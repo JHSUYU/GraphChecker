@@ -2640,4 +2640,92 @@ run_capturing_status campaign_await_host_memory lift13 "${memory_dir}/queue" 1
 unset -f hostname campaign_host_available_mb campaign_log
 reset_config
 
+# MEMORY-3: a start states its need and its own ramp, and counts while that
+# ramp lasts; a head's start is released when its command returns, so a
+# head's JVMs, one after another, are never charged twice.
+campaign_host_gate_root="${memory_dir}/ramps"
+campaign_local_host_names=" localhost gate-head "
+hostname() { echo gate-head; }
+campaign_host_available_mb() { echo 20000; }
+campaign_host_reserve_mb=3000
+campaign_host_poll_s=0
+mkdir -p "${campaign_host_gate_root}/lift14"
+memory_now=$(date +%s)
+printf '%s 8000 60 lapsed\n%s 8000 600 ramping\n' \
+  "$((memory_now - 100))" "$((memory_now - 100))" \
+  >"${campaign_host_gate_root}/lift14/starts"
+campaign_host_try_start lift14 9000 300 \
+  || fail "a row past its own 60 s ramp is still charged"
+read -r _ memory_mb memory_ramp memory_id \
+  < <(grep -v -e lapsed -e ramping "${campaign_host_gate_root}/lift14/starts")
+[[ "${memory_mb} ${memory_ramp} ${memory_id}" \
+    == "9000 300 ${campaign_host_charge_id}" ]] \
+  || fail "a start's row does not state its need, its ramp and its id: \
+$(cat "${campaign_host_gate_root}/lift14/starts")"
+run_capturing_status campaign_host_try_start lift14 1 300
+[[ "${status}" -eq 1 ]] \
+  || fail "a row inside its own 600 s ramp is not charged"
+campaign_host_release lift14 "${memory_id}"
+! grep -q -- "${memory_id}" "${campaign_host_gate_root}/lift14/starts" \
+  || fail "a released start is still charged"
+campaign_head_charging=1
+campaign_head_charged 7000 120 bash -c "grep -c ' 7000 120 ' \
+  '${campaign_host_gate_root}/gate-head/starts' >'${memory_dir}/during'" \
+  || fail "a head's charged command did not run"
+[[ "$(cat "${memory_dir}/during")" -eq 1 \
+    && ! -s "${campaign_host_gate_root}/gate-head/starts" ]] \
+  || fail "a head's start was not charged while it ran and released after"
+run_capturing_status campaign_head_charged 7000 120 false
+[[ "${status}" -eq 1 ]] || fail "a charged command's exit status was lost"
+campaign_head_charging=0
+campaign_head_charged 999999 120 true \
+  || fail "a start outside a head waited for the ledger"
+unset -f hostname campaign_host_available_mb
+reset_config
+
+# HOSTS-7: a wave rotates the slot list, so the one-obligation waves of a
+# campaign do not all start on the first host.
+concolic_worker_count=2
+campaign_worker_hosts="lift06 lift07 lift08"
+[[ "$(campaign_worker_slot_hosts 4 | tr '\n' ' ')" \
+    == "lift07 lift08 lift06 lift07 lift08 lift06 " ]] \
+  || fail "the slot list does not start at its offset: \
+$(campaign_worker_slot_hosts 4 | tr '\n' ' ')"
+campaign_wave_slot() { printf '%s\n' "$1" >>"${memory_dir}/first-hosts"; }
+campaign_wait_workers() { wait; }
+for wave in 0 1 2 3 4 5; do
+  campaign_dispatch_wave "${memory_dir}/campaign/obligations-000${wave}" \
+    /dev/null /dev/null /dev/null /dev/null A
+done
+[[ "$(LC_ALL=C sort -u "${memory_dir}/first-hosts" | wc -l)" -ge 2 ]] \
+  || fail "six one-obligation waves all started on one host: \
+$(cat "${memory_dir}/first-hosts")"
+unset -f campaign_wave_slot campaign_wait_workers
+reset_config
+
+# FANOUT-1: fanout.sh charges each job to the same ledger with the need its
+# line states, releases it when the job returns, and a restart over the same
+# log directory skips every job that returned.
+fanout_dir="${test_tmp}/fanout"
+mkdir -p "${fanout_dir}/logs"
+printf '%s\n' "echo zero >${fanout_dir}/0.out" \
+  "echo one >${fanout_dir}/1.out" \
+  "NEED_MB=1 echo two >${fanout_dir}/2.out" >"${fanout_dir}/jobs"
+echo 0 >"${fanout_dir}/logs/1.exit"
+LIFTS=localhost CAUSYNTH_HOST_LEDGER="${fanout_dir}/ledger" JOB_MEMORY_MB=1 \
+  bash "${repo}/tools/adhoc/fanout.sh" "${fanout_dir}/jobs" \
+  "${fanout_dir}/logs" >"${fanout_dir}/fanout.out" 2>&1 \
+  || fail "fanout failed: $(cat "${fanout_dir}/fanout.out")"
+[[ -s "${fanout_dir}/0.out" && -s "${fanout_dir}/2.out" \
+    && ! -e "${fanout_dir}/1.out" ]] \
+  || fail "fanout did not resume: it ran $(ls "${fanout_dir}"/*.out)"
+[[ "$(cat "${fanout_dir}/logs/0.exit" "${fanout_dir}/logs/2.exit")" \
+    == $'0\n0' ]] \
+  || fail "a returned job left no .exit"
+grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
+  || fail "the finished-job line changed: $(cat "${fanout_dir}/fanout.out")"
+! grep -q . "${fanout_dir}/ledger/$(command hostname -s)/starts" \
+  || fail "a returned job is still charged: \
+$(cat "${fanout_dir}/ledger/$(command hostname -s)/starts")"
+
 echo "run_engine campaign helper tests passed"

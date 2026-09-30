@@ -64,7 +64,7 @@
 #   AB_SOLVE_JOBS concurrent SOLVE.0 solvers of one side (default 2)
 #   AB_STAGE_TIMEOUT_S  wall bound of one JVM (default 1800)
 #   AB_STAGES     the chains to run (default "SEED IMPORT EXPLORE.N COMPOSE")
-#   AB_ACCEPT_ROOT  where round TAGs live (default ~/gc-out)
+#   AB_ACCEPT_ROOT  where round TAGs live (default $GC_OUT, tools/lib/gc-env.sh)
 #   AB_Z3         the z3 both sides use (default: the case's z3_bin)
 #   AB_BASELINE_REPO  the checkout whose experiments/ declare the baseline's
 #                 cases (default: this one)
@@ -72,6 +72,8 @@ set -uo pipefail
 
 ab_self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")
 ab_self_repo=$(cd "$(dirname "${ab_self}")/../.." && pwd -P)
+# shellcheck source=../lib/gc-env.sh
+source "${ab_self_repo}/tools/lib/gc-env.sh"
 
 AB_CASES=(hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17967-pathA
   hdfs-17967-pathB hdfs-17967-pathC hdfs-17960 hdfs-17897 hdfs-11741)
@@ -529,7 +531,7 @@ ab_main() {
   local -a cases=("$@") pids=() override
   local case_id dir side acc decl arg chain classpath onlift repo base_repo
   AB_OUT=${AB_OUT:-/bigtemp/vnr3ne/ab/$(date +%Y%m%d-%H%M%S)}
-  AB_ACCEPT_ROOT=${AB_ACCEPT_ROOT:-${HOME}/gc-out}
+  AB_ACCEPT_ROOT=${AB_ACCEPT_ROOT:-${GC_OUT}}
   AB_STAGES=${AB_STAGES:-${AB_CHAINS[*]}}
   for chain in ${AB_STAGES}; do
     [[ " ${AB_CHAINS[*]} " == *" ${chain} "* ]] \

@@ -391,12 +391,18 @@ stderr line. A result row still saying `SAT_MODEL_READY` after the replay fails 
 ### 7.7 The work pool
 
 `campaign_dispatch_wave` starts `min(slots, obligations)` slots; slots = `concolic_worker_count` per
-host of `campaign_worker_hosts` (empty: local only), interleaved across hosts. A slot waits for memory
+host of `campaign_worker_hosts` (empty: local only), interleaved across hosts and starting at the
+host the wave directory's `cksum` picks, so one-obligation waves spread. A slot waits for memory
 on its host, then claims the next obligation by `mkdir` of its queue index, runs it (locally in a
 subshell, or remotely through `ssh` running `run_engine.sh --run-obligation` with the frozen jar and
-its sha256), and loops. The memory gate (`campaign_host_try_start`) is a ledger shared by all campaigns
-under `~/gc-out/hosts/<host>/`: a start is allowed when `MemAvailable − (starts charged in the last
-60 s) ≥ obligation_memory_mb + 3072`. A slot whose obligation does not finish (nonzero worker exit)
+its sha256), and loops. The memory gate (`campaign_host_try_start <host> [need] [ramp]`) is a ledger
+shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/`
+(`tools/lib/gc-env.sh`): each row is `<epoch> <mb> <ramp_s> <id>`, and a start is allowed when
+`MemAvailable − (rows still inside their own ramp) ≥ need + 3072`. An obligation needs
+`obligation_memory_mb` for 60 s. The head (`do_campaign`, `campaign_head_charged`) charges each of
+its engine JVMs `engine_memory_mb` (else 8192) for 120 s and its seed and CONFIRM replays
+`obligation_memory_mb` for 300 s, and releases the row when the command returns
+(`campaign_host_release`); an obligation's own JVMs are inside its slot's charge. A slot whose obligation does not finish (nonzero worker exit)
 makes the wave fail, and the campaign fails at EXPLORE after reaping remote workers. Verdicts are
 appended to `obligation_results.jsonl` once the wave settled.
 
@@ -810,8 +816,8 @@ comparison.
 
 - A campaign that died names its stage: `[campaign:error] stage=… component=… artifact=… reason=…`
   on stderr. A REPLAY death: `iteration-0000/seed-result/focused/replay.log` and the seed session's
-  `gaps.jsonl`. A slot that seems stalled logs `waiting for memory on <host>: …`; the host ledger
-  is `~/gc-out/hosts/<host>/{available,starts}`.
+  `gaps.jsonl`. A slot or a head that seems stalled logs `waiting for memory on <host>: …`; the
+  host ledger is `$CAUSYNTH_HOST_LEDGER/<host>/{available,starts}`.
 - `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
   `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it

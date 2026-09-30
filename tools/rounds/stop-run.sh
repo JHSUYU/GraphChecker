@@ -15,8 +15,9 @@
 set -euo pipefail
 
 (( $# > 0 )) || { echo "usage: stop-run.sh <round>-<case> ..." >&2; exit 2; }
-out=${GC_OUT:-/u/vnr3ne/gc-out}
-LIFTS=${LIFTS:-"lift06 lift07 lift08 lift09 lift10 lift11 lift12 lift13 lift14 lift15"}
+# shellcheck source=../lib/gc-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
+out=${GC_OUT}
 grace=${STOP_GRACE_S:-20}
 dirs=()
 for suffix in "$@"; do
