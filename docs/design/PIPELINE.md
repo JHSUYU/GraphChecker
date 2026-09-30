@@ -882,7 +882,8 @@ comparison.
   files (stage metrics, file mtimes, the log) and prints each stage (SEED split into static pass,
   weave, recording and aggregation), each wave (planning, dispatch, import gate; obligations by
   verdict, solver JVMs that failed; focused replays with min/median/max duration and how many
-  were refused, flipped or ended in error), the CONFIRM replay and the top time sinks. A gate or
+  were refused, flipped or ended in error, and how many ended early (§5) with the time from the
+  end's replay-log line to the JVM's last write), the CONFIRM replay and the top time sinks. A gate or
   stage that started a head JVM includes the head's wait for memory (§7.7), which the log counts.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
   `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it

@@ -126,6 +126,25 @@ def replay_outcome(worker, result):
     return "error"
 
 
+EARLY_END = re.compile(r"^Causynth (\d\d):(\d\d):(\d\d): the replay ends (AT_\w+)", re.M)
+
+
+def early_end(worker, replay_end):
+    """(reason, seconds from the end's line to the replay log's last write)
+    when the replay ended early (ConcolicResultPublisher#conclude), else None."""
+    try:
+        text = open(os.path.join(worker, "replay.log"), errors="replace").read()
+    except OSError:
+        return None
+    found = EARLY_END.search(text)
+    if not found or not replay_end:
+        return None
+    last = time.localtime(replay_end)
+    said = time.mktime(last[:3] + tuple(int(g) for g in found.groups()[:3]) + last[6:])
+    exit_s = replay_end - said
+    return found.group(4), exit_s + 86400 if exit_s < -60 else exit_s
+
+
 def wave_rows(iteration):
     rows = []
     previous_end = mtime(os.path.join(iteration, "import_gate.json"))
@@ -156,6 +175,7 @@ def wave_rows(iteration):
                 "replayed": replayed,
                 "solver_failed": failed,
                 "outcome": replay_outcome(worker, result) if replayed else None,
+                "early": early_end(worker, replay_end) if replayed else None,
                 "solve": (solve_end - start) if start and solve_end else None,
                 "replay": (replay_end - solve_end) if replayed and replay_end and solve_end else None,
                 "wall": (end - start) if start and end else None,
@@ -192,11 +212,14 @@ def report(root, label):
             summary = dict(zip(lines[0], lines[-1]))
     running = running[-1] if running and running[-1] not in done and not summary else None
     seed_start = mtime(os.path.join(root, ".seed-started"))
-    before_seed = sum(w for n, w in stages[:done.index("SEED")]) if "SEED" in done else 0
+    # The stages before SEED: all that finished, while SEED runs.
+    before_seed = sum(w for n, w in stages[:done.index("SEED") if "SEED" in done else len(done)])
     at = (seed_start - before_seed) if seed_start else None
     # A campaign with no summary row is running or was stopped: its last
     # log line is the last thing it did.
-    last = mtime(log_path) if log_path else None
+    last = max([t for t in [mtime(log_path) if log_path else None, mtime(root)]
+                + [mtime(p) for p in glob.glob(os.path.join(root, "iteration-0000", "*"))]
+                if t] or [None])
     total = float(summary["elapsed"]) if summary.get("elapsed") else (
         last - at if last and at else sum(w for _, w in stages))
     print("== %s  %s" % (label, os.path.abspath(root)))
@@ -244,9 +267,17 @@ def report(root, label):
             " (%d failed JVMs: %s)" % (len(failed), dur(sum(failed))) if failed else "",
             len(replays), dur(sum(o["replay"] or 0 for o in replays))))
         for outcome in ("refused", "flipped", "error"):
-            chosen = [o["replay"] or 0 for o in replays if o["outcome"] == outcome]
-            if chosen:
-                print("     %-8s %3d replays, %s of slot time" % (outcome, len(chosen), dur(sum(chosen))))
+            chosen = [o for o in replays if o["outcome"] == outcome]
+            if not chosen:
+                continue
+            ended = {}
+            for o in chosen:
+                if o["early"]:
+                    ended.setdefault(o["early"][0], []).append(o["early"][1])
+            print("     %-8s %3d replays, %s of slot time%s" % (
+                outcome, len(chosen), dur(sum(o["replay"] or 0 for o in chosen)),
+                "".join("; %d ended %s (exit took %s)" % (len(v), k, spread(v))
+                        for k, v in sorted(ended.items()))))
         reruns = sum(1 for w in waves for o in w["obligations"] if o["rerun"])
         if reruns:
             print("   GROW re-ran %d exposing replay(s)" % reruns)

@@ -552,11 +552,13 @@ public class ManualMintStatesItsValueTest {
     }
 
     /** Puts the one account back the way the rest of this test found it. */
+    /** The abandonment undone, and the early end it decided with it. */
     private static void unmatchedPrefixCleared() throws Exception {
-        Field prefix = FocusedReplay.class
-                .getDeclaredField("unmatchedPrefix");
-        prefix.setAccessible(true);
-        prefix.set(null, "");
+        for (String name : new String[] {"unmatchedPrefix", "refusedAt"}) {
+            Field field = FocusedReplay.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.set(null, "");
+        }
     }
 
     /** One rendered address, as the contract parses one. */
