@@ -206,12 +206,8 @@ Fallbacks and dead code:
 
 Harness and declarations:
 
-20. `experiments/hbase/token-key-roll-concolic/workflow.properties` uses a key `run_engine.sh`
-    refuses, so that case cannot run.
 21. `src/test/resources/external-callers.txt` lists APIs no tree calls, and omits
     `MessageDoors`, which the Solr trees call.
-23. `tools/analysis/confirmrun.sh` calls `campaign_confirm_decide`, which `run_engine.sh` no
-    longer has: the decision is `explore.ConfirmMain --sessions`, which also needs the claim.
 
 Stale artifacts:
 

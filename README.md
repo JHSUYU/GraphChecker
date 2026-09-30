@@ -540,14 +540,12 @@ third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/sh
 experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
 experiments/hadoop/, experiments/solr/   per-system scripts, cases, ad-hoc experiments
-experiments/hbase/                HBase reading notes and sketches (not a runnable case)
 tools/lib/gc-env.sh               GC_OUT, host ledger, LIFTS for every tool
 tools/rounds/                     launch, monitor and stop campaigns on the lifts
 tools/adhoc/                      ad-hoc check discovery, slicing, selection, pre-screen, sweeps,
                                   triage, findings
 tools/regress/                    offline-ab.sh: the offline merge gate
-tools/analysis/                   one-off analyses (chain check, graph diff, pairing probe)
-tools/case_onepager.py            one page per case from a campaign's artifacts
+tools/analysis/                   occurrences.py (a selector from a discovery log), the pairing probe
 docs/STATUS.md                    done / partial / not done, per requirement; open defects
 docs/design/                      the design of main (index: docs/design/README.md)
 ```
