@@ -1492,7 +1492,11 @@ public final class SmtLowering {
      */
     public void pin(String symbol, Sort sort) {
         declareStated(symbol, sort);
-        pins.add(scope + SEPARATOR + symbol);
+        if (pins.add(scope + SEPARATOR + symbol)) {
+            // A read of its version lowers to it from now on
+            // ({@link #pinnedSymbol}), and a memoized one did not.
+            memo = new HashMap<MemoKey, Attempt<?>>();
+        }
     }
 
     /**
