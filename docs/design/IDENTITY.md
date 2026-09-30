@@ -265,8 +265,8 @@ order:
   the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
   slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
   scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
-  wait is missed). The watchdog lets held waits go when the run idles; a released timed wait still
-  waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an order whose
+  wait is missed). The watchdog lets held waits go when the order stalls; a released timed wait
+  still waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an order whose
   run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
@@ -274,18 +274,30 @@ order:
   unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
   follows a cause the order holds, and runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
-  not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog
-  acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled and no
-  workload thread computing, or after eight timeouts (`CEILING`) whatever they do. Every
-  non-waiting thread counts except the engine's own (`causynth-*`: the result publication, the
-  trace parse), since which thread owes a slot cannot be seen between two of its events
-  (`ScheduleLog#computingLocked`). The watchdog first lets the waits held without a slot go; a
+  not do; a waiter gives up what its own occurrence did not make before its slot. The watchdog
+  watches the order's frontier (`ScheduleLog#firstBlocking`: the first open slot that is no
+  `WAKE`), which is what every waiter waits on: for its slot to come due, or for the line. It acts
+  once the frontier has stood `causynth.schedule.timeout.ms` (default 15 s) with waiters and no
+  thread computing toward it, or eight timeouts (`CEILING`) whatever threads do. A slot taken
+  past the frontier (past the cut a non-`WAKE` slot is taken at once) or an event run free moves
+  no waiter, so it does not restart the stall (hdfs-17899-bug2 w4d1 CONFIRM: the test thread's
+  polls took their later slots, then ran free, for the whole of its 30 s wait while a
+  BPServiceActor, held at the order's end in a wait the recording never timed out, owed the
+  frontier, its turn's `END`). Which thread owes the frontier cannot be seen between two of its
+  events, so any thread may be computing toward it, except one waiting for a turn, the engine's
+  own (`causynth-*`: the result publication, the trace parse), and one seen at an event away from
+  the frontier (run free, or into a slot past it; a wait the watchdog let go aside) since the
+  last CPU look: it runs on elsewhere (`ScheduleLog#ELSEWHERE`). The frontier's event is one
+  thread's to make, so one such thread using half a CPU defers the give-up, never their sum: the
+  traffic a free-running loop drives through threads that make no event (an IPC reader, a
+  connection's receiver) is no one computing (`ScheduleLog#computingLocked`). The watchdog first
+  lets the waits held without a slot go; a
   grace (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter
   that waits for a slot. A poll held past its count stands at a due slot and waits for no slot's
   event, so it bounds no give-up; when only such polls wait, they are let go again, a grace
   apart. A let-go does not restart the stall's clock: a wait for a slot is held at most
-  `CEILING` timeouts and a grace, and an event that never comes, with nothing computing, costs a
-  timeout and a grace. After two give-ups past the cut the rest is released. Each let-go and
+  `CEILING` timeouts and a grace, and an event that never comes, with nothing computing toward it,
+  costs a timeout and a grace. After two give-ups past the cut the rest is released. Each let-go and
   give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row;
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that

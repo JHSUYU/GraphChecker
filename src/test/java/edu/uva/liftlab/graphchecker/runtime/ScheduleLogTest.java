@@ -1540,6 +1540,89 @@ public class ScheduleLogTest {
     }
 
     /**
+     * The stall is the frontier's.  A daemon waits at tick.d behind x, which
+     * nobody makes, while another thread runs on elsewhere for longer than
+     * {@link ScheduleLog#CEILING} timeouts, burning CPU: making events the
+     * order lacks, or taking the order's slots past x (a test's polling loop
+     * past the cut).  Neither moves the frontier nor defers the give-up: x
+     * is given up a timeout and a CPU look after it stood, not at the
+     * ceiling or when the loop ends (hdfs-17899-bug2 w4d1 CONFIRM).  Only
+     * x's owner computing silently defers it.
+     */
+    @Test(timeout = 60000L)
+    public void aThreadRunningElsewhereDefersNoStallTheFrontiersOwnerDoes()
+            throws Exception {
+        long timeout = 500L;
+        // row: what the other thread does, its site, x's owner computes.
+        Object[][] rows = {
+            {"runs free", "free", false},
+            {"takes the slots past x", "e", false},
+            {"takes the slots past x while x's owner computes", "e", true},
+        };
+        for (Object[] row : rows) {
+            restart();
+            final String name = "a thread that " + row[0];
+            final String site = (String) row[1];
+            final boolean owner = (Boolean) row[2];
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
+                    String.valueOf(timeout));
+            List<ScheduleEvent> rest = new ArrayList<ScheduleEvent>(
+                    Arrays.asList(event(ScheduleEvent.Kind.SEND, "x"),
+                            event(ScheduleEvent.Kind.WAKE, "tick.d")));
+            for (int poll = 0; poll < 200; poll++) {
+                rest.add(event(ScheduleEvent.Kind.SEND, "e"));
+            }
+            ScheduleLog.enforceForTests(
+                    Collections.<ScheduleEvent>emptyList(), rest);
+            final boolean[] stop = new boolean[1];
+            Thread elsewhere = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    while (!stop[0]) {
+                        ScheduleLog.observe(ScheduleEvent.Kind.SEND, site);
+                        spin(100L);
+                    }
+                }
+            });
+            Thread computes = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    spin(2500L);
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+                }
+            });
+            long before = System.nanoTime();
+            elsewhere.start();
+            if (owner) computes.start();
+            Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+            daemon.join(15000L);
+            long took = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - before);
+            boolean held = daemon.isAlive();
+            stop[0] = true;
+            elsewhere.join(5000L);
+            computes.join(5000L);
+            daemon.join(5000L);
+            assertFalse(name + ": tick.d went while it ran", held);
+            List<String> sites = sites();
+            sites.retainAll(Arrays.asList("x", "tick.d"));
+            String progress = ScheduleLog.progress();
+            if (owner) {
+                assertEquals(name, Arrays.asList("x", "tick.d"), sites);
+                assertTrue(name + ": " + progress,
+                        progress.contains(" 0 given up"));
+                assertTrue(name + ", held for x: " + took, took >= 2400L);
+            } else {
+                assertEquals(name, Collections.singletonList("tick.d"), sites);
+                assertTrue(name + ": " + progress,
+                        progress.contains(" 1 given up"));
+                assertTrue(name + ", well inside the ceiling: " + took,
+                        took < ScheduleLog.CEILING * timeout - 1000L);
+            }
+        }
+    }
+
+    /**
      * A loop polling past its recorded count, its context's next slot due,
      * does not spin: its first poll past the count goes (its last recorded
      * WAKE's slot moved the order), and every later one waits for the order
