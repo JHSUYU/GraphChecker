@@ -173,7 +173,7 @@ field=<f> <subject>`.
 | 9 | a reached anchor states a `phiTerm` (BLOCKING when it observed the fatal, else DIAGNOSTIC: a concrete branch); an observed fatal's `phiTerm` does not evaluate false at the session's valuation (BLOCKING) | `UNSTATED_VALUE` |
 | 10 | a focused session states a decision at its focus row's flip (site, ordinal) with the asked outcome | `ADMISSION_GAP`, DIAGNOSTIC |
 | 11 | every root symbol a session names (in a term, a `phiTerm`, or its expression table) has a `RootMintRow` of that session | `MINT_UNATTRIBUTED`, BLOCKING |
-| 12 | a write's `referentState` names a `WriteRow` of the same session at a version below the write's own | `UNSTATED_VALUE`, BLOCKING |
+| 12 | a write's `referentState` names a version below the write's own (BLOCKING), stated by a `WriteRow` of the same session (else DIAGNOSTIC, as a read of an unwritten version: COMPOSE composes no reader through that store, `REFERENT_STATE_UNSTATED:UNPUBLISHED`) | `UNSTATED_VALUE` |
 
 ## 3. Exploration contract
 

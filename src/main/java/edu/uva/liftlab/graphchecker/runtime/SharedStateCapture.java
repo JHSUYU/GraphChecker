@@ -209,6 +209,9 @@ final class SharedStateCapture {
         String fault = versionsFault(envelope, clean);
         String locationKey = locationKey(envelope);
         if (!fault.isEmpty()) {
+            if (active != null && !locationKey.isEmpty()) {
+                active.sharedStateRefusals.put(locationKey, fault);
+            }
             refuse(expressionSerializationTruncationFault(fault)
                             ? EXPRESSION_SERIALIZATION_TRUNCATED
                             : containerBaseUnstatedFault(fault)

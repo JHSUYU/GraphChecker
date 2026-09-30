@@ -925,11 +925,12 @@ public final class RowInvariants {
     // ---- 12. referent states --------------------------------------------
 
     /**
-     * CONTRACT-SPEC §2.6: a write's {@code referentState} names a write of
-     * its container's {@code MAP} location in the same session, at a
-     * version below the write's own: the state the store saw was published
-     * before it.  Anything else is a state no row stands behind, which a
-     * reader through the reference would be composed over.
+     * CONTRACT-SPEC §2.6: a write's {@code referentState} names a version of
+     * its container's {@code MAP} location below the write's own, BLOCKING
+     * otherwise: the state the store saw was published before it.  A
+     * version no write row of the session states (the runtime states a
+     * refusal wherever its read-out shows one) is DIAGNOSTIC, as a read of
+     * one is: COMPOSE composes no reader through that store.
      */
     private static void referents(SessionReader session, List<GapRow> gaps) {
         Set<String> stated = new LinkedHashSet<String>();
@@ -940,17 +941,24 @@ public final class RowInvariants {
             WriteRow.Referent referent = row.referentState();
             if (referent == null) continue;
             String state = referent.location() + "@" + referent.version();
-            if (stated.contains(state) && referent.version() < row.version()) {
-                continue;
+            if (referent.version() >= row.version()) {
+                gaps.add(violation(session, GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, "writes", row.seq(),
+                        "referentState", row.location() + "@" + row.version()
+                                + " -> " + state, "invariant 12 (CONTRACT-SPEC"
+                                + " §2.6): the state is not older than the "
+                                + "store"));
+            } else if (!stated.contains(state)) {
+                // As a read of a version no row states: evidence the run
+                // lost (a withheld activation's rows), which COMPOSE
+                // refuses the store on by name.
+                gaps.add(violation(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, "writes", row.seq(),
+                        "referentState", row.location() + "@" + row.version()
+                                + " -> " + state, "invariant 12 (CONTRACT-SPEC"
+                                + " §2.6): no WriteRow of this session states "
+                                + "the referent's state"));
             }
-            gaps.add(violation(session, GapKind.UNSTATED_VALUE,
-                    GapClass.BLOCKING, "writes", row.seq(), "referentState",
-                    row.location() + "@" + row.version() + " -> " + state,
-                    "invariant 12 (CONTRACT-SPEC §2.6: a reference write's "
-                            + "referentState names a write of its session "
-                            + "below its own version): " + (stated.contains(
-                            state) ? "the state is not older than the store"
-                            : "no WriteRow of this session states it")));
         }
     }
 

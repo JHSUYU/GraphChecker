@@ -77,6 +77,8 @@ final class ActiveRegion {
     /** The write log this activation read out, and its gaps. */
     final Map<String, JsonObject> sharedStateRecords =
             new LinkedHashMap<>();
+    /** The locations its read-out refused, with why. */
+    final Map<String, String> sharedStateRefusals = new LinkedHashMap<>();
     /** Symbols this activation already minted at a one-shot hook. */
     final Set<String> materialized = new LinkedHashSet<>();
     final ConcolicRegionRuntime.OccurrenceCounter
