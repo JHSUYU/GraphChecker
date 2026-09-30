@@ -45,6 +45,10 @@ public:
                                  int locals_offset, oop obj);
   static void prepare_mutation(MethodSymbolizerHandle &handle);
   static Expression *mutated(MethodSymbolizerHandle &handle);
+  // What append(sequence, start, end) leaves: the content, then the
+  // sequence's range [start, end).
+  static Expression *ranged(Expression *content, Expression *sequence,
+                            Expression *start, Expression *end);
 
   static void init_register_class(MethodSymbolizer* m_symbolizer);
 

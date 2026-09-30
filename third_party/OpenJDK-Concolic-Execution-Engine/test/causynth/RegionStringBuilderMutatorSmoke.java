@@ -1,5 +1,6 @@
 /**
- * A StringBuilder's mutators other than append keep its expression true.
+ * A StringBuilder's mutators other than append keep its expression true, and
+ * so does an append of a range.
  *
  * <p>The builder's content is its append chain, and its bodies' writes to
  * value/count are not followed; setLength, insert and delete used to leave
@@ -50,6 +51,26 @@ public final class RegionStringBuilderMutatorSmoke {
         require(sink.text.equals("bczz") && delete.contains("SB.NAME")
                         && delete.contains("substring"),
                 "delete is not a substring of the content: " + delete);
+
+        // append(CharSequence, start, end) appends the range [start, end),
+        // not the sequence and two renderings of its bounds.
+        StringBuilder ranged = new StringBuilder("k=");
+        ranged.append(in.name, 1, 3);
+        sink.text = ranged.toString();
+        String range = text(sink);
+        require(sink.text.equals("k=bc") && range.contains("SB.NAME")
+                        && range.contains("substring")
+                        && !range.contains("toString"),
+                "a ranged append is not a substring of its sequence: "
+                        + range);
+        // A char[]'s range no String expression states: dropped, not a
+        // concat of the array and its bounds.
+        StringBuilder chars = new StringBuilder();
+        chars.append(in.name);
+        chars.append(new char[]{'x', 'y'}, 0, 1);
+        sink.text = chars.toString();
+        require(sink.text.equals("abcx") && !text(sink).contains("SB.NAME"),
+                "a char[] range kept a stale expression: " + text(sink));
 
         StringBuilder reversed = new StringBuilder();
         reversed.append(in.name);

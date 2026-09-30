@@ -59,6 +59,22 @@ static jint builder_length(oop builder) {
 
 static const char *ABSTRACT_BUILDER = "java/lang/AbstractStringBuilder";
 
+// append(CharSequence, int, int) and append(char[], int, int): a range of
+// the operand, not the operand and two renderings of its bounds.
+static bool is_ranged_append(MethodSymbolizerHandle &handle) {
+  if (handle.get_callee_name() != "append") return false;
+  ResourceMark rm;
+  SignatureStream ss(handle.get_callee_method()->signature());
+  BasicType types[3];
+  int count = 0;
+  for (; !ss.at_return_type(); ss.next()) {
+    if (count == 3) return false;
+    types[count++] = ss.type();
+  }
+  return count == 3 && (types[0] == T_OBJECT || types[0] == T_ARRAY)
+      && types[1] == T_INT && types[2] == T_INT;
+}
+
 void SymStrBuilder::init_register_class(MethodSymbolizer *m_symbolizer) {
   // AbstractStringBuilder too: setLength and setCharAt are declared only
   // there, so a call on a StringBuilder names that holder.
@@ -135,6 +151,25 @@ void SymStrBuilder::prepare_param(MethodSymbolizerHandle &handle) {
   if (!callee_method->is_static()) {
     SymStrBuilder::prepare_param_helper(handle, T_OBJECT, offset);
     ++offset;
+  }
+  if (is_ranged_append(handle)) {
+    // [content, the sequence (NULL for a char[]: no String states it), start,
+    // end]: the bounds as the int expressions they are.
+    oop sequence = handle.get_param<oop>(offset);
+    Expression *range = NULL;
+    if (sequence == NULL) {
+      range = new ConStringSymbolExp(std::string("null"));
+    } else if (sequence->is_instance()
+               && (sequence->klass()->name()->equals(SymString::TYPE_NAME)
+                   || sequence->klass()->name()->equals(
+                          SymStrBuilder::TYPE_NAME))) {
+      range = operand_exp(handle, offset, sequence);
+    }
+    exp_list_t &params = handle.get_param_list();
+    params.push_back(range);
+    params.push_back(handle.get_primitive_exp(offset + 1, T_INT));
+    params.push_back(handle.get_primitive_exp(offset + 2, T_INT));
+    return;
   }
 
   ResourceMark rm;
@@ -239,15 +274,25 @@ SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
     return type == T_VOID ? NULL : exp;
   }
   if (callee_name == "append") {
-    exp_list_t string_exp_list;
-    add_to_string_for_param_list(handle, string_exp_list);
-    exp = new OpStrExpression("concat", string_exp_list);
+    if (is_ranged_append(handle)) {
+      // The range [start, end) of a String or builder; a char[]'s range no
+      // String expression states, so the builder's expression is dropped
+      // and its next use states the concrete content.
+      const exp_list_t &params = handle.get_param_list();
+      exp = params[1] == NULL ? NULL
+          : ranged(params[0], params[1], params[2], params[3]);
+    } else {
+      exp_list_t string_exp_list;
+      add_to_string_for_param_list(handle, string_exp_list);
+      exp = new OpStrExpression("concat", string_exp_list);
+    }
     SymStrBuilder *sym_res_strBuilder =
         (SymStrBuilder *)ConcolicMngr::ctx->get_or_alloc_sym_inst(result);
     if (sym_res_strBuilder != NULL) {
       // append mutates the receiver, so updating its object state is
       // intentional; the same expression also travels on the return edge.
       sym_res_strBuilder->set_ref_exp(exp);
+      if (exp == NULL) sym_res_strBuilder->clear_semantic_expression();
     }
   } else if (callee_name == "toString") {
     oop receiver = handle.get_param<oop>(0);
@@ -342,6 +387,11 @@ Expression *clamped(Expression *end, Expression *length) {
 }
 
 }  // namespace
+
+Expression *SymStrBuilder::ranged(Expression *content, Expression *sequence,
+                                  Expression *start, Expression *end) {
+  return concat(content, substring(sequence, start, end));
+}
 
 Expression *SymStrBuilder::mutated(MethodSymbolizerHandle &handle) {
   const exp_list_t &params = handle.get_param_list();
