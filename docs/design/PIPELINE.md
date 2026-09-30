@@ -508,14 +508,16 @@ since an array-valued choice over lambda terms is outside what z3 decides). Thro
 `perCandidate`: the run's answer for the object the owner read returned (its joined write's
 identity, else the one its row states), and for each other object a write of the owner's location
 stored (`candidates`, any class), the same relation over that object's state (`#answerOf`), its
-receiver beneath views and iterators replaced by the state's chain (`#asOf`). That state is the
-write's `referentState` and the later versions of it the reader could have seen (`#statesOf`,
-R3-REFCONT §1.4): the version live at the read in session order (the store's own when every one
-came later), and each later one whose writer is HB-concurrent with the reader (`SessionJoin#concurrent`,
-`Arms#concurrent`); several are chosen among by nested selectors `nest__<digest>`, one per (read,
-object, version), exactly one where the owner is that object. An answer holds only where the owner
-is its object, so what its lowering requires is its case's precondition, never the path's. An
-object whose write states no state (`referentStateRefused`, none, or no version lowers) is no case,
+receiver beneath views and iterators replaced by the state's chain (`#asOf`). Through each write
+that stored it, that state is the write's `referentState` and the later versions of it the reader
+could have seen (`#statesOf`, R3-REFCONT §1.4): the version live at the read in session order (the
+store's own when every one came later), and each later one whose writer is HB-concurrent with the
+reader (`SessionJoin#concurrent`, `Arms#concurrent`); several are chosen among by nested selectors
+`nest__<digest>`, one per (read, object, version), exactly one where the owner is that object, and
+a family arm delivering one store holds them to the states seen through that store
+(`#storeChoice`, conjoined by `ComposedFamilies#producerBody`). An answer holds only where the
+owner is its object, so what its lowering requires is its case's precondition, never the path's. A
+store that states no state (`referentStateRefused`, none, or no version lowers) delivers no case,
 named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A movable owner that is no
 reference read (a map's own read, `outer.get(k).get(k2)`) names no candidates and refuses the path
 (`UNSTATED_VALUE:OwnerCandidates:<location>`). `ENTRY` is a view to walk through; as a value no
@@ -540,11 +542,15 @@ polarity they took, and the reads they name are joined in turn. A decision whose
 REMOVE_IF guard of the referent's chain, or that guard's complement, stays free. `ComposeMain`
 reads the epoch's scope map (`--static-scope-map`, required; `run_engine.sh do_compose` passes it).
 
-**A mutation through a re-pointable owner** (`Composer#pinnedByMutation`, R3-REFCONT C-4): when a
-reached occurrence's container version is a mutation naming as its `owner` a read of a location a
-STATE family may re-pair, that location keeps the run's pairing (no family, no movable owner), named
-DIAGNOSTIC `OWNER_PINNED_BY_MUTATION:<location>@<session>`: another pairing would mutate an object no
-row records the mutation of.
+**An owner kept to the run's pairing** (`Composer#pinnedOwners`): a location a STATE family may
+re-pair keeps the run's pairing (no family, no movable owner), named DIAGNOSTIC, when a reached
+occurrence's container version is a mutation naming as its `owner` a read of it
+(`OWNER_PINNED_BY_MUTATION:<location>@<session>`, R3-REFCONT C-4: another pairing would mutate an
+object no row records the mutation of), or when a store of it states or refuses a referent while
+the object it stored has no container log of its own in the session, a `Collections` wrapper or a
+view (`OWNER_PINNED_BY_WRAPPER:<location>@<session>`: a query through a wrapper reaches its map
+through a field no row records and names no owner, so it would be the run's map's answer whichever
+object the family delivered).
 
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint

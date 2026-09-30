@@ -2249,9 +2249,11 @@ public class ComposerTest {
      * What another writer of the reference may have handed the reader, by
      * variant: a map mutated after its store by a writer concurrent with the
      * reader is each state the reader could have seen, chosen by nested
-     * selectors; a store whose map state the VM refused is no case, named;
-     * a reader that mutated the map through the reference holds it to the
-     * run's own pairing, named.
+     * selectors; stored again after that mutation, the later store lets the
+     * reader see only the later state; a store whose map state the VM
+     * refused is no case, named; a reader that mutated the map through the
+     * reference, or a store of a wrapper over the map (a query through it
+     * names no owner), holds it to the run's own pairing, named.
      */
     @Test
     public void aReplacedReferencesOtherMapIsEachStateTheReaderCouldSee()
@@ -2260,7 +2262,10 @@ public class ComposerTest {
         LocationId known = LocationId.of(LocationKind.INSTANCE, "8", "16");
         LocationId other = LocationId.of(LocationKind.MAP, "20", "-3");
         LocationId own = LocationId.of(LocationKind.MAP, "30", "-3");
-        for (String variant : new String[]{"mutated", "refused", "put"}) {
+        for (String variant : new String[]{"mutated", "restored", "refused",
+                "put", "wrapper"}) {
+            boolean mutated = "mutated".equals(variant)
+                    || "restored".equals(variant);
             Path iteration = folder.newFolder("other-map-" + variant)
                     .toPath();
             OccurrenceAddress reader = occurrence("solr/leader",
@@ -2294,10 +2299,15 @@ public class ComposerTest {
                     symbol("M_L'" + map + "'_20", map));
             session.expression("EXPR.0000000000000030",
                     symbol("M_L'" + map + "'_30", map));
+            String wrapper = "java/util/Collections$UnmodifiableMap";
+            session.expression("EXPR.0000000000000070",
+                    symbol("M_L'" + wrapper + "'_25", wrapper));
             session.writes.add(WriteRow.of("s0", ++session.seq,
                     Endpoint.of(writers[0], UPDATE + "#56:WRITE",
                             at("kc#1", 0), 0), known, 5L,
-                    "EXPR.0000000000000020", "L", "refused".equals(variant)
+                    "wrapper".equals(variant) ? "EXPR.0000000000000070"
+                            : "EXPR.0000000000000020", "L",
+                    "refused".equals(variant)
                             ? null : WriteRow.Referent.of(other, 2L),
                     "refused".equals(variant) ? "RESIZING" : null));
             session.writes.add(WriteRow.of("s0", ++session.seq,
@@ -2328,7 +2338,7 @@ public class ComposerTest {
                     query);
             session.read(Endpoint.of(reader, "Wrapper#getAndSave#9:READ",
                     at("q#1", 0), 0), own, version, "q", "L", null);
-            if ("mutated".equals(variant)) {
+            if (mutated) {
                 // After the read, on a thread of its own: 5 leaves the map.
                 session.expression("EXPR.0000000000000050", relation(
                         "ASSOCIATIVE", "REMOVE", map, five,
@@ -2336,6 +2346,13 @@ public class ComposerTest {
                 session.write(Endpoint.of(writers[2], "Map#remove#1:WRITE",
                         at("m#10", 0), 0), other, 10L,
                         "EXPR.0000000000000050");
+            }
+            if ("restored".equals(variant)) {
+                session.writes.add(WriteRow.of("s0", ++session.seq,
+                        Endpoint.of(writers[2], UPDATE + "#56:WRITE",
+                                at("kc#4", 0), 0), known, 11L,
+                        "EXPR.0000000000000020", "L",
+                        WriteRow.Referent.of(other, 10L), null));
             }
             session.expression("EXPR.0000000000000060", binary("==",
                     answered, vmNull()));
@@ -2345,21 +2362,41 @@ public class ComposerTest {
             Composer.Composition composition = compose(iteration, reader, 4,
                     StaticScopeMap.empty());
             String path = fatalArm(composition);
-            assertEquals(variant + ": " + path, "mutated".equals(variant),
+            assertEquals(variant + ": " + path, mutated,
                     path.contains("nest__"));
             // The refused map is no case, and a pinned owner is the run's.
-            assertEquals(variant + ": " + path, "mutated".equals(variant),
+            assertEquals(variant + ": " + path, mutated,
                     path.contains("(ite (= kc "));
             assertEquals(variant + ": " + composition.gaps(),
                     "refused".equals(variant), named(composition.gaps(),
                             "@s0") && says(composition.gaps(),
                             GapKind.UNSTATED_VALUE, "(RESIZING)"));
             // A family of the reference binds its read to each writer's map.
-            assertEquals(variant, !"put".equals(variant),
+            assertEquals(variant, mutated || "refused".equals(variant),
                     composition.body().contains("(= kc identity__"));
             assertEquals(variant, "put".equals(variant),
                     named(composition.gaps(),
                             "OWNER_PINNED_BY_MUTATION:INSTANCE/8#16@s0"));
+            assertEquals(variant, "wrapper".equals(variant),
+                    named(composition.gaps(),
+                            "OWNER_PINNED_BY_WRAPPER:INSTANCE/8#16@s0"));
+            // Through the first store the reader sees the map as stored or
+            // as mutated after; through the store after the mutation, only
+            // the latter.
+            for (int index : new int[]{0, 2}) {
+                String arm = "";
+                for (String line : composition.body().split("\n")) {
+                    if (line.contains("writer_family__") && line.contains(
+                            ArtifactIO.digest(writers[index].id() + "|s0",
+                                    12))) {
+                        arm = line;
+                    }
+                }
+                assertEquals(variant + ": " + arm, !mutated ? 0
+                                : index == 0 ? 2
+                                : "restored".equals(variant) ? 1 : 0,
+                        arm.split("nest__", -1).length - 1);
+            }
         }
     }
 

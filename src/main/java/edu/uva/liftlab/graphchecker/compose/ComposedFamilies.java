@@ -612,6 +612,12 @@ final class ComposedFamilies {
                 if (symbol == null || symbol.isEmpty()) continue;
                 lowering.declareStated(symbol, delivered.sort);
                 conjuncts.add("(= " + symbol + " " + delivered.text + ")");
+                // The states of the stored object the reader could have
+                // seen through this very store.
+                if (out.arm.write() != null) {
+                    conjuncts.add(lowering.storeChoice(symbol,
+                            out.arm.write()));
+                }
             }
             guards.putAll(out.arm.guard());
         }

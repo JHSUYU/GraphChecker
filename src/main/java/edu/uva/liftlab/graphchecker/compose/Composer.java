@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
@@ -691,7 +692,7 @@ public final class Composer {
         // independence leaves out.  A location a reader mutated a container
         // through is held to the run's pairing.
         Set<String> repaired = repaired(session);
-        Set<String> pinned = pinnedByMutation(session, reached, repaired);
+        Set<String> pinned = pinnedOwners(session, reached, repaired);
         repaired.removeAll(pinned);
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
                 corpus.join(session), repaired,
@@ -1493,15 +1494,19 @@ public final class Composer {
     }
 
     /**
-     * The anchor locations a reader of this path mutated a container
-     * through (R3-REFCONT C-4): a reached occurrence's container version
-     * whose mutation names, as its owner, a read of a location a family may
-     * re-pair.  Another pairing would mutate an object no row records the
-     * mutation of, so the location keeps the run's own pairing, named.
+     * The anchor locations a family may re-pair that keep the run's own
+     * pairing, named.  A reader of this path mutated a container through
+     * one (R3-REFCONT C-4): a reached occurrence's container version whose
+     * mutation names, as its owner, a read of it; another pairing would
+     * mutate an object no row records the mutation of.  Or a store of one
+     * holds a container through an object that is not it (a
+     * {@code Collections} wrapper, a view): a query through that object
+     * names no owner, so it is the run's container's answer whichever
+     * object the family delivers.
      */
-    private Set<String> pinnedByMutation(String session,
-                                         Map<String, Long> reached,
-                                         Set<String> repaired) {
+    private Set<String> pinnedOwners(String session,
+                                     Map<String, Long> reached,
+                                     Set<String> repaired) {
         Set<String> pinned = new LinkedHashSet<String>();
         for (Map.Entry<String, Long> at : reached.entrySet()) {
             OccurrenceAddress occurrence = corpus.occurrence(at.getKey());
@@ -1533,7 +1538,41 @@ public final class Composer {
                 }
             }
         }
+        for (String key : repaired) {
+            for (WriteRow store : corpus.writesOf(session, key)) {
+                if (store.referentState() == null
+                        && store.referentStateRefused() == null
+                        || storesItsContainer(session, store)) {
+                    continue;
+                }
+                if (pinned.add(key)) {
+                    gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                            "OWNER_PINNED_BY_WRAPPER:" + key + "@" + session,
+                            "the store at version " + store.version()
+                                    + " holds a container through an object"
+                                    + " that is not it, and a query through"
+                                    + " such an object names no owner, so "
+                                    + "this family is held to the arm the "
+                                    + "run took");
+                }
+                break;
+            }
+        }
         return pinned;
+    }
+
+    /**
+     * Whether a reference store stored a container itself: an object this
+     * session logs the state of, which a wrapper or a view of one is not.
+     */
+    private boolean storesItsContainer(String session, WriteRow store) {
+        JsonElement stored = unwrapped(corpus.expression(session,
+                store.expressionRef()));
+        return SmtLowering.named(stored) && !corpus.writesOf(session,
+                SmtLowering.locationKey(LocationId.of(LocationKind.MAP,
+                        Long.toString(VmRows.referencedObjectRid(
+                                stored.getAsJsonObject().get("_exp")
+                                        .getAsString())), "-3"))).isEmpty();
     }
 
     /**

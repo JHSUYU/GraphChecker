@@ -309,6 +309,13 @@ public final class SmtLowering {
     /** {@code session|location|class} -> {@link #candidates}. */
     private final Map<String, Map<Long, Candidate>> candidates =
             new HashMap<String, Map<Long, Candidate>>();
+    /**
+     * {@code session|read symbol|version of the store} -> what the nested
+     * selectors of the object that store delivers may choose
+     * ({@link #storeChoice}).
+     */
+    private final Map<String, Set<String>> storeChoices =
+            new HashMap<String, Set<String>>();
     private final Set<String> integralDomains = new LinkedHashSet<String>();
     private boolean usesJavaIntString;
 
@@ -1812,19 +1819,19 @@ public final class SmtLowering {
     /**
      * One object a re-pointable owner may be: its identity as the VM spells
      * it, the seq of the first write of the owner's location that reaches
-     * it, and the first write that stored this very object, or null when
-     * only a read inside a write reaches it ({@link #candidates}).
+     * it, and the writes that stored this very object, none when only a
+     * read inside a write reaches it ({@link #candidates}).
      */
     private static final class Candidate {
         private final JsonObject spelling;
         private final long firstStored;
-        private final WriteRow store;
+        private final List<WriteRow> stores;
 
         private Candidate(JsonObject spelling, long firstStored,
-                          WriteRow store) {
+                          List<WriteRow> stores) {
             this.spelling = spelling;
             this.firstStored = firstStored;
-            this.store = store;
+            this.stores = stores;
         }
     }
 
@@ -1845,7 +1852,8 @@ public final class SmtLowering {
             Map<Long, JsonObject> spellings =
                     new LinkedHashMap<Long, JsonObject>();
             Map<Long, Long> first = new HashMap<Long, Long>();
-            Map<Long, WriteRow> stored = new HashMap<Long, WriteRow>();
+            Map<Long, List<WriteRow>> stored =
+                    new HashMap<Long, List<WriteRow>>();
             Set<JsonElement> walked = ExpressionWalk.identitySet();
             List<WriteRow> stores = new ArrayList<WriteRow>(join.writes(key));
             stores.sort(Comparator.comparingLong(WriteRow::seq));
@@ -1853,9 +1861,10 @@ public final class SmtLowering {
                 JsonElement value = join.writeExpression(key,
                         store.version());
                 if (named(value)) {
-                    stored.putIfAbsent(VmRows.referencedObjectRid(
+                    stored.computeIfAbsent(VmRows.referencedObjectRid(
                             primitiveString(value.getAsJsonObject(),
-                                    "_exp")), store);
+                                    "_exp")), rid -> new ArrayList<WriteRow>())
+                            .add(store);
                 }
                 Deque<JsonElement> roots = new ArrayDeque<JsonElement>();
                 roots.add(value);
@@ -1883,8 +1892,8 @@ public final class SmtLowering {
             Map<Long, Candidate> found = new LinkedHashMap<Long, Candidate>();
             for (Map.Entry<Long, JsonObject> each : spellings.entrySet()) {
                 found.put(each.getKey(), new Candidate(each.getValue(),
-                        first.get(each.getKey()),
-                        stored.get(each.getKey())));
+                        first.get(each.getKey()), stored.getOrDefault(
+                        each.getKey(), Collections.<WriteRow>emptyList())));
             }
             return found;
         });
@@ -1999,7 +2008,7 @@ public final class SmtLowering {
         for (Map.Entry<Long, Candidate> each
                 : candidates(key, null).entrySet()) {
             Candidate candidate = each.getValue();
-            if (each.getKey() == run || candidate.store == null) continue;
+            if (each.getKey() == run || candidate.stores.isEmpty()) continue;
             Term answer = answerOf(relation, candidate, read, key, origin);
             if (answer != null) {
                 answers.put(symbolTerm(candidate.spelling, Sort.REF).text,
@@ -2025,70 +2034,112 @@ public final class SmtLowering {
 
     /**
      * One other object's answer: the relation over each state of it the
-     * reader could have seen ({@link #statesOf}), chosen among them by
-     * nested selectors when there are several.  An answer holds only where
+     * reader could have seen through any store of it ({@link #statesOf}),
+     * chosen among them by nested selectors when there are several, and
+     * each store's arm held to the states the reader could have seen
+     * through that store ({@link #storeChoice}).  An answer holds only where
      * the owner is this object, so what its lowering requires is its own
      * precondition, never the path's; a state that does not lower is no
-     * option.  An object whose store states no container state is no case,
-     * so the pairings delivering it are refused, and named.
+     * option.  A store that states no container state is no case, so the
+     * pairings delivering the object through it are refused, and named.
      */
     private Term answerOf(JsonObject relation, Candidate candidate,
                           ReadRow read, String owner, String origin) {
-        WriteRow store = candidate.store;
         String object = primitiveString(candidate.spelling, "_exp");
-        String reason = store.referentStateRefused() != null
-                ? store.referentStateRefused()
-                : store.referentState() == null ? "NONE" : "";
         Map<Long, Term> options = new LinkedHashMap<Long, Term>();
-        if (reason.isEmpty()) {
-            String state = locationKey(store.referentState().location());
-            for (WriteRow version : statesOf(store.referentState(), read)) {
-                JsonElement chain = join.writeExpression(state,
-                        version.version());
-                if (chain == null || !chain.isJsonObject()) continue;
-                Attempt<ContainerSmtCodec.Term> asked = attempting(() ->
-                        ContainerSmtCodec.term(asOf(relation,
-                                chain.getAsJsonObject()), host(origin)));
-                if (!asked.lowered() || asked.value() == null) continue;
-                options.put(version.version(), conditioned(asked));
+        Map<WriteRow, List<Long>> seen =
+                new LinkedHashMap<WriteRow, List<Long>>();
+        for (WriteRow store : candidate.stores) {
+            List<Long> versions = new ArrayList<Long>();
+            seen.put(store, versions);
+            String reason = store.referentStateRefused() != null
+                    ? store.referentStateRefused()
+                    : store.referentState() == null ? "NONE" : "";
+            if (reason.isEmpty()) {
+                String state = locationKey(store.referentState().location());
+                for (WriteRow version
+                        : statesOf(store.referentState(), read)) {
+                    if (!options.containsKey(version.version())) {
+                        JsonElement chain = join.writeExpression(state,
+                                version.version());
+                        if (chain == null || !chain.isJsonObject()) continue;
+                        Attempt<ContainerSmtCodec.Term> asked = attempting(
+                                () -> ContainerSmtCodec.term(asOf(relation,
+                                        chain.getAsJsonObject()),
+                                        host(origin)));
+                        if (!asked.lowered() || asked.value() == null) {
+                            continue;
+                        }
+                        options.put(version.version(), conditioned(asked));
+                    }
+                    versions.add(version.version());
+                }
+                if (versions.isEmpty()) reason = "UNLOWERED";
             }
-            if (options.isEmpty()) reason = "UNLOWERED";
+            if (!reason.isEmpty()) {
+                top().candidateUnanswered.put(REFERENT_STATE_UNSTATED + ":"
+                        + reason + ":" + object + "@" + scope, "a STATE "
+                        + "family may re-point " + owner + " to this object"
+                        + " through a store at version " + store.version()
+                        + ", and no state of it answers the query ("
+                        + reason + "), so no pairing that delivers it "
+                        + "through that store is composed");
+            }
         }
-        if (!reason.isEmpty()) {
-            top().candidateUnanswered.put(REFERENT_STATE_UNSTATED + ":"
-                    + reason + ":" + object + "@" + scope, "a STATE family "
-                    + "may re-point " + owner + " to this object, and no "
-                    + "state of it answers the query (" + reason + "), so "
-                    + "no pairing that delivers it is composed");
-            return null;
-        }
-        List<Term> answers = new ArrayList<Term>(options.values());
-        if (answers.size() == 1) return answers.get(0);
+        if (options.isEmpty()) return null;
         // A nested selector per version, one per (read, object, version) so
         // every query through this read sees the object at one version.
-        List<String> selectors = new ArrayList<String>();
-        for (Long version : options.keySet()) {
-            String selector = symbols.mint("nest__", scope + SEPARATOR
-                    + read.symbol() + SEPARATOR + object + SEPARATOR
-                    + version, 12);
-            declare(selector, Sort.BOOL);
-            selectors.add(selector);
-        }
-        String value = answers.get(answers.size() - 1).text;
-        List<String> defined = new ArrayList<String>();
-        for (int index = answers.size() - 1; index >= 0; index--) {
-            Term answer = answers.get(index);
-            if (index < answers.size() - 1) {
-                value = "(ite " + selectors.get(index) + " " + answer.text
-                        + " " + value + ")";
+        Map<Long, String> selectors = new LinkedHashMap<Long, String>();
+        if (options.size() > 1) {
+            for (Long version : options.keySet()) {
+                String selector = symbols.mint("nest__", scope + SEPARATOR
+                        + read.symbol() + SEPARATOR + object + SEPARATOR
+                        + version, 12);
+                declare(selector, Sort.BOOL);
+                selectors.put(version, selector);
             }
-            defined.add(0, and(Arrays.asList(selectors.get(index),
-                    answer.precondition)));
         }
-        return Term.vm(value, answers.get(0).sort,
-                answers.get(0).integralWidth).withPrecondition(and(
-                Arrays.asList(Arms.exactlyOne(selectors),
+        for (Map.Entry<WriteRow, List<Long>> store : seen.entrySet()) {
+            List<String> allowed = new ArrayList<String>();
+            for (Long version : store.getValue()) {
+                allowed.add(selectors.getOrDefault(version, "true"));
+            }
+            storeChoices.computeIfAbsent(scope + SEPARATOR + read.symbol()
+                    + SEPARATOR + store.getKey().version(),
+                    unused -> new LinkedHashSet<String>())
+                    .add(VmTermLowering.or(allowed));
+        }
+        List<Long> versions = new ArrayList<Long>(options.keySet());
+        Term last = options.get(versions.get(versions.size() - 1));
+        if (selectors.isEmpty()) return last;
+        String value = last.text;
+        List<String> defined = new ArrayList<String>();
+        for (int index = versions.size() - 1; index >= 0; index--) {
+            Term answer = options.get(versions.get(index));
+            String selector = selectors.get(versions.get(index));
+            if (index < versions.size() - 1) {
+                value = "(ite " + selector + " " + answer.text + " " + value
+                        + ")";
+            }
+            defined.add(0, and(Arrays.asList(selector, answer.precondition)));
+        }
+        return Term.vm(value, last.sort, last.integralWidth)
+                .withPrecondition(and(Arrays.asList(Arms.exactlyOne(
+                        new ArrayList<String>(selectors.values())),
                         VmTermLowering.or(defined))));
+    }
+
+    /**
+     * What a STATE family's arm delivering one store to a read holds the
+     * nested selectors of the stored object to: the states the reader could
+     * have seen through that store, ({@code false}) none, or {@code ""}
+     * when no query through the read asked another object's state.
+     */
+    public String storeChoice(String symbol, WriteRow store) {
+        Set<String> chosen = storeChoices.get(scope + SEPARATOR + symbol
+                + SEPARATOR + store.version());
+        return chosen == null ? ""
+                : and(new ArrayList<String>(chosen));
     }
 
     /**
