@@ -130,29 +130,63 @@ Rules:
 ## Run an ad-hoc sweep
 
 An ad-hoc check is a guarded `throw` that a system's existing cluster test reaches and passes.
-Each case is one check × one workload (`<check>.<workload>`). The experiments are
+A case is one check on one workload (`<check>.<workload>`), or a batch of checks on one workload
+(`B<n>`, a row of `batches.tsv` with its target spec `targets/B<n>.yaml`). The experiments are
 `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds `checks.tsv`,
-`occurrences.tsv` and `targets/`. Their ad-hoc trees are listed above.
+`batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A check's case
+starts from the classes its experiment's communication mappings name (`system.sh`'s
+`system_mapping_scope`) and its own class; SEED grows the scope from there.
 
 The steps, in order (`tools/adhoc/`; each script's header documents its arguments):
 
-1. `sites.py <system-dir> <repo>`: every guarded `throw new` in the system's sources.
-2. `coverage.sh`, fanned out by `fanout.sh`: one JaCoCo run per workload test, which writes
-   `<w>.lines` and a `.node` marker and exits with the test's own status. You supply the list of
-   workload tests (`workloads.tsv`).
-3. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
-4. `select.py <system-dir> <sweep-dir> <experiment> <N> [per-check] [tree]`: rank and choose
-   checks. It appends them to `checks.tsv` and prints the case ids. A workload whose test failed
-   under coverage, or that starts no node, is skipped and named on stderr.
-5. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
+1. `workloads.py <system-dir> <repo>`: the system's cluster tests (`workloads.tsv`): every
+   JUnit 4 or Jupiter `@Test` method, declared or inherited, that the engine's runner can call,
+   of a test class that names the system's cluster class (`system_cluster_class`).
+2. `sites.py <system-dir> <repo>`: every guarded `throw new` in the system's sources.
+3. `coverage.sh`, fanned out by `fanout.sh`: one JaCoCo run per workload test, which writes
+   `<w>.lines` and a `.node` marker and exits with the test's own status.
+4. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
+5. `select.py <sweep-dir> <experiment> declare [tree]`: declare every reached check a sweep can
+   run in `checks.tsv` (a new one as `<Class>-<throw line>`) and print one
+   `<check>.<workload>` per check, its fastest usable workload. A timeout's check, a workload whose
+   test failed under coverage or starts no node, and a line that moved since coverage are left
+   out and named on stderr.
+6. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
    line (`exception_target: adhoc-<check> …`). Nothing in the tree is edited or rebuilt.
-6. `sweep.sh <snapshot> <round> <cases-file> [heads-per-host]`: one campaign per case over all
-   ten lifts, with `PRUNE=1` and a 5400 s case budget. `fanout.sh` admits each head through the
-   host ledger with the case's `engine_memory_mb` (else 8192); started again, it skips every case
-   whose job returned (`<log-dir>/<n>.exit`).
-7. `triage.py <round> <gc-out>`: one row per case with its outcome class (CONFIRMED, REFUTED,
-   NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING), finding, stage and reason. Pass the sweep's
-   `$GC_OUT`: its own default is still `~/gc-out`.
+7. `slice.sh <experiment> <key> <cases-file>`: the engine's own static slice of each check
+   (`run.sh … slice`: SEED's static half, scope grown, no workload) and its score (`score.py`),
+   in `$GC_OUT/static/<key>/<check>/`, fanned out over the lifts. `score.py` walks the slice back
+   from the throw's branches and finds the roots it reaches: clocks, fault doors (a declared
+   marker, or a door a store's method calls within three calls), `READ` placeholders, fields
+   another region stores, and wire crossings. A check is kept when one lies within 4 edges of
+   its fatal operands. `<key>` names the build; a check already scored under it is not sliced
+   again.
+8. `select.py <sweep-dir> <experiment> rank $GC_OUT/static/<key> <cases-file>`: write
+   `selected.jsonl` (kept checks, best score first, at most three per class, plus every
+   twentieth dropped check as a calibration row).
+9. `cover.py <sweep-dir> <experiment> jobs [16] [2]`: `prescreen-jobs.tsv`, a greedy cover of
+   the selected checks by the tests that reach them, at most 16 checks per recording, until each
+   has 2 tests, each recording bounded by five times its coverage run (at least 300 s).
+10. `prescreen.sh <experiment> <key> <sweep-dir>/prescreen-jobs.tsv`: each row a batch and one
+    `run.sh <experiment> B<n> record` on the lifts: one recording woven for every check of the
+    batch, each check aggregated on its own static slice
+    (`$GC_OUT/prescreen/<key>/B<n>/runtime/record-summary.json`: the test's exit, seconds, and
+    each check's ACTIVATED or refusal).
+11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`, the pairs
+    whose test passed and whose recording activated the check, two fastest per check, no test
+    on more than four checks.
+12. `sweep.sh <snapshot> <round> <sweep-dir>/cases.txt [heads-per-host]`: one campaign per case
+    over all ten lifts, with `PRUNE=1` and a 5400 s case budget. `fanout.sh` admits each head
+    through the host ledger with the case's `engine_memory_mb` (else 8192); started again, it
+    skips every case whose job returned (`<log-dir>/<n>.exit`).
+13. `triage.py <round> <gc-out>`: one row per case with its outcome class (CONFIRMED, REFUTED,
+    NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING), finding, stage and reason. Pass the sweep's
+    `$GC_OUT`: its own default is still `~/gc-out`.
+14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
+    one row per mechanism among the confirmed witnesses (`findings.tsv`, best weight first). A
+    mechanism is the check, the finding kind and each moved root's kind, site method, callee, node
+    role and causal context (a clock's skew by bucket). The ledger marks each new, known or
+    dismissed (`dismissed.tsv` beside it, by hand).
 
 ## Outputs
 
