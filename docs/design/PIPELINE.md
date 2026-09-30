@@ -1,0 +1,616 @@
+# PIPELINE — the stages as the code runs them
+
+One campaign answers one question: can the case's declared occurrence of the annotated target site
+(the *anchor*) reach its fatal arm, and by which mechanism. `./run_engine.sh --config
+<workflow.properties> campaign` runs `do_campaign`, which calls these stages in order through
+`campaign_stage` (each stage's wall time goes to `stage_metrics.tsv`; a failing stage ends the run
+through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason` and exits 1):
+
+| stage | code (`run_engine.sh` function; Java main) | writes | fails the campaign when |
+| --- | --- | --- | --- |
+| PREFLIGHT | `campaign_preflight` | — | the config does not validate; a worker host is unreachable |
+| FREEZE_TOOL | `campaign_freeze_graphchecker_jar` | `frozen-inputs/GraphChecker.jar` | the jar changed while copied |
+| SETUP (optional) | `campaign_setup` | whatever `campaign_setup_command` does | the command fails |
+| FREEZE | `campaign_freeze` | the provenance (published by EMIT) | an input cannot be digested |
+| SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
+| PLAN | `campaign_plan`; `plan.ConcolicScheduler` | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
+| INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
+| REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on a bound; no activation; no target row of the target method |
+| IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
+| EXPLORE | `campaign_explore`, `campaign_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions | the planner fails; an obligation does not finish; a replay states no verdict; a wave's BLOCKING row invariant (as IMPORT) |
+| — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
+| COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
+| SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
+| CONFIRM | `campaign_confirm`; `explore.ConfirmMain` + one replay | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
+| EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed; exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
+
+There is one iteration (`iteration-0000`); what a replay learns past the recording is taken up by GROW
+inside EXPLORE. `campaign_stop_after=IMPORT` returns successfully after IMPORT (a measurement run).
+The campaign root is `schedule_output_dir` = `<causynth_output_dir>/schedule`; `do_campaign` refuses a
+root that already holds an iteration or `final/`, and claims it with `mkdir frozen-inputs`. Every
+directory a stage writes is written once.
+
+The row contract every stage reads is [CONTRACT-SPEC.md](CONTRACT-SPEC.md); occurrence identity and
+the schedule are [IDENTITY.md](IDENTITY.md); what becomes symbolic is [SYMBOL-SCOPE.md](SYMBOL-SCOPE.md);
+the concolic VM is [VM.md](VM.md).
+
+**How the stages divide the work.**
+
+- *A replay collects one arm.* An obligation replay makes one occurrence (or one state-connected
+  factor) symbolic, plants the world it is asked about (root values, clock skews, answered
+  handoffs, inherited flips), holds the schedule prefix of the session it was cut from, and asks
+  that occurrence to take the other arm of one decision. It confirms nothing by itself.
+- *Edges are joined in the SMT, not by execution.* Each replay publishes its own path condition
+  and expressions; COMPOSE merges them into one disjunction, and a message or shared-state edge is
+  a family of arms over the variable the consumer minted, each arm guarded by the world it was
+  collected in. No replay has to realize a cross-node chain end to end.
+- *The asked world is the one nearest the recording.* A flip query minimizes
+  `Σ|x − recorded(x)|` over the integral roots and clocks it bounds, so a model is the smallest move
+  that still takes the other arm (with a one-minute margin where the arm rests on a clock).
+- *Demand, not exhaustion.* Exploration starts at the anchor's fatal predicate and guards and grows
+  only along boundary inputs of demanded values and the doors of messages a demanded occurrence
+  served; an arm is owed once across the corpus. Propagation alone cannot replace it: a root that
+  acts only through control dependence (a store the healthy arm skips) leaves the recorded path's
+  fatal predicate a literal, so the arm has to be collected by a replay. Focused replays cost the
+  sum of the occurrences' path counts where one run holding them all symbolic would cost the product.
+- *Fail closed, by name.* Every refusal is a `GapRow` of a closed `GapKind`, classed BLOCKING or
+  DIAGNOSTIC by the stage that raises it.
+
+## 0. Configuration
+
+`workflow_config_keys` in `run_engine.sh` is the one table of keys a `workflow.properties` may set
+(`k` loadable, `r` reset per run, `p` printed by `config`); an environment variable of the listed
+name (e.g. `CAUSYNTH_SOLVER_TIMEOUT_MS`) overrides the file. `validate_config` refuses a run
+missing `project_repo, project_module_dir, project_classes_dir, project_classpath,
+causynth_output_dir, causynth_target_spec, custom_jdk_home, z3_bin, workload_command, trace_test,
+causynth_loop_bounds, causynth_loop_default_bound`, or without a positive integer for each bound
+marked * below.
+
+| key | meaning |
+| --- | --- |
+| `workload_command`, `concolic_replay_command`, `campaign_setup_command` | the recording, the replay adapter (both `experiments/lib/execute.sh` for the committed cases, set by `experiments/lib/run.sh`), an optional setup step |
+| `project_*`, `trace_test`, `custom_jdk_home`, `z3_bin`, `java_bin`, `graphchecker_jar` | the workload tree, its test, the concolic VM, z3, the engine |
+| `causynth_output_dir` | where every artifact goes; the campaign root is its `schedule/` |
+| `causynth_target_spec`, `causynth_communication_mappings`, `causynth_loop_bounds`, `causynth_loop_default_bound`*, `causynth_lineage_roots`, `causynth_scope_growth_budget` (24), `causynth_root_domains` | the case's declarations: target, wire flows and doors, per-loop bounds, lineage scope, scope growth budget, root domains |
+| `declared_target_occurrence` | the anchor (§3) |
+| `schedule_max_jobs`* | the most tasks PLAN may schedule |
+| `solver_timeout_ms`* | one z3 run, in a flip query and in COMPOSE |
+| `replay_timeout_s`* (2400) | the wall clock of one obligation replay |
+| `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth`, `region_path_stop_at_fatal` | EXPLORE's bounds (§7.4, §7.9) and the witness stop (§7.1) |
+| `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
+| `concolic_worker_count`* (8), `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | slots per host, the hosts, one obligation's memory at the host gate, the head JVMs' heap |
+| `campaign_stop_after` | empty, or `IMPORT` |
+
+Defaults in parentheses; `solver_timeout_ms`, `schedule_max_jobs` and `obligation_memory_mb` have
+none.
+
+## 1. PREFLIGHT, FREEZE_TOOL, SETUP, FREEZE
+
+- PREFLIGHT: `validate_config`, a replay command is required, `jq` and `sha256sum` exist, and every
+  remote host of `campaign_worker_hosts` answers `ssh` in batch mode and sees `run_engine.sh` on the
+  shared home.
+- FREEZE_TOOL copies the jar into `frozen-inputs/`, digesting before, after and the copy; a jar that
+  changed while it was copied fails the stage. Every later stage, and every remote worker, runs the
+  frozen copy (`--run-obligation` refuses a jar whose sha256 is not the frozen one).
+- FREEZE digests the twelve inputs (jar, VM binary, `rt.jar`, `libjava.so`, `libjvm.so`, config,
+  target spec, communication mappings, loop bounds, production classes tree, test classes tree,
+  classpath string) and both checkouts' state (`campaign_checkout_state`: HEAD, branch, digest of the
+  dirty files). SEED adds the static catalog and the region plan to this provenance. EMIT re-digests
+  the inputs (`campaign_verify_frozen_inputs`) and fails if any changed.
+
+## 2. SEED
+
+`campaign_seed` runs the static pass and the recording:
+
+1. `campaign_analyze_grown_scope`: `do_analyze` (`GraphCheckerMain` → `causynth.CausynthPipeline`, Soot
+   over `project_classes_dir`, target from `causynth_target_spec`, per-loop bounds from
+   `causynth_loop_bounds`, wire flows from `causynth_communication_mappings`) writes under
+   `causynth_output_dir`: `candidate_dataflow_edges.jsonl.gz`, `region_skeletons.jsonl.gz`,
+   `communication_gaps.jsonl.gz`, `static_scope_map.jsonl`, `scope_frontier.jsonl`
+   (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
+   `causynth_lineage_roots` is set, `plan.ScopeGrowth` adds classes where the slice stops at the scope
+   into `scope-classes/` and the pass runs again, until it adds nothing ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md)).
+   The scope map is [SYMBOL-SCOPE.md §3](SYMBOL-SCOPE.md); its `TARGET_SITE` rows state the
+   target's `guards` with their fatal arms, the helper branch deciding a guard on a helper's
+   returned 0/1 (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards before them;
+   `StaticScopeMap.Site.pathSites` = guards + chain + the chain's deciders. Loop-bound
+   rows are keyed by Jimple unit id (`<method signature>#uNN`, field `loopSiteId`); the ids the
+   pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
+   the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
+2. `do_workload`: one weave in trace mode `region-state` (lineage classes from `plan.LineageScan`
+   included), then the workload itself (`workload_command`; a nonzero exit fails SEED), then
+   `runtime.CausynthTraceRecorder` aggregates the trace into `runtime/concolic_region_plan.jsonl`
+   (the runtime region plan) and `runtime/region_skeletons.jsonl`; the recording's
+   `runtime/schedule.jsonl` sits beside them.
+3. Both skeleton views are copied to `<campaign root>/seed-skeletons/`.
+
+## 3. PLAN
+
+`campaign_plan` freezes the region plan as `iteration-0000/concolic_region_plan.jsonl`, copies the
+recording's schedule to `recorded_schedule.jsonl`, and runs `plan.ConcolicScheduler`
+(`scheduleTargetFirst`). `RuntimeWorkflowDiscovery.workflow` schedules the declared target first, then
+every other occurrence the plan states is replayable, in recorded order; no slice is applied here
+(the closure is EXPLORE's). The declaration is `declared_target_occurrence`: a resolved address, a
+selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first`, which
+PLAN resolves against this recording and the shell then uses as the address. More tasks than
+`schedule_max_jobs` fail the stage. Outputs: `execution_task_plan.jsonl` (every row stamped with one
+`replayGroupId` = `REPLAY.GROUP.<sha256 of the rows>`) and `runtime_workflow_schedule_index.json`
+(members TARGET/DEPENDENCY; the shell checks it commits the frozen region plan's sha256 and size and
+decodes the membership once into `campaign_member_rows`). The seed replay's plan and every worker's
+plan are hard links of the one task plan file, so a row GROW appends reaches all of them.
+
+## 4. INSTRUMENT
+
+`campaign_instrument` clears `iteration-0000/instrumented-classes/` and runs `do_analyze` with
+`CAUSYNTH_CONCOLIC_TASK_PLAN`/`_TASK_ID` set to the whole plan: one union weave of every task. The
+tree must hold a class file, and `causynth.VerifyWovenClasses` must verify every woven class against
+the replay's class path, or the stage fails naming the class. GROW re-runs this stage's function.
+
+## 5. REPLAY
+
+`campaign_replay` runs `concolic_replay_command` (the adapter) with the plan, task ids, class tree,
+sessions directory, worker directory and `CAUSYNTH_SCHEDULE_PREFIX`; the seed replay is held to the
+recording's schedule (`recorded_schedule.jsonl`). A replay publishes one session under
+`iteration-0000/sessions/<sessionId>/` (layout in [CONTRACT-SPEC.md §2](CONTRACT-SPEC.md)); with no
+focus row its `manifest.json` states role `SEED`. The seed replay is `required`: a replay killed on a
+bound, a session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row whose
+`anchorSiteId` is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. The
+workload's exit code is not the gate (a target that throws exits nonzero by design).
+
+A target occurrence publishes its target row whether or not it reached the throw
+(`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
+the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on the 0/1 a
+helper returned, the helper branch's last decision before it (its `guardDeciders` entry), the target
+standing at that decision; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
+evaluation decided symbolically, from the test it reached the target at, with `observedFatal` = one
+test took its fatal arm. A reached target whose decision has no VM event id is a BLOCKING
+`UNSTATED_VALUE` (no position to cut the prefix at).
+
+## 6. IMPORT
+
+`campaign_import_session` requires every session to hold `activations, decisions, exports, attaches,
+writes, reads, roots, targets, gaps, schedule` `.jsonl` and a non-empty `expressions.jsonl`, and writes
+one `SESSION_CENSUS` row per (session, kind) to `session_census.jsonl`. `campaign_import_gate` then runs
+`contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-11,
+[CONTRACT-SPEC.md §2.6](CONTRACT-SPEC.md)) to `campaign_gaps.jsonl` and prints a summary; one BLOCKING
+violation fails IMPORT naming the first subject. The same gate runs after every EXPLORE wave (§7.9).
+
+## 7. EXPLORE
+
+EXPLORE collects the arms the seed lacks: it flips decisions the anchor's failure can depend on, one
+focused replay per flip, in waves, and never decides a witness (only COMPOSE and z3 do).
+
+### 7.1 One wave: `explore.ExploreMain`
+
+One JVM per wave, `--sessions <iteration>/sessions --results obligation_results.jsonl
+--static-scope-map ... --target-occurrence <declared> --wave N --output-dir obligations-NNNN` plus the
+root domains and bounds. It reads the whole corpus (`explore.Corpus.read`: every session, each
+worker's focus row as that session's world, the wave verdicts, the recorded schedule) and:
+
+1. Names planned tasks answered at two addresses (`ADDRESS_UNSTABLE`, DIAGNOSTIC).
+2. Resolves the declaration against the seed session's activations (`plan.SelectorResolution`);
+   no single SEED session, an unresolved selector, or an address the seed never activated is a
+   BLOCKING gap and leaves the wave with no root.
+3. Plans the anchor's closure (§7.2). A closure truncated at `--max-tasks` is a BLOCKING
+   `ADMISSION_GAP` (DIAGNOSTIC when the witness stop fired).
+4. Reconciles the slot table (`explore.SlotTable`, `iteration-0000/slots.jsonl`): one slot per
+   (interaction, world) inside the closure; a WIRE consumer paired with another producer in the same
+   world is a replacement, and a read whose observed write the run orders after it contradicts the
+   order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when the session is admitted, else DIAGNOSTIC); another
+   world's pairing is a new slot.
+5. Builds the ledger (§7.3) and the candidates (§7.4) and opens the wave: `obligations.jsonl`
+   (empty = the frontier closed).
+6. Witness stop (`region_path_stop_at_fatal=true` → `--stop-at-fatal`): once an admitted non-seed
+   session's target row at the anchor observed the fatal, this wave asks nothing and grows nothing
+   (DIAGNOSTIC gap; manifest state `WITNESSED`).
+7. Writes `graph.jsonl` (`WaveGraph`: NODE per activated occurrence of admitted sessions, EDGE per
+   WIRE pairing and STATE join, each with the world digests it was seen in, and a FRONTIER row with
+   the counts new since the previous wave), `growth.jsonl` (§7.8), `tasks.jsonl`, `gaps.jsonl` and
+   `explore_manifest.json` (anchors, tasks with their `why`, proposed/answered counts, verdict
+   histogram, gap counts, state `FIXED_POINT` | `OBLIGATIONS_PROPOSED` | `WITNESSED`).
+
+### 7.2 The closure: `explore.ClosurePlanner.plan`
+
+Demand starts at the anchor: its flip sites are the target sites' guards
+(`StaticScopeMap.Site.guards`) when some run reached the anchor, else the sites of the target's path
+chain (`pathSites`). The demanded symbols of an occurrence (with its state-connected factor) are those
+its demanded values reach (`SmtLowering.reachedSymbols` over the lowered terms): the anchor's `phiTerm`,
+its decisions at its flip sites, and the values it contributed (the exports a demanded attach paired
+with, the write a demanded read could observe), closed over the reads those name and the writes they
+could observe. Each demanded boundary input grows the closure:
+
+- an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
+  sites = the guards of the port's static export sites, contributed = its exports), and every activated
+  occurrence holding a static export site of the port on the paired producer's node
+  (`STATIC_CANDIDATE_PRODUCER`); an unpaired attach is `LINEAGE_LOST` (DIAGNOSTIC) and its static
+  candidates are taken on every node;
+- a read whose symbol is demanded: the writers `Corpus.eligibleWrites` names (the write of the observed
+  version, and writes of the same session by HB-concurrent occurrences — `Arms.concurrent`: not the
+  same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root, neither
+  Lost), and every activated occurrence on the reader's node holding a static write site of the
+  location's carrier (`STATIC_CANDIDATE_WRITER`);
+- state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
+  `Corpus.expressionStateReads` (never for the anchor);
+- the two doors of the message a demanded occurrence served (sender and receiver of its causal
+  anchor's producer endpoint): `CONTROL_PRODUCER`, contributing no value.
+
+An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint. A region holds a
+static site when the map's method set of the region contains the site's method or one of its callers;
+with no method set, region-id equality. A static site no session activated is a DIAGNOSTIC gap ("the
+retained set would have to grow"), not a task. Each demanded occurrence becomes a `Task` (id =
+`digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
+the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
+plus every fault site (`Corpus.faultSites`: a decision whose lowered term reaches a MARKER root). A
+demanded occurrence no session captured (ran, but no planned task admitted it) is: skipped if it is a
+role (`ROLE.*`, `LINEAGE_LOST` when lost); skipped when its chain began at a daemon tick later than the
+recording's last tick of that role on that node (`Corpus.tickPastRecording`, DIAGNOSTIC); *exposed*
+(grown, §7.8) when an admitted focused session names it; *waiting* when only the seed names it
+(DIAGNOSTIC, BLOCKING at the fixed point); BLOCKING when no session names it. An address already in
+the plan that no replay ran again is a DIAGNOSTIC gap and neither grown nor waited for.
+
+### 7.3 Obligation identity and the ledger: `explore.Frontier`
+
+An obligation id is `ObligationFactory.obligationId` = digest of task id, site, ordinal, flipped
+outcome and `dependence`: the earlier decisions of the path and of the inherited flips' prefixes that
+share a variable with the guard (`compose.Independence.ofGuard`), plus the input shape
+(`Corpus.inputShape`): whether the task's occurrence and each factor member that writes state it reads
+ran, their handoff sites and producers, and those members' write counts at the locations the guard
+reads — never delivered values. Never the session. An arm is
+settled when some session recorded it under the same dependence, or an earlier wave answered it
+`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). The ledger is rebuilt every
+wave from the corpus and `obligation_results.jsonl`.
+
+### 7.4 Candidates: `ObligationFactory.candidates`
+
+Paths of the task's occurrence, smallest world first, cut only from admitted sessions. A flip
+candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
+decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
+`--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32,
+`--max-world-depth` 3 (flips a cut path's world may already hold). Every bound that drops work files
+a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too.
+
+### 7.5 One obligation: `explore.ObligationSolverMain`
+
+`ObligationFactory.locate` finds the published obligation's path in the corpus under the wave's id
+(a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
+it up to the flipped decision, the flipped decision negated, and every inherited flip's prefix through
+its flipped decision (`Arms.conjunct`/`Arms.pathCondition` apply the recorded polarity; terms are
+lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets one rule:
+
+- ROOT: a declared MARKER is a free Bool; a CLOCK is one variable per (root, session) with domain
+  `[reading, reading + 30 days]` in its own ticks (`JavaPrimitiveSmtSemantics.clockDomain`/
+  `clockSkewCeiling`; no reading: `[0, Long.MAX]`; declared clock bounds are not read here); any other
+  root takes its domain from `root-domains.jsonl` (or the mint's), else is pinned to its recorded value.
+- HANDOFF: an attach of the focused occurrence (a *control*) is bound per slot by
+  `OR(pi_q ∧ guard_q ∧ v_H = e_q)` over `Arms.wireArms` (nested slots closed); a paired control whose
+  every arm is dropped refuses the query (`UNPRODUCIBLE_ANSWER`); an unpaired one is free and listed
+  `unproducible`. Every other attach is pinned to its recorded arrival.
+- READ: the eligible writers (`Arms.stateArms`) become one Bool selector each (`wchoice_*`,
+  exactly one); no writer: pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A
+  container state behind a guard is one variable at the sort its writers deliver.
+
+An undeclared name in the flipped conjunct refuses the query (`DECLARATION_MISSING`); in a prefix
+conjunct it drops the conjunct (DIAGNOSTIC); a malformed lowered term likewise. A symbol no rule binds
+refuses (`UNPRODUCIBLE_ANSWER`); a query with no variable of its own is not asked. A construct the
+lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays
+in the query. Demanded conjuncts (the flip and the inherited flips) get a one-minute clock margin on
+each comparison atom over a clock whose polarity `not`/`and`/`or` resolve (`explore.ClockMargin`;
+an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest world:
+`minimize Σ|x − recorded(x)|` over bounded Int roots and clocks (`FlipQueryText`).
+
+z3 runs with `solver_timeout_ms`. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
+`NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
+read back by root id, the flipped path's clocks as skews (`model − reading`; one outside a Java long
+refuses), controls as answers keyed by attach endpoint id. A model that assigns roots, all at their
+recorded values, with no answer and no moved clock, is refused (`NOT_ADMITTED`: it asks for the seed
+replay). The parent world is overlaid (model wins) and its flips inherited. Every assigned root must
+have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`). The worker writes
+`obligation_result.jsonl` (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`,
+`gaps.jsonl`, `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)) and the
+schedule cut (`SchedulePrefix.write`, held): the source session's schedule up to the first event or
+mark of the flip occurrence, the focused occurrence or a factor member goes to
+`schedule_prefix.jsonl`, the rest to `schedule_suffix.jsonl`.
+
+### 7.6 The obligation replay
+
+`campaign_obligation_replay` links the seed plan into the worker directory and runs the adapter under
+`replay_timeout_s`. The replay runs the whole workload; the focused set (focused occurrence, factor,
+each assigned root's mint occurrence, inherited flips' occurrences) runs symbolically
+(`runtime.FocusedReplay`). The replay owns the verdict: `RowRuntime.closeSession` writes the session's
+`obligations.jsonl` and rewrites the worker's `obligation_result.jsonl`. `ADMITTED` = the flipped
+decision took the other arm, the focused prefix was not abandoned, the session published a mint row
+for every assigned root and clock skew, and every inherited flip held; anything else is
+`NOT_ADMITTED` naming why. A mint that ran without planting its assignment is a BLOCKING
+`ASSIGNMENT_UNPLANTED` gap of the session. A replay ends once the focus row's `declaredTarget`
+publishes a target row that reached the anchor and observed the fatal
+(`ConcolicResultPublisher.concludeAtWitness`).
+A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
+verdict is `NOT_ADMITTED`. A solver JVM that exits nonzero records `NOT_ADMITTED` with its last
+stderr line. A result row still saying `SAT_MODEL_READY` after the replay fails EXPLORE.
+
+### 7.7 The work pool
+
+`campaign_dispatch_wave` starts `min(slots, obligations)` slots; slots = `concolic_worker_count` per
+host of `campaign_worker_hosts` (empty: local only), interleaved across hosts. A slot waits for memory
+on its host, then claims the next obligation by `mkdir` of its queue index, runs it (locally in a
+subshell, or remotely through `ssh` running `run_engine.sh --run-obligation` with the frozen jar and
+its sha256), and loops. The memory gate (`campaign_host_try_start`) is a ledger shared by all campaigns
+under `~/gc-out/hosts/<host>/`: a start is allowed when `MemAvailable − (starts charged in the last
+60 s) ≥ obligation_memory_mb + 3072`. A slot whose obligation does not finish (nonzero worker exit)
+makes the wave fail, and the campaign fails at EXPLORE after reaping remote workers. Verdicts are
+appended to `obligation_results.jsonl` once the wave settled.
+
+### 7.8 GROW
+
+When `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session and its
+obligation), `campaign_grow` runs after the wave's replays: `plan.ExposedRegionPlanMain` synthesizes
+one task row per exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's
+`replayGroupId`), appends them to the task plan, re-runs INSTRUMENT, and re-runs each exposing
+obligation's replay in its own worker directory on the head (under the memory gate). The exposing
+session and the worker's previous files move to `<worker>/before-<wave>/`, and the re-run's verdict
+replaces the obligation's row in `obligation_results.jsonl`. An exposure no obligation names (seed
+exposure) fails EXPLORE.
+
+### 7.9 The loop
+
+`campaign_explore`: plan wave N; if `obligations.jsonl` is empty and no region is exposed, stop (the
+fixed point). Otherwise stop with a DIAGNOSTIC `ADMISSION_GAP` row in `campaign_gaps.jsonl` when
+`N ≥ region_path_max_waves` (`REGION_PATH_WAVE_BUDGET_REACHED`) or when the signature over the
+proposed ids, the verdict histogram and the exposures equals the previous wave's
+(`REGION_PATH_CLOSURE_NO_PROGRESS`). Else dispatch the obligations (if any), GROW (if a region is
+exposed), then gate the wave: the IMPORT
+gate over the whole session roster (linked under `import-gates/obligations-NNNN/`) whenever the wave
+added a session; one BLOCKING violation fails the campaign at IMPORT.
+
+`campaign_publish_iteration_manifest` then writes `iteration_manifest.json`: provenance, digests of the
+task plan, schedule index, census and obligation results, the members and their obligation digests.
+
+## 8. COMPOSE: `compose.ComposeMain` → `compose.Composer`
+
+A merge, not a reconstruction: every value was propagated inside some replay. The anchor is the
+declaration resolved against the seed (`ComposeMain.anchorOf`). The formula (`Composer.run`):
+
+```
+exactly-one(path_selector_p)  and  or(path_selector_p)               over admitted paths p
+path_fatal__p:  selector_p => pi_p ∧ phi_p ∧ reads/joins_p ∧ valuation_p ∧ closure_p
+message_family__p_*, writer_family__p_*, observed_family__p_*, state_family__p_*:  selector_p => ...
+root_domain__*, clock_domain__*, clock_order__*, identities_distinct__*
+```
+
+Corpus-level BLOCKING gaps: one solver name for two roots, a session not read whole
+(`SESSION_INCOMPLETE`), a session's own verdict disagreeing with the worker's result row, not exactly
+one SEED, an unreadable slot table, one name at two sorts, one name for two identities. Sessions that
+replace a slot (§7.1) give no arms.
+
+**Admission** (`admit`, `settled`): one path per session whose target row at the anchor reached it
+(a target row that did not reach it is a DIAGNOSTIC gap); the seed always, a focused session only
+when all its own verdicts are `ADMITTED`; an obligation its manifest names with no verdict is
+BLOCKING. No target row at all is
+BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming the first refusal.
+
+**One path** (`compose(path, ordinal)`), in its own session's scope:
+
+- P3 closure (`closure`): the occurrences the path's joins reach, each with the seq its prefix runs to,
+  including earlier versions of every reached write's location;
+- constraint independence (`compose.Independence`): conditions and reads sharing no variable with phi
+  (or a root) stay out;
+- the valuation this session ran each non-clock root at (`valuationOf`; `Corpus.rootValue`: the
+  focus row's assignment where the replay planted it, else the mint's reading): a declared root
+  minted with no value, or a mint whose `recordedValue` differs from the assignment ("stated twice
+  and differently"), is a BLOCKING refusal; a root the sessions recorded differently is pinned to
+  this session's value, or bounded by its declared window around it; a declared root this session
+  never minted refuses the path only when the path's terms name it;
+- anchor handoffs: an obligation's answer if any, else bound only by the message family;
+- the read rule (`statedReads`, `stateJoins`): JOIN to the observed version's write expression if it
+  lowers with no refusal, else the MINT of that version (a placeholder), else PIN to the value the row
+  states, else REFUSE (`UNSTATED_VALUE`); a refused join is dropped when the mint or the pin binds;
+- `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
+  decisions before its cutoff;
+- `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the
+  fatal and refuses the path ("decided concretely on its healthy arm") otherwise;
+- every other handoff the conjunction reaches, by the same rules.
+
+Any refusal drops the path and is filed with its own class (an open lowering refusal is a
+DIAGNOSTIC `UNSTATED_VALUE`).
+
+Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id; the eligible senders are the
+sessions with an attested arm at every leaf of the message, whose world's flip set contains or is
+contained in the path's; one `message_arm__` selector per sender (identical arm bodies share one),
+exactly one, each arm closed like a path in its own session (producer prefix before the delivery, its
+P3 closure, nested families to depth 16). A message no session can send drops the path.
+
+**State families** (`stateFamilies`), for joined reads at the anchor only, of a static field or of a heap
+location whose owner is an object rid (`Arms.namedOwner`; a class-name owner gets no alternatives):
+one `writer_arm__` selector per writer occurrence of the same session (`Arms.stateArms`: the
+observed writer's arm is the write the read observed, any other writer's its last write of the
+location, and only attested HB-concurrent ones), plus an `observed_arm__` holding each read to its
+own join or pin when a version one of the reads observed has no writing row; exactly one per
+location that has two arms or more, else the reads keep their own joins. The arm the run took (the
+observed arm, else the one writer every read observed) is part of the path's recorded pairing; a
+location where no arm is that pairing (the reads saw two writes, or the write they saw has no arm)
+is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formula.
+
+**Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
+stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint
+is a window; otherwise the root is pinned. `clocks`: every clock cell the formula names gets a
+domain, floor = the seed's reading, ceiling = reading + 30 days (in its ticks), unless the case
+declares bounds; on one node, each seed cell is no earlier than the nearest earlier cell (by seq) of
+the same tick whose reading lies within one window (`clock_order__`).
+
+**Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
+moves sorted by distance, then pairs of moves, cut at
+`compose_max_valuations` (a MARKER's move is its other polarity; an INTEGRAL's values come from its
+window; clocks are not enumerated).
+
+ComposeMain writes three files. `candidate.smt2`: the body, then valuation 0 as named pins
+`(assert (! (= <root symbol> <value>) :named valuation__<symbol>))` (so the file as published asks
+about the recorded valuation; every other valuation differs only in these pins), then the pins
+ClaimPolicy held outcome 0 under (clock pins `clock_pinned__*`, recorded pairings), `(assert false)`
+with the blocker named when the claim is blocked or there is no path, and `(check-sat)`.
+`candidate_composition_manifest.json`: the `CompositionManifest` fields plus `finalStatus`
+(`FINAL_READY` | `FINAL_REFUSED`), `finalStatusRefusals`, `gaps` and `solver` (§9). `claim.json`:
+`{kind CLAIM, anchor, claim, solverRuns, seedSessionId, valuations, gaps}`, what CONFIRM reads.
+
+## 9. SOLVE and DECIDE: `compose.ClaimPolicy.decide`
+
+The shell stages only check and print what ComposeMain decided (`solver.state`, valuations, claim).
+`ClaimPolicy`:
+
+1. No disjunct: `NO_SUPPORTED_WITNESS`.
+2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors and
+   clock cells. Each path is also asked alone with every root free (60 s): unsat →
+   `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
+3. *As it happened* = every clock cell pinned to its reading plus `recordedPairings` (each path held to
+   its own observed reads and received arrivals). `recordingDecides`: ordinal 0 is sat free and unsat
+   as it happened. `clockDriven`: it is also unsat with the clocks alone pinned; then the witness keeps
+   every clock pin it can (`leastClocks`). A sat ordinal 0 on a path that did not observe the fatal,
+   when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
+   `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
+4. The claim, first match:
+   - a moved valuation that is a witness — under the as-happened pins when the recording decides —
+     whose moved roots are in no unattested arm (else BLOCKING `UNATTESTED_ARM`): its `mechanism`;
+     without `recordingDecides` it also needs `polarityDecides` (else BLOCKING
+     `FORMULA_SAT_AT_RECORDED_VALUATION`);
+   - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
+     `MESSAGE_PAIRING_FLIPPED`, with `recordingDecides` or `polarityDecides`;
+   - ordinal 0 sat on the seed's path that observed the fatal, every moved valuation decided unsat:
+     its mechanism, with `polarityDecides` true unless that is `RECORDED_FAILURE_EXPLAINED` or
+     `NO_SUPPORTED_WITNESS`;
+   - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
+     the seed's disjunct unsat at the recorded roots: its mechanism, if any;
+   - else `NO_SUPPORTED_WITNESS`.
+5. `mechanism`, narrowest first: pinning the path's observed reads makes it unsat →
+   `STATE_PAIRING_FLIPPED`; its observed anchor arrivals → `MESSAGE_PAIRING_FLIPPED`; a moved root →
+   `MARKER_FLIPPED` (any declared root kind); `clockDriven` → `CLOCK_SKEW`; the seed's path at ordinal 0
+   with the flips refuted → `RECORDED_FAILURE_EXPLAINED`.
+6. In the moved-root rule without `recordingDecides` and in the no-root-moved rule, the witness is
+   re-asked with each moved clock a margin (one minute in its ticks) further the same way, kept if
+   still sat (`withMargin`). `movedRoots` = the valuation's moved roots (by root id) plus every clock
+   cell (by cell symbol) the model placed off its reading.
+7. A z3 error on any ask adds a BLOCKING gap and turns the claim into `NO_SUPPORTED_WITNESS`
+   (`smt.Z3` drops z3's `WARNING:` lines before reading an answer).
+
+| `ClaimKind` | what the witness shows |
+| --- | --- |
+| `MARKER_FLIPPED` | a declared root (a fault marker, a configured source, a declared integral) moved inside its domain reaches the fatal arm; where the recording decides the arm, it does so with every clock and every path's own pairing held as recorded |
+| `CLOCK_SKEW` | no declared root moved; the fatal arm is reached only with clock cells off their readings (those cells are `movedRoots`) |
+| `STATE_PAIRING_FLIPPED` | the roots stay; the path's anchor reads must take another writer than the run's |
+| `MESSAGE_PAIRING_FLIPPED` | the roots stay; the anchor's attaches must receive another delivery than the run's |
+| `RECORDED_FAILURE_EXPLAINED` | the seed itself observed the fatal and every moved valuation is refuted |
+| `NO_SUPPORTED_WITNESS` | nothing in the corpus supports a witness; an answer, not an error |
+
+`ComposeMain.campaignClaim` maps it: any BLOCKING claim gap → `INCONCLUSIVE_PARTIAL`; else a kind other
+than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else every valuation decided unsat → `UNSAT_CLOSED`; else
+`INCONCLUSIVE_PARTIAL`. The manifest's `solver` block carries `state` (sat/unsat/unknown),
+`reachability`, `unsatClosureComplete`, `valuations` (status, assignment, moved, selected path and
+session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
+`findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `blockers`, `whyNotAccepted`,
+`witnessFindings`).
+
+## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
+
+Only a `SAT_CANDIDATE` is confirmed. ConfirmMain reads `claim.json` and the manifest, takes the claim's
+valuation, its selected path and session, and the selected arms of that path; the selected session
+must have a target row at the anchor that reached it (else refused, exit 1 → unconfirmed).
+
+- **Realized**: when that target row observed the fatal, every selected arm is the session's own
+  delivery, and the session minted every moved root at the model's value, the session is the
+  confirmation (`realized.json`, no replay).
+- **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
+  overlaid with the model's moved roots (`plantModel`: a clock as a skew off this session's reading,
+  any other root as its value, at the recording's mint occurrence). The focus row focuses the anchor
+  with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
+  unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
+  they followed). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
+  as that arm's session paired it), `STATE` per read of the anchor's join closure (each reached
+  occurrence's reads before its cutoff, the anchor's before its target seq; the writer the model
+  chose through a `writer_arm__`, else the observed one), `ORDER`
+  rows (the writer's activation exits before the reader's enters; every other writer of the location
+  before the writer or after the reader), `MARKER` per planted marker, `ANCHOR`.
+- The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
+  `Confirmation` compares WIRE at the attach and STATE at close, and holds each `ORDER` activation's
+  entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
+  mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
+  are not read by the runtime. An unreadable `expected_edges.jsonl` compares nothing (logged only).
+- Decision (`campaign_confirm_decide`): the replay's verdict is `ADMITTED`, its session has no
+  `CONFIRM_MISMATCH` gap, and some target row of the session has `reachedAnchor` and `observedFatal`.
+
+`final/confirm.json`: `{kind: CONFIRMATION, confirmed, reason, sessionId}`.
+
+## 11. EMIT
+
+1. `campaign_verify_frozen_inputs` (§1).
+2. `final/gaps.json` (`campaign_write_gaps`), one row per distinct (stage, source, code, subject,
+   detail), class as the row states it (none stated = BLOCKING): static communication gaps and the
+   runtime plan's `gaps` as PLAN; every `gaps.jsonl` under the iteration directory — a path matching
+   `*/sessions/*/gaps.jsonl` as REPLAY (a withdrawn exposing session under `before-*/sessions/`
+   included), any other under `obligations-*/` as EXPLORE (a session withdrawn to
+   `timed-out-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
+   stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
+   `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `byStage`, `byCode`.
+3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a
+   `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in); `findingKind`,
+   `polarityDecides`, `valuationOrdinal`, `movedRoots`, `blockers`, `reachability`, `finalStatus`,
+   `gapCount`, `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
+   `targetOccurrence`, `valuations`, `witnessFindings`.
+4. `final/run-manifest.json`: provenance, iteration manifests, the path, size and sha256 of each
+   required final artifact (`candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json`,
+   `result.json`; a missing or empty one fails EMIT), stage wall times, session rows and bytes.
+5. Exit 2 when the claim is not `SAT_CANDIDATE`/`UNSAT_CLOSED`; exit 3 when BLOCKING gaps remain;
+   else 0.
+
+## 12. Acceptance: `experiments/accept/`
+
+`accept.sh` builds the jar, then per case (one at a time; `CASES`, default the nine HDFS cases of
+`ACCEPT_ALL_CASES`) runs `lib/run.sh <case> validate` and `campaign` under `CASE_TIMEOUT_SECONDS`, then
+`probe.sh`, `cone.py` and `report.py`, and writes `summary.tsv`. `report.py` passes a case when all
+hold, read off `final/result.json`, `gaps.json` and `cone.json`:
+
+- `claim` is `SAT_CANDIDATE` (so CONFIRM agreed) and `confirmation.confirmed` is true, `finalStatus`
+  is `FINAL_READY`, `accepted` is true, and `gaps.json` names no BLOCKING gap;
+- `findingKind` is one of the five mechanisms and is the case's entry in `EXPECTED_MECHANISM` (a case
+  the table does not name cannot pass); `polarityDecides` is true unless
+  `RECORDED_FAILURE_EXPLAINED`;
+- `movedRoots` is non-empty and `valuationOrdinal ≥ 1` unless `CLOCK_SKEW`; an expected `root`/`value`
+  must be moved to that value; for the RPC-failure entries (`fault: org.apache.hadoop.ipc.Client`,
+  `clocks: False`) a MARKER moved to true whose declared site (the plan's `EXPLICIT_SYMBOLIC_FAULT`
+  input action) is in that class, and no CLOCK cell moved;
+- `cone.py`: every moved root is in the causal cone of the selected path — the constants its
+  `path_fatal__i` assertion names (define-funs expanded, `let`/quantifier names bound), closed over
+  the `message_family*` assertions under the same path selector that intersect it — and no
+  `_field_HOFF.` boundary variable in any path's fatal condition is unnamed by that path's message
+  families.
+
+`probe.sh` strips the `valuation__` pins from `candidate.smt2` and asks z3 about the formula
+unpinned, with the accepted assignment and with the other polarity; it is reported, never gated on.
+Ad-hoc sweeps do not use `report.py`: `tools/adhoc/triage.py` classes a case with a `result.json`
+`CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true, `REFUTED` when
+`claim` is `SAT_CANDIDATE` without it (which EMIT's downgrade to `SAT_UNCONFIRMED` makes
+unreachable), else `NO_WITNESS`; a case without one is `STOPPED`, `RUNNING` or `PENDING`.
+
+## 13. Reading a run
+
+- A campaign that died names its stage: `[campaign:error] stage=… component=… artifact=… reason=…`
+  on stderr. A REPLAY death: `iteration-0000/seed-result/focused/replay.log` and the seed session's
+  `gaps.jsonl`. A slot that seems stalled logs `waiting for memory on <host>: …`; the host ledger
+  is `~/gc-out/hosts/<host>/{available,starts}`.
+- `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.
+- `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
+  `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it
+  re-runs by hand in z3), `focused_task.jsonl` (the world), `replay.log`, `stdout.log`/`stderr.log`.
+  An obligation id holds no session id (§7.3), so it repeats across runs whose replays reproduce
+  the same addresses and input shapes: an earlier run's directory is a baseline.
+- `sessions/<id>/`: `targets.jsonl` (`observedFatal`, `reachedAnchor`), `decisions.jsonl`,
+  `roots.jsonl`, `schedule.jsonl`.
+- `final/claim.json` (valuations with status, unsat core, selected path, session and arms),
+  `candidate_composition_manifest.json`, `compose.log`, `confirm.json`, `confirm/confirm.log`.
+- A schedule divergence is read by aligning: take the rows with a `kind` of the prefix the replay
+  was held to (`recorded_schedule.jsonl`, or the worker's `schedule_prefix.jsonl`) and of the
+  session's `schedule.jsonl`, compare `(kind, context, site)` position by position to the first
+  mismatch, then count how many events of the expected key the replay made at all (none: an event
+  the replay never makes; as many as the prefix: it came late). The `{mark, at}` rows of both files
+  say where each occurrence opened; a SEND's `endpoint` joins the recording's `EXCHANGE_SEND` rows
+  in `runtime/runtime_trace.jsonl`.
+- `CAUSYNTH_WORKLOAD_JAVA_OPTS=-Dcausynth.debug.producers=true` (read by `experiments/lib/execute.sh`
+  for every workload JVM) prints each send's producer endpoint (`CAUSYNTH-PRODUCER` lines on stderr),
+  to diff against the recording's when anchors drift.
