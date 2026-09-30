@@ -648,7 +648,14 @@ are comparisons of a `READ` with null or the argument, lowered as any comparison
 answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
 (`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A view's positions are
 stated linearly in its chain's puts: each position below the size names a present key held at that
-position, and each put key present is held at a position below the size. A view walks the state
+position, and each put key present is held at a position below the size. A position is the run's
+iteration count, so it is stated only where the chain's order is the one the map's class iterates
+in (`ContainerSmtCodec#unstatedOrder`): the snapshot's members follow its base in that order
+(`order`, `members`); an `INSERTION` map iterates in its chain's order after them (a `putAll` in
+its source's); a `HASH` map keeps it through removals and updates of a key it holds, while a put of
+another key may rebin or resize its table. Two or more keys past such a put, or a base stating no
+order (a recording before it), are refused by name
+(`UNSTATED_VALUE:AssociativeViewOrder:HASH_INSERT`, `:UNRECORDED`). A view walks the state
 each step of its chain stands for (`Host#chain`: a read's joined version), so a map's `values()` a
 region iterates through a read of it is bounded by that version's keys.
 

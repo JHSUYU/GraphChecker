@@ -237,19 +237,24 @@ versioned without writer, guard or site, a reference by the referent it names.
 A container's state is an immutable `ContainerExpression` chain (`base + PUT/REMOVE/...`) on
 `STATE(identity)`, keyed by the container's `_sym_rid`. What is a container is the receiver's
 concrete class (`ContainerSupport::capability`): the positional ones (arrays, `AbstractList`
-subclasses, `ArrayDeque`), `HashMap`/`LinkedHashMap` in insertion order, `ConcurrentHashMap` and
+subclasses, `ArrayDeque`), `HashMap`, `LinkedHashMap` (insertion order), `ConcurrentHashMap` and
 `Hashtable` (null-free: present exactly when `READ != null`), the hash sets. Views, iterators,
 entries and `Collections` wrappers (unmodifiable, synchronized, checked) are their backing
 container (`ContainerSupport::backing_container`, through `this$0`, `map`, `m`, `c`): a view a
 modeled call made is aliased to it, and one the program built resolves at `state_location` (a
 `KeySetView` is aliased at its first model event). A log opens with an INITIAL version stating
 what the container held when tracking began (`ContainerSupport#snapshot_for_receiver`): walkable
-for the modeled classes and `Object[]` -- a `ConcurrentHashMap` by its table's bins, tree bins by
-`first`, a resize in flight refused as `RESIZING` (the log still starts, at the bare root), past
-4096 bins over the bound -- capped at 64
+for the modeled classes and `Object[]`, each in the order its class's iterator returns them -- a
+`LinkedHashMap` (and a `LinkedHashSet`'s map) from `head` by `after`, a `HashMap` and a
+`ConcurrentHashMap` by their tables' bins from 0 up (tree bins by `next`, and by `first`), a
+`Hashtable` by its bins from the last down; a `ConcurrentHashMap` resize in flight refused as
+`RESIZING` (the log still starts, at the bare root), past 4096 bins over the bound -- capped at 64
 members, else a stated refusal (`NO_MODELLED_SHAPE`, `UNREADABLE_CONTAINER`,
-`MUTATED_BEFORE_FIRST_READ`). `compose/ContainerStateModel` and `compose/ContainerSmtCodec` lower
-the chains (`AssocState` for maps, `IndexedState` for lists and arrays).
+`MUTATED_BEFORE_FIRST_READ`). A map's or set's `SNAPSHOT_BASE` states the order those members
+follow it in and how many of the `PUT`s above it they are (`order`: `INSERTION` or `HASH`,
+`ContainerSupport::iteration_order`; `members`). `compose/ContainerStateModel` and
+`compose/ContainerSmtCodec` lower the chains (`AssocState` for maps, `IndexedState` for lists and
+arrays).
 
 **The owner of a relation.** A query or mutation whose receiver slot carried a guarded reference
 read -- a tracked reference field, an `AtomicReference`, a container `READ` result -- states that
@@ -388,7 +393,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 60
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 61
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -398,6 +403,6 @@ unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither 
 (`RegionTrackedRaceSmoke`, `RegionReadExactnessSmoke`, `RegionLoadedValueSmoke`,
 `RegionVersionDefectsSmoke`, and for a reference carrier `RegionReferenceSwapSmoke`); the
 collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, callbacks, a
-tree bin), `RegionWrapperViewSmoke` (a view or wrapper is its container) and
+tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order), `RegionWrapperViewSmoke` (a view or wrapper is its container) and
 `RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers). No smoke test covers the
 collections the VM does not model, a resize caught in flight, or anything across JVMs.

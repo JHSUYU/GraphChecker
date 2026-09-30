@@ -54,6 +54,12 @@ class ContainerExpression : public Expression {
   // Views, iterators and entries inherit it.  NULL otherwise, and then not
   // serialized, so every other node's JSON is unchanged.
   Expression *_owner;
+  // A SNAPSHOT_BASE's statement of what follows it: the order its class
+  // iterates in (ContainerSupport::iteration_order) and how many of the
+  // relations above it are the members the snapshot read, in that order.
+  // Empty and -1 otherwise, and then not serialized.
+  std::string _order;
+  int _members;
   // See has_constant_size().
   bool _constant_size;
   // See stored_at().  `_writes` is the log this chain's WRITEs share, and
@@ -92,6 +98,12 @@ class ContainerExpression : public Expression {
   // answered from the one log the chain's WRITEs share, so a read never
   // walks the chain however long it is.
   bool stored_at(jint position, Expression **stored, ElementWord *word) const;
+
+  // Called once, on a SNAPSHOT_BASE, before any relation extends it.
+  void state_members(const char *order, int members) {
+    _order = order == NULL ? "" : order;
+    _members = members;
+  }
 
   const std::string &get_operation() const { return _operation; }
   const std::string &get_shape() const { return _shape; }

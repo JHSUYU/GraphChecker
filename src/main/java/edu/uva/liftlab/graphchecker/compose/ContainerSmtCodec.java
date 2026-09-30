@@ -861,6 +861,11 @@ public final class ContainerSmtCodec {
     public static final String ASSOC_VIEW_SIZE_UNSTATED =
             "UNSTATED_VALUE:AssociativeViewSize";
 
+    /** Refusal subject for a view whose positions no row orders
+     *  ({@link #unstatedOrder}). */
+    public static final String ASSOC_VIEW_ORDER_UNSTATED =
+            "UNSTATED_VALUE:AssociativeViewOrder";
+
     /**
      * AN INDEXED VIEW OF AN ASSOCIATIVE STATE IS A BIJECTION between
      * positions {@code [0, n)} and the keys the state holds.
@@ -894,6 +899,11 @@ public final class ContainerSmtCodec {
                     + associativeStateSubject(stateIr));
             return false;
         }
+        String unordered = unstatedOrder(stateIr, host, put);
+        if (!unordered.isEmpty()) {
+            host.unsupported(ASSOC_VIEW_ORDER_UNSTATED + ":" + unordered);
+            return false;
+        }
         Term size = associativeSize(state, host);
         for (int position = 0; position < put.size(); position++) {
             Term key = shared(new Term("(assoc_key_at " + state.text + " "
@@ -914,6 +924,98 @@ public final class ContainerSmtCodec {
         }
         views.add(stateIr);
         return true;
+    }
+
+    /**
+     * Why a view's positions of this state are not the order Java iterates
+     * it in, or {@code ""} when they are.  A position is the run's iteration
+     * count; the model's is the chain's order (a put appends a new key, a
+     * removal closes the gap).  The VM states the members a snapshot read
+     * in their class's iteration order, and how many of the relations above
+     * the base they are ({@code SNAPSHOT_BASE}'s {@code order} and {@code
+     * members}).  An {@code INSERTION} class (LinkedHashMap, LinkedHashSet)
+     * then iterates in the chain's order, a {@code putAll} in its source's.
+     * A {@code HASH} class (HashMap, HashSet, ConcurrentHashMap, Hashtable)
+     * keeps its snapshot's order through removals and updates of a key it
+     * holds, and a put of any other key may rebin or resize its table:
+     * positions past one are stated by no row ({@code HASH_INSERT}).  A
+     * base stating no order is a recording older than that
+     * ({@code UNRECORDED}); a program {@code CLEAR} empties the state and
+     * keeps its class.  One key has one order.
+     */
+    private static String unstatedOrder(JsonElement state, Host host,
+                                        List<JsonElement> put) {
+        Set<String> distinct = new java.util.HashSet<String>();
+        for (JsonElement key : put) distinct.add(String.valueOf(key));
+        if (distinct.size() <= 1) return "";
+        List<Mutation> above = new ArrayList<Mutation>();
+        JsonElement chain = state;
+        JsonObject base = null;
+        int members = 0;
+        for (int depth = 0; depth < VIEW_CHAIN_LIMIT && base == null;
+             depth++) {
+            JsonElement node = host.chain(chain);
+            Mutation mutation = associativeMutation(node);
+            if (mutation == null) return "CHAIN";
+            if ("SNAPSHOT_BASE".equals(mutation.operation)) {
+                base = node.getAsJsonObject();
+                members = JsonFields.optionalInteger(base, "members", -1);
+            } else if ("CLEAR".equals(mutation.operation)) {
+                base = snapshotBase(mutation.receiver, host);
+                if (base == null) return "UNRECORDED";
+            } else {
+                above.add(mutation);
+                chain = mutation.receiver;
+            }
+        }
+        String order = base == null ? "" : optionalString(base, "order");
+        if (order.isEmpty() || members < 0 || members > above.size()) {
+            return "UNRECORDED";
+        }
+        Set<String> present = new java.util.HashSet<String>();
+        for (int index = above.size() - 1; index >= 0; index--) {
+            Mutation mutation = above.get(index);
+            boolean member = index >= above.size() - members;
+            String key = mutation.arguments.size() == 0 ? null
+                    : literalKey(mutation.arguments.get(0));
+            if ("PUT_ALL".equals(mutation.operation)) {
+                if (!"INSERTION".equals(order)) return "HASH_INSERT";
+                List<JsonElement> source = associativeViewKeys(
+                        mutation.arguments.get(0), host);
+                String from = source == null ? "SOURCE"
+                        : unstatedOrder(mutation.arguments.get(0), host,
+                        source);
+                if (!from.isEmpty()) return "PUT_ALL:" + from;
+                present.clear();
+            } else if ("PUT".equals(mutation.operation)) {
+                if (!member && "HASH".equals(order)
+                        && (key == null || !present.contains(key))) {
+                    return "HASH_INSERT";
+                }
+                if (key != null) present.add(key);
+            } else if (key == null) {
+                present.clear();
+            } else {
+                present.remove(key);
+            }
+        }
+        return "INSERTION".equals(order) || "HASH".equals(order) ? ""
+                : "ORDER:" + order;
+    }
+
+    /** The snapshot base beneath a program {@code CLEAR}, or null. */
+    private static JsonObject snapshotBase(JsonElement state, Host host) {
+        JsonElement chain = state;
+        for (int depth = 0; depth < VIEW_CHAIN_LIMIT; depth++) {
+            JsonElement node = host.chain(chain);
+            Mutation mutation = associativeMutation(node);
+            if (mutation == null) return null;
+            if ("SNAPSHOT_BASE".equals(mutation.operation)) {
+                return node.getAsJsonObject();
+            }
+            chain = mutation.receiver;
+        }
+        return null;
     }
 
     /** The position a state holds one key at. */

@@ -3236,15 +3236,12 @@ public class ComposerTest {
                 integer("I", 9L)));
         // A map with three keys in it, and the three positions of the view
         // over it: the shape 11741's NameNode exports its block keys at
-        // (`allKeys.values().toArray(...)`, one element per position).  Put
-        // in an order that is NOT the ascending one, because what a
-        // traversal hands back is the map's business and "ascending ints"
-        // is not a fact any recording of a HashMap states.
-        JsonObject held = relation("ASSOCIATIVE", "SNAPSHOT_BASE",
-                "java/util/HashMap", relation("ASSOCIATIVE", "STATE",
-                        "java/util/HashMap",
-                        symbol("M_L'java/util/HashMap'_88",
-                                "java/util/HashMap")));
+        // (`allKeys.values().toArray(...)`, one element per position).  The
+        // snapshot's three members, in the order its table iterates them,
+        // which is NOT the ascending one: what a traversal hands back is
+        // the map's business and "ascending ints" is not a fact any
+        // recording of a HashMap states.
+        JsonObject held = snapshotBase("java/util/HashMap", "HASH", 3);
         for (long key : new long[]{30L, 10L, 20L}) {
             held = relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
                     held, integer("I", key), integer("I", key));
@@ -3551,6 +3548,73 @@ public class ComposerTest {
                         + "refused by name: " + unbounded,
                 unbounded.contains(ContainerSmtCodec
                         .ASSOC_VIEW_SIZE_UNSTATED + ":STATE"));
+    }
+
+    /**
+     * A VIEW'S POSITION IS THE RUN'S ITERATION COUNT, stated only where the
+     * chain states the order its class iterates in (SOLR-18413 r9: a
+     * LinkedHashMap snapshot stated in hash order keyed a lookup at another
+     * key).  The VM's snapshot states its members in their iteration order
+     * and says which order that is; an insertion-ordered class iterates in
+     * the chain's order after it; a hash-ordered one keeps it through
+     * removals and updates, and a put of another key may rebin it; a
+     * recording that states no order has none.  {order, members, program
+     * mutations above the members, refusal ("" stated)}.
+     */
+    @Test
+    public void aViewPositionIsTheOrderItsClassIteratesIn() {
+        Object[][] rows = {
+                {"INSERTION", 2, new long[]{3L}, ""},
+                {"HASH", 2, new long[]{}, ""},
+                {"HASH", 2, new long[]{1L}, ""},
+                {"HASH", 2, new long[]{-1L, 1L}, "HASH_INSERT"},
+                {"HASH", 2, new long[]{3L}, "HASH_INSERT"},
+                {"", -1, new long[]{1L, 2L}, "UNRECORDED"},
+                {"HASH", 0, new long[]{3L, 4L}, "HASH_INSERT"},
+                {"HASH", 0, new long[]{3L}, ""}};
+        for (Object[] row : rows) {
+            // Members 1..members, then the program's puts (a negative is the
+            // removal of that key).
+            int members = (Integer) row[1];
+            JsonObject state = snapshotBase("java/util/HashMap",
+                    (String) row[0], members);
+            for (long key = 1L; key <= Math.max(members, 0); key++) {
+                state = relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
+                        state, integer("I", key), integer("I", key));
+            }
+            for (long key : (long[]) row[2]) {
+                state = key < 0L
+                        ? relation("ASSOCIATIVE", "REMOVE",
+                        "java/util/HashMap", state, integer("I", -key))
+                        : relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
+                        state, integer("I", key), integer("I", key));
+            }
+            SmtLowering lowering = new SmtLowering(
+                    Collections.<String, VmTermLowering.Sort>emptyMap());
+            lowering.begin("s0", SmtLowering.NO_JOIN, null);
+            lowering.dispatch(viewKey(state, 0), null, "view");
+            List<String> refused = new ArrayList<String>(
+                    lowering.openRefusals());
+            lowering.end();
+            String expected = (String) row[3];
+            assertTrue(java.util.Arrays.deepToString(row) + ": " + refused,
+                    expected.isEmpty() ? refused.isEmpty()
+                            : refused.contains(ContainerSmtCodec
+                            .ASSOC_VIEW_ORDER_UNSTATED + ":" + expected));
+        }
+    }
+
+    /** A snapshot's base, as the VM states its members' order and count;
+     *  an empty order and a negative count are a recording that states
+     *  neither. */
+    private static JsonObject snapshotBase(String map, String order,
+                                           int members) {
+        JsonObject base = relation("ASSOCIATIVE", "SNAPSHOT_BASE", map,
+                relation("ASSOCIATIVE", "STATE", map, symbol("M_L'" + map
+                        + "'_88", map)));
+        if (!order.isEmpty()) base.addProperty("order", order);
+        if (members >= 0) base.addProperty("members", members);
+        return base;
     }
 
     /** One element of the key view of a map, at one position. */

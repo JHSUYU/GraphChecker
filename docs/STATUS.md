@@ -118,10 +118,18 @@ See Acceptance above. What remains (the branches are in README §0.3):
   (invariant 9) and COMPOSE rests the fatal on the path condition that reached the anchor; `r9`'s
   rows predate this and state none. COMPOSE's constraint independence keeps what moves
   (`gc/compose/Independence#of`); closed over sharing, it kept 3479 conditions and reads of that
-  path, a tlog write among them that did not lower, and refused it. The path now composes and is
-  unsat on its own (open defect 29). The store door files what a write carried after the
-  schedule's SEND lets the queue's consumer run (`gc/runtime/MessageDoors#stored`, open defect
-  28), which can leave the Overseer queue's attach unpaired.
+  path, a tlog write among them that did not lower, and refused it. The path now composes. It was
+  unsat on its own because the VM snapshotted MigrateCmd's message map (a `LinkedHashMap`:
+  `operation`, `collection`, ...) by its table, `collection` first, so the leader's lookup at the
+  run's position 1 read `operation`: a snapshot now states its members in the order the class
+  iterates and says which (`ContainerSupport::iteration_order`, image `vm-r3c`), and a view's
+  positions follow the chain only where that order holds (`ContainerSmtCodec#unstatedOrder`). With
+  `r9`'s four message snapshots restated as `vm-r3c` records them, COMPOSE claims CLOCK_SKEW
+  offline: both clocks in the formula, MigrateCmd's moved, the leader's held, polarity decides;
+  under the fixed arithmetic engine z3 did not answer it in 30 minutes (open defect 30). The store
+  door files what a write carried after the schedule's SEND lets the queue's consumer run
+  (`gc/runtime/MessageDoors#stored`, open defect 28), which can leave the Overseer queue's attach
+  unpaired.
 
 The offline regression gate `tools/regress/offline-ab.sh` (with `ab_compare.py`) compares a
 candidate jar against a baseline on a recorded round, stage by stage, with no replay. It reads a
@@ -182,16 +190,6 @@ Correctness:
     `CausynthTraceRecorder#outboundExchange` observed its SEND, and the schedule may run the
     version's reader from that SEND on: `consumed` or `fetched` can find nothing, and the
     delivery pairs with no export (SOLR-18413 r5's seed, the Overseer's queue item).
-29. A map's position is its chain's order (`gc/compose/ContainerStateModel`: `assoc_put` fixes
-    `assoc_order`), and the chain is not always the order the run iterated in:
-    - VM `concolic/reference/containerSupport.cpp#read_hash_map` snapshots a `LinkedHashMap` by
-      its table's bins, not its insertion links (`head`/`after`). SOLR-18413 r9: MigrateCmd's
-      routing-rule message (`Utils.makeMap`, a `LinkedHashMap`: `operation`, `collection`, ...)
-      was first tracked after two puts, its snapshot lists `collection` before `operation`, and
-      the leader's lookup of the source collection, keyed at the run's position 1 (`collection`),
-      is `operation` in the model, so the one anchor path is unsat on its own
-      (`PATH_SELF_CONTRADICTORY`).
-    - A `HashMap` iterates in bin order, which puts after the snapshot do not follow.
 
 Scale and robustness:
 
@@ -204,6 +202,11 @@ Scale and robustness:
 11. Every obligation solver reads the whole corpus (`gc/explore/ObligationSolverMain`).
 12. The seed recording has no wall-clock bound; only the case budget ends it.
 13. VM: every expression is kept until the session closes, under one global mutex.
+30. Every lowered query fixes z3's arithmetic engine (`smt.arith.solver 2`,
+    `gc/compose/VmTermLowering#preamble`), and z3's time on one query swings by orders of
+    magnitude with it and with the random seed: SOLR-18413's composed query with its message maps
+    in link order ran past 900 s under it, and answered sat in 1 s under solver 6 and in 2-6 s
+    under seeds 1-3 (`ClaimPolicy#leastClocks` asks it once per clock).
 
 Fallbacks and dead code:
 

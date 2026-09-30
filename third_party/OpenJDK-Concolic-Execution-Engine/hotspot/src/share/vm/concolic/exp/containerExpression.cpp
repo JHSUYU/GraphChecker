@@ -103,6 +103,7 @@ ContainerExpression::ContainerExpression(
                      : java_type),
       _guard(guard),
       _owner(owner),
+      _members(-1),
       _constant_size(constant_size(_shape, _operation, receiver,
                                    arguments)),
       _decides_reads(false),
@@ -194,6 +195,14 @@ void ContainerExpression::serialize_internal(
   if (_owner != NULL) {
     writer.Key("owner");
     _owner->serialize(writer);
+  }
+  if (!_order.empty()) {
+    writer.Key("order");
+    writer.String(_order.c_str());
+  }
+  if (_members >= 0) {
+    writer.Key("members");
+    writer.Int(_members);
   }
 }
 
