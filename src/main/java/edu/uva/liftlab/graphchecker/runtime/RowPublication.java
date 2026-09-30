@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayDeque;
@@ -188,7 +189,10 @@ final class RowPublication {
                             id, true);
                     RowRuntime.write(performer, id, site, location, id,
                             written, "", LoggedEventSites.siteIndex(version,
-                                    locationKey, id, site, true));
+                                    locationKey, id, site, true),
+                            referent(version), optionalString(version,
+                                    SharedStateCapture
+                                            .REFERENT_STATE_REFUSED));
                 }
                 collect(expression, published, seen);
             }
@@ -196,6 +200,16 @@ final class RowPublication {
         for (JsonObject mapping : active.branchMappings) {
             collect(mapping.get("witness"), published, seen);
         }
+    }
+
+    /** The container state a reference version states it stored, or
+     *  null ({@link SharedStateCapture#REFERENT_STATE}). */
+    private static WriteRow.Referent referent(JsonObject version) {
+        JsonObject state = object(version, SharedStateCapture.REFERENT_STATE);
+        LocationId location = locationId(
+                SharedStateCapture.locationKeyOf(state));
+        return location == null ? null : WriteRow.Referent.of(location,
+                optionalLongInteger(state, "fieldVersionId", -1L));
     }
 
     /**

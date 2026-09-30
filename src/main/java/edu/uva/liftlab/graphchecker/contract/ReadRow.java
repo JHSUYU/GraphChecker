@@ -137,8 +137,9 @@ public final class ReadRow extends Value {
      * What one read node states it returned, as {@link #concreteValue}
      * spells it: a scalar constant's payload ({@code Y_I_2} is {@code 2}), a
      * String as its JSON string literal -- quoted, so no content reads as a
-     * number or an identity -- and Java null as {@code N}.  Null when the
-     * node states nothing: it returned an identity, which no value pins.
+     * number or an identity -- Java null as {@code N}, and an object as the
+     * name of its identity ({@code M_L'<class>'_<rid>}), which a pin states
+     * the read equal to.  Null when the node states nothing.
      */
     public static String returned(JsonObject node) {
         JsonElement value = node == null ? null : node.get("concreteValue");
@@ -156,7 +157,9 @@ public final class ReadRow extends Value {
             return null;
         }
         JsonElement constant = value.getAsJsonObject().get("_exp");
-        return constant == null || !constant.isJsonPrimitive() ? null
+        if (constant == null || !constant.isJsonPrimitive()) return null;
+        return VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(value))
+                ? constant.getAsString()
                 : VmExpressionIr.constantPayload(constant.getAsString());
     }
 

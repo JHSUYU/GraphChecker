@@ -377,7 +377,8 @@ public final class RowRuntime {
     public static void write(OccurrenceAddress occurrence, long seq,
                              String site, LocationId location, long version,
                              JsonObject expression, String javaType,
-                             String siteIndex) {
+                             String siteIndex, WriteRow.Referent referent,
+                             String referentRefused) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null
                 || ownCode(site)) {
@@ -389,7 +390,8 @@ public final class RowRuntime {
         if (type.isEmpty()) return;
         distinct(at, "write#" + location + "#" + version);
         session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
-                version, expressionRef(expression), type));
+                version, expressionRef(expression), type, referent,
+                referentRefused));
         Confirmation.wrote(location, version, at);
     }
 

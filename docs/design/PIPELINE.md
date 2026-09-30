@@ -163,6 +163,11 @@ session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row who
 is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. The workload's exit
 code is not the gate (a target that throws exits nonzero by design).
 
+A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
+admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
+only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the
+identity it returned, which a read no write row states is pinned to.
+
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
 the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on the 0/1 a
@@ -177,7 +182,7 @@ test took its fatal arm. A reached target whose decision has no VM event id is a
 `campaign_import_session` requires every session to hold `activations, decisions, exports, attaches,
 writes, reads, roots, targets, gaps, schedule` `.jsonl` and a non-empty `expressions.jsonl`, and writes
 one `SESSION_CENSUS` row per (session, kind) to `session_census.jsonl`. `campaign_import_gate` then runs
-`contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-11,
+`contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-12,
 [CONTRACT-SPEC.md §2.6](CONTRACT-SPEC.md)) to `campaign_gaps.jsonl` and prints a summary; one BLOCKING
 violation fails IMPORT naming the first subject. The same gate runs after every EXPLORE wave (§7.9).
 
