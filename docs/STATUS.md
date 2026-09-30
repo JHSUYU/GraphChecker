@@ -162,8 +162,6 @@ Correctness:
    `unsupported__*` constant, with no gap (`gc/explore/FlipQuery#statedTerm`; FlipQuery opens
    no refusal frame). A refused arm is dropped by name. A query can therefore ask for a world no
    replay can plant.
-2. A flip model that assigns no root is still dispatched (`gc/explore/ObligationFactory`), and
-   its replay is always NOT_ADMITTED.
 3. Valuations are cut at `compose_max_valuations` with no gap. Only single and pair moves are
    tried, and integral values are enumerated from the domain minimum (`gc/compose/Composer`).
    No `INCONCLUSIVE_BOUNDED` claim exists.

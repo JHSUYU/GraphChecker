@@ -406,9 +406,15 @@ refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#an
 control -- a codec's STR hole -- as its JSON string literal, which the replay plants verbatim; one
 whose model value is no string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
 (an arrival, a read's `concreteValue`, a root) is a literal of the sort its variable is declared at
-by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A model that assigns roots, all at their
-recorded values, with no answer and no moved clock, is refused (`NOT_ADMITTED`: it asks for the seed
-replay). The parent world is overlaid (model wins) and its flips inherited. Every assigned root must
+by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A model that plants
+nothing its path's session did not run -- no moved clock, no answer, and every assigned root at
+the value that session minted -- is refused before any replay (`ObligationFactory#plantsNothing`,
+`NOT_ADMITTED`, a DIAGNOSTIC `ADMISSION_GAP` under `EXPLORATION`): its replay would run that
+session's world again. Assigning roots, all at their recorded values, it names the polarity or
+binding fault that implies; assigning none (`EMPTY_WORLD`), it names the symbols the model moved
+that no replay plants -- writer choices `wchoice_*`, container states `st__*`, refused terms
+`unsupported__*` (SOLR-18413 r5: 67 such focused replays, r7 14, r9 2, none ever admitted). The
+parent world is overlaid (model wins) and its flips inherited. Every assigned root must
 have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`). The worker writes
 `obligation_result.jsonl` (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`,
 `gaps.jsonl`, `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)) and the
