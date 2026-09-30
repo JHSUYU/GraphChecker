@@ -86,6 +86,20 @@ causynth output directory:
 | `static_scope_map.jsonl` | §3; built before any hook is woven, over the door-woven bodies (§4.2), so site ids are the unit indices every pass and every replay decides at |
 | `scope_frontier.jsonl` | §2.4 |
 
+These files are a function of the scope's classes, the same bytes on every host and run
+(`tools/regress/offline-ab.sh` gates on it):
+
+- Soot runs on one thread over the classes by name (`GraphCheckerMain#orderClassesByName`), not
+  in the order the filesystem lists the process dirs.
+- A lambda class is named by its content (`GraphCheckerMain`'s `LambdaClassNames`), not by Soot's
+  run-wide counter.
+- A body's locals are numbered by type and first definition (`jb.lns` `sort-locals`).
+- Hierarchy answers (dispatch targets, subclasses) are taken by signature or name.
+- The worklist runs to a fixed point: a caller whose actual a callee's demand reached, or a method
+  whose field effects or constant stores grew, is processed again (`markDirty`).
+- Edges are numbered `DF.<n>` and written in content order (method, unit, kind, ends), not in the
+  order the worklist found them.
+
 ### 2.4 Scope growth
 
 The case's `scope=(...)` class list is where `S` starts. `run_engine.sh

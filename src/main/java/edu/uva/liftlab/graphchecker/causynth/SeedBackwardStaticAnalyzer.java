@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -191,7 +192,6 @@ final class SeedBackwardStaticAnalyzer {
     /** The declared per-loop {@code K_L} (PIPELINE §2). */
     private final DeclaredLoopBodyBounds loopBodyBounds;
     private boolean globalStaticIndexBuilt;
-    private int edgeCounter;
 
     SeedBackwardStaticAnalyzer(CausynthTargetContext target) {
         this.target = target;
@@ -267,7 +267,15 @@ final class SeedBackwardStaticAnalyzer {
         }
         planCommunicationCatalog(result);
 
-        result.edges.addAll(emittedEdgeRows.values());
+        // Numbered in content order, not in the order the worklist found
+        // them: the ids and the rows' order are the slice's, not the run's.
+        List<EdgeIdentity> found = new ArrayList<>(emittedEdgeRows.keySet());
+        Collections.sort(found);
+        for (EdgeIdentity key : found) {
+            Map<String, Object> edge = emittedEdgeRows.get(key);
+            edge.put("id", "DF." + result.edges.size());
+            result.edges.add(edge);
+        }
         result.traceMethods.addAll(selectedMethods);
         Collections.sort(result.traceMethods);
         for (String method : result.traceMethods) {
@@ -1014,7 +1022,7 @@ final class SeedBackwardStaticAnalyzer {
         if (fact.unit instanceof AssignStmt
                 && ((AssignStmt) fact.unit).getRightOp() instanceof Constant) {
             constantStoresByMethod.computeIfAbsent(method,
-                    ignored -> new LinkedHashSet<>()).add(fieldNode);
+                    DirtyMarkingSet::new).add(fieldNode);
         }
         if (sources.isEmpty()) {
             sources = Collections.singletonList(factNode(fact));
@@ -1054,8 +1062,7 @@ final class SeedBackwardStaticAnalyzer {
                 Set<String> writerRelevant = relevant(writer.method);
                 writerRelevant.add(writer.field);
                 relevantFieldEffectsByMethod
-                        .computeIfAbsent(writer.method,
-                                ignored -> new LinkedHashSet<>())
+                        .computeIfAbsent(writer.method, DirtyMarkingSet::new)
                         .add(writer.field);
                 selectedMethods.add(writer.method);
                 processFieldWrite(writer.method, writerFact, writerRelevant,
@@ -1109,6 +1116,7 @@ final class SeedBackwardStaticAnalyzer {
                         callsite.method, callsiteFact);
                 relevant(callsite.method).add(actual);
                 selectedMethods.add(callsite.method);
+                markDirty(callsite.method);
             });
         }
     }
@@ -1181,8 +1189,11 @@ final class SeedBackwardStaticAnalyzer {
                 for (String target : declared) {
                     forEachCallsite(methodCallersByCallee, target,
                             (callsite, callsiteFact) -> {
+                        // Once per callee and call, and again whenever the
+                        // stored set has grown.
                         if (!expandOnce("STORE_CALLER_GUARDS", method,
-                                callsite.method, callsiteFact.unitIndex)) {
+                                stored.size(), callee, callsite.method,
+                                callsiteFact.unitIndex)) {
                             return;
                         }
                         loadMethod(concreteMethod(callsite.method));
@@ -2197,16 +2208,20 @@ final class SeedBackwardStaticAnalyzer {
         return matches;
     }
 
-    /** The concrete targets of {@code declared} below {@code owner}; none
-     *  when the hierarchy cannot be resolved (a phantom supertype). */
-    private static Set<SootMethod> abstractDispatch(SootClass owner,
-                                                    SootMethod declared) {
+    /** The concrete targets of {@code declared} below {@code owner}, by
+     *  signature (the hierarchy answers a hash set of methods, in identity
+     *  order); none when it cannot resolve them (a phantom supertype). */
+    private static List<SootMethod> abstractDispatch(SootClass owner,
+                                                     SootMethod declared) {
+        List<SootMethod> targets;
         try {
-            return Scene.v().getOrMakeFastHierarchy()
-                    .resolveAbstractDispatch(owner, declared);
+            targets = new ArrayList<>(Scene.v().getOrMakeFastHierarchy()
+                    .resolveAbstractDispatch(owner, declared));
         } catch (RuntimeException unresolved) {
-            return Collections.emptySet();
+            return Collections.emptyList();
         }
+        targets.sort(Comparator.comparing(SootMethod::getSignature));
+        return targets;
     }
 
     /** A loaded, non-phantom class by name, application or library. */
@@ -2359,6 +2374,7 @@ final class SeedBackwardStaticAnalyzer {
                     callsiteFact);
             callerRelevant.add(actual);
             selectedMethods.add(callsite.method);
+            markDirty(callsite.method);
             expanded = true;
         }
         return expanded;
@@ -2378,6 +2394,7 @@ final class SeedBackwardStaticAnalyzer {
                     targetThis, callsite.method, callsiteFact);
             relevant(callsite.method).add(callsite.receiver);
             selectedMethods.add(callsite.method);
+            markDirty(callsite.method);
             return true;
         }
         return false;
@@ -2419,7 +2436,8 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /** {@code declaring} and each of its subclasses that inherits its
-     *  {@code subSignature} (declares none of its own). */
+     *  {@code subSignature} (declares none of its own), breadth first, each
+     *  level's subclasses by name (the hierarchy answers a hash set). */
     private static List<SootClass> inheritingSubtypes(SootClass declaring,
                                                       String subSignature) {
         List<SootClass> runners = new ArrayList<>();
@@ -2432,8 +2450,10 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             runners.add(type);
-            work.addAll(Scene.v().getOrMakeFastHierarchy()
-                    .getSubclassesOf(type));
+            List<SootClass> subclasses = new ArrayList<>(Scene.v()
+                    .getOrMakeFastHierarchy().getSubclassesOf(type));
+            subclasses.sort(Comparator.comparing(SootClass::getName));
+            work.addAll(subclasses);
         }
         return runners;
     }
@@ -2490,6 +2510,15 @@ final class SeedBackwardStaticAnalyzer {
         return expandedDemands.add(key.toString());
     }
 
+    /**
+     * Processes a selected method again.  Any demand that grows is followed
+     * by this for every method whose pass reads it: a caller when a callee's
+     * demand reaches its actual (its own pass emits the call's {@code
+     * call_argument} and dispatch rows from the callee's demand, even when
+     * the actual was already relevant), a method whose field effects or
+     * constant stores grew.  Otherwise the rows would depend on the order
+     * the worklist met the methods.
+     */
     private void markDirty(String method) {
         if (method != null && selectedMethods.contains(method)) {
             dirtyMethods.add(method);
@@ -2808,7 +2837,6 @@ final class SeedBackwardStaticAnalyzer {
         EdgeIdentity key = edgeKey(kind, fromText, toText, method, fact);
         Map<String, Object> edge = emittedEdgeRows.get(key);
         if (edge == null) {
-            String edgeId = "DF." + edgeCounter++;
             String edgeTransferKind = StaticDataflowEdgeSchema.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
@@ -2819,7 +2847,8 @@ final class SeedBackwardStaticAnalyzer {
                     method, fact, edgeTransferKind);
             edge = object(
                     "schemaVersion", StaticDataflowEdgeSchema.VERSION,
-                    "id", edgeId,
+                    // Numbered by analyze() once the slice is complete.
+                    "id", "",
                     "kind", kind,
                     "transferKind", edgeTransferKind,
                     "fromCell", fromText,
@@ -2945,8 +2974,10 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** One emitted edge's identity: kind, ends, method and unit. */
-    private static final class EdgeIdentity {
+    /** One emitted edge's identity: kind, ends, method and unit; ordered by
+     *  method, unit, kind and ends. */
+    private static final class EdgeIdentity
+            implements Comparable<EdgeIdentity> {
         private final String kind;
         private final String from;
         private final String to;
@@ -2970,6 +3001,18 @@ final class SeedBackwardStaticAnalyzer {
             value = 31 * value + method.hashCode();
             value = 31 * value + (concreteSite ? 1 : 0);
             hash = 31 * value + unitIndex;
+        }
+
+        @Override
+        public int compareTo(EdgeIdentity other) {
+            int order = method.compareTo(other.method);
+            if (order == 0) order = Integer.compare(unitIndex, other.unitIndex);
+            if (order == 0) {
+                order = Boolean.compare(concreteSite, other.concreteSite);
+            }
+            if (order == 0) order = kind.compareTo(other.kind);
+            if (order == 0) order = from.compareTo(other.from);
+            return order == 0 ? to.compareTo(other.to) : order;
         }
 
         @Override
