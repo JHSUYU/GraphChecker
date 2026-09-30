@@ -59,7 +59,16 @@ cd "$JDK_ROOT"
   test/causynth/RegionStringSplitParseMapApiSmoke.java \
   test/causynth/RegionTableSwitchApiSmoke.java \
   test/causynth/RegionPathConditionTruncationSmoke.java \
-  test/causynth/RegionConditionalRemovalApiSmoke.java
+  test/causynth/RegionConditionalRemovalApiSmoke.java \
+  test/causynth/RegionArrayCopySmoke.java \
+  test/causynth/RegionCloneSmoke.java \
+  test/causynth/RegionUnsafeWriteSmoke.java \
+  test/causynth/RegionSharedBoxSmoke.java \
+  test/causynth/RegionTrackedRaceSmoke.java \
+  test/causynth/RegionReadExactnessSmoke.java \
+  test/causynth/RegionWrapperFieldSmoke.java \
+  test/causynth/RegionStringBuilderMutatorSmoke.java \
+  test/causynth/RegionVersionDefectsSmoke.java
 
 for smoke in \
   RegionApiSmoke \
@@ -107,7 +116,16 @@ for smoke in \
   RegionStringContainsApiSmoke \
   RegionStringConversionApiSmoke \
   RegionStringSplitParseMapApiSmoke \
-  RegionTableSwitchApiSmoke; do
+  RegionTableSwitchApiSmoke \
+  RegionArrayCopySmoke \
+  RegionCloneSmoke \
+  RegionUnsafeWriteSmoke \
+  RegionSharedBoxSmoke \
+  RegionTrackedRaceSmoke \
+  RegionReadExactnessSmoke \
+  RegionWrapperFieldSmoke \
+  RegionStringBuilderMutatorSmoke \
+  RegionVersionDefectsSmoke; do
   "$JDK_HOME/bin/java" -Xint -cp "$OUT" "$smoke"
 done
 

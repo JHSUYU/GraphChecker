@@ -162,7 +162,7 @@ int SymStrBuilder::prepare_param_helper(MethodSymbolizerHandle &handle,
         ShouldNotCallThis();
       }
     } else {
-      exp = SymStrBuilder::get_exp_of(obj);
+      exp = operand_exp(handle, locals_offset, obj);
     }
 
   } else if (type == T_ARRAY) {
@@ -290,10 +290,12 @@ void SymStrBuilder::prepare_mutation(MethodSymbolizerHandle &handle) {
       exp = OpStrExpression::to_string(handle.get_primitive_exp(offset, type));
     } else if (type == T_OBJECT) {
       oop value = handle.get_param<oop>(offset);
-      exp = value == NULL ? new ConStringSymbolExp(std::string("null"))
-          : (value->klass()->name()->equals(SymString::TYPE_NAME)
-             || value->klass()->name()->equals(SymStrBuilder::TYPE_NAME))
-              ? get_exp_of(value) : NULL;
+      if (value == NULL) {
+        exp = new ConStringSymbolExp(std::string("null"));
+      } else if (value->klass()->name()->equals(SymString::TYPE_NAME)
+                 || value->klass()->name()->equals(SymStrBuilder::TYPE_NAME)) {
+        exp = operand_exp(handle, offset, value);
+      }
     }
     if (exp == NULL) summarizable = false;
     params.push_back(exp);
@@ -383,6 +385,16 @@ Expression *SymStrBuilder::mutated(MethodSymbolizerHandle &handle) {
                   params[2], substring(content, plus_one(params[1]), NULL));
   }
   return NULL;
+}
+
+Expression *SymStrBuilder::operand_exp(MethodSymbolizerHandle &handle,
+                                       int locals_offset, oop obj) {
+  // The operand slot's own shadow first: an interned String carries its
+  // value on the slot only, never on the JVM-wide object, so asking the
+  // object alone read a symbolic literal as its concrete content.
+  Expression *slot = ConcolicMngr::ctx->find_stack_slot(
+      handle.get_caller_stack_begin_offset() + locals_offset);
+  return slot != NULL ? slot : get_exp_of(obj);
 }
 
 Expression *SymStrBuilder::get_exp_of(oop obj) {

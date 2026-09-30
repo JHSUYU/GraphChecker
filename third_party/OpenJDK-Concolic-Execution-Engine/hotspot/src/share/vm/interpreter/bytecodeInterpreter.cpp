@@ -2661,7 +2661,9 @@ run:
         stack_offset + arrayOff + 1);                                          \
     Expression *value_exp =                                                    \
         ConcolicMngr::ctx->get_stack_slot(stack_offset + delta);    \
-    CONCOLIC_ASTORE_SELECT(value_exp)                                          \
+    /* Selected after the array's shadow exists: the first symbolic store  */ \
+    /* into an array starts its element's log, as a field's does.          */ \
+    Expression *astore_operand = value_exp;                                    \
     if (arrObj->is_symbolic() || index_exp != NULL || value_exp != NULL) {     \
       SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(            \
           arrObj, NULL, true);                                                 \
@@ -2691,6 +2693,7 @@ run:
                                                                                \
       sym_arr->store();                                                        \
     }                                                                          \
+    CONCOLIC_ASTORE_SELECT(astore_operand)                                     \
     ConcolicMngr::ctx->clear_stack_value(stack_offset + arrayOff, 1);          \
     ConcolicMngr::ctx->clear_stack_value(stack_offset + arrayOff + 1, 1);      \
     ConcolicMngr::ctx->clear_stack_value(                                     \
@@ -2786,7 +2789,8 @@ run:
               value_exp = sym_inst == NULL ? NULL
                   : sym_inst->get_or_create_ref_exp(rhsObject);
             }
-            CONCOLIC_ASTORE_SELECT(value_exp)
+            // Selected after the array's shadow exists (see CONCOLIC_ASTORE).
+            Expression *astore_operand = value_exp;
             if (arrObj->is_symbolic() || index_exp != NULL
                 || value_exp != NULL) {
               SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(
@@ -2816,6 +2820,7 @@ run:
                       astore_word));
               sym_arr->store();
             }
+            CONCOLIC_ASTORE_SELECT(astore_operand)
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 3, 1);
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 2, 1);
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 1, 1);

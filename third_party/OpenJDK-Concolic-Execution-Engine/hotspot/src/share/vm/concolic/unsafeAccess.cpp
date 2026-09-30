@@ -73,13 +73,13 @@ void UnsafeAccess::capture(MethodSymbolizerHandle &handle) {
   if (callee == NULL || callee->is_static() || _intent.kind != NONE) return;
   const std::string &name = handle.get_callee_name();
   int kind = NONE;
-  if (name.compare(0, 3, "put") == 0) {
+  if (name.find("put") == 0) {
     kind = PUT;
-  } else if (name.compare(0, 13, "compareAndSwap") == 0) {
+  } else if (name.find("compareAndSwap") == 0) {
     kind = CAS;
-  } else if (name.compare(0, 9, "getAndAdd") == 0) {
+  } else if (name.find("getAndAdd") == 0) {
     kind = ADD;
-  } else if (name.compare(0, 9, "getAndSet") == 0) {
+  } else if (name.find("getAndSet") == 0) {
     kind = SET;
   } else {
     return;
