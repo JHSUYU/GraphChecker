@@ -591,11 +591,16 @@ final class ComposedFamilies {
                     }
                 }
             }
-            // What the delivered values rest on (Independence).
+            // What the delivered values and the handoffs a nested family
+            // binds rest on (Independence).
             List<String> delivered = new ArrayList<String>();
             for (Out out : outs) delivered.add(out.arm.expressionRef());
+            Set<String> bound = new LinkedHashSet<String>();
+            for (AttachRow attach : nestedAttaches(session, outs)) {
+                bound.add(attach.symbol());
+            }
             Independence relevant = composer.independence(session,
-                    delivered, reached,
+                    delivered, bound, reached,
                     composer.reachedConditions(session, reached));
             Set<String> answered = new LinkedHashSet<String>();
             composer.statedReads(session, reached.keySet(), relevant, rows,

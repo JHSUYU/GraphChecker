@@ -63,6 +63,11 @@ public final class Independence {
         return reads.contains(read.seq());
     }
 
+    /** One tracked location as a variable of this closure. */
+    static String location(String locationKey) {
+        return LOCATION + locationKey;
+    }
+
     /** The tracked locations the seed rests on, as location keys. */
     public Set<String> locations() {
         Set<String> locations = new LinkedHashSet<String>();
@@ -75,14 +80,17 @@ public final class Independence {
     }
 
     /**
-     * What {@code seedTerms} rest on among these conditions and reads of
-     * one session.
+     * What {@code seedTerms}, the roots and the variables a family binds
+     * ({@code bound}: symbols, and {@link #location}s) rest on among these
+     * conditions and reads of one session.  A family moves what it binds,
+     * so a condition over it is not the recording's to satisfy.
      */
     static Independence of(Corpus corpus, String session,
                            Collection<String> seedTerms,
+                           Collection<String> bound,
                            List<DecisionRow> conditions,
                            List<ReadRow> readRows) {
-        Set<String> seeds = new LinkedHashSet<String>();
+        Set<String> seeds = new LinkedHashSet<String>(bound);
         for (String term : seedTerms) {
             seeds.addAll(termLeaves(corpus, session, term));
         }

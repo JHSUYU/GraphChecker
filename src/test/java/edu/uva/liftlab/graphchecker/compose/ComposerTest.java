@@ -3693,13 +3693,17 @@ public class ComposerTest {
      * refuse the path (f4 visible-gs, sender-gs); the same condition over
      * the location phi reads still does.  Java null is no variable: every
      * null check spells it alike, and sharing it kept 80 of the 145
-     * conditions and reads of a SOLR-18406 path.
+     * conditions and reads of a SOLR-18406 path.  What a family binds is
+     * kept as phi is: a condition over an anchor handoff phi never names
+     * still refuses (C1 review M2).
      */
     @Test
     public void aConditionPhiDoesNotRestOnDoesNotRefuseThePath()
             throws Exception {
-        for (String shares : new String[]{"nothing", "location", "null"}) {
-            boolean shared = "location".equals(shares);
+        for (String shares : new String[]{"nothing", "location", "null",
+                "handoff"}) {
+            boolean shared = "location".equals(shares)
+                    || "handoff".equals(shares);
             boolean nulls = "null".equals(shares);
             Path iteration = folder.newFolder("independence-" + shares)
                     .toPath();
@@ -3718,7 +3722,8 @@ public class ComposerTest {
             name.addProperty("_name", "substring");
             name.addProperty("_is_not", false);
             JsonArray parameters = new JsonArray();
-            parameters.add(shared ? read("INSTANCE_FIELD", 58L, 40L, 158L, "I")
+            parameters.add("location".equals(shares)
+                    ? read("INSTANCE_FIELD", 58L, 40L, 158L, "I")
                     : read("INSTANCE_FIELD", 59L, 32L, 157L,
                     "Ljava/lang/String;"));
             parameters.add(integer("I", 4L));
@@ -3727,7 +3732,13 @@ public class ComposerTest {
             session.expression("EXPR.00000000000000a2", nulls
                     ? binary("&&", named, binary("!=", symbol(
                             "M_L'org/apache/Bar'_2", "org/apache/Bar"),
-                    vmNull())) : named);
+                    vmNull())) : "handoff".equals(shares)
+                    ? binary("&&", named, binary("!=", symbol("vH_heard",
+                    "I"), integer("I", 0L))) : named);
+            if ("handoff".equals(shares)) {
+                session.answered(Endpoint.of(ANCHOR, "Port#recv#1:ATTACH",
+                        at("recv#1", 0), 0), "vH_heard", "I", "5", null);
+            }
             session.decision(ANCHOR, "file#u3", true,
                     "EXPR.00000000000000a2");
             session.expression("EXPR.00000000000000a4", binary("!=",
@@ -3739,7 +3750,8 @@ public class ComposerTest {
             session.write();
 
             Composer.Composition composition = compose(iteration, 4);
-            assertEquals(shared ? "a condition phi rests on still refuses"
+            assertEquals(shared ? "a condition phi or a family rests on "
+                            + "still refuses: " + shares
                             : "a condition phi does not rest on is left out: "
                             + shares,
                     shared ? 0 : 1, composition.disjuncts().size());
@@ -3747,69 +3759,156 @@ public class ComposerTest {
     }
 
     /**
-     * THE ONE BINDING RULE: JOIN, MINT, PIN, REFUSE.  A read whose write
-     * does not lower is bound by the value its row states, and the join that
-     * refused is then no refusal of the path -- neither in the state joins
-     * nor where phi reads the same version and meets the refused write
-     * again.  Kept at once, it dropped every SOLR-18406 anchor path (s46).
-     * With nothing to bind the read, it is the path's, beside the read's.
+     * THE ONE BINDING RULE ({@code SmtLowering#bind}), at the row and at the
+     * node alike: JOIN, MINT, PIN, REFUSE, a refused join giving way only
+     * where nothing it rests on can move.  One case per row:
+     * <ul>
+     *   <li>pin: the write refuses over nothing that moves, and the row
+     *       states its value: the pin binds the read, and what the dropped
+     *       join raised (its recorded reading, its cut) went with it;</li>
+     *   <li>unstated: the same with no value stated: the path is refused,
+     *       the join's refusal beside the read's;</li>
+     *   <li>H1: the write is {@code parseInt(valueOf(R))}, R a declared
+     *       root: pinned, phi {@code x != R} would move R past a constant,
+     *       so no pin stands and there is no path to move it in;</li>
+     *   <li>H2a: the node's own projection lowers where the write refused:
+     *       phi reads the projection, never the pinned constant;</li>
+     *   <li>H2b: the write joins and a STATE family may re-pair the read,
+     *       while the node's projection refuses: phi gets no literal the
+     *       family cannot move, so the path is refused.</li>
+     * </ul>
      */
     @Test
-    public void aJoinThatRefusedIsDroppedWhenThePinBindsTheRead()
-            throws Exception {
-        for (boolean stated : new boolean[]{true, false}) {
-            Path iteration = folder.newFolder("attempt-" + stated).toPath();
+    public void theOneBindingRule() throws Exception {
+        for (String name : new String[]{"pin", "unstated", "H1", "H2a",
+                "H2b"}) {
+            Path iteration = folder.newFolder("bind-" + name).toPath();
+            OccurrenceAddress reader = occurrence("case/nn0", "REGION.commit",
+                    CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
+                    frame("Namesystem#commit#12", 0));
+            OccurrenceAddress first = occurrence("case/nn0", "REGION.tick",
+                    CausalContext.of(Role.of("TICK_A"), "", 1),
+                    frame("TickA#run#3", 0));
+            LocationId stamp = LocationId.of(LocationKind.INSTANCE, "10",
+                    "value");
+            String key = SmtLowering.locationKey(stamp);
+            String symbol = key + "@v2@s0";
             Session session = new Session(iteration, "s0", false);
+            session.occurrence = reader;
+            session.activation(reader);
+            session.activation(first);
             session.serial("3", "0", "8");
-            // The write refuses (its leaf is undeclared) and states what
-            // the run read of it: a side condition of the join attempt.
-            JsonObject written = binary("+", symbol(NO_ROW, "I"),
+            // Refused over nothing that moves (an undeclared leaf), with
+            // what the run read of it: a side condition of the join.
+            JsonObject refused = binary("+", symbol(NO_ROW, "I"),
                     integer("I", 1L));
-            written.add(VmRows.RECORDED_READING, integer("I", 4242L));
-            session.expression("EXPR.00000000000000a3", written);
-            LocationId stamp = LocationId.of(LocationKind.INSTANCE, "58",
-                    "40");
-            session.write(Endpoint.of(ANCHOR, "Replica#set#1:WRITE",
-                    at("stamp#1", 0), 0), stamp, 158L,
-                    "EXPR.00000000000000a3");
-            session.read(Endpoint.of(ANCHOR, "Replica#get#1:READ",
-                    at("stamp#2", 0), 0), stamp, 158L, "INSTANCE/58#40@v158",
-                    "I", stated ? "1001" : null);
-            session.expression("EXPR.00000000000000a1", binary("<",
-                    read("INSTANCE_FIELD", 58L, 40L, 158L, "I"),
+            refused.add(VmRows.RECORDED_READING, integer("I", 4242L));
+            JsonObject parsed = new JsonObject();
+            parsed.addProperty("_type", "MethodExpression");
+            parsed.addProperty("_name", "java/lang/Integer parseInt");
+            JsonArray arguments = new JsonArray();
+            arguments.add(vmString("toString", symbol(SERIAL, "I")));
+            parsed.add("_param_list", arguments);
+            parsed.add("_res_exp", symbol("M_I_return7", "I"));
+            session.expression("EXPR.00000000000000b1", "H1".equals(name)
+                    ? parsed : "H2b".equals(name) ? integer("I", 2L)
+                    : refused);
+            session.write(Endpoint.of(first, "TickA#set#4:WRITE",
+                    at("w#1", 0), 0), stamp, 2L, "EXPR.00000000000000b1");
+            if ("H2b".equals(name)) {
+                // A concurrent writer: the read's STATE family re-pairs it.
+                OccurrenceAddress second = occurrence("case/nn0",
+                        "REGION.tock", CausalContext.of(Role.of("TICK_B"),
+                                "", 1), frame("TickB#run#3", 0));
+                session.activation(second);
+                session.expression("EXPR.00000000000000b2",
+                        integer("I", 1L));
+                session.write(Endpoint.of(second, "TickB#set#4:WRITE",
+                        at("w#2", 0), 0), stamp, 1L, "EXPR.00000000000000b2");
+            }
+            session.read(Endpoint.of(reader, "Block#getStamp#29:READ",
+                            at("r#1", 0), 0), stamp, 2L, symbol, "I",
+                    "unstated".equals(name) ? null : "H1".equals(name) ? "3"
+                            : "H2b".equals(name) ? "2" : "1001");
+            JsonObject node = read("INSTANCE_FIELD", stamp.owner(), "value",
+                    2L, "I");
+            if ("H2a".equals(name) || "H2b".equals(name)) {
+                // The node's own projection of the version it observed.
+                node.getAsJsonObject("observedVersion").add("expression",
+                        "H2a".equals(name) ? integer("I", 1001L)
+                                : binary("-", symbol(NO_ROW, "I"),
+                                integer("I", 1L)));
+                // And what it returned, a literal the family cannot move.
+                node.add("concreteValue", integer("I",
+                        "H2a".equals(name) ? 1001L : 2L));
+            }
+            session.expression("EXPR.00000000000000b3", binary(
+                    "H1".equals(name) ? "!=" : "<", node,
                     symbol(SERIAL, "I")));
-            session.target("EXPR.00000000000000a1", false, true);
+            session.target("EXPR.00000000000000b3", false, true);
             session.write();
 
-            Composer.Composition composition = compose(iteration, 4);
-            if (stated) {
-                assertEquals("the pin binds the read and the path stands",
-                        1, composition.disjuncts().size());
-                assertTrue("phi reads the pinned symbol: "
-                                + fatalArm(composition),
-                        fatalArm(composition).contains(SmtNames.legalSymbols(
-                                "(< INSTANCE/58#40@v158 " + SERIAL + ")"))
-                                && fatalArm(composition).contains(
-                                SmtNames.legalSymbols(
-                                        "(= INSTANCE/58#40@v158 1001)")));
-                // What the dropped join raised went with it: its side
-                // condition and its cut (M3, L3).
-                assertFalse("the dropped join's recorded reading binds "
-                                + "nothing: " + composition.body(),
-                        composition.body().contains("4242"));
-                assertFalse("and its cut is no gap",
-                        named(composition.gaps(),
-                                "UndeclaredFreeSymbol:" + NO_ROW));
-                continue;
+            Composer.Composition composition = Composer.compose(
+                    Corpus.read(iteration, null), reader,
+                    Collections.<String,
+                            edu.uva.liftlab.graphchecker.contract.RootDomain>
+                            emptyMap(), 4);
+            List<GapRow> gaps = composition.gaps();
+            String arm = fatalArm(composition);
+            switch (name) {
+                case "pin":
+                    assertEquals(name + ": the pin binds the read", 1,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": phi reads the pinned symbol: " + arm,
+                            arm.contains(SmtNames.legalSymbols("(< " + symbol
+                                    + " " + SERIAL + ")"))
+                                    && arm.contains(SmtNames.legalSymbols(
+                                    "(= " + symbol + " 1001)")));
+                    assertFalse(name + ": the dropped join's recorded "
+                                    + "reading binds nothing (M3)",
+                            composition.body().contains("4242"));
+                    assertFalse(name + ": and its cut is no gap (L3)",
+                            named(gaps, "UndeclaredFreeSymbol:" + NO_ROW));
+                    break;
+                case "unstated":
+                    assertEquals(name + ": nothing binds the read", 0,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": the write's refusal is the path's, "
+                                    + "beside the read's own",
+                            says(gaps, GapKind.UNSTATED_VALUE,
+                                    "did not lower")
+                                    && named(gaps, "PROPAGATION_CUT:"
+                                    + "UndeclaredFreeSymbol:" + NO_ROW));
+                    break;
+                case "H1":
+                    assertEquals(name + ": no pin stands for a value a "
+                                    + "root computed", 0,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": and the refusal says why",
+                            says(gaps, GapKind.UNSTATED_VALUE, "can move"));
+                    assertEquals(name + ": so no witness moves the root",
+                            ClaimKind.NO_SUPPORTED_WITNESS,
+                            ClaimPolicy.decide(composition, solver())
+                                    .claim().kind());
+                    break;
+                case "H2a":
+                    assertEquals(name + ": the projection binds the node",
+                            1, composition.disjuncts().size());
+                    assertTrue(name + ": phi reads the projection that "
+                                    + "lowered, not the pin: " + arm,
+                            arm.contains(SmtNames.legalSymbols("(< 1001 "
+                                    + SERIAL + ")"))
+                                    && !arm.contains(SmtNames.legalSymbols(
+                                    symbol)));
+                    break;
+                default:
+                    assertEquals(name + ": a read a family re-pairs is no "
+                                    + "literal", 0,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": refused by name",
+                            named(gaps, "JoinOverMovingValue:" + key
+                                    + "@2"));
             }
-            assertEquals("with no pin nothing binds it", 0,
-                    composition.disjuncts().size());
-            assertTrue("and the write's refusal is the path's, beside the "
-                            + "read's own",
-                    says(composition.gaps(), GapKind.UNSTATED_VALUE,
-                            "did not lower")
-                            && named(composition.gaps(),
-                            "PROPAGATION_CUT:UndeclaredFreeSymbol:" + NO_ROW));
         }
     }
 
