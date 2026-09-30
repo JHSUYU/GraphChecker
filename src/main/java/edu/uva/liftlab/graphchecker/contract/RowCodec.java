@@ -447,8 +447,12 @@ public final class RowCodec {
             json.addProperty("domainMax", row.domainMax());
         }
         json.addProperty("declared", row.declared());
-        if (row.clockNanos() > 0L) {
-            json.addProperty("clockNanos", row.clockNanos());
+        if (row.clock() != null) {
+            json.addProperty("clockNanos", row.clock().nanos());
+            if (!row.clock().source().isEmpty()) {
+                json.addProperty(RootMintRow.CLOCK_SOURCE,
+                        row.clock().source());
+            }
         }
         if (row.clockSkew() != 0L) {
             json.addProperty(RootMintRow.CLOCK_SKEW, row.clockSkew());
@@ -468,7 +472,9 @@ public final class RowCodec {
                 string(json, "recordedValue"),
                 optionalString(json, "domainMin"),
                 optionalString(json, "domainMax"), bool(json, "declared"),
-                json.has("clockNanos") ? number(json, "clockNanos") : 0L,
+                json.has("clockNanos") ? Clock.of(number(json, "clockNanos"),
+                        optionalString(json, RootMintRow.CLOCK_SOURCE))
+                        : null,
                 json.has(RootMintRow.CLOCK_SKEW)
                         ? number(json, RootMintRow.CLOCK_SKEW) : 0L);
     }

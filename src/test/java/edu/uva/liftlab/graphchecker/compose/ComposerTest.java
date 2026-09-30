@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.smt.Z3;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Arm;
@@ -1523,7 +1524,7 @@ public class ComposerTest {
                                          String rootId, String symbol,
                                          String reading) {
         return RootMintRow.of(session, seq, ANCHOR, rootId, symbol,
-                RootKind.CLOCK, reading, null, null, true, 1_000_000L);
+                RootKind.CLOCK, reading, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L);
     }
 
     // ------------------------------------------------------------------
@@ -1603,7 +1604,7 @@ public class ComposerTest {
         twice.clock("700");
         twice.roots.add(RootMintRow.of("s0", ++twice.seq, ANCHOR, "ROOT.THEN",
                 "clock_then", RootKind.CLOCK, "705", null, null, true,
-                1_000_000L));
+                Clock.of(1_000_000L, Clock.WALL), 0L));
         twice.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
                 + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
         twice.decision(ANCHOR, "anchor#u2", "(or (> clock_then 0) "
@@ -2691,7 +2692,7 @@ public class ComposerTest {
             if (guarded) {
                 session.roots.add(RootMintRow.of("s0", ++session.seq,
                         writers[2], "ROOT.CLEAN", "M_J_clean",
-                        RootKind.CLOCK, "1000", null, null, true, 1L));
+                        RootKind.CLOCK, "1000", null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
                 session.expression("EXPR.0000000000000090", binary("<",
                         symbol("M_J_clean", "J"), integer("J", 2_000L)));
                 session.decision(writers[2], "Cleaner#clean#u3", true,
@@ -2865,7 +2866,7 @@ public class ComposerTest {
         LocationId reserves = LocationId.of(LocationKind.MAP, "50", "-3");
         session.roots.add(RootMintRow.of(id, ++session.seq, reserver,
                 "ROOT.RESERVED", RESERVED, RootKind.CLOCK,
-                Long.toString(seed - 1_000L), null, null, true, 1L));
+                Long.toString(seed - 1_000L), null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
         // As the VM publishes it: an arithmetic node states no Java type,
         // and the deadline is a Long cell by its width alone.
         JsonObject deadline = binary("+", symbol(RESERVED, "J"),
@@ -2881,7 +2882,7 @@ public class ComposerTest {
         session.roots.add(RootMintRow.of(id, ++session.seq, newer,
                 "ROOT.RESERVE", NANO, RootKind.CLOCK, Long.toString(
                         expired ? seed + 10_000L : seed), null, null, true,
-                1L));
+                Clock.of(1L, Clock.MONOTONIC), 0L));
         // The older commit's map, then its store.
         JsonObject base = relation("ASSOCIATIVE", "SNAPSHOT_BASE", map, null);
         JsonObject four = putCommit(base, 4L);
@@ -4152,21 +4153,23 @@ public class ComposerTest {
      * A node that reads the wall clock and a monotonic one orders each on
      * its own: the second wall reading is no earlier than the first, and
      * neither is ordered against the monotonic one (hdfs-11741 v78: wall
-     * 1.79e12 "before" monotonic 4.5e9 made all 165 paths false).
+     * 1.79e12 "before" monotonic 4.5e9 made all 165 paths false).  Which
+     * clock a cell reads is its row's statement, never its value's size.
      */
     @Test
     public void aNodeReadingTwoClocksOrdersEachClockOnItsOwn()
             throws Exception {
         Path iteration = folder.newFolder("two-clocks").toPath();
         Session session = new Session(iteration, "s0", false);
-        String[][] cells = {{"CLOCK.wall.1", "M_J_wall_1", "1790500000000"},
-                {"CLOCK.mono", "M_J_mono", "4549240012"},
-                {"CLOCK.wall.2", "M_J_wall_2", "1790500000900"}};
+        String[][] cells = {
+                {"CLOCK.wall.1", "M_J_wall_1", "1790500000000", Clock.WALL},
+                {"CLOCK.mono", "M_J_mono", "1790500000400", Clock.MONOTONIC},
+                {"CLOCK.wall.2", "M_J_wall_2", "1790500000900", Clock.WALL}};
         StringBuilder phi = new StringBuilder("(and");
         for (String[] cell : cells) {
             session.roots.add(RootMintRow.of("s0", ++session.seq, ANCHOR,
                     cell[0], cell[1], RootKind.CLOCK, cell[2], null, null,
-                    true, 1_000_000L));
+                    true, Clock.of(1_000_000L, cell[3]), 0L));
             phi.append(" (> ").append(cell[1]).append(" 0)");
         }
         session.target(phi.append(")").toString(), false, true);
@@ -5707,7 +5710,7 @@ public class ComposerTest {
 
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
-                    RootKind.MARKER, recorded, null, null, true, 0L));
+                    RootKind.MARKER, recorded, null, null, true, null, 0L));
         }
 
         /**
@@ -5720,7 +5723,7 @@ public class ComposerTest {
          */
         void clock(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,
-                    RootKind.CLOCK, recorded, null, null, true, 1_000_000L));
+                    RootKind.CLOCK, recorded, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
         }
 
         /** One decision, and the clock cells its predicate read. */
@@ -5734,7 +5737,7 @@ public class ComposerTest {
         /** A declared counter, with the window the CASE states around it. */
         void serial(String recorded, String min, String max) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
-                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true, 0L));
+                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true, null, 0L));
         }
 
         void expression(String ref, JsonObject node) {
@@ -5807,7 +5810,8 @@ public class ComposerTest {
                   RootKind kind, String recorded) {
             roots.add(RootMintRow.of(id, ++seq, at, rootId, symbol, kind,
                     recorded, null, null, true,
-                    kind == RootKind.CLOCK ? 1_000_000L : 0L));
+                    kind == RootKind.CLOCK
+                ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
         }
 
         /** @return the session event this write was sequenced at. */

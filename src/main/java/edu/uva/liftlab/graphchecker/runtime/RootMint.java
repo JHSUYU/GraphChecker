@@ -713,13 +713,11 @@ final class RootMint {
         }
         // A clock reads its node's clock (NodeClocks): the host's reading
         // moved by the jump before it.
-        Long host = action.declaresWallClockRead() ? readingOf(concrete)
-                : null;
-        String node = host == null ? "" : active.rootOwner(action.symbol)
-                .d3Address.node().render();
-        Object ran = host == null ? concrete : atInstant(action, concrete,
-                host + NodeClocks.skew(node, action.clockNanos,
-                        action.eventSeq, host));
+        ActiveRegion owner = active.rootOwner(action.symbol);
+        String node = owner.d3Address.node().render();
+        boolean clock = action.declaresWallClockRead()
+                && readingOf(concrete) != null;
+        Object ran = clock ? clockReading(node, action, concrete) : concrete;
         // The box minted here IS what the region reads back, so the plant
         // goes into it (#focusedRootValue).
         String assigned = focusedRootValue(active, action.symbol, concrete);
@@ -742,8 +740,8 @@ final class RootMint {
         // bodies share one address) is a later instant of the same root at
         // the same place: its node's clock, concrete.  One symbol for both
         // would state two values for one source (IMPORT invariant 8).
-        if (action.clockNanos > 0L && !CLOCK_READINGS.add(active.rootOwner(
-                action.symbol).address() + "|" + action.symbol)) {
+        if (action.clock != null && !CLOCK_READINGS.add(owner.address()
+                + "|" + action.symbol)) {
             return ran;
         }
         Object fresh = freshPrimitiveBox(planted);
@@ -755,23 +753,12 @@ final class RootMint {
             // What the region ran the root at: the box's value.  A clock
             // also states how far its node's clock ran off the host there,
             // the reading a skew is relative to (RootMintRow#hostReading).
-            long skew = host == null ? 0L
-                    : readingOf(planted).longValue() - host.longValue();
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
-                    ConcolicRegionRuntime.recordedScalar(planted), skew);
-            if (!assigned.isEmpty()) {
-                FocusedReplay.planted(action.symbol);
-                if (host != null && !NodeClocks.jump(node, action.clockNanos,
-                        action.eventSeq, host, skew)) {
-                    RowRuntime.gap(GapKind.DECLARATION_MISSING,
-                            GapClass.DIAGNOSTIC, action.symbol,
-                            "the recording states no event for this clock "
-                                    + "reading, so it has no place on its "
-                                    + "node's clock: the plant moves this "
-                                    + "reading alone");
-                }
-            }
+                    ConcolicRegionRuntime.recordedScalar(planted),
+                    clock ? clockSkew(node, action, concrete, planted,
+                            !assigned.isEmpty()) : 0L);
+            if (!assigned.isEmpty()) FocusedReplay.planted(action.symbol);
             return fresh;
         } catch (Throwable throwable) {
             return ran;
@@ -779,13 +766,17 @@ final class RootMint {
     }
 
     /**
-     * One clock reading at an instant of its node's clock, boxed as the
-     * host's was; the host's own box where they agree, and refused by name
-     * (the host's) where the mint's type cannot hold the instant.
+     * The value one declared clock reading runs at: its node's clock
+     * ({@link NodeClocks}), the host's reading moved by the skew of the jump
+     * before it in the recording's order.  The host's own box where there is
+     * none; where the mint's type cannot hold the instant, the host's, named
+     * BLOCKING.
      */
-    private static Object atInstant(SymbolizeAction action, Object host,
-                                    long instant) {
-        if (instant == readingOf(host).longValue()) return host;
+    static Object clockReading(String node, SymbolizeAction action,
+                               Object host) {
+        long skew = NodeClocks.skew(node, action.clock, action.eventSeq);
+        if (skew == 0L) return host;
+        long instant = readingOf(host).longValue() + skew;
         Object moved = ModelValues.coerce("", Long.toString(instant),
                 host.getClass());
         if (moved == null
@@ -797,6 +788,27 @@ final class RootMint {
             return host;
         }
         return moved;
+    }
+
+    /**
+     * How far a minted clock reading ran off the host's reading (the skew
+     * its row states), filed as a jump of its node's clock where the wave
+     * planted it: the clock runs on from there.  A reading the recording
+     * states no event for, or whose clock states no source, is on no
+     * clock's order, and the plant moves it alone (named).
+     */
+    static long clockSkew(String node, SymbolizeAction action,
+                          Object host, Object ran, boolean planted) {
+        long skew = readingOf(ran).longValue() - readingOf(host).longValue();
+        if (planted && !NodeClocks.jump(node, action.clock, action.eventSeq,
+                skew)) {
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    action.symbol, "this clock reading has no place on its "
+                            + "node's clock (recorded event " + action.eventSeq
+                            + ", clock " + action.clock + "), so the plant "
+                            + "moves this reading alone");
+        }
+        return skew;
     }
 
     /** Exact expression stored in a Java primitive wrapper's value field. */

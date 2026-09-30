@@ -441,7 +441,11 @@ final class ActiveRegion {
         // from a name.  Trap: never publish the PLAN's instant as its value.
         if (action.declaresWallClockRead()) {
             row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK,
-                    action.clockNanos);
+                    action.clock.nanos());
+            if (!action.clock.source().isEmpty()) {
+                row.addProperty(InputActionCatalog.DECLARED_CLOCK_SOURCE,
+                        action.clock.source());
+            }
             row.addProperty("eventSeq", action.eventSeq);
             if (clockSkew != 0L) {
                 row.addProperty(RootMintRow.CLOCK_SKEW, clockSkew);

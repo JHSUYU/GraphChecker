@@ -183,7 +183,7 @@ public class ReferenceCellTest {
 
         List<StaticScopeMap.Site> sites = StaticScopeMap.sites(program.edges,
                 Collections.<Map<String, Object>>singletonList(region()),
-                Collections.<String, Long>emptyMap(),
+                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(),
                 method -> !method.startsWith("<s."),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField);

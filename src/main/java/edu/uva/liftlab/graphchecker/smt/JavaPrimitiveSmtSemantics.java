@@ -81,24 +81,6 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /**
-     * Whether two readings of one node are readings of ONE clock: the one
-     * rule COMPOSE orders a node's clock cells by ({@code Composer#clocks})
-     * and a replay runs a planted clock on by ({@code runtime.NodeClocks}).
-     * A node reads more than one clock -- the wall clock and a monotonic one
-     * (hdfs-11741's Balancer: {@code Time.now()} for its keys, {@code
-     * monotonicNow()} for its SASL user), both in milliseconds -- and one run
-     * is far shorter than a clock window: two readings of one clock share a
-     * tick and lie within one window, two of different clocks lie decades
-     * apart.
-     */
-    public static boolean oneClock(long tick, long reading, long otherTick,
-                                   long otherReading) {
-        return tick == otherTick && tick > 0L
-                && Math.abs(reading - otherReading)
-                <= clockTicks(CLOCK_SKEW_WINDOW_NANOS, tick);
-    }
-
-    /**
      * {@code reading + } {@link #CLOCK_SKEW_WINDOW_NANOS} in the clock's
      * ticks.  Trap: never {@code Long.MAX_VALUE} when a reading exists --
      * the SMT sum cannot wrap but the JVM's does, so a flip would be

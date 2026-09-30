@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -23,21 +23,21 @@ import java.util.concurrent.ConcurrentHashMap;
  * one node may plant either way round.  COMPOSE orders a node's cells by
  * the same seq ({@code Composer#clocks}) and the claim names the same jumps
  * ({@code ClaimPolicy#runsOn}).  One clock is what COMPOSE orders as one
- * ({@link JavaPrimitiveSmtSemantics#oneClock}): the wall clock and a
- * monotonic one of a node, both in milliseconds, are two.</p>
+ * ({@link Clock#same}: one JVM clock at one tick): the wall clock and a
+ * monotonic one of a node, both in milliseconds, are two.  A reading whose
+ * clock states no source is on no clock's order: it reads the host, and a
+ * plant there moves it alone.</p>
  */
 final class NodeClocks {
-    /** One plant: its clock's tick, its place, the host's reading, the skew. */
+    /** One plant: its clock, its place, the skew. */
     private static final class Jump {
-        private final long tick;
+        private final Clock clock;
         private final long place;
-        private final long host;
         private final long skew;
 
-        private Jump(long tick, long place, long host, long skew) {
-            this.tick = tick;
+        private Jump(Clock clock, long place, long skew) {
+            this.clock = clock;
             this.place = place;
-            this.host = host;
             this.skew = skew;
         }
     }
@@ -60,14 +60,13 @@ final class NodeClocks {
      * recording states no event for it, {@code place <= 0}) is on no clock's
      * order and reads the host.
      */
-    static long skew(String node, long tick, long place, long host) {
+    static long skew(String node, Clock clock, long place) {
         List<Jump> jumps = JUMPS.get(node);
         if (jumps == null || place <= 0L) return 0L;
         synchronized (jumps) {
             Jump latest = null;
             for (Jump jump : jumps) {
-                if (jump.place > place || !JavaPrimitiveSmtSemantics.oneClock(
-                        tick, host, jump.tick, jump.host)) {
+                if (jump.place > place || !jump.clock.same(clock)) {
                     continue;
                 }
                 if (latest == null || jump.place >= latest.place) {
@@ -80,15 +79,15 @@ final class NodeClocks {
 
     /**
      * Files one plant as a jump of its node's clock; false for a reading
-     * with no place, which the plant moves alone.
+     * with no place or a clock stating no source, which the plant moves
+     * alone.
      */
-    static boolean jump(String node, long tick, long place, long host,
-                        long skew) {
-        if (place <= 0L) return false;
+    static boolean jump(String node, Clock clock, long place, long skew) {
+        if (place <= 0L || clock.source().isEmpty()) return false;
         List<Jump> jumps = JUMPS.computeIfAbsent(node,
                 key -> new ArrayList<Jump>());
         synchronized (jumps) {
-            jumps.add(new Jump(tick, place, host, skew));
+            jumps.add(new Jump(clock, place, skew));
         }
         return true;
     }

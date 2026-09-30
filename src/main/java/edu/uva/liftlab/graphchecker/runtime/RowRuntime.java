@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -468,7 +469,7 @@ public final class RowRuntime {
                                 String rootId, String symbol, RootKind kind,
                                 String recordedValue, String domainMin,
                                 String domainMax, boolean declared,
-                                long clockNanos, long clockSkew) {
+                                Clock clock, long clockSkew) {
         if (kind == RootKind.CLOCK) {
             // The cell the mint already filed, restated so a CLOCK row
             // nothing filed at the mint still resolves.
@@ -483,7 +484,7 @@ public final class RowRuntime {
                 Text.safe(recordedValue),
                 Text.safe(domainMin).isEmpty() ? null : Text.safe(domainMin),
                 Text.safe(domainMax).isEmpty() ? null : Text.safe(domainMax),
-                declared, clockNanos, clockSkew));
+                declared, clock, clockSkew));
         // The mint is IN the session -- a different fact from the plant,
         // which survives an occurrence whose rows are discarded.
         FocusedReplay.mintPublished(rootId);

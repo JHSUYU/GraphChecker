@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
@@ -2193,9 +2194,10 @@ public final class Composer {
      * <p>ONE ORDER PER CLOCK OF A NODE: a cell is no earlier than the last
      * cell before it by seq -- the event the recording read it at, the order
      * a replay runs a planted clock on in ({@code runtime.NodeClocks}) --
-     * that read the same clock ({@link JavaPrimitiveSmtSemantics#oneClock}:
-     * a node's wall clock and a monotonic one are two, and ordering those
-     * against each other made every path false).  Where the recording's own
+     * that read the same clock ({@link Clock#same}: one JVM clock at one
+     * tick; a node's wall clock and a monotonic one are two, and ordering
+     * those against each other made every path false; a cell whose row
+     * states no JVM clock is on no order, named).  Where the recording's own
      * readings of the two run the other way (two threads between reading
      * and logging), the order gives way by that much, so the recording
      * always satisfies it.  {@code earlierOf} maps each ordered cell to that
@@ -2260,6 +2262,13 @@ public final class Composer {
                             + ArtifactIO.digest(row.symbol(), 10),
                     JavaPrimitiveSmtSemantics.clockDomain(row.symbol(),
                             floor, ceiling));
+            if (row.clock().source().isEmpty()) {
+                gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        row.rootId(), "this clock cell's row states no JVM "
+                                + "clock it reads, so it is on no clock's "
+                                + "order: no cell runs on from it, and it "
+                                + "from none");
+            }
         }
         Map<NodeId, List<RootMintRow>> byNode =
                 new LinkedHashMap<NodeId, List<RootMintRow>>();
@@ -2275,12 +2284,11 @@ public final class Composer {
             for (int index = 1; index < mints.size(); index++) {
                 String later = mints.get(index).symbol();
                 long reading = readings.get(later);
-                long tick = ticks.get(later);
                 for (int before = index - 1; before >= 0; before--) {
                     String earlier = mints.get(before).symbol();
                     long earlierReading = readings.get(earlier);
-                    if (!JavaPrimitiveSmtSemantics.oneClock(tick, reading,
-                            ticks.get(earlier), earlierReading)) {
+                    if (!mints.get(index).clock().same(
+                            mints.get(before).clock())) {
                         continue;
                     }
                     long inversion = earlierReading - reading;
@@ -2335,9 +2343,7 @@ public final class Composer {
                         : number(same.hostReading());
                 if (sameHost == null || !anchor.occurrence().node().equals(
                         cell.occurrence().node())
-                        || !JavaPrimitiveSmtSemantics.oneClock(
-                        cell.clockNanos(), host, same.clockNanos(),
-                        sameHost)) {
+                        || !cell.clock().same(same.clock())) {
                     continue;
                 }
                 long distance = Math.abs(anchor.seq() - cell.seq());

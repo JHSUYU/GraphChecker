@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -4115,7 +4116,8 @@ public class ExploreTest {
                           String min, String max, boolean declared) {
             roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId,
                     symbol, kind, recorded, min, max, declared,
-                    kind == RootKind.CLOCK ? 1_000_000L : 0L));
+                    kind == RootKind.CLOCK
+                ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
         }
 
         private void export(Endpoint endpoint, String ref, long handle,
