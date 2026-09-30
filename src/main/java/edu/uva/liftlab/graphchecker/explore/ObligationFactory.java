@@ -89,8 +89,7 @@ public final class ObligationFactory {
         public final Corpus.RecordedPath path;
         public final int index;
         public final DecisionRow decision;
-        /** Its question once {@link #candidates} built it (an earlier wave
-         *  answered its flip), its {@link #flip} before; "" located. */
+        /** The question, once {@link #candidates} asked it; else "". */
         public final String question;
 
         private Candidate(Corpus corpus, Task task,
@@ -280,19 +279,16 @@ public final class ObligationFactory {
     }
 
     /**
-     * THE QUESTION one flip asks, as {@code <flip>:<content>}: the flip
-     * ({@link #flip}), then a digest of the query as its solver is asked it
-     * (or the refusal that leaves none) and the world its replay would plant
-     * -- its path's world, inherited whole.  The ledger answers a question
-     * once ({@link Frontier}): an obligation's id drifts as sessions land
-     * (its dependence's factor grows, {@link Corpus#inputShape}), and its
-     * question does not while the query reads the same (SOLR-18413 r5: 185
-     * questions asked 717 times; 118 of the 166 re-asked came back
-     * byte-identical, 162 answered as before).  Built over fresh lowerings
-     * ({@link Corpus#isolated}), as a solver JVM builds its one query, so
-     * the planner's question is the solver's.  The planner builds it only
-     * for a flip an earlier wave answered: a query can cost a solver most of
-     * a minute (hdfs-17960), and no other flip's question can be answered.
+     * THE QUESTION one flip asks, digested: the flip, the query as its solver
+     * is asked it (or the refusal that leaves none), and the world its
+     * replay would plant -- its path's world, inherited whole.  The ledger
+     * answers a question once ({@link Frontier}): an obligation's id drifts
+     * as sessions land (its dependence's factor grows, {@link
+     * Corpus#inputShape}), and its question does not while the query reads
+     * the same (SOLR-18413 r5: 185 questions asked 717 times; 118 of the 166
+     * re-asked came back byte-identical, 162 answered as before).  Built
+     * over fresh lowerings ({@link Corpus#isolated}), as a solver JVM builds
+     * its one query, so the planner's question is the solver's.
      */
     public static String question(Corpus corpus, Candidate candidate) {
         FlipQuery.Built built;
@@ -300,8 +296,8 @@ public final class ObligationFactory {
             built = ask(corpus, candidate);
         } catch (RuntimeException unbuildable) {
             // Its solver fails the same way, and says so; a query no one
-            // can build is no question the ledger could hold: its flip.
-            return flip(candidate);
+            // can build is no question the ledger could hold.
+            return "";
         }
         return question(candidate, corpus.world(candidate.path.sessionId),
                 built);
@@ -313,20 +309,15 @@ public final class ObligationFactory {
                 candidate.path, candidate.index));
     }
 
-    /** The flip a question is about, digested: task, path, site, ordinal
-     *  and the outcome asked for -- the first half of its {@link
-     *  #question}. */
-    public static String flip(Candidate candidate) {
-        return ArtifactIO.digest(candidate.task.taskId() + "|"
-                + candidate.path.pathId + "|" + candidate.decision.siteId()
-                + "#" + candidate.decision.ordinal() + " -> "
-                + !candidate.decision.outcome(), 16);
-    }
-
     private static String question(Candidate candidate, Corpus.World world,
                                    FlipQuery.Built built) {
         StringBuilder text = new StringBuilder();
-        text.append(built.ok()
+        text.append(candidate.task.taskId()).append('|')
+                .append(candidate.path.pathId).append('|')
+                .append(candidate.decision.siteId()).append('#')
+                .append(candidate.decision.ordinal()).append(" -> ")
+                .append(!candidate.decision.outcome()).append('\n')
+                .append(built.ok()
                         ? Z3.modelQuery(built.smt2, built.modelSymbols)
                         : "refused: " + built.refusal).append('\n')
                 .append(new TreeMap<String, String>(world.rootAssignments))
@@ -338,7 +329,7 @@ public final class ObligationFactory {
                     .append(flip.siteId).append('#').append(flip.ordinal)
                     .append(" -> ").append(flip.outcome);
         }
-        return flip(candidate) + ":" + ArtifactIO.digest(text.toString(), 16);
+        return ArtifactIO.digest(text.toString(), 16);
     }
 
     /**
@@ -378,6 +369,8 @@ public final class ObligationFactory {
                                              List<GapRow> gaps) {
         List<Candidate> candidates = new ArrayList<Candidate>();
         Set<String> offered = new LinkedHashSet<String>();
+        // question -> the obligation of this wave that asks it
+        Map<String, String> asking = new LinkedHashMap<String, String>();
         int paths = 0;
         int unread = 0;
         int tooDeep = 0;
@@ -423,11 +416,17 @@ public final class ObligationFactory {
                 if (!offered.add(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate.obligationId);
                 if (reason.isEmpty()) {
-                    String flip = flip(candidate);
                     candidate = new Candidate(task, path, index,
-                            candidate.obligationId, owed.answered(flip)
-                            ? question(corpus, candidate) : flip);
+                            candidate.obligationId,
+                            question(corpus, candidate));
                     reason = owed.asked(candidate.question);
+                }
+                if (reason.isEmpty() && !candidate.question.isEmpty()
+                        && asking.containsKey(candidate.question)) {
+                    reason = "question " + candidate.question + " is asked "
+                            + "this wave by obligation "
+                            + asking.get(candidate.question)
+                            + ", whose answer is this one's";
                 }
                 if (!reason.isEmpty()) {
                     gaps.add(GapRow.of(path.sessionId,
@@ -436,6 +435,7 @@ public final class ObligationFactory {
                                     + " -> " + !decision.outcome(), reason));
                     continue;
                 }
+                asking.put(candidate.question, candidate.obligationId);
                 candidates.add(candidate);
                 flips++;
             }
