@@ -115,7 +115,7 @@ public class ConfirmationTest {
         Files.write(plain, new byte[0]);
         System.setProperty(FocusedReplay.PLAN_PROPERTY, plain.toString());
         assertEquals("", Confirmation.attached(
-                endpoint(ANCHOR, "x"), endpoint(MINT, "y")));
+                endpoint(ANCHOR, "x"), endpoint(MINT, "y"), null, null));
         assertTrue(Confirmation.close().isEmpty());
         reset();
 
@@ -125,6 +125,8 @@ public class ConfirmationTest {
         Endpoint reader = endpoint(ANCHOR, "a.Handler#handle()#12:READ");
         Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
         Endpoint absent = endpoint(ANCHOR, "a.Handler#handle()#99:READ");
+        Endpoint hole = endpoint(ANCHOR, "kv:expireAt");
+        String state = "SOLR_ZK /collections/c/state.json@5";
         handed("{\"schemaVersion\":1,\"kind\":\"FOCUSED_TASK\","
                 + "\"taskId\":\"CONFIRM\",\"obligationId\":\"CONFIRM\","
                 + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
@@ -136,6 +138,10 @@ public class ConfirmationTest {
                 Arrays.asList(
                         "{\"kind\":\"WIRE\",\"consumer\":\"" + consumer.id()
                                 + "\",\"producer\":\"" + chosen.id() + "\"}",
+                        "{\"kind\":\"WIRE\",\"consumer\":\"" + hole.id()
+                                + "\",\"producer\":\"" + chosen.id()
+                                + "\",\"messageKey\":\"" + state
+                                + "\",\"value\":\"2000\"}",
                         "{\"kind\":\"STATE\",\"reader\":\"" + reader.id()
                                 + "\",\"writer\":\"" + writer.id()
                                 + "\",\"version\":\"121\"}",
@@ -146,12 +152,23 @@ public class ConfirmationTest {
                                 + "\"value\":true}"));
         LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
         assertEquals("the chosen producer is no mismatch", "",
-                Confirmation.attached(consumer, chosen));
-        String mismatch = Confirmation.attached(consumer, other);
+                Confirmation.attached(consumer, chosen, null, null));
+        String mismatch = Confirmation.attached(consumer, other, null, null);
         assertTrue(mismatch, mismatch.contains("the model chose producer "
                 + chosen.id() + ", the run paired " + other.id()));
         assertEquals("a consumer the model chose nothing for", "",
-                Confirmation.attached(other, chosen));
+                Confirmation.attached(other, chosen, null, null));
+        // A codec's hole: its message's store version and its text too.
+        assertEquals("the chosen version, decoded as the model's value", "",
+                Confirmation.attached(hole, chosen, state, "2000"));
+        mismatch = Confirmation.attached(hole, chosen,
+                "SOLR_ZK /collections/c/state.json@4", "2000");
+        assertTrue(mismatch, mismatch.contains("the model's arm came from "
+                + "message " + state + ", the run decoded SOLR_ZK "
+                + "/collections/c/state.json@4"));
+        mismatch = Confirmation.attached(hole, chosen, state, "1999");
+        assertTrue(mismatch, mismatch.endsWith("the model's value is "
+                + "\"2000\", the run decoded \"1999\""));
         // The writer of a version is published after the read that saw
         // it, so the state edge is answered at the close.
         Confirmation.read(reader, cell, 121L,

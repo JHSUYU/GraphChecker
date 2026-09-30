@@ -328,7 +328,6 @@ public final class SmtLowering {
      *  read a container query answers ({@link #query}). */
     private final Deque<ReadAt> answering = new ArrayDeque<ReadAt>();
     private final Set<String> integralDomains = new LinkedHashSet<String>();
-    private boolean usesJavaIntString;
 
     /**
      * Where a symbol's declaration comes from.  A CORPUS lowering knows every
@@ -554,7 +553,7 @@ public final class SmtLowering {
         if (value == null) {
             return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
         }
-        return new Lowered(value.text, value.sort.smt, lowered);
+        return new Lowered(value.text, value.sort.smt, value, lowered);
     }
 
     /**
@@ -566,7 +565,7 @@ public final class SmtLowering {
         Attempt<String> lowered = attempting(() -> statedTerm(term, origin));
         String text = commit(lowered);
         return text.isEmpty() ? Lowered.refused("UNSTATED_TERM:" + origin)
-                : new Lowered(text, "", lowered);
+                : new Lowered(text, "", null, lowered);
     }
 
     /**
@@ -674,13 +673,16 @@ public final class SmtLowering {
     public static final class Lowered {
         private final String text;
         private final String sort;
+        private final Term value;
         private final String refusal;
         /** The texts of the joins a mint or a pin stood in for. */
         private final List<String> dropped;
 
-        private Lowered(String text, String sort, Attempt<?> lowered) {
+        private Lowered(String text, String sort, Term value,
+                        Attempt<?> lowered) {
             this.text = text;
             this.sort = sort;
+            this.value = value;
             this.refusal = lowered.lowered() ? ""
                     : lowered.refusals().iterator().next();
             this.dropped = lowered.raised == null
@@ -691,6 +693,7 @@ public final class SmtLowering {
         private Lowered(String reason) {
             this.text = "";
             this.sort = "";
+            this.value = null;
             this.refusal = reason;
             this.dropped = Collections.<String>emptyList();
         }
@@ -732,6 +735,15 @@ public final class SmtLowering {
          */
         public String sort() {
             return sort;
+        }
+
+        /**
+         * The value with its Java-level facts (a String's nullness, an
+         * integral's width), in this session's names; null for a published
+         * term ({@link #lowerTerm}) or a refusal.
+         */
+        public Term value() {
+            return value;
         }
 
         @Override
@@ -3084,9 +3096,10 @@ public final class SmtLowering {
         lines.add("(set-logic ALL)");
         lines.add("(set-option :produce-models true)");
         for (String line : VmTermLowering.preamble()) lines.add(line);
-        if (usesJavaIntString) {
-            lines.add(VmTermLowering.JAVA_INT_TO_STRING);
-        }
+        // Offered always: a query keeps only the definitions it reaches
+        // (SmtNames#reachedPreamble), and a hole's arm reads a rendering
+        // back through it (VmTermLowering#holeArm).
+        lines.add(VmTermLowering.JAVA_INT_TO_STRING);
         lines.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
         lines.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
         return lines;
@@ -3814,7 +3827,6 @@ public final class SmtLowering {
             return Term.nonNullString("(str.from_code " + value.text + ")",
                     value.precondition);
         }
-        usesJavaIntString = true;
         return Term.nonNullString("(java_int_to_string " + value.text + ")",
                 value.precondition);
     }

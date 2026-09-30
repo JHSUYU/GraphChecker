@@ -82,7 +82,7 @@ or zero. Every row but a `ScheduleEvent` carries `sessionId`; every row but an `
 | `ActivationRow` | `occurrence, taskId, focused, instrumented, threadKey, anchorProducer?` | one per activation. `focused`: ran symbolically as a task's region. `instrumented=false`: only the entry hook ran, so "no decisions" is no evidence. Same `threadKey` = program order. `anchorProducer`: the endpoint of this run that sent the message the context's anchor names. No thread-start edge exists |
 | `DecisionRow` | `seq, occurrence, siteId, ordinal, outcome, term, clockReadings{symbol: reading}` | one branch: `ordinal` = k-th decision of the site in the occurrence (1-based); `term` = the predicate as written at the site (SMT-LIB over declared symbols and `EXPR.` refs; empty for a concrete branch); `outcome` = whether the term held. The conjunct is `outcome ? term : (not term)`, applied by the readers (`smt.Arms.conjunct`, `Arms.pathCondition`), never by the runtime |
 | `ExportRow` | `seq, endpoint, expressionRef, javaType, handle, recordedValue, codec?, keyPath?, hole?, messageKey?` | a value put on the wire (`e_p`); `seq` cuts the producer's path condition; the sort comes from `javaType`. A codec's export states its hole and `messageKey`, both or neither: the message that carried it, spelled as its consumers' `correlationId` (`<transport> <path>@<version>` for a store, the exchange's correlation id otherwise) |
-| `AttachRow` | `seq, endpoint, symbol, javaType, arrival, answered, answeredValue?, producer?, correlationId, pairedBy?, codec?, keyPath?, hole?` | a value taken off the wire: `symbol` = the handoff variable `v_H` minted at the port; `producer` absent = unpaired; `pairedBy` = `HANDLE`, `CORRELATION_PORT` or `ENVELOPE` (absent = unstated); `answered` = an obligation's answer replaced the arrival. A codec's attach states the hole it minted; its `correlationId` is the message's key and it is paired by `ENVELOPE`: the producer endpoint the message carried |
+| `AttachRow` | `seq, endpoint, symbol, javaType, arrival, answered, answeredValue?, producer?, correlationId, pairedBy?, codec?, keyPath?, hole?` | a value taken off the wire: `symbol` = the handoff variable `v_H` minted at the port; `producer` absent = unpaired; `pairedBy` = `HANDLE`, `CORRELATION_PORT` or `ENVELOPE` (absent = unstated); `answered` = an obligation's answer replaced the arrival. A codec's attach states the hole it minted; its `correlationId` is the message's key and it is paired by `ENVELOPE`: the producer endpoint the message carried. A String hole's `arrival` and `answeredValue` are spelled as a read row spells a String, its JSON string literal |
 | `WriteRow` | `seq, endpoint, location, version, expressionRef, javaType, referentState?, referentStateRefused?` | a write and the version of the location it produced; versions join reads within one session. A write of a reference to a modeled container (or a view or wrapper of one) states `referentState` = `{location, version}`: the canonical container's `MAP` location and its version live at the store (invariant 12), else `referentStateRefused` = the VM's reason (`UNREADABLE_CONTAINER:<class>`, `TRUNCATED`, `RESIZING`, `NO_CONTEXT`); neither for null or a plain object |
 | `ReadRow` | `seq, endpoint, location, observedVersion, symbol, javaType, mintVersion?, concreteValue?, unnamedWriter?` | a read: `observedVersion` = the version seen, `-1` when unknown (never 0) -- known when the location's writer set was whole or the VM verified the read (`observedExact`, `VmRows#joinable`); `mintVersion` = a placeholder's own store version (a placeholder's site contains `#PLACEHOLDER#`); `concreteValue` = what the read returned as `ReadRow.returned` spells it (a scalar's payload, a String as its JSON string literal, Java null as `N`, an object as its identity's name `M_L'<class>'_<rid>`; for an exact read the VM left unstated, its version's leaf of those kinds; absent for a String the VM cut); `unnamedWriter` = `true` only when a writer the VM's log never named had reached the location (any incompleteness but the version bound), which leaves the read no alternative writer (`Arms#stateArms`) |
 | `RootMintRow` | `seq, occurrence, rootId, symbol, kind, recordedValue, domainMin?, domainMax?, declared, clockNanos?` | a root minted here. `kind` `MARKER` (a boolean: fault marker or boolean configured source), `INTEGRAL`, `CLOCK`; `symbol` is the root's one solver name; `recordedValue` is the value the region ran the root at — a fresh-box mint states the box it handed the region, the plant where one was applied (`runtime.RootMint.materializePrimitiveValue`) — except a CLOCK, which states the instant it read (its counterfactual is the focus row's skew); a clock site read again inside the occurrence is a later instant of the same root and stays concrete, so a clock root is the site's first reading in the occurrence. `domainMin/Max` absolute or absent (both absent = pinned); `clockNanos` = a CLOCK's tick in ns (1 for `nanoTime`, 1,000,000 for `currentTimeMillis`), present exactly for CLOCK |
@@ -197,7 +197,8 @@ field=<f> <subject>`.
 - `Obligation(obligationId, taskId, pathId, siteId, ordinal, flippedOutcome, rootAssignments,
   answers, unproducible)`: one path prefix and one decision to take the other way.
   `rootAssignments` = root id → value, `answers` = attach endpoint id → value (one attach, not a
-  port), `unproducible` = attach endpoint ids answered without a producer arm. `pathId` = sha16(session
+  port; a String attach's -- a codec's STR hole -- as its JSON string literal, planted verbatim),
+  `unproducible` = attach endpoint ids answered without a producer arm. `pathId` = sha16(session
   id + `|` + occurrence id) (`explore.Corpus.pathId`). `Obligation.confirming` is a CONFIRM run: empty
   site, ordinal 0, `flips()` false. `obligations.jsonl` rows carry exactly these fields.
 - `Verdict`: `SAT_MODEL_READY` (a model exists, the replay may run), `UNSAT`, `ADMITTED` (a focused
@@ -217,7 +218,10 @@ field=<f> <subject>`.
   the replay adds to its own reading; a root is planted only at a focused mint, so each assigned
   root's mint occurrence is focused.
 - CONFIRM's worker adds `expected_edges.jsonl` (`runtime.Confirmation.FILE`): `WIRE {consumer,
-  producer, selector}`, `STATE {reader, mint, writer, version, location}`, `ORDER {before, after}`
+  producer, selector, messageKey?, value?}` (a codec hole's: `messageKey` the store version its
+  arm's message was, when that key is a store's `<transport> <path>@<version>` -- an exchange's
+  correlation id is its own run's; `value` the text the hole must decode to, the claim's
+  `holeTexts`), `STATE {reader, mint, writer, version, location}`, `ORDER {before, after}`
   (activation keys), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation
   flips nothing (`Obligation.confirming`) owes these rows: missing or unreadable, it files a
   `CONFIRM_MISMATCH`. `final/confirm.json` is `{schemaVersion 1, kind CONFIRMATION, confirmed,
@@ -284,11 +288,20 @@ field=<f> <subject>`.
   what cannot start with a digit, an opaque String by literals alone), is piece-wise equality.
   Otherwise a rendering is a String: `java_int_to_string` of an integral (a binary operator's
   value too), `(ite b "true" "false")` of a boolean, `str.from_code` of a char.
-- In COMPOSE a recorded value is a literal of the sort it is read at
-  (`compose.VmTermLowering#smtLiteral`): a Bool `true`/`false` (the VM's `1`/`0`), an integral's
-  decimal, a floating value's bits, a String's JSON string literal's content quoted; Java null
-  (`N`) is no String literal. A flip query's literals (`explore.SmtText#literal`) are Bool or
-  integral only.
+- A recorded value is a literal of the sort it is read at (`compose.VmTermLowering#smtLiteral`,
+  COMPOSE's and, through `explore.SmtText#literal`, a flip query's): a Bool `true`/`false` (the
+  VM's `1`/`0`), an integral's decimal, a floating value's bits, a String's JSON string literal's
+  content quoted; Java null (`N`) is no String literal.
+- A codec's hole (WIRE-CODEC §6.1, §6.3) is bound to an arm by one rule,
+  `compose.VmTermLowering#holeArm`, in COMPOSE and flip queries alike: its symbol has the DECODED
+  leaf's sort (the attach's `javaType`), the arm is the operand the export cut out of its leaf (of
+  the export's `javaType`), and its arms are the exports of its own message and hole
+  (`smt.Arms#sameMessage`). The same sort is equality; an integral operand is widened by Java's
+  rule (its range inside the hole's); a String operand of an integral or boolean hole is its
+  canonical rendering read back (`(= (java_int_to_string v) s)` within the hole's range, `"true"`
+  or `"false"`); a narrowing or any other change of sort is refused by name (`HoleNarrowed`,
+  `HoleSortChanged`, `UNSTATED_VALUE`); Java null is `CODEC_MISMATCH` `NULL_LEAF`; a String that
+  may be null holds only where it is not, one whose nullness nothing states is refused.
 - A per-session fact — arrivals, clock readings, the valuation — stays inside that path's
   conjunction, never a global assertion.
 - A root without a domain is pinned in COMPOSE and in flip queries; a declared MARKER is free over

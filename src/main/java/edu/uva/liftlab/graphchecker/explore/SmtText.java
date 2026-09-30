@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.explore;
 
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
 
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -14,20 +14,20 @@ final class SmtText {
     private SmtText() {
     }
 
-    /** One recorded value as a literal of one sort, or "" when it is not one. */
+    /**
+     * One recorded value as a literal of the query sort it is bound at (a
+     * {@link VmTermLowering.Sort#smt} spelling), or "" when it is not one:
+     * the composition's one literal rule ({@link VmTermLowering#smtLiteral}),
+     * so a String hole's arrival is its JSON string literal's content quoted
+     * here as there (WIRE-CODEC §6.1).
+     */
     static String literal(String value, String sort) {
-        String text = value == null ? "" : value.trim();
-        if (text.isEmpty()) return "";
-        if ("Bool".equals(sort)) {
-            if ("true".equalsIgnoreCase(text) || "1".equals(text)) {
-                return "true";
+        for (VmTermLowering.Sort each : VmTermLowering.Sort.values()) {
+            if (each.smt.equals(sort)) {
+                return VmTermLowering.smtLiteral(value, each);
             }
-            if ("false".equalsIgnoreCase(text) || "0".equals(text)) {
-                return "false";
-            }
-            return "";
         }
-        return JavaPrimitiveSmtSemantics.integralLiteral(text);
+        return "";
     }
 
     static final class Names {
