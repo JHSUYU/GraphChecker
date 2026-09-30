@@ -319,8 +319,10 @@ public final class ClosurePlanner {
     /**
      * One anchor's walk over the corpus: the gaps it says (the same gap said
      * twice is one gap, as {@link ExploreMain} publishes them), the unread
-     * deliveries it said ({@link #unread}), and the static candidates it
-     * offered ({@link #candidates}).
+     * deliveries it said ({@link #unread}), the static candidates it
+     * offered ({@link #candidates}), and what the static map answered it:
+     * each answer scans every site of the map, and the walk asks again for
+     * every demanded read of a site.
      */
     private static final class Walk {
         private final Corpus corpus;
@@ -331,10 +333,40 @@ public final class ClosurePlanner {
         /** (reason, site, guards, node) -> whether some occurrence ran it. */
         private final Map<List<Object>, Boolean> offered =
                 new HashMap<List<Object>, Boolean>();
+        private final Map<String, Set<String>> carriers =
+                new HashMap<String, Set<String>>();
+        private final Map<String, Set<String>> guards =
+                new HashMap<String, Set<String>>();
+        private final Map<String, List<StaticScopeMap.Site>> writers =
+                new HashMap<String, List<StaticScopeMap.Site>>();
 
         private Walk(Corpus corpus, StaticScopeMap map) {
             this.corpus = corpus;
             this.map = map;
+        }
+
+        /** {@link StaticScopeMap#carriersAt}. */
+        private Set<String> carriersAt(String recordedSite, String javaType) {
+            return carriers.computeIfAbsent(recordedSite + "|" + javaType,
+                    key -> map.carriersAt(recordedSite, javaType));
+        }
+
+        /** A writer's flip sites: guards of every static write site in the
+         *  METHOD it wrote from (bci vs unit index do not compare); may be
+         *  one too many. */
+        private Set<String> guardsAt(String recordedSite) {
+            return guards.computeIfAbsent(recordedSite, key -> {
+                Set<String> held = new LinkedHashSet<String>();
+                for (StaticScopeMap.Site site : map.sitesAt(recordedSite)) {
+                    held.addAll(site.guards);
+                }
+                return held;
+            });
+        }
+
+        /** {@link StaticScopeMap#writersOf}. */
+        private List<StaticScopeMap.Site> writersOf(String carrier) {
+            return writers.computeIfAbsent(carrier, map::writersOf);
         }
     }
 
@@ -438,10 +470,7 @@ public final class ClosurePlanner {
     private static Set<String> demanded(Corpus corpus, Demand demand,
                                         List<OccurrenceAddress> group) {
         Set<String> named = new LinkedHashSet<String>();
-        List<ReadRow> reads = new ArrayList<ReadRow>();
-        for (OccurrenceAddress member : group) {
-            reads.addAll(corpus.readsOn(member));
-        }
+        GroupReads reads = new GroupReads(corpus, group);
         for (OccurrenceAddress member : group) {
             for (Corpus.RecordedPath path : corpus.pathsOf(member)) {
                 for (DecisionRow decision : path.decisions) {
@@ -450,8 +479,8 @@ public final class ClosurePlanner {
                     }
                     reaches(corpus, path.sessionId, FlipQuery.reach(corpus,
                             path.sessionId, decision.term()), named);
-                    readsUnder(corpus, path.sessionId, decision.term(),
-                            reads, named);
+                    reads.under(corpus, path.sessionId, decision.term(),
+                            named);
                 }
             }
             if (demand.anchor) {
@@ -459,8 +488,8 @@ public final class ClosurePlanner {
                     reaches(corpus, target.sessionId(),
                             FlipQuery.reach(corpus, target.sessionId(),
                                     target.phiTerm()), named);
-                    readsUnder(corpus, target.sessionId(), target.phiTerm(),
-                            reads, named);
+                    reads.under(corpus, target.sessionId(),
+                            target.phiTerm(), named);
                 }
             }
         }
@@ -479,8 +508,7 @@ public final class ClosurePlanner {
             grew = false;
             for (String symbol : new ArrayList<String>(named)) {
                 if (!settled.add(symbol)) continue;
-                for (ReadRow row : reads) {
-                    if (!symbol.equals(row.symbol())) continue;
+                for (ReadRow row : reads.of(symbol)) {
                     for (WriteRow write : corpus.eligibleWrites(
                             row.sessionId(),
                             SmtLowering.locationKey(row.location()),
@@ -498,22 +526,52 @@ public final class ClosurePlanner {
     }
 
     /**
-     * The read rows a term's expressions read by structure, into {@code
-     * named}: a scalar read the lowering joined to its version's value is
-     * inlined there, and still what the term rests on (SOLR-18406: the phi
-     * reads a commit point's `deleted` flag at its INITIAL, which the join
-     * made the constant false).
+     * One group's read rows, indexed once per {@link #demanded}, which asks
+     * them once per decision at a flip site and once per demanded symbol:
+     * a group holds every read its state-connected factor made (SOLR-18413
+     * r2: 109,016 rows, mostly Lucene streams, and a rescan of them per
+     * decision was two thirds of the wave planner's time).
      */
-    private static void readsUnder(Corpus corpus, String sessionId,
-                                   String term, List<ReadRow> reads,
-                                   Set<String> named) {
-        Set<String> locations = corpus.readLocations(sessionId, term);
-        if (locations.isEmpty()) return;
-        for (ReadRow row : reads) {
-            if (sessionId.equals(row.sessionId()) && !row.symbol().isEmpty()
-                    && locations.contains(
-                    SmtLowering.locationKey(row.location()))) {
-                named.add(row.symbol());
+    private static final class GroupReads {
+        private final Map<String, List<ReadRow>> bySymbol =
+                new HashMap<String, List<ReadRow>>();
+        /** session|location key -> the symbols its reads stated. */
+        private final Map<String, Set<String>> symbolsAt =
+                new HashMap<String, Set<String>>();
+
+        private GroupReads(Corpus corpus, List<OccurrenceAddress> group) {
+            for (OccurrenceAddress member : group) {
+                for (ReadRow row : corpus.readsOn(member)) {
+                    bySymbol.computeIfAbsent(row.symbol(),
+                            symbol -> new ArrayList<ReadRow>()).add(row);
+                    if (row.symbol().isEmpty()) continue;
+                    symbolsAt.computeIfAbsent(row.sessionId() + "|"
+                                    + SmtLowering.locationKey(row.location()),
+                            key -> new LinkedHashSet<String>())
+                            .add(row.symbol());
+                }
+            }
+        }
+
+        /** The rows that stated one symbol, in recorded order. */
+        private List<ReadRow> of(String symbol) {
+            List<ReadRow> rows = bySymbol.get(symbol);
+            return rows == null ? Collections.<ReadRow>emptyList() : rows;
+        }
+
+        /**
+         * The read rows a term's expressions read by structure, into {@code
+         * named}: a scalar read the lowering joined to its version's value
+         * is inlined there, and still what the term rests on (SOLR-18406:
+         * the phi reads a commit point's `deleted` flag at its INITIAL,
+         * which the join made the constant false).
+         */
+        private void under(Corpus corpus, String sessionId, String term,
+                           Set<String> named) {
+            for (String location : corpus.readLocations(sessionId, term)) {
+                Set<String> symbols = symbolsAt.get(sessionId + "|"
+                        + location);
+                if (symbols != null) named.addAll(symbols);
             }
         }
     }
@@ -609,7 +667,7 @@ public final class ClosurePlanner {
         writersOfVersion(walk, row.sessionId(), row.endpoint().occurrence(),
                 SmtLowering.locationKey(row.location()),
                 row.observedVersion(),
-                walk.map.carriersAt(row.endpoint().site(), row.javaType()),
+                walk.carriersAt(row.endpoint().site(), row.javaType()),
                 row.endpoint().toString(),
                 String.valueOf(row.location()), into);
     }
@@ -632,8 +690,13 @@ public final class ClosurePlanner {
                                          String subject, String located,
                                          List<Demand> into) {
         Corpus corpus = walk.corpus;
-        StaticScopeMap map = walk.map;
-        Set<String> carriers = carriersOf(corpus, map, locationKey);
+        // Every carrier the static map names for the location, and the
+        // read's own.
+        Set<String> carriers = new LinkedHashSet<String>();
+        for (WriteRow write : corpus.writeSitesOf(locationKey)) {
+            carriers.addAll(walk.carriersAt(write.endpoint().site(),
+                    write.javaType()));
+        }
         carriers.addAll(readCarriers);
         for (WriteRow write : corpus.eligibleWrites(sessionId, locationKey,
                 observedVersion, reader)) {
@@ -641,10 +704,10 @@ public final class ClosurePlanner {
                     CLOSURE_MEMBER, false);
             paired.contributed.add(write.sessionId() + "|"
                     + write.expressionRef());
-            paired.flipSites.addAll(guardsAt(map, write.endpoint().site()));
+            paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
             into.add(paired);
         }
-        if (carriers.isEmpty() && map.stated()) {
+        if (carriers.isEmpty() && walk.map.stated()) {
             walk.gaps.add(GapRow.of(sessionId, GapKind.DECLARATION_MISSING,
                     GapClass.DIAGNOSTIC, subject,
                     "no recorded write of " + located + " matches a "
@@ -655,34 +718,11 @@ public final class ClosurePlanner {
         }
         // N1: the heap this read observed is the reader JVM's.
         for (String carrier : carriers) {
-            for (StaticScopeMap.Site site : map.writersOf(carrier)) {
+            for (StaticScopeMap.Site site : walk.writersOf(carrier)) {
                 candidates(walk, site, STATIC_CANDIDATE_WRITER, site.guards,
                         into, sessionId, "carrier " + carrier, reader.node());
             }
         }
-    }
-
-    /** Every carrier the static map names for one location key. */
-    private static Set<String> carriersOf(Corpus corpus, StaticScopeMap map,
-                                          String locationKey) {
-        Set<String> carriers = new LinkedHashSet<String>();
-        for (WriteRow write : corpus.writeSitesOf(locationKey)) {
-            carriers.addAll(map.carriersAt(write.endpoint().site(),
-                    write.javaType()));
-        }
-        return carriers;
-    }
-
-    /** A writer's flip sites: guards of every static write site in the METHOD
-     *  it wrote from (bci vs unit index do not compare); may be one too many.
-     */
-    private static Set<String> guardsAt(StaticScopeMap map,
-                                        String recordedSite) {
-        Set<String> guards = new LinkedHashSet<String>();
-        for (StaticScopeMap.Site site : map.sitesAt(recordedSite)) {
-            guards.addAll(site.guards);
-        }
-        return guards;
     }
 
     /**
