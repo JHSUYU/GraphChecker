@@ -231,7 +231,6 @@ void MethodSymbolizer::register_functional_arguments() {
 bool MethodSymbolizer::enter_callback(ZeroFrame *caller_frame,
                                       ZeroFrame *callee_frame) {
   if (!_symbolizing_method || !_handle.has_functional()
-      || _windows.size() >= MAX_CALLBACK_DEPTH
       || !callee_frame->is_interpreter_frame()) {
     return false;
   }
@@ -241,6 +240,12 @@ bool MethodSymbolizer::enter_callback(ZeroFrame *caller_frame,
   if (method->is_static() || method->is_native()) return false;
   oop receiver = *(oop *) istate->locals();
   if (receiver == NULL || !_handle.is_functional(receiver->get_sym_rid())) {
+    return false;
+  }
+  if (_windows.size() >= MAX_CALLBACK_DEPTH) {
+    // Declined: the callback runs muted and unlogged, so its call cannot say
+    // whether it ran, nor what it answered.
+    _handle.refuse_callbacks("CALLBACK_DEPTH_EXCEEDED");
     return false;
   }
   // The callback's arguments, as its locals hold them, and the local each
@@ -307,24 +312,18 @@ bool MethodSymbolizer::exit_callback(ZeroFrame *callee_frame) {
   _handle = _suspended.back();
   _suspended.pop_back();
   if (!result.threw && type != T_VOID) {
-    // Where a returning frame leaves its result, as get_result reads it.  A
-    // concrete result is stated for a call that records, or when the
-    // callback's path decided it; one admitted for its callbacks alone
-    // keeps nothing else.
+    // Where a returning frame leaves its result, as get_result reads it.
     intptr_t *slot = istate->stack() + 1;
     result.symbolic = returned != NULL;
-    const bool stated = returned != NULL || result.path != NULL
-        || _handle.is_recording();
     if (type == T_OBJECT || type == T_ARRAY) {
       oop value = *(oop *) slot;
       result.returned_null = value == NULL;
-      result.result = returned != NULL ? returned
-          : stated ? ContainerSupport::concrete_value(value) : NULL;
+      result.result = returned != NULL
+          ? returned : ContainerSupport::concrete_value(value);
     } else if (type == T_BOOLEAN || type == T_BYTE || type == T_CHAR
                || type == T_SHORT || type == T_INT) {
       result.returned_int = *(jint *) slot;
       result.result = returned != NULL ? returned
-          : !stated ? NULL
           : type == T_BOOLEAN
               ? static_cast<Expression *>(
                     new ConExpression((jboolean)(result.returned_int & 1)))
@@ -360,6 +359,14 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
       // Unsafe write the call stated it would make (UnsafeAccess::Intent)
       // did not complete; a later write must not take it for its own.
       UnsafeAccess::clear_intent();
+      // A call that mutates as its callbacks answer (removeIf, replaceAll)
+      // and unwound once one had run changed its container part way: named,
+      // not stated.
+      if (_handle.mutates_per_callback() && !_handle.callbacks().empty()) {
+        ContainerSupport::abandon_state(
+            ContainerSupport::backing_container(_handle.get_param<oop>(0)),
+            "CALLBACK_THREW_AFTER_MUTATION");
+      }
       this->_handle.reset();
       this->set_symbolizing_method(false);
       return;

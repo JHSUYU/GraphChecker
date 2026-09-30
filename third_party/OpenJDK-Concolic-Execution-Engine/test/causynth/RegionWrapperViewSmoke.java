@@ -12,7 +12,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * their backing map's container state ({@code referentState}), not one of
  * their own: one logical container, one location.  A query through a
  * wrapper reaches the model at the inner call and binds to the map's
- * location; a query through a ConcurrentHashMap's keySet() does too.</p>
+ * location; a query through a ConcurrentHashMap's keySet() does too, and
+ * keeps the read of the cell that held the view as its owner -- a read of a
+ * reference cell is its own owner, whatever the object it returned.</p>
  */
 public final class RegionWrapperViewSmoke {
     private static final class Holder {
@@ -94,8 +96,10 @@ public final class RegionWrapperViewSmoke {
                 "the wrapper's query is not its map's: " + throughWrapper);
         require(throughView.contains("\"operation\":\"CONTAINS\"")
                         && throughView.contains("\"ownerSymRid\":"
-                                + indexOwner + ","),
-                "the view's query is not its map's: " + throughView);
+                                + indexOwner + ",")
+                        && throughView.contains("\"owner\":{"),
+                "the view's query is not its map's, or lost the read of"
+                        + " its cell: " + throughView);
         System.out.println("CAUSYNTH_REGION_WRAPPER_VIEW_SMOKE_OK");
     }
 
