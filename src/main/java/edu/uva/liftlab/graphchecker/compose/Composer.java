@@ -755,14 +755,12 @@ public final class Composer {
         Independence relevant = independence(session,
                 Collections.singletonList(target.phiTerm()),
                 familyBound(session, repaired), reached, conditions);
-        //       What the fatal itself rests on, of phi -- for a concrete
-        //       fatal condition, the path condition that reached the anchor
-        //       ({@link Arms#fatalRests}) -- and the roots alone: a location
-        //       a family binds and nothing else reaches holds the formula's
-        //       alternatives, not the witness (a confirming run is held to
-        //       these only).
+        //       What the fatal itself rests on ({@link #fatalRests}) and
+        //       the roots alone: a location a family binds and nothing else
+        //       reaches holds the formula's alternatives, not the witness (a
+        //       confirming run is held to these only).
         Set<String> restsOn = independence(session,
-                Arms.fatalRests(target, path.decisions),
+                fatalRests(target, path.decisions),
                 Collections.<String>emptySet(), reached, conditions)
                 .locations();
 
@@ -902,6 +900,20 @@ public final class Composer {
         heldArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, target.observedFatal(),
                 interactionIds, restsOn);
+    }
+
+    /**
+     * What the fatal a target row states rests on: its phi; a concrete
+     * fatal condition states phi as the constant of its arm, which names
+     * nothing, and that fatal rests on the path condition that reached the
+     * anchor, the decisions before the target (CONTRACT-SPEC §2.2).
+     */
+    private static List<String> fatalRests(TargetRow target,
+                                           List<DecisionRow> decisions) {
+        String phi = target.phiTerm().trim();
+        return "true".equals(phi) || "false".equals(phi)
+                ? Arms.pathCondition(decisions, target.seq())
+                : Collections.singletonList(target.phiTerm());
     }
 
     private static List<String> selectors(List<Disjunct> disjuncts) {

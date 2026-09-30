@@ -526,10 +526,8 @@ public final class ClosurePlanner {
         }
     }
 
-    /** The symbols one occurrence's demanded values name: what the anchor's
-     *  fatal rests on ({@link Arms#fatalRests}: its predicate, or the path
-     *  condition that reached a concrete one), its decisions at its
-     *  guard-set sites, and its contributed
+    /** The symbols one occurrence's demanded values name: the anchor's fatal
+     *  predicate, its decisions at its guard-set sites, and its contributed
      *  expressions -- then the fixed point over its group's reads and the
      *  writes they could observe. A factor member deciding the same site
      *  decides it on its own objects, and demands nothing here. Terms are
@@ -548,15 +546,10 @@ public final class ClosurePlanner {
         }
         if (demand.anchor) {
             for (TargetRow target : corpus.targetsOn(demand.occurrence)) {
-                Corpus.RecordedPath path = corpus.path(target.sessionId(),
-                        demand.occurrence);
-                for (String rest : Arms.fatalRests(target, path == null
-                        ? Collections.<DecisionRow>emptyList()
-                        : path.decisions)) {
-                    reaches(corpus, target.sessionId(), FlipQuery.reach(
-                            corpus, target.sessionId(), rest), named);
-                    reads.under(corpus, target.sessionId(), rest, named);
-                }
+                reaches(corpus, target.sessionId(), FlipQuery.reach(corpus,
+                        target.sessionId(), target.phiTerm()), named);
+                reads.under(corpus, target.sessionId(), target.phiTerm(),
+                        named);
             }
         }
         for (String contributed : demand.contributed) {

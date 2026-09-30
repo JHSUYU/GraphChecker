@@ -263,9 +263,8 @@ Demand starts at the anchor: its flip sites are the target sites' guards
 chain (`pathSites`). The demanded symbols of an occurrence are those its demanded values reach
 (`SmtLowering.reachedSymbols` over the lowered terms and, where a read's refused join gave way to its
 mint or its value, over what that join lowered: `Lowered.reach`; such a lowering is no `Lowered.ok`
-value a flip query stands on): what the anchor's fatal rests on (`smt.Arms#fatalRests`: its
-`phiTerm`, and for a concrete fatal condition the path condition before the target), its own
-decisions at its flip sites (a factor
+value a flip query stands on): the anchor's `phiTerm` (a concrete fatal condition's constant names
+nothing), its own decisions at its flip sites (a factor
 member deciding the same site decides it on its own objects), and the values it contributed (the
 exports a demanded attach paired with, the write a demanded read could observe), closed over the
 reads those name and the writes they could observe. The occurrence and its state-connected factor are
@@ -787,7 +786,7 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   occurrence's reads before its cutoff, the anchor's before its target seq) at a location the
   selected path's fatal rests on (its manifest `restsOn`: `Composer`'s constraint independence of
   what the fatal rests on -- phi, or for a concrete fatal condition the path condition before the
-  target, `Arms#fatalRests` -- and the roots alone, without the locations a family merely binds: a
+  target, `Composer#fatalRests` -- and the roots alone, without the locations a family merely binds: a
   read elsewhere holds no
   value the witness needs, and under a moved root the run may make it at another endpoint or not at
   all; the write the model chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
