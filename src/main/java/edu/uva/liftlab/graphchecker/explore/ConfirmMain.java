@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -69,6 +70,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  * {@code selectedSessionId}, {@code selectedArms}); nothing is re-solved. An
  * unrunnable confirmation is refused by name (exit 1), which the driver reads
  * as "unconfirmed, because ...".</p>
+ *
+ * <p>Once the replay has published, {@code --claim --output --sessions
+ * <dir>} prints the decision ({@link #decide}): final/confirm.json.</p>
  */
 public final class ConfirmMain {
     /** The one obligation id a confirmation carries. */
@@ -86,6 +90,12 @@ public final class ConfirmMain {
         Path claim = options.path("claim");
         Path manifest = options.path("manifest");
         Path out = options.path("output");
+        Path sessions = options.path("sessions");
+        if (sessions != null && claim != null && out != null) {
+            System.out.println(ExploreMain.pretty(
+                    decide(claim, out, sessions)));
+            return;
+        }
         if (iteration == null || claim == null || manifest == null
                 || out == null) {
             throw new IllegalArgumentException("--iteration, --claim, "
@@ -174,14 +184,9 @@ public final class ConfirmMain {
         String realized = realizedBy(decided, sessionId, arms, session,
                 target);
         if (!realized.isEmpty()) {
-            JsonObject confirmation = new JsonObject();
-            confirmation.addProperty("schemaVersion", 1);
-            confirmation.addProperty("kind", "CONFIRMATION");
-            confirmation.addProperty("confirmed", true);
-            confirmation.addProperty("reason", realized);
-            confirmation.addProperty("sessionId", sessionId);
             RowCodec.writeJsonl(out.resolve(REALIZED),
-                    Collections.singletonList(confirmation));
+                    Collections.singletonList(
+                            confirmation(true, realized, sessionId)));
             JsonObject summary = summary(anchor, pathId, sessionId, ordinal);
             summary.addProperty("realizedBy", sessionId);
             return summary;
@@ -289,6 +294,103 @@ public final class ConfirmMain {
                 }
             }
         }
+    }
+
+    /**
+     * The decision, off the session the confirmation replay published: the
+     * rule's conditions in order, the first one failing named.  The replay
+     * was ADMITTED (roots planted); (a) its session published its gaps and
+     * none is a CONFIRM_MISMATCH -- a session that published no readable
+     * gaps answers nothing; (b) a target row AT THE CLAIM'S ANCHOR reached it
+     * and observed the fatal.  A fatal at another occurrence of the target
+     * site is another question (11741 v93's confirming session had two fatal
+     * target rows), and an occurrence is named by its id, which only this
+     * address computes.
+     */
+    static JsonObject decide(Path claimFile, Path worker, Path sessions)
+            throws IOException {
+        List<JsonObject> results =
+                RowCodec.readJsonl(worker.resolve(ObligationDir.RESULT));
+        JsonObject result = results.isEmpty() ? new JsonObject()
+                : results.get(0);
+        String verdict = optionalString(result, "verdict");
+        String sessionId = optionalString(result, "sessionId");
+        if (!"ADMITTED".equals(verdict)) {
+            return confirmation(false, "the confirmation replay was "
+                    + (verdict.isEmpty() ? "not run" : verdict) + ": "
+                    + optionalString(result, "detail"), sessionId);
+        }
+        Path session = sessions.resolve(sessionId);
+        if (sessionId.isEmpty() || !Files.isDirectory(session)) {
+            return confirmation(false, "the confirmation replay names session "
+                    + sessionId + ", which " + sessions + " does not hold",
+                    sessionId);
+        }
+        List<JsonObject> gaps;
+        List<TargetRow> targets;
+        try {
+            gaps = published(session.resolve(SessionDir.GAPS));
+            targets = new ArrayList<TargetRow>();
+            for (JsonObject row
+                    : published(session.resolve(SessionDir.TARGETS))) {
+                targets.add(RowCodec.readTarget(row));
+            }
+        } catch (IOException | RuntimeException unread) {
+            return confirmation(false, "the run's session could not be read,"
+                    + " so it answers nothing: " + unread.getMessage(),
+                    sessionId);
+        }
+        for (JsonObject gap : gaps) {
+            if ("CONFIRM_MISMATCH".equals(optionalString(gap, "kind"))) {
+                return confirmation(false, "the run took an edge the model"
+                        + " did not choose: " + optionalString(gap, "detail"),
+                        sessionId);
+            }
+        }
+        OccurrenceAddress anchor;
+        try {
+            anchor = OccurrenceAddress.parse(optionalString(
+                    ExploreCodec.readObject(claimFile), "anchor"));
+        } catch (RuntimeException unparsed) {
+            return confirmation(false, "the claim states no parseable anchor: "
+                    + unparsed.getMessage(), sessionId);
+        }
+        int elsewhere = 0;
+        for (TargetRow target : targets) {
+            if (!target.reachedAnchor() || !target.observedFatal()) continue;
+            if (target.occurrence().id().equals(anchor.id())) {
+                return confirmation(true, "every edge the model chose was"
+                        + " taken, and the claim's anchor observed the fatal",
+                        sessionId);
+            }
+            elsewhere++;
+        }
+        return confirmation(false, "the run published no target row at the"
+                + " claim's anchor " + anchor.id() + " that reached it and"
+                + " observed the fatal" + (elsewhere == 0 ? ""
+                : " (" + elsewhere + " row(s) at other occurrences did)"),
+                sessionId);
+    }
+
+    /** A session file's rows; one the replay did not publish is refused (its
+     *  publisher creates every file at open, so absent is "not published"). */
+    private static List<JsonObject> published(Path file) throws IOException {
+        if (!Files.isReadable(file)) {
+            throw new IOException("it published no readable " + file);
+        }
+        return RowCodec.readJsonl(file);
+    }
+
+    /** The one shape of final/confirm.json. */
+    private static JsonObject confirmation(boolean confirmed, String reason,
+                                           String sessionId) {
+        JsonObject confirmation = new JsonObject();
+        confirmation.addProperty("schemaVersion", 1);
+        confirmation.addProperty("kind", "CONFIRMATION");
+        confirmation.addProperty("confirmed", confirmed);
+        confirmation.addProperty("reason", reason);
+        confirmation.addProperty("sessionId", sessionId);
+        return confirmation;
     }
 
     /** What either kind of confirmation task states first. */

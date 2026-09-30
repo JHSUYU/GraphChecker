@@ -2287,11 +2287,12 @@ $(cat "${nogrowth_loop}/explore.err")"
 reset_config
 
 
-# CONFIRM-1: a SAT claim, checked by one replay (DESIGN4 §5).  ConfirmMain
-# and the replay are stubbed -- the first writes the focus row and the
+# CONFIRM-1: a SAT claim, checked by one replay (DESIGN4 §5).  ConfirmMain's
+# task and the replay are stubbed -- the first writes the focus row and the
 # expected edges, the second publishes a session and its verdict -- and the
-# stage's own decision is the production code: the three conditions of the
-# rule in order, the first one failing named, and never a failed campaign.
+# decision is the production code, ConfirmMain --sessions on the built jar:
+# the conditions of the rule in order, the first one failing named, and
+# never a failed campaign.
 confirm_root="${test_tmp}/confirm"
 confirm_iteration="${confirm_root}/iteration-0000"
 mkdir -p "${confirm_iteration}/instrumented-classes" \
@@ -2300,12 +2301,20 @@ mkdir -p "${confirm_iteration}/instrumented-classes" \
 campaign_final="${confirm_root}/final"
 composition_manifest="${campaign_final}/candidate_composition_manifest.json"
 # What each run's stubs state: the replay's verdict, the session's gap rows
-# and whether its target row observed the fatal.
+# (unset: no gap file published), whether its target row observed the fatal,
+# and the occurrence that row is at -- the claim's anchor (iteration 0 of the
+# handler) or another occurrence of the same site (iteration 1).
 confirm_stub_verdict=ADMITTED
 confirm_stub_gaps=""
 confirm_stub_fatal=true
+confirm_stub_target_iteration=0
 confirm_stub_task_status=0
 confirm_stub_realized=false
+confirm_anchor='hdfs/dn0#epoch0/region/REGION.7c569c3f/ctx:Root:XCEIVER#1/idx:<a.Handler: void handle()>@0'
+# The decision's JVM, on the built jar: reset_config clears java_bin and
+# graphchecker_jar, which are workflow keys.
+confirm_java=("${JAVA_HOME:+${JAVA_HOME}/bin/}java" -cp
+  "${repo}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar")
 confirm_stub_main() {
   local out=""
   while [[ $# -gt 0 ]]; do
@@ -2336,18 +2345,33 @@ confirm_stub_replay() {
     kind: "OBLIGATION_RESULT", obligationId: "CONFIRM", verdict: $v,
     sessionId: "CONFIRM-1", detail: "stub"}' \
     >"${worker}/obligation_result.jsonl"
-  printf '%s' "${confirm_stub_gaps}" >"${sessions}/CONFIRM-1/gaps.jsonl"
-  jq -n -c --argjson fatal "${confirm_stub_fatal}" '{sessionId: "CONFIRM-1",
-    seq: 40, anchorSiteId: "T#u1#1", observedFatal: $fatal,
-    reachedAnchor: true}' >"${sessions}/CONFIRM-1/targets.jsonl"
+  [[ -z "${confirm_stub_gaps+set}" ]] \
+    || printf '%s' "${confirm_stub_gaps}" >"${sessions}/CONFIRM-1/gaps.jsonl"
+  # The occurrence as its four parts, exactly as RowCodec writes a target.
+  jq -n -c --argjson fatal "${confirm_stub_fatal}" \
+    --argjson iteration "${confirm_stub_target_iteration}" \
+    '{sessionId: "CONFIRM-1", seq: 40,
+      occurrence: {node: "hdfs/dn0#epoch0", regionId: "REGION.7c569c3f",
+        context: {form: "ROOT", role: "XCEIVER", windowIndex: 1},
+        index: [{callSite: "<a.Handler: void handle()>",
+          iteration: $iteration}]},
+      anchorSiteId: "T#u1#1", phiTerm: "EXPR.phi", observedFatal: $fatal,
+      reachedAnchor: true}' >"${sessions}/CONFIRM-1/targets.jsonl"
 }
 run_confirm() {
   local claim=$1
   rm -rf -- "${campaign_final}/confirm" "${campaign_final}/confirm.json"
   jq -n --arg claim "${claim}" \
     '{solver: {campaignClaim: {claim: $claim}}}' >"${composition_manifest}"
+  jq -n --arg anchor "${confirm_anchor}" '{anchor: $anchor}' \
+    >"${campaign_final}/claim.json"
   (
-    run_java_main() { confirm_stub_main "$@"; }
+    run_java_main() {
+      case " $* " in
+        *" --sessions "*) "${confirm_java[@]}" "$@" ;;
+        *) confirm_stub_main "$@" ;;
+      esac
+    }
     campaign_obligation_replay() { confirm_stub_replay "$@"; }
     campaign_confirm "${confirm_iteration}"
   ) >"${confirm_root}/confirm-stage.log" 2>&1 \
@@ -2370,7 +2394,8 @@ grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
   || fail "the stage did not say why it ran nothing"
 # The rule, both conditions holding.
 run_confirm SAT_CANDIDATE
-confirm_says true "the anchor observed the fatal" "a clean replay was not confirmed"
+confirm_says true "the claim's anchor observed the fatal" \
+  "a clean replay was not confirmed"
 [[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == CONFIRM-1 ]] \
   || fail "the confirmation does not name the session that answered"
 [[ -s "${campaign_final}/confirm/worker/focused_task.jsonl" \
@@ -2393,11 +2418,24 @@ run_confirm SAT_CANDIDATE
 confirm_says false "the model chose producer p1, the run paired p2" \
   "a mismatched edge was confirmed"
 confirm_stub_gaps=""
+# A session that published no gap file answers nothing about the edges.
+unset confirm_stub_gaps
+run_confirm SAT_CANDIDATE
+confirm_says false "published no readable" \
+  "a session with no gap file was confirmed"
+confirm_stub_gaps=""
 # (b) The fatal not observed at the anchor.
 confirm_stub_fatal=false
 run_confirm SAT_CANDIDATE
 confirm_says false "observed the fatal" "a healthy anchor was confirmed"
 confirm_stub_fatal=true
+# ... and observed at another occurrence of the target site is not the
+# claim's anchor observing it.
+confirm_stub_target_iteration=1
+run_confirm SAT_CANDIDATE
+confirm_says false "1 row(s) at other occurrences did" \
+  "a fatal at another occurrence of the site confirmed the claim's anchor"
+confirm_stub_target_iteration=0
 # A replay whose roots were not planted, or whose prefix was abandoned,
 # states NOT_ADMITTED, and that is the reason.
 confirm_stub_verdict=NOT_ADMITTED
@@ -2424,6 +2462,7 @@ confirm_says false "CONFIRM refused: the claim moves a cell nobody minted" \
   "a refused confirmation task did not name its reason"
 confirm_stub_task_status=0
 unset -f confirm_stub_main confirm_stub_replay run_confirm confirm_says
+unset confirm_anchor confirm_stub_target_iteration confirm_java
 
 # EMIT-CONFIRM: an unconfirmed SAT claim is published as SAT_UNCONFIRMED,
 # not accepted, with the confirmation and its reason in the result, and

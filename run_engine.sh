@@ -3316,9 +3316,11 @@ campaign_decide() {
 # schedule cut at the anchor, and the edges the model chose -- and the
 # replay runs through campaign_obligation_replay exactly as an obligation
 # does, into its own sessions directory under final/confirm.  The verdict is
-# read off the session it published: ADMITTED (the roots were planted and
-# the anchor was reached), no CONFIRM_MISMATCH, and a target row that reached
-# the anchor and observed the fatal.  The schedule is how the replay
+# read off the session it published (ConfirmMain --sessions): ADMITTED (the
+# roots were planted and the anchor was reached), a published gap file with
+# no CONFIRM_MISMATCH, and a target row AT THE CLAIM'S ANCHOR occurrence that
+# reached it and observed the fatal -- an occurrence id only the Java address
+# computes, so the decision is Java's.  The schedule is how the replay
 # reproduces the selected session, not what the claim says: a divergence of
 # the order stays a diagnostic gap of the session (DESIGN4 SS5).  Every other
 # outcome -- a refused task, a replay that published no verdict -- is
@@ -3371,8 +3373,14 @@ campaign_confirm() {
 verdict (exit ${status}); its log is ${confirm_dir}/confirm.log" "" \
         >"${campaign_final}/confirm.json"
     else
-      campaign_confirm_decide "${worker}" "${sessions}" \
-        >"${campaign_final}/confirm.json"
+      run_capturing_status run_java_main \
+        edu.uva.liftlab.graphchecker.explore.ConfirmMain \
+        --claim "${campaign_final}/claim.json" --output "${worker}" \
+        --sessions "${sessions}" >"${campaign_final}/confirm.json" \
+        2>>"${confirm_dir}/confirm.log"
+      [[ "${status}" -eq 0 ]] || campaign_confirm_verdict false "the \
+confirmation decision exited ${status}; its log is \
+${confirm_dir}/confirm.log" "" >"${campaign_final}/confirm.json"
     fi
   fi
   require_nonempty "confirmation" "${campaign_final}/confirm.json"
@@ -3387,46 +3395,6 @@ campaign_confirm_verdict() {
     --arg sessionId "${session_id}" \
     '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: $confirmed,
       reason: $reason, sessionId: $sessionId}'
-}
-
-# The decision, off the session the confirmation replay published: the two
-# conditions of the rule in order, the first one failing named.
-campaign_confirm_decide() {
-  local worker=$1 sessions=$2
-  local result_row="${worker}/obligation_result.jsonl"
-  local verdict session_id detail session_dir mismatch fatal
-  verdict=$(jq -r '.verdict // ""' "${result_row}")
-  session_id=$(jq -r '.sessionId // ""' "${result_row}")
-  detail=$(jq -r '.detail // ""' "${result_row}")
-  if [[ "${verdict}" != ADMITTED ]]; then
-    campaign_confirm_verdict false "the confirmation replay was \
-${verdict:-not run}: ${detail}" "${session_id}"
-    return 0
-  fi
-  session_dir="${sessions}/${session_id}"
-  if [[ ! -d "${session_dir}" ]]; then
-    campaign_confirm_verdict false "the confirmation replay names session \
-${session_id}, which ${sessions} does not hold" "${session_id}"
-    return 0
-  fi
-  # (a) Every edge the model chose is the edge the run took.
-  mismatch=$(jq -r 'select(.kind == "CONFIRM_MISMATCH") | .detail' \
-    "${session_dir}/gaps.jsonl" 2>/dev/null | head -n 1)
-  if [[ -n "${mismatch}" ]]; then
-    campaign_confirm_verdict false "the run took an edge the model did \
-not choose: ${mismatch}" "${session_id}"
-    return 0
-  fi
-  # (b) The fatal, observed at the anchor.
-  fatal=$(jq -r 'select(.reachedAnchor == true and .observedFatal == true)
-    | "observed"' "${session_dir}/targets.jsonl" 2>/dev/null | head -n 1)
-  if [[ "${fatal}" != observed ]]; then
-    campaign_confirm_verdict false "the run published no target row that \
-reached the anchor and observed the fatal" "${session_id}"
-    return 0
-  fi
-  campaign_confirm_verdict true "every edge the model chose was taken, and \
-the anchor observed the fatal" "${session_id}"
 }
 
 campaign_artifact_digests() {
