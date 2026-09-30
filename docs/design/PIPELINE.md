@@ -175,13 +175,16 @@ end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmissi
 starts after it), live activations settle, the run totals close the session's rows (a closed
 `SessionPublisher` writes nothing more), and only then the VM session closes. The settle
 (`ConcolicResultPublisher#awaitSelectedResultPublications`) is bounded by progress: it gives up once
-nothing has moved for 30 s (no loop body charged, no activation settled, no publication finished,
-and the publication thread spent no CPU), so a publication that computes is never cut and one
-blocked is: every activation still live is then stranded, and the publication left running is a
-`TASK_UNANSWERED` `RESULT_PUBLICATION_UNSETTLED` that holds every obligation of the replay
-`NOT_ADMITTED` (`FocusedReplay#noteUnsettledPublication`: its rows may be partial). A stranded
-activation's VM region is its thread's, so the terminal that thread still reaches closes it
-(`ConcolicRegionRuntime#strand`, `#closeStranded`) and publishes nothing. The end runs once: a
+nothing has moved for 30 s (`#Grace`: no loop body charged, no activation settled, no publication
+finished, no CPU on the publication thread and no garbage collection), so a publication that
+computes is never cut and one blocked is: every activation still live is then stranded, and the
+publication left running and every one queued behind it (the one publication thread reaches none)
+are each a `TASK_UNANSWERED` `RESULT_PUBLICATION_UNSETTLED`, a seed's or a confirmation's session
+included, which holds every obligation of the replay `NOT_ADMITTED`
+(`FocusedReplay#noteUnsettledPublication`: its rows may be partial or missing). A stranded
+activation is finished, abandoned and moved aside in one step (`ConcolicRegionRuntime#strand`,
+under the lock its terminal takes); its VM region is its thread's, so the terminal that thread still
+reaches closes it (`#closeStranded`) and publishes nothing. The end runs once: a
 second thread ending the same run (an early end meeting the workload's own) waits for the first's
 `System.exit`, and a caller of the run totals (`ConcolicResultPublisher#publishRunTotals`, also the
 shutdown hook) returns only once they are published, so no exit halts the close half-done. Cluster threads
