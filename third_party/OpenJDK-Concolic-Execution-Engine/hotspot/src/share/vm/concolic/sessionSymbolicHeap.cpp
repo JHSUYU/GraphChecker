@@ -98,20 +98,19 @@ Expression *SessionSymbolicHeap::container_state(oop container,
                                            const char *shape) {
   if (container == NULL) return NULL;
 
-  // Phase 1, unlocked: obtain the container's shadow and identity expression.
-  // Both may allocate -- a shadow, a GC root, an Expression -- so neither may
-  // happen with _mutex held.
+  // Phase 1, unlocked: obtain the container's shadow and, for an object, its
+  // identity expression.  Both may allocate -- a shadow, a GC root, an
+  // Expression -- so neither may happen with _mutex held.  An array's shadow
+  // caches no identity, so it is built in phase 3, only for a root: built
+  // here, it made every access to a rooted array a new node (one per bucket
+  // of hdfs-17960's inode-map scan).
   sym_rid_t id;
-  Expression *identity;
+  Expression *identity = NULL;
   SymArr *array = NULL;
   if (container->is_array()) {
     array = get_or_alloc_sym_array((arrayOop)container);
     if (array == NULL) return NULL;
     id = array->get_sym_rid();
-    identity = array->get_ref_exp();
-    if (identity == NULL) {
-      identity = new ArraySymbolExp(id, array->get_version(), T_OBJECT);
-    }
   } else {
     SymInstance *instance = get_or_alloc_sym_inst(container);
     if (instance == NULL) return NULL;
@@ -137,6 +136,11 @@ Expression *SessionSymbolicHeap::container_state(oop container,
   // Phase 3, unlocked: build the state root.
   exp_list_t state_arguments;
   if (container->is_array()) {
+    identity = array->get_ref_exp();
+    if (identity == NULL) {
+      identity = new ArraySymbolExp(array->get_sym_rid(),
+                                    array->get_version(), T_OBJECT);
+    }
     Expression *declared_length = array->get_length_exp();
     state_arguments.push_back(declared_length == NULL
         ? (Expression *)new ConExpression(

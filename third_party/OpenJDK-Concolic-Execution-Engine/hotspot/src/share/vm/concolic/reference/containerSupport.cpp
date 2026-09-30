@@ -856,6 +856,21 @@ void ContainerSupport::constrain_position(
       position, size, allow_end ? op_le : op_lt, true));
 }
 
+bool ContainerSupport::recorded_element(SymArr *array, Expression *state,
+                                        Expression *position, jint index,
+                                        Expression **stored) {
+  jint at = index;
+  if (array == NULL || state == NULL || !array->named()
+      || array->has_semantic_expression()
+      || (position != NULL && !position->concrete_int_value(&at))) {
+    return false;
+  }
+  // The state itself, not what a consumer boundary around it delegates to:
+  // the boundary is the cross-process provenance of every element.
+  ContainerExpression *relation = state->as_container_expression();
+  return relation == state && relation->stored_at(at, stored);
+}
+
 void ContainerSupport::attach_result(oop result, Expression *expression,
                                      oop owner) {
   if (result == NULL || expression == NULL) return;

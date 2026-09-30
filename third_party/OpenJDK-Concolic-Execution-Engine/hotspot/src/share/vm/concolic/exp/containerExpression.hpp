@@ -7,6 +7,8 @@
 
 #include <string>
 
+class ElementWrites;
+
 /**
  * One operation in an activation-local shadow container.
  *
@@ -29,6 +31,12 @@ class ContainerExpression : public Expression {
   Expression *_guard;
   // See has_constant_size().
   bool _constant_size;
+  // See stored_at().  `_writes` is the log this chain's WRITEs share, and
+  // `_ordinal` this node's place in it; the WRITE whose ordinal is 1 made
+  // the log and frees it.
+  bool _decides_reads;
+  uint _ordinal;
+  ElementWrites *_writes;
 
  public:
   ContainerExpression(const char *shape, const char *operation,
@@ -51,6 +59,16 @@ class ContainerExpression : public Expression {
   // replaces an element in place.  Decided at construction from the
   // receiver's answer, so asking costs nothing however long the chain is.
   bool has_constant_size() const { return _constant_size; }
+
+  // What a read at the concrete `position` of this state returns, when the
+  // chain alone decides it: the state is a Java array's STATE root with a
+  // constant length, or a WRITE at a concrete position over such a state.
+  // `*stored` is then the value the newest WRITE at `position` stored, or
+  // NULL when none did and the element is the root's.  A WRITE at a symbolic
+  // position may have replaced any element, so no state above one decides.
+  // Decided at construction and answered from the one log the chain's WRITEs
+  // share, so a read never walks the chain however long it is.
+  bool stored_at(jint position, Expression **stored) const;
 
   const std::string &get_operation() const { return _operation; }
   const std::string &get_shape() const { return _shape; }

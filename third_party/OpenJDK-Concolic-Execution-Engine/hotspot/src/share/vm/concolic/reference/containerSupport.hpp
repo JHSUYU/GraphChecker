@@ -11,6 +11,7 @@
 
 class ContainerExpression;
 class MethodSymbolizerHandle;
+class SymArr;
 
 namespace ContainerSupport {
 const char *shape(oop value);
@@ -29,6 +30,20 @@ void constrain_result(MethodSymbolizerHandle &handle,
                       Expression *expression);
 void constrain_position(const char *shape, Expression *state,
                         Expression *position, bool allow_end = false);
+// What a load at a concrete position of an array returns when the recording
+// already decides it, with no READ: true with `*stored` the value the newest
+// recorded write at that position stored, or with `*stored` NULL when no
+// recorded write replaced the element, which is then the heap's own and
+// concrete.  False -- the load stays a READ -- for a symbolic `position`
+// (NULL is the concrete `index`), below a write at a symbolic position, and
+// for an array whose elements are an input: one a symbolization reached, or
+// whose shadow stands for a semantic value.  hdfs-17960's FSImageSaver
+// scanned the NameNode's 2^21-bucket inode map, which an earlier region had
+// stored into under symbolic guards, and built a READ, its index and an
+// `== null` condition for every untouched bucket, a million nodes a second,
+// until the replay JVM passed 24 GB.
+bool recorded_element(SymArr *array, Expression *state, Expression *position,
+                      jint index, Expression **stored);
 void attach_result(oop result, Expression *expression, oop owner = NULL);
 // True for a call whose body the engine can follow instead of summarizing:
 // a constructor, or a method that only reads its container (its result is

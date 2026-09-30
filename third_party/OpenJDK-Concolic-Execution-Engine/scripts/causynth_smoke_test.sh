@@ -41,6 +41,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionLoggingObservationSmoke.java \
   test/causynth/RegionOneWayFunctionSmoke.java \
   test/causynth/RegionSymbolicIndexScanSmoke.java \
+  test/causynth/RegionWrittenArrayScanSmoke.java \
   test/causynth/RegionUnattributedWriterSmoke.java \
   test/causynth/RegionLoadedValueSmoke.java \
   test/causynth/RegionMethodReturnValueSmoke.java \
@@ -91,6 +92,7 @@ for smoke in \
   RegionLoggingObservationSmoke \
   RegionOneWayFunctionSmoke \
   RegionSymbolicIndexScanSmoke \
+  RegionWrittenArrayScanSmoke \
   RegionUnattributedWriterSmoke \
   RegionLoadedValueSmoke \
   RegionMethodReturnValueSmoke \

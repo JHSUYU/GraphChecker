@@ -18,10 +18,11 @@ private:
   Expression *_length_exp;
   Expression *_ref_exp;
   bool _semantic_expression;
-  // The shadow exists only because a read at a symbolic index named the
-  // array: its contents are the heap's own until something writes or
-  // symbolizes it.
-  bool _named_by_read;
+  // The shadow exists only because a load or store named the array -- a read
+  // at a symbolic index, a write of a symbolic value or at a symbolic index --
+  // so its elements are the heap's own under the writes its container state
+  // records, until something symbolizes it and they become an input.
+  bool _named;
 
 public:
   SymArr(sym_rid_t sym_rid, Expression *length_exp);
@@ -41,8 +42,8 @@ public:
     return _semantic_expression;
   }
 
-  inline void set_named_by_read(bool named) { _named_by_read = named; }
-  inline bool named_by_read() const { return _named_by_read; }
+  inline void set_named(bool named) { _named = named; }
+  inline bool named() const { return _named; }
 
   inline void store() {
     ++_version;

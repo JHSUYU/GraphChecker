@@ -544,18 +544,6 @@ SymArr *ThreadContext::get_sym_array(sym_rid_t sym_rid) {
   return heap().get_sym_array(sym_rid);
 }
 
-bool ThreadContext::holds_concrete_elements(arrayOop array) const {
-  SymArr *symbolic = find_sym_array(array);
-  if (symbolic == NULL) return true;
-  if (!symbolic->named_by_read() || symbolic->get_version() != 0
-      || symbolic->has_semantic_expression()
-      || symbolic->get_length_exp() != NULL) {
-    return false;
-  }
-  Expression *state = heap().find_container_state(array);
-  return state == NULL || !state->is_recorded_container_mutation();
-}
-
 SymArr *ThreadContext::find_sym_array(arrayOop array_obj) const {
   return heap().find_sym_array(array_obj);
 }
