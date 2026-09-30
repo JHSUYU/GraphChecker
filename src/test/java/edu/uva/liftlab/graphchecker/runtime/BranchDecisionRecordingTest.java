@@ -18,6 +18,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * Characterization of the branch-observation machinery a region runs for one
@@ -264,6 +265,29 @@ public class BranchDecisionRecordingTest {
             ConcolicRegionRuntime.exitRegionFrame("sel", METHOD);
             installedPlan(null);
             Identity.resetForTests();
+            RowRuntime.resetForTests();
+        }
+    }
+
+    /**
+     * A replay on a VM missing a native this side binds (a stock JDK has
+     * none) fails before its workload, naming what is missing: a cell the
+     * VM cannot observe is never a silent gap.
+     */
+    @Test
+    public void aVmWithoutTheCurrentNativesRefusesTheReplay()
+            throws Exception {
+        installPlan();
+        broker().set(null, null);
+        try {
+            ConcolicRegionRuntime.openWorkloadSession();
+            fail("a stock JDK opened a concolic session");
+        } catch (IllegalStateException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains("observeField"));
+        } finally {
+            installedPlan(null);
+            broker().set(null, null);
             RowRuntime.resetForTests();
         }
     }
