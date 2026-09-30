@@ -171,21 +171,30 @@ public class RowRuntimeTest {
     }
 
     /**
-     * A session the campaign withdrew stays withdrawn: a replay killed at its
-     * bound still shuts down, and its last table rewrite brought back a
-     * directory holding only its expression table (hdfs-11741 v85, IMPORT).
+     * A closed session is written no more.  The run ended before its close
+     * (JUnitMethodRunner#exit), and a cluster thread outliving the test
+     * filed rows about no run (hdfs-17899-bug1 r1: attaches refused in a VM
+     * session opened after the close).  And a session the campaign withdrew
+     * stays withdrawn: a replay killed at its bound still shuts down, and its
+     * last table rewrite brought back a directory holding only its
+     * expression table (hdfs-11741 v85, IMPORT).
      */
     @Test
-    public void aWithdrawnSessionIsNotWrittenBack() throws Exception {
+    public void aClosedSessionIsNotWrittenAgain() throws Exception {
+        GapRow late = GapRow.of("s", GapKind.UNSTATED_VALUE,
+                GapClass.BLOCKING, "late", "filed after the run ended");
+        SessionDir ended = SessionDir.of(iteration.getRoot().toPath(),
+                "ended");
+        SessionPublisher closed = SessionPublisher.at(ended);
+        closed.close();
+        closed.gap(late);
+        assertEquals(0L, Files.size(ended.gaps()));
+
         SessionDir layout = SessionDir.of(iteration.getRoot().toPath(),
                 "withdrawn");
         SessionPublisher session = SessionPublisher.at(layout);
         Files.move(layout.dir(), iteration.getRoot().toPath().resolve("aside"));
-        session.close();
-        JsonObject constant = new JsonObject();
-        constant.addProperty("_type", "ConstExpr");
-        constant.addProperty("_exp", "C_I_1");
-        session.expression("EXPR.0000000000000001", constant);
+        session.gap(late);
         assertFalse(Files.exists(layout.dir()));
     }
 
