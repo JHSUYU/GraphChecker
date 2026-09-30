@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
@@ -25,11 +26,17 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -499,6 +506,83 @@ public class RowRuntimeTest {
                 Interactions.pairing("XCH.resp.other", 4242L, "").key());
         assertEquals("", Interactions.pairing(
                 "XCH.resp.block-key-id", 0L, "").key());
+    }
+
+    /**
+     * Never silent: an export or attach the VM refused, and a receipt whose
+     * sender this run does not hold, each name the occurrence they ran in.
+     * An attach no activation ran is the closure's to admit: an
+     * ADMISSION_GAP beside the unselected activation it names (SOLR-18413
+     * s45: a watcher callback's refused attach left no row and no gap, and
+     * its parse fed the leader's check).
+     */
+    @Test
+    public void aRefusedWireStepNamesTheOccurrenceItRanIn() throws Exception {
+        JsonObject row;
+        try (Reader plan = new InputStreamReader(
+                getClass().getClassLoader().getResourceAsStream(
+                        "plans/hdfs-17899-bug3-loop-body-producer.json"),
+                StandardCharsets.UTF_8)) {
+            row = new JsonParser().parse(plan).getAsJsonObject();
+        }
+        // The row's two OUT ports, the first declared IN instead.
+        JsonArray ports = row.getAsJsonArray("communicationHandoffs");
+        String out = ports.get(1).getAsJsonObject().get("portId")
+                .getAsString();
+        String in = ports.get(0).getAsJsonObject().get("portId")
+                .getAsString();
+        ports.get(0).getAsJsonObject().addProperty("side", "IN");
+        Field installed = ConcolicTaskPlan.class.getDeclaredField("plan");
+        installed.setAccessible(true);
+        installed.set(null, new ConcolicTaskPlan(null,
+                Collections.singletonList(new ConcolicTaskPlan.RuntimeTask(
+                        ExecutionTask.decode(row)))));
+        RowRuntime.configure(sessionFile());
+        long request = RuntimeTraceContext.beginRequest(NN, "refused-wire");
+        OccurrenceAddress here;
+        try {
+            // No concolic VM runs these tests: the broker refuses both steps.
+            WireExport.exportLeaf(out,
+                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J");
+            assertTrue(SymbolicMessageEnvelope.stage(in, 41L));
+            SymbolicMessageEnvelope.installInbound(
+                    SymbolicMessageEnvelope.takeOutbound());
+            WireExport.attachLeaf(in,
+                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "i", "I");
+            here = RowRuntime.occurrenceHere(NN.key(), in);
+            RuntimeTraceContext.exitInbound(RuntimeTraceContext.enterInbound(
+                    RuntimeTraceContext.outboundHeader(null, null),
+                    "HADOOP_IPC", "never-sent", "0", "REQUEST", null, ""));
+        } finally {
+            RuntimeTraceContext.endRequest(request);
+            SymbolicMessageEnvelope.clear();
+            installed.set(null, null);
+        }
+        RowRuntime.closeSession();
+
+        Map<GapKind, GapRow> named = new EnumMap<>(GapKind.class);
+        for (GapRow gap : RowCodec.readAll(session().gaps(),
+                RowCodec::readGap)) {
+            named.put(gap.kind(), gap);
+        }
+        GapRow attach = named.get(GapKind.ADMISSION_GAP);
+        assertEquals(here.render(), attach.subject());
+        assertEquals(GapClass.DIAGNOSTIC, attach.cls());
+        assertTrue(attach.detail(), attach.detail().contains(
+                "attach of handle 41 at " + in + " (INVOCATION_FAILED)"));
+        GapRow export = named.get(GapKind.UNSTATED_VALUE);
+        assertEquals(here.render(), export.subject());
+        assertTrue(export.detail(), export.detail().contains(
+                "export at " + out + " (INVOCATION_FAILED)"));
+        GapRow receipt = named.get(GapKind.LINEAGE_LOST);
+        assertTrue(receipt.detail(), receipt.detail().contains(
+                "HADOOP_IPC REQUEST received at HADOOP_IPC/refused-wire"
+                        + " names no sender this run holds"));
+        List<ActivationRow> activations = RowCodec.readAll(
+                session().activations(), RowCodec::readActivation);
+        assertEquals("the activation to admit is stated, unselected",
+                here, activations.get(0).occurrence());
+        assertFalse(activations.get(0).instrumented());
     }
 
     /** Every row kind round-trips through the codec it is written with. */

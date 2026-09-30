@@ -3,6 +3,9 @@ package edu.uva.liftlab.graphchecker.runtime;
 import static edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner.UNREGISTERED_SOURCE;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import java.nio.charset.StandardCharsets;
@@ -601,16 +604,38 @@ final class RuntimeTraceContext {
         // it are scheduling (Identity.Hop.ANCHOR).
         scope.scopeBaseBefore = Identity.scopeStart(Identity.Hop.ANCHOR);
         // The producer endpoint IS the causal context (IDENTITY-V3).
-        Lineage.anchor(Interactions.sender(state.flow.exchangeTransport,
-                                state.flow.exchangeCorrelationId,
-                                state.flow.exchangeHalf),
-                // Api is the last segment (ComposeMain.apiOf).
-                normalizedUpper(transport)
-                        + (Text.safe(via).isEmpty() ? ""
-                        : "." + normalizedUpper(via)) + "/"
-                        + MapFields.safe(remote.requestApi));
+        String sender = Interactions.sender(state.flow.exchangeTransport,
+                state.flow.exchangeCorrelationId, state.flow.exchangeHalf);
+        // Api is the last segment (ComposeMain.apiOf).
+        String rpcSite = normalizedUpper(transport)
+                + (Text.safe(via).isEmpty() ? ""
+                : "." + normalizedUpper(via)) + "/"
+                + MapFields.safe(remote.requestApi);
+        Lineage.anchor(sender, rpcSite);
+        if (sender.isEmpty()) unanchored(state, rpcSite);
         publishCausalSource(state);
         return token;
+    }
+
+    /**
+     * Names a receipt whose sender this run does not hold -- evicted past
+     * {@link Interactions#LIMIT} (a store version read long after its write)
+     * or never filed: the work it opens stands on this thread's own root or
+     * lost context, not on the sender's anchor.
+     */
+    private static void unanchored(State state, String rpcSite) {
+        OccurrenceAddress here = RowRuntime.occurrenceHere(
+                state.source == null ? "" : state.source.key(), rpcSite);
+        RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                here == null ? rpcSite : here.render(),
+                "the " + state.flow.exchangeTransport + " "
+                        + state.flow.exchangeHalf + " received at " + rpcSite
+                        + " names no sender this run holds ("
+                        + Interactions.sendersEvicted() + " sent messages"
+                        + " were evicted past the " + Interactions.LIMIT
+                        + "-entry bound, or its sender filed none), so the"
+                        + " work it opens is addressed under this thread's"
+                        + " own context instead of an anchor");
     }
 
     /**

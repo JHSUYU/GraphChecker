@@ -37,7 +37,10 @@ final class WireExport {
     private WireExport() {
     }
 
-    /** One export: the staged handle (0 for a concrete leaf) and its event. */
+    /**
+     * One export: the staged handle (0 for a concrete leaf, negative for the
+     * status the VM refused with) and its event.
+     */
     private static final class Export {
         private final long handle;
         /** The VM ledger event of the export, or 0. */
@@ -100,9 +103,23 @@ final class WireExport {
         } finally {
             resumeObservation();
         }
-        if (site == null || carrier == null) return;
+        if (site == null) {
+            // Rule 5, as for an attach.
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    Text.safe(portId),
+                    "a wire export ran for a port no task of this campaign "
+                            + "declares, so it staged nothing");
+            return;
+        }
+        if (carrier == null) return;
         Export exported = export(carrier, field, descriptor);
-        if (exported == null) return;
+        if (exported.handle < 0L) {
+            refused(site.portId(), "export", exported.handle,
+                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    "the message carries no element for it, so its"
+                            + " consumer's attach pairs with no export");
+            return;
+        }
         if (!SymbolicMessageEnvelope.stage(site.portId(), exported.handle)) {
             // The row still states the endpoint; the loss is named.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -114,28 +131,32 @@ final class WireExport {
     }
 
     /**
-     * Exports one carrier leaf, or null when the VM refused it.  A concrete
-     * leaf is still a leaf the message carried: handle 0.
+     * Exports one carrier leaf.  A concrete leaf is still a leaf the message
+     * carried: handle 0.
      */
     private static Export export(Object carrier, String field,
                                  String descriptor) {
         pauseObservation();
         try {
-            if (!leafNamed(field, descriptor)) return null;
-            ConcolicVmBroker api = engine();
+            if (!leafNamed(field, descriptor)) {
+                return new Export(ConcolicVmBroker.MISSING_METADATA, 0L);
+            }
             long handle;
             // The VM reports the export's ledger event so the
             // row names the exact export.
             long[] exportEvent = new long[1];
             try {
-                handle = api.exportExpression(carrier, CARRIER_CLASS, field,
-                        descriptor, exportEvent);
+                handle = engine().exportExpression(carrier, CARRIER_CLASS,
+                        field, descriptor, exportEvent);
             } catch (Throwable refused) {
-                return null;
+                handle = ConcolicVmBroker.INVOCATION_FAILED;
             }
             if (handle > 0L) return new Export(handle, exportEvent[0]);
-            return handle == ConcolicVmBroker.NOT_SYMBOLIC
-                    ? new Export(0L, 0L) : null;
+            if (handle == ConcolicVmBroker.NOT_SYMBOLIC) {
+                return new Export(0L, 0L);
+            }
+            return new Export(handle < 0L ? handle
+                    : ConcolicVmBroker.MALFORMED_RESULT, 0L);
         } finally {
             resumeObservation();
         }
@@ -154,17 +175,7 @@ final class WireExport {
         try {
             if (!RowRuntime.open()) return;
             RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            ActiveRegion active = ConcolicRegionRuntime.activeRegion();
-            // Producer address: the admitted activation's, else the
-            // occurrence running here.
-            OccurrenceAddress producer = active != null
-                    && active.d3Address != null
-                    ? active.d3Address
-                    : RowRuntime.occurrenceHere(view.source == null ? ""
-                            : view.source.key(), site.portId());
-            if (active == null || active.d3Address == null) {
-                RowRuntime.ambientActivation(producer);
-            }
+            OccurrenceAddress producer = occurrenceHere(site.portId());
             JsonObject exported = null;
             String recordedValue = "";
             try {
@@ -226,7 +237,9 @@ final class WireExport {
         pauseObservation();
         try {
             site = site(portId, false);
-            handle = site == null ? 0L
+            // With no carrier nothing is taken: the element stays for the
+            // message's end to name as unattached.
+            handle = site == null || carrier == null ? 0L
                     : SymbolicMessageEnvelope.take(site.portId());
         } finally {
             resumeObservation();
@@ -252,11 +265,26 @@ final class WireExport {
             }
             pauseObservation();
             try {
-                long attachEventId = attach(carrier, field, descriptor,
-                        handle);
-                if (attachEventId > 0L) {
-                    HandoffMint.mintDelivered(site, attachEventId, carrier,
-                            field, descriptor);
+                long attached = attach(carrier, field, descriptor, handle);
+                if (attached > 0L) {
+                    HandoffMint.mintDelivered(site, attached, carrier, field,
+                            descriptor);
+                } else if (ConcolicRegionRuntime.activeRegion() == null) {
+                    // SOLR-18413 s45: a callback no activation ran parsed the
+                    // value, and its parse won the cache the leader read.
+                    refused(site.portId(), "attach of handle " + handle,
+                            attached, GapKind.ADMISSION_GAP,
+                            GapClass.DIAGNOSTIC, "no admitted activation runs"
+                                    + " here, so the value stays concrete and"
+                                    + " nothing computed from it is a version"
+                                    + " until the closure admits this one");
+                } else {
+                    refused(site.portId(), "attach of handle " + handle,
+                            attached, GapKind.UNSTATED_VALUE,
+                            GapClass.BLOCKING, "the admitted activation here"
+                                    + " computes on the arrived value as a"
+                                    + " constant, and no attach row says a"
+                                    + " producer sent it");
                 }
             } finally {
                 resumeObservation();
@@ -293,24 +321,63 @@ final class WireExport {
 
     /**
      * Attaches {@code handle} onto one carrier leaf: the VM's attach event
-     * id, or 0 when it refused.  An attach accepted with no attach event is
-     * half an edge, so refused too.
+     * id, or the status it refused with (never positive).  An attach
+     * accepted with no attach event is half an edge, so refused too.
      */
     private static long attach(Object carrier, String field,
                                String descriptor, long handle) {
-        if (!leafNamed(field, descriptor)) return 0L;
-        ConcolicVmBroker api = engine();
+        if (!leafNamed(field, descriptor)) {
+            return ConcolicVmBroker.MISSING_METADATA;
+        }
         // Both VALUE_HANDOFF endpoints leave the VM together.
         long[] attachEvent = new long[1];
+        long exportEvent;
         try {
-            if (api.attachExpression(carrier, CARRIER_CLASS, field,
-                    descriptor, handle, attachEvent) <= 0L) {
-                return 0L;
-            }
+            exportEvent = engine().attachExpression(carrier, CARRIER_CLASS,
+                    field, descriptor, handle, attachEvent);
         } catch (Throwable refused) {
-            return 0L;
+            return ConcolicVmBroker.INVOCATION_FAILED;
         }
-        return Math.max(0L, attachEvent[0]);
+        if (exportEvent < 0L) return exportEvent;
+        return exportEvent > 0L && attachEvent[0] > 0L ? attachEvent[0]
+                : ConcolicVmBroker.MALFORMED_RESULT;
+    }
+
+    /**
+     * Names one leaf the VM would not carry across {@code portId}: the
+     * occurrence it happened in, the step and the VM's status.  A refusal is
+     * a row, never a missing one; the caller says what it costs.
+     */
+    private static void refused(String portId, String step, long status,
+                                GapKind kind, GapClass cls,
+                                String consequence) {
+        pauseObservation();
+        try {
+            OccurrenceAddress here = occurrenceHere(portId);
+            RowRuntime.gap(kind, cls, here == null ? portId : here.render(),
+                    "the VM refused the " + step + " at " + portId + " ("
+                            + ConcolicVmBroker.statusName(status) + "): "
+                            + consequence);
+        } finally {
+            resumeObservation();
+        }
+    }
+
+    /**
+     * The occurrence a port event runs in: the admitted activation's, else
+     * the one running here, stated as an unselected activation (still
+     * keyable, R-I1).
+     */
+    private static OccurrenceAddress occurrenceHere(String portId) {
+        ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+        if (active != null && active.d3Address != null) {
+            return active.d3Address;
+        }
+        RuntimeTraceContext.View view = RuntimeTraceContext.current();
+        OccurrenceAddress here = RowRuntime.occurrenceHere(
+                view.source == null ? "" : view.source.key(), portId);
+        RowRuntime.ambientActivation(here);
+        return here;
     }
 
     /** Whether a leaf names its field and type. */

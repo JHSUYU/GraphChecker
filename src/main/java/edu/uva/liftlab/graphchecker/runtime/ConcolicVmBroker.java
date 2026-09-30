@@ -25,6 +25,26 @@ final class ConcolicVmBroker {
     static final int INVOCATION_FAILED = -1001;
     static final int MALFORMED_RESULT = -1002;
 
+    /**
+     * The name expressionBroker.hpp gives one handoff status: a refusal row
+     * states which gap the VM named, never a bare number.
+     */
+    static String statusName(long status) {
+        switch (status == (int) status ? (int) status : 0) {
+            case -1: return "HANDOFF_NO_ACTIVE_REGION";
+            case -2: return "HANDOFF_MISSING_METADATA";
+            case -3: return "HANDOFF_FIELD_NOT_FOUND";
+            case -4: return "HANDOFF_NOT_SYMBOLIC";
+            case -5: return "HANDOFF_FOREIGN_HANDLE";
+            case -6: return "HANDOFF_UNKNOWN_HANDLE";
+            case -9: return "HANDOFF_SORT_MISMATCH";
+            case -12: return "HANDOFF_UNSUPPORTED_TARGET";
+            case INVOCATION_FAILED: return "INVOCATION_FAILED";
+            case MALFORMED_RESULT: return "MALFORMED_RESULT";
+            default: return "status " + status;
+        }
+    }
+
     private static final Object LOCK = new Object();
     private static volatile ConcolicVmBroker engineApi;
 

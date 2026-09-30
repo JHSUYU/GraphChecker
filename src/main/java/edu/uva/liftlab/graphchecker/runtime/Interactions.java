@@ -27,13 +27,31 @@ public final class Interactions {
     }
 
     /** An insertion-ordered store that drops its eldest past {@link #LIMIT}. */
-    static <V> Map<String, V> bounded() {
-        return new LinkedHashMap<String, V>(64, 0.75f, false) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<String, V> eldest) {
-                return size() > LIMIT;
-            }
-        };
+    static <V> Bounded<V> bounded() {
+        return new Bounded<V>();
+    }
+
+    /** A store bounded at {@link #LIMIT}, counting what it dropped. */
+    static final class Bounded<V> extends LinkedHashMap<String, V> {
+        /** Under the owner's monitor: a miss after the first drop may be one. */
+        private long evicted;
+
+        private Bounded() {
+            super(64, 0.75f, false);
+        }
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, V> eldest) {
+            if (size() <= LIMIT) return false;
+            evicted++;
+            return true;
+        }
+
+        @Override
+        public void clear() {
+            super.clear();
+            evicted = 0L;
+        }
     }
 
     /** Files the producer of one staged value, by every key it states. */
@@ -170,6 +188,11 @@ public final class Interactions {
         return producer == null ? "" : producer.id();
     }
 
+    /** How many messages {@link #sender} can no longer answer for. */
+    static synchronized long sendersEvicted() {
+        return MESSAGES.evicted;
+    }
+
     /** The whole endpoint a message's anchor names, or {@code null} when
      *  this run filed no message under it. */
     public static synchronized Endpoint producer(String endpointId) {
@@ -189,7 +212,7 @@ public final class Interactions {
                 + Text.safe(half);
     }
 
-    private static final Map<String, Endpoint> MESSAGES = bounded();
+    private static final Bounded<Endpoint> MESSAGES = bounded();
     /** The same producers, by endpoint id: what an anchor names. */
     private static final Map<String, Endpoint> SENDERS = bounded();
 

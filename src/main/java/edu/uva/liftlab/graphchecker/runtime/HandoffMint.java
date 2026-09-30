@@ -64,17 +64,23 @@ final class HandoffMint {
             return;
         }
         // Only an element the VM states an expression for is minted on.
-        JsonElement expression;
+        String unstated;
         try {
             Field storage = declaredInstanceField(carrier, CARRIER_CLASS,
                     field, descriptor);
-            if (storage == null) return;
-            expression = RootMint.cellExpression(engine(), carrier,
+            JsonElement expression = storage == null ? null
+                    : RootMint.cellExpression(engine(), carrier,
                     CARRIER_CLASS, field, descriptor, storage.get(carrier));
+            unstated = expression == null || expression.isJsonNull()
+                    ? "the VM states no expression for the attached leaf"
+                    : "";
         } catch (Throwable failure) {
+            unstated = ConcolicRegionRuntime.rootCause(failure);
+        }
+        if (!unstated.isEmpty()) {
+            unminted(active, site.portId(), unstated);
             return;
         }
-        if (expression == null || expression.isJsonNull()) return;
         Interactions.deliveringAt(attachEventId);
         mintHandoffVariable(active, site, carrier, field, descriptor);
     }
@@ -142,7 +148,11 @@ final class HandoffMint {
         String phaseId = handoffMintKey(portId, consumerOccurrenceId,
                 nextAttach(consumerOccurrenceId, portId, leaf.path),
                 leaf.path);
-        if (phaseId.isEmpty()) return;
+        if (phaseId.isEmpty()) {
+            unminted(active, portId, "its identity names no consumer"
+                    + " occurrence or element path");
+            return;
+        }
         String descriptor = javaTypeDescriptor(
                 leaf.field.getType().getTypeName());
         try {
@@ -170,6 +180,8 @@ final class HandoffMint {
             JsonObject minted = mintLeaf(active, leaf,
                     mintLabel(phaseId, portId));
             if (minted == null) {
+                unminted(active, portId, "the VM read " + leaf.path
+                        + " back as no one exact symbol");
                 return;
             }
             publishAttachRow(consumer, portId,
@@ -177,13 +189,21 @@ final class HandoffMint {
                     optionalString(minted, "_java_type"), recordedValue,
                     answer);
         } catch (Throwable failure) {
-            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    portId,
-                    "the boundary variable of this attach was not minted, so"
-                            + " the delivery names no occurrence two replays"
-                            + " could be joined at: "
-                            + ConcolicRegionRuntime.rootCause(failure));
+            unminted(active, portId, ConcolicRegionRuntime.rootCause(failure));
         }
+    }
+
+    /**
+     * Names one attach inside {@code active} that minted no v_H: the value
+     * crossed, but no row keys an arm by it.
+     */
+    private static void unminted(ActiveRegion active, String portId,
+                                 String why) {
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                active.d3Address == null ? portId : active.d3Address.render(),
+                "the boundary variable of the attach at " + portId + " was"
+                        + " not minted, so the delivery names no occurrence"
+                        + " two replays could be joined at: " + why);
     }
 
     /**
