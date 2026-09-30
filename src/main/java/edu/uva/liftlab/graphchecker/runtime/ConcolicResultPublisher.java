@@ -141,11 +141,12 @@ final class ConcolicResultPublisher {
      * workload does after it no stage reads (SOLR-18406: a follower retried
      * the download it could no longer get, every bound lifted, until the
      * worker's clock killed the JVM and the witness session was withdrawn).
-     * Once, on a thread of its own: admission ends, every publication in
-     * flight settles (the witness's own among them), every activation still
-     * live is stranded now rather than after a grace its retries keep
-     * resetting, and the replay ends as every replay does ({@link
-     * JUnitMethodRunner}).
+     * Once, on a thread of its own: admission ends, the schedule states the
+     * run cut at its witness ({@link ScheduleLog#witnessed}), every
+     * publication in flight settles (the witness's own among them), every
+     * activation still live is stranded now rather than after a grace its
+     * retries keep resetting, and the replay ends as every replay does
+     * ({@link JUnitMethodRunner}).
      */
     static void concludeAtWitness() {
         synchronized (PUBLICATION_LOCK) {
@@ -154,6 +155,7 @@ final class ConcolicResultPublisher {
             submittedAtWitness = submitted;
         }
         ConcolicRegionRuntime.endAdmission();
+        ScheduleLog.witnessed();
         ThreadGroup root = Thread.currentThread().getThreadGroup();
         while (root.getParent() != null) root = root.getParent();
         new Thread(root, new Runnable() {

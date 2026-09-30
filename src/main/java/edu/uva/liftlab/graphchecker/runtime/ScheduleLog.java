@@ -47,7 +47,9 @@ import java.util.concurrent.TimeUnit;
  * held.  While the prefix stands a WAKE with no slot is held too: at the
  * cut when the recording never made it, and past its recorded count -- a
  * loop polling longer than recorded -- once per move of the order, unless
- * its loop reads a CLOCK root ({@link #waitsAtLocked}).</p>
+ * its loop reads a CLOCK root ({@link #waitsAtLocked}).  An order cut at its
+ * witness ({@link ScheduleEvent#WITNESS}) holds such a WAKE to its END, not
+ * its cut: that run made nothing it does not list before its witness.</p>
  *
  * <p>SETTLING what did not happen: a CLOSED occurrence's untaken slots are
  * dead; a turn's END gives up what the turn did not do; a WAITER gives up
@@ -81,9 +83,9 @@ public final class ScheduleLog {
     static final long DEFAULT_TIMEOUT_MS = 15000L;
     /** Give-ups past the cut before the rest is let go as a whole. */
     static final int REST_STALLS = 2;
-    /** Where a wait no slot holds waits while the prefix stands and its
-     *  context has no slot left. */
-    private static final int AT_THE_CUT = -1;
+    /** Where a wait no slot holds waits while the line stands and its
+     *  context has no slot left ({@link #line}). */
+    private static final int AT_THE_LINE = -1;
     /** An event that waits nowhere: it is written now. */
     private static final int GO = -2;
 
@@ -120,6 +122,15 @@ public final class ScheduleLog {
     private static volatile boolean holds;
     private static List<ScheduleEvent> order = Collections.emptyList();
     private static int cut;
+    /**
+     * Where a WAKE no slot holds waits: the cut, or the order's end when its
+     * run was cut at its witness -- that run's log orders nothing after, so
+     * a daemon turn it never made came, if at all, after all of it
+     * (hdfs-17967-pathC r1b: CONFIRM ran the target DataNode's first
+     * BP_SERVICE_ACTOR turn free, before the anchor, and it refreshed the
+     * keys the witness had failed on).
+     */
+    private static int line;
     private static byte[] state = new byte[0];
     /** Per key, the slots not taken and not dead, in order. */
     private static final Map<String, ArrayDeque<Integer>> SLOTS =
@@ -490,10 +501,20 @@ public final class ScheduleLog {
         if (id.isEmpty() || !RecordingWindow.opened()) return;
         synchronized (LOCK) {
             if (!MARKED.add(id)) return;
-            JsonObject row = new JsonObject();
-            row.addProperty("mark", id);
-            row.addProperty("at", seq);
-            writeLocked(row);
+            writeLocked(RowCodec.writeScheduleMark(id, seq));
+        }
+    }
+
+    /**
+     * Marks this run cut at its witness ({@link ScheduleEvent#WITNESS}):
+     * what it makes after the declared occurrence observed the fatal is not
+     * its question, and the run ends there.
+     */
+    static void witnessed() {
+        if (!RecordingWindow.opened()) return;
+        synchronized (LOCK) {
+            writeLocked(RowCodec.writeScheduleMark(ScheduleEvent.WITNESS,
+                    seq));
         }
     }
 
@@ -636,10 +657,11 @@ public final class ScheduleLog {
     /**
      * Where {@code event}, whose slot is {@code slot} (-1: none), waits now,
      * or {@link #GO}.  INTERRUPT is never held.  A WAKE no slot holds is
-     * held while the prefix stands, and only then ({@link #HELD}):
+     * held while the line stands ({@link #line}: the prefix, or the whole
+     * order cut at its witness), and only then ({@link #HELD}):
      *
      * <ul>
-     *   <li>one the recording never made waits AT THE CUT;</li>
+     *   <li>one the recording never made waits AT THE LINE;</li>
      *   <li>one PAST ITS RECORDED COUNT is a loop polling longer than
      *       recorded, for what another context brings.  It waits until its
      *       context's next slot is due -- only its next turn makes that
@@ -648,7 +670,7 @@ public final class ScheduleLog {
      *       would read what the last one read.  A loop that reads a CLOCK
      *       root ({@link ClockLoops}) waits for time only the clock brings,
      *       and goes as soon as its slot is due.  With no slot of its
-     *       context left, it waits at the cut.</li>
+     *       context left, it waits at the line.</li>
      * </ul>
      *
      * The watchdog lets a held wait go when the run idles.  Released, a
@@ -661,7 +683,7 @@ public final class ScheduleLog {
             return event.kind == ScheduleEvent.Kind.INTERRUPT
                     || !heldKind(slot) || dueLocked(slot) ? GO : slot;
         }
-        if (event.kind != ScheduleEvent.Kind.WAKE || !prefixStandsLocked()) {
+        if (event.kind != ScheduleEvent.Kind.WAKE || !lineStandsLocked()) {
             return GO;
         }
         int next = SLOTS.containsKey(event.key)
@@ -674,7 +696,7 @@ public final class ScheduleLog {
         }
         if (LET_GO.contains(self)) return GO;
         HELD.put(self, event);
-        return next >= 0 ? next : AT_THE_CUT;
+        return next >= 0 ? next : AT_THE_LINE;
     }
 
     /** Whether the order moved since the last WAKE of {@code event}'s key. */
@@ -716,9 +738,9 @@ public final class ScheduleLog {
         return firstBlocking >= slot;
     }
 
-    /** Whether the prefix stands: an open non-WAKE slot before the cut. */
-    private static boolean prefixStandsLocked() {
-        return holds && firstBlocking < cut;
+    /** Whether the line stands: an open non-WAKE slot before it. */
+    private static boolean lineStandsLocked() {
+        return holds && firstBlocking < line;
     }
 
     private static void takeLocked(int slot) {
@@ -816,7 +838,7 @@ public final class ScheduleLog {
                         == ScheduleEvent.Kind.WAKE)) {
             firstBlocking++;
         }
-        holds = openHeld > 0;
+        holds = openHeld > 0 || firstBlocking < line;
         LOCK.notifyAll();
     }
 
@@ -901,13 +923,13 @@ public final class ScheduleLog {
         if (idle < CEILING * timeout && computingLocked(now)) return false;
         // A poll held past its recorded count stands at its context's due
         // slot and waits for no slot's event, so it bounds no give-up (it
-        // would shadow the stalled slot); a wait AT_THE_CUT bounds one at the
-        // cut.
+        // would shadow the stalled slot); a wait AT_THE_LINE bounds one at
+        // the line.
         int earliest = Integer.MAX_VALUE;
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
             int slot = waiter.getValue();
-            if (slot == AT_THE_CUT) {
-                earliest = Math.min(earliest, cut);
+            if (slot == AT_THE_LINE) {
+                earliest = Math.min(earliest, line);
             } else if (!HELD.containsKey(waiter.getKey())) {
                 earliest = Math.min(earliest, slot);
             }
@@ -918,10 +940,10 @@ public final class ScheduleLog {
             return true;
         }
         if (earliest == Integer.MAX_VALUE) return false;
-        boolean atTheCut = WAITERS.containsValue(AT_THE_CUT)
-                && earliest == cut;
+        boolean atTheLine = WAITERS.containsValue(AT_THE_LINE)
+                && earliest == line;
         stalls++;
-        if (!atTheCut && earliest >= cut && restStalls >= REST_STALLS) {
+        if (!atTheLine && earliest >= cut && restStalls >= REST_STALLS) {
             int open = 0;
             for (int index = firstOpen; index < state.length; index++) {
                 if (state[index] == OPEN) {
@@ -946,7 +968,7 @@ public final class ScheduleLog {
             count++;
         }
         if (count == 0) return false;
-        if (!atTheCut && earliest >= cut) restStalls++;
+        if (!atTheLine && earliest >= cut) restStalls++;
         stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
                 count + " slot(s) of the order from " + first + " on (the"
                         + " first " + order.get(first).render() + ") did not"
@@ -985,8 +1007,9 @@ public final class ScheduleLog {
     /** What waits at {@code earliest}, as it names itself. */
     private static String waitingAtLocked(int earliest) {
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
-            if (earliest == cut && waiter.getValue() == AT_THE_CUT) {
-                return heldLocked(waiter.getKey()) + " waited at the cut";
+            if (earliest == line && waiter.getValue() == AT_THE_LINE) {
+                return heldLocked(waiter.getKey()) + " waited at the "
+                        + (line == cut ? "cut" : "order's end");
             }
         }
         return order.get(earliest).render() + " waited at slot " + earliest;
@@ -1090,7 +1113,9 @@ public final class ScheduleLog {
                             : SessionReader.readSchedule(file),
                     restFile == null
                             ? Collections.<ScheduleEvent>emptyList()
-                            : SessionReader.readSchedule(restFile));
+                            : SessionReader.readSchedule(restFile),
+                    restFile != null && SessionReader.readScheduleMarks(
+                            restFile).containsKey(ScheduleEvent.WITNESS));
         } catch (IOException | RuntimeException unreadable) {
             // An order it cannot read, it left at its first event.
             stateLocked(String.valueOf(file == null ? restFile : file),
@@ -1107,13 +1132,16 @@ public final class ScheduleLog {
         }, "causynth-schedule-progress"));
     }
 
-    /** Holds the run to {@code events}, cut, then {@code after}. */
+    /** Holds the run to {@code events}, cut, then {@code after}, which a
+     *  run cut at its witness ends at. */
     private static void installLocked(List<ScheduleEvent> events,
-                                      List<ScheduleEvent> after) {
+                                      List<ScheduleEvent> after,
+                                      boolean atWitness) {
         List<ScheduleEvent> all = new ArrayList<ScheduleEvent>(events);
         all.addAll(after);
         order = all;
         cut = events.size();
+        line = atWitness ? all.size() : cut;
         state = new byte[all.size()];
         SLOTS.clear();
         BY_OCCURRENCE.clear();
@@ -1200,9 +1228,15 @@ public final class ScheduleLog {
 
     static void enforceForTests(List<ScheduleEvent> events,
                                 List<ScheduleEvent> after) {
+        enforceForTests(events, after, false);
+    }
+
+    static void enforceForTests(List<ScheduleEvent> events,
+                                List<ScheduleEvent> after,
+                                boolean atWitness) {
         synchronized (LOCK) {
             loaded = true;
-            installLocked(events, after);
+            installLocked(events, after, atWitness);
         }
     }
 
@@ -1217,6 +1251,7 @@ public final class ScheduleLog {
             holds = false;
             order = Collections.emptyList();
             cut = 0;
+            line = 0;
             state = new byte[0];
             SLOTS.clear();
             BY_OCCURRENCE.clear();

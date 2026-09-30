@@ -9,6 +9,14 @@ package edu.uva.liftlab.graphchecker.contract;
  * is not part of the key; it is where a prefix is cut.
  */
 public final class ScheduleEvent extends Value {
+    /**
+     * The mark of a run cut at its witness ({@code RowCodec
+     * #writeScheduleMark}): its log orders nothing after the witness, so a
+     * replay held to it lets no WAKE its order never made go before the
+     * order has drained ({@code runtime.ScheduleLog}).
+     */
+    public static final String WITNESS = "WITNESS";
+
     /** What kind of handoff the event is. */
     public enum Kind {
         /** A work start: {@code Thread.start}, a submission, a queue put. */

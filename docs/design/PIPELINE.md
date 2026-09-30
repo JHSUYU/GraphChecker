@@ -171,8 +171,9 @@ outlive the test, and a region started after the close would open a fresh VM ses
 every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
 
 A focused replay ends at its witness: when the focus row's declared occurrence publishes a target row
-that observed the fatal (`ConcolicResultPublisher#concludeAtWitness`), admission ends, the
-publications in flight settle, every activation still live is stranded (`TASK_UNANSWERED`
+that observed the fatal (`ConcolicResultPublisher#concludeAtWitness`), admission ends, its schedule
+states the run cut there (`ScheduleLog#witnessed`: a replay held to it holds a `WAKE` it never made
+to the order's end, IDENTITY.md §8), the publications in flight settle, every activation still live is stranded (`TASK_UNANSWERED`
 `AT_WITNESS`; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and one that
 completes after the witness is not published (`AT_WITNESS`). A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
@@ -581,7 +582,8 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   any other root as its value, at the recording's mint occurrence). The focus row focuses the anchor
   with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
-  they followed). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
+  they followed, and when the selected session was cut at its witness, a WAKE it never made waits
+  for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
   as that arm's session paired it), `STATE` per read of the anchor's join closure (each reached
   occurrence's reads before its cutoff, the anchor's before its target seq; the writer the model
   chose through a `writer_arm__`, else the observed one), `ORDER`
