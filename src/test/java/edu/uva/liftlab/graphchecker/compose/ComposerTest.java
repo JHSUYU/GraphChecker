@@ -1171,12 +1171,18 @@ public class ComposerTest {
         }
         Z3 solver = solver();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            List<String> pinned = new ArrayList<String>(
+            // One path's question holds its own guarded commands and none
+            // of the other path's (Composition#pathQuery).
+            String alone = composition.pathQuery(disjunct.selector(),
                     composition.valuations().get(0).assertions());
-            pinned.add("(assert " + disjunct.selector() + ")");
+            for (Composer.Disjunct other : composition.disjuncts()) {
+                assertEquals("guarded by " + other.selector(),
+                        other == disjunct, alone.contains(
+                                "(=> " + other.selector() + " "));
+            }
             assertEquals("each path is satisfiable as the execution that "
                             + "made it: " + disjunct.path().sessionId,
-                    "sat", solver.ask(composition.query(pinned),
+                    "sat", solver.ask(alone,
                             Collections.<String>emptyList(), false).status());
         }
 

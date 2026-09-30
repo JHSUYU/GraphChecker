@@ -183,6 +183,10 @@ public final class Composer {
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         private final String seedSessionId;
+        /** Where each top-level command of the body ends, and the path
+         *  selector it is guarded by (null: every path's); #pathQuery. */
+        private final int[] commandEnds;
+        private final String[] commandGuards;
 
         /** The composer's state once every path is composed. */
         private Composition(Composer composed, String body,
@@ -215,6 +219,15 @@ public final class Composer {
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
             this.seedSessionId = composed.seed();
+            List<Integer> ends = new ArrayList<Integer>();
+            List<String> guards = new ArrayList<String>();
+            commands(body, new LinkedHashSet<String>(
+                    Composer.selectors(disjuncts)), ends, guards);
+            this.commandEnds = new int[ends.size()];
+            for (int index = 0; index < ends.size(); index++) {
+                this.commandEnds[index] = ends.get(index);
+            }
+            this.commandGuards = guards.toArray(new String[0]);
         }
 
         public OccurrenceAddress anchor() {
@@ -227,20 +240,147 @@ public final class Composer {
         }
 
         /**
-         * One question's text: the body (rendered once) plus these
-         * assertions.  Legal spelling is reapplied because pins name raw
-         * symbols such as {@code CLOCK/...#...}, and a bare {@code #} is a
-         * bit-vector literal to z3; the pass is idempotent.
+         * One question's text: the body plus these assertions.  The body is
+         * spelled legally once ({@link SmtLowering#body}); the assertions
+         * are spelled here, since pins name raw symbols such as
+         * {@code CLOCK/...#...} and a bare {@code #} is a bit-vector literal
+         * to z3.  Spelling is token-local, so each assertion spelled alone
+         * spells the text, and the body is copied once, into a builder of
+         * the text's size: a body can run to 100 MB, asked on 8 threads.
          */
         public String query(List<String> assertions) {
-            StringBuilder text = new StringBuilder(body);
-            if (assertions != null) {
-                for (String assertion : assertions) {
-                    if (assertion == null || assertion.isEmpty()) continue;
-                    text.append(assertion).append('\n');
-                }
+            List<String> legal = legal(assertions);
+            StringBuilder text = new StringBuilder(
+                    body.length() + length(legal));
+            text.append(body);
+            for (String assertion : legal) text.append(assertion);
+            return text.toString();
+        }
+
+        /**
+         * One path's question: the body without the commands another path's
+         * selector guards, this path's selector asserted, plus these
+         * assertions.  The partition forces every other selector false, so
+         * each command dropped held vacuously: the answer is
+         * {@link #query}'s with the selector asserted, but z3 reads what
+         * every path shares and this path's own text, not every path's.
+         */
+        public String pathQuery(String selector, List<String> assertions) {
+            List<String> legal = legal(assertions);
+            legal.add(0, "\n(assert " + selector + ")\n");
+            int size = length(legal);
+            int start = 0;
+            for (int index = 0; index < commandEnds.length; index++) {
+                if (kept(index, selector)) size += commandEnds[index] - start;
+                start = commandEnds[index];
             }
-            return SmtNames.legalSymbols(text.toString());
+            StringBuilder text = new StringBuilder(size);
+            start = 0;
+            for (int index = 0; index < commandEnds.length; index++) {
+                if (kept(index, selector)) {
+                    text.append(body, start, commandEnds[index]);
+                }
+                start = commandEnds[index];
+            }
+            for (String assertion : legal) text.append(assertion);
+            return text.toString();
+        }
+
+        private boolean kept(int command, String selector) {
+            String guard = commandGuards[command];
+            return guard == null || guard.equals(selector);
+        }
+
+        /** Each assertion spelled legally, one per line. */
+        private static List<String> legal(List<String> assertions) {
+            List<String> legal = new ArrayList<String>();
+            if (assertions == null) return legal;
+            for (String assertion : assertions) {
+                if (assertion == null || assertion.isEmpty()) continue;
+                legal.add(SmtNames.legalSymbols(assertion) + "\n");
+            }
+            return legal;
+        }
+
+        private static int length(List<String> texts) {
+            int length = 0;
+            for (String text : texts) length += text.length();
+            return length;
+        }
+
+        /**
+         * The body's top-level commands: where each ends (the first one's
+         * text starts at 0, each next at the previous end), and the selector
+         * among these that guards it, {@code (assert (=> selector ...))}
+         * named or not, else null.  Bar-quoted symbols, string literals and
+         * comments are skipped whole, so a parenthesis inside one is none.
+         */
+        private static void commands(String body, Set<String> selectors,
+                                     List<Integer> ends, List<String> guards) {
+            int start = 0;
+            int depth = 0;
+            int index = 0;
+            while (index < body.length()) {
+                char at = body.charAt(index);
+                if (at == '|') {
+                    int close = body.indexOf('|', index + 1);
+                    index = close < 0 ? body.length() : close + 1;
+                    continue;
+                }
+                if (at == '"') {
+                    int close = index + 1;
+                    while (close < body.length()) {
+                        if (body.charAt(close) == '"') {
+                            // "" is an escaped quote inside the literal.
+                            if (close + 1 < body.length()
+                                    && body.charAt(close + 1) == '"') {
+                                close += 2;
+                                continue;
+                            }
+                            break;
+                        }
+                        close++;
+                    }
+                    index = close + 1;
+                    continue;
+                }
+                if (at == ';') {
+                    int close = body.indexOf('\n', index);
+                    index = close < 0 ? body.length() : close;
+                    continue;
+                }
+                if (at == '(') depth++;
+                if (at == ')' && --depth == 0) {
+                    int from = start;
+                    while (Character.isWhitespace(body.charAt(from))) from++;
+                    ends.add(index + 1);
+                    guards.add(guard(body.substring(from,
+                            Math.min(index + 1, from + GUARD_PREFIX)),
+                            selectors));
+                    start = index + 1;
+                }
+                index++;
+            }
+            if (start < body.length()) {
+                ends.add(body.length());
+                guards.add(null);
+            }
+        }
+
+        /** How much of a command's head names its guard: the assert and
+         *  implication heads and a selector, whose names are short. */
+        private static final int GUARD_PREFIX = 256;
+
+        /** The selector this command's head is guarded by, or null. */
+        private static String guard(String command, Set<String> selectors) {
+            String rest = command.startsWith("(assert (! (=> ")
+                    ? command.substring("(assert (! (=> ".length())
+                    : command.startsWith("(assert (=> ")
+                    ? command.substring("(assert (=> ".length()) : null;
+            if (rest == null) return null;
+            int end = rest.indexOf(' ');
+            String token = end < 0 ? rest : rest.substring(0, end);
+            return selectors.contains(token) ? token : null;
         }
 
         public List<Disjunct> disjuncts() {

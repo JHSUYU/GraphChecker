@@ -73,12 +73,20 @@ on engine defects the richer recordings exposed, fixed on HEAD:
   was read as a missing table entry (BLOCKING).
 
 Offline over r3's final corpus (`tools/regress/offline-ab.sh --round r3 --round r1`,
-`/bigtemp/vnr3ne/ab/agent-a0f-gate3`), HEAD admits 47 paths at the anchor (none before), and the
-closing wave proposes 112 obligations (none: the false order contradictions had closed it). The
-claim is still `INCONCLUSIVE_PARTIAL`: z3 decides valuations 1–6 but not 0 within 30 minutes (item
-33 below). Over r4 (`/bigtemp/vnr3ne/ab/agent-a0f-gate3-r4`) hdfs-17899-bug2, refused the same
-way, claims `MARKER_FLIPPED` again (its IPC client door's marker). hdfs-17960 and hdfs-17899-bug1
-keep their claims.
+`/bigtemp/vnr3ne/ab/agent-a0f-gate5`), HEAD admits 47 paths at the anchor (main before these
+fixes: 2), and the closing wave proposes 112 obligations (none: the false order contradictions had
+closed it). Valuation 0 asked whole over the 47 paths was undecided after 30 minutes, each path
+alone deciding in about a second; a valuation z3 leaves undecided whole is now asked one path at
+a time (`gc/compose/ClaimPolicy#byDisjunct`). The claim: `SAT_CANDIDATE` `CLOCK_SKEW`,
+`polarityDecides`, on path 6, moving the NameNode's four key-expiry clocks (`REGION.08ab84c9`) and
+the DataNode's (`REGION.ba3902cd`) off their readings, in 1000 s. Over it `cone.py` finds the
+DataNode clock and the first NameNode clock (`in.d977bf12`) in the path's cone, so a NameNode clock
+now reaches the DataNode check; the other three NameNode clocks move only because `clock_order`
+keeps that node's readings ordered, which the cone does not follow, so the cone gate would still
+fail on them. Over r4 (`/bigtemp/vnr3ne/ab/agent-a0f-gate4-r4`) hdfs-11741 claims the same
+mechanism on 41 paths, and hdfs-17899-bug2, refused the same way, claims `MARKER_FLIPPED` again
+(its IPC client door's marker; `/bigtemp/vnr3ne/ab/agent-a0f-gate3-r4`). hdfs-17960 and
+hdfs-17899-bug1 keep their claims.
 
 Neither Solr case has ever produced `SAT_CANDIDATE`. `experiments/accept/report.py` expects
 `CLOCK_SKEW` of both (`EXPECTED_MECHANISM`). It has no entry for hdfs-token-key or any ad-hoc
@@ -261,10 +269,6 @@ Scale and robustness:
 32. COMPOSE lowers and states a message family once per path that binds it
     (`gc/compose/ComposedFamilies#messageFamily`): hdfs-11741 r3's 47 paths carry 7 MB of family
     text per query, each arm body up to twice.
-33. A valuation is one query over the disjunction of every path (`gc/compose/ClaimPolicy#outcome`).
-    hdfs-11741 r3's valuation 0 over 47 paths is undecided after 30 minutes, while each path with
-    its selector asserted decides in about a second (paths 6 and 16 sat, the rest unsat); tracked
-    for a core, as every run was before `gc/smt/Z3#CORE_TRACKING`, the same query took 122 s.
 
 Fallbacks and dead code:
 

@@ -669,6 +669,17 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    the nested state selectors a state arm's stores are chosen among (§8) and clock cells; a selected
    state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →
    `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
+   Every such ask (and each re-ask below) is `byDisjunct`: the disjunction whole, its verdict within
+   60 s (`WHOLE_BUDGET_MS`; its model and core runs keep the full budget); undecided, one path at a
+   time: the first sat path answers, else undecided if any path was, else unsat with the union of
+   the paths' cores. Whole, z3 decides in seconds where it decides at all, but can spend any budget
+   searching every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole,
+   about a second each alone). A path is asked by `Composition#pathQuery`: the body without the
+   commands another path's selector guards (`(assert (=> <selector> ...))`, vacuous once the
+   partition forces that selector false), its own selector asserted; 90-98% of a body is guarded
+   (hdfs-17899-bug2 r4: 1.7 of 93 MB shared). The self-contradiction check and `mechanism`'s pinned
+   re-asks of the selected path read the same text. Selectors are never asserted together: two
+   contradict the partition.
    An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
    each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
    since tracked z3 simplifies nothing across them and still searches a disjunct whose selector the
@@ -690,7 +701,7 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      its mechanism, with `polarityDecides` true unless that is `RECORDED_FAILURE_EXPLAINED` or
      `NO_SUPPORTED_WITNESS`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
-     the seed's disjunct unsat at the recorded roots: its mechanism, if any;
+     every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any;
    - else `NO_SUPPORTED_WITNESS`.
 5. `mechanism`, narrowest first: pinning the path's observed reads makes it unsat →
    `STATE_PAIRING_FLIPPED`; its observed anchor arrivals → `MESSAGE_PAIRING_FLIPPED`; a moved root →
