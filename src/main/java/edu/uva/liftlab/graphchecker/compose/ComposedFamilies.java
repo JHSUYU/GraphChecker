@@ -428,7 +428,15 @@ final class ComposedFamilies {
                 new LinkedHashMap<String, List<AttachRow>>();
         Set<String> seen = new LinkedHashSet<String>();
         for (AttachRow attach : attaches) {
-            if (attach.interaction() == null) continue;
+            if (attach.interaction() == null) {
+                // No producer, so no family: a free constant, refused.
+                refusals.add(GapRow.of(owner, GapKind.UNATTESTED_ARM,
+                        GapClass.DIAGNOSTIC, attach.symbol(), "a delivery "
+                                + "this rests on was handed a value its "
+                                + "attach pairs with no producer, so "
+                                + "nothing binds it"));
+                return false;
+            }
             if (!seen.add(attach.endpoint().id())) continue;
             String correlation = attach.correlationId();
             add(byMessage, correlation == null || correlation.isEmpty()
@@ -863,8 +871,12 @@ final class ComposedFamilies {
                 }
             }
             Set<String> bound = new LinkedHashSet<String>();
-            for (AttachRow attach : nestedAttaches(session, outs)) {
-                bound.add(attach.symbol());
+            for (Out out : outs) {
+                for (String symbol : out.arm.nested()) {
+                    if (corpus.attach(session, symbol) != null) {
+                        bound.add(symbol);
+                    }
+                }
             }
             Independence relevant = composer.independence(session,
                     delivered, bound, reached,
@@ -892,9 +904,13 @@ final class ComposedFamilies {
             // session's selector: sessions share the leaf's handoff symbol,
             // so a nested family under one selector leaves it unbound for
             // the others.
+            List<String> asks = new ArrayList<String>(conjuncts);
+            asks.addAll(composer.statedJoins(joins,
+                    Collections.<String>emptySet(), conjuncts,
+                    Collections.<String>emptyList()));
             stated = closeMessages(ordinal, nestedGuard, session,
-                    nestedAttaches(session, outs), reachedSlots, nested,
-                    local, closedProducers, depth + 1);
+                    handedOn(session, outs, asks, local), reachedSlots,
+                    nested, local, closedProducers, depth + 1);
         }
         List<String> reachTexts = new ArrayList<String>(conjuncts);
         reachTexts.addAll(nested);
@@ -988,18 +1004,36 @@ final class ComposedFamilies {
 
     /**
      * The attaches one delivery was itself handed (item (iv) of an arm's
-     * closure, above): the handoff
-     * variables {@link Arms.Arm#nested} names, resolved in the delivering
-     * session.
+     * closure, above): every handoff variable the arm's conjunction names
+     * but the leaves it binds -- its delivered expressions'
+     * ({@link Arms.Arm#nested}) and those its closure's conditions and
+     * joins read (hdfs-11741 r8: the balancer's block-key expiry, joined in
+     * a move task's closure) -- resolved in the delivering session.  Unbound,
+     * each would be a free constant inside the arm; one that session
+     * minted no attach for has no family there, and refuses the arm.
      */
-    private List<AttachRow> nestedAttaches(String session, List<Out> outs) {
-        List<AttachRow> attaches = new ArrayList<AttachRow>();
-        Set<String> seen = new LinkedHashSet<String>();
+    private List<AttachRow> handedOn(String session, List<Out> outs,
+                                     List<String> asks,
+                                     List<GapRow> refused) {
+        Set<String> names = new LinkedHashSet<String>();
+        Set<String> leaves = new LinkedHashSet<String>();
         for (Out out : outs) {
-            for (String symbol : out.arm.nested()) {
-                if (!seen.add(symbol)) continue;
-                AttachRow attach = corpus.attach(session, symbol);
-                if (attach != null) attaches.add(attach);
+            names.addAll(out.arm.nested());
+            leaves.addAll(out.symbols);
+        }
+        names.addAll(lowering.reachedSymbols(asks));
+        names.removeAll(leaves);
+        List<AttachRow> attaches = new ArrayList<AttachRow>();
+        for (String name : names) {
+            AttachRow attach = corpus.attach(session, name);
+            if (attach != null) {
+                attaches.add(attach);
+            } else if (corpus.handoffSymbol(name)) {
+                refused.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, name, "an arm names a handoff "
+                                + "variable no attach row of its session "
+                                + "minted, so no family of that run binds "
+                                + "it"));
             }
         }
         return attaches;

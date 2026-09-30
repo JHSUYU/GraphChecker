@@ -535,7 +535,11 @@ twice, are one message under one selector; the eligible senders are the
 sessions with an attested arm at every leaf of the message, whose world's flip set contains or is
 contained in the path's; one `message_arm__` selector per sender (identical arm bodies share one),
 exactly one, each arm closed like a path in its own session (producer prefix before the delivery, its
-P3 closure, nested families to depth 16). A message no session can send drops the path. **A codec's
+P3 closure, nested families to depth 16). The nested families bind every handoff the arm's conjunction
+names, its delivery's and those its closure's conditions and joins read
+(`ComposedFamilies#handedOn`); one its session minted no attach for, or one paired with no producer,
+refuses the arm, so no arm lowers a handoff as a free constant. A message no session can send drops
+the path. **A codec's
 hole** (WIRE-CODEC §6.1, §6.3) is bound by `VmTermLowering#holeArm`, never by plain equality: its
 symbol is declared at the DECODED leaf's sort (the attach's `javaType`, also in
 `Composer#attestedArrival`), and the arm is the operand the producer's export cut out of its leaf

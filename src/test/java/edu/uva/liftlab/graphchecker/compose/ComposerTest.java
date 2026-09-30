@@ -1950,6 +1950,62 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A HANDOFF AN ARM'S CLOSURE READS IS BOUND LIKE ONE ITS DELIVERY NAMES
+     * (hdfs-11741 r8: the balancer's block-key expiry): the producer decided
+     * over a value it was handed before it sent the marker, and the flip
+     * replay's producer was answered 5 where upstream sent 2.  Free inside
+     * the arm, the solver took 5 and moved the marker; bound by its nested
+     * family, no run sent a value that decides that way.
+     */
+    @Test
+    public void aHandoffAnArmsClosureReadsIsBoundByItsFamily()
+            throws Exception {
+        Path iteration = folder.newFolder("arm-handoff").toPath();
+        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.count",
+                at("export#0", 0), 0);
+        Endpoint handed = Endpoint.of(PRODUCER, "PORT.count",
+                at("attach#0", 0), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        for (String each : new String[]{"s0", "s1"}) {
+            boolean flip = "s1".equals(each);
+            Session session = new Session(iteration, each, flip);
+            session.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
+                    flip, true);
+            session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                    flip, true);
+            session.marker(String.valueOf(flip));
+            session.expression("EXPR.0000000000000e01", integer("I", 2L));
+            session.export(upstream, "EXPR.0000000000000e01", "I", 1L, "2");
+            if (flip) {
+                session.answered(handed, "vu", "I", "2", "5", upstream);
+            } else {
+                session.attach(handed, "vu", "I", "2", upstream);
+            }
+            session.expression("EXPR.0000000000000e02", binary("&&",
+                    symbol(MARKER, "Z"), binary(">", symbol("vu", "I"),
+                            integer("I", 3L))));
+            session.decision(PRODUCER, "nn#u1", flip,
+                    "EXPR.0000000000000e02");
+            session.expression("EXPR.0000000000000e03", symbol(MARKER, "Z"));
+            session.export(producer, "EXPR.0000000000000e03", 2L,
+                    String.valueOf(flip));
+            session.attach(consumer, "vh", String.valueOf(flip), producer);
+            session.target("vh", flip, true);
+            session.write();
+        }
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                compose(iteration, 8), solver());
+        for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+            assertFalse("no run handed the producer a value past 3: "
+                    + outcome, outcome.answer().sat());
+        }
+        assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
+    }
+
     // ------------------------------------------------------------------
     // 11. Which writer the read could have seen (IDENTITY §4).
     // ------------------------------------------------------------------
