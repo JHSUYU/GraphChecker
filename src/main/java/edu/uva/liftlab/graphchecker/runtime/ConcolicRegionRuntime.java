@@ -724,13 +724,14 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * A fault marker's ({@code Debug.makeSymbolicBoolean}) recorded
-     * polarity: always {@code false}.  The wave's polarity is planted by the
+     * A fault marker's ({@code Debug.makeSymbolicBoolean}) polarity: {@code
+     * false}, as recorded, but where a native reproduction's plant names this
+     * call ({@link RecordingPlant}).  A replay's polarity is planted by the
      * local-definition mint ({@link RootMint#materializePrimitive}), not
      * here.  External caller (workload trees); keep the name.
      */
     public static boolean materializeSymbolicBoolean(String name) {
-        return false;
+        return RecordingPlant.marker(name);
     }
 
 

@@ -22,6 +22,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
 | CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
+| REPRODUCE | `campaign_reproduce`; `explore.ConfirmMain --plant`, `reproduce_runs` recordings with the plant, `runtime.CausynthTraceRecorder` | `final/reproduce/`, `final/reproduce.json` | never (it ranks a finding, and moves no claim) |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed; exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
 
 There is one iteration (`iteration-0000`); what a replay learns past the recording is taken up by GROW
@@ -802,6 +803,27 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, reason, sessionId}`, the
 same shape for a refusal, `realized.json` and the decision.
 
+## 10b. REPRODUCE: the confirmed world, natively
+
+A confirmed `SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the
+concolic VM (`campaign_reproduce`; ADHOC-INFRA WP5.D). `ConfirmMain --iteration --claim --plant
+<file>` writes the plant from CONFIRM's own world (`ConfirmMain#world`: the selected session's focus
+row overlaid by `plantModel`), one row per root, `{kind MARKER, occurrence: <mint occurrence id>,
+siteId: <the call site its plan input action names>, value}`; a world that also skews a clock,
+answers an attach or assigns any other root is refused (`NATIVE_PLANT_UNSUPPORTED`), and so is an
+empty one. The recording command runs `reproduce_runs` (10) times, each under `record_timeout_s` and
+charged as a replay, with `-Dcausynth.plant` (`execute.sh`, `CAUSYNTH_PLANT`): there
+`Debug.makeSymbolicBoolean` answers a row's value when its call site is the row's and a region
+occurrence enclosing it on the thread (`CausynthTraceRecorder#enclosingOccurrences`) has the row's id,
+inside the window, and states each answer as a `PLANT_APPLIED` trace row (`runtime.RecordingPlant`).
+Each run is aggregated for the target as the pre-screen aggregates (`--summary`: `plantsApplied`, and
+per target its `occurrences` and `fatalOccurrences`, those that took the fatal arm).
+`final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs, planted, fatal, atAnchor,
+reason}` -- runs whose plant answered a marker, runs where a target occurrence took the fatal arm,
+runs where the claim's own anchor did; `runs` 0 with the refusal as `reason` when nothing can be
+planted. A native run holds no schedule, so the planted occurrence may not recur: the rate ranks a
+finding (`tools/adhoc/findings.py`) and never refutes it.
+
 ## 11. EMIT
 
 1. `campaign_verify_frozen_inputs` (§1).
@@ -814,7 +836,8 @@ same shape for a refusal, `realized.json` and the decision.
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
    `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `byStage`, `byCode`.
 3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a
-   `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in); `findingKind`,
+   `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in, and a
+   confirmed one's `reproduction`, required then, null otherwise); `findingKind`,
    `polarityDecides`, `valuationOrdinal`, `movedRoots`, `blockers`, `reachability`, `finalStatus`,
    `gapCount`, `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
    `targetOccurrence`, `valuations`, `witnessFindings`.

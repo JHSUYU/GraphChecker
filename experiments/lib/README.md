@@ -26,7 +26,7 @@ on its own slice (`CAUSYNTH_STATIC_ROOT/<target name>/`), and
 | --- | --- |
 | `case-env.sh` | sourced by every script: reads the system's `system.sh`, then `case.sh`, and derives paths |
 | `run.sh` | the launcher: the case's declarations become the campaign environment, then `run_engine.sh` |
-| `execute.sh` | one workload JVM: the recording, or a concolic replay |
+| `execute.sh` | one workload JVM: the recording (with a native reproduction's plant, `CAUSYNTH_PLANT`), or a concolic replay |
 | `prepare-analysis.sh` | copies the declared scope into the classes directory the weave reads |
 | `classpath.sh` | the workload classpath, as the system's `system.sh` reads it off a test report (`experiments/<system>/classpath.py`) |
 | `java.sh` | the engine JVM |

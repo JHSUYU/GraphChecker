@@ -144,10 +144,13 @@ workflow_config_keys=(
   # nearest the throw first; 0 keeps the declared scope as it is.
   "causynth_scope_growth_budget CAUSYNTH_SCOPE_GROWTH_BUDGET krp 24"
   # `record` (a pre-screen): the directory holding each target's static
-  # slice, <root>/<target name>/, as `slice` wrote it (tools/adhoc/slice.sh),
-  # and the wall clock the recording's workload may take.
+  # slice, <root>/<target name>/, as `slice` wrote it (tools/adhoc/slice.sh).
   "causynth_static_root CAUSYNTH_STATIC_ROOT krp -"
+  # The wall clock a recording's workload may take after SEED's own: the
+  # pre-screen's, and each native reproduction run's (REPRODUCE).
   "record_timeout_s CAUSYNTH_RECORD_TIMEOUT_S krp 300"
+  # How many times REPRODUCE runs a confirmed witness natively.
+  "reproduce_runs CAUSYNTH_REPRODUCE_RUNS krp 10"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -513,7 +516,7 @@ validate_config() {
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
       schedule_max_jobs concolic_worker_count region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound \
-      obligation_memory_mb record_timeout_s; do
+      obligation_memory_mb record_timeout_s reproduce_runs; do
     require_positive_integer "${key}"
   done
   # The one stage a campaign may be asked to stop after.  Refused here rather
@@ -784,19 +787,22 @@ do_compose() {
     "${selection[@]}"
 }
 
-# The recording's workload, under a wall-clock bound of <seconds> when one is
-# given (run_under_wall_clock_bound).
+# run_configured_workload <trace-dir> [seconds] [plant]: the workload in the
+# recording weave (analysis_classes_dir, as SEED's static pass wove it), its
+# trace into <trace-dir>, under a wall-clock bound of <seconds> when one is
+# given (run_under_wall_clock_bound), with a native reproduction's plant
+# (runtime.RecordingPlant) when one is named.
 run_configured_workload() {
+  local trace_dir=$1
   local -a workload_env bound=()
-  local trace_dir
-  trace_dir=$(dirname "${runtime_region_plan}")
   workload_env=(
     "GRAPHCHECKER_JAR=${graphchecker_jar}"
     "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}"
     "CAUSYNTH_INSTRUMENTED_CLASSES_DIR=${analysis_classes_dir}"
     "CAUSYNTH_TRACE_OUTPUT_DIR=${trace_dir}"
+    "CAUSYNTH_PLANT=${3:-}"
   )
-  [[ -z "${1:-}" ]] || bound=(run_under_wall_clock_bound "$1")
+  [[ -z "${2:-}" ]] || bound=(run_under_wall_clock_bound "$2")
   (cd "${workload_work_dir}" && "${bound[@]+"${bound[@]}"}" \
     env "${workload_env[@]}" bash -lc "${workload_command}")
 }
@@ -815,7 +821,7 @@ do_workload() {
   # aggregation below, which writes them to ${trace_dir}/region_skeletons.jsonl.
   CAUSYNTH_TRACE_MODE=region-state do_analyze
   local status=0 started=${SECONDS}
-  run_configured_workload || status=$?
+  run_configured_workload "${trace_dir}" || status=$?
   campaign_recorded_workload_s=$(( SECONDS - started ))
   (( status == 0 )) || campaign_fail SEED WORKLOAD "${trace_dir}" \
     "the recorded workload exited ${status}: the test failed, or its run" \
@@ -863,7 +869,8 @@ ${trace_dir}/${name}")
   CAUSYNTH_TRACE_MODE=region-state do_analyze
   ensure_output_directory "${trace_dir}"
   local started=${SECONDS} status
-  run_capturing_status run_configured_workload "${record_timeout_s}"
+  run_capturing_status run_configured_workload "${trace_dir}" \
+    "${record_timeout_s}"
   exit_status=${status}
   wall=$(( SECONDS - started ))
   case "${exit_status}" in
@@ -2086,7 +2093,9 @@ campaign_instrument() {
   [[ -n "${ids}" ]] || campaign_fail INSTRUMENT CAMPAIGN "${plan}" \
     "the campaign plan published no task id"
   rm -rf -- "${classes}"
-  analysis_classes_dir="${classes}"
+  # This weave's output; the recording weave stays analysis_classes_dir
+  # (REPRODUCE runs it again).
+  local analysis_classes_dir="${classes}"
   export CAUSYNTH_CONCOLIC_TASK_PLAN="${plan}"
   export CAUSYNTH_CONCOLIC_TASK_ID="${ids}"
   do_analyze
@@ -3619,6 +3628,75 @@ ${confirm_dir}/confirm.log" "" >"${campaign_final}/confirm.json"
     "${campaign_final}/confirm.json"
 }
 
+# REPRODUCE (ADHOC-INFRA WP5.D): a confirmed witness run again natively --
+# the recording weave on the stock JDK, planting only the fault markers the
+# confirmation's world plants (explore.ConfirmMain --plant, the code that
+# wrote CONFIRM's world; runtime.RecordingPlant) -- reproduce_runs times,
+# each under record_timeout_s and charged as a replay, and each aggregated
+# for the target as the pre-screen aggregates.  final/reproduce.json states
+# how many runs there were, how many planted a marker, how many took the
+# target's fatal arm and how many at the claim's own anchor occurrence.  A
+# native run holds no schedule, so the planted occurrence may not recur: the
+# rate ranks a finding (tools/adhoc/findings.py) and never refutes it, and
+# nothing here moves the claim or CONFIRM's decision.  A world a native run
+# cannot plant (a clock, an attach's answer, any root but a marker) is a
+# reproduce.json with no run and the reason.  Only a confirmed SAT_CANDIDATE
+# is reproduced.
+campaign_reproduce() {
+  local iteration_dir=$1
+  local dir="${campaign_final}/reproduce" run trace name status=0
+  if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
+      != SAT_CANDIDATE || "$(jq -r '.confirmed' \
+      "${campaign_final}/confirm.json")" != true ]]; then
+    campaign_log "nothing confirmed to reproduce"
+    return 0
+  fi
+  [[ ! -e "${dir}" ]] \
+    || die "the reproduction directory already exists: ${dir}"
+  mkdir -p "${dir}"
+  run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.explore.ConfirmMain \
+    --iteration "${iteration_dir}" --claim "${campaign_final}/claim.json" \
+    --plant "${dir}/plant.jsonl" >"${dir}/plant.log" 2>&1
+  if [[ "${status}" -ne 0 ]]; then
+    jq -n --arg reason "$(sed -n 's/^CONFIRM refused: //p' \
+        "${dir}/plant.log" | head -n 1)" \
+      '{schemaVersion: 1, kind: "REPRODUCTION", runs: 0, planted: 0,
+        fatal: 0, atAnchor: 0,
+        reason: ("no native run: " + $reason)}' \
+      >"${campaign_final}/reproduce.json"
+    campaign_log "reproduce: $(jq -r .reason "${campaign_final}/reproduce.json")"
+    return 0
+  fi
+  name=$(campaign_target_names | head -n 1)
+  for (( run = 1; run <= reproduce_runs; run++ )); do
+    trace="${dir}/run-${run}"
+    # The run's own outcome is its summary: a planted fault may well fail
+    # the test.
+    campaign_head_charged "${obligation_memory_mb}" 300 \
+      run_configured_workload "${trace}" "${record_timeout_s}" \
+      "${dir}/plant.jsonl" >"${trace}.log" 2>&1 || true
+    run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+      --trace-dir "${trace}" --test "${trace_test}" \
+      --target "${name}=${candidate_graph},${causynth_static_scope_map},\
+${causynth_region_skeletons},${trace}/${name}" \
+      --summary "${trace}/summary.json" >>"${trace}.log" 2>&1 || true
+  done
+  find "${dir}" -mindepth 2 -maxdepth 2 -name summary.json -print0 \
+    | xargs -0 -r cat \
+    | jq -s --argjson runs "${reproduce_runs}" --arg name "${name}" \
+      --arg anchor "$(jq -r '.anchor' "${campaign_final}/claim.json")" '
+      {schemaVersion: 1, kind: "REPRODUCTION", runs: $runs,
+       planted: map(select(.plantsApplied > 0)) | length,
+       fatal: map(select((.targets[$name].fatalOccurrences // [])
+                         | length > 0)) | length,
+       atAnchor: map(select((.targets[$name].fatalOccurrences // [])
+                            | index($anchor) != null)) | length,
+       reason: ""}' >"${campaign_final}/reproduce.json"
+  jq -r '"  reproduced at the anchor in \(.atAnchor) of \(.runs) native run(s) (\(.planted) planted, \(.fatal) fatal)"' \
+    "${campaign_final}/reproduce.json"
+}
+
 # The one shape of final/confirm.json.
 campaign_confirm_verdict() {
   local confirmed=$1 reason=$2 session_id=$3
@@ -3857,9 +3935,20 @@ campaign_emit() {
         "the confirmation states no boolean confirmed and string reason"
     confirmation=$(cat "${campaign_final}/confirm.json")
   fi
+  # REPRODUCE's answer for a confirmed candidate, beside the confirmation it
+  # never changes; null for every other claim.
+  local reproduction=null
+  if [[ "$(jq -r '.confirmed' <<<"${confirmation}")" == true ]]; then
+    require_nonempty "reproduction" "${campaign_final}/reproduce.json"
+    campaign_require_json "reproduction" "${campaign_final}/reproduce.json" \
+      || campaign_fail EMIT REPRODUCE "${campaign_final}/reproduce.json" \
+        "the reproduction is malformed"
+    reproduction=$(cat "${campaign_final}/reproduce.json")
+  fi
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --argjson confirmation "${confirmation}" \
+    --argjson reproduction "${reproduction}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
     $composedDocuments[0] as $c | ($c.solver // {}) as $r |
@@ -3891,6 +3980,8 @@ campaign_emit() {
      # The confirmation itself, so a reader of result.json sees which
      # session answered and why, not only that the claim was downgraded.
      confirmation: $confirmation,
+     # How often the confirmed world reproduced natively (REPRODUCE).
+     reproduction: $reproduction,
      # WHICH mechanism the formula supports, beside WHETHER the run is
      # accepted.  Two questions, and a reader of result.json alone could
      # answer only the second: the ClaimKind, the valuation that carried it
@@ -4163,6 +4254,7 @@ do_campaign() {
   campaign_stage SOLVE campaign_solve
   campaign_stage DECIDE campaign_decide
   campaign_stage CONFIRM campaign_confirm "${iteration_dir}"
+  campaign_stage REPRODUCE campaign_reproduce "${iteration_dir}"
   campaign_stage EMIT campaign_emit "${iteration_dir}"
 }
 

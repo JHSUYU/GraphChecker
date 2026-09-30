@@ -120,6 +120,9 @@ emit_fixture() {
   jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: true,
     reason: "every edge the model chose was taken, and the anchor observed the fatal",
     sessionId: "CONFIRM-1"}' >"${campaign_final}/confirm.json"
+  # REPRODUCE's answer for that confirmed claim, which EMIT copies beside it.
+  jq -n '{schemaVersion: 1, kind: "REPRODUCTION", runs: 10, planted: 10,
+    fatal: 7, atAnchor: 6, reason: ""}' >"${campaign_final}/reproduce.json"
   # One replay session, per kind, as the runtime publishes it.  IMPORT
   # counted these into the census EMIT requires; the fixture states both.
   for session_kind in activations decisions exports attaches writes reads \
@@ -189,6 +192,8 @@ run_emit
   || fail "a complete candidate was withheld: $(<"${emit_root}/emit.log")"
 [[ $(jq -r '.claim' "${campaign_final}/result.json") == SAT_CANDIDATE ]] \
   || fail "the accepted SAT claim was not published"
+[[ $(jq -r '.reproduction.atAnchor' "${campaign_final}/result.json") == 6 ]] \
+  || fail "the result lost the native reproduction"
 [[ $(jq -r '.provenance.loopBounds.sha256' \
       "${campaign_final}/result.json") \
     == "$(campaign_digest "${emit_bounds}")" ]] \
@@ -718,7 +723,9 @@ done
 # 50: `causynth_static_root` and `record_timeout_s` joined it with `record`,
 # the pre-screen: which static slices it aggregates each target on, and how
 # long its recording may run.
-[[ "$(print_normalized_config | wc -l)" -eq 50 ]] \
+# 51: `reproduce_runs` joined it with REPRODUCE: how often a confirmed
+# witness is run natively.
+[[ "$(print_normalized_config | wc -l)" -eq 51 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -967,7 +974,7 @@ stop_after_campaign "${stop_after_dir}/campaign-full" \
   || fail "a campaign with campaign_stop_after unset did not exit 0"
 [[ "$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")" == \
     "PREFLIGHT FREEZE_TOOL FREEZE SEED PLAN INSTRUMENT REPLAY IMPORT EXPLORE \
-COMPOSE SOLVE DECIDE CONFIRM EMIT " ]] \
+COMPOSE SOLVE DECIDE CONFIRM REPRODUCE EMIT " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 

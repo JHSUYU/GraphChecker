@@ -144,9 +144,10 @@ for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f
    patches and Solr `fdf91e8` + the per-branch `consumed` commits; §4.9 deletions), then **W7**
    validation (11 cases live + one sweep each system). Ad-hoc checks need this: no hand rows.
 8. **ADHOC-INFRA** (`/bigtemp/vnr3ne/specs/ADHOC-INFRA-proposal.md`; WP4, WP5.A, WP1, WP5.C, WP2
-   and WP5.B's build key, nightly and snapshot locks are on main): WP5.B's `regress.sh` (the
-   day's engine-fix regression list that places the `regress-pass-*` tag the nightly freezes;
-   tagged by hand until then), WP5.D, WP3 (one shared recording and seed replay per test for all
+   and WP5.B's build key, nightly and snapshot locks, and WP5.D phase 1 (REPRODUCE plants fault
+   markers natively) are on main): WP5.B's `regress.sh` (the day's engine-fix regression list
+   that places the `regress-pass-*` tag the nightly freezes; tagged by hand until then), WP5.D
+   phase 2 (clock and config plants), WP3 (one shared recording and seed replay per test for all
    its checks). The first nightly slices every declared check under the new build key.
 9. **R3 leftovers** (`/bigtemp/vnr3ne/specs/R3-REFCONT-proposal.md`): WP3b/c (TreeMap,
    ConcurrentSkipList*, LinkedList, CopyOnWrite*, queues in the VM), WP7 (`cone.py` follows writer
@@ -399,6 +400,8 @@ COMPOSE     merge all sessions into one disjunction over the anchor, solve it pe
             valuation with z3, decide the claim (compose/ComposeMain: Composer, ClaimPolicy)
 SOLVE/DECIDE  check and print the solver verdict and the claim COMPOSE published
 CONFIRM     re-run the witness world, check its edges (explore/ConfirmMain)
+REPRODUCE   run a confirmed witness natively: the recording weave on the stock JDK,
+            planting only its fault markers (runtime/RecordingPlant), N times
 EMIT        final/result.json, gaps.json, run-manifest.json
 ```
 
@@ -520,8 +523,9 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
 13. `triage.py <round> [gc-out]`: outcome class per case (CONFIRMED, REFUTED, NO_WITNESS, STOPPED,
     DEAD, RUNNING, PENDING); `gc-out` defaults to `gc-env.sh`'s `GC_OUT`.
 14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
-    one row per mechanism among the confirmed witnesses (`findings.tsv`); the ledger marks each
-    new, known or dismissed.
+    one row per mechanism among the confirmed witnesses (`findings.tsv`), weighted by kind,
+    mediation and (1 + the rate at which REPRODUCE reproduced it natively at its anchor); the
+    ledger marks each new, known or dismissed.
 
 ## Outputs
 
@@ -534,7 +538,7 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
 | `out/<case>/schedule/stage_metrics.tsv` | time per stage |
 | `out/<case>/schedule/iteration-0000/` | `execution_task_plan.jsonl`, `concolic_region_plan.jsonl`, `recorded_schedule.jsonl`, `sessions/<id>/`, `obligations-<NNNN>/` (per wave: one worker directory per obligation), `obligation_results.jsonl` |
 | `…/sessions/<id>/` | one replay's rows: `activations`, `decisions`, `reads`, `writes`, `exports`, `attaches`, `roots`, `targets`, `gaps`, `schedule` (`.jsonl`), `expressions.jsonl`, `manifest.json` |
-| `out/<case>/schedule/final/` | `result.json`, `claim.json`, `gaps.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `run-manifest.json` |
+| `out/<case>/schedule/final/` | `result.json`, `claim.json`, `gaps.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `reproduce.json`, `run-manifest.json` |
 
 A flip query can be re-solved by hand with `z3 -smt2 obligation_query.smt2`.
 

@@ -7,6 +7,8 @@ lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 source "${lib}/case-env.sh" "${1:?missing case directory}" "${2-}"
 jar=${GRAPHCHECKER_JAR:?missing GraphChecker jar}
 cp=$(bash "${lib}/classpath.sh" "${case_dir}" "${case_id}")
+# The scratch directory this script made, removed when it exits.
+scratch_owned=""
 
 if [[ -n ${CAUSYNTH_CONCOLIC_TASK_PLAN:-} ]]; then
   classes=${CAUSYNTH_CONCOLIC_CLASSES:?missing concolic classes}
@@ -23,12 +25,16 @@ if [[ -n ${CAUSYNTH_CONCOLIC_TASK_PLAN:-} ]]; then
     -Dcausynth.concolic.halt.after.selected.result=true)
 else
   classes=${CAUSYNTH_INSTRUMENTED_CLASSES_DIR:?missing instrumented classes}
+  # The recording's own temp and data: nothing reads them after it.
   work=$(mktemp -d "/tmp/${tag}-trace.XXXXXX")
+  scratch_owned=${work}
   trace=${CAUSYNTH_TRACE_OUTPUT_DIR:?missing trace output directory}
   jdk=/usr/lib/jvm/java-8-openjdk-amd64
+  # A native reproduction plants its markers (runtime.RecordingPlant).
   properties=(
     "-Dcausynth.trace.test=${test_name}"
-    "-Dcausynth.trace.start.paused=true")
+    "-Dcausynth.trace.start.paused=true"
+    ${CAUSYNTH_PLANT:+"-Dcausynth.plant=${CAUSYNTH_PLANT}"})
 fi
 
 mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
@@ -40,10 +46,10 @@ mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
 # Nothing downstream reads either: what a replay PUBLISHES is its session and
 # its result rows, both under the worker directory.  Opt-in, and it degrades
 # rather than fails.
-scratch_owned=""
 remove_local_scratch() {
   [[ -z ${scratch_owned} ]] || rm -rf -- "${scratch_owned}"
 }
+trap remove_local_scratch EXIT
 tmpdir="${work}/temp"
 datadir="${work}/data"
 if [[ -n ${CAUSYNTH_LOCAL_SCRATCH:-} ]]; then
@@ -52,7 +58,6 @@ if [[ -n ${CAUSYNTH_LOCAL_SCRATCH:-} ]]; then
         2>/dev/null); then
     tmpdir="${scratch_owned}/temp"
     datadir="${scratch_owned}/data"
-    trap remove_local_scratch EXIT
   else
     scratch_owned=""
     echo "${tag}: CAUSYNTH_LOCAL_SCRATCH=${CAUSYNTH_LOCAL_SCRATCH} is not\
