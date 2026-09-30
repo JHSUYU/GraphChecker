@@ -1,6 +1,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/methodSymbolizer.hpp"
+#include "concolic/unsafeAccess.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "runtime/atomic.inline.hpp"
 #include "concolic/exp/methodExpression.hpp"
@@ -206,7 +207,10 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
   if (caller_frame == _handle.get_caller_frame()) {
     if (ConcolicMngr::ctx->get_thread()->has_pending_exception()) {
       // Exceptional unwind has no Java result.  Reset symbolizer state only;
-      // the real handler will establish the new operand-stack contents.
+      // the real handler will establish the new operand-stack contents.  An
+      // Unsafe write the call stated it would make (UnsafeAccess::Intent)
+      // did not complete; a later write must not take it for its own.
+      UnsafeAccess::clear_intent();
       this->_handle.reset();
       this->set_symbolizing_method(false);
       return;
