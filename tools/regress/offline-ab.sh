@@ -37,9 +37,6 @@
 # nothing) and run under THIS checkout's case declarations and harness
 # (experiments/): the jar is the one variable.  The workload classpath is
 # the one the run froze when it states one (its tree's report may be gone).
-# SEED.static deviates from run_engine.sh by one argument (Soot on one
-# thread) and is still not deterministic, so it is compared canonically and
-# reported, never gating.
 #
 # Each case is one task, both sides inside it, placed by
 # /bigtemp/vnr3ne/bin/onlift.sh on the lift with the most free memory for
@@ -213,16 +210,9 @@ ab_stage_seed_static() {
   )
   [[ -z "$(ab_cfg causynth_communication_mappings)" ]] || ab_props+=(
     "-Dcausynth.communication.mappings=$(ab_cfg causynth_communication_mappings)")
-  # The one argument run_engine.sh does not pass: Soot on one thread.  With
-  # its default (a thread per core) two runs of one jar differ in Soot's
-  # lambda class counters, the lambda-rooted region ids hashed from them,
-  # Jimple local names and the guard edges over them.  On one thread what is
-  # left is the static pipeline's own hash order: DF edge ids, the order of
-  # a row's lists, and in some cases a few rows (ab_compare.py).
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
     "${ab_jar}:${ab_project_cp}" edu.uva.liftlab.graphchecker.GraphCheckerMain \
-    -i "${classes}" -x "${ab_project_cp}" -o "${out}/instrumented-classes" \
-    -- -num-threads 1
+    -i "${classes}" -x "${ab_project_cp}" -o "${out}/instrumented-classes"
   ab_props=()
 }
 

@@ -220,7 +220,9 @@ worker's focus row as that session's world, the wave verdicts, the recorded sche
 Demand starts at the anchor: its flip sites are the target sites' guards
 (`StaticScopeMap.Site.guards`) when some run reached the anchor, else the sites of the target's path
 chain (`pathSites`). The demanded symbols of an occurrence (with its state-connected factor) are those
-its demanded values reach (`SmtLowering.reachedSymbols` over the lowered terms): the anchor's `phiTerm`,
+its demanded values reach (`SmtLowering.reachedSymbols` over the lowered terms and, where a read's
+refused join gave way to its mint or its value, over what that join lowered: `Lowered.reach`; such a
+lowering is no `Lowered.ok` value a flip query stands on): the anchor's `phiTerm`,
 its decisions at its flip sites, and the values it contributed (the exports a demanded attach paired
 with, the write a demanded read could observe), closed over the reads those name and the writes they
 could observe. Each demanded boundary input grows the closure:
@@ -412,9 +414,12 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   this session's value, or bounded by its declared window around it; a declared root this session
   never minted refuses the path only when the path's terms name it;
 - anchor handoffs: an obligation's answer if any, else bound only by the message family;
-- the read rule (`statedReads`, `stateJoins`): JOIN to the observed version's write expression if it
-  lowers with no refusal, else the MINT of that version (a placeholder), else PIN to the value the row
-  states, else REFUSE (`UNSTATED_VALUE`); a refused join is dropped when the mint or the pin binds;
+- the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
+  too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
+  of that version (a placeholder), else PIN to the value the row states, else REFUSE
+  (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
+  can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
+  dropped it raises nothing (no refusal, side condition or gap);
 - `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the
@@ -644,9 +649,10 @@ a pure function of the recording once per jar — the static pass, the trace agg
 EXPLORE wave 0 and its solves, IMPORT, the closing EXPLORE wave, COMPOSE with SOLVE and DECIDE,
 and CONFIRM's planning — over private iterations that link the recorded sessions, with no
 workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
-2 when one could not be checked. The static pass (Soot) is not deterministic: it runs on one
-thread, is compared canonically and never gates. A round is read as the current engine reads it,
-so the gate needs a round recorded by a build whose row contract HEAD still reads.
+2 when one could not be checked. Every stage gates on bytes, the static pass included: it is the
+same on every host and run ([SYMBOL-SCOPE.md §2.3](SYMBOL-SCOPE.md)). A round is read as the
+current engine reads it, so the gate needs a round recorded by a build whose row contract HEAD
+still reads.
 
 ## 13. Reading a run
 

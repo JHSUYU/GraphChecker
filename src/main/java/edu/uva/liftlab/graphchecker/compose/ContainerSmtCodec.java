@@ -359,7 +359,7 @@ public final class ContainerSmtCodec {
             if (arguments.size() != 1) {
                 return unmodeled("INDEXED", operation, arguments, host);
             }
-            Term size = host.operand(arguments.get(0), Sort.INT);
+            Term size = integer(arguments.get(0), host);
             return size == null ? null : new Term(
                     "(mkIndexedState " + size.text
                             + " (indexed_elements " + state.text + "))",
@@ -384,7 +384,7 @@ public final class ContainerSmtCodec {
             }
             // The element a traversal reads: an indexed ITERATOR is the
             // identity on its state.
-            Term index = host.operand(positions.get(0), Sort.INT);
+            Term index = integer(positions.get(0), host);
             Term cursor = host.operand(expression.get("receiver"),
                     Sort.INDEXED);
             if (cursor != null && index != null) {
@@ -433,7 +433,7 @@ public final class ContainerSmtCodec {
                     ? Sort.INDEXED : Sort.ASSOCIATIVE;
             JsonArray positions = array(expression, "arguments");
             Term position = positions.size() == 1
-                    ? host.operand(positions.get(0), Sort.INT) : null;
+                    ? integer(positions.get(0), host) : null;
             Term state = stateSort == Sort.ASSOCIATIVE
                     ? associativeState(expression.get("receiver"), host)
                     : host.operand(expression.get("receiver"), stateSort);
@@ -506,7 +506,7 @@ public final class ContainerSmtCodec {
             return indexedSize(receiverIr, receiver, host);
         }
         if ("READ".equals(operation) && arguments.size() == 1) {
-            Term index = host.operand(arguments.get(0), Sort.INT);
+            Term index = integer(arguments.get(0), host);
             if (index != null) {
                 requireIndexedMember(receiver, index, host);
             }
@@ -516,12 +516,15 @@ public final class ContainerSmtCodec {
                     Sort.VALUE), javaType);
         }
         if ("WRITE".equals(operation) && arguments.size() == 2) {
-            Term index = host.operand(arguments.get(0), Sort.INT);
+            Term index = integer(arguments.get(0), host);
             Term value = host.box(arguments.get(1));
-            // In place: the size is the receiver's (dropped, Lucene's
-            // deleteCommits compaction left its REMOVE no size to shift by).
-            return index == null || value == null ? null
-                    : new Term("(indexed_write " + receiver.text + " "
+            if (index == null || value == null) return null;
+            // A set() or an array store throws outside its receiver, as a
+            // get() does.  In place: the size is the receiver's (dropped,
+            // Lucene's deleteCommits compaction left its REMOVE no size to
+            // shift by).
+            requireIndexedMember(receiver, index, host);
+            return new Term("(indexed_write " + receiver.text + " "
                     + index.text + " " + value.text + ")",
                     Sort.INDEXED, IntegralWidth.NONE, receiver.indexedSize);
         }
@@ -533,13 +536,13 @@ public final class ContainerSmtCodec {
                     IntegralWidth.NONE, grown(receiver, 1L));
         }
         if ("INSERT".equals(operation) && arguments.size() == 2) {
-            Term index = host.operand(arguments.get(0), Sort.INT);
+            Term index = integer(arguments.get(0), host);
             Term value = host.box(arguments.get(1));
             if (index == null || value == null) return null;
             return shift(receiver, index, value, host);
         }
         if ("REMOVE".equals(operation) && arguments.size() == 1) {
-            Term index = host.operand(arguments.get(0), Sort.INT);
+            Term index = integer(arguments.get(0), host);
             if (index == null) return null;
             return shift(receiver, index, null, host);
         }
@@ -588,7 +591,7 @@ public final class ContainerSmtCodec {
         }
         if ("REMOVE_AT".equals(operation)
                 && arguments.size() == 1) {
-            Term index = host.operand(arguments.get(0), Sort.INT);
+            Term index = integer(arguments.get(0), host);
             if (index == null) return null;
             // Removing AT a position is a walk of the same view: which
             // key the position names is the bijection's to say.
@@ -687,6 +690,19 @@ public final class ContainerSmtCodec {
                 optionalString(constant, "_exp"));
     }
 
+    /**
+     * One int operand (a position or a size), or null once refused by name.
+     * A refused leaf keeps its own node's sort, which need not be Int, and
+     * a membership require over it was ill-sorted SMT: z3 answered the
+     * whole composition with an error.
+     */
+    private static Term integer(JsonElement expression, Host host) {
+        Term value = host.operand(expression, Sort.INT);
+        if (value == null || value.sort == Sort.INT) return value;
+        host.unsupported("ContainerRelation:int-operand-sort=" + value.sort);
+        return null;
+    }
+
     /** An operation this codec has no relation for, refused by name. */
     private static Term unmodeled(String shape, String operation,
                                   JsonArray arguments, Host host) {
@@ -700,7 +716,7 @@ public final class ContainerSmtCodec {
                                               String javaType, Host host,
                                               Set<JsonElement> views) {
         Term state = associativeState(entry.stateExpression, host);
-        Term index = host.operand(entry.indexExpression, Sort.INT);
+        Term index = integer(entry.indexExpression, host);
         if (state == null || index == null) return null;
         // Only where the recording bounds the view's positions.
         if (!requireAssociativeViewBijection(entry.stateExpression, state,
@@ -764,7 +780,7 @@ public final class ContainerSmtCodec {
             if (EXPRESSION_TYPE.equals(optionalString(object, "_type"))
                     && "STATE".equals(optionalString(object, "operation"))
                     && arguments.size() == 1) {
-                return host.operand(arguments.get(0), Sort.INT);
+                return integer(arguments.get(0), host);
             }
         }
         return javaContainerSize("(indexed_size " + state.text + ")", host);

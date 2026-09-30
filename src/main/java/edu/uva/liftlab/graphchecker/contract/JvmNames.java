@@ -4,14 +4,16 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * A class name the JVM or a weave mints per run is not an identity: strips
- * the counter from reflection accessors ({@code GeneratedMethodAccessor23}),
- * lambda proxies ({@code Foo$$Lambda$14/0x..}) and the classes a weave
- * desugars a lambda into ({@code Foo$lambda_execute_0__259}), whose numbers
- * depend on unrelated inflation or weave order and would make one site differ
- * across recordings (spurious
+ * A class name the JVM mints per run is not an identity: strips the counter
+ * from reflection accessors ({@code GeneratedMethodAccessor23}) and lambda
+ * proxies ({@code Foo$$Lambda$14/0x..}), whose numbers depend on unrelated
+ * inflation and would make one site differ across recordings (spurious
  * {@link edu.uva.liftlab.graphchecker.explore.Corpus}{@code .affected}; a
  * Solr client's pooled send named a different anchor in each recording).
+ * The classes a weave desugars a lambda into ({@code
+ * Foo$lambda_execute_0__1734091262}) keep their number: every weave names
+ * them by content (GraphChecker's {@code LambdaClassNames}), so a runtime
+ * site spells its class as every run and the static artifacts do.
  *
  * <p>Applied at the mint in the runtime, never when parsing
  * {@link Endpoint} or {@link Frame}.  Text-level and idempotent: takes a
@@ -31,14 +33,6 @@ public final class JvmNames {
     private static final Pattern LAMBDA = Pattern.compile(
             "\\$\\$Lambda\\$[0-9]+(?:[/.][0-9a-fA-Fx]+)?");
 
-    /**
-     * {@code <Outer>$lambda_<method>_<n>__<counter>}: the weave's class for
-     * the n-th lambda of a method, numbered by a counter over the whole weave.
-     * The n tells two lambdas of one method apart and stays.
-     */
-    private static final Pattern DESUGARED = Pattern.compile(
-            "(\\$lambda_[A-Za-z0-9_$]+?_[0-9]+)__[0-9]+");
-
     private JvmNames() {
     }
 
@@ -54,8 +48,7 @@ public final class JvmNames {
         // Runs per recorded event: cheap indexOf before any regex.
         boolean accessor = className.indexOf("Accessor") >= 0;
         boolean lambda = className.indexOf("$$Lambda$") >= 0;
-        boolean desugared = className.indexOf("$lambda_") >= 0;
-        if (!accessor && !lambda && !desugared) return className;
+        if (!accessor && !lambda) return className;
         String stable = className;
         // "$1" is the group: the accessor's own name without its number.
         if (accessor) stable = ACCESSOR.matcher(stable).replaceAll("$1");
@@ -65,7 +58,6 @@ public final class JvmNames {
             stable = LAMBDA.matcher(stable).replaceAll(
                     Matcher.quoteReplacement("$$Lambda"));
         }
-        if (desugared) stable = DESUGARED.matcher(stable).replaceAll("$1");
         return stable;
     }
 }

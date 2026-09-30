@@ -1577,7 +1577,8 @@ public class ComposerTest {
                     read("INSTANCE_FIELD", 6L, 12L, 5L, "Z"),
                     integer("Z", 1L)));
             // And a call's result the VM minted and no row declares, whose
-            // node states what it returned: that value, and not a cut.
+            // node states what it returned but not the call (a VM before
+            // f14): what it was computed from is unknown, so it is refused.
             JsonObject returned = symbol(RETURNED, "J");
             returned.add("concreteValue", integer("J", 2L));
             session.expression("EXPR.00000000000000b8", binary("<",
@@ -1703,11 +1704,10 @@ public class ComposerTest {
                     gap.subject().contains("MalformedJvmLcmpOperands")
                             || gap.subject().contains("BinarySortConflict"));
         }
-        assertTrue("an undeclared symbol whose node states what it returned "
-                        + "is that value, named once as a dropped dependency",
-                named(gaps, "UndeclaredSymbolPinned:" + RETURNED));
-        assertFalse("and is not cut",
-                named(gaps, "UndeclaredFreeSymbol:" + RETURNED));
+        assertTrue("a method-return symbol whose node states no call is "
+                        + "refused by name, whatever value it states",
+                named(gaps, "MethodReturnCallUnstated:" + RETURNED)
+                        && !named(gaps, "MethodReturnPinned:" + RETURNED));
         assertTrue("a reference projection the VM valued neither way is "
                         + "refused by name, naming the class and offset",
                 named(gaps, "UNSTATED_FIELD_PROJECTION:"
@@ -2645,13 +2645,15 @@ public class ComposerTest {
                 composition.body().contains("indexed_insert")
                         || composition.body().contains("indexed_remove")
                         || composition.body().contains("indexed_contains"));
-        assertTrue("each insertion and the removal carry the operation's "
-                        + "own definedness, at the size the recording "
-                        + "stated and a write in place kept: "
+        assertTrue("each insertion, the write and the removal carry the "
+                        + "operation's own definedness, at the size the "
+                        + "recording stated and a write in place kept: "
                         + composition.body(),
                 composition.body().contains("(and (<= 0 0) (<= 0 0))")
                         && composition.body().contains(
                         "(and (<= 0 1) (<= 1 1))")
+                        && composition.body().contains(
+                        "(i 1)) (and (<= 0 i) (< i (indexed_size s))))")
                         && composition.body().contains(
                         "(and (<= 0 1) (< 1 2))"));
         assertTrue("and the element lands at the index, cell by cell, with "
@@ -3711,13 +3713,17 @@ public class ComposerTest {
      * refuse the path (f4 visible-gs, sender-gs); the same condition over
      * the location phi reads still does.  Java null is no variable: every
      * null check spells it alike, and sharing it kept 80 of the 145
-     * conditions and reads of a SOLR-18406 path.
+     * conditions and reads of a SOLR-18406 path.  What a family binds is
+     * kept as phi is: a condition over an anchor handoff phi never names
+     * still refuses (C1 review M2).
      */
     @Test
     public void aConditionPhiDoesNotRestOnDoesNotRefuseThePath()
             throws Exception {
-        for (String shares : new String[]{"nothing", "location", "null"}) {
-            boolean shared = "location".equals(shares);
+        for (String shares : new String[]{"nothing", "location", "null",
+                "handoff"}) {
+            boolean shared = "location".equals(shares)
+                    || "handoff".equals(shares);
             boolean nulls = "null".equals(shares);
             Path iteration = folder.newFolder("independence-" + shares)
                     .toPath();
@@ -3736,7 +3742,8 @@ public class ComposerTest {
             name.addProperty("_name", "substring");
             name.addProperty("_is_not", false);
             JsonArray parameters = new JsonArray();
-            parameters.add(shared ? read("INSTANCE_FIELD", 58L, 40L, 158L, "I")
+            parameters.add("location".equals(shares)
+                    ? read("INSTANCE_FIELD", 58L, 40L, 158L, "I")
                     : read("INSTANCE_FIELD", 59L, 32L, 157L,
                     "Ljava/lang/String;"));
             parameters.add(integer("I", 4L));
@@ -3745,7 +3752,13 @@ public class ComposerTest {
             session.expression("EXPR.00000000000000a2", nulls
                     ? binary("&&", named, binary("!=", symbol(
                             "M_L'org/apache/Bar'_2", "org/apache/Bar"),
-                    vmNull())) : named);
+                    vmNull())) : "handoff".equals(shares)
+                    ? binary("&&", named, binary("!=", symbol("vH_heard",
+                    "I"), integer("I", 0L))) : named);
+            if ("handoff".equals(shares)) {
+                session.answered(Endpoint.of(ANCHOR, "Port#recv#1:ATTACH",
+                        at("recv#1", 0), 0), "vH_heard", "I", "5", null);
+            }
             session.decision(ANCHOR, "file#u3", true,
                     "EXPR.00000000000000a2");
             session.expression("EXPR.00000000000000a4", binary("!=",
@@ -3757,7 +3770,8 @@ public class ComposerTest {
             session.write();
 
             Composer.Composition composition = compose(iteration, 4);
-            assertEquals(shared ? "a condition phi rests on still refuses"
+            assertEquals(shared ? "a condition phi or a family rests on "
+                            + "still refuses: " + shares
                             : "a condition phi does not rest on is left out: "
                             + shares,
                     shared ? 0 : 1, composition.disjuncts().size());
@@ -3765,57 +3779,272 @@ public class ComposerTest {
     }
 
     /**
-     * THE ONE BINDING RULE: JOIN, MINT, PIN, REFUSE.  A read whose write
-     * does not lower is bound by the value its row states, and the join that
-     * refused is then no refusal of the path -- neither in the state joins
-     * nor where phi reads the same version and meets the refused write
-     * again.  Kept at once, it dropped every SOLR-18406 anchor path (s46).
-     * With nothing to bind the read, it is the path's, beside the read's.
+     * THE ONE BINDING RULE ({@code SmtLowering#bind}), at the row and at the
+     * node alike: JOIN, MINT, PIN, REFUSE, a refused join giving way only
+     * where nothing it rests on can move.  One case per row:
+     * <ul>
+     *   <li>pin: the write refuses over nothing that moves, and the row
+     *       states its value: the pin binds the read, and what the dropped
+     *       join raised (its recorded reading, its cut) went with it;</li>
+     *   <li>unstated: the same with no value stated: the path is refused,
+     *       the join's refusal beside the read's;</li>
+     *   <li>H1: the write is {@code parseInt(valueOf(R))}, R a declared
+     *       root: pinned, phi {@code x != R} would move R past a constant,
+     *       so no pin stands and there is no path to move it in;</li>
+     *   <li>H2a: the node's own projection lowers where the write refused:
+     *       phi reads the projection, never the pinned constant;</li>
+     *   <li>H2b: the write joins and a STATE family may re-pair the read,
+     *       while the node's projection refuses: phi gets no literal the
+     *       family cannot move, so the path is refused.</li>
+     * </ul>
      */
     @Test
-    public void aJoinThatRefusedIsDroppedWhenThePinBindsTheRead()
-            throws Exception {
-        for (boolean stated : new boolean[]{true, false}) {
-            Path iteration = folder.newFolder("attempt-" + stated).toPath();
+    public void theOneBindingRule() throws Exception {
+        for (String name : new String[]{"pin", "unstated", "H1", "H2a",
+                "H2b"}) {
+            Path iteration = folder.newFolder("bind-" + name).toPath();
+            OccurrenceAddress reader = occurrence("case/nn0", "REGION.commit",
+                    CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
+                    frame("Namesystem#commit#12", 0));
+            OccurrenceAddress first = occurrence("case/nn0", "REGION.tick",
+                    CausalContext.of(Role.of("TICK_A"), "", 1),
+                    frame("TickA#run#3", 0));
+            LocationId stamp = LocationId.of(LocationKind.INSTANCE, "10",
+                    "value");
+            String key = SmtLowering.locationKey(stamp);
+            String symbol = key + "@v2@s0";
+            Session session = new Session(iteration, "s0", false);
+            session.occurrence = reader;
+            session.activation(reader);
+            session.activation(first);
+            session.serial("3", "0", "8");
+            // Refused over nothing that moves (an undeclared leaf here, a
+            // call no lowering models in EXPLORE's too), with what the run
+            // read of it: a side condition of the join.
+            JsonObject unmodeled = new JsonObject();
+            unmodeled.addProperty("_type", "MethodExpression");
+            unmodeled.addProperty("_name", "org/apache/Foo bar");
+            unmodeled.add("_param_list", new JsonArray());
+            unmodeled.add("_res_exp", integer("I", 7L));
+            JsonObject refused = binary("+", symbol(NO_ROW, "I"), unmodeled);
+            refused.add(VmRows.RECORDED_READING, integer("I", 4242L));
+            JsonObject parsed = new JsonObject();
+            parsed.addProperty("_type", "MethodExpression");
+            parsed.addProperty("_name", "java/lang/Integer parseInt");
+            JsonArray arguments = new JsonArray();
+            arguments.add(vmString("toString", symbol(SERIAL, "I")));
+            parsed.add("_param_list", arguments);
+            parsed.add("_res_exp", symbol("M_I_return7", "I"));
+            session.expression("EXPR.00000000000000b1", "H1".equals(name)
+                    ? parsed : "H2b".equals(name) ? integer("I", 2L)
+                    : refused);
+            session.write(Endpoint.of(first, "TickA#set#4:WRITE",
+                    at("w#1", 0), 0), stamp, 2L, "EXPR.00000000000000b1");
+            if ("H2b".equals(name)) {
+                // A concurrent writer: the read's STATE family re-pairs it.
+                OccurrenceAddress second = occurrence("case/nn0",
+                        "REGION.tock", CausalContext.of(Role.of("TICK_B"),
+                                "", 1), frame("TickB#run#3", 0));
+                session.activation(second);
+                session.expression("EXPR.00000000000000b2",
+                        integer("I", 1L));
+                session.write(Endpoint.of(second, "TickB#set#4:WRITE",
+                        at("w#2", 0), 0), stamp, 1L, "EXPR.00000000000000b2");
+            }
+            session.read(Endpoint.of(reader, "Block#getStamp#29:READ",
+                            at("r#1", 0), 0), stamp, 2L, symbol, "I",
+                    "unstated".equals(name) ? null : "H1".equals(name) ? "3"
+                            : "H2b".equals(name) ? "2" : "1001");
+            JsonObject node = read("INSTANCE_FIELD", stamp.owner(), "value",
+                    2L, "I");
+            if ("H2a".equals(name) || "H2b".equals(name)) {
+                // The node's own projection of the version it observed.
+                node.getAsJsonObject("observedVersion").add("expression",
+                        "H2a".equals(name) ? integer("I", 1001L)
+                                : binary("-", symbol(NO_ROW, "I"),
+                                integer("I", 1L)));
+            }
+            if (!"unstated".equals(name) && !"H1".equals(name)) {
+                // What it returned: a literal no family moves.
+                node.add("concreteValue", integer("I",
+                        "H2b".equals(name) ? 2L : 1001L));
+            }
+            session.expression("EXPR.00000000000000b3", binary(
+                    "H1".equals(name) ? "!=" : "<", node,
+                    symbol(SERIAL, "I")));
+            session.target("EXPR.00000000000000b3", false, true);
+            session.write();
+
+            Composer.Composition composition = Composer.compose(
+                    Corpus.read(iteration, null), reader,
+                    Collections.<String,
+                            edu.uva.liftlab.graphchecker.contract.RootDomain>
+                            emptyMap(), 4);
+            List<GapRow> gaps = composition.gaps();
+            String arm = fatalArm(composition);
+            switch (name) {
+                case "pin":
+                    assertEquals(name + ": the pin binds the read", 1,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": phi reads the pinned symbol: " + arm,
+                            arm.contains(SmtNames.legalSymbols("(< " + symbol
+                                    + " " + SERIAL + ")"))
+                                    && arm.contains(SmtNames.legalSymbols(
+                                    "(= " + symbol + " 1001)")));
+                    assertFalse(name + ": the dropped join's recorded "
+                                    + "reading binds nothing (M3)",
+                            composition.body().contains("4242"));
+                    assertFalse(name + ": and its cut is no gap (L3)",
+                            named(gaps, "UndeclaredFreeSymbol:" + NO_ROW));
+                    // EXPLORE: the node's value stands in for the join, no
+                    // flip is built over it, and the closure still reaches
+                    // what the join lowered (M1).
+                    SmtLowering.Lowered explored = Corpus.read(iteration,
+                            null).lowering("s0").lower(
+                            "EXPR.00000000000000b3");
+                    assertFalse(name + ": no flip over the pin: " + explored,
+                            explored.ok());
+                    assertTrue(name + ": the join is still reached: "
+                                    + explored.reach(),
+                            explored.reach().size() == 2
+                                    && explored.reach().get(0).contains(
+                                    "1001") && explored.reach().get(1)
+                                    .contains(NO_ROW));
+                    break;
+                case "unstated":
+                    assertEquals(name + ": nothing binds the read", 0,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": the write's refusal is the path's, "
+                                    + "beside the read's own",
+                            says(gaps, GapKind.UNSTATED_VALUE,
+                                    "did not lower")
+                                    && named(gaps, "PROPAGATION_CUT:"
+                                    + "UndeclaredFreeSymbol:" + NO_ROW));
+                    break;
+                case "H1":
+                    assertEquals(name + ": no pin stands for a value a "
+                                    + "root computed", 0,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": and the refusal says why",
+                            says(gaps, GapKind.UNSTATED_VALUE, "can move"));
+                    assertEquals(name + ": so no witness moves the root",
+                            ClaimKind.NO_SUPPORTED_WITNESS,
+                            ClaimPolicy.decide(composition, solver())
+                                    .claim().kind());
+                    break;
+                case "H2a":
+                    assertEquals(name + ": the projection binds the node",
+                            1, composition.disjuncts().size());
+                    assertTrue(name + ": phi reads the projection that "
+                                    + "lowered, not the pin: " + arm,
+                            arm.contains(SmtNames.legalSymbols("(< 1001 "
+                                    + SERIAL + ")"))
+                                    && !arm.contains(SmtNames.legalSymbols(
+                                    symbol)));
+                    break;
+                default:
+                    assertEquals(name + ": a read a family re-pairs is no "
+                                    + "literal", 0,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": refused by name",
+                            named(gaps, "JoinOverMovingValue:" + key
+                                    + "@2"));
+            }
+        }
+    }
+
+    /**
+     * A method-return symbol (the VM's result of a call it does not model)
+     * is its CALL, which the node states (VM f14).  One case per row:
+     * <ul>
+     *   <li>parse: {@code Long.parseLong} of a String is its decimal
+     *       reading, a relation and no pin;</li>
+     *   <li>round-trip: {@code parseInt(valueOf(R))}, R a declared root, is
+     *       R itself, so phi {@code x != R} holds under no valuation: no
+     *       moved-root witness (the pin C1 made gave one);</li>
+     *   <li>pinned: a callee the lowering does not know, over nothing that
+     *       moves, is pinned by a NAMED assertion an unsat core shows;</li>
+     *   <li>moving: the same over R refuses: a pin would carry a moved R
+     *       through the call as a constant;</li>
+     *   <li>no-call: a node stating no call (a VM before f14) refuses.</li>
+     * </ul>
+     */
+    @Test
+    public void aMethodReturnIsItsCall() throws Exception {
+        for (String name : new String[]{"parse", "round-trip", "pinned",
+                "moving", "no-call"}) {
+            Path iteration = folder.newFolder("return-" + name).toPath();
             Session session = new Session(iteration, "s0", false);
             session.serial("3", "0", "8");
-            session.expression("EXPR.00000000000000a3", binary("+",
-                    symbol(NO_ROW, "I"), integer("I", 1L)));
-            LocationId stamp = LocationId.of(LocationKind.INSTANCE, "58",
-                    "40");
-            session.write(Endpoint.of(ANCHOR, "Replica#set#1:WRITE",
-                    at("stamp#1", 0), 0), stamp, 158L,
-                    "EXPR.00000000000000a3");
-            session.read(Endpoint.of(ANCHOR, "Replica#get#1:READ",
-                    at("stamp#2", 0), 0), stamp, 158L, "INSTANCE/58#40@v158",
-                    "I", stated ? "1001" : null);
-            session.expression("EXPR.00000000000000a1", binary("<",
-                    read("INSTANCE_FIELD", 58L, 40L, 158L, "I"),
-                    symbol(SERIAL, "I")));
-            session.target("EXPR.00000000000000a1", false, true);
+            boolean integer = "round-trip".equals(name);
+            JsonObject returned = symbol(integer ? "M_I_return4" : RETURNED,
+                    integer ? "I" : "J");
+            returned.add("concreteValue", integer ? integer("I", 3L)
+                    : integer("J", 2L));
+            if (!"no-call".equals(name)) {
+                JsonObject call = new JsonObject();
+                call.addProperty("holder", "parse".equals(name)
+                        ? "java/lang/Long" : integer ? "java/lang/Integer"
+                        : "org/apache/solr/Params");
+                call.addProperty("name", "parse".equals(name) ? "parseLong"
+                        : integer ? "parseInt" : "getLong");
+                JsonArray arguments = new JsonArray();
+                arguments.add("parse".equals(name) || "pinned".equals(name)
+                        ? vmLeaf("ConStringSymbolExp", "Y_L'String'_2",
+                        "java/lang/String")
+                        : "moving".equals(name) ? symbol(SERIAL, "I")
+                        : vmString("toString", symbol(SERIAL, "I")));
+                call.add("arguments", arguments);
+                returned.add("call", call);
+            }
+            session.expression("EXPR.00000000000000c1", integer
+                    ? binary("!=", returned, symbol(SERIAL, "I"))
+                    : binary("<", binary("--", returned,
+                    integer("J", 3L)), integer("I", 0L)));
+            session.target("EXPR.00000000000000c1", false, true);
             session.write();
 
             Composer.Composition composition = compose(iteration, 4);
-            if (stated) {
-                assertEquals("the pin binds the read and the path stands",
-                        1, composition.disjuncts().size());
-                assertTrue("phi reads the pinned symbol: "
-                                + fatalArm(composition),
-                        fatalArm(composition).contains(SmtNames.legalSymbols(
-                                "(< INSTANCE/58#40@v158 " + SERIAL + ")"))
-                                && fatalArm(composition).contains(
-                                SmtNames.legalSymbols(
-                                        "(= INSTANCE/58#40@v158 1001)")));
-                continue;
-            }
-            assertEquals("with no pin nothing binds it", 0,
+            List<GapRow> gaps = composition.gaps();
+            String body = composition.body();
+            boolean composed = !"moving".equals(name)
+                    && !"no-call".equals(name);
+            assertEquals(name + ": composed", composed ? 1 : 0,
                     composition.disjuncts().size());
-            assertTrue("and the write's refusal is the path's, beside the "
-                            + "read's own",
-                    says(composition.gaps(), GapKind.UNSTATED_VALUE,
-                            "did not lower")
-                            && named(composition.gaps(),
-                            "PROPAGATION_CUT:UndeclaredFreeSymbol:" + NO_ROW));
+            if ("parse".equals(name) || integer) {
+                assertTrue(name + ": the call is its relation: " + body,
+                        body.contains("str.to_int")
+                                && !named(gaps, "MethodReturnPinned:"
+                                + RETURNED));
+            }
+            if (integer) {
+                ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                        composition, solver());
+                for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+                    assertTrue(name + ": phi holds under no valuation: "
+                                    + outcome,
+                            outcome.answer().unsat());
+                }
+                assertEquals(name + ": so no witness moves the root past "
+                                + "it", ClaimKind.NO_SUPPORTED_WITNESS,
+                        decision.claim().kind());
+            }
+            if ("pinned".equals(name)) {
+                assertTrue(name + ": pinned by a named assertion: " + body,
+                        body.contains(":named pinned_returned__")
+                                && named(gaps, "MethodReturnPinned:"
+                                + RETURNED));
+            }
+            if ("moving".equals(name)) {
+                assertTrue(name + ": refused by name",
+                        named(gaps, "MethodReturnOverMovingArgument:"
+                                + RETURNED));
+            }
+            if ("no-call".equals(name)) {
+                assertTrue(name + ": refused by name",
+                        named(gaps, "MethodReturnCallUnstated:"
+                                + RETURNED));
+            }
         }
     }
 

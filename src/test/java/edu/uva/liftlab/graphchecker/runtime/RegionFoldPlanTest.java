@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.Rule;
 import org.junit.Test;
@@ -361,7 +362,7 @@ public class RegionFoldPlanTest {
                 Collections.singletonList(thrown),
                 Collections.singletonList(region),
                 Collections.<String, Long>emptyMap(), method -> false,
-                cell -> true),
+                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false),
                 site -> Collections.singletonList(new StaticScopeMap.Guard(
                         GUARD_SITE, Boolean.TRUE)))) {
             text.append(row).append('\n');

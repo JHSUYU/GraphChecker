@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
@@ -23,6 +24,7 @@ import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import soot.ArrayType;
 import soot.DoubleType;
 import soot.G;
 import soot.IntType;
@@ -271,7 +273,7 @@ public class RegionGraphOccurrenceKeyTest {
 
         List<StaticScopeMap.Site> sites = StaticScopeMap.sites(edges, regions,
                 Collections.<String, Long>emptyMap(), method -> false,
-                cell -> true);
+                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false);
         Path file = tree.newFolder("scope-map").toPath()
                 .resolve(StaticScopeMap.FILE);
         StringBuilder text = new StringBuilder();
@@ -420,13 +422,16 @@ public class RegionGraphOccurrenceKeyTest {
     }
 
     /**
-     * SYMBOL-SCOPE F2: a wrapper-typed field is a value cell as its
-     * primitive is (solr-18413's {@code RoutingRule.expireAt}, a Long): it
-     * is versionable; its {@code getfield} is the READ_SITE a branch decides
-     * on through the unboxing, observed like its {@code putfield}; the box's
-     * own {@code value} is no tracked cell; and a write row stating the
-     * value's type ({@code J}), or a null ({@code L}), names the field as
-     * its carrier.
+     * SYMBOL-SCOPE F2: a field is tracked by what it holds.  An integral
+     * instance field, boxed or not, is a VALUE; a field a store re-points
+     * holding any other object, an array or a static one included, is a
+     * REFERENCE; a final one, a String, a float and a static value are
+     * none.  A wrapper-typed field is a value cell as its primitive is
+     * (solr-18413's {@code RoutingRule.expireAt}, a Long): its {@code
+     * getfield} is the READ_SITE a branch decides on through the unboxing,
+     * observed like its {@code putfield}; the box's own {@code value} is no
+     * tracked cell; and a write row stating the value's type ({@code J}),
+     * or a null ({@code L}), names the field as its carrier.
      */
     @Test
     public void aWrapperFieldIsAValueCell() throws IOException {
@@ -437,21 +442,31 @@ public class RegionGraphOccurrenceKeyTest {
         SootClass box = new SootClass("java.lang.Long");
         box.addField(new SootField("value", LongType.v(), Modifier.FINAL));
         Scene.v().addClass(box);
+        SharedFieldFlow.TrackedKind held = SharedFieldFlow.TrackedKind.VALUE;
+        SharedFieldFlow.TrackedKind reference =
+                SharedFieldFlow.TrackedKind.REFERENCE;
+        SharedFieldFlow.TrackedKind none = SharedFieldFlow.TrackedKind.NONE;
         Object[][] fields = {
-                {LongType.v(), 0, true},
-                {RefType.v("java.lang.Long"), 0, true},
-                {RefType.v("java.lang.Boolean"), 0, true},
-                {RefType.v("java.lang.Long"), Modifier.STATIC, false},
-                {RefType.v("java.lang.Double"), 0, false},
-                {DoubleType.v(), 0, false},
-                {RefType.v("java.lang.String"), 0, false}};
+                {LongType.v(), 0, held},
+                {RefType.v("java.lang.Long"), 0, held},
+                {RefType.v("java.lang.Boolean"), 0, held},
+                {RefType.v("java.lang.Long"), Modifier.STATIC, none},
+                {RefType.v("java.lang.Double"), 0, none},
+                {DoubleType.v(), 0, none},
+                {RefType.v("java.lang.String"), 0, none},
+                {RefType.v("java.util.Map"), Modifier.VOLATILE, reference},
+                {RefType.v("java.util.Map"), Modifier.FINAL, none},
+                {RefType.v("java.util.Map"), Modifier.STATIC, reference},
+                {ArrayType.v(LongType.v(), 1), 0, reference}};
         for (int index = 0; index < fields.length; index++) {
             SootField field = new SootField("f" + index,
                     (soot.Type) fields[index][0], (Integer) fields[index][1]);
             rule.addField(field);
             assertEquals(field.getSignature(), fields[index][2],
-                    CausynthStaticFacts.versionableField(
-                            field.getSignature()));
+                    CausynthStaticFacts.trackedKind(field.getSignature()));
+            assertEquals(field.getSignature(),
+                    ((Integer) fields[index][1] & Modifier.STATIC) != 0,
+                    CausynthStaticFacts.staticField(field.getSignature()));
         }
         assertTrue("Boolean's unboxing passes its receiver's value on",
                 JavaPrimitiveBoxing.unboxing(
@@ -488,7 +503,8 @@ public class RegionGraphOccurrenceKeyTest {
         for (JsonObject written : StaticScopeMap.rows(StaticScopeMap.sites(
                 edges, regions, Collections.<String, Long>emptyMap(),
                 method -> !method.startsWith("<example."),
-                CausynthStaticFacts::versionableField), null)) {
+                CausynthStaticFacts::trackedKind,
+                CausynthStaticFacts::staticField), null)) {
             text.append(written.toString()).append('\n');
         }
         Path file = tree.newFolder("wrapper").toPath()

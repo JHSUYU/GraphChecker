@@ -21,14 +21,21 @@ fail() {
   exit 1
 }
 
-# EMIT publishes the gap ledger beside the gaps it classed, and the ledger is
-# the Java table -- there is no second copy of it to test against.  The built
-# jar is therefore an input to these helper tests.
-graphchecker_jar="${repo}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
+# CONFIRM's decision is ConfirmMain on the built jar, and the freeze and
+# two-host tests digest that jar: it is an input to these helper tests, and
+# so is a JVM to run it.
+graphchecker_jar=${default_graphchecker_jar}
 [[ -s "${graphchecker_jar}" ]] \
   || fail "these tests need the packaged jar: run mvn -o package -DskipTests"
-java_bin=${JAVA_HOME:+${JAVA_HOME}/bin/}java
-graphchecker_work_dir="${repo}"
+# That JVM is resolved as initialize_config resolves java_bin: the
+# GRAPH_CHECKER_JAVA override, else java on PATH.  JAVA_HOME is not read --
+# run_engine.sh never reads it, and a shell started on a lift can carry a
+# JAVA_HOME that host does not have.
+test_java=$(workflow_path_base=project \
+  resolve_executable "${GRAPH_CHECKER_JAVA:-java}")
+"${test_java}" -version >/dev/null 2>&1 \
+  || fail "no runnable JVM '${test_java}': set GRAPH_CHECKER_JAVA or put \
+java on PATH"
 
 emit_sequence=0
 emit_fixture() {
@@ -1744,7 +1751,7 @@ twohost_dir="${test_tmp}/two-hosts"
 mkdir -p "${twohost_dir}/wave" "${twohost_dir}/sessions"
 for pool_job in A B C D; do mkdir -p "${twohost_dir}/wave/${pool_job}"; done
 campaign_root="${twohost_dir}"
-graphchecker_jar="${repo}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
+graphchecker_jar=${default_graphchecker_jar}
 replay_timeout_s=2400
 solver_timeout_ms=1800000
 campaign_init_local_scratch_root
@@ -1871,7 +1878,7 @@ EOF
 chmod +x "${orphan_dir}/fake-repo/run_engine.sh"
 (
   graphchecker_dir="${orphan_dir}/fake-repo"
-  graphchecker_jar="${repo}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
+  graphchecker_jar=${default_graphchecker_jar}
   config_file="${orphan_dir}/workflow.properties"
   campaign_local_scratch_root="${orphan_dir}/scratch"
   campaign_worker_hosts=""
@@ -2350,8 +2357,7 @@ confirm_stub_realized=false
 confirm_anchor='hdfs/dn0#epoch0/region/REGION.7c569c3f/ctx:Root:XCEIVER#1/idx:<a.Handler: void handle()>@0'
 # The decision's JVM, on the built jar: reset_config clears java_bin and
 # graphchecker_jar, which are workflow keys.
-confirm_java=("${JAVA_HOME:+${JAVA_HOME}/bin/}java" -cp
-  "${repo}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar")
+confirm_java=("${test_java}" -cp "${default_graphchecker_jar}")
 confirm_stub_main() {
   local out=""
   while [[ $# -gt 0 ]]; do
