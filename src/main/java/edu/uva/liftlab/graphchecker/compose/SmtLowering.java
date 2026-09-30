@@ -2890,9 +2890,9 @@ public final class SmtLowering {
     private void appendPreamble(StringBuilder query,
                                 Iterable<String> texts) {
         query.append("; GraphChecker composed query").append('\n');
-        // Must precede the logic: without it (get-unsat-core) errors.
-        query.append("(set-option :produce-unsat-cores true)").append('\n');
-        // Only the part of the one preamble the query reaches.
+        // No core tracking: the one run asking for a core sets it
+        // (Z3#CORE_TRACKING).  Only the part of the one preamble the query
+        // reaches.
         for (String line : SmtNames.reachedPreamble(preambleLines(), texts)) {
             query.append(line).append('\n');
         }

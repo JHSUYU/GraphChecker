@@ -588,6 +588,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors and
    clock cells. Each path is also asked alone with every root free (60 s): unsat →
    `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
+   An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
+   each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
+   since tracked z3 simplifies nothing across them and still searches a disjunct whose selector the
+   rest forces false.
 3. *As it happened* = every clock cell pinned to its reading plus `recordedPairings` (each path held to
    its own observed reads and received arrivals). `recordingDecides`: ordinal 0 is sat free and unsat
    as it happened. `clockDriven`: it is also unsat with the clocks alone pinned; then the witness keeps
