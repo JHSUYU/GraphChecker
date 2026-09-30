@@ -39,9 +39,9 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *       unsat.</li>
  *   <li><b>CLOCK_SKEW</b> -- no declared root moved; pinning every clock
  *       cell to its recorded reading makes the query unsat.  The witness is
- *       asked under every pin it can keep ({@link #leastClocks}), so {@link
- *       Claim#movedRoots} ({@link #movedRoots}) names only the cells it
- *       needs.  A moved marker is asked first ({@link #mechanism}); where
+ *       asked with every clock running on wherever it can
+ *       ({@link #leastClocks}), so {@link Claim#movedRoots}
+ *       ({@link #movedRoots}) names only the jumps it needs.  A moved marker is asked first ({@link #mechanism}); where
  *       the clock pins refute the recorded valuation, a moved root must
  *       reach the fatal arm under those same pins.</li>
  *   <li><b>MESSAGE_PAIRING_FLIPPED</b> -- an explored session's fatal path
@@ -555,10 +555,11 @@ public final class ClaimPolicy {
 
     /**
      * The roots this witness moved: the valuation's moved roots plus every
-     * clock cell the model placed off its recorded reading (no valuation
-     * pins a clock, so the model is the only statement of it).  Cells at
-     * their reading are ones {@link #leastClocks} pinned as unneeded.
-     * NO_SUPPORTED_WITNESS claims carry an empty map instead.
+     * clock cell where the model's clock jumped ({@link #jump}; no valuation
+     * pins a clock, so the model is the only statement of it), at the
+     * model's instant.  A cell that runs on from the cell before it is one
+     * {@link #leastClocks} pinned as unneeded.  NO_SUPPORTED_WITNESS claims
+     * carry an empty map instead.
      */
     private static Map<String, String> movedRoots(
             Composer.Composition composition, Outcome outcome) {
@@ -567,12 +568,9 @@ public final class ClaimPolicy {
         moved.putAll(outcome.valuation().moved());
         Map<String, String> model = outcome.answer().values();
         for (String cell : composition.clockCells()) {
-            Long reading = composition.clockReadings().get(cell);
-            String answered = model.get(cell);
-            if (answered == null || reading == null) continue;
-            String at = answered.trim();
-            if (at.isEmpty() || at.equals(Long.toString(reading))) continue;
-            moved.put(cell, at);
+            Long jumped = jump(composition, model, cell);
+            if (jumped == null || jumped == 0L) continue;
+            moved.put(cell, model.get(cell).trim());
         }
         return moved;
     }
@@ -683,9 +681,10 @@ public final class ClaimPolicy {
     }
 
     /**
-     * The witness under every clock pin it can keep: all cells pinned first;
-     * otherwise pin back one at a time in recording order, keeping each pin
-     * that stays sat.  The free cells are then a minimal needed set (z3's
+     * The witness under every clock pin it can keep: every cell running on
+     * from the cell before it ({@link #runsOn}) first; otherwise pin back one
+     * at a time in recording order, keeping each pin that stays sat.  The
+     * free cells are then a minimal set of the jumps the witness needs (z3's
      * unsat core is not: it names every pin).
      */
     private static Outcome leastClocks(Composer.Composition composition,
@@ -693,14 +692,14 @@ public final class ClaimPolicy {
                                        List<String> cells) {
         if (cells.isEmpty()) return outcome;
         Outcome all = outcome(composition, solver, outcome.valuation(),
-                pins(composition, cells), false);
+                runsOn(composition, cells), false);
         if (all.witness()) return all;
         List<String> kept = new ArrayList<String>();
         Outcome witness = outcome;
         for (String cell : cells) {
             kept.add(cell);
             Outcome asked = outcome(composition, solver, outcome.valuation(),
-                    pins(composition, kept), false);
+                    runsOn(composition, kept), false);
             if (asked.witness()) {
                 witness = asked;
             } else {
@@ -711,30 +710,24 @@ public final class ClaimPolicy {
     }
 
     /**
-     * The witness with each clock it moves moved {@link ClockMargin#margin}
-     * (a minute in its ticks) further the same way, where the formula still reaches the fatal arm
-     * there; else the witness as it was.  The model is the cheapest world (a
-     * token's expiry passed by one millisecond), and the confirming replay
-     * reads every clock fresh, so an instant at the boundary falls back on
-     * the recorded arm: exploration's margin rule (adhoc token-expired.proxy
-     * missed by 70 ms).
+     * The witness with each clock jump it makes ({@link #jump}) made
+     * {@link ClockMargin#margin} (a minute in its ticks) further the same
+     * way, where the formula still reaches the fatal arm there; else the
+     * witness as it was.  The model is the cheapest world (a token's expiry
+     * passed by one millisecond), and the confirming replay reads every
+     * clock fresh, so an instant at the boundary falls back on the recorded
+     * arm: exploration's margin rule (adhoc token-expired.proxy missed by
+     * 70 ms).
      */
     private static Outcome withMargin(Composer.Composition composition,
                                       Z3 solver, Outcome witness) {
         List<String> room = new ArrayList<String>(witness.pinned());
         Map<String, String> model = witness.answer().values();
         for (String cell : composition.clockCells()) {
-            Long reading = composition.clockReadings().get(cell);
-            String answered = model.get(cell);
-            if (reading == null || answered == null) continue;
-            long at;
-            try {
-                at = Long.parseLong(answered.trim());
-            } catch (NumberFormatException notAnInstant) {
-                continue;
-            }
-            if (at == reading.longValue()) continue;
-            boolean later = at > reading.longValue();
+            Long jumped = jump(composition, model, cell);
+            if (jumped == null || jumped == 0L) continue;
+            long at = Long.parseLong(model.get(cell).trim());
+            boolean later = jumped > 0L;
             long margin = ClockMargin.margin(
                     composition.clockNanos().get(cell));
             room.add("(assert (! (" + (later ? ">=" : "<=") + " " + cell
@@ -747,6 +740,61 @@ public final class ClaimPolicy {
         Outcome asked = outcome(composition, solver, witness.valuation(),
                 room, false);
         return asked.witness() ? asked : witness;
+    }
+
+    /**
+     * These cells running on from the cell before each on its node's clock
+     * ({@link Composer.Composition#clockBefore}), as named pins: a cell keeps
+     * that cell's skew off its reading, and a cell with none before it its
+     * reading.  A clock that jumped at one cell runs on from there, as a
+     * replay runs it ({@code RootMint#CLOCK_AHEAD}), so the cells after a
+     * jump are no more the witness's moves than the cells before it
+     * (SOLR-18406: delete()'s clock jumped past G's reservation, and the
+     * commit's next two readings were moved with it, the second one outside
+     * the witness path's cone).
+     */
+    private static List<String> runsOn(Composer.Composition composition,
+                                       List<String> cells) {
+        List<String> pinned = new ArrayList<String>();
+        for (String cell : cells) {
+            String before = composition.clockBefore().get(cell);
+            String reading = integralLiteral(Long.toString(
+                    composition.clockReadings().get(cell)));
+            String runs = before == null
+                    ? "(= " + cell + " " + reading + ")"
+                    : "(= (- " + cell + " " + reading + ") (- " + before + " "
+                    + integralLiteral(Long.toString(composition
+                    .clockReadings().get(before))) + "))";
+            pinned.add("(assert (! " + runs + " :named clock_runs_on__"
+                    + ArtifactIO.digest(cell, 10) + "))");
+        }
+        return pinned;
+    }
+
+    /**
+     * How far a model's clock jumped at one cell: its skew off its reading
+     * less the skew of the cell before it on its node's clock, or null where
+     * the model or the recording states no instant for either.
+     */
+    private static Long jump(Composer.Composition composition,
+                             Map<String, String> model, String cell) {
+        Long skew = skew(composition, model, cell);
+        String before = composition.clockBefore().get(cell);
+        if (skew == null || before == null) return skew;
+        Long previous = skew(composition, model, before);
+        return previous == null ? null : skew - previous;
+    }
+
+    private static Long skew(Composer.Composition composition,
+                             Map<String, String> model, String cell) {
+        Long reading = composition.clockReadings().get(cell);
+        String answered = model.get(cell);
+        if (reading == null || answered == null) return null;
+        try {
+            return Long.parseLong(answered.trim()) - reading;
+        } catch (NumberFormatException notAnInstant) {
+            return null;
+        }
     }
 
     /** These cells at the instants the recording read, as named pins. */

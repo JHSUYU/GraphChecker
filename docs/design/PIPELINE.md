@@ -682,7 +682,9 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 3. *As it happened* = every clock cell pinned to its reading plus `recordedPairings` (each path held to
    its own observed reads and received arrivals). `recordingDecides`: ordinal 0 is sat free and unsat
    as it happened. `clockDriven`: it is also unsat with the clocks alone pinned; then the witness keeps
-   every clock pin it can (`leastClocks`). A sat ordinal 0 on a path that did not observe the fatal,
+   every clock running on wherever it can (`leastClocks`: a cell's skew off its reading equals that
+   of the cell before it on its node's clock, `clock_runs_on__`; a first cell stays at its reading),
+   so the cells left free are the clock's jumps. A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
 4. The claim, first match:
@@ -703,16 +705,17 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    `MARKER_FLIPPED` (any declared root kind); `clockDriven` → `CLOCK_SKEW`; the seed's path at ordinal 0
    with the flips refuted → `RECORDED_FAILURE_EXPLAINED`.
 6. In the moved-root rule without `recordingDecides` and in the no-root-moved rule, the witness is
-   re-asked with each moved clock a margin (one minute in its ticks) further the same way, kept if
+   re-asked with each clock jump a margin (one minute in its ticks) further the same way, kept if
    still sat (`withMargin`). `movedRoots` = the valuation's moved roots (by root id) plus every clock
-   cell (by cell symbol) the model placed off its reading.
+   cell (by cell symbol) where the model's clock jumped (its skew differs from the cell's before it),
+   at the model's instant.
 7. A z3 error on any ask adds a BLOCKING gap and turns the claim into `NO_SUPPORTED_WITNESS`
    (`smt.Z3` drops z3's `WARNING:` lines before reading an answer).
 
 | `ClaimKind` | what the witness shows |
 | --- | --- |
 | `MARKER_FLIPPED` | a declared root (a fault marker, a configured source, a declared integral) moved inside its domain reaches the fatal arm; where the recording decides the arm, it does so with every clock and every path's own pairing held as recorded |
-| `CLOCK_SKEW` | no declared root moved; the fatal arm is reached only with clock cells off their readings (those cells are `movedRoots`) |
+| `CLOCK_SKEW` | no declared root moved; the fatal arm is reached only with clock cells off their readings (the cells where a clock jumped are `movedRoots`) |
 | `STATE_PAIRING_FLIPPED` | the roots stay; the path's anchor reads must take another writer than the run's |
 | `MESSAGE_PAIRING_FLIPPED` | the roots stay; the anchor's attaches must receive another delivery than the run's |
 | `RECORDED_FAILURE_EXPLAINED` | the seed itself observed the fatal and every moved valuation is refuted |

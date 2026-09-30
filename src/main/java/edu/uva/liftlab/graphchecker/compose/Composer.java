@@ -177,6 +177,7 @@ public final class Composer {
         private final List<String> clockCells;
         private final Map<String, Long> clockReadings;
         private final Map<String, Long> clockNanos;
+        private final Map<String, String> clockBefore;
         private final Map<String, Set<String>> unattestedRoots;
         private final Map<String, List<String>> observedReads;
         private final Map<String, List<String>> observedArrivals;
@@ -190,7 +191,8 @@ public final class Composer {
                             List<Valuation> valuations,
                             List<String> clockCells,
                             Map<String, Long> clockReadings,
-                            Map<String, Long> clockNanos) {
+                            Map<String, Long> clockNanos,
+                            Map<String, String> clockBefore) {
             this.anchor = composed.anchor;
             this.body = body;
             this.disjuncts = Collections.unmodifiableList(disjuncts);
@@ -205,6 +207,7 @@ public final class Composer {
             this.clockReadings =
                     Collections.unmodifiableMap(clockReadings);
             this.clockNanos = Collections.unmodifiableMap(clockNanos);
+            this.clockBefore = Collections.unmodifiableMap(clockBefore);
             this.unattestedRoots =
                     Collections.unmodifiableMap(composed.unattestedRoots);
             this.observedReads =
@@ -281,6 +284,12 @@ public final class Composer {
          *  ({@code RootMintRow#clockNanos}). */
         public Map<String, Long> clockNanos() {
             return clockNanos;
+        }
+
+        /** Clock cell -> the cell before it on its node's clock, where its
+         *  order names one ({@code clock_order__}). */
+        public Map<String, String> clockBefore() {
+            return clockBefore;
         }
 
         /** Interaction -> the declared roots its unattested arms mention. */
@@ -572,7 +581,8 @@ public final class Composer {
         List<String> clockCells = new ArrayList<String>();
         Map<String, Long> clockReadings = new LinkedHashMap<String, Long>();
         Map<String, Long> clockNanos = new LinkedHashMap<String, Long>();
-        clocks(clockCells, clockReadings, clockNanos);
+        Map<String, String> clockBefore = new LinkedHashMap<String, String>();
+        clocks(clockCells, clockReadings, clockNanos, clockBefore);
         domains();
         lowering.assertIdentitiesDistinct();
         // Corpus inconsistencies (one name, two sorts; one truncated name,
@@ -619,7 +629,8 @@ public final class Composer {
             pins.addAll(valuation.assertions());
         }
         return new Composition(this, lowering.body(pins), disjuncts, entries,
-                valuations, clockCells, clockReadings, clockNanos);
+                valuations, clockCells, clockReadings, clockNanos,
+                clockBefore);
     }
 
     // ------------------------------------------------------------------
@@ -2071,10 +2082,13 @@ public final class Composer {
      * for its SASL user) -- and ordering those against each other made
      * every path false.  One run is far shorter than a clock window, so
      * two readings of one clock share a tick and lie within one window;
-     * any other two are two clocks.</p>
+     * any other two are two clocks.  {@code earlierOf} maps each ordered cell
+     * to that cell, which the claim runs its clock on from
+     * ({@code ClaimPolicy#runsOn}).</p>
      */
     private void clocks(List<String> cells, Map<String, Long> readings,
-                        Map<String, Long> ticks) {
+                        Map<String, Long> ticks,
+                        Map<String, String> earlierOf) {
         String seed = seed();
         Map<NodeId, List<RootMintRow>> byNode =
                 new LinkedHashMap<NodeId, List<RootMintRow>>();
@@ -2143,6 +2157,7 @@ public final class Composer {
                     lowering.assertNamed("clock_order__" + ArtifactIO.digest(
                                     earlier + "|" + later, 10),
                             "(<= " + earlier + " " + later + ")");
+                    earlierOf.put(later, earlier);
                     break;
                 }
             }

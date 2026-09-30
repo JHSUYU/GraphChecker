@@ -1491,6 +1491,30 @@ public class ComposerTest {
                         > 1000L + edu.uva.liftlab.graphchecker.explore
                         .ClockMargin.margin(1_000_000L));
 
+        // R2b: THE CLOCK RUNS ON FROM ITS JUMP.  A later reading of the same
+        // clock is no earlier than the cell before it, so the model moves it
+        // too; it runs on from the jump as a replay runs it, and the claim
+        // names the jump alone (SOLR-18406's cleanReserves clock, moved with
+        // delete()'s and outside the witness path's cone).
+        Path runs = folder.newFolder("clock-runs-on").toPath();
+        Session twice = new Session(runs, "s0", false);
+        twice.clock("700");
+        twice.roots.add(RootMintRow.of("s0", ++twice.seq, ANCHOR, "ROOT.THEN",
+                "clock_then", RootKind.CLOCK, "705", null, null, true,
+                1_000_000L));
+        twice.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
+                + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        twice.decision(ANCHOR, "anchor#u2", "(or (> clock_then 0) "
+                + "(not (> clock_then 0)))", "ROOT.THEN", 705L);
+        twice.target("(> " + CLOCK + " 1000)", false, true);
+        twice.write();
+        ClaimPolicy.Decision ranOn = ClaimPolicy.decide(compose(runs, 4),
+                solver());
+        assertEquals(ClaimKind.CLOCK_SKEW, ranOn.claim().kind());
+        assertEquals("the jump alone: the later reading runs on from it",
+                Collections.singleton(CLOCK),
+                ranOn.claim().movedRoots().keySet());
+
         // R3: AND A WINDOWED ROOT BESIDE THE CLOCK DOES NOT TAKE THE CLAIM
         // AWAY.  Same clock, plus one declared counter the case gave a
         // window: ordinal 0 is sat (a clock is free in every valuation),
