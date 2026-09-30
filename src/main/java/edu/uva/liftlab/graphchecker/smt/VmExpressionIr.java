@@ -20,6 +20,8 @@ public final class VmExpressionIr {
 
     /** The VM's spelling of a symbolic null reference. */
     public static final String SYMBOLIC_NULL = "N";
+    /** The VM's spelling of void, its other built-in symbol. */
+    public static final String SYMBOLIC_VOID = "V";
     /** Transparent VM marker installed at a consumer-side value boundary. */
     private static final String CONSUMER_BOUNDARY_TYPE =
             "ConsumerBoundaryExpression";
@@ -102,6 +104,14 @@ public final class VmExpressionIr {
             }
         }
         return false;
+    }
+
+    /**
+     * Whether a symbol's {@code _exp} is one of the VM's built-in constants
+     * (null, void) and not a name: every null check spells the same "N".
+     */
+    public static boolean builtinSymbol(String raw) {
+        return SYMBOLIC_NULL.equals(raw) || SYMBOLIC_VOID.equals(raw);
     }
 
     /** The expression, only when the VM stated one exact, complete root. */

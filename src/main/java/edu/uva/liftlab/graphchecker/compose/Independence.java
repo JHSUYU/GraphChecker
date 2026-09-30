@@ -34,10 +34,10 @@ import java.util.Set;
  * state (a string operation on a block file's name, a read no write row
  * states) refuse the whole path.
  *
- * <p>A variable is a symbol a recorded expression names, or a tracked
- * location: every read of one location is one variable, since a STATE
- * family moves them together, and a read carries the value its observed
- * write stated.</p>
+ * <p>A variable is a symbol a recorded expression names (never the VM's
+ * built-in null or void), or a tracked location: every read of one location
+ * is one variable, since a STATE family moves them together, and a read
+ * carries the value its observed write stated.</p>
  *
  * <p>The same closure seeded by one flipped GUARD alone ({@link #ofGuard})
  * is what an obligation is keyed by ({@code ObligationFactory#dependence}).
@@ -228,8 +228,12 @@ public final class Independence {
             JsonObject object = node.getAsJsonObject();
             if (VmExpressionIr.SYMBOL_TYPE.equals(
                     VmExpressionIr.typeOf(object))) {
+                // A constant is no variable: as one, every "x != null" shared
+                // "N" with every other (80 of 145 kept per SOLR-18406 path).
                 String raw = JsonFields.optionalString(object, "_exp");
-                if (!raw.isEmpty()) into.add(raw);
+                if (!raw.isEmpty() && !VmExpressionIr.builtinSymbol(raw)) {
+                    into.add(raw);
+                }
             }
             JsonElement location = object.get("location");
             if (location != null && location.isJsonObject()) {

@@ -2313,9 +2313,17 @@ public class ComposerTest {
         // left out, Independence).
         session.expression("EXPR.00000000000000f5", binary("!=",
                 read("ARRAY_ELEMENT", 7L, 2L, 1L, "I"), integer("I", 6L)));
+        // And the reference the two projections above ask about: phi rests
+        // on them through it, and not through the null both compare
+        // against, which every null check spells alike (Independence).
+        session.expression("EXPR.00000000000000f6", binary("!=",
+                fieldRead("org/apache/Store", 24L,
+                        read("MAP_STATE", 4L, -3L, 9L, "L"),
+                        symbol("M_L'org/apache/Held'_9", "org/apache/Held")),
+                vmNull()));
         session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2 "
                         + "EXPR.00000000000000f3 EXPR.00000000000000f4 "
-                        + "EXPR.00000000000000f5)",
+                        + "EXPR.00000000000000f5 EXPR.00000000000000f6)",
                 false, true);
         session.write();
 
@@ -3324,13 +3332,17 @@ public class ComposerTest {
      * a root is left out, so one the composer cannot state -- a substring
      * of a block file's name, read from a tracked location -- does not
      * refuse the path (f4 visible-gs, sender-gs); the same condition over
-     * the location phi reads still does.
+     * the location phi reads still does.  Java null is no variable: every
+     * null check spells it alike, and sharing it kept 80 of the 145
+     * conditions and reads of a SOLR-18406 path.
      */
     @Test
     public void aConditionPhiDoesNotRestOnDoesNotRefuseThePath()
             throws Exception {
-        for (boolean shared : new boolean[]{false, true}) {
-            Path iteration = folder.newFolder("independence-" + shared)
+        for (String shares : new String[]{"nothing", "location", "null"}) {
+            boolean shared = "location".equals(shares);
+            boolean nulls = "null".equals(shares);
+            Path iteration = folder.newFolder("independence-" + shares)
                     .toPath();
             Session session = new Session(iteration, "s0", false);
             session.serial("3", "0", "8");
@@ -3352,16 +3364,25 @@ public class ComposerTest {
                     "Ljava/lang/String;"));
             parameters.add(integer("I", 4L));
             name.add("_param_list", parameters);
-            session.expression("EXPR.00000000000000a2",
-                    binary("==", name, name));
+            JsonObject named = binary("==", name, name);
+            session.expression("EXPR.00000000000000a2", nulls
+                    ? binary("&&", named, binary("!=", symbol(
+                            "M_L'org/apache/Bar'_2", "org/apache/Bar"),
+                    vmNull())) : named);
             session.decision(ANCHOR, "file#u3", true,
                     "EXPR.00000000000000a2");
-            session.target("EXPR.00000000000000a1", false, true);
+            session.expression("EXPR.00000000000000a4", binary("!=",
+                    symbol("M_L'org/apache/Foo'_1", "org/apache/Foo"),
+                    vmNull()));
+            session.target(nulls ? "(and EXPR.00000000000000a1 "
+                    + "EXPR.00000000000000a4)" : "EXPR.00000000000000a1",
+                    false, true);
             session.write();
 
             Composer.Composition composition = compose(iteration, 4);
             assertEquals(shared ? "a condition phi rests on still refuses"
-                            : "a condition phi does not rest on is left out",
+                            : "a condition phi does not rest on is left out: "
+                            + shares,
                     shared ? 0 : 1, composition.disjuncts().size());
         }
     }

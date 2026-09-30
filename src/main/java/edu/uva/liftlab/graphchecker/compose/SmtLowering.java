@@ -732,7 +732,9 @@ public final class SmtLowering {
         if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
             return nullLeaf(expected);
         }
-        if ("V".equals(raw)) return Term.of("true", Sort.BOOL);
+        if (VmExpressionIr.SYMBOLIC_VOID.equals(raw)) {
+            return Term.of("true", Sort.BOOL);
+        }
         String javaType = primitiveString(expression, "_java_type");
         Sort encoded = JavaSmtSorts.sortOfJava(javaType);
         Sort sort = expected == Sort.MAP || expected == Sort.ARRAY_VALUE
