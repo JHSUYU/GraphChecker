@@ -133,7 +133,7 @@ public final class ExposedRegionPlanMain {
             for (String method : methods) branchMethods.add(method);
             JsonObject task = ConcolicScheduler.regionPathTask(goal, actions,
                     branchMethods, loopBound, inputs).json();
-            task.addProperty("replayGroupId", replayGroupId);
+            task.addProperty(ConcolicScheduler.REPLAY_GROUP_ID, replayGroupId);
             task.addProperty(RuntimeSelectedRegionFinalizer.ADMISSION_BASIS,
                     EXPOSED_BY + exposedBy.get(index));
             rows.add(task);
@@ -221,7 +221,8 @@ public final class ExposedRegionPlanMain {
     private static String replayGroupId(Path plan) throws IOException {
         String group = "";
         for (JsonObject task : ArtifactIO.readJsonl(plan)) {
-            String named = optionalString(task, "replayGroupId");
+            String named = optionalString(task,
+                    ConcolicScheduler.REPLAY_GROUP_ID);
             if (named.isEmpty() || !group.isEmpty() && !group.equals(named)) {
                 throw new IOException("the iteration plan names no single "
                         + "replayGroupId: " + plan);

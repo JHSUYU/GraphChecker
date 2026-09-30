@@ -13,7 +13,8 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | SETUP (optional) | `campaign_setup` | whatever `campaign_setup_command` does | the command fails |
 | FREEZE | `campaign_freeze` | the provenance (published by EMIT) | an input cannot be digested |
 | SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` (a batch: `campaign_batch_seed`, §2b) | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
-| PLAN | `campaign_plan`; `plan.ConcolicScheduler` | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
+| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
+| UNION (a batch) | `campaign_batch_union`; `plan.PlanUnion` | `groups/groups.json`, `groups/group-<n>/execution_task_plan.jsonl` | `PlanUnion` exits nonzero |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
@@ -159,19 +160,40 @@ by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FR
    target directory links the batch's merged skeletons, grown scope, lineage classes, recording
    weave and recorded schedule, so every weave and replay of every target stands on the recording's
    frames.
-2. Every `ACTIVATED` target runs its own iteration, all at once, each in a subshell
-   (`campaign_batch_target`) logging to `targets/<name>/campaign.log`: its `causynth_output_dir` is
-   `targets/<name>/` (so it, and every peer of its waves, derives its slice, scope map and region plan
-   there), its campaign root `targets/<name>/schedule/`, its spec its one line, its region plan's
-   aggregation slice the one REPRODUCE reuses (`campaign_target_slice`); PLAN .. EMIT are the
-   ordinary stages (`campaign_iteration`), with `first` resolved per target. Each target's replays
-   run only its own tasks, over the batch's weave.
-3. The batch fails when SEED does, when the recording activated no target, or when a target's
-   campaign ended before EMIT (EMIT's exits 2 and 3 are verdicts); each target's claim is its own
-   `targets/<name>/schedule/final/result.json`.
+2. PLAN, per `ACTIVATED` target (`campaign_batch_plan`, a subshell logging to
+   `targets/<name>/campaign.log`): its `causynth_output_dir` is `targets/<name>/` (so it, and every
+   peer of its waves, derives its slice, scope map and region plan there), its campaign root
+   `targets/<name>/schedule/`, its spec its one line, its region plan's aggregation slice the one
+   REPRODUCE reuses (`campaign_target_slice`), `first` resolved per target; PLAN is the ordinary
+   stage (`campaign_plan`).
+3. UNION (`campaign_batch_union`, `plan.PlanUnion`): the planned targets' plans grouped, each
+   target joining the first group it agrees with -- every occurrence both plan is the same task
+   there (one task id: occurrence, region content, ports and, for a target's own reach, its
+   target branch), every tracked site both observe the same observation. The plans stand on one
+   recording and one weave, so the tasks they share are one task; two targets' different tasks at
+   one occurrence (both reaching their own target there) would need one task carrying several
+   target branches, which the runtime does not have, so such targets replay apart. A group's union
+   plan is every task once, every task observing every site any target observes, under the union's
+   own replay group: `groups/group-<n>/execution_task_plan.jsonl`, `groups/groups.json`.
+4. Per group (`campaign_batch_group`, logging to `groups/group-<n>.log`): INSTRUMENT, REPLAY and
+   IMPORT once, in `groups/group-<n>/`, under the union of its targets' scope maps (the replay's
+   guarded stores, and its target coverage: any target). A target the seed replay published no
+   target row of fails as a solo REPLAY does, in its own log (`campaign_target_reached`).
+5. Every target its group's seed reached runs its own campaign from EXPLORE on, all at once, each in
+   a subshell (`campaign_batch_target`): its iteration takes the group's union plan (a copy: GROW
+   appends to it), woven classes and seed session (hard links: GROW re-weaves its own), census and
+   import gate, and reads its own PLAN again (`campaign_plan_read`); EXPLORE .. EMIT are the
+   ordinary stages (`campaign_iteration_explore`). `campaign_stop_after=IMPORT` stops the batch after
+   the groups' IMPORT.
+6. The batch fails when SEED does, when the recording activated no target, or when a target that
+   was planned ends before EMIT -- its PLAN, its group's seed, or its own stages (EMIT's exits 2 and
+   3 are verdicts); each target's claim is its own `targets/<name>/schedule/final/result.json`.
 
 What is shared is the static pass (the build's), the recording weave, the recording and its
-aggregation; each target still plans, weaves (INSTRUMENT) and replays its seed on its own.
+aggregation, and per group the seed's weave, replay and import; each target plans and explores on
+its own. A target's EXPLORE reads the union's seed session, whose tasks include the other targets':
+its closure is rooted at its own declared anchor (§7.1), so another target's task is taken up only
+where it writes what that anchor depends on.
 
 ## 3. PLAN
 

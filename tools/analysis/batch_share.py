@@ -33,7 +33,7 @@ def plans(batch):
     for path in sorted(glob.glob(os.path.join(
             batch, "targets", "*", "schedule", "iteration-0000",
             "execution_task_plan.jsonl"))):
-        name = path.split(os.sep)[-5]
+        name = path.split(os.sep)[-4]
         found[name] = [json.loads(line) for line in open(path) if line.strip()]
     return found
 

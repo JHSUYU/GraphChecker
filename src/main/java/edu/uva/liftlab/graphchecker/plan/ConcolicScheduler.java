@@ -379,10 +379,13 @@ public final class ConcolicScheduler {
         return result;
     }
 
+    /** The member every task row names its replay ledger by. */
+    static final String REPLAY_GROUP_ID = "replayGroupId";
+
     /** Stamps the replay ledger id: a hash of the plan, so the same tasks are
      *  the same ledger across iterations; flip replays link the same plan and
-     *  group. */
-    private static List<JsonObject> withSeedReplayGroup(
+     *  group.  A batch's union of plans is one plan ({@link PlanUnion}). */
+    static List<JsonObject> withSeedReplayGroup(
             List<JsonObject> taskRows) {
         StringBuilder seed = new StringBuilder();
         for (JsonObject row : taskRows) {
@@ -393,7 +396,7 @@ public final class ConcolicScheduler {
         List<JsonObject> named = new ArrayList<>(taskRows.size());
         for (JsonObject row : taskRows) {
             JsonObject stamped = row.deepCopy();
-            stamped.addProperty("replayGroupId", groupId);
+            stamped.addProperty(REPLAY_GROUP_ID, groupId);
             named.add(stamped);
         }
         return named;

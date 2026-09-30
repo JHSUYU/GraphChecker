@@ -147,13 +147,11 @@ for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f
    and WP5.B's build key, nightly and snapshot locks, and WP5.D phase 1 (REPRODUCE plants fault
    markers natively) are on main): WP5.B's `regress.sh` (the day's engine-fix regression list
    that places the `regress-pass-*` tag the nightly freezes; tagged by hand until then), WP5.D
-   phase 2 (clock and config plants), and WP3's shared seed replay: a batch shares its checks'
-   slices, recording and aggregation (on main), but each check still plans, weaves and replays its
-   own seed. Sharing the seed replay needs WP3.1 (one Soot scene, every target's scope map over the
-   merged regions: a region of one check nested in another's changes which activation an event is
-   filed under) and the union plan with a list of target branches per task in the runtime (M1/M2),
-   behind the spec's §3.5 gate. The first nightly slices every declared check under the new build
-   key.
+   phase 2 (clock and config plants), and WP3's rest: a batch shares its checks' recording,
+   aggregation and seed replay (PIPELINE §2b; checks whose plans agree share one seed), but checks
+   that reach their own target at one occurrence still replay apart (a task with a list of target
+   branches in the runtime, M1/M2), and each check's slice is its own Soot pass (WP3.1, one scene).
+   The first nightly slices every declared check under the new build key.
 9. **R3 leftovers** (`/bigtemp/vnr3ne/specs/R3-REFCONT-proposal.md`): WP3b/c (TreeMap,
    ConcurrentSkipList*, LinkedList, CopyOnWrite*, queues in the VM), WP7 (`cone.py` follows writer
    families), D3 (STATE arms from other sessions); the VM does not state a container query's
@@ -469,8 +467,9 @@ experiments are `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; ea
 check's slice starts from the classes its experiment's communication mappings name (`system.sh`'s
 `system_mapping_scope`) and its own class, and grows the scope from there. A sweep runs batches:
 given `causynth_static_root` (`sweep.sh`'s `STATIC_ROOT`), a batch campaign takes each check's
-slice from the build, records its workload once for all its checks, and runs one campaign per
-check from PLAN on, all at once, in `out/<case>/targets/<check>/` (PIPELINE §2b).
+slice from the build, records its workload once for all its checks, plans each check, replays
+one seed per group of checks whose plans agree, and runs each check's campaign from EXPLORE on,
+all at once, in `out/<case>/targets/<check>/` (PIPELINE §2b).
 
 `tools/adhoc/nightly.sh <system>/<experiment> [date]` runs the whole chain below once per night
 (one frozen, comparable sweep, never stopped for an engine fix) into
@@ -531,7 +530,8 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
     case per workload with the checks it activated (at most four).
 12. `STATIC_ROOT=$GC_OUT/static/<key> sweep.sh <snapshot> <round> <sweep-dir>/cases.txt
     [heads-per-host]`: one campaign per batch over all ten lifts, `PRUNE=1`, 5400 s per case;
-    restartable.
+    restartable. A batch records once, plans each check, and seed-replays each group of checks
+    whose plans agree once (`out/<batch>/schedule/groups/`); each check explores on its own.
 13. `triage.py <round> [gc-out]`: outcome class per case, and per check of a batch case
     (`<case>/<check>`): CONFIRMED, REFUTED, NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING; `gc-out`
     defaults to `gc-env.sh`'s `GC_OUT`.

@@ -978,13 +978,16 @@ COMPOSE SOLVE DECIDE CONFIRM REPRODUCE EMIT " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
-# BATCH-1: a batch campaign (causynth_static_root) runs one campaign per
-# target its recording activated, all at once, each logging to its own
-# targets/<name>/campaign.log; a target whose campaign reached EMIT (exit 0,
-# 2 or 3) is its own verdict, and one that ended before EMIT fails the batch
-# once every other has finished.
+# BATCH-1: a batch campaign (causynth_static_root) plans every target its
+# recording activated, seed-replays each group of plans once, and runs the
+# campaign of every target its group's seed reached, all at once, each
+# logging to its own targets/<name>/campaign.log.  A target whose campaign
+# reached EMIT (exit 0, 2 or 3) is its own verdict; one its group's seed did
+# not reach, or whose campaign ended before EMIT, fails the batch once every
+# other has finished.
 batch_out="${test_tmp}/batch"
-for batch_exit in 3 1; do
+for batch_case in "3 a b" "1 a b" "0 a"; do
+  read -r batch_exit batch_served <<<"${batch_case}"
   rm -rf -- "${batch_out}"
   mkdir -p "${batch_out}/runtime" "${batch_out}/targets/a" \
     "${batch_out}/targets/b" "${batch_out}/targets/c"
@@ -995,22 +998,36 @@ for batch_exit in 3 1; do
   status=0
   (
     causynth_output_dir="${batch_out}"
+    campaign_root="${batch_out}/schedule"
     campaign_stage_metrics="${batch_out}/metrics.tsv"
     campaign_batch_seed() { :; }
+    campaign_batch_plan() { echo "plan of $1"; }
+    campaign_batch_union() {
+      mkdir -p "$1"
+      jq -n '[{group: 0, targets: ["a", "b"]}]' >"$1/groups.json"
+    }
+    campaign_batch_group() {
+      local dir=$1 name
+      mkdir -p "${dir}"
+      for name in ${batch_served}; do
+        printf '%s\t%s\n' "${name}" "${dir}"
+      done >"${dir}/served"
+    }
     campaign_batch_target() {
-      echo "campaign of $1"
+      echo "campaign of $1 on $(basename "$2")"
       [[ "$1" == a ]] && exit 2
       exit "${batch_exit}"
     }
     campaign_batch
   ) >"${batch_out}/batch.log" 2>&1 || status=$?
-  [[ "${status}" -eq $(( batch_exit == 1 )) ]] \
-    || fail "a batch whose target exited ${batch_exit} exited ${status}: \
+  [[ "${status}" -eq $(( batch_exit == 1 || ${#batch_served} < 3 )) ]] \
+    || fail "a batch (${batch_case}) exited ${status}: \
 $(cat "${batch_out}/batch.log")"
-  [[ "$(cat "${batch_out}/targets/a/campaign.log")" == "campaign of a" \
-      && "$(cat "${batch_out}/targets/b/campaign.log")" == "campaign of b" \
+  [[ "$(cat "${batch_out}/targets/a/campaign.log")" == \
+      $'plan of a\ncampaign of a on group-0' \
+      && "$(head -n 1 "${batch_out}/targets/b/campaign.log")" == "plan of b" \
       && ! -e "${batch_out}/targets/c/campaign.log" ]] \
-    || fail "a batch ran other campaigns than its activated targets'"
+    || fail "a batch (${batch_case}) ran other campaigns than its targets'"
 done
 
 # IMPORT-GATE: the row contract stops the campaign at IMPORT, or records.
