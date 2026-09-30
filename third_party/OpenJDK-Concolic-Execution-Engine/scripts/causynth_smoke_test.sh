@@ -23,6 +23,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionFieldExpressionApiSmoke.java \
   test/causynth/RegionPropagatedFieldGuardSmoke.java \
   test/causynth/RegionExpressionHandoffApiSmoke.java \
+  test/causynth/RegionLeafBrokerSmoke.java \
   test/causynth/RegionContainerLiveInApiSmoke.java \
   test/causynth/RegionIndexedCarrierApiSmoke.java \
   test/causynth/RegionUnshadowedStringArgumentSmoke.java \
@@ -86,6 +87,7 @@ for smoke in \
   RegionFieldExpressionApiSmoke \
   RegionPropagatedFieldGuardSmoke \
   RegionExpressionHandoffApiSmoke \
+  RegionLeafBrokerSmoke \
   RegionContainerLiveInApiSmoke \
   RegionIndexedCarrierApiSmoke \
   RegionUnshadowedStringArgumentSmoke \

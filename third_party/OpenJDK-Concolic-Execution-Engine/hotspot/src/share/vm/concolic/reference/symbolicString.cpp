@@ -1,6 +1,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/reference/symbolicString.hpp"
+#include "classfile/javaClasses.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/globalSymbolicSession.hpp"
 #include "concolic/sessionSymbolicHeap.hpp"
@@ -38,6 +39,40 @@ bool result_aliases_reference_input(MethodSymbolizerHandle &handle,
     signature.next();
   }
   return false;
+}
+
+// String.valueOf of an int, a long or a boolean (a byte or short arrives as
+// an int), or of a Byte, Short, Integer, Long or Boolean: the same decimal or
+// boolean rendering Integer/Long/Boolean.toString make, so the same one
+// `toString` op of the value.  valueOf of a char, a float, a double, a char[]
+// or any other object stays its own `valueOf` op.
+bool renders_decimal_or_boolean(MethodSymbolizerHandle &handle) {
+  Method *callee = handle.get_callee_method();
+  if (handle.get_callee_name() != "valueOf" || !callee->is_static()) {
+    return false;
+  }
+  ResourceMark rm;
+  const char *signature = callee->signature()->as_C_string();
+  if (strcmp(signature, "(I)Ljava/lang/String;") == 0
+      || strcmp(signature, "(J)Ljava/lang/String;") == 0
+      || strcmp(signature, "(Z)Ljava/lang/String;") == 0) {
+    return true;
+  }
+  if (strcmp(signature, "(Ljava/lang/Object;)Ljava/lang/String;") != 0) {
+    return false;
+  }
+  oop argument = handle.get_param<oop>(handle.get_callee_local_begin_offset());
+  if (argument == NULL) return false;
+  switch (java_lang_boxing_object::basic_type(argument)) {
+    case T_BYTE:
+    case T_SHORT:
+    case T_INT:
+    case T_LONG:
+    case T_BOOLEAN:
+      return true;
+    default:
+      return false;
+  }
 }
 
 }  // namespace
@@ -214,10 +249,13 @@ Expression *SymString::finish_method_helper(MethodSymbolizerHandle &handle) {
         // engine does not attempt to model or rewrite intern-table identity.
         bool identity_result = callee_name == "toString"
             || callee_name == "intern";
-        exp = identity_result
-            ? handle.get_param_list()[0]
-            : static_cast<Expression *>(new OpStrExpression(
-                  callee_name, handle.get_param_list()));
+        if (identity_result) {
+          exp = handle.get_param_list()[0];
+        } else if (renders_decimal_or_boolean(handle)) {
+          exp = OpStrExpression::to_string(handle.get_param_list()[0]);
+        } else {
+          exp = new OpStrExpression(callee_name, handle.get_param_list());
+        }
         bool aliases_input = result_aliases_reference_input(handle, obj);
         bool may_return_shared_alias = callee_name == "intern";
         if (!aliases_input && !may_return_shared_alias

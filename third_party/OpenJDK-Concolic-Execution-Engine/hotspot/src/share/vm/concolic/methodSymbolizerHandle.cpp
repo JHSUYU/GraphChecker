@@ -159,14 +159,21 @@ bool MethodSymbolizerHandle::general_check_param_symbolized_helper(BasicType typ
         ? NULL : ConcolicMngr::ctx->find_sym_inst(obj);
     SymArr *array = obj != NULL && obj->is_array()
         ? ConcolicMngr::ctx->find_sym_array((arrayOop)obj) : NULL;
-    if (exp != NULL || (obj != NULL
-        && (ConcolicMngr::ctx->find_container_state(obj) != NULL
-            || (instance != NULL
-                && instance->has_semantic_expression())
-            || (array != NULL
-                && array->has_semantic_expression())))) {
+    const bool carried =
+        (instance != NULL && instance->has_semantic_expression())
+        || (array != NULL && array->has_semantic_expression());
+    if (exp != NULL || carried || (obj != NULL
+        && ConcolicMngr::ctx->find_container_state(obj) != NULL)) {
       recording = true;
     }
+    // An operand that carries its own expression is a symbolic value this
+    // thread's code reads here -- a String or a box a decode minted outside
+    // every region (System.mintLeaf), a container READ's result -- so, as a
+    // getfield that yields an expression does, it opens the path-condition
+    // gate (by value).  Without it a region whose first symbolic read is
+    // such an operand recorded none of its decisions.  A container's state
+    // does not open it: a query of it opens the gate through its own read.
+    if (carried) ConcolicMngr::ctx->set_pc_admitted(true);
   } else {
     ShouldNotCallThis();
   }

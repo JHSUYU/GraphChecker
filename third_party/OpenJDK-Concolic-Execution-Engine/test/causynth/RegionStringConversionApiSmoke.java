@@ -31,7 +31,7 @@ public final class RegionStringConversionApiSmoke {
 
         // Consume both returned edges in real predicates.  Merely computing
         // the conversions above is not a path decision; these contains calls
-        // are what make the unsupported conversion provenance reportable.
+        // are what put the boolean renderings into the path.
         boolean booleanStaticMatches = booleanStatic.contains("true");
         System.markConcolicBranch("STRING.CONVERSION.BOOLEAN.STATIC", 1);
         if (!booleanStaticMatches) {
@@ -101,13 +101,16 @@ public final class RegionStringConversionApiSmoke {
         require(!hexadecimalExpression.contains(radixOperation),
                 hexadecimalExpression);
 
-        require(longStaticExpression.contains(
-                "unsupportedPrimitiveStringConversion:"
-                        + "java/lang/Long.toString(J)Ljava/lang/String;"),
+        // Long's decimal rendering is the same one `toString` op as Integer's.
+        require(longStaticExpression.contains("\"_name\":\"toString\""),
                 longStaticExpression);
-        require(longInstanceExpression.contains(
-                "unsupportedPrimitiveStringConversion:"
-                        + "java/lang/Long.toString()Ljava/lang/String;"),
+        require(longInstanceExpression.contains("\"_name\":\"toString\""),
+                longInstanceExpression);
+        require(!longStaticExpression.contains(
+                "unsupportedPrimitiveStringConversion"),
+                longStaticExpression);
+        require(!longInstanceExpression.contains(
+                "unsupportedPrimitiveStringConversion"),
                 longInstanceExpression);
 
         require(builderBeforeToString.contains("\"symbolic\":true"),
@@ -137,14 +140,9 @@ public final class RegionStringConversionApiSmoke {
                 summary);
         require(summary.contains(
                 "\"taskId\":\"ACT.string-conversion\""), summary);
-        require(path.contains(
-                "unsupportedPrimitiveStringConversion:"
-                        + "java/lang/Boolean.toString(Z)Ljava/lang/String;"),
-                path);
-        require(path.contains(
-                "unsupportedPrimitiveStringConversion:"
-                        + "java/lang/Boolean.toString()Ljava/lang/String;"),
-                path);
+        // Boolean's "true"/"false" rendering is the same `toString` op.
+        require(path.contains("\"_name\":\"toString\""), path);
+        require(!path.contains("unsupportedPrimitiveStringConversion"), path);
         require(path.contains("string_conversion_boolean"), path);
         require("true".equals(booleanStatic), booleanStatic);
         require("true".equals(booleanInstance), booleanInstance);
