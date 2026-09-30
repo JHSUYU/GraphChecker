@@ -335,7 +335,9 @@ public final class Arms {
      * the reader.  Locks are not constraints.  A writer's writes move as a
      * BLOCK, so there is one arm per writer at its last write of L, and the
      * caller binds every read of L in the reader to it (the arm has no
-     * symbol).
+     * symbol).  The observed writer's arm is the write the read observed:
+     * a read that saw STARTING of a writer that then wrote RUNNING never
+     * paired with RUNNING, and that arm is the run as it happened.
      *
      * @param readerEndpoint one read of L in the reading occurrence
      * @param session        the reader's own session: eligibility is its
@@ -345,18 +347,20 @@ public final class Arms {
     public List<Arm> stateArms(Endpoint readerEndpoint, String session,
                                String location, long observedVersion) {
         OccurrenceAddress reader = readerEndpoint.occurrence();
-        // One arm per writer occurrence: the block, at its last write of L.
-        Map<String, WriteRow> lastByOccurrence =
-                new LinkedHashMap<String, WriteRow>();
+        // One arm per writer occurrence: the observed write, else the
+        // block's last write of L.
+        Map<String, WriteRow> armOf = new LinkedHashMap<String, WriteRow>();
         for (WriteRow write : rows.writesOf(session, location)) {
             String key = write.endpoint().occurrence().id();
-            WriteRow held = lastByOccurrence.get(key);
-            if (held == null || held.seq() < write.seq()) {
-                lastByOccurrence.put(key, write);
+            WriteRow held = armOf.get(key);
+            if (held == null || held.version() != observedVersion
+                    && (write.version() == observedVersion
+                    || held.seq() < write.seq())) {
+                armOf.put(key, write);
             }
         }
         List<Arm> arms = new ArrayList<Arm>();
-        for (WriteRow write : lastByOccurrence.values()) {
+        for (WriteRow write : armOf.values()) {
             OccurrenceAddress writer = write.endpoint().occurrence();
             boolean observed = write.version() == observedVersion;
             if (!observed && !concurrent(reader, writer, session)) continue;

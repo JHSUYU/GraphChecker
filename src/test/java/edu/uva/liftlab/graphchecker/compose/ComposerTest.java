@@ -2105,6 +2105,120 @@ public class ComposerTest {
                 composition.observedArrivals(witness).isEmpty());
     }
 
+    /**
+     * The recorded arm is the pairing the run took, or there is none and the
+     * claim is blocked by name.  (a) The observed writer wrote again after
+     * the read: its arm is the write read, not the later one.  (b) Two reads
+     * of one location saw two writes, and one arm binds both.  (c) The one
+     * writer read has no arm: its block, stretched to its write of another
+     * location, rests on a decision nothing states.  (p) A second read saw a
+     * version no row wrote: the pins' arm, holding each read to its own
+     * join or pin, is the run, whichever read came first.
+     */
+    @Test
+    public void theRecordedArmIsTheWriteReadOrABlockingGap()
+            throws Exception {
+        OccurrenceAddress reader = occurrence("case/dn0", "REGION.read",
+                CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
+                frame("Reader#run#4", 0));
+        OccurrenceAddress first = occurrence("case/dn0", "REGION.first",
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
+                frame("Handler#run#2", 0));
+        OccurrenceAddress second = occurrence("case/dn0", "REGION.second",
+                CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
+                frame("Heartbeat#run#9", 0));
+        OccurrenceAddress third = occurrence("case/dn0", "REGION.third",
+                CausalContext.of(Role.of("LEASE_MONITOR"), "", 1),
+                frame("Monitor#run#5", 0));
+        LocationId keys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        LocationId stamp = LocationId.of(LocationKind.INSTANCE, "10",
+                "value");
+        String taut = "(or " + MARKER + " (not " + MARKER + "))";
+        for (String shape : new String[]{"a", "b", "c", "p"}) {
+            Path iteration = folder.newFolder("recorded-" + shape).toPath();
+            for (String[] each : new String[][]{{"s0", "false", "false"},
+                    {"s1", "true", "true"}}) {
+                Session session = new Session(iteration, each[0],
+                        "true".equals(each[2]));
+                session.occurrence = reader;
+                session.activation(reader);
+                session.activation(first);
+                session.activation(second);
+                session.activation(third);
+                session.marker(each[1]);
+                session.expression("EXPR.v1.observed", constant("false"));
+                session.expression("EXPR.v1.other", symbol(MARKER, "Z"));
+                session.expression("EXPR.v1.later", constant("true"));
+                session.decision(first, "first#u1", taut);
+                session.write(Endpoint.of(first, "Handler#put#3:WRITE",
+                        at("w#1", 0), 0), keys, 1L, "EXPR.v1.observed");
+                session.decision(second, "second#u1", taut);
+                session.write(Endpoint.of(second, "Heartbeat#put#7:WRITE",
+                        at("w#1", 0), 0), keys, 2L, "EXPR.v1.other");
+                if ("a".equals(shape)) {
+                    session.write(Endpoint.of(first, "Handler#put#8:WRITE",
+                            at("w#2", 0), 0), keys, 3L, "EXPR.v1.later");
+                }
+                if ("c".equals(shape)) {
+                    session.decision(first, "first#u2", "(and " + MARKER
+                            + " ghost)");
+                    session.write(Endpoint.of(first, "Handler#set#9:WRITE",
+                            at("w#3", 0), 0), stamp, 5L, "EXPR.v1.later");
+                    session.write(Endpoint.of(second, "Heartbeat#set#8:WRITE",
+                            at("w#2", 0), 0), stamp, 4L, "EXPR.v1.other");
+                    session.decision(third, "third#u1", taut);
+                    session.write(Endpoint.of(third, "Monitor#put#6:WRITE",
+                            at("w#1", 0), 0), keys, 3L, "EXPR.v1.observed");
+                    session.read(Endpoint.of(reader, "Reader#stamp#6:READ",
+                            at("r#2", 0), 0), stamp, 4L, "read_s", each[1]);
+                }
+                session.read(Endpoint.of(reader, "Reader#get#5:READ",
+                        at("r#1", 0), 0), keys, 1L, "read_k", "false");
+                if ("b".equals(shape) || "p".equals(shape)) {
+                    // The other writer's version, or one no row wrote (a
+                    // boolean returned is spelled 0 or 1).
+                    long seen = "b".equals(shape) ? 2L : 9L;
+                    session.read(Endpoint.of(reader, "Reader#get#7:READ",
+                            at("r#3", 0), 0), keys, seen, "read_j", "0");
+                }
+                session.target("read_k", false, true);
+                session.write();
+            }
+            Composer.Composition composition = Composer.compose(
+                    Corpus.read(iteration, null), reader,
+                    Collections.<String,
+                            edu.uva.liftlab.graphchecker.contract.RootDomain>
+                            emptyMap(), 4);
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals(shape + ": both runs are paths", 2,
+                    composition.disjuncts().size());
+            boolean stated = "a".equals(shape) || "p".equals(shape);
+            assertEquals(shape + ": a recorded pairing iff one arm is it",
+                    stated, !composition.recordedPairings().isEmpty());
+            assertEquals(shape + ": the pins' arm iff a read saw no write",
+                    "p".equals(shape),
+                    composition.body().contains("observed_arm__"));
+            boolean named = false;
+            for (GapRow gap : decision.claim().gaps()) {
+                named |= gap.kind() == GapKind.UNSTATED_VALUE
+                        && gap.blocking()
+                        && gap.subject().equals(SmtLowering.locationKey(keys));
+            }
+            assertEquals(shape + ": else the location is named", !stated,
+                    named);
+            assertEquals(shape + ": and the claim is blocked " + decision
+                    .claim().gaps(), !stated, decision.claim().blocked());
+            if (stated) {
+                assertEquals(shape + ": the run as it happened is healthy",
+                        "unsat", decision.outcomes().get(0).answer()
+                                .status());
+                assertEquals(shape, ClaimKind.STATE_PAIRING_FLIPPED,
+                        decision.claim().kind());
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // 13. A published term is a predicate; the row says which arm.
     // ------------------------------------------------------------------

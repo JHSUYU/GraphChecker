@@ -12,7 +12,6 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -801,9 +800,14 @@ final class ComposedFamilies {
      * writer).  Choosing a writer for one location and not another would
      * be half a block moved.  {@code recorded} receives each family's arm
      * the run took -- the observed writer's selector, or the pins' when no
-     * region wrote the version read: the pairing a witness re-pairs if it
+     * region wrote a version read: the pairing a witness re-pairs if it
      * needs another.  A read's value is no such statement, since a joined
-     * value moves with the valuation while its pairing stays.
+     * value moves with the valuation while its pairing stays.  Where no arm
+     * is that pairing (the reads saw two writes, or the one they saw has no
+     * arm) the run as it happened is no world of the formula, and a BLOCKING
+     * gap says so: STATE_PAIRING_FLIPPED and the recording's own verdict pin
+     * that pairing, and every other kind is named only once the pairing flip
+     * is ruled out ({@link ClaimPolicy}).
      */
     Set<String> stateFamilies(Corpus.RecordedPath path,
                               int ordinal, String selector,
@@ -823,17 +827,15 @@ final class ComposedFamilies {
         // Each location's writers, and each writer's outs across locations.
         Map<String, List<String>> writersOf =
                 new LinkedHashMap<String, List<String>>();
-        Map<String, OccurrenceAddress> writerOf =
-                new LinkedHashMap<String, OccurrenceAddress>();
         Map<String, List<Out>> outsOfWriter =
                 new LinkedHashMap<String, List<Out>>();
-        // A location whose observed version no row wrote: its reads' pins,
-        // the arm that is the run's own interleaving.
+        // A location one of whose observed versions no row wrote: its reads'
+        // joins and pins, the arm that is the run's own interleaving.
         Map<String, List<String>> observedPins =
                 new LinkedHashMap<String, List<String>>();
-        // Otherwise the writer occurrence of the version its reads observed.
-        Map<String, String> observedWriter =
-                new LinkedHashMap<String, String>();
+        // Otherwise the writes its reads observed: version -> writer.
+        Map<String, Map<Long, String>> observedWrites =
+                new LinkedHashMap<String, Map<Long, String>>();
         for (Map.Entry<String, List<ReadRow>> entry
                 : byLocation.entrySet()) {
             List<ReadRow> reads = entry.getValue();
@@ -876,15 +878,24 @@ final class ComposedFamilies {
                 found.add(arm);
             }
             fileRefusals();
-            // Its writer ran outside every region, so no arm states what the
-            // read returned: the pins do, as one more arm.
+            // What EVERY read of it observed, not the first's.  A version
+            // whose writer ran outside every region is stated by no arm: the
+            // pins are, as one more arm holding each read to its own join or
+            // pin, the run as it happened.
+            boolean outside = false;
+            Map<Long, String> observed = new LinkedHashMap<Long, String>();
+            for (ReadRow read : reads) {
+                WriteRow write = corpus.writeOf(session, entry.getKey(),
+                        read.observedVersion());
+                if (write == null) {
+                    outside = true;
+                } else {
+                    observed.put(write.version(),
+                            write.endpoint().occurrence().id());
+                }
+            }
             List<String> observedPin = new ArrayList<String>();
-            WriteRow observedWrite = corpus.writeOf(session, entry.getKey(),
-                    reads.get(0).observedVersion());
-            if (observedWrite != null) {
-                observedWriter.put(entry.getKey(),
-                        observedWrite.endpoint().occurrence().id());
-            } else {
+            if (outside) {
                 for (String symbol : symbols) {
                     String pin = pins.get(symbol);
                     if (pin != null && !observedPin.contains(pin)) {
@@ -894,14 +905,14 @@ final class ComposedFamilies {
             }
             // One arm is the run's own interleaving: the join says it.
             if (found.size() + (observedPin.isEmpty() ? 0 : 1) < 2) continue;
-            chosen.addAll(symbols);
-            if (!observedPin.isEmpty()) {
+            if (observedPin.isEmpty()) {
+                observedWrites.put(entry.getKey(), observed);
+            } else {
                 observedPins.put(entry.getKey(), observedPin);
             }
             List<String> writers = new ArrayList<String>();
             for (Arms.Arm arm : found) {
                 String writer = arm.producer().id();
-                writerOf.put(writer, arm.producer());
                 if (!writers.contains(writer)) writers.add(writer);
                 add(outsOfWriter, writer, new Out(arm, symbols));
             }
@@ -911,7 +922,6 @@ final class ComposedFamilies {
         Map<String, String> selectorOf = new LinkedHashMap<String, String>();
         for (Map.Entry<String, List<Out>> writer
                 : outsOfWriter.entrySet()) {
-            OccurrenceAddress at = writerOf.get(writer.getKey());
             String name = "writer_arm__" + ordinal + "__"
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
             lowering.declare(name, VmTermLowering.Sort.BOOL);
@@ -939,8 +949,18 @@ final class ComposedFamilies {
                 if (name != null) selectors.add(name);
             }
             List<String> observedPin = observedPins.get(location.getKey());
-            String taken = selectorOf.get(observedWriter.get(
-                    location.getKey()));
+            // A refused body can leave one arm, which is no alternative: the
+            // reads keep their own joins, not a selector nothing forces.
+            if (selectors.size() + (observedPin == null ? 0 : 1) < 2) {
+                continue;
+            }
+            // The arm the run took: the pins', else the one write every read
+            // of it observed.
+            Map<Long, String> observed =
+                    observedWrites.get(location.getKey());
+            String taken = observed != null && observed.size() == 1
+                    ? selectorOf.get(observed.values().iterator().next())
+                    : null;
             if (observedPin != null) {
                 String name = "observed_arm__" + ordinal + "__"
                         + ArtifactIO.digest(location.getKey() + "|"
@@ -961,8 +981,22 @@ final class ComposedFamilies {
                 selectors.add(name);
                 taken = name;
             }
-            if (selectors.size() < 2) continue;
-            if (taken != null && !recorded.contains(taken)) {
+            for (ReadRow read : byLocation.get(location.getKey())) {
+                chosen.add(read.symbol());
+            }
+            if (taken == null) {
+                String saw = observed.size() == 1
+                        ? "one write, by " + observed.values().iterator()
+                        .next() + ", that no arm here states"
+                        : "versions " + observed.keySet() + " while one arm "
+                        + "binds every read";
+                gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, location.getKey(), "path "
+                                + path.pathId + " observed " + saw + ": no "
+                                + "arm is the pairing the run took, so the "
+                                + "run as it happened is no world of the "
+                                + "formula"));
+            } else if (!recorded.contains(taken)) {
                 recorded.add(taken);
             }
             String formula = Arms.exactlyOne(selectors);
