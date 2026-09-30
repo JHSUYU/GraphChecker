@@ -755,12 +755,14 @@ public final class Composer {
         Independence relevant = independence(session,
                 Collections.singletonList(target.phiTerm()),
                 familyBound(session, repaired), reached, conditions);
-        //       What the fatal itself rests on, of phi and the roots alone: a
-        //       location a family binds and nothing else reaches holds the
-        //       formula's alternatives, not the witness (a confirming run is
-        //       held to these only).
+        //       What the fatal itself rests on, of phi -- for a concrete
+        //       fatal condition, the path condition that reached the anchor
+        //       ({@link Arms#fatalRests}) -- and the roots alone: a location
+        //       a family binds and nothing else reaches holds the formula's
+        //       alternatives, not the witness (a confirming run is held to
+        //       these only).
         Set<String> restsOn = independence(session,
-                Collections.singletonList(target.phiTerm()),
+                Arms.fatalRests(target, path.decisions),
                 Collections.<String>emptySet(), reached, conditions)
                 .locations();
 
@@ -820,22 +822,23 @@ public final class Composer {
                 refusals));
 
         // (5) phi_p is the FATAL arm as published; never re-derive its
-        //     polarity.  No predicate is a concrete branch (invariant 9):
-        //     the arm this run took is the whole of phi_p, and a healthy one
-        //     is no path to the fatal arm in any world.
+        //     polarity.  A concrete fatal condition is the constant of its
+        //     arm (invariant 9): `true` rests the fatal on pi_p, the path
+        //     condition that reached the anchor; `false` is no path to the
+        //     fatal arm in any world of this one; none stated is no phi.
         String subject = "phi of " + anchor.render();
-        if (target.phiTerm() == null || target.phiTerm().isEmpty()) {
-            if (target.observedFatal()) {
-                terms.add("true");
-            } else {
-                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, subject, "the anchor decided "
-                                + "concretely on its healthy arm, so no root "
-                                + "of this path reaches the fatal one"));
-            }
+        String published = target.phiTerm().trim();
+        if (published.isEmpty() || "false".equals(published)) {
+            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, subject, published.isEmpty()
+                            ? "the target row states no phi (invariant 9), "
+                            + "so what the fatal rests on is stated by no "
+                            + "row"
+                            : "the anchor decided concretely on its healthy "
+                            + "arm, so no world of this path reaches the "
+                            + "fatal one"));
         } else {
-            String phi = lowering.statedTerm(target.phiTerm(),
-                    "phi:" + subject);
+            String phi = lowering.statedTerm(published, "phi:" + subject);
             if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
                 terms.add(phi);
             }

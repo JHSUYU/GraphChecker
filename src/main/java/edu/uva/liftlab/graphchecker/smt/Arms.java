@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.util.ArrayList;
@@ -680,6 +681,20 @@ public final class Arms {
             pi.add(conjunct(decision));
         }
         return pi;
+    }
+
+    /**
+     * What the fatal a target row states rests on: its phi; a concrete
+     * fatal condition states phi as the constant of its arm, which names
+     * nothing, and that fatal rests on the path condition that reached the
+     * anchor, the decisions before the target (CONTRACT-SPEC §2.2).
+     */
+    public static List<String> fatalRests(TargetRow target,
+                                          List<DecisionRow> decisions) {
+        String phi = target.phiTerm().trim();
+        return "true".equals(phi) || "false".equals(phi)
+                ? pathCondition(decisions, target.seq())
+                : Collections.singletonList(target.phiTerm());
     }
 
     /** One decision, as the arm of it that its run took. */

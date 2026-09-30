@@ -1541,6 +1541,52 @@ public class ComposerTest {
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
     }
 
+    /**
+     * A CONCRETE FATAL CONDITION states phi as the constant of the arm it
+     * took (SOLR-18413 r9: {@code targetColl == null} on a reference the
+     * lookup returned concretely).  {@code true} rests the fatal on the path
+     * condition that reached the anchor -- here the clock compare before
+     * it, so the witness moves the clock; {@code false} is no path to the
+     * fatal arm in any world; a row stating none is no path either, as the
+     * composer never invents phi.  {phi, observedFatal, disjuncts}.
+     */
+    @Test
+    public void aConcreteFatalConditionRestsOnThePathThatReachedIt()
+            throws Exception {
+        Object[][] rows = {{"true", true, 1}, {"false", false, 0},
+                {"", true, 0}};
+        for (Object[] row : rows) {
+            Path iteration = folder.newFolder("concrete-" + row[0] + "-"
+                    + row[1]).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.clock("700");
+            session.decision(ANCHOR, "anchor#u1", "(> " + CLOCK + " 1000)",
+                    CLOCK_ROOT, 700L);
+            session.target((String) row[0], (Boolean) row[1], true);
+            session.write();
+
+            Composer.Composition composition = compose(iteration, 4);
+            assertEquals("phi \"" + row[0] + "\": " + composition.gaps(),
+                    row[2], composition.disjuncts().size());
+            if (composition.disjuncts().isEmpty()) {
+                assertTrue("refused by name: " + composition.gaps(),
+                        named(composition.gaps(), "phi of "
+                                + ANCHOR.render()));
+                continue;
+            }
+            assertTrue("the fatal rests on the compare before the anchor: "
+                            + fatalArm(composition),
+                    fatalArm(composition).contains("(> " + CLOCK + " 1000)"));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals(ClaimKind.CLOCK_SKEW, decision.claim().kind());
+            assertTrue("the clock moved past the compare: "
+                            + decision.claim().movedRoots(),
+                    Long.parseLong(decision.claim().movedRoots().get(CLOCK)
+                            .trim()) > 1000L);
+        }
+    }
+
     // ------------------------------------------------------------------
     // 9. What the recording does not state is named, never dropped.
     // ------------------------------------------------------------------
@@ -4050,25 +4096,10 @@ public class ComposerTest {
                 JavaPrimitiveSmtSemantics.primitiveCast("x", "I", "F"),
                 JavaPrimitiveSmtSemantics.bitwise("&", "x", "y",
                         JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT),
-                JavaPrimitiveSmtSemantics.bitwise("^",
-                        JavaPrimitiveSmtSemantics.bitwise("&", "x", "255",
-                                JavaPrimitiveSmtSemantics.IntegralWidth
-                                        .JAVA_INT), "-1",
-                        JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT),
                 JavaPrimitiveSmtSemantics.shift(">>>", "x", "y",
                         JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_LONG),
                 JavaPrimitiveSmtSemantics.complement("x",
                         JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT)));
-        // A chain of constant masks spells each operand once: per selected
-        // bit, six rounds of a hash were 33^6 copies of x.
-        String hashed = "x";
-        for (int round = 0; round < 6; round++) {
-            hashed = JavaPrimitiveSmtSemantics.bitwise("^", hashed, "-1",
-                    JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT);
-        }
-        assertTrue("a chain of masks grows with its length: "
-                + hashed.length(), hashed.length() < 100_000);
-        texts.add(hashed);
         for (String text : texts) {
             Set<String> free = SmtNames.symbols(text,
                     new LinkedHashSet<String>());

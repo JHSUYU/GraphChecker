@@ -767,21 +767,32 @@ public class ContractTest {
                 null, true, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=recordedValue",
                 unspelled);
-        // 9: phi is published in the FATAL polarity and holds at the
-        // recording's own root values; none is a concrete decision, named on
-        // either arm and never a stop (SOLR-18413 r9: the deleted target's
-        // lookup took the fatal arm concretely, the witness resting on the
-        // expiry check before it).
-        for (boolean fatal : new boolean[] {true, false}) {
-            Rows concrete = clean();
-            concrete.targets.set(0, TargetRow.of("s-gate", 15L,
-                    concrete.anchor, "Guard#u8", "", fatal, true));
-            assertInvariant(9, GapClass.DIAGNOSTIC, "field=phiTerm",
-                    concrete);
-            for (GapRow stated : gate(concrete)) {
-                assertFalse("a concrete decision is no stop: " + stated,
-                        stated.cls() == GapClass.BLOCKING
-                                && stated.detail().contains("invariant 9"));
+        // 9: a reached anchor states phi in the FATAL polarity -- a term, or
+        // for a concrete fatal condition the constant of the arm it took
+        // (SOLR-18413 r9: the deleted target's lookup) -- and phi holds
+        // exactly on the fatal arm at the session's own root values (the
+        // marker ran true, so EXPR.1 holds).  {phi, observedFatal, class}.
+        Object[][] nine = {
+                {"", true, GapClass.BLOCKING},
+                {"", false, GapClass.DIAGNOSTIC},
+                {"true", true, null},
+                {"false", false, null},
+                {"false", true, GapClass.BLOCKING},
+                {"true", false, GapClass.BLOCKING},
+                {"EXPR.0000000000000001", false, GapClass.BLOCKING},
+                {"(not EXPR.0000000000000001)", false, null}};
+        for (Object[] row : nine) {
+            Rows stated = clean();
+            stated.targets.set(0, TargetRow.of("s-gate", 15L, stated.anchor,
+                    "Guard#u8", (String) row[0], (Boolean) row[1], true));
+            if (row[2] == null) {
+                assertTrue("phi " + row[0] + " on the " + (Boolean.TRUE.equals(
+                                row[1]) ? "fatal" : "healthy") + " arm: "
+                                + names(gate(stated)),
+                        noViolation(gate(stated), 9));
+            } else {
+                assertInvariant(9, (GapClass) row[2], "field=phiTerm",
+                        stated);
             }
         }
         // 11 (R4): a root symbol without its RootMintRow.  WHICH quantities

@@ -1417,16 +1417,28 @@ public class RowRuntimeTest {
                 condition, true, true, true);
         RowRuntime.target(occurrence, 9L, "retrieveDataEncryptionKey#u8",
                 condition, false, false, true);
+        // A concrete fatal condition states the constant of the arm it took
+        // (SOLR-18413 r9: the deleted target's lookup); an anchor the run
+        // did not reach states none.
+        RowRuntime.target(occurrence, 10L, "retrieveDataEncryptionKey#u8",
+                null, true, true, true);
+        RowRuntime.target(occurrence, 11L, "retrieveDataEncryptionKey#u8",
+                null, false, false, true);
+        RowRuntime.target(occurrence, 0L, "retrieveDataEncryptionKey#u8",
+                null, false, false, false);
         RowRuntime.closeSession();
 
         List<TargetRow> rows = RowCodec.readAll(session().targets(),
                 RowCodec::readTarget);
-        assertEquals(2, rows.size());
+        assertEquals(5, rows.size());
         String ref = rows.get(0).phiTerm();
         assertTrue(ref.startsWith("EXPR."));
         assertTrue(rows.get(0).observedFatal());
         assertEquals("(not " + ref + ")", rows.get(1).phiTerm());
         assertFalse(rows.get(1).observedFatal());
+        assertEquals("true", rows.get(2).phiTerm());
+        assertEquals("false", rows.get(3).phiTerm());
+        assertEquals("", rows.get(4).phiTerm());
     }
 
     /**
@@ -2282,9 +2294,10 @@ public class RowRuntimeTest {
                         decided("G#u3", true, c), false,
                         Arrays.asList("(not " + refA + ")",
                                 "(not " + refC + ")")},
-                // b took its fatal arm concretely: fatal, and no arm stated.
+                // b took its fatal arm concretely: fatal, and the
+                // disjunction is the constant of that arm.
                 {decided("G#u1", false, a), decided("G#u2", true, null),
-                        null, true, Collections.emptyList()},
+                        null, true, Collections.singletonList("true")},
                 // a took it symbolically: its predicate is the arm.
                 {decided("G#u1", true, a), null, null, true,
                         Collections.singletonList(refA)}};

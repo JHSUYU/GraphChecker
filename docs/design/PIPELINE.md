@@ -206,9 +206,12 @@ A target occurrence publishes its target row whether or not it reached the throw
 the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on the 0/1 a
 helper returned, the helper branch's last decision before it (its `guardDeciders` entry), the target
 standing at that decision; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
-evaluation decided symbolically, from the test it reached the target at, with `observedFatal` = one
-test took its fatal arm. A reached target whose decision has no VM event id is a BLOCKING
-`UNSTATED_VALUE` (no position to cut the prefix at).
+evaluation decided, from the test it reached the target at, with `observedFatal` = one
+test took its fatal arm. A decision that states no predicate (the VM decided it concretely) is the
+constant of the arm it took: `true` on the fatal arm, `false` on the healthy one, so a concrete
+test that took its fatal arm is the whole disjunction and no arm at all is `false`; a reached anchor
+never states an empty phi, an unreached one states none. A reached target whose decision has no
+VM event id is a BLOCKING `UNSTATED_VALUE` (no position to cut the prefix at).
 
 ## 6. IMPORT
 
@@ -260,7 +263,9 @@ Demand starts at the anchor: its flip sites are the target sites' guards
 chain (`pathSites`). The demanded symbols of an occurrence are those its demanded values reach
 (`SmtLowering.reachedSymbols` over the lowered terms and, where a read's refused join gave way to its
 mint or its value, over what that join lowered: `Lowered.reach`; such a lowering is no `Lowered.ok`
-value a flip query stands on): the anchor's `phiTerm`, its own decisions at its flip sites (a factor
+value a flip query stands on): what the anchor's fatal rests on (`smt.Arms#fatalRests`: its
+`phiTerm`, and for a concrete fatal condition the path condition before the target), its own
+decisions at its flip sites (a factor
 member deciding the same site decides it on its own objects), and the values it contributed (the
 exports a demanded attach paired with, the write a demanded read could observe), closed over the
 reads those name and the writes they could observe. The occurrence and its state-connected factor are
@@ -514,8 +519,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   (`Host#state`: that object's own state root, `container__`);
 - `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
   decisions before its cutoff;
-- `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the
-  fatal and refuses the path ("decided concretely on its healthy arm") otherwise;
+- `phi_p`: the published `phiTerm` (fatal polarity); a concrete fatal condition's `true` is the
+  fatal resting on `pi_p`, the path condition that reached the anchor, and its `false` refuses the
+  path ("decided concretely on its healthy arm"); a row stating no phi refuses it too (invariant 9),
+  as the composer never invents one;
 - every other handoff the conjunction reaches, by the same rules.
 
 Any refusal drops the path and is filed with its own class (an open lowering refusal is a
@@ -772,7 +779,9 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   `holeTexts` entry), `STATE` per read of the anchor's join closure (each reached
   occurrence's reads before its cutoff, the anchor's before its target seq) at a location the
   selected path's fatal rests on (its manifest `restsOn`: `Composer`'s constraint independence of
-  phi and the roots alone, without the locations a family merely binds: a read elsewhere holds no
+  what the fatal rests on -- phi, or for a concrete fatal condition the path condition before the
+  target, `Arms#fatalRests` -- and the roots alone, without the locations a family merely binds: a
+  read elsewhere holds no
   value the witness needs, and under a moved root the run may make it at another endpoint or not at
   all; the write the model chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
   endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a

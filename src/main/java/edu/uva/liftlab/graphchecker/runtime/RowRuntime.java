@@ -244,13 +244,6 @@ public final class RowRuntime {
         FocusedReplay.observeDecision(occurrence, siteId, ordinal, outcome);
     }
 
-    /** One arm's term: the ref in that polarity (the composer lowers). */
-    static String term(String expressionRef, boolean arm) {
-        String ref = Text.safe(expressionRef);
-        if (ref.isEmpty()) return "";
-        return Arms.conjunct(ref, arm);
-    }
-
     /** One export, and the producer endpoint a delivery can be paired to. */
     public static Endpoint exported(OccurrenceAddress producer, long seq,
                                     String portId, long handle,
@@ -486,14 +479,15 @@ public final class RowRuntime {
         FocusedReplay.mintPublished(rootId);
     }
 
-    /** The anchor, with phi stated in the FATAL polarity as published. */
+    /** The anchor, with phi stated in the FATAL polarity as published;
+     *  an anchor the run did not reach states none. */
     public static void target(OccurrenceAddress occurrence, long seq,
                               String anchorSiteId, JsonObject condition,
                               boolean fatalArm, boolean observedFatal,
                               boolean reachedAnchor) {
-        target(occurrence, seq, anchorSiteId,
-                fatalTerm(condition, fatalArm), observedFatal,
-                reachedAnchor);
+        target(occurrence, seq, anchorSiteId, reachedAnchor
+                        ? fatalTerm(condition, fatalArm) : "",
+                observedFatal, reachedAnchor);
     }
 
     /** The anchor with phi already stated (a disjunction of fatal arms). */
@@ -511,9 +505,17 @@ public final class RowRuntime {
         }
     }
 
-    /** One decision's predicate in the polarity of its fatal arm, or "". */
+    /**
+     * One decision's predicate in the polarity of its fatal arm: the ref
+     * as the arm it states, or {@code (not ref)}.  A decision that states no
+     * predicate decided concretely, and its predicate is the constant of the
+     * arm it took: {@code true} where that arm is the fatal one, else
+     * {@code false} (CONTRACT-SPEC §2.2), never empty.
+     */
     static String fatalTerm(JsonObject condition, boolean fatalArm) {
-        return term(expressionRef(condition), fatalArm);
+        String ref = Text.safe(expressionRef(condition));
+        return ref.isEmpty() ? String.valueOf(fatalArm)
+                : Arms.conjunct(ref, fatalArm);
     }
 
     /**

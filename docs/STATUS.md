@@ -51,7 +51,7 @@ assumption.
 | Scope growth to a fixpoint | partial | `gc/plan/ScopeFrontier`, `gc/plan/ScopeGrowth`; `run_engine.sh` `campaign_analyze_grown_scope` | The default budget is 24 classes, and the audited sweeps hit it. Growth is switched off (`causynth_scope_growth_budget=0`) for every named case. CHA spends the budget on every implementation. Protobuf classes are never grown into. |
 | Root admission | over-admits | `gc/causynth/RuntimeSelectedRegionFinalizer#readsARoot` | Every occurrence that reads any clock or marker is admitted, whether or not the slice needs it. |
 | Loop-body roots (a service-loop iteration is the activation) | done | `gc/causynth/StaticProgram`; `CausynthPipeline#loopBodyEntry` | An unsupported loop shape throws `LOOP_BODY_ROOT_ENTRY_UNAVAILABLE` at INSTRUMENT and ends the campaign. |
-| Demand a root when the anchor's predicate is concrete | not done | `gc/explore/ClosurePlanner` demands only symbolic operands of the target guard and predicate | When the predicate is concrete, the closure is the anchor alone, the wave has zero obligations, and COMPOSE refuses every path as "decided concretely on its healthy arm". This is 195 of 260 finished sweep verdicts. |
+| Demand a root when the anchor's predicate is concrete | partial | `gc/runtime/RowRuntime#fatalTerm` states a concrete fatal condition as the constant of its arm; `gc/explore/ClosurePlanner#demanded` then demands the path condition before the target (`gc/smt/Arms#fatalRests`) | Not measured on a sweep (195 of 260 finished sweep verdicts had a concrete predicate, closure = the anchor alone, zero obligations). A healthy concrete anchor states `false` and is no disjunct in COMPOSE: only a flip upstream of it can reach its fatal arm. |
 | Restart and delivery-delay roots | not done | — | — |
 
 ## R2. Values keep their expression across processes
@@ -113,8 +113,10 @@ See Acceptance above. What remains (the branches are in README §0.3):
 - SOLR-18406: reference-carried container state and the `ConcurrentHashMap` model are on main
   (R3); the clock planting fixes that make it pass are off main.
 - SOLR-18413: the `isExpired` flip is SAT with MigrateCmd's clock skewed forward, and its replay
-  reproduces the fatal; a fatal condition that is concrete in a replay must state its phi (IMPORT
-  invariant 9). The store door files what a write carried after the schedule's SEND lets the queue's
+  reproduces the fatal. Its fatal condition is concrete in that replay: the runtime now states such
+  a phi as the constant of its arm (`gc/runtime/RowRuntime#fatalTerm`), IMPORT judges it
+  (invariant 9) and COMPOSE rests the fatal on the path condition that reached the anchor; `r9`'s
+  rows predate this and state none. The store door files what a write carried after the schedule's SEND lets the queue's
   consumer run (`gc/runtime/MessageDoors#stored`, open defect 28), which can leave the Overseer
   queue's attach unpaired.
 
