@@ -63,10 +63,11 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  * </pre>
  *
  * <p>Deliberately NOT global: a path's arrivals, clock readings and
- * valuation are per session (R-PIN); a family sits under its session's
+ * valuation are per session (CONTRACT-SPEC §5); a family sits under its
+ * session's
  * selector, so an arm-less family kills only its disjunct; an arm is
  * guarded by its replay's valuation of only the roots its expression
- * depends on (R-GUARD).</p>
+ * depends on (CONTRACT-SPEC §4).</p>
  */
 public final class Composer {
 
@@ -362,7 +363,7 @@ public final class Composer {
     /**
      * Interaction -> the declared roots an UNATTESTED arm of it mentions.
      * Such an arm has no producer path condition, so a witness may not move
-     * a root inside it (R-I5).
+     * a root inside it (IDENTITY §4).
      */
     private final Map<String, Set<String>> unattestedRoots =
             new LinkedHashMap<String, Set<String>>();
@@ -379,7 +380,8 @@ public final class Composer {
     /** Path id -> what the anchor's attaches received. */
     private final Map<String, List<String>> observedArrivals =
             new LinkedHashMap<String, List<String>>();
-    /** This epoch's skeleton: which interactions have a slot (R-I6). */
+    /** This epoch's skeleton: which interactions have a slot (PIPELINE
+     *  §7.1). */
     private SlotTable slots;
     /** Sessions whose pairing replaces a slot's: their arms are not ours. */
     private final Set<String> replacing = new LinkedHashSet<String>();
@@ -779,7 +781,8 @@ public final class Composer {
 
         // (6) Families: one selector per (producer occurrence, session) for
         //     every interaction reached, under this path's selector.  If no
-        //     single session could make all deliveries the path took (R3c),
+        //     single session could make all deliveries the path took (PIPELINE
+        //     §8),
         //     the path is dropped.
         List<String> familyTerms = new ArrayList<String>();
         List<GapRow> unproducible = new ArrayList<GapRow>();
@@ -990,7 +993,7 @@ public final class Composer {
      * <ol>
      *   <li>an obligation answered the mint: that value;</li>
      *   <li>an ATTESTED producer delivered it: nothing is conjoined; the
-     *       attach joins its FAMILY only (CLOSURE-V2) and takes just its
+     *       attach joins its FAMILY only (PIPELINE §8) and takes just its
      *       sort from the delivery ({@link #attestedArrival});</li>
      *   <li>otherwise refused by name.</li>
      * </ol>
@@ -1182,8 +1185,8 @@ public final class Composer {
      * is reached at the seq of the write a read joined to, widened by later
      * writes; its reads before the cutoff are joined in turn.</p>
      *
-     * <p>P3c: EARLIER VERSIONS of a reached write's location are reached
-     * too, since a state is the result of every earlier mutation (e.g. what
+     * <p>P3 (PIPELINE §8): EARLIER VERSIONS of a reached write's location
+     * are reached too, since a state is the result of every earlier mutation (e.g. what
      * a map lacks was removed earlier under a clock comparison).  Each
      * (location, version) is handled once.</p>
      */
@@ -1531,7 +1534,7 @@ public final class Composer {
     /**
      * What this session received at these attaches, one term per symbol.
      * Kept beside the path, not in it: an arrival is a consequence of its
-     * producer's roots (R-READ), so pinning it would pin them.
+     * producer's roots, so pinning it would pin them.
      */
     private List<String> arrivals(List<AttachRow> attaches) {
         List<String> stated = new ArrayList<String>();

@@ -1503,7 +1503,7 @@ public final class SmtLowering {
     /**
      * The unlabeled FACTS about the names these texts reach (e.g. an
      * {@code identity__} is non-null).  A query emitting a name without its
-     * facts frees a boundary CLOSURE-V2 SS3 forbids freeing.
+     * facts frees a boundary variable, which is never free (PIPELINE §7.5).
      * {@link #body} emits them itself; other callers ask here.  A fact is
      * returned only if EVERY name in it is reached: half a relation is a
      * different fact.
@@ -1644,7 +1644,7 @@ public final class SmtLowering {
      * <p>Two outputs: {@code into} is what the term SAYS (recorded names);
      * {@code states} is what it RESTS ON, the read rows behind named
      * container subterms ({@link SharedTerm#states}, the v_C rule of
-     * CLOSURE-V2).  The closure planner may pass one set for both; the flip
+     * PIPELINE §7.5).  The closure planner may pass one set for both; the flip
      * query must not, or it declares a container variable the query never
      * names.</p>
      */
@@ -1677,7 +1677,7 @@ public final class SmtLowering {
             if (SmtNames.BUILTIN.contains(name) || !seen.add(name)) continue;
             SharedTerm shared = sharedByName.get(name);
             if (shared != null) {
-                // v_C (CLOSURE-V2): a term reaching the dag rests on the
+                // v_C (PIPELINE §7.5): a term reaching the dag rests on the
                 // state it stands for, which its body does not name.
                 if (states != null) states.addAll(shared.states);
                 names.push(SmtNames.names(shared.body).iterator());
