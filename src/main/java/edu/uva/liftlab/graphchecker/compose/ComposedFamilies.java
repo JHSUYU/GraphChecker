@@ -1249,7 +1249,13 @@ final class ComposedFamilies {
     Term lower(String session, String expressionRef, String origin,
                List<String> conditions) {
         SessionReader reader = corpus.session(session);
-        if (reader == null) return null;
+        // A row that states no expression delivered a value the VM did not
+        // follow: no arm rests on it (Arms#arm), and it cites nothing the
+        // table could lack (hdfs-11741 r4: the second move task's export).
+        if (reader == null || expressionRef == null
+                || expressionRef.isEmpty()) {
+            return null;
+        }
         JsonObject expression = reader.expressions()
                 .expression(expressionRef);
         if (expression == null) {
