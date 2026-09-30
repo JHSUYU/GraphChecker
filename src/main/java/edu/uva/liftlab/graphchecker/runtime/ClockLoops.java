@@ -35,9 +35,14 @@ final class ClockLoops {
     private ClockLoops() {
     }
 
-    /** Whether a frame of {@code stack} is a method declaring a CLOCK root. */
+    /**
+     * Whether a frame of {@code stack} is a method declaring a CLOCK root.
+     * The map was read when the wait's event was computed ({@link #load}),
+     * before the schedule's lock was taken.
+     */
     static boolean reads(StackTraceElement[] stack) {
-        Set<String> declared = methods();
+        load();
+        Set<String> declared = methods;
         if (declared.isEmpty()) return false;
         for (StackTraceElement frame : stack) {
             if (declared.contains(frame.getClassName() + "#"
@@ -48,17 +53,16 @@ final class ClockLoops {
         return false;
     }
 
-    private static Set<String> methods() {
-        Set<String> known = methods;
-        if (known == null) {
-            known = load();
-            methods = known;
+    /** Reads the scope map's CLOCK methods once; a volatile read after. */
+    static void load() {
+        if (methods != null) return;
+        synchronized (ClockLoops.class) {
+            if (methods == null) methods = read();
         }
-        return known;
     }
 
     /** The scope map's CLOCK methods; none, said once, when it is unread. */
-    private static Set<String> load() {
+    private static Set<String> read() {
         String named = Text.safe(System.getenv(
                 GuardedStoreSites.PATH_ENVIRONMENT));
         if (named.isEmpty()) {

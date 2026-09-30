@@ -1447,33 +1447,36 @@ public class ScheduleLogTest {
     }
 
     /**
-     * Computing is progress only on a thread that owes the stalled slot: one
-     * whose last event stood in x's context.  The same computation on a
-     * thread no event bound (a store notification's parse, the result
-     * publication), or on one whose last event was a poll past its recorded
-     * count, is no one's progress, and x is given up after a timeout.
+     * A computing workload thread defers a stall, whichever context it last
+     * stood in: which thread owes x cannot be seen between two of its events
+     * (one that made w, one that made nothing yet, one whose last event was a
+     * poll past its recorded count).  The engine's own threads never do: x
+     * is given up after a timeout while one computes.
      */
     @Test
-    public void onlyTheThreadThatOwesTheStalledSlotComputesForIt()
+    public void aComputingWorkloadThreadDefersAStallAnEngineThreadDoesNot()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "600");
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "700");
         final String w = "w";
         final String p = "tick.poll";
-        // row: what the worker made before it computes, the order, the
-        // sites written, whether x was given up.
+        // row: what the worker made before it computes, the order's first
+        // event, the worker's name, the sites written, whether x was given up.
         Object[][] rows = {
-            {"made w", Arrays.asList(ScheduleEvent.Kind.SEND),
-                    w, Arrays.asList(w, "x", "tick.d"), false},
-            {"made nothing", Collections.emptyList(),
-                    w, Arrays.asList(w, "tick.d", "x"), true},
+            {"made w", Arrays.asList(ScheduleEvent.Kind.SEND), w, "worker",
+                    Arrays.asList(w, "x", "tick.d"), false},
+            {"made nothing", Collections.emptyList(), w, "worker",
+                    Arrays.asList(w, "x", "tick.d"), false},
             {"polled once past its recorded count",
                     Arrays.asList(ScheduleEvent.Kind.WAKE,
-                            ScheduleEvent.Kind.WAKE),
-                    p, Arrays.asList(p, p, "tick.d", "x"), true},
+                            ScheduleEvent.Kind.WAKE), p, "worker",
+                    Arrays.asList(p, p, "x", "tick.d"), false},
+            {"is the engine's", Collections.emptyList(), w,
+                    "causynth-test-publication",
+                    Arrays.asList(w, "tick.d", "x"), true},
         };
         for (Object[] row : rows) {
             restart();
-            final String name = "a worker that " + row[0] + " computes";
+            final String name = "a thread that " + row[0] + " computes";
             @SuppressWarnings("unchecked")
             final List<ScheduleEvent.Kind> before =
                     (List<ScheduleEvent.Kind>) row[1];
@@ -1495,16 +1498,16 @@ public class ScheduleLogTest {
                     spin(3500L);
                     ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
                 }
-            });
+            }, (String) row[3]);
             worker.start();
             Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
             worker.join(10000L);
             daemon.join(10000L);
             assertFalse(name, worker.isAlive() || daemon.isAlive());
-            assertEquals(name, row[3], sites());
+            assertEquals(name, row[4], sites());
             assertTrue(name + ": " + ScheduleLog.progress(),
                     ScheduleLog.progress().contains(
-                            (Boolean) row[4] ? " 1 given up" : " 0 given up"));
+                            (Boolean) row[5] ? " 1 given up" : " 0 given up"));
         }
     }
 
@@ -1599,38 +1602,69 @@ public class ScheduleLogTest {
 
     /**
      * An event that never comes costs a timeout, then a grace after the
-     * waits held at the cut are let go -- not {@link ScheduleLog#CEILING}
-     * timeouts twice over while a thread that owes nothing computes.
+     * waits held without a slot are let go -- not {@link
+     * ScheduleLog#CEILING} timeouts twice over while an engine thread
+     * computes.  A wait held at the cut is let go once; a poll held past its
+     * recorded count at its context's due slot -- the stalled one -- waits
+     * for no slot's event, so it does not hide that slot from the give-up
+     * y waits for, however long it keeps polling.
      */
-    @Test(timeout = 30000L)
+    @Test(timeout = 60000L)
     public void aNeverComingEventCostsATimeoutAndAGrace() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
-        ScheduleLog.enforceForTests(prefix("never", "y"));
-        final boolean[] stop = new boolean[1];
-        Thread busy = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                while (!stop[0]) spin(50L);
-            }
-        });
-        busy.start();
-        long before = System.nanoTime();
-        Thread held = observer(ScheduleEvent.Kind.WAKE, "tick.idle");
-        Thread y = observer(ScheduleEvent.Kind.SEND, "y");
-        y.join(20000L);
-        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
-        stop[0] = true;
-        busy.join();
-        held.join(5000L);
-        assertFalse(y.isAlive() || held.isAlive());
-        assertTrue("a timeout, then the let-go's grace: " + took,
-                took >= 1000L + ScheduleLog.LET_GO_GRACE_MS);
-        assertTrue("well inside the ceiling: " + took,
-                took < ScheduleLog.CEILING * 1000L - 500L);
-        assertEquals(Arrays.asList("tick.idle", "y"), sites());
-        String progress = ScheduleLog.progress();
-        assertTrue(progress, progress.contains(" 1 given up"));
-        assertTrue(progress, progress.contains("1 of them let go"));
+        final String loop = "<L: boolean poll()>#u5";
+        for (final boolean polls : new boolean[] {false, true}) {
+            restart();
+            String row = polls ? "a poll past its count" : "a wait at the cut";
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+            ClockLoops.useForTests(Collections.<String>emptySet());
+            List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
+            if (polls) order.add(event(ScheduleEvent.Kind.WAKE, loop));
+            order.addAll(prefix("never", "y"));
+            ScheduleLog.enforceForTests(order);
+            final boolean[] stop = new boolean[1];
+            Thread busy = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    while (!stop[0]) spin(50L);
+                }
+            }, "causynth-test-publication");
+            busy.start();
+            long before = System.nanoTime();
+            Thread held = polls ? new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        while (!stop[0]) TimedWaits.sleep(50L, loop);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }) : observer(ScheduleEvent.Kind.WAKE, "tick.idle");
+            if (polls) held.start();
+            Thread y = observer(ScheduleEvent.Kind.SEND, "y");
+            y.join(20000L);
+            long took = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - before);
+            boolean waited = y.isAlive();
+            stop[0] = true;
+            busy.join();
+            held.join(5000L);
+            y.join(5000L);
+            assertFalse(row + ": y went while the loop still polled", waited);
+            assertFalse(row, y.isAlive() || held.isAlive());
+            assertTrue(row + ", a timeout, then the let-go's grace: " + took,
+                    took >= 1000L + ScheduleLog.LET_GO_GRACE_MS);
+            assertTrue(row + ", well inside the ceiling: " + took,
+                    took < ScheduleLog.CEILING * 1000L - 500L);
+            List<String> sites = sites();
+            assertEquals(row + ": " + sites, polls ? loop : "tick.idle",
+                    sites.get(0));
+            assertTrue(row + ": " + sites, sites.contains("y"));
+            String progress = ScheduleLog.progress();
+            assertTrue(row + ": " + progress, progress.contains(" 1 given up"));
+            assertTrue(row + ": " + progress, progress.contains(
+                    polls ? " of them let go" : "1 of them let go"));
+        }
     }
 
     /** Burns this thread's CPU for {@code millis}. */

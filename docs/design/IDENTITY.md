@@ -258,17 +258,18 @@ order:
   waits out its own deadline. Past the cut a `WAKE` with no slot runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
   not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog
-  acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled, and none
-  of the threads that owe the stalled slots computing, or after eight timeouts whatever they do.
-  A thread owes a slot when its last event stood in the slot's context, or in work that context
-  handed on (`context|…`), and it neither waits nor polls past what the order holds
-  (`ScheduleLog#computingLocked`); the result publication, store-notification work and threads
-  no event bound never count. The watchdog first lets the waits held without a slot go; a grace
-  (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter, and when
-  that settles nothing it lets the held waits go again, a grace apart. A let-go does not restart
-  the stall's clock, so an event that never comes costs a timeout and a grace.
-  After two give-ups past the cut the rest is released. Each let-go and give-up is a
-  `SCHEDULE_DIVERGED` DIAGNOSTIC row;
+  acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled and no
+  workload thread computing, or after eight timeouts (`CEILING`) whatever they do. Every
+  non-waiting thread counts except the engine's own (`causynth-*`: the result publication, the
+  trace parse), since which thread owes a slot cannot be seen between two of its events
+  (`ScheduleLog#computingLocked`). The watchdog first lets the waits held without a slot go; a
+  grace (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter
+  that waits for a slot. A poll held past its count stands at a due slot and waits for no slot's
+  event, so it bounds no give-up; when only such polls wait, they are let go again, a grace
+  apart. A let-go does not restart the stall's clock: a wait for a slot is held at most
+  `CEILING` timeouts and a grace, and an event that never comes, with nothing computing, costs a
+  timeout and a grace. After two give-ups past the cut the rest is released. Each let-go and
+  give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row;
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that
   session's world (its flips and planted values); flips are cut only from ADMITTED sessions
