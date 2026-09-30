@@ -13,9 +13,11 @@
 # score.json is there already belongs to the same build and is not sliced
 # again, whichever run sliced it.
 #
-# The jobs run on the lifts (fanout.sh), each charged the case's engine heap
-# (engine_memory_mb, else the launcher's 8192) and at most <slots-per-host>
-# at a time on each (default 6).  One cases file is one fanout: its jobs and
+# The jobs run on the lifts (fanout.sh), at most <slots-per-host> at a time
+# on each (default 6).  A slice's engine JVM stays near 3.2 GB resident
+# (WP1's measurement), whatever heap a campaign head of the case needs: it
+# runs under a heap of SLICE_HEAP_MB (default 4096) and is charged that and
+# 512 MB beyond it.  One cases file is one fanout: its jobs and
 # logs are $GC_OUT/static/<key>/slices-<digest of the file>/ (jobs.txt,
 # logs/<n>.log), so started again with the same file it resumes, and another
 # file never inherits its finished jobs; a failed job runs again.
@@ -34,18 +36,16 @@ bash "${here}/buildkey.sh" "${experiment}" --inputs >"${root}/key.json" || exit 
 echo "slices of build ${key}: ${root}" >&2
 mapfile -t cases < <(grep -v '^\s*\(#\|$\)' "${cases_file}")
 (( ${#cases[@]} > 0 )) || { echo "no case in ${cases_file}" >&2; exit 2; }
-need=$(CAUSYNTH_CLASSPATH_OVERRIDE=unread bash \
-  "${checkout}/experiments/lib/run.sh" "${experiment}" "${cases[0]}" config \
-  | sed -n 's/^engine_memory_mb=//p')
+heap=${SLICE_HEAP_MB:-4096}
 run=${root}/slices-$(printf '%s\n' "${cases[@]}" | sha256sum | cut -c1-12)
 mkdir -p "${run}"
 jobs=${run}/jobs.txt
 : > "${jobs}"
 for case_id in "${cases[@]}"; do
   out=${root}/${case_id%%.*}
-  printf 'NEED_MB=%s [[ -s %s/score.json ]] || { CAUSYNTH_OUTPUT_DIR=%s bash experiments/lib/run.sh %s %s slice && python3 tools/adhoc/score.py %s; }\n' \
-    "${need:-8192}" "${out}" "${out}" "${experiment}" "${case_id}" "${out}" \
-    >> "${jobs}"
+  printf 'NEED_MB=%s [[ -s %s/score.json ]] || { GRAPH_CHECKER_ENGINE_MEMORY_MB=%s CAUSYNTH_OUTPUT_DIR=%s bash experiments/lib/run.sh %s %s slice && python3 tools/adhoc/score.py %s; }\n' \
+    "$(( heap + 512 ))" "${out}" "${heap}" "${out}" "${experiment}" \
+    "${case_id}" "${out}" >> "${jobs}"
 done
 # A job that failed (a lift ran out of memory, a slice refused) runs
 # again; one that finished is kept.
