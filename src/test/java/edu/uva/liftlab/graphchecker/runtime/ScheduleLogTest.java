@@ -1521,6 +1521,16 @@ public class ScheduleLogTest {
             throws Exception {
         final String loop = "<L: boolean poll()>#u5";
         final String clock = ScheduleLogTest.class.getName() + "#pollLoop";
+        // A clock loop's method, as the scope map declares its CLOCK root.
+        JsonObject root = new JsonObject();
+        root.addProperty("kind", "STATIC_SCOPE_SITE");
+        root.addProperty("role", "DECLARED_SITE");
+        root.addProperty("inputKind", "CLOCK");
+        root.addProperty("vmSite", "org.a.RoutingRule#isExpired()Z");
+        assertEquals("org.a.RoutingRule#isExpired",
+                ClockLoops.clockMethod(root));
+        root.addProperty("inputKind", "FAULT");
+        assertEquals("", ClockLoops.clockMethod(root));
         // row: released by, timeout, the loop reads a clock, the sites.
         Object[][] rows = {
             {"another context's event", "30000", false,

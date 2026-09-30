@@ -153,9 +153,6 @@ public final class ScheduleLog {
      */
     private static final Map<String, Long> POLLED =
             new HashMap<String, Long>();
-    /** Per WAKE key, whether its wait's loop reads a CLOCK root. */
-    private static final Map<String, Boolean> CLOCK_LOOPS =
-            new HashMap<String, Boolean>();
     /**
      * Whether this thread's last observed event was a vacant WAKE: one the
      * recording never made, held at the cut and let go only because the run
@@ -437,6 +434,9 @@ public final class ScheduleLog {
         private final String occurrence;
         private final String endpoint;
         private final String key;
+        /** Whether this wait's loop reads a CLOCK root; asked once, under
+         *  the lock, only of a poll past its recorded count. */
+        private Boolean clockLoop;
 
         private Pending(ScheduleEvent.Kind kind, String context, String site,
                         String occurrence, String endpoint) {
@@ -691,14 +691,17 @@ public final class ScheduleLog {
         return polled == null || moves > polled;
     }
 
-    /** Whether {@code event}'s wait -- on this thread -- is a clock's loop. */
+    /**
+     * Whether {@code event}'s wait -- on this thread's stack now -- is a
+     * clock's loop.  Asked per wait: one context's waits at one site (a
+     * {@code TimeOut}'s sleep) may stand in different loops.
+     */
     private static boolean clockLoopLocked(Pending event) {
-        Boolean known = CLOCK_LOOPS.get(event.key);
-        if (known == null) {
-            known = ClockLoops.reads(Thread.currentThread().getStackTrace());
-            CLOCK_LOOPS.put(event.key, known);
+        if (event.clockLoop == null) {
+            event.clockLoop = ClockLoops.reads(
+                    Thread.currentThread().getStackTrace());
         }
-        return known;
+        return event.clockLoop;
     }
 
     /** The first open slot of {@code slots}, or -1. */
@@ -1145,7 +1148,6 @@ public final class ScheduleLog {
         HELD.clear();
         LET_GO.clear();
         POLLED.clear();
-        CLOCK_LOOPS.clear();
         moves = 0L;
         letGoSinceProgress = false;
         letGoAt = 0L;
@@ -1249,7 +1251,6 @@ public final class ScheduleLog {
             HELD.clear();
             LET_GO.clear();
             POLLED.clear();
-            CLOCK_LOOPS.clear();
             ClockLoops.resetForTests();
             moves = 0L;
             letGoSinceProgress = false;
