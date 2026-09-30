@@ -286,7 +286,8 @@ every value across a process.
 
 One schema for the engine's library catalog and a system's `wire.jsonl`, read together:
 `WireDeclarations.of(rows)` takes every row of the five kinds, each keyed by where it was read
-(`file:line`); the caller routes rows of other kinds (`DOOR`) away first. Every row states
+(`file:line`); the caller routes rows of other kinds away first (the library catalog's `DOOR` and
+`CONFIG_SOURCE` rows are `causynth/LibraryCatalog`'s, SYMBOL-SCOPE §4.2). Every row states
 `schemaVersion 1` and its `kind`. A malformed row, a member its kind does not have, a declaration
 stated twice (same codec name, codec and type, space and method, transport name, or exchange
 method) and a name no row declares are refused, naming the row, never skipped.

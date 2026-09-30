@@ -76,7 +76,8 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
 - `workflow.properties`: budgets and inputs. `run_engine.sh` accepts only the keys it knows, so
   an unknown key is refused;
 - `target.yaml`;
-- optionally `communication-mappings.jsonl` (`DOOR` and `WIRE_FLOW` rows),
+- optionally `communication-mappings.jsonl` (`WIRE_FLOW` rows; the fault doors are the engine's
+  library catalog, `docs/design/SYMBOL-SCOPE.md` §4.2),
   `root-domains.jsonl` and `loop-bounds*.jsonl`.
 
 Everything executable is in `experiments/lib/`; its README gives the workload rules. Per-system

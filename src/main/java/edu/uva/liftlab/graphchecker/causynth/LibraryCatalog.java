@@ -11,37 +11,63 @@ import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * The libraries' environment boundaries, shipped with the engine (one file,
- * {@value #RESOURCE}) rather than declared per case: a library is the same
- * wherever a system calls it.
+ * The libraries' environment boundaries, shipped with the engine in one file
+ * ({@value #RESOURCE}) rather than declared per case: a library is the same
+ * wherever a system calls it (SYMBOL-SCOPE §4.2).  One row per line; each
+ * states {@code schemaVersion} 1 and its {@code kind}, and is keyed by where
+ * it was read ({@code library-catalog.jsonl:<line>}), the shape
+ * {@code contract.WireDeclarations} reads declaration rows in.  A malformed
+ * row, a member its kind does not have and a row stated twice are refused,
+ * naming the row, never skipped.
  *
  * <ul>
- *   <li>{@code DOOR}: a transport's fault point ({@link DoorWeave}): the
- *       method, the call it sits {@code before} or {@code after} (the first
- *       call of it in the body), and the fault kinds in order.  Several rows
- *       may name one transport and direction: one per door method, or one
- *       per library line whose method differs (Hadoop IPC's response wait is
- *       a {@code CompletableFuture} on trunk, a monitor on 3.4).</li>
- *   <li>{@code CONFIG_SOURCE}: a configuration getter whose argument
- *       {@code keyArg} is the key and {@code defaultArg} (optional) the
- *       default; read by {@code tools/analysis/rootcov.py}.</li>
+ *   <li>{@code DOOR} ({@code transport, direction, method, before | after,
+ *       faults}): a transport's fault point ({@link DoorWeave}), at the first
+ *       call of {@code before} or {@code after} in {@code method}, one
+ *       marker per fault kind in order.  Rows of one door method (its
+ *       transport, direction, class and name) are that method's signatures
+ *       on different library lines (Hadoop IPC's response wait is a
+ *       {@code CompletableFuture} on trunk, a monitor on 3.4).</li>
+ *   <li>{@code CONFIG_SOURCE} ({@code method, keyArg, defaultArg?}): a
+ *       configuration getter, argument {@code keyArg} (a String) its key and
+ *       {@code defaultArg} its default.</li>
  * </ul>
- *
- * A door applies where its method's class family is analysed; which library
- * a system calls decides which families its scope takes
- * ({@code plan.ScopeGrowth --doors}).
  */
 public final class LibraryCatalog {
     static final String RESOURCE =
             "/edu/uva/liftlab/graphchecker/library-catalog.jsonl";
+    static final int SCHEMA_VERSION = 1;
     static final String DOOR = "DOOR";
     static final String CONFIG_SOURCE = "CONFIG_SOURCE";
+
+    private static final Map<String, Set<String>> MEMBERS =
+            new LinkedHashMap<>();
+
+    static {
+        MEMBERS.put(DOOR, names("transport", "direction", "method", "before",
+                "after", "faults"));
+        MEMBERS.put(CONFIG_SOURCE, names("method", "keyArg", "defaultArg"));
+    }
+
+    /** A transport or direction name. */
+    private static final Pattern NAME = Pattern.compile("[A-Z][A-Z0-9_]*");
+    /** A Soot method signature: its class, name and parameter types. */
+    private static final Pattern SIGNATURE = Pattern.compile(
+            "<([^:\\s]+): \\S+ ([^(\\s]+)\\(([^)]*)\\)>");
+    /** A class name, nested ({@code $}) or not. */
+    private static final Pattern CLASS =
+            Pattern.compile("[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)+");
 
     private static volatile List<Door> doors;
 
@@ -59,28 +85,14 @@ public final class LibraryCatalog {
         public final boolean after;
         public final List<String> faults;
 
-        Door(JsonObject row) {
-            transport = text(row, "transport");
-            direction = text(row, "direction").toUpperCase();
-            method = text(row, "method");
-            after = !text(row, "after").isEmpty();
-            anchor = after ? text(row, "after") : text(row, "before");
-            List<String> kinds = new ArrayList<String>();
-            JsonElement listed = row.get("faults");
-            if (listed != null && listed.isJsonArray()) {
-                for (JsonElement kind : listed.getAsJsonArray()) {
-                    kinds.add(kind.getAsString());
-                }
-            }
-            faults = Collections.unmodifiableList(kinds);
-            if (transport.isEmpty() || direction.isEmpty()
-                    || className(method).isEmpty() || anchor.isEmpty()
-                    || (after && !text(row, "before").isEmpty())
-                    || faults.isEmpty()) {
-                throw new IllegalStateException("library catalog: a DOOR "
-                        + "names transport, direction, method, one of "
-                        + "before/after and its faults: " + row);
-            }
+        private Door(String transport, String direction, String method,
+                     String anchor, boolean after, List<String> faults) {
+            this.transport = transport;
+            this.direction = direction;
+            this.method = method;
+            this.anchor = anchor;
+            this.after = after;
+            this.faults = Collections.unmodifiableList(faults);
         }
 
         /** {@code FAULT:<TRANSPORT>:<DIRECTION>}, the markers' stem. */
@@ -91,21 +103,37 @@ public final class LibraryCatalog {
         /** The outermost class of the door method: the unit a scope
          *  takes, with its nested classes. */
         public String family() {
-            String owner = className(method);
+            String owner = owner(method);
             int nested = owner.indexOf('$');
             return nested < 0 ? owner : owner.substring(0, nested);
         }
+
+        /** The door method this row is one library line's signature of. */
+        String doorMethod() {
+            Matcher member = SIGNATURE.matcher(method);
+            member.matches();
+            return name() + " at " + member.group(1) + "#" + member.group(2);
+        }
     }
 
-    /** Every DOOR row, in file order. */
+    /** Every DOOR row of the engine's catalog, in file order. */
     public static List<Door> doors() {
         List<Door> known = doors;
         if (known == null) {
-            List<Door> read = new ArrayList<Door>();
-            for (JsonObject row : rows()) {
-                if (DOOR.equals(text(row, "kind"))) read.add(new Door(row));
+            try (InputStream in = LibraryCatalog.class
+                    .getResourceAsStream(RESOURCE)) {
+                if (in == null) {
+                    throw new IllegalStateException(
+                            "library catalog missing from the engine: "
+                                    + RESOURCE);
+                }
+                known = doors(rows(new BufferedReader(new InputStreamReader(
+                        in, StandardCharsets.UTF_8)), RESOURCE.substring(
+                        RESOURCE.lastIndexOf('/') + 1)));
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException(unreadable);
             }
-            doors = known = Collections.unmodifiableList(read);
+            doors = known;
         }
         return known;
     }
@@ -113,49 +141,194 @@ public final class LibraryCatalog {
     /** The door transports: a {@code FAULT:<TRANSPORT>:...} marker is a
      *  door's exactly when its transport is one of these. */
     public static Set<String> transports() {
-        Set<String> found = new LinkedHashSet<String>();
+        Set<String> found = new LinkedHashSet<>();
         for (Door door : doors()) found.add(door.transport);
         return found;
     }
 
-    private static List<JsonObject> rows() {
-        List<JsonObject> rows = new ArrayList<JsonObject>();
-        try (InputStream in = LibraryCatalog.class
-                .getResourceAsStream(RESOURCE)) {
-            if (in == null) {
-                throw new IllegalStateException(
-                        "library catalog missing from the engine: " + RESOURCE);
+    /** A catalog's rows, each keyed by {@code <file>:<line>}. */
+    static Map<String, JsonObject> rows(BufferedReader reader, String file)
+            throws IOException {
+        Map<String, JsonObject> rows = new LinkedHashMap<>();
+        String line;
+        int number = 0;
+        while ((line = reader.readLine()) != null) {
+            number++;
+            if (line.trim().isEmpty()) continue;
+            String at = file + ":" + number;
+            JsonElement row;
+            try {
+                row = JsonParser.parseString(line);
+            } catch (RuntimeException malformed) {
+                throw refused(at, malformed.getMessage(), malformed);
             }
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(in, StandardCharsets.UTF_8));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) continue;
-                JsonObject row = JsonParser.parseString(line)
-                        .getAsJsonObject();
-                String kind = text(row, "kind");
-                if (!DOOR.equals(kind) && !CONFIG_SOURCE.equals(kind)) {
-                    throw new IllegalStateException(
-                            "library catalog: unknown row kind " + kind);
-                }
-                rows.add(row);
-            }
-        } catch (IOException unreadable) {
-            throw new UncheckedIOException(unreadable);
+            if (!row.isJsonObject()) throw refused(at, "not an object", null);
+            rows.put(at, row.getAsJsonObject());
         }
         return rows;
     }
 
-    /** The declaring class of a Soot method signature, or "". */
-    static String className(String signature) {
-        int colon = signature.indexOf(": ");
-        return signature.startsWith("<") && colon > 1
-                ? signature.substring(1, colon) : "";
+    /** The DOOR rows of a catalog's rows, every row checked by its kind. */
+    static List<Door> doors(Map<String, JsonObject> rows) {
+        List<Door> doors = new ArrayList<>();
+        Map<String, String> declaredAt = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonObject> entry : rows.entrySet()) {
+            try {
+                JsonObject row = entry.getValue();
+                String identity;
+                if (DOOR.equals(kind(row))) {
+                    Door door = door(row);
+                    doors.add(door);
+                    identity = door.name() + " " + door.method;
+                } else {
+                    identity = CONFIG_SOURCE + " " + configSource(row);
+                }
+                String first = declaredAt.putIfAbsent(identity,
+                        entry.getKey());
+                if (first != null) {
+                    throw new IllegalArgumentException(identity
+                            + " is stated again; first at " + first);
+                }
+            } catch (RuntimeException malformed) {
+                throw refused(entry.getKey(), malformed.getMessage(),
+                        malformed);
+            }
+        }
+        return Collections.unmodifiableList(doors);
     }
 
-    private static String text(JsonObject row, String field) {
-        JsonElement value = row.get(field);
-        return value == null || value.isJsonNull() ? ""
-                : value.getAsString().trim();
+    private static String kind(JsonObject row) {
+        JsonElement version = row.get("schemaVersion");
+        if (version == null || !version.isJsonPrimitive()
+                || !version.getAsJsonPrimitive().isNumber()
+                || !String.valueOf(SCHEMA_VERSION).equals(
+                        version.getAsString())) {
+            throw new IllegalArgumentException("states schemaVersion "
+                    + version + "; this build reads " + SCHEMA_VERSION);
+        }
+        String kind = text(row, "kind");
+        Set<String> members = MEMBERS.get(kind);
+        if (members == null) {
+            throw new IllegalArgumentException("kind " + kind + " is none of "
+                    + MEMBERS.keySet());
+        }
+        for (String member : row.keySet()) {
+            if (!members.contains(member)) {
+                throw new IllegalArgumentException(kind + " has no member "
+                        + member);
+            }
+        }
+        return kind;
+    }
+
+    private static Door door(JsonObject row) {
+        String before = optionalText(row, "before");
+        String after = optionalText(row, "after");
+        if ((before == null) == (after == null)) {
+            throw new IllegalArgumentException(
+                    "a door states one of before and after");
+        }
+        JsonElement listed = row.get("faults");
+        if (listed == null || !listed.isJsonArray()
+                || listed.getAsJsonArray().size() == 0) {
+            throw new IllegalArgumentException(
+                    "faults lists the kinds a door throws");
+        }
+        List<String> faults = new ArrayList<>();
+        for (JsonElement kind : listed.getAsJsonArray()) {
+            faults.add(matching(CLASS, string(kind, "faults"), "faults")
+                    .group());
+        }
+        return new Door(matching(NAME, text(row, "transport"), "transport")
+                .group(), matching(NAME, text(row, "direction"), "direction")
+                .group(), signature(text(row, "method")).group(),
+                signature(after != null ? after : before).group(),
+                after != null, faults);
+    }
+
+    /** Checks a CONFIG_SOURCE row; its method. */
+    private static String configSource(JsonObject row) {
+        Matcher method = signature(text(row, "method"));
+        List<String> parameters = method.group(3).isEmpty()
+                ? Collections.<String>emptyList()
+                : Arrays.asList(method.group(3).split(","));
+        int key = index(row, "keyArg", parameters.size());
+        if (key < 0 || !"java.lang.String".equals(parameters.get(key))) {
+            throw new IllegalArgumentException(
+                    "keyArg names the String argument that is the key");
+        }
+        if (index(row, "defaultArg", parameters.size()) == key) {
+            throw new IllegalArgumentException(
+                    "defaultArg is another argument than the key");
+        }
+        return method.group();
+    }
+
+    /** An argument index below {@code arity}, or -1 when absent. */
+    private static int index(JsonObject row, String member, int arity) {
+        JsonElement value = row.get(member);
+        if (value == null) return -1;
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()
+                || !value.getAsString().matches("0|[1-9][0-9]*")
+                || Integer.parseInt(value.getAsString()) >= arity) {
+            throw new IllegalArgumentException(member + " is an argument "
+                    + "index below " + arity + "; got " + value);
+        }
+        return Integer.parseInt(value.getAsString());
+    }
+
+    private static Matcher signature(String signature) {
+        return matching(SIGNATURE, signature, "method");
+    }
+
+    private static Matcher matching(Pattern pattern, String value,
+                                    String member) {
+        Matcher matcher = pattern.matcher(value);
+        if (!matcher.matches()) {
+            throw new IllegalArgumentException(member + " is no "
+                    + pattern.pattern() + ": " + value);
+        }
+        return matcher;
+    }
+
+    private static String text(JsonObject row, String member) {
+        String stated = optionalText(row, member);
+        if (stated == null) {
+            throw new IllegalArgumentException("states no " + member);
+        }
+        return stated;
+    }
+
+    /** A string member, or null when absent. */
+    private static String optionalText(JsonObject row, String member) {
+        JsonElement value = row.get(member);
+        return value == null ? null : string(value, member);
+    }
+
+    private static String string(JsonElement value, String member) {
+        if (!value.isJsonPrimitive()
+                || !value.getAsJsonPrimitive().isString()) {
+            throw new IllegalArgumentException(member + " is not a string: "
+                    + value);
+        }
+        return value.getAsString();
+    }
+
+    /** The declaring class of a Soot method signature. */
+    private static String owner(String signature) {
+        return signature.substring(1, signature.indexOf(": "));
+    }
+
+    private static Set<String> names(String... names) {
+        Set<String> set = new LinkedHashSet<>(Arrays.asList(names));
+        set.add("schemaVersion");
+        set.add("kind");
+        return set;
+    }
+
+    private static IllegalArgumentException refused(String at, String why,
+                                                    Throwable cause) {
+        return new IllegalArgumentException("library catalog at " + at
+                + ": " + why, cause);
     }
 }

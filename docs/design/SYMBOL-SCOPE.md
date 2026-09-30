@@ -150,7 +150,8 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
 3. The grown directory joins every later pass as `-Dcausynth.process.dirs`: one application scope.
 
 Only classes under the lineage roots are indexed, so nothing else (the JDK, a library jar) is
-ever grown.
+ever grown by a row. Before the first pass, outside the budget, the door step copies the class
+families of the library doors the system calls (§4.2), from a library jar too.
 
 ## 3. The static scope map
 
@@ -201,30 +202,64 @@ obligation states (`FocusedReplay.clockSkew`).
 
 ### 4.2 Fault markers
 
-A `DOOR` row of the communication mapping (`causynth/DoorWeave`):
+Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
+(`src/main/resources/edu/uva/liftlab/graphchecker/library-catalog.jsonl`, read by
+`causynth/LibraryCatalog`), woven by `causynth/DoorWeave`:
 
 ```json
 {"schemaVersion": 1, "kind": "DOOR", "transport": "HADOOP_IPC", "direction": "REQUEST",
- "method": "<...Client$Connection: void sendRpcRequest(...)>",
- "after": "<...CausynthMessagePropagation: ...Outbound outbound(...)>",
+ "method": "<...Client$Connection: void sendRpcRequest(...Client$Call)>",
+ "after": "<...RpcWritable: void writeTo(...ResponseBuffer)>",
  "faults": ["java.io.IOException", "org.apache.hadoop.net.ConnectTimeoutException"]}
 ```
+
+| transport | direction | door method | anchor |
+| --- | --- | --- | --- |
+| `HADOOP_IPC` | `REQUEST` | `Client$Connection#sendRpcRequest` | after the request's `RpcWritable#writeTo` (serialized, not yet queued) |
+| `HADOOP_IPC` | `RESPONSE` | `Client#getRpcResponse` | after `CompletableFuture#get` (trunk); before `Call#getRpcResponse` (3.4) |
+| `HDFS_SASL` | `REQUEST` | `SaslDataTransferClient#doSaslHandshake` | before `DataOutputStream#writeInt` |
+| `HDFS_DATA_TRANSFER` | `SEND` | `datatransfer.Sender#send` | before `DataOutputStream#flush` |
+| `SOLR_HTTP` | `REQUEST` / `RESPONSE` | `HttpSolrClient#executeMethod` | before / after `HttpClient#execute` |
+| `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
+| `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
+
+No anchor is a tree's own hook (`CausynthMessagePropagation`, `CausynthHttp`, `causynthWrote`); each
+lies after the tree's outbound message hook and before its inbound one, so a door keeps its
+pairing. There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
+`getChildren`): every packet and cluster-state read would be one, and ROOT_READ admission (§4.4)
+admits every occurrence that runs a marker.
+
+A door applies where its class family (the method's outermost class with its nested classes) is
+analysed. `plan/ScopeGrowth --doors`, before the first static pass and outside the growth budget
+(§2.4), copies into `scope-classes/` the family of every door that a class of the lineage roots
+outside the family calls, from the first of the roots and the workload classpath holding it (the
+system's own classes or a library jar), unless the case scope holds it; its `GROWN` lines have kind
+`DOOR`. A library merely on the classpath (Solr's Hadoop jars) is never called and gets no door.
 
 At the first call of `after` (or before the first call of `before`) in `method`, the weave inserts,
 per fault kind in row order, `if (Debug.makeSymbolicBoolean(name)) throw new Kind("symbolic
 <name>")`, the false arm falling to the next marker. `name` is `FAULT:<TRANSPORT>:<DIRECTION>` for
-`java.io.IOException` and `FAULT:<TRANSPORT>:<DIRECTION>:<SimpleName>` otherwise. A method, call or
-exception class that does not resolve is refused by name (`DOOR_METHOD_UNAVAILABLE`,
-`DOOR_SITE_UNAVAILABLE`, `DOOR_FAULT_KIND_UNAVAILABLE`). A kind is an environment failure the
-transport can raise and a caller tells apart (a retry policy fails over on one and retries
-another); a semantic server exception is never a kind, it must come from the causal chain. The
-weave runs before any analysis (`CausynthPipeline#run`), so every pass numbers units over the same
-woven body and site ids agree across passes; they differ from the unwoven method's.
+`java.io.IOException` and `FAULT:<TRANSPORT>:<DIRECTION>:<SimpleName>` otherwise. Rows of one door
+method (transport, direction, class and method name) are its signatures on different library lines;
+where the family is analysed, every row that resolves is woven and a door method none of whose rows
+resolves is refused (`DOOR_METHOD_UNAVAILABLE`), as is an exception class that does not resolve
+(`DOOR_FAULT_KIND_UNAVAILABLE`). A kind is an environment failure the transport can raise and a
+caller tells apart (a retry policy fails over on one and retries another); a semantic server
+exception is never a kind, it must come from the causal chain. The weave runs before any analysis
+(`CausynthPipeline#run`), so every pass numbers units over the same woven body and site ids agree
+across passes; they differ from the unwoven method's.
 
-A `FAULT:` marker is a `DECLARED_SITE` (`inputKind: FAULT`) iff its transport has a DOOR row
-(`StaticScopeMap#declaredFault`, `WireFlowCatalog#declaredTransports`); a marker whose name does
-not start with `FAULT:` is the workload's own and always declared. The recorded polarity is
-`false`. How fault decisions become flip sites is IDENTITY.md §7.
+The catalog's rows each state `schemaVersion 1` and their `kind` and are keyed by
+`library-catalog.jsonl:<line>`, the shape `contract/WireDeclarations` reads (CONTRACT-SPEC §6.1). A
+malformed row, a member its kind lacks and a row stated twice are refused by name. `CONFIG_SOURCE`
+rows (`method`, `keyArg` naming the String key argument, optional `defaultArg`) list configuration
+getters (Hadoop `Configuration.get*`, Solr `getClusterProperty` and `XmlConfigFile.get*`); only
+`tools/analysis/rootcov.py` reads them yet.
+
+A `FAULT:` marker is a `DECLARED_SITE` (`inputKind: FAULT`) iff its transport is a catalog door's
+(`StaticScopeMap#declaredFault`, `LibraryCatalog#transports`); a marker whose name does not start
+with `FAULT:` is the workload's own and always declared. The recorded polarity is `false`. How
+fault decisions become flip sites is IDENTITY.md §7.
 
 ### 4.3 Configured sources
 
@@ -362,8 +397,8 @@ id (`plan/CommunicationCatalogContract#portId`).
 ### 6.1 Declared rows
 
 `communication-mappings.jsonl` (`-Dcausynth.communication.mappings` or
-`CAUSYNTH_COMMUNICATION_MAPPINGS`, from `causynth_communication_mappings`) holds DOOR rows (§4.2)
-and WIRE_FLOW rows:
+`CAUSYNTH_COMMUNICATION_MAPPINGS`, from `causynth_communication_mappings`) holds WIRE_FLOW rows; a
+row of any other kind (a DOOR row: doors are the library catalog's, §4.2) is refused:
 
 ```json
 {"schemaVersion": 2, "kind": "WIRE_FLOW", "id": "block-key-id", "javaType": "int",
@@ -399,7 +434,7 @@ is one whose first parameter is `*.protobuf.RpcController`: the shape protoc emi
 which the system's RPC engine proxies on the client and dispatches on the server, so every call
 crosses the transport's door (Hadoop: the IPC door in `Client`). The services are those of the
 loaded program (Soot resolves the analysis scope's references transitively), read once, at the
-first demanded getter. The rule does not read the DOOR rows: which transport serves a proxy is
+first demanded getter. The rule does not read the doors: which transport serves a proxy is
 decided at run time, where no static pass follows it. A message no service reaches (an fsimage
 section, an edit-log record, a DataTransfer op) is written to a file or a stream that no door
 carries values over, and derives no port.
@@ -427,7 +462,8 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
 
 ## 7. Current limits
 
-- Roots are clocks recognized by the call-return rule, declared door faults and tree hooks. A clock
+- Roots are clocks recognized by the call-return rule, the library catalog's door faults (no door
+  on a read, §4.2) and tree hooks. A clock
   read through a field, a parameter, `java.time`, or an interface whose implementation is outside
   the scope is not recognized; configuration values and pre-window state are roots only where a
   tree hook says so.

@@ -21,8 +21,10 @@ import soot.jimple.StringConstant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The transport doors' fault points, the {@code DOOR} rows of the engine's
@@ -35,10 +37,9 @@ import java.util.Map;
  *
  * <p>A door applies where its class family is analysed: an application
  * class of this run that is not there for its lineage alone (no pass analyses
- * or weaves such a class's text).  Of the rows of one transport direction in
- * one family, those whose method and anchor resolve are woven; none resolving
- * is refused ({@code DOOR_METHOD_UNAVAILABLE}): the library moved under the
- * catalog.</p>
+ * or weaves such a class's text).  There every row whose method and anchor
+ * resolve is woven, and a door method none of whose rows resolves is refused
+ * ({@code DOOR_METHOD_UNAVAILABLE}): the library moved under the catalog.</p>
  *
  * <p>A kind is an ENVIRONMENT failure the transport can raise and a caller
  * distinguishes (e.g. {@code RetryPolicies} fails over on
@@ -59,29 +60,24 @@ final class DoorWeave {
 
     /** Weaves every catalog door of an analysed family. */
     static void apply() {
-        // "<name> in <family>" -> why its rows were not woven; empty once one
-        // of them was.
-        Map<String, List<String>> missed =
-                new LinkedHashMap<String, List<String>>();
-        List<String> woven = new ArrayList<String>();
+        Map<String, List<String>> missed = new LinkedHashMap<>();
+        Set<String> doorMethods = new LinkedHashSet<>();
+        List<String> woven = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
             if (!analysed(door.family())) continue;
-            String group = door.name() + " in " + door.family();
             String miss = weave(door);
             if (miss.isEmpty()) {
-                missed.put(group, Collections.<String>emptyList());
+                doorMethods.add(door.doorMethod());
                 woven.add(door.name() + " at " + door.method);
-            } else if (!missed.containsKey(group)
-                    || !missed.get(group).isEmpty()) {
-                missed.computeIfAbsent(group,
-                        at -> new ArrayList<String>()).add(miss);
+            } else {
+                missed.computeIfAbsent(door.doorMethod(),
+                        method -> new ArrayList<>()).add(miss);
             }
         }
-        for (Map.Entry<String, List<String>> group : missed.entrySet()) {
-            if (!group.getValue().isEmpty()) {
-                throw new IllegalStateException("DOOR_METHOD_UNAVAILABLE: "
-                        + group.getKey() + ": " + group.getValue());
-            }
+        missed.keySet().removeAll(doorMethods);
+        if (!missed.isEmpty()) {
+            throw new IllegalStateException(
+                    "DOOR_METHOD_UNAVAILABLE: " + missed);
         }
         LOG.info("Library doors woven: {}", woven);
     }
@@ -116,7 +112,7 @@ final class DoorWeave {
         }
         // Built back to front: each marker's false arm falls to the next.
         List<Unit> faults = new ArrayList<Unit>();
-        List<String> kinds = new ArrayList<String>(door.faults);
+        List<String> kinds = new ArrayList<>(door.faults);
         Collections.reverse(kinds);
         for (String kind : kinds) {
             List<Unit> fault = fault(body, door.name(), kind, next);

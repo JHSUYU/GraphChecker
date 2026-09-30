@@ -218,7 +218,7 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
 
 ### 7.3 Typed faults
 
-The DOOR rows and the woven markers are SYMBOL-SCOPE.md §4.2. A marker's branch is a decision of
+The library catalog's doors and the woven markers are SYMBOL-SCOPE.md §4.2. A marker's branch is a decision of
 the occurrence that runs the door; `explore/ClosurePlanner#controlProducer` adds the sender and the
 receiver of the message a demanded occurrence served (found through its `Anchor`,
 `explore/Corpus#senderOf`, `#receiverOf`) as control producers, so their door faults are proposed

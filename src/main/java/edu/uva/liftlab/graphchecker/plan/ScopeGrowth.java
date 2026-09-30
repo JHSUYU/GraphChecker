@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.causynth.LibraryCatalog;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.FieldVisitor;
@@ -51,7 +52,7 @@ import java.util.zip.ZipFile;
  *
  * <p>Before the first pass, outside the budget, {@value #DOORS} takes the
  * class family (the class and its nested classes) of every library catalog
- * door ({@code causynth.LibraryCatalog}) the system calls: a class of the
+ * door ({@link LibraryCatalog}) the system calls: a class of the
  * roots outside the family invokes a method of it.  It is copied from the
  * first of the roots and the classpath holding it -- a library jar
  * (ZooKeeper) as well as the system's own classes -- unless the scope holds
@@ -152,9 +153,7 @@ public final class ScopeGrowth {
         present.addAll(classNames(grown));
         Set<String> decided = new LinkedHashSet<>();
         List<String> taken = new ArrayList<>();
-        for (edu.uva.liftlab.graphchecker.causynth.LibraryCatalog.Door door
-                : edu.uva.liftlab.graphchecker.causynth.LibraryCatalog
-                .doors()) {
+        for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
             String family = door.family();
             if (!decided.add(family) || present.contains(family)
                     || !index.called(family)) {

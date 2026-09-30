@@ -30,11 +30,9 @@ target_spec=${here}/targets/${check}.yaml
 target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
   "${here}/occurrences.tsv")
 target_occurrence=${target_occurrence:-first}
-# The family scope carries the IPC and SASL doors; Sender carries the
-# data-transfer SEND door, one per op.  No door on reads: every pipeline ack
-# is one, and a door per packet admits an occurrence per packet.
-scope=("${blockkey_scope[@]}"
-  client:org/apache/hadoop/hdfs/protocol/datatransfer/Sender)
+# The library doors' classes (IPC, SASL, the data-transfer SEND) join the
+# scope by themselves (ScopeGrowth --doors).
+scope=("${blockkey_scope[@]}")
 [[ "${own}" == - ]] || scope+=("${own}")
 datanode=org.apache.hadoop.hdfs.server.datanode
 ec=hdfs:org/apache/hadoop/hdfs/server/datanode/erasurecode

@@ -143,6 +143,35 @@ public class ScopeGrowthTest {
         }
     }
 
+    /** SYMBOL-SCOPE §4.2: a door's family joins the scope when a class
+     *  outside it calls it, copied from the first entry holding it, a
+     *  directory or a jar. */
+    @Test
+    public void aCalledDoorFamilyIsCopiedFromItsEntry() throws Exception {
+        Path root = fixtures();
+        ScopeGrowth growth = new ScopeGrowth();
+        growth.scan(root);
+        assertEquals(Arrays.asList(true, false), Arrays.asList(
+                growth.called(T + "$Holder"), growth.called(T + "$Writer")));
+        Path jar = folder.newFolder().toPath().resolve("lib.jar");
+        try (java.util.zip.ZipOutputStream out =
+                     new java.util.zip.ZipOutputStream(
+                             Files.newOutputStream(jar))) {
+            String file = (T + "$Holder").replace('.', '/') + ".class";
+            out.putNextEntry(new java.util.zip.ZipEntry(file));
+            out.write(Files.readAllBytes(root.resolve(file)));
+        }
+        for (Path entry : Arrays.asList(root, jar)) {
+            Path grown = folder.newFolder().toPath();
+            assertEquals(names("Holder"), ScopeGrowth.copyFamily(
+                    T + "$Holder", Arrays.asList(
+                            folder.newFolder().toPath(), entry), grown));
+            assertEquals(1, Files.list(grown.resolve(
+                    T.substring(0, T.lastIndexOf('.')).replace('.', '/')))
+                    .count());
+        }
+    }
+
     /** A class root holding the fixtures' class files. */
     private Path fixtures() throws Exception {
         Path root = folder.newFolder().toPath();
