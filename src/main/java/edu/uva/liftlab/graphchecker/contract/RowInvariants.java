@@ -45,6 +45,9 @@ public final class RowInvariants {
             Pattern.compile("^Y_([A-Z])_(-?[0-9]+)$");
     /** A plain decimal, as an INTEGRAL or CLOCK reading is spelled. */
     private static final Pattern DECIMAL = Pattern.compile("^-?[0-9]+$");
+    /** The sorts a codec's hole can have: a primitive, or a String. */
+    private static final Pattern HOLE_SORT =
+            Pattern.compile("^([ZBCSIJFD]|Ljava/lang/String;)$");
     /** The site spelling a placeholder read carries. */
     public static final String PLACEHOLDER = "#PLACEHOLDER#";
 
@@ -186,7 +189,8 @@ public final class RowInvariants {
     /**
      * CONTRACT-SPEC §2.6: every ReadRow must have an observedVersion or
      * a plain decimal concreteValue, never neither.  An attach is paired by
-     * HANDLE or CORRELATION_PORT and nothing else.
+     * HANDLE, CORRELATION_PORT or ENVELOPE and nothing else, and a hole is
+     * paired by the envelope that carried its producer and nothing else.
      */
     private static void neverNeither(SessionReader session,
                                      List<GapRow> gaps) {
@@ -202,19 +206,34 @@ public final class RowInvariants {
                             + "concreteValue, never both absent)"));
         }
         for (AttachRow row : session.attaches()) {
-            String pairedBy = row.pairedBy();
-            if (pairedBy == null || "HANDLE".equals(pairedBy)
-                    || "CORRELATION_PORT".equals(pairedBy)) {
-                continue;
-            }
+            String refused = pairing(row);
+            if (refused.isEmpty()) continue;
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "attaches", row.seq(), "pairedBy",
-                    row.endpoint().id() + "=" + pairedBy,
+                    row.endpoint().id() + "=" + row.pairedBy(),
                     "invariant 2 (CONTRACT-SPEC §2.6: an attach is paired by "
-                            + "the handle or by correlation+port): this row "
-                            + "names a third key, so which evidence paired "
-                            + "it has no answer"));
+                            + "the handle, by correlation+port, or -- a hole, "
+                            + "and only a hole -- by the envelope that "
+                            + "carried its producer): this row " + refused));
         }
+    }
+
+    /** Why an attach's pairing has no answer, or "" when it has one. */
+    private static String pairing(AttachRow row) {
+        String key = row.pairedBy();
+        boolean envelope = AttachRow.ENVELOPE.equals(key);
+        if (row.hole() == null) {
+            if (envelope) return "names the envelope and states no hole";
+            return key == null || AttachRow.HANDLE.equals(key)
+                    || AttachRow.CORRELATION_PORT.equals(key) ? ""
+                    : "names a fourth key, so which evidence paired it has "
+                    + "no answer";
+        }
+        if (!envelope) {
+            return "states hole " + row.hole() + " and pairs it by " + key;
+        }
+        return row.producer() != null ? "" : "states hole " + row.hole()
+                + " and no producer, which its envelope carried";
     }
 
     // ---- 3. expression references -------------------------------------
@@ -369,7 +388,10 @@ public final class RowInvariants {
 
     // ---- 5. symbol sorts ----------------------------------------------
 
-    /** One name, one spelled sort, = a read's javaType (CONTRACT-SPEC §2.6). */
+    /**
+     * One name, one spelled sort, = a read's or a hole attach's javaType;
+     * a hole is a primitive or a String (CONTRACT-SPEC §2.6).
+     */
     private static void sorts(SessionReader session, List<GapRow> gaps) {
         Map<String, String[]> sortOfName = new LinkedHashMap<String, String[]>();
         for (RootMintRow row : session.roots()) {
@@ -378,22 +400,46 @@ public final class RowInvariants {
         for (AttachRow row : session.attaches()) {
             sort(session, gaps, sortOfName, "attaches", row.seq(),
                     row.symbol());
+            if (row.hole() == null) continue;
+            holeSort(session, gaps, "attaches", row.seq(), row.javaType());
+            spelledAsDeclared(session, gaps, "attaches", row.seq(),
+                    row.symbol(), row.javaType());
+        }
+        for (ExportRow row : session.exports()) {
+            if (row.hole() == null) continue;
+            holeSort(session, gaps, "exports", row.seq(), row.javaType());
         }
         for (ReadRow row : session.reads()) {
             sort(session, gaps, sortOfName, "reads", row.seq(), row.symbol());
-            Matcher minted = MINTED.matcher(row.symbol());
-            if (!minted.matches()) continue;
-            String spelled = minted.group(1).substring(0, 1);
-            String declared = row.javaType().substring(0, 1);
-            if (spelled.equals(declared)) continue;
-            gaps.add(violation(session, GapKind.UNSTATED_VALUE,
-                    GapClass.BLOCKING, "reads", row.seq(), "symbol/javaType",
-                    row.symbol(),
-                    "invariant 5 (CONTRACT-SPEC §2.6: one symbol spelling): the "
-                            + "symbol is spelled sort " + spelled
-                            + " and the row declares javaType "
-                            + row.javaType()));
+            spelledAsDeclared(session, gaps, "reads", row.seq(), row.symbol(),
+                    row.javaType());
         }
+    }
+
+    /** A minted symbol's spelled sort is its row's javaType's. */
+    private static void spelledAsDeclared(SessionReader session,
+                                          List<GapRow> gaps, String kind,
+                                          long seq, String symbol,
+                                          String javaType) {
+        Matcher minted = MINTED.matcher(symbol);
+        if (!minted.matches()) return;
+        String spelled = minted.group(1).substring(0, 1);
+        if (spelled.equals(javaType.substring(0, 1))) return;
+        gaps.add(violation(session, GapKind.UNSTATED_VALUE,
+                GapClass.BLOCKING, kind, seq, "symbol/javaType", symbol,
+                "invariant 5 (CONTRACT-SPEC §2.6: one symbol spelling): the "
+                        + "symbol is spelled sort " + spelled
+                        + " and the row declares javaType " + javaType));
+    }
+
+    /** A hole's value is a primitive or a String piece of its leaf. */
+    private static void holeSort(SessionReader session, List<GapRow> gaps,
+                                 String kind, long seq, String javaType) {
+        if (HOLE_SORT.matcher(javaType).matches()) return;
+        gaps.add(violation(session, GapKind.UNSTATED_VALUE,
+                GapClass.BLOCKING, kind, seq, "javaType", javaType,
+                "invariant 5 (CONTRACT-SPEC §2.6: a hole is a primitive or a "
+                        + "String): this hole's row declares another sort"));
     }
 
     private static void sort(SessionReader session, List<GapRow> gaps,
@@ -925,11 +971,12 @@ public final class RowInvariants {
     // ---- 12. referent states --------------------------------------------
 
     /**
-     * CONTRACT-SPEC §2.6: a write's {@code referentState} names a write of
-     * its container's {@code MAP} location in the same session, at a
-     * version below the write's own: the state the store saw was published
-     * before it.  Anything else is a state no row stands behind, which a
-     * reader through the reference would be composed over.
+     * CONTRACT-SPEC §2.6: a write's {@code referentState} names a version of
+     * its container's {@code MAP} location below the write's own, BLOCKING
+     * otherwise: the state the store saw was published before it.  A
+     * version no write row of the session states (the runtime states a
+     * refusal wherever its read-out shows one) is DIAGNOSTIC, as a read of
+     * one is: COMPOSE composes no reader through that store.
      */
     private static void referents(SessionReader session, List<GapRow> gaps) {
         Set<String> stated = new LinkedHashSet<String>();
@@ -940,17 +987,24 @@ public final class RowInvariants {
             WriteRow.Referent referent = row.referentState();
             if (referent == null) continue;
             String state = referent.location() + "@" + referent.version();
-            if (stated.contains(state) && referent.version() < row.version()) {
-                continue;
+            if (referent.version() >= row.version()) {
+                gaps.add(violation(session, GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, "writes", row.seq(),
+                        "referentState", row.location() + "@" + row.version()
+                                + " -> " + state, "invariant 12 (CONTRACT-SPEC"
+                                + " §2.6): the state is not older than the "
+                                + "store"));
+            } else if (!stated.contains(state)) {
+                // As a read of a version no row states: evidence the run
+                // lost (a withheld activation's rows), which COMPOSE
+                // refuses the store on by name.
+                gaps.add(violation(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, "writes", row.seq(),
+                        "referentState", row.location() + "@" + row.version()
+                                + " -> " + state, "invariant 12 (CONTRACT-SPEC"
+                                + " §2.6): no WriteRow of this session states "
+                                + "the referent's state"));
             }
-            gaps.add(violation(session, GapKind.UNSTATED_VALUE,
-                    GapClass.BLOCKING, "writes", row.seq(), "referentState",
-                    row.location() + "@" + row.version() + " -> " + state,
-                    "invariant 12 (CONTRACT-SPEC §2.6: a reference write's "
-                            + "referentState names a write of its session "
-                            + "below its own version): " + (stated.contains(
-                            state) ? "the state is not older than the store"
-                            : "no WriteRow of this session states it")));
         }
     }
 

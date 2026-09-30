@@ -1576,17 +1576,20 @@ public final class Composer {
     }
 
     /**
-     * Whether a reference store stored a container itself: an object this
-     * session logs the state of, which a wrapper or a view of one is not.
+     * Whether a reference store stored a container itself, which a wrapper
+     * or a view of one is not: the container its referent names, or,
+     * refused, an object this session logs the state of.
      */
     private boolean storesItsContainer(String session, WriteRow store) {
         JsonElement stored = unwrapped(corpus.expression(session,
                 store.expressionRef()));
-        return SmtLowering.named(stored) && !corpus.writesOf(session,
-                SmtLowering.locationKey(LocationId.of(LocationKind.MAP,
-                        Long.toString(VmRows.referencedObjectRid(
-                                stored.getAsJsonObject().get("_exp")
-                                        .getAsString())), "-3"))).isEmpty();
+        if (!SmtLowering.named(stored)) return false;
+        String rid = Long.toString(VmRows.referencedObjectRid(
+                stored.getAsJsonObject().get("_exp").getAsString()));
+        return store.referentState() != null
+                ? rid.equals(store.referentState().location().owner())
+                : !corpus.writesOf(session, SmtLowering.locationKey(
+                LocationId.of(LocationKind.MAP, rid, "-3"))).isEmpty();
     }
 
     /**

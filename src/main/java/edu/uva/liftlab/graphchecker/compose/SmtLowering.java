@@ -2101,7 +2101,10 @@ public final class SmtLowering {
                     unused -> new LinkedHashMap<String, WriteRow>());
             String reason = store.referentStateRefused() != null
                     ? store.referentStateRefused()
-                    : store.referentState() == null ? "NONE" : "";
+                    : store.referentState() == null ? "NONE"
+                    : join.writeExpression(locationKey(store.referentState()
+                    .location()), store.referentState().version()) == null
+                    ? "UNPUBLISHED" : "";
             if (reason.isEmpty()) {
                 String state = locationKey(store.referentState().location());
                 boolean answered = false;

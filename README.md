@@ -103,7 +103,7 @@ To run from a frozen snapshot (a round) instead of the working tree:
 ```bash
 git worktree add ~/gc-run/p<N> HEAD && (cd ~/gc-run/p<N> && mvn -q -o package -DskipTests)
 GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/launch-run.sh ~/gc-run/p<N> hdfs-17960 v<R>-17960
-tools/rounds/launch-round.sh ~/gc-run/p<N> v<R>          # the nine HDFS cases, heads placed per host
+GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/launch-round.sh ~/gc-run/p<N> v<R>   # the nine HDFS + two Solr cases
 tools/rounds/round-monitor.sh 'v<R>-*' | grep --line-buffered 'DONE '
 tools/rounds/stop-run.sh v<R>-17960                      # stops a run by its output dir, on every lift
 ```

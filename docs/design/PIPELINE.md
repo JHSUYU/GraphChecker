@@ -182,7 +182,11 @@ name its symbols (IMPORT invariant 11).
 A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
 admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
 only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the
-identity it returned, which a read no write row states is pinned to.
+identity it returned, which a read no write row states is pinned to. A referent's version is a
+write row or the write refuses it by name (`RowPublication#unrowedReferent`): the read-out refused
+the container's log (its fault, e.g. `CONTAINER_BASE_UNSTATED` for a class the VM walks no base of,
+a truncated envelope), or holds the version as no row (`VERSION_NOT_ROWED`) or no longer
+(`VERSION_NOT_RETAINED`).
 
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
@@ -542,7 +546,8 @@ writers EXPLORE demands), each before its cutoff, and joins the reads they name;
 closure the recording does not state is no option (`(not nest__…)`, its refusals named
 DIAGNOSTIC). An answer holds only where the
 owner is its object, so what its lowering requires is its case's precondition, never the path's. A
-store that states no state (`referentStateRefused`, none, or no version lowers) delivers no case,
+store that states no state (`referentStateRefused`, none, a version no write row states
+(`UNPUBLISHED`), or no version lowers) delivers no case,
 named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A movable owner that is no
 reference read (a map's own read, `outer.get(k).get(k2)`) names no candidates and refuses the path
 (`UNSTATED_VALUE:OwnerCandidates:<location>`). `ENTRY` is a view to walk through; as a value no

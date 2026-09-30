@@ -165,9 +165,9 @@ public final class SessionExpressionLog {
      * ({@code SessionPublisher}), so a missing or headless file was never
      * published, and is refused: read as the empty table, every row's ref
      * came out UNSTATED_VALUE and hid the missing file (hdfs-17960's
-     * offline compose).
+     * offline compose).  Its strings come from {@code pool}.
      */
-    public static ExpressionTable read(Path file) throws IOException {
+    static ExpressionTable read(Path file, RowPool pool) throws IOException {
         if (file == null || !Files.isRegularFile(file)) {
             throw new IllegalArgumentException(
                     "the session published no expression log: no " + file);
@@ -180,7 +180,7 @@ public final class SessionExpressionLog {
             boolean headed = false;
             while ((line = in.readLine()) != null) {
                 if (line.trim().isEmpty()) continue;
-                JsonObject row = RowCodec.fromLine(line);
+                JsonObject row = RowCodec.fromLine(line, pool);
                 if (!headed) {
                     if (!KIND.equals(text(row, "kind")) || !row.has(
                             "schemaVersion") || row.get("schemaVersion")
