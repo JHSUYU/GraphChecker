@@ -919,14 +919,12 @@ public final class Composer {
                 new LinkedHashMap<String, Set<String>>();
         terms.addAll(valuationOf(session, refusals, unminted));
 
-        // (2) Each anchor handoff: the obligation's answer if any, else
-        //     nothing (its family binds it; collected in `bound`).  Never a
-        //     recorded literal.
+        // (2) Each anchor handoff, answered or not: nothing here (its family
+        //     binds it; collected in `bound`).  Never a literal.
         Set<String> interactionIds = new LinkedHashSet<String>();
         Set<String> handoffs = new LinkedHashSet<String>();
         List<AttachRow> bound = new ArrayList<AttachRow>();
-        terms.addAll(handoffReads(session, interactionIds, handoffs,
-                refusals, bound));
+        handoffReads(session, interactionIds, handoffs, refusals, bound);
 
         // (3) State joins, read := observed write's expression, kept by
         //     symbol: a read with family alternatives must not also be
@@ -982,11 +980,11 @@ public final class Composer {
         }
 
         // (5b) Every OTHER handoff the conjunction reaches (via joins, pi,
-        //      phi), by the same rules as (2).
+        //      phi), by the same rule as (2).
         List<String> reaching = new ArrayList<String>(terms);
         reaching.addAll(joins.values());
-        terms.addAll(reachedHandoffs(session, reaching, interactionIds,
-                handoffs, refusals, bound));
+        reachedHandoffs(session, reaching, interactionIds, handoffs,
+                refusals, bound);
 
         // Read BEFORE end() forgets them: any refusal drops the whole path
         // (it would otherwise rest on a free constant).
@@ -1221,64 +1219,59 @@ public final class Composer {
     }
 
     /**
-     * What this path read at each of the anchor's handoffs, in order:
-     * <ol>
-     *   <li>an obligation answered the mint: that value;</li>
-     *   <li>an ATTESTED producer delivered it: nothing is conjoined; the
-     *       attach joins its FAMILY only (PIPELINE §8) and takes just its
-     *       sort from the delivery ({@link #attestedArrival});</li>
-     *   <li>otherwise refused by name.</li>
-     * </ol>
+     * Each of the anchor's handoffs, by {@link #handoffRead}: bound by its
+     * FAMILY alone, or the path is refused by name.
      */
-    private List<String> handoffReads(String session,
-                                      Set<String> interactionIds,
-                                      Set<String> handoffs,
-                                      List<GapRow> refusals,
-                                      List<AttachRow> bound) {
-        List<String> reads = new ArrayList<String>();
+    private void handoffReads(String session, Set<String> interactionIds,
+                              Set<String> handoffs, List<GapRow> refusals,
+                              List<AttachRow> bound) {
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
-            handoffRead(session, attach, reads, interactionIds, handoffs,
-                    refusals, bound);
+            handoffRead(session, attach, interactionIds, handoffs, refusals,
+                    bound);
         }
-        return reads;
     }
 
     /**
      * Every OTHER handoff this path's conjunction reaches (e.g. a delivered
-     * value a joined write put into a container), by the same rules, to a
-     * fixed point as in {@link Arms#wireArms}.  Unbound, each would be a free
-     * constant.
+     * value a joined write put into a container), by the same rule.
+     * Unbound, each would be a free constant: a handoff variable this
+     * session minted no attach for (the corpus states it of another run)
+     * has no family here, and refuses the path by name.
      */
-    private List<String> reachedHandoffs(String session, List<String> terms,
-                                         Set<String> interactionIds,
-                                         Set<String> handoffs,
-                                         List<GapRow> refusals,
-                                         List<AttachRow> bound) {
-        List<String> reads = new ArrayList<String>();
-        List<String> pending = new ArrayList<String>(terms);
-        while (!pending.isEmpty()) {
-            Set<String> reached = lowering.reachedSymbols(pending);
-            pending = new ArrayList<String>();
-            for (String name : reached) {
-                if (handoffs.contains(name)) continue;
-                AttachRow attach = corpus.attach(session, name);
-                if (attach == null) continue;
-                List<String> stated = new ArrayList<String>();
-                handoffRead(session, attach, stated, interactionIds,
-                        handoffs, refusals, bound);
-                reads.addAll(stated);
-                pending.addAll(stated);
+    private void reachedHandoffs(String session, List<String> terms,
+                                 Set<String> interactionIds,
+                                 Set<String> handoffs, List<GapRow> refusals,
+                                 List<AttachRow> bound) {
+        for (String name : lowering.reachedSymbols(terms)) {
+            if (handoffs.contains(name)) continue;
+            AttachRow attach = corpus.attach(session, name);
+            if (attach != null) {
+                handoffRead(session, attach, interactionIds, handoffs,
+                        refusals, bound);
+            } else if (corpus.handoffSymbol(name) && handoffs.add(name)) {
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, name, "this path names a "
+                                + "handoff variable no attach row of its "
+                                + "session minted, so no family of this "
+                                + "run binds what it read"));
             }
         }
-        return reads;
     }
 
     /**
-     * One attach, by the three rules, stated once per symbol
-     * ({@code handoffs} holds the symbols already bound).
+     * One attach, stated once per symbol ({@code handoffs} holds the
+     * symbols already bound): an ATTESTED producer delivered it, and its
+     * FAMILY alone binds it (PIPELINE §8); nothing is conjoined here, and
+     * it takes just its sort from the delivery ({@link #attestedArrival}).
+     * Answered or not: an obligation's answer is what its replay planted at
+     * the consumer, and a witness rests only on a value a run compatible
+     * with its path delivered (hdfs-17967-pathC rb1: a flip answered the
+     * DataNode's key id with 119532 while the moved serial had its producer
+     * deliver 119533, and the answer, pinned as a literal, let the solver
+     * move the serial past it).  Otherwise refused by name.
      */
     private void handoffRead(String session, AttachRow attach,
-                             List<String> reads, Set<String> interactionIds,
+                             Set<String> interactionIds,
                              Set<String> handoffs, List<GapRow> refusals,
                              List<AttachRow> bound) {
         if (!handoffs.add(attach.symbol())) return;
@@ -1289,16 +1282,11 @@ public final class Composer {
             // No known source, so no family: named, and refused below.
             composedFamilies.unpaired(session, attach);
         }
-        if (attach.answered()) {
-            String read = bind(attach, refusals);
-            if (!read.isEmpty()) reads.add(read);
-            return;
-        }
         if (attestedArrival(attach)) {
             bound.add(attach);
             return;
         }
-        // Never pin the received literal: the question is whether the
+        // Never pin the literal it took: the question is whether the
         // producer could have delivered another value.  Refuse by name.
         refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
                 GapClass.DIAGNOSTIC, attach.symbol(),
@@ -1306,52 +1294,13 @@ public final class Composer {
                         + "occurrence this delivery came from, so what was "
                         + "delivered is stated and why is not: this path "
                         + "would have to pin the read to the literal it "
-                        + "received"));
-    }
-
-    /**
-     * One answered handoff read, its answer a literal of the sort the MINT
-     * declared, never of the one the value's spelling suggests ("0" fits
-     * many sorts).
-     */
-    private String bind(AttachRow attach, List<GapRow> refusals) {
-        String symbol = attach.symbol();
-        Sort sort = scalarSort(attach.javaType(), attach.sessionId(),
-                symbol, refusals);
-        if (sort == null) return "";
-        String literal = smtLiteral(attach.answeredValue(), sort);
-        if (literal.isEmpty()) {
-            refusals.add(GapRow.of(attach.sessionId(),
-                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, symbol,
-                    "an answered attach whose value is not a " + sort.smt
-                            + " literal: " + attach.answeredValue()));
-            return "";
-        }
-        lowering.declareStated(symbol, sort);
-        return "(= " + symbol + " " + literal + ")";
+                        + (attach.answered() ? "was answered with"
+                        : "received")));
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
     private static Sort sortOf(RootMintRow row) {
         return row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT;
-    }
-
-    /**
-     * The scalar sort one JVM descriptor denotes, or a named refusal; never
-     * a fallback to {@code Ref}, which would leave the value unconstrained.
-     */
-    private Sort scalarSort(String javaType, String session, String subject,
-                            List<GapRow> refusals) {
-        Sort sort = JavaSmtSorts.sortOfJava(javaType);
-        if (sort.scalar()) return sort;
-        refusals.add(GapRow.of(session == null || session.isEmpty()
-                        ? COMPOSITION : session, GapKind.UNSTATED_VALUE,
-                GapClass.DIAGNOSTIC, subject,
-                "the row states the Java type as \""
-                        + (javaType == null ? "" : javaType)
-                        + "\", which names no scalar this lowering can "
-                        + "place"));
-        return null;
     }
 
     /**

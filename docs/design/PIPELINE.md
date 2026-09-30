@@ -501,7 +501,9 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   and differently"), is a BLOCKING refusal; a root the sessions recorded differently is pinned to
   this session's value, or bounded by its declared window around it; a declared root this session
   never minted refuses the path only when the path's terms name it;
-- anchor handoffs: an obligation's answer if any, else bound only by the message family;
+- anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
+  what its replay planted at the consumer, not what a run delivered, so it is never a literal);
+  an attach no session attests the producer of refuses the path (`UNATTESTED_ARM`);
 - the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
   too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
   of that version (a placeholder), else PIN to the value the row states, else REFUSE
@@ -520,7 +522,9 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the
   fatal and refuses the path ("decided concretely on its healthy arm") otherwise;
-- every other handoff the conjunction reaches, by the same rules.
+- every other handoff the conjunction reaches, by the same rule; a handoff variable the corpus
+  states of another session and this one minted no attach for refuses the path by name
+  (`UNSTATED_VALUE`), so no path names a boundary variable its families do not bind.
 
 Any refusal drops the path and is filed with its own class (an open lowering refusal is a
 DIAGNOSTIC `UNSTATED_VALUE`).

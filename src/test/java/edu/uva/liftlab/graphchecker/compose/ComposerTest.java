@@ -1591,13 +1591,11 @@ public class ComposerTest {
             Session session = new Session(iteration, each, false);
             session.marker("false");
             // An attach the wire delivered to and the recording cannot
-            // pair, and one whose Java type names no scalar.
+            // pair, and one an obligation ANSWERED, which is no literal
+            // either: an answer is what a replay planted, not what a run
+            // delivered, so nothing binds it and it is refused by name.
             session.attach(consumer, "vh", "I", "7", null);
-            // ANSWERED, because that is the only rule left that binds a
-            // handoff read to a literal: the arrival fallback is deleted,
-            // and an attach nothing attests is refused by name before a
-            // sort is ever asked for.
-            session.answered(other, "vh_ref", "Lorg/apache/Foo;", "7", null);
+            session.answered(other, "vh_ref", "I", "7", "8", null);
             // A read of ONE associative cell, joined to a write of the
             // WHOLE map (its state root) at the version it observed.  The
             // location names its key by hash, so which entry the read
@@ -1734,8 +1732,9 @@ public class ComposerTest {
         assertTrue("an unpaired attach is a named row",
                 says(gaps, GapKind.UNSTATED_VALUE,
                         "names no producer endpoint"));
-        assertTrue("a Java type this lowering cannot place is refused",
-                says(gaps, GapKind.UNSTATED_VALUE, "names no scalar"));
+        assertTrue("an answered attach no family binds is refused, not "
+                        + "pinned to its answer",
+                says(gaps, GapKind.UNATTESTED_ARM, "was answered with"));
         assertTrue("and two recordings are not one: the sessions STATE the "
                         + "role they ran as, and two SEEDs is no answer",
                 says(gaps, GapKind.UNSTATED_VALUE, "state role SEED"));
@@ -1867,6 +1866,88 @@ public class ComposerTest {
                     : rest.substring(0, end);
         }
         return "";
+    }
+
+    /**
+     * AN ANSWERED HANDOFF IS BOUND BY ITS FAMILY, NEVER BY ITS ANSWER: the
+     * answer is what an obligation's replay planted at the consumer, and a
+     * path rests only on what a run compatible with it delivered.
+     * <ul>
+     *   <li>delivered: the flip replay's producer delivered the answer, and
+     *       the marker witness stands;</li>
+     *   <li>undelivered (hdfs-17967-pathC rb1): the serial moved, the
+     *       producer, whose export the VM valued as a constant, delivered
+     *       the moved serial, and the consumer was answered with the
+     *       recorded one.  Pinned to the answer, the solver moved the
+     *       serial past a key id no run delivers with it;</li>
+     *   <li>foreign: a path names a handoff variable its session minted no
+     *       attach for, so no family of that run binds it: refused by
+     *       name.</li>
+     * </ul>
+     */
+    @Test
+    public void anAnsweredHandoffIsBoundByItsFamily() throws Exception {
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        Path delivered = folder.newFolder("answered-delivered").toPath();
+        session(delivered, "s0", false, "false", producer, consumer,
+                "vh", "false", null, true, false, "EXPR.v1.marker");
+        session(delivered, "s1", true, "true", producer, consumer,
+                "vh", "true", "true", true, true, "EXPR.v1.marker");
+        ClaimPolicy.Decision witness = ClaimPolicy.decide(
+                compose(delivered, 8), solver());
+        assertEquals("delivered", ClaimKind.MARKER_FLIPPED,
+                witness.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "true"),
+                witness.claim().movedRoots());
+
+        for (String shape : new String[]{"undelivered", "foreign"}) {
+            Path iteration = folder.newFolder("answered-" + shape).toPath();
+            // {session, serial it ran at}: the flip replay moved it.
+            for (String[] each : new String[][]{{"s0", "5"}, {"s1", "6"}}) {
+                boolean flip = "s1".equals(each[0]);
+                Session session = new Session(iteration, each[0], flip);
+                session.activation(PRODUCER, "thread#"
+                        + PRODUCER.regionId(), flip, true);
+                session.serial(each[1], "5", "8");
+                session.expression("EXPR.0000000000000d01", integer("I",
+                        Long.parseLong(each[1])));
+                session.export(producer, "EXPR.0000000000000d01", "I", 1L,
+                        each[1]);
+                if (!flip) {
+                    session.attach(consumer, "vh", "I", each[1], producer);
+                } else if ("undelivered".equals(shape)) {
+                    session.answered(consumer, "vh", "I", each[1], "5",
+                            producer);
+                }
+                // The fatal: the key id the handoff named is not current.
+                session.expression("EXPR.0000000000000d02", binary("!=",
+                        symbol("vh", "I"), symbol(SERIAL, "I")));
+                session.target("EXPR.0000000000000d02", flip, true);
+                session.write();
+            }
+            Composer.Composition composition = compose(iteration, 8);
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+                assertFalse(shape + ": no valuation reaches the fatal with "
+                                + "the key id a run delivered: " + outcome,
+                        outcome.answer().sat());
+            }
+            assertEquals(shape, ClaimKind.NO_SUPPORTED_WITNESS,
+                    decision.claim().kind());
+            assertEquals(shape + ": the answered path stays a disjunct, "
+                            + "its read bound by the family",
+                    "undelivered".equals(shape) ? 2 : 1,
+                    composition.disjuncts().size());
+            assertEquals(shape + ": a handoff variable no attach of the "
+                            + "path's session minted is refused by name",
+                    "foreign".equals(shape), says(composition.gaps(),
+                            GapKind.UNSTATED_VALUE, "no attach row of its "
+                                    + "session minted"));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -4464,8 +4545,17 @@ public class ComposerTest {
                     ? binary("&&", named, binary("!=", symbol("vH_heard",
                     "I"), integer("I", 0L))) : named);
             if ("handoff".equals(shares)) {
-                session.answered(Endpoint.of(ANCHOR, "Port#recv#1:ATTACH",
-                        at("recv#1", 0), 0), "vH_heard", "I", "5", null);
+                // Delivered by a producer the replay attests, so its family
+                // binds it and no refusal of its own drops the path.
+                Endpoint sender = Endpoint.of(PRODUCER, "Port#send#1:EXPORT",
+                        at("send#1", 0), 0);
+                session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                        false, true);
+                session.expression("EXPR.00000000000000a5",
+                        integer("I", 5L));
+                session.export(sender, "EXPR.00000000000000a5", "I", 1L, "5");
+                session.attach(Endpoint.of(ANCHOR, "Port#recv#1:ATTACH",
+                        at("recv#1", 0), 0), "vH_heard", "I", "5", sender);
             }
             session.decision(ANCHOR, "file#u3", true,
                     "EXPR.00000000000000a2");
@@ -5505,8 +5595,13 @@ public class ComposerTest {
 
         void export(Endpoint endpoint, String ref, long handle,
                     String recorded) {
-            exports.add(ExportRow.of(id, ++seq, endpoint, ref, "Z", handle,
-                    recorded));
+            export(endpoint, ref, "Z", handle, recorded);
+        }
+
+        void export(Endpoint endpoint, String ref, String javaType,
+                    long handle, String recorded) {
+            exports.add(ExportRow.of(id, ++seq, endpoint, ref, javaType,
+                    handle, recorded));
         }
 
         void attach(Endpoint endpoint, String symbol, String arrival,
@@ -5533,18 +5628,13 @@ public class ComposerTest {
         }
 
         /**
-         * An attach an OBLIGATION answered: the mint was planted.
-         *
-         * <p>The one place a handoff read is still bound to a literal, and
-         * the literal is the wave's assignment and not the arrival: what
-         * the replay was told to receive is a fact about the question that
-         * was asked, so the sort the row states has to place it
-         * ({@code Composer.bind}).</p>
+         * An attach an OBLIGATION answered: the mint was planted with
+         * {@code answer} while its producer delivered {@code arrival}.
          */
         void answered(Endpoint endpoint, String symbol, String javaType,
-                      String value, Endpoint producer) {
+                      String arrival, String answer, Endpoint producer) {
             attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
-                    value, true, value, producer, "corr-" + symbol,
+                    arrival, true, answer, producer, "corr-" + symbol,
                     producer == null ? "" : "HANDLE"));
         }
 
@@ -5685,11 +5775,15 @@ public class ComposerTest {
                     + MARKER + "))");
         }
         session.export(producer, ref, 1L, marker);
-        session.attach(consumer, symbol, arrival, producer);
+        if (answered == null) {
+            session.attach(consumer, symbol, arrival, producer);
+        } else {
+            session.answered(consumer, symbol, "Z", arrival, answered,
+                    producer);
+        }
         // phi is published in the FATAL polarity by the runtime, healthy
         // sessions included; the composer never re-derives it.
         session.target(symbol, observedFatal, true);
         session.write();
-        assertNotNull(answered == null ? "" : answered);
     }
 }
