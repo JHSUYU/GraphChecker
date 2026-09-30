@@ -1073,10 +1073,9 @@ public final class SmtLowering {
     private static final Pattern METHOD_RETURN =
             Pattern.compile("M_[A-Z]_return[0-9]+");
     /**
-     * The member a method-return node states its CALL in (VM f14): the
-     * callee's {@code "<holder> <method>"} as {@code _name} and its
-     * argument expressions as {@code _param_list}, a MethodExpression's own
-     * spelling without its result.
+     * The member a method-return node states its CALL in (VM f14):
+     * {@code holder} and {@code name} of the callee, its {@code descriptor},
+     * and its argument expressions as {@code arguments}.
      */
     private static final String CALL = "call";
 
@@ -1152,8 +1151,9 @@ public final class SmtLowering {
      * arguments this lowering cannot state is refused by name.
      */
     private Term knownCall(JsonObject call, String raw) {
-        String callee = optionalString(call, "_name");
-        JsonArray arguments = array(call, "_param_list");
+        String callee = optionalString(call, "holder") + " "
+                + optionalString(call, "name");
+        JsonArray arguments = array(call, "arguments");
         String origin = "call:" + raw;
         if (RENDERINGS.contains(callee) && arguments.size() == 1) {
             return javaToString(arguments, origin);

@@ -3963,17 +3963,18 @@ public class ComposerTest {
                     : integer("J", 2L));
             if (!"no-call".equals(name)) {
                 JsonObject call = new JsonObject();
-                call.addProperty("_name", "parse".equals(name)
-                        ? "java/lang/Long parseLong" : integer
-                        ? "java/lang/Integer parseInt"
-                        : "org/apache/solr/Params getLong");
+                call.addProperty("holder", "parse".equals(name)
+                        ? "java/lang/Long" : integer ? "java/lang/Integer"
+                        : "org/apache/solr/Params");
+                call.addProperty("name", "parse".equals(name) ? "parseLong"
+                        : integer ? "parseInt" : "getLong");
                 JsonArray arguments = new JsonArray();
                 arguments.add("parse".equals(name) || "pinned".equals(name)
                         ? vmLeaf("ConStringSymbolExp", "Y_L'String'_2",
                         "java/lang/String")
                         : "moving".equals(name) ? symbol(SERIAL, "I")
                         : vmString("toString", symbol(SERIAL, "I")));
-                call.add("_param_list", arguments);
+                call.add("arguments", arguments);
                 returned.add("call", call);
             }
             session.expression("EXPR.00000000000000c1", integer
