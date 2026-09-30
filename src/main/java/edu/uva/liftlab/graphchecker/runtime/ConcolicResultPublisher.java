@@ -209,6 +209,13 @@ final class ConcolicResultPublisher {
         active.abandoned = true;
         ACTIVE.remove(active.token, active);
         endLiveSelectedRegion();
+        // Its path is withheld and its mints published, as an abandoned
+        // occurrence's are: other activations' rows already name those
+        // symbols (hdfs-11741 r1: IMPORT invariant 11, a root symbol with
+        // no RootMintRow).  Its thread still runs and may mint meanwhile.
+        synchronized (active) {
+            RowPublication.publishMints(active);
+        }
         taskUnanswered(active.activation, detail);
     }
 
@@ -320,7 +327,9 @@ final class ConcolicResultPublisher {
                 afterWitness = ordinal > submittedAtWitness;
             }
             if (afterWitness) {
+                // Withheld as a stranded one is: its mints still published.
                 configuration().markOccurrenceClaimed(active.activation);
+                RowPublication.publishMints(active);
                 taskUnanswered(active.activation, "AT_WITNESS: this"
                         + " occurrence completed after the declared"
                         + " occurrence observed the fatal, and the replay"

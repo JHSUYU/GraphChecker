@@ -170,6 +170,14 @@ starts after it), live activations settle, the run totals close the session's ro
 outlive the test, and a region started after the close would open a fresh VM session in which
 every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
 
+A focused replay ends at its witness: when the focus row's declared occurrence publishes a target row
+that observed the fatal (`ConcolicResultPublisher#concludeAtWitness`), admission ends, the
+publications in flight settle, every activation still live is stranded (`TASK_UNANSWERED`
+`AT_WITNESS`; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and one that
+completes after the witness is not published (`AT_WITNESS`). A stranded or late activation's path
+is withheld and its mints are published, as an abandoned one's are: other activations' rows already
+name its symbols (IMPORT invariant 11).
+
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
 the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on the 0/1 a
