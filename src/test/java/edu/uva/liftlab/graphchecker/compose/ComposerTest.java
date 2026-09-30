@@ -3248,6 +3248,74 @@ public class ComposerTest {
                 refused.disjuncts().isEmpty());
     }
 
+    /**
+     * Nor is a theory operator the lowering writes: every stage reads a name
+     * outside {@link SmtNames#BUILTIN} as undeclared, and COMPOSE refuses
+     * the path by it (solr-adhoc q13-22 dropped 36 conjuncts on str.substr
+     * and str.indexof).  The Java String methods and a container emptied
+     * and read are lowered here as a recording states them; the primitive
+     * operators are spelled by their one writer.
+     */
+    @Test
+    public void everyOperatorTheLoweringWritesIsBuiltin() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        declared.put("n", VmTermLowering.Sort.INT);
+        declared.put("c", VmTermLowering.Sort.INT);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        JsonObject s = vmLeaf("SymbolExpression", "s", "java/lang/String");
+        JsonObject n = vmLeaf("SymbolExpression", "n", "I");
+        JsonObject c = vmLeaf("SymbolExpression", "c", "C");
+        JsonObject emptied = relation("INDEXED", "SNAPSHOT_BASE",
+                relation("INDEXED", "STATE", symbol(
+                        "M_L'java/util/ArrayList'_3", "java/util/ArrayList")));
+        List<String> texts = new ArrayList<String>();
+        for (JsonObject expression : Arrays.asList(
+                vmString("substring", s, n), vmString("charAt", s, n),
+                vmString("indexOf", s, c), vmString("lastIndexOf", s, s),
+                vmString("toString", c),
+                binary("==", relation("INDEXED", "READ", "I",
+                        relation("INDEXED", "INSERT", emptied,
+                                integer("I", 0L), n), integer("I", 0L)),
+                        n))) {
+            VmTermLowering.Term term =
+                    lowering.dispatch(expression, null, "test");
+            texts.add(term.text);
+            texts.add(term.precondition);
+        }
+        texts.addAll(lowering.end());
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        for (SmtLowering.Declaration declaration : lowering.reachedBy(texts)) {
+            texts.add(declaration.body);
+        }
+        texts.addAll(Arrays.asList(
+                JavaPrimitiveSmtSemantics.floatingComparison("<=", "x", "y"),
+                JavaPrimitiveSmtSemantics.floatingArithmetic("/", "x", "y"),
+                JavaPrimitiveSmtSemantics.floatingNegate("x"),
+                JavaPrimitiveSmtSemantics.floatingCompareResult("x", "y",
+                        true),
+                JavaPrimitiveSmtSemantics.primitiveCast("x", "D", "J"),
+                JavaPrimitiveSmtSemantics.primitiveCast("x", "I", "F"),
+                JavaPrimitiveSmtSemantics.bitwise("&", "x", "y",
+                        JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT),
+                JavaPrimitiveSmtSemantics.shift(">>>", "x", "y",
+                        JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_LONG),
+                JavaPrimitiveSmtSemantics.complement("x",
+                        JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT)));
+        for (String text : texts) {
+            Set<String> free = SmtNames.symbols(text,
+                    new LinkedHashSet<String>());
+            free.removeAll(SmtNames.letBound(text));
+            free.removeAll(SmtNames.preambleNames());
+            free.removeAll(Arrays.asList("x", "y"));
+            free.removeIf(lowering::defined);
+            assertTrue(free + " in " + text, free.isEmpty());
+        }
+    }
+
     /** One session whose decision carries the size model over {@code body}. */
     private void letCorpus(Path iteration, String body) throws IOException {
         Session session = new Session(iteration, "s0", false);

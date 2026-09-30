@@ -122,7 +122,7 @@ public final class SmtNames {
                     "bvudiv", "bvsrem", "bvurem", "bvule", "bvult", "bvsle",
                     "bvslt", "bvuge", "bvugt", "bvsge", "bvsgt", "concat",
                     "extract", "zero_extend", "sign_extend", "Int", "Bool",
-                    "Real", "String", "Ref", "Value", "AssocState",
+                    "Real", "String", "Array", "Ref", "Value", "AssocState",
                     "IndexedState", "FloatingPoint", "RoundingMode",
                     "roundNearestTiesToEven", "RNE", "RTZ", "RTP", "RTN",
                     "RNA", "nullRef", "java_int_wrap", "java_long_wrap",
@@ -140,11 +140,17 @@ public final class SmtNames {
                     "valueInt", "valueLong", "valueFloat", "valueDouble",
                     "valueBool", "valueRef", "valueString", "str", "fp",
                     "to_real", "to_int", "is_int", "divisible",
-                    // Exactly the string names the lowering writes
-                    // (SmtLowering, java_int_to_string): one missing here is
-                    // read as a free symbol and refuses its path.
+                    // Every theory operator the lowering writes (SmtLowering,
+                    // JavaPrimitiveSmtSemantics, ContainerSmtCodec): one
+                    // missing here is read as a free symbol and refuses its
+                    // path (solr-adhoc q13-22 dropped 36 conjuncts on
+                    // str.substr and str.indexof).
                     "str.++", "str.len", "str.contains", "str.prefixof",
-                    "str.suffixof", "str.from_int")));
+                    "str.suffixof", "str.from_int", "str.substr",
+                    "str.indexof", "str.at", "str.from_code", "str.to_code",
+                    "fp.add", "fp.sub", "fp.mul", "fp.div", "fp.neg",
+                    "fp.eq", "fp.lt", "fp.leq", "fp.gt", "fp.geq",
+                    "fp.isNaN", "fp.to_sbv", "to_fp", "int2bv", "bv2int")));
 
     /**
      * Every NAME one SMT term names: the one tokenizer, over
