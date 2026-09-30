@@ -165,6 +165,11 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
 9. `triage.py <round> <gc-out>`: one row per case with its outcome class (CONFIRMED, REFUTED,
    NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING), finding, stage and reason. Pass the sweep's
    `$GC_OUT`: its own default is still `~/gc-out`.
+10. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
+    one row per mechanism among the confirmed witnesses (`findings.tsv`, best weight first). A
+    mechanism is the check, the finding kind and each moved root's kind, site method, callee, node
+    role and causal context (a clock's skew by bucket). The ledger marks each new, known or
+    dismissed (`dismissed.tsv` beside it, by hand).
 
 ## Outputs
 

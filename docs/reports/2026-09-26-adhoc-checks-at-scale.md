@@ -1010,6 +1010,22 @@ h4/q2–q13 结论里 195 个是"anchor 在具体值上决定"。现在按引擎
   `fault` 找到的是 SASL 握手的门。
 * 以前的命名 case 关掉了作用域生长，它们原来的静态产物里看不到任何门；比较时要按 ad-hoc 的预算重切。
 
+## 15. 按机制去重、排序见证（2026-09-30）
+
+`tools/adhoc/findings.py <sweep> [--ledger …] [--static …]`：只读 PRUNE 保留的文件（`result.json`、计划里定义每个
+被移动根的 input action、被选 session 的 `roots.jsonl`、`static_scope_map.jsonl`），把 CONFIRM 为真的
+SAT_CANDIDATE 按签名合并：检查的 TARGET_SITE、发现类型、每个被移动根的类型（门上的标记记为 FAULT）、site 的方法、
+callee、节点角色（去掉数字与 epoch）、因果上下文的 role/api、时钟偏移的档位（≤1s/≤1min/≤1h/>1h）。权重：
+STATE/MESSAGE_PAIRING 5，门上的 MARKER_FLIPPED 4，其余 MARKER_FLIPPED 与 RECORDED_FAILURE_EXPLAINED 3，
+CLOCK_SKEW 偏移都 ≤1 分钟为 2、否则 1；静态切片只经字段或 wire 到达被移动的根 +2；多一个被移动的根 −1。
+ledger（`$GC_OUT/findings/ledger.jsonl`）把每个签名标为 new / known / dismissed（`dismissed.tsv` 手填）。
+
+实测：h1/h2/a10 的 case 目录已被清理，只剩 triage 表和 launch 日志。磁盘上现存的 625 个 case 目录（h4、q2–q13、
+接受轮次 r1–r8、v92–v94、bs-*）里 29 个可读的确认见证，合并成 **6 个机制**：block-key 族按节点角色分成 5 个
+（17897 的 dn、17967 pathA 的 mirror-dn、pathB 的 proxy-dn、17899-bug1/bug3 与 17967 pathC 共用的 target-dn
+请求门、17899-bug2 的 target-dn 响应门），17960 的配置标记 1 个。第二遍同一 ledger 全部为 known。v93-11741 的
+CLOCK 根行早于 `clockNanos` 契约，按名拒读。h4/q* 没有确认见证。
+
 ## 8. 下一步
 
 **2026-09-28 这一轮留下的**（§13）：
