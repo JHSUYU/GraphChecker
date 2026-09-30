@@ -92,7 +92,7 @@ bool constant_size(const std::string &shape, const std::string &operation,
 ContainerExpression::ContainerExpression(
     const char *shape, const char *operation, Expression *receiver,
     const exp_list_t &arguments, BasicType result_type,
-    const std::string &java_type, Expression *guard,
+    const std::string &java_type, Expression *guard, Expression *owner,
     const ElementWord &word)
     : _shape(shape == NULL ? "" : shape),
       _operation(operation == NULL ? "" : operation),
@@ -102,6 +102,7 @@ ContainerExpression::ContainerExpression(
                      ? std::string(1, type2char(result_type))
                      : java_type),
       _guard(guard),
+      _owner(owner),
       _constant_size(constant_size(_shape, _operation, receiver,
                                    arguments)),
       _decides_reads(false),
@@ -133,6 +134,16 @@ ContainerExpression::ContainerExpression(
     return;
   }
   _decides_reads = true;
+}
+
+bool ContainerExpression::derived_container_value(Expression **owner) {
+  if (_operation != "ENTRY_VIEW" && _operation != "KEY_VIEW"
+      && _operation != "VALUE_VIEW" && _operation != "ITERATOR"
+      && _operation != "NEXT" && _operation != "ENTRY") {
+    return false;
+  }
+  *owner = _owner;
+  return true;
 }
 
 ContainerExpression::~ContainerExpression() {
@@ -179,6 +190,10 @@ void ContainerExpression::serialize_internal(
   if (_guard != NULL) {
     writer.Key("guard");
     _guard->serialize(writer);
+  }
+  if (_owner != NULL) {
+    writer.Key("owner");
+    _owner->serialize(writer);
   }
 }
 

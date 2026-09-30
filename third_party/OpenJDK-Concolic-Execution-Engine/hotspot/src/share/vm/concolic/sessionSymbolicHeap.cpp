@@ -241,7 +241,7 @@ void SessionSymbolicHeap::write_array_element(arrayOop array, int index,
   arguments.push_back(expression);
   Expression *next = new ContainerExpression(
       "INDEXED", "WRITE", container_state(array, "INDEXED"), arguments,
-      T_OBJECT, std::string(), NULL, word);
+      T_OBJECT, std::string(), NULL, NULL, word);
   set_container_state(array, next);
   symbolic->store();
 }

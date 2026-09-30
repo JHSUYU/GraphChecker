@@ -8,11 +8,6 @@
 #include "concolic/methodSymbolizer.hpp"
 
 class SymList {
-public:
-  inline static bool target(const std::string &class_name) {
-    return target_class_names.find(class_name) != target_class_names.end();
-  }
-
 private:
   static std::set<std::string> target_class_names;
   static std::set<std::string> init_target_class_names();

@@ -277,20 +277,16 @@ jint OopUtils::last_returned_index(oop iterator_obj, bool *found) {
   return int_field_by_name(iterator_obj, "lastRet", found);
 }
 
-oop OopUtils::map_of_view(oop view_obj) {
-  if (view_obj == NULL) return NULL;
-  oop owner = obj_field_by_name(view_obj, "this$0", "Ljava/util/HashMap;");
-  if (owner != NULL) return owner;
-  return obj_field_by_name(view_obj, "this$0", "Ljava/util/LinkedHashMap;");
-}
-
 oop OopUtils::current_node_of_iterator(oop iterator_obj) {
   if (iterator_obj == NULL) return NULL;
   oop node = obj_field_by_name(iterator_obj, "current",
                                "Ljava/util/HashMap$Node;");
   if (node != NULL) return node;
-  return obj_field_by_name(iterator_obj, "current",
+  node = obj_field_by_name(iterator_obj, "current",
                            "Ljava/util/LinkedHashMap$Entry;");
+  if (node != NULL) return node;
+  return obj_field_by_name(iterator_obj, "lastReturned",
+                           "Ljava/util/concurrent/ConcurrentHashMap$Node;");
 }
 
 oop OopUtils::key_of_map_node(oop node_obj) {

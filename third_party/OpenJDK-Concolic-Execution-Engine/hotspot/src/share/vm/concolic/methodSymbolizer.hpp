@@ -19,6 +19,17 @@ class MethodSymbolizer {
 
   bool _symbolizing_method;
   MethodSymbolizerHandle _handle;
+  // The muted calls whose callbacks are running, innermost last, and the
+  // callback frames, one per suspended call.
+  struct CallbackWindow {
+    const ZeroFrame *frame;
+    Expression *key;
+    // The thread's path-condition length when the callback began.
+    int path_start;
+  };
+  std::vector<MethodSymbolizerHandle> _suspended;
+  std::vector<CallbackWindow> _windows;
+  static const size_t MAX_CALLBACK_DEPTH = 4;
   invoke_helper_method_map_t _invoke_helper_methods;
   finish_helper_method_map_t _finish_helper_methods;
   // Logging is an observation sink, not part of the program relation.  A
@@ -43,8 +54,32 @@ public:
   void invoke_method(ZeroFrame *caller_frame, ZeroFrame *callee_frame);
   void finish_method(ZeroFrame *caller_frame);
 
+  /**
+   * The callback window.  While a model call's body runs muted, a frame
+   * whose receiver is one of the call's functional arguments is a callback
+   * (a lambda's apply/test/accept): it runs with propagation, its parameters
+   * seeded by the model's contract (CallbackSeeder), and a model call inside
+   * it nests -- the muted call's handle is suspended on a stack, at most
+   * MAX_CALLBACK_DEPTH deep.  What it returned is logged on the call
+   * (CallbackResult), from which the model's finish builds the mutation.
+   * Its side effects are hooked like any interpreted code; before, they ran
+   * muted and were lost.  True when `callee_frame` opened one.
+   */
+  bool enter_callback(ZeroFrame *caller_frame, ZeroFrame *callee_frame);
+  /** Closes the innermost window when `callee_frame` is its frame. */
+  bool exit_callback(ZeroFrame *callee_frame);
+  /**
+   * Whether a call suspended in a callback window is on `container` (its
+   * receiver's backing container); such a call is marked reentered.
+   */
+  bool reenters(oop container);
+  /** Whether a callback window is open on this thread. */
+  inline bool in_callback() const { return !_windows.empty(); }
+
 private:
   void init_helper_methods();
+  // Names the call's functional arguments, so their frames are found.
+  void register_functional_arguments();
 
 public:
   static Expression *finish_method_helper(MethodSymbolizerHandle &handle);

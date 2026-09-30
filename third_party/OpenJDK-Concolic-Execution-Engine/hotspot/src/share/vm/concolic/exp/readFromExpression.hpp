@@ -47,6 +47,9 @@ public:
 
   virtual bool is_boolean_expression();
   virtual bool is_guarded_reference_read();
+  virtual bool derived_container_value(Expression **owner) {
+    return _observed_value->derived_container_value(owner);
+  }
   virtual std::string get_name();
 
 protected:

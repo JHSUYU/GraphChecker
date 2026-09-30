@@ -36,6 +36,11 @@ enum Capability {
 Capability capability(oop value);
 // The shape a capability's state has: "INDEXED", "ASSOCIATIVE", or NULL.
 const char *shape(oop value);
+// Why a map- or set-like receiver is not modeled, or empty when it is one
+// or is nothing of the kind: CONTAINER_SUBCLASS_UNMODELED:<class> for a
+// subclass of a modeled class, ACCESS_ORDER_UNMODELED for a LinkedHashMap
+// whose get reorders it.
+std::string unmodeled_reason(oop value);
 // The modeled container `value` is, or views, iterates or wraps -- through
 // the backing fields of the JDK's views (`this$0`, `map`), iterators and
 // Collections wrappers (`m`, `c`, `s`) -- or NULL.
@@ -44,6 +49,10 @@ oop backing_container(oop value);
 // wrapper, by class name alone: no field is read and no lock taken, so it
 // may be asked under a stripe.
 bool names_container(oop value);
+// Resolves a view or wrapper built by bytecode to its backing container, so
+// its state is that container's: one logical container, one location.
+// Returns the backing container (or `value` itself).
+oop canonicalize(oop value);
 
 BasicType result_type(oop result, BasicType declared);
 std::string java_type(oop result, BasicType declared);
@@ -313,7 +322,24 @@ struct StateQuery {
  */
 StateQuery query_state(oop container, const char *shape,
                        const char *operation, const exp_list_t &arguments,
-                       BasicType result_type, const std::string &java_type);
+                       BasicType result_type, const std::string &java_type,
+                       Expression *owner = NULL);
+
+/**
+ * The owner a call's container relation carries (ContainerExpression's
+ * `owner`): the receiver slot's own shadow when it is a guarded reference
+ * read -- a tracked reference field, an AtomicReference, a container READ
+ * result -- so the choice that read made survives; the owner of the view,
+ * iterator or entry the receiver is, which it inherits; else NULL.
+ */
+Expression *receiver_owner(Expression *receiver);
+
+/**
+ * `container`'s state as a read of it: a read of its location's observed
+ * version when it is tracked, else its chain when it has one, else NULL.
+ * A source a mutation copies from (putAll).
+ */
+Expression *observed_state(oop container);
 }
 
 #endif  // ENABLE_CONCOLIC

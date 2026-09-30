@@ -70,6 +70,12 @@ public:
   // without it.
   virtual bool is_guarded_reference_read() { return false; }
 
+  // Whether this value is a view, iterator or entry a container relation
+  // derived from its container (ENTRY_VIEW, KEY_VIEW, VALUE_VIEW, ITERATOR,
+  // NEXT, ENTRY), with `*owner` the owner that relation carries: what a call
+  // on it inherits.  Answered through a read or a boundary around it.
+  virtual bool derived_container_value(Expression **owner) { return false; }
+
   // The exact jint this node denotes, written to `value`, or false when it
   // denotes anything else.  Undoing a recorded INSERT to recover the content
   // a container held before it needs the position the insert happened at, and

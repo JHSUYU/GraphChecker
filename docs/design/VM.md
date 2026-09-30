@@ -67,8 +67,12 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 ## 4. Calls and library models
 
 `VM/concolic/methodSymbolizer.cpp` intercepts a call when the callee's holder class name equals a
-registered model, a boxing class, or a muted prefix (exact name: a subclass of a modeled class is
-not modeled). Any other Java callee is interpreted and propagates normally. A native with a
+registered model, a boxing class, or a muted prefix. A container model then decides by the
+receiver's concrete class (`ContainerSupport::capability`), not by the holder: an application
+subclass of a modeled class reaching a modeled holder is refused by name
+(`CONTAINER_SUBCLASS_UNMODELED:<class>`, as is a LinkedHashMap in access order,
+`ACCESS_ORDER_UNMODELED`) and runs as bytecode. Any other Java callee is interpreted and
+propagates normally. A native with a
 symbolic argument returns a concrete value, except `Unsafe.get<Primitive>(Object, long)`, which
 returns the field shadow at that offset (`VM/concolic/native/nativeGetPrimitiveHandler.cpp`). A
 model never reads a native's primitive result: it is still in `native_entry`'s C local when the
@@ -82,7 +86,23 @@ caller's operand shadow, captured by the Unsafe model at the call boundary (`put
 intent; a write from a thread outside every region is unattributed; any other write (a muted
 subtree's) is versioned with its concrete word and marks the location
 `UNSAFE_WRITE_UNCAPTURED`. A write to a shadowed object also updates its field shadow or the
-array's state.
+array's state. A captured compare-and-swap that compared something symbolic (a tracked location's
+read, or a symbolic expected value) records `old == expected`, or `!=` when it failed, as a path
+condition; a capture is cleared by the write it was taken for.
+
+**Callback window** (`MethodSymbolizer::enter_callback`/`exit_callback`, hooked in
+`JavaThread::push_zero_frame`/`pop_zero_frame`). A modeled call's functional arguments (parameters
+typed `java/util/function/*` or `java/util/Comparator`) are named at its invoke. While its body runs
+muted, a frame whose receiver is one of them is a callback: it runs with propagation in a shadow
+frame of its own (`ShadowStack::push_callback`), its parameters seeded by the model's contract
+(`CallbackSeeder`), and the muted call's handle is suspended on a stack (at most 4 deep), so a
+model call inside the callback nests. When its frame pops, what it returned (its expression, else
+its concrete value when the call records) and the conditions its path recorded (`path`,
+`path_negation`: a predicate compiled to branches returns a constant) are logged on the call
+(`CallbackResult`), and the model's finish builds the mutation from the log. Its side effects are
+hooked like any interpreted code. A callback that calls back into its call's map is refused
+(`CALLBACK_REENTERS_CONTAINER`). An unmarked JDK branch inside a callback (`maxBy`) chooses a value
+the result then pins by identity.
 
 **Muted subtrees** run concretely and return no expression: `org/slf4j/`, `org/apache/log4j/`,
 `org/apache/commons/logging/`, `java/util/logging/` (observation only), `com/sun/crypto/provider/`,
@@ -99,15 +119,19 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | `Integer.toString(int)`, `Integer.toString()` | string of the int | other primitive-to-string conversions become a named `unsupportedPrimitiveStringConversion:` operation |
 | `Integer.parseInt`, `Long.parseLong` | a method-return symbol stating its concrete value and its call (holder, name, descriptor, argument expressions), plus a `MethodExpression` condition | |
 | `BigDecimal` | 8 signatures | `<init>(double)`, `<init>(String)` mint symbols unrelated to the argument; `BigInteger` |
-| `AtomicInteger`, `AtomicLong` | `getAndIncrement getAndDecrement incrementAndGet decrementAndGet getAndAdd addAndGet compareAndSet weakCompareAndSet`, when the receiver is shadowed: the model states `new = old op delta` (or the CAS's expect/update) as an intent, and the compare-and-swap that performs it reads `old` at the word it compared and publishes the RMW version, in one critical section; a failed CAS reads the word it lost to | `set` is a putfield; `lazySet`, `getAndSet`, `AtomicReference`/`AtomicBoolean`, field updaters are versioned as Unsafe writes with their captured operands, not modeled; `accumulate*`, `LongAdder`, atomic arrays |
-| `HashMap`, `LinkedHashMap` (views, iterators, entries) | `put get remove containsKey isEmpty clear size entrySet keySet values iterator hasNext next getKey getValue`, conditional removal | `putAll putIfAbsent replace replaceAll compute* merge` abandon the state; `Entry.setValue` abandons the entry |
+| `AtomicInteger`, `AtomicLong` | `getAndIncrement getAndDecrement incrementAndGet decrementAndGet getAndAdd addAndGet compareAndSet weakCompareAndSet`, when the receiver is shadowed: the model states `new = old op delta` (or the CAS's expect/update) as an intent, and the compare-and-swap that performs it reads `old` at the word it compared and publishes the RMW version, in one critical section; a failed CAS reads the word it lost to | `set` is a putfield; `lazySet`, `getAndSet`, `AtomicReference`/`AtomicBoolean` (`value` observed on the atomic; `get`/`set` are a getfield/putfield, a CAS decides over the value it compared), field updaters are versioned as Unsafe writes with their captured operands, not modeled; `accumulate*`, `LongAdder`, atomic arrays |
+| maps by the Map contract: `HashMap`, `LinkedHashMap` (insertion order), `ConcurrentHashMap`, `Hashtable` (views, iterators, entries, a map view's `Collection.removeIf`) | `put get getOrDefault remove containsKey isEmpty clear size mappingCount entrySet keySet values iterator hasNext next getKey getValue`, conditional removal; `putAll` (a tracked source as `PUT_ALL` of its state read, else one `PUT` per entry); `putIfAbsent`, `replace`, `remove(k, v)`: the presence or match the body decided as a path condition, then `PUT`/`REMOVE`; `computeIfAbsent computeIfPresent compute merge`: presence, then the callback's result stored (`PUT`, or `REMOVE` for null); `replaceAll`, `forEach`; key and entry views' `removeIf` (`REMOVE_IF` under the predicate) | `Entry.setValue` abandons the entry; `values().removeIf` (`ASSOCIATIVE_VALUES_REMOVE_IF_UNMODELED`); a HashMap `replace(k, v)` that answered null (`ASSOCIATIVE_REPLACE_UNDECIDED`); `ConcurrentHashMap`'s bulk parallel operations |
 | `ArrayList`, `ArrayDeque`, `AbstractList` iterators | list and deque operations | `removeIf` abandons |
-| `HashSet`, `LinkedHashSet` | set operations | reads are not bound to versions |
+| `HashSet`, `LinkedHashSet`, `ConcurrentHashMap`'s `KeySetView` (its map's location) | set operations | a hash set's reads are not bound to versions |
 | commons-lang 2 and Spring `StringUtils` | `isNotBlank`, `isEmpty` | commons-lang3 |
 
-Every other collection (`ConcurrentHashMap`, `TreeMap`, `TreeSet`, `LinkedList`, `CopyOnWrite*`,
-`PriorityQueue`, blocking queues, `Hashtable`, `EnumMap`, `Collections.*` wrappers) is interpreted as
+Every other collection (`TreeMap`, `TreeSet`, `ConcurrentSkipList*`, `LinkedList`, `CopyOnWrite*`,
+`PriorityQueue`, blocking queues, `IdentityHashMap`, `WeakHashMap`, `EnumMap`) is interpreted as
 plain objects: its elements' fields propagate, but it has no container state and no version log.
+A modeled call with a callback on one of the four maps is admitted even when nothing symbolic
+reached it: its body runs muted and the callback with propagation, and it records only if a
+callback's result or path was symbolic (then an untracked map's log starts at that mutation, its
+base unstated as `MUTATED_BEFORE_FIRST_READ`).
 
 ## 5. Shared-state versioning
 
@@ -206,12 +230,32 @@ versioned without writer, guard or site, a reference by the referent it names.
 ## 6. Containers
 
 A container's state is an immutable `ContainerExpression` chain (`base + PUT/REMOVE/...`) on
-`STATE(identity)`, keyed by the container's `_sym_rid`; views and iterators alias their owner. A
-log opens with an INITIAL version stating what the container held when tracking began
-(`ContainerSupport#snapshot_for_receiver`): walkable for the modeled classes and `Object[]`, capped
-at 64 members, else a stated refusal (`NO_MODELLED_SHAPE`, `UNREADABLE_CONTAINER`,
+`STATE(identity)`, keyed by the container's `_sym_rid`. What is a container is the receiver's
+concrete class (`ContainerSupport::capability`): the positional ones (arrays, `AbstractList`
+subclasses, `ArrayDeque`), `HashMap`/`LinkedHashMap` in insertion order, `ConcurrentHashMap` and
+`Hashtable` (null-free: present exactly when `READ != null`), the hash sets. Views, iterators,
+entries and `Collections` wrappers (unmodifiable, synchronized, checked) are their backing
+container (`ContainerSupport::backing_container`, through `this$0`, `map`, `m`, `c`): a view a
+modeled call made is aliased to it, and one the program built resolves at `state_location` (a
+`KeySetView` is aliased at its first model event). A log opens with an INITIAL version stating
+what the container held when tracking began (`ContainerSupport#snapshot_for_receiver`): walkable
+for the modeled classes and `Object[]` -- a `ConcurrentHashMap` by its table's bins, tree bins by
+`first`, a resize in flight refused as `RESIZING`, past 4096 bins over the bound -- capped at 64
+members, else a stated refusal (`NO_MODELLED_SHAPE`, `UNREADABLE_CONTAINER`,
 `MUTATED_BEFORE_FIRST_READ`). `compose/ContainerStateModel` and `compose/ContainerSmtCodec` lower
 the chains (`AssocState` for maps, `IndexedState` for lists and arrays).
+
+**The owner of a relation.** A query or mutation whose receiver slot carried a guarded reference
+read -- a tracked reference field, an `AtomicReference`, a container `READ` result -- states that
+read as its `owner` member (`ContainerSupport::receiver_owner`), so the choice the read made
+survives while the relation's receiver stays the observed object's state; relations built on a
+view, iterator or entry inherit their node's owner. Absent otherwise.
+
+**Map operations beyond get/put.** `READ_OR_DEFAULT [k, d]` (`getOrDefault`), `PUT_ALL [source
+state]`, and `ENTRY [k]` -- the entry of key `k` a view's callback visits, whose `getKey`/`getValue`
+answer `k` and `READ(state, k)`. The presence or match a conditional mutator decided is a path
+condition over the pre-state (`READ(s, k) == null` / `!= null`, `READ(s, k) == expected` / `!=`) in
+the polarity the run took, followed by an ordinary `PUT`/`REMOVE` version or none.
 
 **Array reads over recorded writes.** The writes at concrete positions of one array chain share
 one index of what was stored where, and what each left in the heap (`ElementWrites`,
@@ -293,7 +337,8 @@ that does not hold.
 | primitive-to-string conversions other than `Integer.toString` | detected (a named operation, not pinned) |
 | a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
 | an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
-| map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`, list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
+| map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6); a callback's result and its side effects hooked |
+| list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
 | stream `write(byte[])`/`readFully`, `ByteArrayOutputStream` | through arraycopy: hooked |
 | a cached box, `Boolean.TRUE/FALSE`, an interned String returned by `valueOf` or a container | hooked: the value rides the result slot; the shared object stays clean |
 | `Unsafe` volatile or object gets | the field shadow or nothing; a tracked location's get is not a versioned read |
@@ -332,7 +377,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 57
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 60
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -340,5 +385,8 @@ unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither 
 `RegionCloneSmoke`, `RegionUnsafeWriteSmoke`, `RegionSharedBoxSmoke`,
 `RegionStringBuilderMutatorSmoke`, `RegionWrapperFieldSmoke`), and the versioning rules theirs
 (`RegionTrackedRaceSmoke`, `RegionReadExactnessSmoke`, `RegionLoadedValueSmoke`,
-`RegionVersionDefectsSmoke`, and for a reference carrier `RegionReferenceSwapSmoke`). No smoke test
-covers the collections the VM does not model or anything across JVMs.
+`RegionVersionDefectsSmoke`, and for a reference carrier `RegionReferenceSwapSmoke`); the
+collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, callbacks, a
+tree bin), `RegionWrapperViewSmoke` (a view or wrapper is its container) and
+`RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers). No smoke test covers the
+collections the VM does not model, a resize caught in flight, or anything across JVMs.

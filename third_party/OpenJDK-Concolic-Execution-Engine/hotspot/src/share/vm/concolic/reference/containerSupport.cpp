@@ -241,6 +241,26 @@ const char *ContainerSupport::shape(oop value) {
   }
 }
 
+std::string ContainerSupport::unmodeled_reason(oop value) {
+  if (value == NULL || value->is_array()
+      || capability(value) != CAPABILITY_NONE) {
+    return std::string();
+  }
+  Klass *klass = value->klass();
+  if (klass_name_is(klass, "java/util/LinkedHashMap")) {
+    return "ACCESS_ORDER_UNMODELED";
+  }
+  for (Klass *current = klass->super(); current != NULL;
+       current = current->super()) {
+    if (exact_capability(current) != CAPABILITY_NONE) {
+      ResourceMark rm;
+      return std::string("CONTAINER_SUBCLASS_UNMODELED:")
+          + klass->name()->as_C_string();
+    }
+  }
+  return std::string();
+}
+
 oop ContainerSupport::backing_container(oop value) {
   // A wrapper of a view of a map is two hops; four bounds a cycle.
   for (int hop = 0; value != NULL && hop < 4; ++hop) {
@@ -257,6 +277,15 @@ bool ContainerSupport::names_container(oop value) {
   if (value == NULL || value->is_array()) return false;
   return exact_capability(value->klass()) != CAPABILITY_NONE
       || backing_field_of(value->klass()) != NULL;
+}
+
+oop ContainerSupport::canonicalize(oop value) {
+  oop container = backing_container(value);
+  if (container == NULL || container == value || ConcolicMngr::ctx == NULL) {
+    return value;
+  }
+  ConcolicMngr::ctx->alias_container(value, container);
+  return container;
 }
 
 BasicType ContainerSupport::result_type(oop result, BasicType declared) {
@@ -999,7 +1028,7 @@ bool ContainerSupport::mark_state_gap(oop container, const char *reason) {
 ContainerSupport::StateQuery ContainerSupport::query_state(
     oop container, const char *shape, const char *operation,
     const exp_list_t &arguments, BasicType result_type,
-    const std::string &java_type) {
+    const std::string &java_type, Expression *owner) {
   StateQuery answer;
   if (operation == NULL) return answer;
   const std::string type_name = java_type.empty()
@@ -1040,9 +1069,31 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
   answer.expression = SharedFieldVersions::build_read_from(
       plan, location, type_name,
       new ContainerExpression(shape, operation, plan.observed.value,
-                              arguments, result_type, type_name),
+                              arguments, result_type, type_name, NULL,
+                              owner),
       ReturnedValue());
   return answer;
+}
+
+Expression *ContainerSupport::receiver_owner(Expression *receiver) {
+  if (receiver == NULL) return NULL;
+  Expression *inherited = NULL;
+  if (receiver->derived_container_value(&inherited)) return inherited;
+  return receiver->is_guarded_reference_read() ? receiver : NULL;
+}
+
+Expression *ContainerSupport::observed_state(oop container) {
+  if (container == NULL || ConcolicMngr::ctx == NULL) return NULL;
+  SharedFieldVersions::Location location = state_location(container);
+  SharedFieldVersions::ReadPlan plan;
+  if (location.is_valid()
+      && SharedFieldVersions::plan_read(
+             location, SharedFieldVersions::ConcreteBits(), &plan)
+      && plan.observed.value != NULL) {
+    return SharedFieldVersions::build_read_from(
+        plan, location, "L", plan.observed.value, ReturnedValue());
+  }
+  return ConcolicMngr::ctx->find_container_state(container);
 }
 
 // Naming an object is not making it symbolic.  This function answers what a

@@ -84,6 +84,19 @@ public:
 
   void pop(ZeroFrame *zero_frame);
 
+  /**
+   * A callback's frame, called from a muted model body that has no shadow
+   * frame of its own: nothing is copied from a caller; the local at each of
+   * `anchors` is seeded with the matching `seeds` entry.
+   */
+  void push_callback(ZeroFrame *callee_frame, const std::vector<int> &anchors,
+                     const exp_list_t &seeds);
+  /**
+   * Pops a callback's frame without handing its result to any caller, and
+   * returns the result's shadow (NULL for `result_type` T_VOID or none).
+   */
+  Expression *pop_callback(ZeroFrame *callee_frame, BasicType result_type);
+
 };
 
 #endif

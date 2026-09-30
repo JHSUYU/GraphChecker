@@ -35,6 +35,9 @@ class ConsumerBoundaryExpression : public Expression {
 
   virtual bool is_boolean_expression();
   virtual bool is_guarded_reference_read();
+  virtual bool derived_container_value(Expression **owner) {
+    return _expression->derived_container_value(owner);
+  }
   virtual ContainerExpression *as_container_expression();
   virtual bool is_or_wraps_consumer_value(Expression *value);
   virtual Expression *logical_negation();

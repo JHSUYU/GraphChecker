@@ -2685,7 +2685,7 @@ run:
       Expression *next_container_state = new ContainerExpression(             \
           "INDEXED", "WRITE",                                                \
           container_state,                                                     \
-          container_arguments, T, std::string(), NULL, astore_word);          \
+          container_arguments, T, std::string(), NULL, NULL, astore_word);    \
       ConcolicMngr::ctx->set_container_state(                                 \
           arrObj, next_container_state);                                      \
                                                                                \
@@ -2815,7 +2815,7 @@ run:
                   arrObj, new ContainerExpression(
                       "INDEXED", "WRITE", container_state,
                       container_arguments, T_OBJECT, std::string(), NULL,
-                      astore_word));
+                      NULL, astore_word));
               sym_arr->store();
             }
             CONCOLIC_ASTORE_SELECT(astore_operand)

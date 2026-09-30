@@ -14,7 +14,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * names that INITIAL.  A read states the identity it returned.  A store no
  * hook saw -- here one made while recording is paused -- is found by the
  * next read's word, as an UNOBSERVED version of the loaded referent.  A
- * static reference field is observed on its class.</p>
+ * static reference field is observed on its class.  A query through the
+ * field's read keeps the read as its {@code owner}.</p>
  */
 public final class RegionReferenceSwapSmoke {
     private static final class Holder {
@@ -36,6 +37,7 @@ public final class RegionReferenceSwapSmoke {
     private static final class Sink {
         Map<Long, String> commits;
         Map<String, String> byName;
+        String commit;
     }
 
     private static final String MAP = "Ljava/util/Map;";
@@ -76,6 +78,12 @@ public final class RegionReferenceSwapSmoke {
         String staticRead = System.getSymbolicFieldExpression(sink,
                 Sink.class.getName(), "byName", MAP, sink.byName);
 
+        // A query through the read keeps the read as its owner.
+        sink.commit = holder.commits.get(input.generation);
+        String query = System.getSymbolicFieldExpression(sink,
+                Sink.class.getName(), "commit", "Ljava/lang/String;",
+                sink.commit);
+
         // A store no hook sees, found by the next read's word.
         System.pauseConcolicPathCondition();
         holder.commits = new ConcurrentHashMap<>();
@@ -92,6 +100,7 @@ public final class RegionReferenceSwapSmoke {
         System.out.println("FIELD " + field);
         System.out.println("MAP " + map);
         System.out.println("READ " + read);
+        System.out.println("QUERY " + query);
 
         // INITIAL: the first map's identity; WRITE: the second's, with the
         // second map's state at the store.
@@ -123,6 +132,10 @@ public final class RegionReferenceSwapSmoke {
         require(staticRead.contains("\"locationKind\":\"STATIC_FIELD\"")
                         && staticRead.contains("\"observedExact\":true"),
                 "the static field is not observed: " + staticRead);
+        require(query.contains("\"operation\":\"READ\"")
+                        && query.contains("\"owner\":{\"_type\":"
+                                + "\"VmExpressionReference\""),
+                "the query lost the read it went through: " + query);
         require(unobserved.contains("\"versionKind\":\"UNOBSERVED\"")
                         && unobserved.contains("\"unnamedWriter\":true")
                         && unobserved.contains("\"observedExact\":true"),

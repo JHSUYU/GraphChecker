@@ -69,7 +69,10 @@ cd "$JDK_ROOT"
   test/causynth/RegionWrapperFieldSmoke.java \
   test/causynth/RegionStringBuilderMutatorSmoke.java \
   test/causynth/RegionVersionDefectsSmoke.java \
-  test/causynth/RegionReferenceSwapSmoke.java
+  test/causynth/RegionReferenceSwapSmoke.java \
+  test/causynth/RegionConcurrentHashMapSmoke.java \
+  test/causynth/RegionWrapperViewSmoke.java \
+  test/causynth/RegionAtomicCarrierSmoke.java
 
 for smoke in \
   RegionApiSmoke \
@@ -127,7 +130,10 @@ for smoke in \
   RegionWrapperFieldSmoke \
   RegionStringBuilderMutatorSmoke \
   RegionVersionDefectsSmoke \
-  RegionReferenceSwapSmoke; do
+  RegionReferenceSwapSmoke \
+  RegionConcurrentHashMapSmoke \
+  RegionWrapperViewSmoke \
+  RegionAtomicCarrierSmoke; do
   "$JDK_HOME/bin/java" -Xint -cp "$OUT" "$smoke"
 done
 

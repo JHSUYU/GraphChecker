@@ -10,6 +10,45 @@
 #include "runtime/frame.inline.hpp"
 
 #include <string>
+#include <vector>
+
+class MethodSymbolizerHandle;
+
+/**
+ * What one callback of a modeled call returned, in the order the muted body
+ * made them (MethodSymbolizer's callback window): its expression when it
+ * returned one, else its concrete value or identity; whether a reference
+ * result was null, or a primitive's int; whether it threw; the key its
+ * seeder named the visited element by (removeIf, forEach, replaceAll); and
+ * the conditions its path recorded -- a predicate compiled to branches
+ * returns a constant, and what decided it is `path` (their conjunction) and
+ * `path_negation` (the disjunction of their negations, NULL when one has
+ * no relational complement).
+ */
+struct CallbackResult {
+  Expression *result;
+  bool symbolic;
+  bool returned_null;
+  jint returned_int;
+  bool threw;
+  Expression *key;
+  Expression *path;
+  Expression *path_negation;
+  CallbackResult()
+      : result(NULL), symbolic(false), returned_null(false), returned_int(0),
+        threw(false), key(NULL), path(NULL), path_negation(NULL) {}
+  // Whether anything symbolic decided what it returned.
+  bool decided() const { return symbolic || path != NULL; }
+};
+
+/**
+ * A model's contract for its callbacks: the expressions a callback's
+ * parameters carry (one per parameter, NULL for none), given the arguments
+ * the muted body passes it, and the key of the element it visits, if any.
+ */
+typedef void (*CallbackSeeder)(MethodSymbolizerHandle &call,
+                               const std::vector<oop> &arguments,
+                               exp_list_t *seeds, Expression **key);
 
 class MethodSymbolizerHandle {
 private:
@@ -25,14 +64,41 @@ private:
   // thread; a per-class static would be shared by every thread attached to the
   // session and read back a decision another thread had just made.
   bool _recording;
+  // The call's functional arguments (java/util/function/*, Comparator), by
+  // session id: a frame whose receiver is one of them is a callback.
+  std::vector<sym_rid_t> _functional;
+  CallbackSeeder _seeder;
+  std::vector<CallbackResult> _callbacks;
+  // The state the call's container held when it began, when it had one.
+  Expression *_pre_state;
+  // A callback called back into this call's container.
+  bool _reentered;
 
 public:
   MethodSymbolizerHandle()
       : _caller_frame(NULL), _callee_frame(NULL), _callee_istate(NULL),
-        _recording(false) {}
+        _recording(false), _seeder(NULL), _pre_state(NULL),
+        _reentered(false) {}
 
   inline void set_recording(bool recording) { _recording = recording; }
   inline bool is_recording() const { return _recording; }
+
+  // ---- callbacks (MethodSymbolizer::enter_callback) ----
+  inline void add_functional(sym_rid_t id) { _functional.push_back(id); }
+  inline bool has_functional() const { return !_functional.empty(); }
+  bool is_functional(sym_rid_t id) const {
+    for (size_t index = 0; index < _functional.size(); ++index) {
+      if (_functional[index] == id) return true;
+    }
+    return false;
+  }
+  inline void set_seeder(CallbackSeeder seeder) { _seeder = seeder; }
+  inline CallbackSeeder seeder() const { return _seeder; }
+  inline std::vector<CallbackResult> &callbacks() { return _callbacks; }
+  inline void set_pre_state(Expression *pre_state) { _pre_state = pre_state; }
+  inline Expression *pre_state() const { return _pre_state; }
+  inline void mark_reentered() { _reentered = true; }
+  inline bool reentered() const { return _reentered; }
 
   /**
    * returns the being offset of first parameter in callee's local variable
@@ -182,6 +248,11 @@ public:
     _callee_frame = NULL;
     _callee_istate = NULL;
     _recording = false;
+    _functional.clear();
+    _seeder = NULL;
+    _callbacks.clear();
+    _pre_state = NULL;
+    _reentered = false;
     clear_param_list();
     _callee_holder_name.clear();
     _callee_name.clear();
