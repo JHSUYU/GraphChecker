@@ -52,41 +52,39 @@ moves lie outside the selected path's causal cone. In that formula, the DataNode
 comparison is against recorded constants. No clock value crosses the process into it as data,
 so R2's 11741 chain (the NameNode clock reaching the DataNode check) is not in the formula.
 
-Rounds r3 (VM f13) and r4 (VM R3) ended hdfs-11741 `INCONCLUSIVE_PARTIAL`, `NO_SUPPORTED_WITNESS`,
-on engine defects the richer recordings exposed, fixed on HEAD:
+Rounds r3 (VM f13), r4 and r8 (VM R3; r8 on main 8820c3129) ended hdfs-11741
+`INCONCLUSIVE_PARTIAL` on engine defects the richer recordings exposed, fixed on HEAD (r8 reached
+`CLOCK_SKEW` and was blocked by the first three):
 
-- PLAN `OCCURRENCE_ADDRESS_SHARED` (3): a pool's worker inherits no frames
+- PLAN `OCCURRENCE_ADDRESS_SHARED` (3 in each round): a pool's worker inherits no frames
   (`gc/runtime/PoolWorkers`), so the balancer's two move tasks, each submitted from the one site of
   an `executePendingMove` call, shared one address, and so did the two DataNode SASL handlers they
-  reached. A task now stands on the frames it was submitted under (`gc/runtime/Identity#startWork`);
-  a recording on it (`/bigtemp/vnr3ne/gc-out/accept-agent-a0f-id1`) plans no shared address.
-- EXPLORE `TOPOLOGY_DIVERGENCE` (32 in r3, 36 in r4): the order check ranked two events by the
-  anchor chain, so the dispatcher's later `isDelayActive` reads came before the move task's
-  `activateDelay` writes they observed. It reads the rows' seqs (`gc/explore/SlotTable`).
-- COMPOSE `UNPRODUCIBLE_ANSWER`: every arm of the SASL message was refused. Independence walked a
-  field projection's owner chain, which no lowering reads, and so demanded the balancer's
-  storage-group lookups (a key built from an enum's `toString`); the NameNode's exported keys (a
-  `toArray` of its key map's values) bounded no view positions, the view not following the map read
-  to its chain (`gc/compose/Independence`, `ContainerSmtCodec#fieldOperands`,
-  `#associativeViewKeys`).
-- r4 also: the second move task's export, sharing the first's endpoint and stating no expression,
-  was read as a missing table entry (BLOCKING).
+  reached, the anchor among them. A task now stands on the frames it was submitted under
+  (`gc/runtime/Identity#startWork`). The address is recorded, so only a new recording shows it: two
+  on it (`/bigtemp/vnr3ne/gc-out/accept-agent-a0f-id1`, `accept-agent-a0f-full2`) plan no shared
+  address.
+- EXPLORE `TOPOLOGY_DIVERGENCE` (32 in r3, 36 in r4, 18 in r8's last wave): the order check ranked
+  two events by the anchor chain, so the dispatcher's later `isDelayActive` reads came before the
+  move task's `activateDelay` writes they observed. It reads the rows' seqs (`gc/explore/SlotTable`).
+- COMPOSE `UNSTATED_VALUE` (r4, r8): the second move task's export, sharing the first's endpoint
+  and stating no expression, was read as a missing table entry (`ComposedFamilies#lower`).
+- COMPOSE `UNPRODUCIBLE_ANSWER` (every SASL path in r3 and r4, 11 of 17 in r8): Independence walked
+  a field projection's owner chain, which no lowering reads, and so demanded the balancer's
+  storage-group lookups (a key built from an enum's `toString`, item 30)
+  (`gc/compose/Independence`, `ContainerSmtCodec#fieldOperands`).
 
-Offline over r3's final corpus (`tools/regress/offline-ab.sh --round r3 --round r1`,
-`/bigtemp/vnr3ne/ab/agent-a0f-gate5`), HEAD admits 47 paths at the anchor (main before these
-fixes: 2), and the closing wave proposes 112 obligations (none: the false order contradictions had
-closed it). Valuation 0 asked whole over the 47 paths was undecided after 30 minutes, each path
-alone deciding in about a second; a valuation z3 leaves undecided whole is now asked one path at
-a time (`gc/compose/ClaimPolicy#byDisjunct`). The claim: `SAT_CANDIDATE` `CLOCK_SKEW`,
-`polarityDecides`, on path 6, moving the NameNode's four key-expiry clocks (`REGION.08ab84c9`) and
-the DataNode's (`REGION.ba3902cd`) off their readings, in 1000 s. Over it `cone.py` finds the
-DataNode clock and the first NameNode clock (`in.d977bf12`) in the path's cone, so a NameNode clock
-now reaches the DataNode check; the other three NameNode clocks move only because `clock_order`
-keeps that node's readings ordered, which the cone does not follow, so the cone gate would still
-fail on them. Over r4 (`/bigtemp/vnr3ne/ab/agent-a0f-gate4-r4`) hdfs-11741 claims the same
-mechanism on 41 paths, and hdfs-17899-bug2, refused the same way, claims `MARKER_FLIPPED` again
-(its IPC client door's marker; `/bigtemp/vnr3ne/ab/agent-a0f-gate3-r4`). hdfs-17960 and
-hdfs-17899-bug1 keep their claims.
+Offline over r8 (`tools/regress/offline-ab.sh --round r8`, `/bigtemp/vnr3ne/ab/agent-a0f-gate8-r8`)
+HEAD claims `SAT_CANDIDATE` `CLOCK_SKEW`, `polarityDecides`, on 17 paths (main: 6), moving the
+NameNode's four key-expiry clocks (`REGION.08ab84c9`) and the DataNode's (`REGION.ba3902cd`) off
+their readings, with no BLOCKING gap from COMPOSE or the last EXPLORE wave (main: 17 and 18); only
+the recording's own three shared addresses remain. Over r3's corpus (`agent-a0f-gate7`) it admits
+47 paths (main: 2) and claims the same, and valuation 0 needed `ClaimPolicy#byDisjunct` (whole,
+undecided after 30 minutes; each path alone, about a second); over r4 (`agent-a0f-gate7-r4`) it
+claims the same on 41 paths, and hdfs-17899-bug2 claims `MARKER_FLIPPED` in 486 s. `cone.py` puts the DataNode clock and the first
+NameNode clock (`in.d977bf12`) in the witness path's cone, so a NameNode clock now reaches the
+DataNode check; the other three NameNode clocks move only because `clock_order` keeps that node's
+readings ordered, which the cone does not follow, so the cone gate would still fail on them.
+hdfs-17960, hdfs-17897, hdfs-17899-bug1 and hdfs-17967-pathB keep their claims (r3, r7).
 
 Neither Solr case has ever produced `SAT_CANDIDATE`. `experiments/accept/report.py` expects
 `CLOCK_SKEW` of both (`EXPECTED_MECHANISM`). It has no entry for hdfs-token-key or any ad-hoc
