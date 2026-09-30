@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 
 import java.io.IOException;
@@ -1098,7 +1099,9 @@ public final class StaticScopeMap {
     }
 
     /** The carriers the slice says one RECORDED write site stores into, joined
-     *  on the shared method (VM vs Soot spellings) plus the type, when stated.
+     *  on the shared method (VM vs Soot spellings) plus whether the carrier's
+     *  cell may hold the row's type ({@link #sameType}): the one rule EXPLORE
+     *  and COMPOSE join a recorded write to its carrier by.
      */
     public Set<String> carriersAt(String recordedSite, String javaType) {
         Set<String> carriers = new LinkedHashSet<String>();
@@ -1375,14 +1378,41 @@ public final class StaticScopeMap {
 
     /** Disagreement, not equality: a row may state only the sort ({@code L}
      *  = "a reference"), e.g. every container store; equality would drop
-     *  those writers. Compare the sort, and the class only where both name
-     *  one. */
+     *  those writers. Compare the sort, and, where both name a class, whether
+     *  the cell may hold the row's ({@link #mayHold}). */
     private static boolean agree(String stated, String row) {
         if (stated.isEmpty() || row.isEmpty()) return true;
         if (stated.charAt(0) != row.charAt(0)) return false;
         // Bare "L": the row named no class.
         if (row.length() == 1 || stated.length() == 1) return true;
-        return stated.equals(row);
+        return stated.equals(row) || stated.charAt(0) == 'L'
+                && mayHold(stated, row);
+    }
+
+    /**
+     * Whether a location of one declared class may hold an object of
+     * another: a store states its object's runtime class, the cell its
+     * declared type, and no class hierarchy is at hand here.  So by the value
+     * sorts COMPOSE types either by ({@code compose.JavaSmtSorts}): a
+     * container's shape ({@link JavaContainerTypes#shape}, by interface), a
+     * String, a box's value.  A class none of them names (an application
+     * class, an interface, {@code Object}) may be a supertype of the other,
+     * and agrees with any reference.  SOLR-18406: the {@code Map} field
+     * {@code knownCommits} holding a {@code ConcurrentHashMap}.
+     */
+    private static boolean mayHold(String declared, String runtime) {
+        String cell = valueSort(declared);
+        String held = valueSort(runtime);
+        return cell.isEmpty() || held.isEmpty() || cell.equals(held);
+    }
+
+    /** A reference descriptor's value sort, or "" when it names none. */
+    private static String valueSort(String descriptor) {
+        String boxed = JavaPrimitiveBoxing.valueDescriptor(descriptor);
+        if (!boxed.equals(descriptor)) return boxed;
+        if ("Ljava/lang/String;".equals(descriptor)) return "STRING";
+        JavaContainerTypes.Shape shape = JavaContainerTypes.shape(descriptor);
+        return shape == JavaContainerTypes.Shape.NONE ? "" : shape.name();
     }
 
     /** A row's type as a descriptor; bare sort letters (notably {@code L}) stay

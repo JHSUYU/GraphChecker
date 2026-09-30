@@ -340,7 +340,13 @@ For a demanded read, `explore/ClosurePlanner#writers` asks the session's rows fo
 and the map for the static write sites of the read's carrier (`#carriersAt`, `#writersOf`), on the
 reader's node only. A recorded site's type matches a map row's by sort, or by the value it holds:
 a wrapper location agrees with a row of its primitive (a stored box states its value) and with a
-reference row (a stored null) (`StaticScopeMap#sameType`).
+reference row (a stored null) (`StaticScopeMap#sameType`). A reference row states its object's
+runtime class and the map row the carrier's declared type; with no class hierarchy at hand they
+agree where the cell may hold the class (`#mayHold`): the same class, or value sorts that agree (a
+container's shape by interface, `JavaContainerTypes#shape`; a String; a box's value), and a class
+no sort names (an application class, an interface, `Object`) agrees with any reference. A `Map`
+field holding a `ConcurrentHashMap` is that field's carrier. COMPOSE joins a store to its carriers
+by the same rule (`Composer#constructionGuards`).
 
 ### 5.6 Construction guards
 

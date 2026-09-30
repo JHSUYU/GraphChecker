@@ -257,7 +257,9 @@ could observe. Each demanded boundary input grows the closure:
   version, and writes of the same session by HB-concurrent occurrences — `Arms.concurrent`: not the
   same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root, neither
   Lost), and every activated occurrence on the reader's node holding a static write site of the
-  location's carrier (`STATIC_CANDIDATE_WRITER`);
+  location's carrier (`STATIC_CANDIDATE_WRITER`; `StaticScopeMap#carriersAt`: a recorded write joins
+  a carrier in its method whose declared type may hold the row's: the same class, the bare sort, or,
+  with no hierarchy at hand, value sorts that agree, a class none names agreeing with any reference);
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
 - the two doors of the message a demanded occurrence served (sender and receiver of its causal
@@ -536,8 +538,8 @@ are comparisons of a `READ` with null or the argument, lowered as any comparison
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
 before it at the guard sites of the mutations its method made on a container it then published
-(`StaticScopeMap#constructionGuards`, the scope map's `publishedFrom` write sites, carriers matched on
-the reference sort alone), those that skipped a mutation included. `Independence` keeps them: a kept
+(`StaticScopeMap#constructionGuards`, the scope map's `publishedFrom` write sites, the carriers the
+store's recorded type may be held by, `StaticScopeMap#carriersAt`), those that skipped a mutation included. `Independence` keeps them: a kept
 read brings the guards of the write it observed, and an arm (`ComposedFamilies#producerBody`) seeds
 the guards of the writes it delivers (`Arms.Arm#write`); the closure then conjoins them in the
 polarity they took, and the reads they name are joined in turn. A decision whose condition is a

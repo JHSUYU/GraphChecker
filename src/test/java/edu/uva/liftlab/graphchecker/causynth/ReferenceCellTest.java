@@ -234,6 +234,19 @@ public class ReferenceCellTest {
                 {"the put builds no other carrier",
                         Collections.<String>emptyList(),
                         guards(map.constructionGuards(store, LATEST))},
+                {"a store joins the carrier that may hold its object's"
+                        + " class: any map, the sort alone, a class no sort"
+                        + " names; a String or a list is no map",
+                        Arrays.asList(
+                                "java/util/concurrent/ConcurrentHashMap ["
+                                        + KNOWN + "]", "L [" + KNOWN + "]",
+                                "s/Other [" + KNOWN + "]",
+                                "java/lang/String []",
+                                "java/util/ArrayList []"),
+                        carriers(map, store,
+                                "java/util/concurrent/ConcurrentHashMap",
+                                "L", "s/Other", "java/lang/String",
+                                "java/util/ArrayList")},
                 {"every access is observed with its kind, the put before"
                         + " its publication is not",
                         new LinkedHashSet<>(Arrays.asList(
@@ -265,6 +278,16 @@ public class ReferenceCellTest {
             }
         }
         return "";
+    }
+
+    /** Each type, and the carriers one recorded site joins at it. */
+    private static List<String> carriers(StaticScopeMap map, String site,
+                                         String... types) {
+        List<String> found = new ArrayList<>();
+        for (String type : types) {
+            found.add(type + " " + map.carriersAt(site, type));
+        }
+        return found;
     }
 
     private static List<String> guards(List<StaticScopeMap.Guard> guards) {

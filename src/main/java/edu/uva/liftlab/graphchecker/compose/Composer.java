@@ -1394,10 +1394,8 @@ public final class Composer {
                 + write.version(), unused -> {
             String site = write.endpoint().site();
             Set<String> sites = new LinkedHashSet<String>();
-            // A write states its referent's runtime class and a carrier its
-            // declared type; names do not decide subtyping, so the carriers
-            // are matched on the reference sort alone.
-            for (String carrier : scope.carriersAt(site, "L")) {
+            for (String carrier : scope.carriersAt(site,
+                    write.javaType())) {
                 for (StaticScopeMap.Guard guard
                         : scope.constructionGuards(site, carrier)) {
                     sites.add(guard.siteId());
