@@ -1,1 +1,1 @@
-exception_target_id: adhoc-FSImageUtil-71
+exception_target: adhoc-FSImageUtil-71 org.apache.hadoop.hdfs.server.namenode.FSImageUtil 71

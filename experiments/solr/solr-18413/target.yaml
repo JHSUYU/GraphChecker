@@ -1,1 +1,1 @@
-exception_target_id: solr-18413
+exception_target: solr-18413 org.apache.solr.update.processor.DistributedZkUpdateProcessor 934

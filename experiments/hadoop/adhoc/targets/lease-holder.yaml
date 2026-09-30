@@ -1,1 +1,1 @@
-exception_target_id: adhoc-lease-holder
+exception_target: adhoc-lease-holder org.apache.hadoop.hdfs.server.namenode.FSNamesystem 3250

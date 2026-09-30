@@ -50,7 +50,7 @@ workload asserts the gap itself.
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
-| the failure | `@CausynthExceptionTarget` in each Hadoop checkout; `target.yaml` | `exception_target_id: hdfs-17899` |
+| the failure | `target.yaml` | `exception_target: hdfs-17899 …BlockTokenSecretManager 582`, the same line in each of the three checkouts |
 | the occurrence | `target_occurrence` in `case.sh`, exported as `CAUSYNTH_TARGET_OCCURRENCE` | `bug1` `hdfs-17899/target-dn#epoch0/…@hdfs-17899/balancer#epoch0/balance-block#1`; `bug2` `…/target-dn#epoch0/…@hdfs-17899/sps#epoch0/satisfy-storage-policy#1`; `bug3` `…/target-dn#epoch0/…@hdfs-17899/source-dn#epoch0/replicate-block#1`. Left empty, the run keeps every observed occurrence |
 | clock roots | the program text (`causynth/RootCatalog`) | every read the slice reaches of a clock -- a JVM clock or a method returning one under constant arithmetic (`Timer.now()`, `Time.now()`, `Time.monotonicNow()`) -- is a root, and the occurrence that reads it is admitted as a root reader |
 | fault points | the Hadoop worktrees, not this directory | every mapped transport door mints its Boolean fault point unconditionally: `Debug.makeSymbolicBoolean("FAULT:HADOOP_IPC:REQUEST")` in `Client$Connection.sendRpcRequest` (the key-refresh RPC failure) and `…("FAULT:HDFS_SASL:REQUEST")` in `SaslDataTransferClient.doSaslHandshake`. The recorded polarity is false; true throws the transport's `IOException` before the request leaves, with no `causynth.active()` guard |

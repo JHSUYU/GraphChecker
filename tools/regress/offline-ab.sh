@@ -35,8 +35,11 @@
 # copied, so nothing under a recorded run is ever written.  Both jars are
 # copied into the output first (a rebuild under a running gate changes
 # nothing) and run under THIS checkout's case declarations and harness
-# (experiments/): the jar is the one variable.  The workload classpath is
-# the one the run froze when it states one (its tree's report may be gone).
+# (experiments/): the jar is the one variable -- unless AB_BASELINE_REPO
+# gives the baseline its own checkout's, for a change that moves a
+# declaration's format together with the jar (a target spec).  The workload
+# classpath is the one the run froze when it states one (its tree's report
+# may be gone).
 #
 # Each case is one task, both sides inside it, placed by
 # /bigtemp/vnr3ne/bin/onlift.sh on the lift with the most free memory for
@@ -61,12 +64,16 @@
 #   AB_SOLVE_JOBS concurrent SOLVE.0 solvers of one side (default 2)
 #   AB_STAGE_TIMEOUT_S  wall bound of one JVM (default 1800)
 #   AB_STAGES     the chains to run (default "SEED IMPORT EXPLORE.N COMPOSE")
-#   AB_ACCEPT_ROOT  where round TAGs live (default ~/gc-out)
+#   AB_ACCEPT_ROOT  where round TAGs live (default $GC_OUT, tools/lib/gc-env.sh)
 #   AB_Z3         the z3 both sides use (default: the case's z3_bin)
+#   AB_BASELINE_REPO  the checkout whose experiments/ declare the baseline's
+#                 cases (default: this one)
 set -uo pipefail
 
 ab_self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")
 ab_self_repo=$(cd "$(dirname "${ab_self}")/../.." && pwd -P)
+# shellcheck source=../lib/gc-env.sh
+source "${ab_self_repo}/tools/lib/gc-env.sh"
 
 AB_CASES=(hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17967-pathA
   hdfs-17967-pathB hdfs-17967-pathC hdfs-17960 hdfs-17897 hdfs-11741)
@@ -193,7 +200,7 @@ ab_stage_seed_static() {
   # The scope, copied out of the case's tree into this stage, never into the
   # per-host directory a running campaign of the case weaves from.
   (cd "${ab_case_decl}" && env CAUSYNTH_ANALYSIS_CLASSES_DIR="${classes}" \
-      bash "${ab_self_repo}/experiments/lib/prepare-analysis.sh" \
+      bash "${ab_side_repo}/experiments/lib/prepare-analysis.sh" \
       "${ab_case_decl}" "${ab_case_arg}") >"${dir}/prepare.log" 2>&1 \
     || ab_skip "${dir}" "the scope copy failed (prepare.log)" || return
   # campaign_kind_digest tree: whether the tree still holds the classes the
@@ -384,7 +391,8 @@ ab_side_env() {
   local out=$1 side=$2 case_id=$3
   ab_case_dir=${out}/${side}/${case_id}
   ab_jar=${out}/jars/${side}.jar
-  read -r ab_acc ab_case_decl ab_case_arg <"${ab_case_dir}/inputs.txt"
+  read -r ab_acc ab_case_decl ab_case_arg ab_side_repo \
+    <"${ab_case_dir}/inputs.txt"
   [[ "${ab_case_arg}" == - ]] && ab_case_arg=""
   ab_acc_it=${ab_acc}/schedule/iteration-0000
   ab_java_bin=$(ab_cfg java_bin)
@@ -521,9 +529,9 @@ ab_main() {
 [--round TAG|DIR]... <baseline-jar> <candidate-jar> [case...]"
   shift 2
   local -a cases=("$@") pids=() override
-  local case_id dir side acc decl arg chain classpath onlift
+  local case_id dir side acc decl arg chain classpath onlift repo base_repo
   AB_OUT=${AB_OUT:-/bigtemp/vnr3ne/ab/$(date +%Y%m%d-%H%M%S)}
-  AB_ACCEPT_ROOT=${AB_ACCEPT_ROOT:-${HOME}/gc-out}
+  AB_ACCEPT_ROOT=${AB_ACCEPT_ROOT:-${GC_OUT}}
   AB_STAGES=${AB_STAGES:-${AB_CHAINS[*]}}
   for chain in ${AB_STAGES}; do
     [[ " ${AB_CHAINS[*]} " == *" ${chain} "* ]] \
@@ -532,6 +540,8 @@ ab_main() {
   (( ${#cases[@]} > 0 )) || cases=("${AB_CASES[@]}")
   [[ ! -e "${AB_OUT}" || -z "$(ls -A "${AB_OUT}")" ]] \
     || ab_die "AB_OUT already holds a run: ${AB_OUT}"
+  base_repo=$(cd "${AB_BASELINE_REPO:-${ab_self_repo}}" && pwd -P) \
+    || ab_die "AB_BASELINE_REPO is not a directory: ${AB_BASELINE_REPO}"
   mkdir -p "${AB_OUT}/jars" "${AB_OUT}/logs"
   local t0=${SECONDS}
 
@@ -544,11 +554,12 @@ ab_main() {
   [[ -z "${AB_Z3:-}" ]] || printf 'AB_Z3=%q\n' "${AB_Z3}" >>"${AB_OUT}/env.sh"
   printf '%s\n' ${AB_STAGES} >"${AB_OUT}/chains.txt"
   printf 'baseline\t%s\t%s\ncandidate\t%s\t%s\n' \
-    "$(readlink -f "${baseline}")" "${ab_self_repo}" \
+    "$(readlink -f "${baseline}")" "${base_repo}" \
     "$(readlink -f "${candidate}")" "${ab_self_repo}" >"${AB_OUT}/sides.tsv"
 
-  # Each case: its recorded run, its declarations here, and the config
-  # run_engine.sh reads -- with the classpath the run froze, when it states one.
+  # Each case: its recorded run, each side's declarations of it, and the
+  # config run_engine.sh reads -- with the classpath the run froze, when it
+  # states one.
   for case_id in "${cases[@]}"; do
     acc=$(ab_recorded_run "${case_id}") \
       || ab_die "no round of ${ab_rounds[*]} recorded ${case_id}"
@@ -556,15 +567,18 @@ ab_main() {
     classpath=$(ab_recorded_classpath "${acc}")
     override=()
     [[ -z "${classpath}" ]] || override=("CAUSYNTH_CLASSPATH_OVERRIDE=${classpath}")
-    read -r decl arg < <(ab_experiment_of "${ab_self_repo}" "${case_id}") \
-      || ab_die "${ab_self_repo} declares no experiment for ${case_id}"
     for side in "${AB_SIDES[@]}"; do
+      repo=${ab_self_repo}
+      [[ "${side}" == candidate ]] || repo=${base_repo}
+      read -r decl arg < <(ab_experiment_of "${repo}" "${case_id}") \
+        || ab_die "${repo} declares no experiment for ${case_id}"
       dir=${AB_OUT}/${side}/${case_id}
       mkdir -p "${dir}"
-      printf '%s %s %s\n' "${acc}" "${decl}" "${arg}" >"${dir}/inputs.txt"
+      printf '%s %s %s %s\n' "${acc}" "${decl}" "${arg}" "${repo}" \
+        >"${dir}/inputs.txt"
       (cd "${decl}" && env -i HOME="${HOME}" PATH="${PATH}" \
           CAUSYNTH_OUTPUT_DIR="${dir}/SEED.static/out" "${override[@]}" \
-          bash "${ab_self_repo}/experiments/lib/run.sh" "${decl}" \
+          bash "${repo}/experiments/lib/run.sh" "${decl}" \
           "$([[ ${arg} == - ]] || echo "${arg}")" config) \
         >"${dir}/config.txt" 2>"${dir}/config.log" \
         || ab_die "${case_id}: run.sh config failed (${dir}/config.log)"

@@ -1,6 +1,6 @@
 # PIPELINE — the stages as the code runs them
 
-One campaign answers one question: can the case's declared occurrence of the annotated target site
+One campaign answers one question: can the case's declared occurrence of the declared target site
 (the *anchor*) reach its fatal arm, and by which mechanism. `./run_engine.sh --config
 <workflow.properties> campaign` runs `do_campaign`, which calls these stages in order through
 `campaign_stage` (each stage's wall time goes to `stage_metrics.tsv`; a failing stage ends the run
@@ -111,6 +111,13 @@ none.
    (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
    `causynth_lineage_roots` is set, `plan.ScopeGrowth` adds classes where the slice stops at the scope
    into `scope-classes/` and the pass runs again, until it adds nothing ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md)).
+   The target spec holds one line, `exception_target: <name> <binary class name> <source line>
+   [<thrown type>]`; `causynth.ExceptionTargetLineResolver` finds the one `throw new` javac compiled at
+   that line of the class or a class nested in it (a lambda body, an anonymous class), by the
+   LineNumberTable of the analysis inputs, and refuses `TARGET_LINE_UNRESOLVED` or
+   `TARGET_LINE_AMBIGUOUS` (state the type) otherwise. Its identity is the method, the thrown type and
+   the `NEW`'s ordinal among the method's `NEW`s of that type, which the analyzer matches on Jimple.
+   A spec of more than one line is refused (`MULTI_TARGET_UNSUPPORTED`).
    The scope map is [SYMBOL-SCOPE.md §3](SYMBOL-SCOPE.md); its `TARGET_SITE` rows state the
    target's `guards` with their fatal arms, the helper branch deciding a guard on a helper's
    returned 0/1 (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards before them;
@@ -386,12 +393,18 @@ stderr line. A result row still saying `SAT_MODEL_READY` after the replay fails 
 ### 7.7 The work pool
 
 `campaign_dispatch_wave` starts `min(slots, obligations)` slots; slots = `concolic_worker_count` per
-host of `campaign_worker_hosts` (empty: local only), interleaved across hosts. A slot waits for memory
+host of `campaign_worker_hosts` (empty: local only), interleaved across hosts and starting at the
+host the wave directory's `cksum` picks, so one-obligation waves spread. A slot waits for memory
 on its host, then claims the next obligation by `mkdir` of its queue index, runs it (locally in a
 subshell, or remotely through `ssh` running `run_engine.sh --run-obligation` with the frozen jar and
-its sha256), and loops. The memory gate (`campaign_host_try_start`) is a ledger shared by all campaigns
-under `~/gc-out/hosts/<host>/`: a start is allowed when `MemAvailable − (starts charged in the last
-60 s) ≥ obligation_memory_mb + 3072`. A slot whose obligation does not finish (nonzero worker exit)
+its sha256), and loops. The memory gate (`campaign_host_try_start <host> [need] [ramp]`) is a ledger
+shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/`
+(`tools/lib/gc-env.sh`): each row is `<epoch> <mb> <ramp_s> <id>`, and a start is allowed when
+`MemAvailable − (rows still inside their own ramp) ≥ need + 3072`. An obligation needs
+`obligation_memory_mb` for 60 s. The head (`do_campaign`, `campaign_head_charged`) charges each of
+its engine JVMs `engine_memory_mb` (else 8192) for 120 s and its seed and CONFIRM replays
+`obligation_memory_mb` for 300 s, and releases the row when the command returns
+(`campaign_host_release`); an obligation's own JVMs are inside its slot's charge. A slot whose obligation does not finish (nonzero worker exit)
 makes the wave fail, and the campaign fails at EXPLORE after reaping remote workers. Verdicts are
 appended to `obligation_results.jsonl` once the wave settled.
 
@@ -805,14 +818,17 @@ workload and no replay; `ab_compare.py` prints one table and exits 1 when a gati
 2 when one could not be checked. Every stage gates on bytes, the static pass included: it is the
 same on every host and run ([SYMBOL-SCOPE.md §2.3](SYMBOL-SCOPE.md)). A round is read as the
 current engine reads it, so the gate needs a round recorded by a build whose row contract HEAD
-still reads.
+still reads. Both sides run under the gate's own checkout's case declarations, unless
+`AB_BASELINE_REPO` names the baseline's: a change that moves a declaration's format with the jar
+(the target spec) is gated that way, and each side's checkout path is one token in the
+comparison.
 
 ## 13. Reading a run
 
 - A campaign that died names its stage: `[campaign:error] stage=… component=… artifact=… reason=…`
   on stderr. A REPLAY death: `iteration-0000/seed-result/focused/replay.log` and the seed session's
-  `gaps.jsonl`. A slot that seems stalled logs `waiting for memory on <host>: …`; the host ledger
-  is `~/gc-out/hosts/<host>/{available,starts}`.
+  `gaps.jsonl`. A slot or a head that seems stalled logs `waiting for memory on <host>: …`; the
+  host ledger is `$CAUSYNTH_HOST_LEDGER/<host>/{available,starts}`.
 - `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
   `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it

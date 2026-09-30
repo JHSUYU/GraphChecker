@@ -1,1 +1,1 @@
-exception_target_id: adhoc-NameNode-2024
+exception_target: adhoc-NameNode-2024 org.apache.hadoop.hdfs.server.namenode.NameNode 2024

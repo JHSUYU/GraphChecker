@@ -1,1 +1,1 @@
-exception_target_id: adhoc-DirectorySnapshottableFeature-135
+exception_target: adhoc-DirectorySnapshottableFeature-135 org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature 135

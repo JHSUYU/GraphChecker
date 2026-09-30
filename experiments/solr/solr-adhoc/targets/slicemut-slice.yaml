@@ -1,1 +1,1 @@
-exception_target_id: adhoc-slicemut-slice
+exception_target: adhoc-slicemut-slice org.apache.solr.cloud.overseer.SliceMutator 228

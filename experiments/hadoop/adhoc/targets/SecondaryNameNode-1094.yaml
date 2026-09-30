@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SecondaryNameNode-1094
+exception_target: adhoc-SecondaryNameNode-1094 org.apache.hadoop.hdfs.server.namenode.SecondaryNameNode 1094

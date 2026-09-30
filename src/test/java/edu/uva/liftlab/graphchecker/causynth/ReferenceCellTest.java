@@ -375,7 +375,7 @@ public class ReferenceCellTest {
         return region;
     }
 
-    /** The scene, and the annotated throw in {@code check}. */
+    /** The scene, and the declared throw in {@code check}. */
     private static CausynthTargetContext scene() {
         G.reset();
         soot.options.Options.v().set_allow_phantom_refs(true);
@@ -523,7 +523,7 @@ public class ReferenceCellTest {
                         Jimple.v().newNewExpr(failure)),
                 Jimple.v().newThrowStmt(thrown),
                 done);
-        return new CausynthTargetContext(Paths.get("unused"), "t",
+        return new CausynthTargetContext(Paths.get("unused"),
                 new ExceptionTargetSite("t", POLICY, "check",
                         "(Ljava/lang/Object;)V", CHECK,
                         "java.lang.IllegalStateException", 0));

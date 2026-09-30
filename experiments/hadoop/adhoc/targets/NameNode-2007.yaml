@@ -1,1 +1,1 @@
-exception_target_id: adhoc-NameNode-2007
+exception_target: adhoc-NameNode-2007 org.apache.hadoop.hdfs.server.namenode.NameNode 2007

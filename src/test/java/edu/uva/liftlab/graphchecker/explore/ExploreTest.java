@@ -199,7 +199,7 @@ public class ExploreTest {
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         seed.flush();
         // What the wave may flip in the anchor is the guard set of the
-        // annotated target, and nothing else (PIPELINE §7.2).
+        // declared target, and nothing else (PIPELINE §7.2).
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8", "Guard#u19"));
 
@@ -3623,7 +3623,7 @@ public class ExploreTest {
         return site.toString();
     }
 
-    /** The annotated target and the branches it is control-dependent on. */
+    /** The declared target and the branches it is control-dependent on. */
     private static String targetSite(String regionId, String siteId,
                                      String... guards) {
         return scopeSite(StaticScopeMap.TARGET_SITE, regionId, siteId, "",

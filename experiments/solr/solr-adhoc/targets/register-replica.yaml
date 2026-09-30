@@ -1,1 +1,1 @@
-exception_target_id: adhoc-register-replica
+exception_target: adhoc-register-replica org.apache.solr.cloud.ZkController 1274

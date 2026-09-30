@@ -1,1 +1,1 @@
-exception_target_id: adhoc-BlobHandler-177
+exception_target: adhoc-BlobHandler-177 org.apache.solr.handler.BlobHandler 177

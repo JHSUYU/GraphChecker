@@ -1,1 +1,1 @@
-exception_target_id: adhoc-NameNodeRpcServer-2677
+exception_target: adhoc-NameNodeRpcServer-2677 org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer 2677

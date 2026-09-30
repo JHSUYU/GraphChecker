@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SplitShardCmd-198
+exception_target: adhoc-SplitShardCmd-198 org.apache.solr.cloud.api.collections.SplitShardCmd 198

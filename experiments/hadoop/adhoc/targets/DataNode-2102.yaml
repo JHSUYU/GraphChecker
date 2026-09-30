@@ -1,1 +1,1 @@
-exception_target_id: adhoc-DataNode-2102
+exception_target: adhoc-DataNode-2102 org.apache.hadoop.hdfs.server.datanode.DataNode 2102

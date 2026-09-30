@@ -30,16 +30,16 @@ on the upstream fix branch `HDFS-17899-followup-invalid-encryption-key`) and alr
 the instrumentation stack. Do not base this case on the upstream follow-up branch: it has
 the fix, so there is no fatal arm to reach.
 
-## The one annotated site, and why it is not any of the three throws
+## The one target site, and why it is not any of the three throws
 
-`@CausynthExceptionTarget` has to sit on a `throw new` **whose backward slice reaches the
-state the mechanism turns on**. For all three paths that is the `allKeys` miss in
-`BlockTokenSecretManager.retrieveDataEncryptionKey`, which is also where HDFS-11741,
-HDFS-17897 and all three HDFS-17899 cases are annotated. It is not convenience.
+The target has to be a `throw new` **whose backward slice reaches the state the mechanism
+turns on**. For all three paths that is the `allKeys` miss in
+`BlockTokenSecretManager.retrieveDataEncryptionKey`, which is also the target of HDFS-11741,
+HDFS-17897 and all three HDFS-17899 cases. It is not convenience.
 
-The three in-frame ends above cannot carry it. A and B are rethrows, and
-`@CausynthExceptionTarget` is `@Target(TYPE_USE)`, so it can only sit on a constructed type.
-C is a real `throw new`, and it was annotated there first — but its only operand is a
+The three in-frame ends above cannot be it. A and B are rethrows, and a target is a
+constructed exception handed straight to `athrow` (`causynth/ExceptionTargetLineResolver`).
+C is a real `throw new`, and it was the target first — but its only operand is a
 `String`, so nothing classifies the key-management methods as writers of tracked state, they
 lose `STATE_WRITER_ENTRY`, and `RuntimeRegionPlanner#validRootAuthority` refuses the whole
 recording by name:
@@ -50,7 +50,7 @@ region skeleton has no authoritative execution context root:
 ```
 
 The client-side reconstruction in `DataTransferSaslUtil` fails the same way, for the same
-reason. So the three paths share one `exception_target_id` — `hdfs-17967` — and are told
+reason. So the three paths share one `exception_target` — `hdfs-17967` — and are told
 apart by `declared_target_occurrence`, exactly as HDFS-17899's three bugs are.
 
 ## What these cases declare
@@ -61,7 +61,7 @@ carries what is per case, including the per-case analysis scope.
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
-| the failure | `@CausynthExceptionTarget("hdfs-17967")` in each worktree's `BlockTokenSecretManager`; `target.yaml` | `exception_target_id: hdfs-17967` |
+| the failure | `target.yaml` | `exception_target: hdfs-17967 …BlockTokenSecretManager 582`, the same line in each of the three worktrees |
 | the occurrence | `target_occurrence` in `case.sh` | `pathA` `hdfs-17967/mirror-dn#epoch0/region/REGION.7c569c3f…#1`; `pathB` `…/proxy-dn#…`; `pathC` `…/target-dn#…`. `REGION.7c569c3f` is the per-connection `SaslDataTransferServer` callback handler, the region every passing case in this family anchors on |
 | clock roots | the program text (`causynth/RootCatalog`) | every read the slice reaches of a clock -- a JVM clock or a method returning one under constant arithmetic (`Timer.now()`, `Time.now()`, `Time.monotonicNow()`) -- is a root, and the occurrence that reads it is admitted as a root reader |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `+0` to `+3`: the recorded value and up to three rotations past it |

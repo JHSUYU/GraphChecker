@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SimDistribStateManager-173
+exception_target: adhoc-SimDistribStateManager-173 org.apache.solr.cloud.autoscaling.sim.SimDistribStateManager 173

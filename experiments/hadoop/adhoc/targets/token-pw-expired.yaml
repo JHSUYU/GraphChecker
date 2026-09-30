@@ -1,1 +1,1 @@
-exception_target_id: adhoc-token-pw-expired
+exception_target: adhoc-token-pw-expired org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager 533

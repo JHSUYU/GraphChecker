@@ -1,1 +1,1 @@
-exception_target_id: adhoc-CoreAdminRequest-486
+exception_target: adhoc-CoreAdminRequest-486 org.apache.solr.client.solrj.request.CoreAdminRequest 486

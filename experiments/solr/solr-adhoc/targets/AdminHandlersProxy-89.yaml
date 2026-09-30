@@ -1,1 +1,1 @@
-exception_target_id: adhoc-AdminHandlersProxy-89
+exception_target: adhoc-AdminHandlersProxy-89 org.apache.solr.handler.admin.AdminHandlersProxy 89

@@ -18,25 +18,10 @@ classpath=$("$here/classpath.sh")
 mkdir -p "$source_dir" "$production_dir" "$test_dir"
 find "$production_dir" "$test_dir" -type f -name '*.class' -delete
 
-python3 - "$repo/hbase-server/src/main/java/org/apache/hadoop/hbase/security/token/AuthenticationTokenSecretManager.java" \
-  "$source_dir/AuthenticationTokenSecretManager.java" <<'PY'
-import pathlib
-import sys
-
-source = pathlib.Path(sys.argv[1]).read_text()
-needle = '      throw new InvalidToken("Unknown master key for token (id="'
-if source.count(needle) != 1:
-    raise SystemExit('expected exactly one unknown-master-key throw')
-source = source.replace(
-    'import org.apache.hadoop.conf.Configuration;',
-    'import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;\n'
-    'import org.apache.hadoop.conf.Configuration;', 1)
-source = source.replace(
-    needle,
-    '      throw new @CausynthExceptionTarget("hbase-token-key-roll") '
-    'InvalidToken("Unknown master key for token (id="', 1)
-pathlib.Path(sys.argv[2]).write_text(source)
-PY
+# The target is named by class and line (target.yaml), so the source is
+# compiled as it is written.
+cp "$repo/hbase-server/src/main/java/org/apache/hadoop/hbase/security/token/AuthenticationTokenSecretManager.java" \
+  "$source_dir/AuthenticationTokenSecretManager.java"
 
 test_source="$here/workload-src/TestAuthenticationTokenKeyRollCoordination.java"
 [[ -s "$test_source" ]] || {
@@ -51,4 +36,4 @@ test_source="$here/workload-src/TestAuthenticationTokenKeyRollCoordination.java"
 
 [[ -s "$production_dir/org/apache/hadoop/hbase/security/token/AuthenticationTokenSecretManager.class" ]]
 [[ -s "$test_dir/org/apache/hadoop/hbase/security/token/TestAuthenticationTokenKeyRollCoordination.class" ]]
-printf 'compiled annotated HBase target and regression workload in %s\n' "$overlay"
+printf 'compiled the HBase target and regression workload in %s\n' "$overlay"

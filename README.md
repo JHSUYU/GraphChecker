@@ -4,10 +4,10 @@ GraphChecker is an academic research tool in software engineering. It studies ho
 distributed Java systems (HDFS, Solr) fail under fault, clock and ordering counterfactuals.
 
 It starts from one recorded run of a system's own cluster test that does **not** fail, plus one
-annotated failure site (a `throw`). It then asks whether a small change could have made that
-run fail at that site, and it answers with a witness. The changes it considers are a transport
-fault, a skewed clock, a flipped configuration value, or a different pairing of a message or of
-shared state.
+declared failure site (a `throw`, named by its class and source line). It then asks whether a
+small change could have made that run fail at that site, and it answers with a witness. The
+changes it considers are a transport fault, a skewed clock, a flipped configuration value, or a
+different pairing of a message or of shared state.
 
 A witness is a quantifier-free SMT formula (`candidate.smt2`), a claim naming what moved
 (`claim.json`), and one replay confirming that the program agrees (`confirm.json`). Replays run
@@ -75,7 +75,10 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
 - `case.sh`: the tree, the workload test, the target occurrence and the analysis scope;
 - `workflow.properties`: budgets and inputs. `run_engine.sh` accepts only the keys it knows, so
   an unknown key is refused;
-- `target.yaml`;
+- `target.yaml`: `exception_target: <name> <binary class name> <source line> [<thrown type>]`.
+  The engine finds the one `throw new` at that line of the class or of a class nested in it (a
+  lambda body, an anonymous class) in the compiled classes; the tree carries no annotation and is
+  not rebuilt. The thrown type is needed only when the line holds two throws;
 - optionally `communication-mappings.jsonl` (`DOOR` and `WIRE_FLOW` rows),
   `root-domains.jsonl` and `loop-bounds*.jsonl`.
 
@@ -102,16 +105,24 @@ To run from a frozen snapshot (a round) instead of the working tree:
 
 ```bash
 git worktree add ~/gc-run/p<N> HEAD && (cd ~/gc-run/p<N> && mvn -q -o package -DskipTests)
-GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/launch-run.sh ~/gc-run/p<N> hdfs-17960 v<R>-17960
-GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/launch-round.sh ~/gc-run/p<N> v<R>   # the nine HDFS + two Solr cases
+tools/rounds/launch-run.sh ~/gc-run/p<N> hdfs-17960 v<R>-17960
+tools/rounds/launch-round.sh ~/gc-run/p<N> v<R>   # the nine HDFS + two Solr cases
 tools/rounds/round-monitor.sh 'v<R>-*' | grep --line-buffered 'DONE '
 tools/rounds/stop-run.sh v<R>-17960                      # stops a run by its output dir, on every lift
 ```
 
-Obligations of a campaign fan out over the hosts in `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`. On each
-host, a per-host memory gate in `run_engine.sh` admits a start only when `MemAvailable` covers
-three things: the case's `obligation_memory_mb`, a 3072 MB reserve, and every start made there
-in the last 60 s. The ledger is `~/gc-out/hosts/<host>/`. Rules:
+`tools/lib/gc-env.sh` states, once for every tool and for `run_engine.sh`, the output root
+`GC_OUT` (default `/bigtemp/vnr3ne/gc-out`), the host ledger `CAUSYNTH_HOST_LEDGER` (default
+`/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes) and the hosts
+`LIFTS` (lift06–15).
+
+Obligations of a campaign fan out over the hosts in `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, the first
+host rotated per wave. Every start on a host is charged to the ledger first: an obligation
+(`obligation_memory_mb`, for 60 s), a campaign head's engine JVM (`engine_memory_mb`, else 8192, for
+120 s), its seed and CONFIRM replays (`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
+(its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, a 3072 MB
+reserve and every start still in its ramp there; a head's start is released when it returns.
+Rules:
 
 - Never rebuild a tree, or edit a snapshot, while a campaign runs on it.
 - Never remove a `~/gc-run/p<N>` that a running sweep uses.
@@ -133,16 +144,15 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
 4. `select.py <system-dir> <sweep-dir> <experiment> <N> [per-check] [tree]`: rank and choose
    checks. It appends them to `checks.tsv` and prints the case ids. A workload whose test failed
    under coverage, or that starts no node, is skipped and named on stderr.
-5. `annotate.py <experiment> <tree>`: put `@CausynthExceptionTarget("adhoc-<check>")` on each
-   chosen throw and write `targets/`. Then rebuild the tree and commit it (a manual step).
+5. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
+   line (`exception_target: adhoc-<check> …`). Nothing in the tree is edited or rebuilt.
 6. `sweep.sh <snapshot> <round> <cases-file> [heads-per-host]`: one campaign per case over all
-   ten lifts, with `PRUNE=1` and a 5400 s case budget. Head starts are gated on memory by
-   `fanout.sh`.
-7. `triage.py <round> [gc-out]`: one row per case with its outcome class (CONFIRMED, REFUTED,
-   NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING), finding, stage and reason.
-
-Set `GC_OUT=/bigtemp/vnr3ne/gc-out` for sweeps. The scripts default to `/u/vnr3ne/gc-out`,
-which is on the quota-limited home.
+   ten lifts, with `PRUNE=1` and a 5400 s case budget. `fanout.sh` admits each head through the
+   host ledger with the case's `engine_memory_mb` (else 8192); started again, it skips every case
+   whose job returned (`<log-dir>/<n>.exit`).
+7. `triage.py <round> <gc-out>`: one row per case with its outcome class (CONFIRMED, REFUTED,
+   NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING), finding, stage and reason. Pass the sweep's
+   `$GC_OUT`: its own default is still `~/gc-out`.
 
 ## Outputs
 
@@ -187,7 +197,7 @@ src/main/java/edu/uva/liftlab/graphchecker/
   compose/     Composer, families, SMT lowering, container codec, ClaimPolicy, ComposeMain
   contract/    row kinds, identity types, gap registry, session layout, IMPORT gate
   smt/         expression IR, arms and families, z3 driver
-  annotation/  @CausynthExceptionTarget, Debug.makeSymbolicBoolean
+  annotation/  Debug.makeSymbolicBoolean; @CausynthExceptionTarget (the trees' compile ABI only)
 src/shim/java/                    the Hadoop shim (org.apache.hadoop.ipc.*) the HDFS trees call
 src/test/                         unit tests; shell/run_engine_campaign_helpers_test.sh
 third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/share/vm/concolic,

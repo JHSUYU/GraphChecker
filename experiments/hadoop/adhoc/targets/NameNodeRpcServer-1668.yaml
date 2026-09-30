@@ -1,1 +1,1 @@
-exception_target_id: adhoc-NameNodeRpcServer-1668
+exception_target: adhoc-NameNodeRpcServer-1668 org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer 1668

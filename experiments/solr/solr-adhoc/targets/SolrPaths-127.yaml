@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SolrPaths-127
+exception_target: adhoc-SolrPaths-127 org.apache.solr.core.SolrPaths 127

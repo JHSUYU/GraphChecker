@@ -1,1 +1,1 @@
-exception_target_id: adhoc-ReplaceNodeCmd-81
+exception_target: adhoc-ReplaceNodeCmd-81 org.apache.solr.cloud.api.collections.ReplaceNodeCmd 81

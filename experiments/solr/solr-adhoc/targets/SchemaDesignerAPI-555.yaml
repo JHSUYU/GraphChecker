@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SchemaDesignerAPI-555
+exception_target: adhoc-SchemaDesignerAPI-555 org.apache.solr.handler.designer.SchemaDesignerAPI 555

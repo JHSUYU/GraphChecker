@@ -1,1 +1,1 @@
-exception_target_id: adhoc-BackupCmd-315
+exception_target: adhoc-BackupCmd-315 org.apache.solr.cloud.api.collections.BackupCmd 315

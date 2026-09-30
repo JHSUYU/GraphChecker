@@ -1,1 +1,1 @@
-exception_target_id: adhoc-UpdateLog-348
+exception_target: adhoc-UpdateLog-348 org.apache.solr.update.UpdateLog 348

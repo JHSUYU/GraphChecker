@@ -102,8 +102,8 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     /**
-     * What a sweep declares: the first observed occurrence of the annotated
-     * site in THIS recording, fixed at the seed like any declaration and
+     * What a sweep declares: the first observed occurrence of the declared
+     * target site in THIS recording, fixed at the seed like any declaration and
      * handed to every later stage as the address PLAN resolved it to.  A
      * case about one failure names its occurrence; a sweep over checks has
      * no failure to name one by, and an address read off one recording
@@ -126,9 +126,9 @@ public final class RuntimeWorkflowDiscovery {
         if (declared.isEmpty()) {
             throw new IOException("DECLARED_TARGET_OCCURRENCE_MISSING: this "
                     + "campaign states no declared_target_occurrence, and "
-                    + "which occurrence of the annotated site it is about is "
-                    + "not a question runtime evidence may answer; observed "
-                    + "target occurrences: " + observed);
+                    + "which occurrence of the declared target site it is "
+                    + "about is not a question runtime evidence may "
+                    + "answer; observed target occurrences: " + observed);
         }
         if (FIRST.equals(declared)) return targets.get(0);
         int k = declaredK(declared);
@@ -285,7 +285,7 @@ public final class RuntimeWorkflowDiscovery {
         final String occurrenceId;
         final String goalId;
         final boolean target;
-        /** Captures the annotated target's reach (the target and its sibling
+        /** Captures the declared target's reach (the target and its sibling
          *  occurrences). */
         final boolean targetReach;
 
@@ -323,7 +323,7 @@ public final class RuntimeWorkflowDiscovery {
         }
     }
 
-    /** One observed occurrence of the annotated target site. */
+    /** One observed occurrence of the declared target site. */
     private static final class Target {
         private final RegionInstancePlan plan;
         private final Goal goal;

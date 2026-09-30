@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SnapshotManager-228
+exception_target: adhoc-SnapshotManager-228 org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager 228

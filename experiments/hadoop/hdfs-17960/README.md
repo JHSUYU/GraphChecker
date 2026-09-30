@@ -10,7 +10,7 @@ enabled, restarts the NameNode with ordered deletion disabled, then checkpoints.
 restarted NameNode the second deletion record finds no such snapshot; with ordered deletion
 off and the image not yet loaded, `removeSnapshot` takes its tolerance path and returns
 without removing anything, while the counter is decremented all the same. Counter and
-snapshot list then disagree and `saveNamespace` reaches the annotated snapshot-count check
+snapshot list then disagree and `saveNamespace` reaches the declared snapshot-count check
 in `FSImageFormatPBSnapshot.Saver.serializeSnapshotSection`. The recording takes the healthy
 arm, so the fatal predicate is concrete on the recorded path: the witness has to come from a
 flipped decision, which is what makes this case the worked example for the whole design.
@@ -19,7 +19,7 @@ flipped decision, which is what makes this case the worked example for the whole
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
-| the failure | `@CausynthExceptionTarget` on the constructed exception in the Hadoop checkout; `target.yaml` | `exception_target_id: hdfs-17960-snapshot-count-mismatch` |
+| the failure | `target.yaml` | `exception_target: hdfs-17960-snapshot-count-mismatch …FSImageFormatPBSnapshot 468`: the `throw new` at that line, in the nested `Saver.serializeSnapshotSection` |
 | the occurrence | `declared_target_occurrence` in `workflow.properties` | `hdfs-17960/nn0#epoch1/region/REGION.5cf88831-22cf-3d39-88b2-258261af8fc8#1` — the checkpoint RPC handler on the restarted NameNode. The target site sits in `serializeSnapshotSection`, whose own region (`REGION.f0132fca`) is entered synchronously from inside that handler and therefore opens no occurrence of its own: its sites are events of the enclosing one. The selector carries no `@api` part, so it is read as region plus node, and `#1` names the first of the two observed instances |
 | roots | the checkout's hook | the one root is `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED`, minted by a `CausynthSymbolicSource.symbolize` hook in the checkout's own `SnapshotManager`, on the `dfs.namenode.snapshot.deletion.ordered` value the restarted NameNode caches. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so the field is not listed here |
 | region input | the static scope map (`inputKind: READ`) | `SnapshotManager.getNumSnapshots()` reads its `AtomicInteger` through a JDK accessor no replay versions, and other regions store it, so the read is a placeholder the closure binds to those writers -- the value the fatal predicate compares |

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-delrep-slice
+exception_target: adhoc-delrep-slice org.apache.solr.cloud.api.collections.DeleteReplicaCmd 102

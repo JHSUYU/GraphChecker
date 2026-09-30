@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SimClusterStateProvider-315
+exception_target: adhoc-SimClusterStateProvider-315 org.apache.solr.cloud.autoscaling.sim.SimClusterStateProvider 315

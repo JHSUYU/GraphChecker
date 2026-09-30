@@ -6,20 +6,32 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 
-/** Resolves workflow properties and target YAML into a target context. */
+/** Resolves the workflow properties and the target spec into a context. */
 final class CausynthTargetResolver {
     private CausynthTargetResolver() {
     }
 
     /**
-     * The target spec and output dir, as system properties {@code
-     * run_engine.sh} always sets; an unset one is refused by name.
+     * The output dir and the spec's one exception target, found in the
+     * analysis inputs, as the system properties {@code run_engine.sh} always
+     * sets; an unset one is refused by name.
      */
-    static CausynthTargetContext resolve() throws IOException {
-        Path specPath = declaredPath("causynth.target.spec");
+    static CausynthTargetContext resolve(List<String> inputs)
+            throws IOException {
+        Path spec = declaredPath("causynth.target.spec");
+        List<ExceptionTargetLineResolver.TargetLine> targets =
+                targetLines(spec);
+        if (targets.size() != 1) {
+            throw new IOException((targets.isEmpty()
+                    ? "TARGET_SPEC_EMPTY" : "MULTI_TARGET_UNSUPPORTED")
+                    + ": a static run slices from one exception_target; "
+                    + spec + " declares " + targets.size());
+        }
         return new CausynthTargetContext(declaredPath("causynth.output.dir"),
-                exceptionTargetId(specPath), null);
+                ExceptionTargetLineResolver.resolve(inputs, targets.get(0)));
     }
 
     private static Path declaredPath(String property) throws IOException {
@@ -30,39 +42,33 @@ final class CausynthTargetResolver {
         return Paths.get(declared.trim()).toAbsolutePath().normalize();
     }
 
-    /** The spec's single {@code exception_target_id}, or null if absent. */
-    private static String exceptionTargetId(Path path) throws IOException {
-        if (!Files.isRegularFile(path)) {
-            return null;
+    /**
+     * The spec's {@code exception_target:} lines, in order.  Blank lines and
+     * {@code #} comments are skipped; any other entry is refused.
+     */
+    static List<ExceptionTargetLineResolver.TargetLine> targetLines(Path spec)
+            throws IOException {
+        if (!Files.isRegularFile(spec)) {
+            throw new IOException("the target spec does not exist: " + spec);
         }
-        String exceptionTargetId = null;
-        for (String line : Files.readAllLines(path,
-                StandardCharsets.UTF_8)) {
+        List<ExceptionTargetLineResolver.TargetLine> targets =
+                new ArrayList<>();
+        for (String line : Files.readAllLines(spec, StandardCharsets.UTF_8)) {
             String trimmed = line.trim();
             if (trimmed.isEmpty() || trimmed.startsWith("#")) {
                 continue;
             }
             int separator = trimmed.indexOf(':');
-            if (line.startsWith(" ") || separator <= 0
-                    || trimmed.endsWith(":")) {
+            if (separator <= 0 || !"exception_target".equals(
+                    trimmed.substring(0, separator).trim())) {
                 throw new IOException("Unsupported target specification "
-                        + "entry: " + trimmed);
+                        + "entry: " + trimmed + "; a target is "
+                        + "exception_target: <name> <binary class name> "
+                        + "<source line> [<thrown type>]");
             }
-            if (!"exception_target_id".equals(
-                    trimmed.substring(0, separator).trim())
-                    || exceptionTargetId != null) {
-                throw new IOException("Target specification accepts only "
-                        + "one exception_target_id");
-            }
-            exceptionTargetId = trimmed.substring(separator + 1).trim();
-            if ((exceptionTargetId.startsWith("\"")
-                    && exceptionTargetId.endsWith("\""))
-                    || (exceptionTargetId.startsWith("'")
-                    && exceptionTargetId.endsWith("'"))) {
-                exceptionTargetId = exceptionTargetId.substring(1,
-                        exceptionTargetId.length() - 1);
-            }
+            targets.add(ExceptionTargetLineResolver.TargetLine.parse(
+                    trimmed.substring(separator + 1)));
         }
-        return exceptionTargetId;
+        return targets;
     }
 }

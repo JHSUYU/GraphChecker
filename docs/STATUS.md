@@ -64,7 +64,7 @@ token-expiry checks, which were judged to be HDFS's clock-sync assumption, not b
 
 | capability | status | where | missing |
 | --- | --- | --- | --- |
-| Backward data slice from the annotated throw across methods (arguments, returns, callers, CHA dispatch) and field writers | done | `gc/causynth/SeedBackwardStaticAnalyzer` | Application classes only. The field jump is instance-insensitive. |
+| Backward data slice from the declared throw across methods (arguments, returns, callers, CHA dispatch) and field writers | done | `gc/causynth/SeedBackwardStaticAnalyzer` | Application classes only. The field jump is instance-insensitive. |
 | Control dependence inside a method | done | `gc/causynth/SiteControlDependence` | The CFG is a `BriefUnitGraph`, so exception edges are ignored and a catch handler a fault leads to has no guard. The slice uses may-reach; the scope map's guards use post-dominance: two relations. |
 | Control dependence across methods, threads and the wire | partial | `SeedBackwardStaticAnalyzer` (callers of field writers, constant stores up to 3 calls up) | Nothing across a thread start, an executor submit or a message. |
 | Library-typed state (the receiver of a non-application call) | not done | `SeedBackwardStaticAnalyzer#localValueUses`, `#isValueLikeLibraryInvoke` | `x = lib.m(k)` depends on `k` only, except modeled containers, String/StringBuilder, unboxing and structural accessors. State behind a `ConcurrentMap`, `NavigableMap`, `AtomicBoolean` or cache never enters the slice. |
@@ -116,10 +116,10 @@ token-expiry checks, which were judged to be HDFS's clock-sync assumption, not b
 
 | capability | status | where | missing |
 | --- | --- | --- | --- |
-| Find guarded throws; find the checks a test reaches | done | `tools/adhoc/sites.py`, `coverage.sh` (exits with the test's own status), `reach.py` | A text scan; lambda throws lose their annotation. JaCoCo counts the whole JVM, not the recording window. |
+| Find guarded throws; find the checks a test reaches | done | `tools/adhoc/sites.py`, `coverage.sh` (exits with the test's own status), `reach.py` | A text scan. JaCoCo counts the whole JVM, not the recording window. |
 | List a system's cluster tests | not done | — | The workload list is produced outside the repository. |
-| Select and annotate checks | done | `tools/adhoc/select.py` (skips, and names on stderr, a workload whose test failed under coverage or that starts no node), `annotate.py` | Ranks the guard's text, not what the engine can make symbolic. A check needs a source annotation and a tree rebuild, done by hand. |
-| Fan out over ten lifts under a memory gate | done | `tools/adhoc/sweep.sh`, `fanout.sh`; `run_engine.sh` host ledger `~/gc-out/hosts` | Heads are gated on `MemAvailable` only, outside the ledger. A one-obligation wave always starts on the first listed host (`campaign_worker_slot_hosts`). |
+| Select checks and declare their targets | done | `tools/adhoc/select.py` (skips, and names on stderr, a workload whose test failed under coverage or that starts no node), `targets.py`; `gc/causynth/ExceptionTargetLineResolver` | Ranks the guard's text, not what the engine can make symbolic. A target is a class and a source line: no annotation, no tree rebuild; a throw in a lambda body or an anonymous class resolves. A slice that starts in a `lambda$…` body stops at its captured arguments (no `invokedynamic` call edge). |
+| Fan out over ten lifts under a memory gate | done | `tools/adhoc/sweep.sh`, `fanout.sh` (a job's `NEED_MB`, resume over `<n>.exit`); `tools/lib/gc-env.sh` (`GC_OUT`, `CAUSYNTH_HOST_LEDGER`, `LIFTS`); `run_engine.sh` `campaign_host_try_start` (need and ramp per row), `campaign_head_charged` (a head's engine JVMs and replays), `campaign_worker_slot_hosts` (rotated per wave) | A charge is the stated heap, not the measured RSS. |
 | Disk and quota gate | done | `experiments/accept/accept.sh` `acc_free_gb`: `MIN_FREE_GB` free on the filesystem `OUT` is written to, and a refused 1 MB write there reads as 0 | — |
 | Time bounds | partial | case budget 5400 s (`sweep.sh`); obligation replay 2400 s (`replay_timeout_s`); seed replay `seed_replay_time_factor` (40) × the recorded workload's time, at least `replay_timeout_s` (`run_engine.sh` `campaign_session_replay`) | The seed recording has no wall-clock bound of its own; only the case budget ends it. |
 | Replay schedule stalls | done | `gc/runtime/ScheduleLog#watchdogLocked`, `#computingLocked` | The engine's own threads (`causynth-*`) never defer a give-up, and a let-go no longer restarts the stall's clock: a never-coming event costs a timeout plus a 2 s grace when no workload thread computes, and at most eight timeouts plus the grace when one does (s49: 17 stalls of 120 s, two per episode). Every workload thread's CPU counts, because which thread owes a slot cannot be seen between its events. |
@@ -142,7 +142,8 @@ See Acceptance above. What remains:
 The offline regression gate `tools/regress/offline-ab.sh` (with `ab_compare.py`) compares a
 candidate jar against a baseline on a recorded round, stage by stage, with no replay. It reads a
 round as HEAD reads it, so it needs a round recorded by a build whose rows HEAD still reads (not
-v92–v94, see Acceptance). Every stage gates on bytes: SEED (with its woven classes) and PLAN
+v92–v94, see Acceptance). `AB_BASELINE_REPO` runs the baseline under its own checkout's case
+declarations, for a change whose declarations move with the jar. Every stage gates on bytes: SEED (with its woven classes) and PLAN
 are byte-identical across lifts and runs (`/bigtemp/vnr3ne/analysis/det2/s6/`: hdfs-17897,
 11741, 17899-bug1, 17960 and solr-18413 on five lifts, two with the scope copied in opposite
 orders, three under other JVM identity-hash generators).
@@ -170,7 +171,7 @@ What a system costs today, outside the general engine.
 | tree: daemon ticks | `beginTick`/`endTick` in `KeyManager`, `HeartbeatManager`, `BPServiceActor`, `DataXceiver` | `Overseer`, `OverseerTaskProcessor`, `ReplicationHandler` (with `vacant`) |
 | tree: roots | `CausynthSymbolicSource.symbolize`: 6 hooks in `BlockTokenSecretManager` of every block-key tree, 1 in 17960's `SnapshotManager` | none |
 | tree: cluster and bounds | `CausynthCluster` (automatic mode on `hadoop-hdfs-17967-c` only), `MiniDFSCluster` hooks, timeouts in `CausynthCluster.configure`, `pinBlockKeys` copies in the workloads | `CausynthSolrCluster`, `MiniSolrCloudCluster`, `SolrCloudTestCase`, `CausynthBounds` and its uses; `ClusterState` keeps live nodes in a `TreeSet`; Overseer batching off in automatic mode |
-| tree: targets | `@CausynthExceptionTarget` on each target `throw` (one per case; one per ad-hoc check on `hadoop-hdfs-17967-c`) | the same. SOLR-18413 also turned a `getCollection` call in `DistributedZkUpdateProcessor` into `getCollectionOrNull` plus an annotated local throw, and turned `SliceMutator`'s `expireAt` into a `Long.parseLong`/`String.valueOf` round trip so that its `WIRE_FLOW` rows have capture sites. |
+| tree: targets | none needed: `target.yaml` names the class and line. The trees still carry `@CausynthExceptionTarget` on each target `throw` (one per case; one per ad-hoc check on `hadoop-hdfs-17967-c`), read by no engine code | the same. SOLR-18413 also turned a `getCollection` call in `DistributedZkUpdateProcessor` into `getCollectionOrNull` plus a local throw, and turned `SliceMutator`'s `expireAt` into a `Long.parseLong`/`String.valueOf` round trip so that its `WIRE_FLOW` rows have capture sites. |
 | branches | one `gc/<case>` branch per case, each carrying the whole adapter | `gc/solr`, `gc/solr-18406`, `gc/solr-18413`, `gc/solr-adhoc`; the Overseer `consumed` call exists only on the three derived branches |
 
 ## Open defects

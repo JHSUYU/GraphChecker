@@ -1,1 +1,1 @@
-exception_target_id: adhoc-delshard-state
+exception_target: adhoc-delshard-state org.apache.solr.cloud.api.collections.DeleteShardCmd 88
