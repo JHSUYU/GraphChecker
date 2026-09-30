@@ -30,7 +30,8 @@
 #              runaway guard, not a schedule: hdfs-17899-bug1 takes ~1.8 h.
 #   SKIP_BUILD=1          use the jar already in <repo>/target, run no mvn
 #   Z3_BIN / Z3_TIMEOUT_SECONDS   default z3 (from PATH) and 600
-#   MIN_FREE_GB / DISK_WAIT_SECONDS   default 6 G and 1800 s
+#   MIN_FREE_GB / DISK_WAIT_SECONDS   default 6 G and 1800 s, free on the
+#              filesystem OUT is written to (acc_free_gb)
 #   PRUNE=1 / CASE_CAP_MB DELETES every file of a finished case that is not
 #              named in ACCEPT_KEEP_GLOBS below.  Off by default: what a case
 #              publishes moves with the pipeline, and a keep list that has
@@ -81,7 +82,23 @@ CASE_TIMEOUT=${CASE_TIMEOUT_SECONDS:-21600}
 SKIP_BUILD=${SKIP_BUILD:-0}
 
 acc_log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
-acc_free_gb() { df --output=avail -BG / | tail -1 | tr -dc 0-9; }
+# The G free where the run writes: OUT's filesystem, or before the run makes
+# OUT its nearest existing parent's (h4 wrote to a home `df /` never saw).  A
+# 1 MB write there must succeed first, and a refused one is 0 G: a per-user
+# quota on an NFS export is not in df's numbers (h4 lost three cases to
+# "Disk quota exceeded" with the pool 32 T free).
+acc_free_gb() {
+  local at=$OUT probe=""
+  until [[ -d "$at" ]]; do at=$(dirname "$at"); done
+  if ! probe=$(mktemp -p "$at" .accept-disk-probe.XXXXXX 2>/dev/null) \
+      || ! head -c 1048576 /dev/zero 2>/dev/null >"$probe"; then
+    rm -f -- "$probe"
+    echo 0
+    return
+  fi
+  rm -f -- "$probe"
+  df --output=avail -BG "$at" | tail -1 | tr -dc 0-9
+}
 acc_dir_mb() { du -sm "$1" 2>/dev/null | cut -f1; }
 
 # The experiment a case id lives in, under any system's directory: the
@@ -318,8 +335,8 @@ for c in "${CASE_LIST[@]}"; do
 done
 free=$(acc_free_gb)
 (( free >= ACCEPT_MIN_FREE_GB )) \
-  && check disk ok "${free}G free (need ${ACCEPT_MIN_FREE_GB}G)" \
-  || check disk no "${free}G free, need ${ACCEPT_MIN_FREE_GB}G"
+  && check disk ok "${free}G free where $OUT is written (need ${ACCEPT_MIN_FREE_GB}G)" \
+  || check disk no "${free}G free where $OUT is written, need ${ACCEPT_MIN_FREE_GB}G (0: a 1 MB write there was refused, the disk or a quota is full)"
 
 echo
 echo "== commands per case"
@@ -357,7 +374,7 @@ TSV="$OUT/summary.tsv"
 
 for c in "${CASE_LIST[@]}"; do
   free=$(acc_await_disk "$ACCEPT_MIN_FREE_GB") || {
-    acc_log "SKIP $c: only ${free}G free after waiting ${ACCEPT_DISK_WAIT_S}s"
+    acc_log "SKIP $c: only ${free}G free where $OUT is written after waiting ${ACCEPT_DISK_WAIT_S}s"
     printf '%s\tskipped\t0\t-\t-\t-\t-\t-\t-\t-\tFAIL\tno disk\t-\n' "$c" >>"$TSV"
     continue
   }
