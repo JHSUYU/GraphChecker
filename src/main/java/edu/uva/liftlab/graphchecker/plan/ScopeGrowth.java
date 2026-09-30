@@ -28,6 +28,8 @@ import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * Grows the analysis scope toward the slice's frontier (SYMBOL-SCOPE §2), over
@@ -47,14 +49,27 @@ import java.util.stream.Stream;
  * is copied into the grown directory and listed in its {@value #MANIFEST}
  * with the row that took it.
  *
+ * <p>Before the first pass, outside the budget, {@value #DOORS} takes the
+ * class family (the class and its nested classes) of every library catalog
+ * door ({@code causynth.LibraryCatalog}) the system calls: a class of the
+ * roots outside the family invokes a method of it.  It is copied from the
+ * first of the roots and the classpath holding it -- a library jar
+ * (ZooKeeper) as well as the system's own classes -- unless the scope holds
+ * it.  A library merely on the classpath (Solr's Hadoop jars) is not
+ * called, and gets no door.</p>
+ *
  * <p>Usage: {@code ScopeGrowth <grown-dir> <frontier.jsonl> <budget>
- * <scope-dir> <class-root>...}.  Prints the number of classes it added,
- * then what it did.</p>
+ * <scope-dir> <class-root>...}, or {@code ScopeGrowth --doors <grown-dir>
+ * <scope-dir> <classpath> <class-root>...}.  Prints the number of classes it
+ * added, then what it did.</p>
  */
 public final class ScopeGrowth {
     /** The grown classes and why, one {@code class<TAB>kind<TAB>signature
      *  <TAB>distance} line each, in the order they were taken. */
     public static final String MANIFEST = "GROWN";
+    /** The door step's flag, and the kind of its manifest lines. */
+    static final String DOORS = "--doors";
+    private static final String DOOR = "DOOR";
     private static final Pattern METHOD = Pattern.compile(
             "<([^:]+): \\S+ ([^(\\s]+)\\(([^)]*)\\)>");
     private static final Pattern FIELD = Pattern.compile(
@@ -66,6 +81,10 @@ public final class ScopeGrowth {
     }
 
     public static void main(String[] args) throws IOException {
+        if (args.length > 0 && DOORS.equals(args[0])) {
+            doors(args);
+            return;
+        }
         if (args.length < 5) {
             throw new IllegalArgumentException("usage: ScopeGrowth "
                     + "<grown-dir> <frontier.jsonl> <budget> <scope-dir> "
@@ -87,7 +106,10 @@ public final class ScopeGrowth {
         Set<String> present = new LinkedHashSet<>(
                 classNames(Paths.get(args[3])));
         present.addAll(classNames(grown));
-        int taken = lines(grown.resolve(MANIFEST)).size();
+        int taken = 0;
+        for (String line : lines(grown.resolve(MANIFEST))) {
+            if (!line.contains("\t" + DOOR + "\t")) taken++;
+        }
         int added = 0;
         for (JsonObject row : rows) {
             String kind = row.get("kind").getAsString();
@@ -108,6 +130,143 @@ public final class ScopeGrowth {
         }
         System.out.println(added + " added " + added + " class(es), "
                 + (taken + added) + " of " + budget + " grown");
+    }
+
+    /** The door step ({@value #DOORS}): one decision per family, in catalog
+     *  order. */
+    private static void doors(String[] args) throws IOException {
+        if (args.length < 5) {
+            throw new IllegalArgumentException("usage: ScopeGrowth " + DOORS
+                    + " <grown-dir> <scope-dir> <classpath> <class-root>...");
+        }
+        Path grown = Paths.get(args[1]);
+        ScopeGrowth index = new ScopeGrowth();
+        List<Path> search = new ArrayList<>();
+        for (int at = 4; at < args.length; at++) {
+            index.scan(Paths.get(args[at]));
+            search.add(Paths.get(args[at]));
+        }
+        search.addAll(classpath(args[3]));
+        Set<String> present = new LinkedHashSet<>(
+                classNames(Paths.get(args[2])));
+        present.addAll(classNames(grown));
+        Set<String> decided = new LinkedHashSet<>();
+        List<String> taken = new ArrayList<>();
+        for (edu.uva.liftlab.graphchecker.causynth.LibraryCatalog.Door door
+                : edu.uva.liftlab.graphchecker.causynth.LibraryCatalog
+                .doors()) {
+            String family = door.family();
+            if (!decided.add(family) || present.contains(family)
+                    || !index.called(family)) {
+                continue;
+            }
+            List<String> copied = copyFamily(family, search, grown);
+            for (String name : copied) {
+                append(grown.resolve(MANIFEST), name + "\t" + DOOR + "\t"
+                        + door.method + "\t0");
+            }
+            if (!copied.isEmpty()) taken.add(family);
+        }
+        System.out.println(taken.size() + " door famil"
+                + (taken.size() == 1 ? "y" : "ies") + " added: " + taken);
+    }
+
+    /** Whether a class of the roots outside {@code family} calls into it. */
+    boolean called(String family) {
+        String nested = family + "$";
+        for (ClassFacts caller : classes.values()) {
+            if (caller.name.equals(family)
+                    || caller.name.startsWith(nested)) {
+                continue;
+            }
+            for (String call : caller.calls) {
+                String owner = call.substring(0, call.indexOf('|'));
+                if (owner.equals(family) || owner.startsWith(nested)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Copies a class and its nested classes from the first entry holding
+     *  it into {@code grown}; their names, none when no entry holds it. */
+    static List<String> copyFamily(String family, List<Path> search,
+                                   Path grown) throws IOException {
+        String outer = family.replace('.', '/') + ".class";
+        String nested = family.replace('.', '/') + "$";
+        List<String> names = new ArrayList<>();
+        for (Path entry : search) {
+            if (Files.isDirectory(entry)) {
+                if (!Files.isRegularFile(entry.resolve(outer))) continue;
+                for (Path file : classFiles(entry.resolve(outer)
+                        .getParent())) {
+                    String relative = entry.relativize(file).toString();
+                    if (!relative.equals(outer)
+                            && !relative.startsWith(nested)) {
+                        continue;
+                    }
+                    Path target = grown.resolve(relative);
+                    Files.createDirectories(target.getParent());
+                    Files.copy(file, target,
+                            StandardCopyOption.REPLACE_EXISTING);
+                    names.add(binaryName(relative));
+                }
+                return names;
+            }
+            if (!Files.isRegularFile(entry)
+                    || !entry.toString().endsWith(".jar")) {
+                continue;
+            }
+            try (ZipFile jar = new ZipFile(entry.toFile())) {
+                if (jar.getEntry(outer) == null) continue;
+                List<String> relatives = new ArrayList<>();
+                for (ZipEntry file : Collections.list(jar.entries())) {
+                    String relative = file.getName();
+                    if (relative.equals(outer) || (relative.startsWith(nested)
+                            && relative.endsWith(".class"))) {
+                        relatives.add(relative);
+                    }
+                }
+                Collections.sort(relatives);
+                for (String relative : relatives) {
+                    Path target = grown.resolve(relative);
+                    Files.createDirectories(target.getParent());
+                    try (InputStream in = jar.getInputStream(
+                            jar.getEntry(relative))) {
+                        Files.copy(in, target,
+                                StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    names.add(binaryName(relative));
+                }
+                return names;
+            }
+        }
+        return names;
+    }
+
+    /** A classpath's entries, a {@code dir/*} as its jars in name order. */
+    private static List<Path> classpath(String classpath) throws IOException {
+        List<Path> entries = new ArrayList<>();
+        for (String entry : classpath.split(Pattern.quote(
+                java.io.File.pathSeparator))) {
+            if (entry.trim().isEmpty()) continue;
+            if (!entry.endsWith("/*")) {
+                entries.add(Paths.get(entry));
+                continue;
+            }
+            Path dir = Paths.get(entry.substring(0, entry.length() - 2));
+            if (!Files.isDirectory(dir)) continue;
+            try (Stream<Path> jars = Files.list(dir)) {
+                jars.filter(path -> path.toString().endsWith(".jar"))
+                        .sorted().forEach(entries::add);
+            }
+        }
+        return entries;
+    }
+
+    private static String binaryName(String relative) {
+        return relative.substring(0, relative.length() - 6).replace('/', '.');
     }
 
     private static List<String> lines(Path file) throws IOException {

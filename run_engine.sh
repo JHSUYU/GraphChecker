@@ -668,7 +668,9 @@ campaign_grown_scope() {
 }
 
 # The static pass, with the scope grown where the slice stops at it until
-# nothing is added or the budget is spent (SYMBOL-SCOPE section 2).
+# nothing is added or the budget is spent (SYMBOL-SCOPE section 2).  First,
+# outside the budget, the classes of the library doors the system calls
+# (ScopeGrowth --doors, SYMBOL-SCOPE section 4.2).
 campaign_analyze_grown_scope() {
   local grown changes summary
   grown=$(campaign_grown_scope)
@@ -676,6 +678,13 @@ campaign_analyze_grown_scope() {
   rm -rf -- "${grown}"
   mkdir -p "${grown}"
   IFS=: read -r -a roots <<<"${causynth_lineage_roots}"
+  if (( ${#roots[@]} > 0 )); then
+    summary=$(run_java_main edu.uva.liftlab.graphchecker.plan.ScopeGrowth \
+      --doors "${grown}" "${project_classes_dir}" "${project_classpath}" \
+      "${roots[@]}") \
+      || campaign_fail SEED ScopeGrowth "${grown}" "door scope failed"
+    campaign_log "scope growth: ${summary}"
+  fi
   while :; do
     do_analyze
     (( causynth_scope_growth_budget > 0 && ${#roots[@]} > 0 )) || return 0
