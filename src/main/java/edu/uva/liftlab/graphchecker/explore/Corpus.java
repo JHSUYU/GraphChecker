@@ -484,7 +484,7 @@ public final class Corpus implements Arms.Rows {
 
     /** The occurrence that TOOK IN the message served under {@code
      *  producerEndpointId} (its RECV runs under that anchor), or null: the
-     *  receiving door whose fault point decides delivery (DESIGN4 SS1.2). */
+     *  receiving door whose fault point decides delivery (IDENTITY §7.3). */
     public OccurrenceAddress receiverOf(String producerEndpointId) {
         String receiver = receiverByEndpoint.get(producerEndpointId);
         return receiver == null ? null : occurrenceById.get(receiver);
@@ -826,11 +826,11 @@ public final class Corpus implements Arms.Rows {
                 Collections.<ExportRow>emptyList());
     }
 
-    // ---- The causal graph (SS3.1) ----
+    // ---- The causal graph (GreyGraph §3.1) ----
 
     /**
      * The writes one read could have taken its value from: the observed one and
-     * every HB-concurrent writer (R-I7.1, {@code smt.Arms}) -- the same
+     * every HB-concurrent writer (IDENTITY §4, {@code smt.Arms}) -- the same
      * alternatives the composition offers. ONE implementation, used by the
      * closure ({@link ClosurePlanner#writers}).
      *
@@ -851,7 +851,7 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** Whether a decision is a FAULT decision: its lowered term REACHES a
-     *  MARKER root the same session minted (DESIGN4 SS1.4). */
+     *  MARKER root the same session minted (PIPELINE §7.2). */
     public boolean fault(String sessionId, DecisionRow decision) {
         SmtLowering lowering = lowering(sessionId);
         if (lowering == null || !Arms.predicate(decision.term())) return false;
@@ -935,8 +935,8 @@ public final class Corpus implements Arms.Rows {
     /** The shared state one published expression rests on: for each read node
      *  ({@code location} + {@code readEventId}), the latest write at or before
      *  the read. ONE implementation, shared by the composer ({@code
-     *  ComposedFamilies.expressionWrites}) and the closure (E2). Locations the
-     *  session never wrote are skipped (no version to guess). */
+     *  ComposedFamilies.expressionWrites}) and the closure (PIPELINE §7.2).
+     *  Locations the session never wrote are skipped (no version to guess). */
     public List<StateRead> expressionStateReads(String sessionId,
                                                 String expressionRef) {
         List<StateRead> found = new ArrayList<StateRead>();

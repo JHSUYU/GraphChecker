@@ -35,7 +35,7 @@ import java.util.Set;
 
 /**
  * The target's closure: what its failure can depend on, and the branches
- * exploration may flip in it (CLOSURE-V2 SS1-SS2).
+ * exploration may flip in it (PIPELINE §7.2).
  *
  * <p>Demand starts at the ANNOTATED TARGET: the fatal predicate's operands and
  * the target's guard set ({@link StaticScopeMap}). Deliveries no demanded value
@@ -54,7 +54,7 @@ import java.util.Set;
  * {@link #writers}), the PAIRED PRODUCER's for an export site (N2, {@link
  * #producers}); a class field exists in every JVM, but only one heap or sender
  * is the real one. A candidate is flipped only at its own guards; a region no
- * session activated is named (INTERACTION-ID SS8 case 2), not a task.</p>
+ * session activated is named (PIPELINE §7.2), not a task.</p>
  */
 public final class ClosurePlanner {
     /** How many tasks one anchor may open, before the closure is truncated. */
@@ -83,7 +83,7 @@ public final class ClosurePlanner {
         /** task id -> site ids this wave may flip. */
         public final Map<String, Set<String>> flipSites;
         /** A demanded occurrence no session captured -> the admitted
-         *  focused session whose rows name it: GROWTH (DESIGN4 SS3.3b). */
+         *  focused session whose rows name it: GROWTH (PIPELINE §7.8). */
         public final Map<OccurrenceAddress, String> exposed;
         /** Demanded, uncaptured, and run by the seed replay alone: a focused
          *  replay that runs it will expose it, so it is a gap only at the
@@ -115,7 +115,7 @@ public final class ClosurePlanner {
         Deque<String> pending = new ArrayDeque<String>();
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
         // The anchor flips only the decisions on its way to the throw: the
-        // target's guard set (CLOSURE-V2 SS1) and, when no run of it reached
+        // target's guard set (PIPELINE §7.2) and, when no run of it reached
         // the throw, the chain its path left by; flipping a chain guard of a
         // path that went on to the throw only leaves it.  The throw itself is
         // no branch.
@@ -171,7 +171,7 @@ public final class ClosurePlanner {
                     stateConnected(corpus, demand.occurrence), seed));
             why.put(taskId, demand.why);
             // Flip sites: the demanded guards plus every FAULT decision
-            // (DESIGN4 SS1.4).
+            // (PIPELINE §7.2).
             Set<String> sites = new LinkedHashSet<String>(demand.flipSites);
             sites.addAll(corpus.faultSites(demand.occurrence));
             flips.put(taskId, sites);
@@ -185,7 +185,7 @@ public final class ClosurePlanner {
      * runtime identity is in some session's rows (a SEND, the sender an anchor
      * names, a producer of a delivery) -- but no planned task admitted it, so
      * it has no decisions to flip.  It is the retained set that must grow
-     * (INTERACTION-ID SS8 case 2, DESIGN4 SS3.3b): an admitted focused
+     * (PIPELINE §7.2, §7.8): an admitted focused
      * session naming it is re-run with a plan row at its address, and the
      * next wave has it as a task.  hdfs-17899: a DataNode's periodic
      * heartbeat sends its request through the woven IPC door under no task,
@@ -361,7 +361,7 @@ public final class ClosurePlanner {
 
     /** Both doors of the message a demanded occurrence served join as control
      *  producers: they contribute no value, but their fault points decide
-     *  whether the message exists (DESIGN4 SS1.2, SS1.4). Paired via the served
+     *  whether the message exists (IDENTITY §7.3). Paired via the served
      *  occurrence's ANCHOR (the producer endpoint). */
     private static void controlProducer(Corpus corpus, Demand demand,
                                         List<Demand> next) {
@@ -412,7 +412,7 @@ public final class ClosurePlanner {
      *  predicate, decisions at its guard-set sites, and its contributed
      *  expressions -- then the fixed point over reads and the writes they could
      *  observe. Terms are EXPR references, resolved by the ONE lowering
-     *  (CONTRACT-SPEC). */
+     *  (CONTRACT-SPEC §5). */
     private static Set<String> demanded(Corpus corpus, Demand demand,
                                         List<OccurrenceAddress> group) {
         Set<String> named = new LinkedHashSet<String>();
@@ -501,7 +501,7 @@ public final class ClosurePlanner {
      * {@code named}: {@link SmtLowering#reachedSymbols}, as the flip query
      * uses. Trap: {@code SmtLowering.symbols} sees only a {@code
      * container_dag__} name that matches no row. Includes the state behind a
-     * container name (the v_C rule, CLOSURE-V2).
+     * container name (the v_C rule, PIPELINE §7.5).
      *
      * @return whether the set grew
      */
@@ -579,7 +579,7 @@ public final class ClosurePlanner {
      *
      * <p><b>N1 -- a concrete location lives in ONE process:</b> static
      * candidates only on the reader's node (Writers_W(l) is per concrete
-     * object, SS4).</p>
+     * object, SYMBOL-SCOPE §5.5).</p>
      */
     private static void writers(Corpus corpus, StaticScopeMap map,
                                 ReadRow row, List<Demand> into,
@@ -666,8 +666,8 @@ public final class ClosurePlanner {
     }
 
     /** Every activated occurrence of the region holding one static site, on
-     *  {@code node} (N1/N2; null = any). None: named (INTERACTION-ID SS8 case
-     *  2), scoped to that node, and no task. */
+     *  {@code node} (N1/N2; null = any). None: named (PIPELINE §7.2),
+     *  scoped to that node, and no task. */
     private static void candidates(Corpus corpus, StaticScopeMap map,
                                    StaticScopeMap.Site site,
                                    String why, Set<String> guards,
@@ -695,8 +695,8 @@ public final class ClosurePlanner {
                         + "activated that region"
                         + (node == null ? "" : " on " + node.render())
                         + ": the retained set would have "
-                        + "to grow before it can be a task (INTERACTION-ID "
-                        + "SS8 case 2)"));
+                        + "to grow before it can be a task (PIPELINE "
+                        + "§7.2)"));
     }
 
     /** Whether an occurrence's region would RUN a static site: by HOLDING its

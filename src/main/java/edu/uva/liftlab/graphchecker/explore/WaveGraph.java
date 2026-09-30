@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/** G_k and its growth (DESIGN4 SS3.1-SS3.3, SS3.5). {@code graph.jsonl}: NODE
+/** G_k and its growth (PIPELINE §7.1, §7.8). {@code graph.jsonl}: NODE
  *  per activated occurrence, EDGE per WIRE pairing or STATE join, with worlds
  *  ({@link ObligationFactory#worldDigest}), plus a FRONTIER diff; no THREAD
  *  edge (schedule rows carry no occurrence). {@code growth.jsonl}: the
