@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.smt;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -145,10 +146,6 @@ public final class VmExpressionIr {
     }
 
 
-    public static boolean isJavaParseInt(String name) {
-        return "java/lang/Integer parseInt".equals(firstNonBlank(name));
-    }
-
     public static boolean isJavaSplitElement(String name) {
         return "java/lang/String splitElement".equals(firstNonBlank(name));
     }
@@ -186,6 +183,26 @@ public final class VmExpressionIr {
     public static String quote(String value) {
         String exact = value == null ? "" : value;
         return "\"" + exact.replace("\"", "\"\"") + "\"";
+    }
+
+    /** A String constant as the VM spells one ({@link #constantPayload}
+     *  reads the text back). */
+    public static JsonObject stringConstant(String text) {
+        JsonObject constant = new JsonObject();
+        constant.addProperty("_type", "ConStringSymbolExp");
+        constant.addProperty("_exp", "Y_L'String'_" + text);
+        constant.addProperty("_java_type", "java/lang/String");
+        return constant;
+    }
+
+    /** One {@code String} operation as the VM spells one, un-negated. */
+    public static JsonObject stringOperation(String name, JsonArray params) {
+        JsonObject operation = new JsonObject();
+        operation.addProperty("_type", STRING_OPERATION_TYPE);
+        operation.addProperty("_name", name);
+        operation.addProperty("_is_not", false);
+        operation.add("_param_list", params);
+        return operation;
     }
 
     public static String constantPayload(String raw) {
