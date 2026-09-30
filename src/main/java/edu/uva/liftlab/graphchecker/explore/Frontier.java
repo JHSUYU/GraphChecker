@@ -77,6 +77,8 @@ public final class Frontier {
     /** question -> the reason it is answered, as a gap row prints it. */
     private final Map<String, String> askedBefore =
             new LinkedHashMap<String, String>();
+    /** The flips those questions are about ({@code ObligationFactory#flip}). */
+    private final Set<String> answeredFlips = new LinkedHashSet<String>();
     /** obligation id -> its question, for what this wave proposes. */
     private final Map<String, String> questions =
             new LinkedHashMap<String, String>();
@@ -133,7 +135,9 @@ public final class Frontier {
                     + "one is a fact about the occurrence, not about the "
                     + "session whose path it was cut from");
             String question = asked.getOrDefault(result.obligationId(), "");
-            if (question.isEmpty()) continue;
+            int split = question.indexOf(':');
+            if (split < 0) continue;
+            answeredFlips.add(question.substring(0, split));
             askedBefore.putIfAbsent(question, "question " + question
                     + " already answered " + result.verdict() + " by an "
                     + "earlier wave, as obligation " + result.obligationId()
@@ -142,11 +146,14 @@ public final class Frontier {
         }
     }
 
-    /** Why this question needs no asking, or {@code ""} while it does (or
-     *  while there is none). */
+    /** Why this question needs no asking, or {@code ""} while it does. */
     public String asked(String question) {
-        return question.isEmpty() ? ""
-                : askedBefore.getOrDefault(question, "");
+        return askedBefore.getOrDefault(question, "");
+    }
+
+    /** Whether an earlier wave answered a question about this flip. */
+    public boolean answered(String flip) {
+        return answeredFlips.contains(flip);
     }
 
     /** The first reason this arm is settled, or {@code ""} while it is owed. */
@@ -174,7 +181,8 @@ public final class Frontier {
         return new Wave(index, obligations);
     }
 
-    /** Obligation id -> the question it asks, for this wave's proposals. */
+    /** Obligation id -> the question it asks (its flip, where no earlier
+     *  wave answered one about it), for this wave's proposals. */
     public Map<String, String> questions() {
         return Collections.unmodifiableMap(questions);
     }

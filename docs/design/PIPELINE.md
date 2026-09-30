@@ -346,10 +346,10 @@ ran, their handoff sites and producers, and those members' write counts at the l
 reads — never delivered values. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier wave answered it
 `ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer), or an earlier wave answered
-its **question** under another id. The question (`ObligationFactory#question`) is a digest of the
-flip (task, path, site, ordinal, flipped outcome), the query as its solver is asked it (or the
-refusal that leaves none) and the world its replay would plant (the path's world: roots, clock
-skews, answers, inherited flips); an id drifts as sessions land (the factor, and so the input
+its **question** under another id. The question (`ObligationFactory#question`) is
+`<flip>:<content>`: the flip (`#flip`: task, path, site, ordinal, flipped outcome), then a digest of
+the query as its solver is asked it (or the refusal that leaves none) and the world its replay would
+plant (the path's world: roots, clock skews, answers, inherited flips); an id drifts as sessions land (the factor, and so the input
 shape, grows) while the question does not as long as the query reads the same (SOLR-18413 r5:
 185 questions asked 717 times, 118 of the 166 re-asked byte-identical, 162 answered as before).
 The planner and the solver build the query the same way, over fresh session lowerings
@@ -366,11 +366,13 @@ decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/
 `--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32,
 `--max-world-depth` 3 (flips a cut path's world may already hold). Every bound that drops work files
 a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too. A candidate the ledger does not
-settle by id is asked its question: one an earlier wave answered, or one another candidate of the
-task asks this wave, is settled by it (a DIAGNOSTIC gap naming the obligation that asked it). The
-wave writes `questions.tsv` (`<obligationId> TAB <question>` per proposed obligation) and states
-`answeredQuestions` (distinct questions answered so far) in `explore_manifest.json`. A case stopped
-at its witness seeks no flip at all.
+settle by id, whose flip an earlier wave answered a question about, is built its question; one an
+earlier wave answered settles it (a DIAGNOSTIC gap naming the obligation that asked it). No other
+query is built by the planner: one costs a solver up to a minute (hdfs-17960: 33 built in the planner
+took 23 min), and no other flip's question can have an answer. The wave writes `questions.tsv`
+(`<obligationId> TAB <question>`, or its flip where none was built, per proposed obligation) and
+states `answeredQuestions` (distinct questions answered so far) in `explore_manifest.json`. A case
+stopped at its witness seeks no flip at all.
 
 ### 7.5 One obligation: `explore.ObligationSolverMain`
 

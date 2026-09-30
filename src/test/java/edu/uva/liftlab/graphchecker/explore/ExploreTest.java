@@ -3313,7 +3313,8 @@ public class ExploreTest {
      * (its dependence's factor grows); its question -- the query as asked
      * and the world it plants -- does not, and a question answered under
      * another id is not asked again (SOLR-18413 r5: 185 questions asked 717
-     * times).  The planner's question is the one its solver asks.
+     * times).  The planner's question, built for a flip an earlier wave
+     * answered, is the one its solver asked.
      */
     @Test
     public void aQuestionAnsweredUnderAnotherIdIsNotAskedAgain()
@@ -3331,8 +3332,12 @@ public class ExploreTest {
         String asked = new String(Files.readAllBytes(worker.directory
                 .resolve(ObligationDir.QUESTION)), StandardCharsets.UTF_8)
                 .trim();
-        assertEquals("the planner's question is the one its solver asked",
-                lookup.obligationId() + "\t" + asked + "\n", planned);
+        assertEquals("a flip no wave answered is proposed under its flip "
+                        + "alone, its query unbuilt; the solver's question "
+                        + "is about that flip",
+                lookup.obligationId() + "\t"
+                        + asked.substring(0, asked.indexOf(':')) + "\n",
+                planned);
         // The same question, answered by an earlier wave under an id that
         // has since drifted.
         Path earlier = Files.createDirectories(iteration.resolve(
