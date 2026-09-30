@@ -632,10 +632,18 @@ public final class RowRuntime {
             return "";
         }
         JsonObject object = expression.getAsJsonObject();
-        String ref = expressions.ref(object);
+        String ref = refOf(object);
         SessionPublisher session = publisher;
         if (session != null) session.expression(ref, object);
         return ref;
+    }
+
+    /**
+     * One expression's ref, filing nothing: THE structural identity of a VM
+     * expression (equal refs, equal expressions), each node hashed once.
+     */
+    static String refOf(JsonObject expression) {
+        return expressions.ref(expression);
     }
 
     /**

@@ -163,7 +163,7 @@ final class VmBranchAttestation {
                         : Collections.singletonList(conditionIndex));
     }
 
-    private static Attestation attestSwitchConditions(
+    static Attestation attestSwitchConditions(
             JsonObject event, BranchObservation.SwitchExpectation expected,
             JsonArray rawIndices, PathConditionWindow conditions) {
         int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
@@ -192,7 +192,7 @@ final class VmBranchAttestation {
                             + completeSymbolicCount);
         }
         List<Integer> indices = new ArrayList<>();
-        String selector = "";
+        JsonObject selector = null;
         String expectedPosition = optionalString(event, "codePosition");
         int previousIndex = -1;
         for (int offset = 0; offset < rawIndices.size(); offset++) {
@@ -222,17 +222,17 @@ final class VmBranchAttestation {
                     expected.observedSuccessorIndex)
                     : expected.caseKeys.get(offset);
             String operator = expected.caseArm() ? "==" : "!=";
-            String matchedSelector = switchSelectorIfMatches(condition,
+            JsonObject matchedSelector = switchSelectorIfMatches(condition,
                     operator, key);
-            if (matchedSelector.isEmpty()) {
+            if (matchedSelector == null) {
                 return Attestation.invalid(
                         "switch condition " + offset
                                 + " is not selector " + operator + " "
                                 + key);
             }
-            if (selector.isEmpty()) {
+            if (selector == null) {
                 selector = matchedSelector;
-            } else if (!selector.equals(matchedSelector)) {
+            } else if (!sameExpression(selector, matchedSelector)) {
                 return Attestation.invalid(
                         "switch conditions do not share one selector");
             }
@@ -251,13 +251,15 @@ final class VmBranchAttestation {
         return Attestation.valid(indices);
     }
 
-    private static String switchSelectorIfMatches(
+    /** The selector of {@code selector <op> key}, or null when the
+     *  condition is not that comparison. */
+    private static JsonObject switchSelectorIfMatches(
             JsonElement condition, String expectedOperator, int expectedKey) {
-        if (condition == null || !condition.isJsonObject()) return "";
+        if (condition == null || !condition.isJsonObject()) return null;
         JsonObject object = condition.getAsJsonObject();
         if (!"BinaryExpression".equals(optionalString(object, "_type"))
                 || !expectedOperator.equals(optionalString(object, "_op"))) {
-            return "";
+            return null;
         }
         JsonElement left = object.get("_left");
         JsonElement right = object.get("_right");
@@ -265,20 +267,35 @@ final class VmBranchAttestation {
                 || right == null || !right.isJsonObject()
                 || "ConstExpr".equals(optionalString(left.getAsJsonObject(),
                 "_type"))) {
-            return "";
+            return null;
         }
         JsonObject constant = right.getAsJsonObject();
-        if (!"ConstExpr".equals(optionalString(constant, "_type"))) return "";
+        if (!"ConstExpr".equals(optionalString(constant, "_type"))) {
+            return null;
+        }
         Matcher encoded = INT_CONSTANT.matcher(
                 optionalString(constant, "_exp"));
-        if (!encoded.matches()) return "";
+        if (!encoded.matches()) return null;
         final int key;
         try {
             key = Integer.parseInt(encoded.group(1));
         } catch (NumberFormatException malformed) {
-            return "";
+            return null;
         }
-        return key == expectedKey ? left.toString() : "";
+        return key == expectedKey ? left.getAsJsonObject() : null;
+    }
+
+    /**
+     * Whether two VM expressions are one: the same node, or equal refs
+     * ({@link RowRuntime#refOf}, each node hashed once).  Never their
+     * renderings: the decoder shares nodes and a FieldAccessExpression
+     * names its owner twice, so a rendering doubles per level -- SOLR-18413's
+     * verifyProp selector was 1,060 nodes and 7.4e10 as a tree, and one
+     * toString ran over 70 s on the workload's thread.
+     */
+    static boolean sameExpression(JsonObject left, JsonObject right) {
+        return left == right
+                || RowRuntime.refOf(left).equals(RowRuntime.refOf(right));
     }
 
     static boolean conditionMatches(String expression, boolean outcome,

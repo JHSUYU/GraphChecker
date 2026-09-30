@@ -4,8 +4,12 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonIOException;
 import com.google.gson.JsonObject;
+import com.google.gson.stream.JsonWriter;
 
+import java.io.IOException;
+import java.io.Writer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,10 +40,51 @@ public final class JsonFields {
             String field, JsonElement value, String expected,
             RuntimeException cause) {
         return new IllegalArgumentException("row field " + field
-                + " states " + value + ", which is not " + expected
+                + " states " + quoted(value) + ", which is not " + expected
                 + ": a member a row states is the authority, so a value of"
                 + " the wrong kind is a row-invariant violation and never"
                 + " the field's absent value", cause);
+    }
+
+    /** The most characters of a value a refusal quotes. */
+    private static final int QUOTED = 512;
+
+    /**
+     * A value as a refusal quotes it: its JSON, cut after {@link #QUOTED}
+     * characters.  Never whole: a VM expression is a shared DAG, and a
+     * FieldAccessExpression names its owner twice, so its rendering doubles
+     * per level (2^depth nodes).
+     */
+    static String quoted(JsonElement value) {
+        StringBuilder text = new StringBuilder();
+        try {
+            WRITER.toJson(value, new JsonWriter(new Writer() {
+                @Override
+                public void write(char[] chars, int offset, int length)
+                        throws IOException {
+                    int room = QUOTED - text.length();
+                    text.append(chars, offset, Math.min(room, length));
+                    if (length > room) throw new QuotedInFull();
+                }
+
+                @Override
+                public void flush() {
+                }
+
+                @Override
+                public void close() {
+                }
+            }));
+        } catch (JsonIOException cut) {
+            if (!(cut.getCause() instanceof QuotedInFull)) throw cut;
+            text.append("...");
+        }
+        return text.toString();
+    }
+
+    /** Stops {@link #quoted} at its bound. */
+    private static final class QuotedInFull extends IOException {
+        private static final long serialVersionUID = 1L;
     }
 
     /**
