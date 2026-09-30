@@ -1477,6 +1477,56 @@ $(cat "${withdraw_worker}/obligation_result.jsonl")"
     == "replay exceeded replay_timeout_s=5" ]] \
   || fail "withdrawing the session changed the recorded detail: \
 $(cat "${withdraw_worker}/obligation_result.jsonl")"
+
+# EARLY-END-1: a replay a refusal decided ended there, and its verdict names
+# no session (RowRuntime.closeSession): the session it opened is a prefix of
+# a run and leaves the corpus on the host that ran it, under the worker; the
+# verdict row stays the replay's own.  The head, reading a peer's result,
+# waits until its own listing holds no session naming the obligation.
+refused_dir="${bound_dir}/refused"
+refused_worker="${refused_dir}/obligation"
+mkdir -p "${refused_worker}" "${refused_dir}/sessions"
+cat >"${refused_dir}/replay.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.cut"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.cut", role: "FOCUSED", obligationIds: ["OB.R"]}' \\
+  >"\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.cut/manifest.json"
+jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.R",
+  verdict: "NOT_ADMITTED", sessionId: "", detail: "wrong decision; ended"}' \\
+  >"\${CAUSYNTH_CONCOLIC_WORKER_DIR}/obligation_result.jsonl"
+EOF
+chmod +x "${refused_dir}/replay.sh"
+replay_timeout_s=60
+concolic_replay_command="${refused_dir}/replay.sh"
+printf '{"taskId":"TASK.1"}\n' >"${refused_worker}/focused_task.jsonl"
+(
+  campaign_obligation_replay OB.R "${withdraw_dir}/classes" \
+    "${refused_worker}" "${refused_dir}/sessions" \
+    "${withdraw_dir}/seed_plan.jsonl"
+) >"${refused_worker}/worker.log" 2>&1 \
+  || fail "EARLY-END-1: the worker failed on a replay that published no \
+session: $(cat "${refused_worker}/worker.log")"
+[[ ! -e "${refused_dir}/sessions/SESSION.cut" \
+    && -f "${refused_worker}/refused-sessions/SESSION.cut/manifest.json" ]] \
+  || fail "EARLY-END-1: the session of a replay whose verdict names none is \
+not withdrawn under its worker: $(find "${refused_dir}" | LC_ALL=C sort)"
+[[ "$(jq -r '.detail' "${refused_worker}/obligation_result.jsonl")" \
+    == "wrong decision; ended" ]] \
+  || fail "EARLY-END-1: the withdrawal changed the replay's verdict row"
+mkdir -p "${refused_dir}/sessions/SESSION.stale"
+cp "${refused_worker}/refused-sessions/SESSION.cut/manifest.json" \
+  "${refused_dir}/sessions/SESSION.stale/"
+( sleep 2; rm -rf "${refused_dir}/sessions/SESSION.stale" ) &
+campaign_remote_visibility_wait_s=30 campaign_await_remote_result \
+  "${refused_worker}" peer OB.R "${refused_dir}/sessions" \
+  >"${refused_worker}/await.log" 2>&1 \
+  || fail "EARLY-END-1: the head did not wait out a listing that still held \
+the withdrawn session: $(cat "${refused_worker}/await.log")"
+[[ ! -e "${refused_dir}/sessions/SESSION.stale" ]] \
+  || fail "EARLY-END-1: the head returned while its listing held the session"
+wait
 reset_config
 
 # ---- CHECKOUT-STATE-1: a clean tree hashes nothing -------------------------

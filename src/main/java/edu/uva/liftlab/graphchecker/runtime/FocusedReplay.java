@@ -223,13 +223,17 @@ public final class FocusedReplay {
      * occurrence: an ordinal restarts per activation, so (site, ordinal)
      * alone matches the same code on every node, and {@link #focused} is too
      * wide (the whole focused set).</p>
+     *
+     * @return whether this decision {@link #decide decided} the replay: it
+     *         contradicted a flip the replay inherited
      */
-    public static void observeDecision(OccurrenceAddress occurrence,
-                                       String siteId, int ordinal,
-                                       boolean outcome) {
+    public static boolean observeDecision(OccurrenceAddress occurrence,
+                                          String siteId, int ordinal,
+                                          boolean outcome) {
         load();
-        if (task == null || occurrence == null) return;
+        if (task == null || occurrence == null) return false;
         String at = occurrence.id();
+        boolean decided = false;
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
                 observe(obligation, at, siteId, ordinal, outcome);
@@ -252,7 +256,49 @@ public final class FocusedReplay {
                         + ": took " + outcome + ", the flip this replay "
                         + "INHERITED from the session its path was cut "
                         + "from is " + flip.render();
+                decided |= decide(flip.refusal);
             }
+        }
+        return decided;
+    }
+
+    /**
+     * THE EARLY END: the refusal that decided every obligation this replay
+     * carries, or {@code ""} while one is still open.
+     *
+     * <p>Stated once, at the first refusal after which no obligation can end
+     * anything but NOT_ADMITTED, whatever the run does next: the prefix of an
+     * obligation's own occurrence abandoned ({@link #noteUnansweredTask}: it
+     * took the recorded arm, or closed without the decision), which
+     * {@link #unstated} holds against every flipped obligation, or a flip the
+     * replay inherited contradicted, which {@link #inherited} holds against
+     * every one.  A flipped obligation is never decided before its replay
+     * ends: its session is a corpus session, and later waves and COMPOSE read
+     * every row of it (the anchor, the fatal, writers after the anchor).</p>
+     *
+     * <p>A replay decided here ends at once
+     * ({@code ConcolicResultPublisher#concludeAtRefusal}) and publishes no
+     * session: its verdict rows name none ({@code RowRuntime#closeSession}),
+     * and the campaign withdraws the directory it opened.  A NOT_ADMITTED
+     * replay ran no world ({@code explore.ObligationFactory}), and rows cut
+     * at the refusal are a prefix of a run no stage could tell from a whole
+     * one.</p>
+     */
+    private static String refusedAt = "";
+
+    /** States the refusal that decided this replay, once; called under
+     *  {@link #LOCK}.  @return whether this call decided it. */
+    private static boolean decide(String refusal) {
+        if (!refusedAt.isEmpty() || OBLIGATIONS.isEmpty()) return false;
+        refusedAt = refusal;
+        return true;
+    }
+
+    /** The refusal that decided every obligation of this replay, or "". */
+    static String refusedAt() {
+        load();
+        synchronized (LOCK) {
+            return refusedAt;
         }
     }
 
@@ -359,13 +405,17 @@ public final class FocusedReplay {
     /**
      * Keeps the first prefix-abandonment gap, recognised by the reason word
      * it opens with ({@code ConcolicResultPublisher#taskUnanswered}).
+     *
+     * @return whether it {@link #decide decided} the replay
      */
-    static void noteUnansweredTask(String detail) {
+    static boolean noteUnansweredTask(String detail) {
         String stated = Text.safe(detail);
-        if (!stated.startsWith(PREFIX_UNMATCHED)) return;
+        if (!stated.startsWith(PREFIX_UNMATCHED)) return false;
         load();
         synchronized (LOCK) {
-            if (unmatchedPrefix.isEmpty()) unmatchedPrefix = stated;
+            if (!unmatchedPrefix.isEmpty()) return false;
+            unmatchedPrefix = stated;
+            return decide(stated);
         }
     }
 
@@ -392,50 +442,74 @@ public final class FocusedReplay {
      *
      * <p>FAIL-CLOSED: ADMITTED is a claim about the SESSION's rows, so the
      * flip alone does not admit -- an abandoned prefix, a missing mint row or
-     * a broken inherited flip is NOT_ADMITTED naming the gap.</p>
+     * a broken inherited flip is NOT_ADMITTED naming the gap.  A replay a
+     * refusal decided ({@link #refusedAt}) says in each detail that it ended
+     * there.</p>
      */
     public static List<ObligationResult> results(String sessionId) {
         load();
         List<ObligationResult> results = new ArrayList<ObligationResult>();
         if (task == null) return results;
         synchronized (LOCK) {
-            for (Obligation obligation : OBLIGATIONS) {
-                String id = Text.safe(obligation.obligationId());
-                if (REFUSALS.containsKey(id)) {
-                    results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
-                            sessionId, REFUSALS.get(id)));
-                } else if (FLIPPED.contains(id)) {
-                    // The one place ADMITTED is stated.
-                    String unstated = unstated(obligation);
-                    // And the inherited world has to hold.
-                    if (unstated.isEmpty()) unstated = inherited();
-                    results.add(unstated.isEmpty()
-                            ? ObligationResult.of(id, Verdict.ADMITTED,
-                                    sessionId, obligation.flips()
-                                    ? "the focused prefix reproduced and "
-                                    + Text.safe(obligation.siteId()) + "#"
-                                    + obligation.ordinal() + " took "
-                                    + obligation.flippedOutcome()
-                                    : "the focused prefix reproduced and "
-                                    + "every root the model assigns was "
-                                    + "planted; no flip was owed")
-                            : ObligationResult.of(id, Verdict.NOT_ADMITTED,
-                                    sessionId, unstated));
-                } else if (Text.safe(FOCUS.get(id)).isEmpty()) {
-                    // No occurrence stated: the ask is missing, not the run.
-                    results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
-                            sessionId, "the focus row states no "
-                            + "focusedOccurrenceId, so the flip at "
-                            + Text.safe(obligation.siteId()) + "#"
-                            + obligation.ordinal() + " is addressed at no "
-                            + "occurrence of this replay"));
-                } else {
-                    results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
-                            sessionId, "occurrence "
-                            + Text.safe(FOCUS.get(id)) + " never reached "
-                            + Text.safe(obligation.siteId()) + "#"
-                            + obligation.ordinal() + " in this replay"));
-                }
+            for (ObligationResult result : settled(sessionId)) {
+                results.add(refusedAt.isEmpty() ? result
+                        : ObligationResult.of(result.obligationId(),
+                                result.verdict(), result.sessionId(),
+                                endedAtRefusal(result.detail())));
+            }
+        }
+        return results;
+    }
+
+    /** One verdict's detail, and where the replay decided by
+     *  {@link #refusedAt} ended.  Called under {@link #LOCK}. */
+    private static String endedAtRefusal(String detail) {
+        return detail + (refusedAt.contains(detail)
+                ? "; the replay ended at this refusal and published no session"
+                : "; the replay ended at the refusal that decided every"
+                        + " obligation it carried and published no session: "
+                        + refusedAt);
+    }
+
+    /** What each obligation settled; called under {@link #LOCK}. */
+    private static List<ObligationResult> settled(String sessionId) {
+        List<ObligationResult> results = new ArrayList<ObligationResult>();
+        for (Obligation obligation : OBLIGATIONS) {
+            String id = Text.safe(obligation.obligationId());
+            if (REFUSALS.containsKey(id)) {
+                results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
+                        sessionId, REFUSALS.get(id)));
+            } else if (FLIPPED.contains(id)) {
+                // The one place ADMITTED is stated.
+                String unstated = unstated(obligation);
+                // And the inherited world has to hold.
+                if (unstated.isEmpty()) unstated = inherited();
+                results.add(unstated.isEmpty()
+                        ? ObligationResult.of(id, Verdict.ADMITTED,
+                                sessionId, obligation.flips()
+                                ? "the focused prefix reproduced and "
+                                + Text.safe(obligation.siteId()) + "#"
+                                + obligation.ordinal() + " took "
+                                + obligation.flippedOutcome()
+                                : "the focused prefix reproduced and "
+                                + "every root the model assigns was "
+                                + "planted; no flip was owed")
+                        : ObligationResult.of(id, Verdict.NOT_ADMITTED,
+                                sessionId, unstated));
+            } else if (Text.safe(FOCUS.get(id)).isEmpty()) {
+                // No occurrence stated: the ask is missing, not the run.
+                results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
+                        sessionId, "the focus row states no "
+                        + "focusedOccurrenceId, so the flip at "
+                        + Text.safe(obligation.siteId()) + "#"
+                        + obligation.ordinal() + " is addressed at no "
+                        + "occurrence of this replay"));
+            } else {
+                results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
+                        sessionId, "occurrence "
+                        + Text.safe(FOCUS.get(id)) + " never reached "
+                        + Text.safe(obligation.siteId()) + "#"
+                        + obligation.ordinal() + " in this replay"));
             }
         }
         return results;
@@ -820,6 +894,7 @@ public final class FocusedReplay {
             MINTED.clear();
             REACHED.clear();
             unmatchedPrefix = "";
+            refusedAt = "";
             ROOT_MINTS.clear();
             task = null;
             OBLIGATIONS.clear();

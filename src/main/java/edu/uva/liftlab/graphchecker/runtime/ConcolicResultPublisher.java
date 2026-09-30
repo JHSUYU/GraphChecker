@@ -73,13 +73,14 @@ final class ConcolicResultPublisher {
     static void taskUnanswered(RuntimeTask task, String detail) {
         // An abandoned occurrence publishes nothing, so the replay's verdict
         // must know before it calls a prefix reproduced.
-        FocusedReplay.noteUnansweredTask(detail);
+        boolean decided = FocusedReplay.noteUnansweredTask(detail);
         // Never name nothing: Fields.text would refuse; taskId may be blank.
         RowRuntime.gap(GapKind.TASK_UNANSWERED, GapClass.DIAGNOSTIC,
                 task == null ? RowRuntime.sessionId()
                         : firstNonBlank(task.taskId, task.regionId,
                                 task.occurrenceId, RowRuntime.sessionId()),
                 detail);
+        if (decided) concludeAtRefusal();
     }
 
     /** Waits until every live or publishing selected activation settles. */
@@ -135,65 +136,101 @@ final class ConcolicResultPublisher {
         return charged;
     }
 
+    /** Why a focused replay ends before its workload does. */
+    private enum Conclusion {
+        /** The case's declared occurrence observed the fatal. */
+        AT_WITNESS("the declared occurrence observed the fatal"),
+        /** A refusal decided every obligation the replay carries
+         *  ({@code FocusedReplay#refusedAt}). */
+        AT_REFUSAL("a refusal decided every obligation this replay carries");
+
+        private final String when;
+
+        Conclusion(String when) {
+            this.when = when;
+        }
+    }
+
     /**
      * Ends a focused replay at its witness: the case's declared occurrence
      * observed the fatal, which answers the replay's question, and what the
      * workload does after it no stage reads (SOLR-18406: a follower retried
      * the download it could no longer get, every bound lifted, until the
      * worker's clock killed the JVM and the witness session was withdrawn).
-     * Once, on a thread of its own: admission ends, the schedule states the
-     * run cut at its witness ({@link ScheduleLog#witnessed}), every
-     * publication in flight settles (the witness's own among them), every
-     * activation still live is stranded now rather than after a grace its
-     * retries keep resetting, and the replay ends as every replay does
-     * ({@link JUnitMethodRunner}).
+     * The schedule states the run cut there ({@link ScheduleLog#witnessed}).
      */
     static void concludeAtWitness() {
+        conclude(Conclusion.AT_WITNESS);
+    }
+
+    /**
+     * Ends a focused replay at the refusal that decided every obligation it
+     * carries ({@code FocusedReplay#refusedAt}): each verdict is NOT_ADMITTED
+     * whatever the run does next, and the session is published to no stage,
+     * so the rest of the workload answers nothing (SOLR-18413 r5: 67 focused
+     * replays of 10 to 22 minutes, each refused at a constructor's branch and
+     * run to the test's end).
+     */
+    static void concludeAtRefusal() {
+        conclude(Conclusion.AT_REFUSAL);
+    }
+
+    /**
+     * The one early end, once, on a thread of its own: admission ends, every
+     * publication in flight settles (the witness's own among them), every
+     * activation still live is stranded now rather than after a grace its
+     * retries keep resetting, one that completes later is not published, and
+     * the replay ends as every replay does ({@link JUnitMethodRunner}).
+     */
+    private static void conclude(final Conclusion end) {
         synchronized (PUBLICATION_LOCK) {
-            if (concludingAtWitness) return;
-            concludingAtWitness = true;
-            submittedAtWitness = submitted;
+            if (concluded != null) return;
+            concluded = end;
+            submittedAtEnd = submitted;
         }
         ConcolicRegionRuntime.endAdmission();
-        ScheduleLog.witnessed();
+        if (end == Conclusion.AT_WITNESS) ScheduleLog.witnessed();
         ThreadGroup root = Thread.currentThread().getThreadGroup();
         while (root.getParent() != null) root = root.getParent();
         new Thread(root, new Runnable() {
             @Override
             public void run() {
+                // The replay log's one line saying when and why it ended.
+                System.err.println(String.format("Causynth %tT: the replay"
+                        + " ends %s: %s", System.currentTimeMillis(), end,
+                        end.when));
                 List<ActiveRegion> stranded = new ArrayList<>();
                 synchronized (PUBLICATION_LOCK) {
                     while (resultPublicationsInFlight > 0) {
                         try {
                             PUBLICATION_LOCK.wait();
                         } catch (InterruptedException ignored) {
-                            // The witness stands; settle and end regardless.
+                            // The end stands; settle and end regardless.
                         }
                     }
                     stranded.addAll(ACTIVE.values());
                 }
                 for (ActiveRegion active : stranded) {
-                    strandWithoutTerminal(active, "AT_WITNESS: the region"
-                            + " root was still running when the declared"
-                            + " occurrence observed the fatal, and the replay"
-                            + " ended there");
+                    strandWithoutTerminal(active, end + ": the region root"
+                            + " was still running when " + end.when
+                            + ", and the replay ended there");
                 }
                 JUnitMethodRunner.exit(0);
             }
-        }, "causynth-witness-stop").start();
+        }, "causynth-early-end").start();
     }
 
     /** Guarded by {@link #PUBLICATION_LOCK}. */
-    private static boolean concludingAtWitness;
+    private static Conclusion concluded;
     /**
-     * Publications submitted, and how many were when the witness stood:
-     * one completed after it is no part of the question, and publishing it
-     * kept the queue from ever draining (SOLR-18406's follower retried the
-     * download, each retry an occurrence with its own publication).
-     * Guarded by {@link #PUBLICATION_LOCK}.
+     * Publications submitted, and how many were when the replay's end
+     * stood: one completed after it is no part of the question, and
+     * publishing it kept the queue from ever draining (SOLR-18406's follower
+     * retried the download, each retry an occurrence with its own
+     * publication).  Guarded by {@link #PUBLICATION_LOCK}.
      */
     private static long submitted;
-    private static long submittedAtWitness = Long.MAX_VALUE;
+    private static long submittedAtEnd = Long.MAX_VALUE;
 
     /** Names one activation whose root never reached a terminal. */
     private static void strandWithoutTerminal(ActiveRegion active) {
@@ -324,17 +361,16 @@ final class ConcolicResultPublisher {
             ActiveRegion active, RawSharedStateReadOut rawSharedState,
             long ordinal) {
         try {
-            boolean afterWitness;
+            Conclusion late;
             synchronized (PUBLICATION_LOCK) {
-                afterWitness = ordinal > submittedAtWitness;
+                late = ordinal > submittedAtEnd ? concluded : null;
             }
-            if (afterWitness) {
+            if (late != null) {
                 // Withheld as a stranded one is: its mints still published.
                 configuration().markOccurrenceClaimed(active.activation);
                 RowPublication.publishMints(active);
-                taskUnanswered(active.activation, "AT_WITNESS: this"
-                        + " occurrence completed after the declared"
-                        + " occurrence observed the fatal, and the replay"
+                taskUnanswered(active.activation, late + ": this occurrence"
+                        + " completed after " + late.when + ", and the replay"
                         + " ended there");
                 return;
             }

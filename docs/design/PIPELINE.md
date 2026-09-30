@@ -177,14 +177,21 @@ starts after it), live activations settle, the run totals close the session's ro
 outlive the test, and a region started after the close would open a fresh VM session in which
 every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
 
-A focused replay ends at its witness: when the focus row's declared occurrence publishes a target row
-that observed the fatal (`ConcolicResultPublisher#concludeAtWitness`), admission ends, its schedule
-states the run cut there (`ScheduleLog#witnessed`: a replay held to it holds a `WAKE` it never made
-to the order's end, IDENTITY.md §8), the publications in flight settle, every activation still live is stranded (`TASK_UNANSWERED`
-`AT_WITNESS`; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and one that
-completes after the witness is not published (`AT_WITNESS`). A stranded or late activation's path
+A focused replay ends early, once, for one of two reasons (`ConcolicResultPublisher#conclude`):
+
+- `AT_WITNESS`: the focus row's declared occurrence publishes a target row that observed the fatal
+  (`#concludeAtWitness`); its schedule states the run cut there (`ScheduleLog#witnessed`: a replay
+  held to it holds a `WAKE` it never made to the order's end, IDENTITY.md §8).
+- `AT_REFUSAL`: a refusal decided every obligation the replay carries (`#concludeAtRefusal`,
+  `FocusedReplay#refusedAt`, §7.6).
+
+Either way admission ends, `Causynth <time>: the replay ends <reason>` goes to the replay log, the
+publications in flight settle, every activation still live is stranded (`TASK_UNANSWERED` with the
+reason; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and one that
+completes after the end is not published (the reason again). A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
-name its symbols (IMPORT invariant 11).
+name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
+`System.exit` ends the in-process cluster (its threads and ports) with the JVM.
 
 A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
 admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
@@ -390,7 +397,8 @@ mark of the flip occurrence, the focused occurrence or a factor member goes to
 ### 7.6 The obligation replay
 
 `campaign_obligation_replay` links the seed plan into the worker directory and runs the adapter under
-`replay_timeout_s`. The replay runs the whole workload; the focused set (focused occurrence, factor,
+`replay_timeout_s`. The replay runs the workload to its end, its witness or its deciding refusal
+(below); the focused set (focused occurrence, factor,
 each assigned root's mint occurrence, inherited flips' occurrences) runs symbolically
 (`runtime.FocusedReplay`). The replay owns the verdict: `RowRuntime.closeSession` writes the session's
 `obligations.jsonl` and rewrites the worker's `obligation_result.jsonl`. `ADMITTED` = the flipped
@@ -398,8 +406,25 @@ decision took the other arm, the focused prefix was not abandoned, the session p
 for every assigned root and clock skew, and every inherited flip held; anything else is
 `NOT_ADMITTED` naming why. A mint that ran without planting its assignment is a BLOCKING
 `ASSIGNMENT_UNPLANTED` gap of the session. A replay ends once the focus row's `declaredTarget`
-publishes a target row that reached the anchor and observed the fatal
-(`ConcolicResultPublisher.concludeAtWitness`).
+publishes a target row that reached the anchor and observed the fatal (`AT_WITNESS`, §5).
+
+**The early end at a refusal** (`FocusedReplay#refusedAt`). A replay is *decided* at the first
+refusal after which every obligation it carries is `NOT_ADMITTED` whatever the run does next: the
+prefix of an obligation's own occurrence is abandoned (`REPLAY_PREFIX_UNMATCHED`: the flip site took
+the recorded arm, or the occurrence closed without reaching it), which holds every flipped
+obligation of the replay `NOT_ADMITTED` too, or a flip the replay inherited took the other arm. It
+ends there (`AT_REFUSAL`, §5). A flipped obligation is never decided before its replay ends: its
+session is a corpus session, cut from by later waves and read whole by the closure and COMPOSE (the
+anchor, the fatal and writers after the anchor among them), so only the witness ends it early. A
+decided replay **publishes no session**: its verdict rows state the refusal and that the replay
+ended there, the worker's row names no session (`RowRuntime#closeSession`), and
+`campaign_obligation_replay`, on the host that ran the replay, withdraws the directory it opened to
+`<worker>/refused-sessions/`. A `NOT_ADMITTED` replay ran no world (§7.4 cuts no path from one),
+and rows cut at the refusal are a prefix of a run no stage could tell from a whole one. Its gap rows
+stay EMIT's (§11). The head, reading a peer's row that names no session, waits until its own
+listing holds no session naming the obligation (`campaign_await_remote_result`), so neither the
+wave's gate nor the next planner reads one a cached listing kept.
+
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
 verdict is `NOT_ADMITTED`. A solver JVM that exits nonzero records `NOT_ADMITTED` with its last
 stderr line. A result row still saying `SAT_MODEL_READY` after the replay fails EXPLORE.
@@ -774,7 +799,7 @@ same shape for a refusal, `realized.json` and the decision.
    runtime plan's `gaps` as PLAN; every `gaps.jsonl` under the iteration directory — a path matching
    `*/sessions/*/gaps.jsonl` as REPLAY (a withdrawn exposing session under `before-*/sessions/`
    included), any other under `obligations-*/` as EXPLORE (a session withdrawn to
-   `timed-out-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
+   `timed-out-sessions/` or `refused-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
    `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `byStage`, `byCode`.
 3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a

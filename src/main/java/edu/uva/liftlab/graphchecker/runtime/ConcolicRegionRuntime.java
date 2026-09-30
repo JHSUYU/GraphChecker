@@ -1267,10 +1267,11 @@ public final class ConcolicRegionRuntime {
         if (active.d3Address != null
                 && !active.activation.loopBodyRoot
                 && !FocusedReplay.complete(active.d3Address)) {
+            // Not contradicted (above), so no refusal to name: it closed
+            // before reaching the decision.
             abandonOccurrence(active, "REPLAY_PREFIX_UNMATCHED: the"
-                    + " focused occurrence did not take the decision its"
-                    + " obligation flips: "
-                    + FocusedReplay.refusal(active.d3Address));
+                    + " focused occurrence closed without taking the"
+                    + " decision its obligation flips");
         }
     }
 

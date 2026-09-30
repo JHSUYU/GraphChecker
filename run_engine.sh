@@ -1498,9 +1498,26 @@ ${waited}s; the shared home did not deliver what the peer wrote"
     waited=$((waited + 1))
   done
   session_id=$(jq -r '.sessionId // ""' "${result}" 2>/dev/null) || session_id=""
-  # A terminal verdict the solver reached publishes no session, and says so
-  # by naming none; only a session that was NAMED has to be here.
-  [[ -n "${session_id}" ]] || return 0
+  # A verdict that names no session published none.  The solver's own
+  # opened none; a replay's opened one that the peer withdrew (killed on its
+  # bound, or decided by a refusal), and a listing cached here may still
+  # hold it, where the wave's gate and the next planner would read it.
+  if [[ -z "${session_id}" ]]; then
+    [[ -s "${worker}/focused_task.jsonl" ]] || return 0
+    while [[ -n "$(campaign_sessions_naming "${obligation_id}" \
+        "${sessions}")" ]]; do
+      if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
+        campaign_log "obligation ${obligation_id} on ${host}: its result \
+names no session but a session naming it is still under ${sessions} here \
+after ${waited}s"
+        return 1
+      fi
+      ls "${sessions}" >/dev/null 2>&1 || true
+      sleep 1
+      waited=$((waited + 1))
+    done
+    return 0
+  fi
   while [[ ! -d "${sessions}/${session_id}" ]]; do
     if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
       campaign_log "obligation ${obligation_id} on ${host}: its result names \
@@ -2328,18 +2345,7 @@ campaign_session_roster() {
 }
 
 
-# The sessions that name one obligation, out of the corpus and under the
-# worker that owned them.
-#
-# Two callers.  A replay killed on its bound has opened its session --
-# SessionPublisher writes manifest.json at the OPEN -- and will never close
-# it, so its rows state no verdict for the obligation the manifest names;
-# Composer.settled reads exactly that pair as UNSTATED_VALUE/BLOCKING, and
-# one hung JVM would withhold the whole candidate.  A replay that exposed a
-# region ran without that region's hooks, and the re-run's session is the
-# one the corpus keeps.  Either way the directory is MOVED under the worker,
-# never deleted: it is the evidence of why the obligation's verdict is what
-# it is, and the campaign keeps what it saw.
+# The session directories whose manifest names one obligation, one per line.
 #
 # Found by the manifest, which is the same lookup settled() does -- read the
 # document and match one element of obligationIds exactly -- and never by
@@ -2347,9 +2353,8 @@ campaign_session_roster() {
 # directory at once and every session but this obligation's belongs to
 # somebody else.  A manifest that cannot be read is somebody else's, half
 # written: skipped, not guessed at.
-campaign_withdraw_sessions() {
-  local obligation_id=$1 sessions=$2 quarantine=$3 why=$4
-  local manifest session_dir session_id withdrawn=0
+campaign_sessions_naming() {
+  local obligation_id=$1 sessions=$2 manifest
   # SessionDir.MANIFEST, one directory down: <sessions>/<sessionId>/.
   for manifest in "${sessions}"/*/manifest.json; do
     [[ -f "${manifest}" ]] || continue
@@ -2358,7 +2363,28 @@ campaign_withdraw_sessions() {
     jq -e --arg id "${obligation_id}" \
       'any((.obligationIds // [])[]; . == $id)' "${manifest}" \
       >/dev/null 2>&1 || continue
-    session_dir=$(dirname "${manifest}")
+    dirname "${manifest}"
+  done
+}
+
+# The sessions that name one obligation, out of the corpus and under the
+# worker that owned them.
+#
+# Three callers.  A replay killed on its bound has opened its session --
+# SessionPublisher writes manifest.json at the OPEN -- and will never close
+# it, so its rows state no verdict for the obligation the manifest names;
+# Composer.settled reads exactly that pair as UNSTATED_VALUE/BLOCKING, and
+# one hung JVM would withhold the whole candidate.  A replay a refusal
+# decided ended there and names no session in its verdict (PIPELINE §7.6):
+# what it wrote is a prefix of a run.  A replay that exposed a region ran
+# without that region's hooks, and the re-run's session is the one the
+# corpus keeps.  Each way the directory is MOVED under the worker, never
+# deleted: it is the evidence of why the obligation's verdict is what it is,
+# and the campaign keeps what it saw.
+campaign_withdraw_sessions() {
+  local obligation_id=$1 sessions=$2 quarantine=$3 why=$4
+  local session_dir session_id withdrawn=0
+  while IFS= read -r session_dir; do
     session_id=$(basename "${session_dir}")
     mkdir -p "${quarantine}"
     if mv -- "${session_dir}" "${quarantine}/${session_id}"; then
@@ -2371,7 +2397,7 @@ ${session_id} from ${sessions} to ${quarantine}/${session_id}: ${why}"
       campaign_log "obligation ${obligation_id}: could not withdraw session \
 ${session_id} from ${sessions}: ${why}; COMPOSE will read it"
     fi
-  done
+  done < <(campaign_sessions_naming "${obligation_id}" "${sessions}")
   if [[ "${withdrawn}" -eq 0 ]]; then
     campaign_log "obligation ${obligation_id}: no session under ${sessions} \
 names it; nothing withdrawn"
@@ -2502,6 +2528,14 @@ session"
         "the replay of ${obligation_id} published no verdict for it \
 (the row still states \"${outcome}\")" ;;
   esac
+  # A verdict that names no session published none: a refusal decided every
+  # obligation the replay carried, and it ended there (FocusedReplay
+  # #refusedAt).  What it wrote before is a prefix of a run, so it leaves the
+  # corpus here, on the host that ran the replay and sees its directory.
+  [[ -n "$(jq -r '.sessionId // ""' "${result_row}")" ]] \
+    || campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
+      "${worker}/refused-sessions" "a refusal decided every obligation its \
+replay carried and the replay ended there, so its rows are a prefix of a run"
 }
 
 

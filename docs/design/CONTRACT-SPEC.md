@@ -202,7 +202,10 @@ field=<f> <subject>`.
   site, ordinal 0, `flips()` false. `obligations.jsonl` rows carry exactly these fields.
 - `Verdict`: `SAT_MODEL_READY` (a model exists, the replay may run), `UNSAT`, `ADMITTED` (a focused
   replay took the flipped arm and published its rows; never "validated"), `NOT_ADMITTED`.
-  `ObligationResult(obligationId, verdict, sessionId, detail)`, `sessionId` "" when no replay ran.
+  `ObligationResult(obligationId, verdict, sessionId, detail)`, `sessionId` "" when no replay ran
+  or its replay published no session (killed on its bound, or decided by a refusal: the worker's
+  row names none, while the withdrawn session's own `obligations.jsonl` keeps its id;
+  [PIPELINE.md §7.6](PIPELINE.md)).
 - The worker directory (`ObligationDir`): `<iteration>/obligations-NNNN/<obligationId>/` with
   `obligation.jsonl`, `obligation_result.jsonl`, `focused_task.jsonl`, plus `obligation_query.smt2`,
   `gaps.jsonl`, `schedule_prefix.jsonl`, `schedule_suffix.jsonl` and the replay's logs.

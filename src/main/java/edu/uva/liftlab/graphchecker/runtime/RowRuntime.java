@@ -241,7 +241,10 @@ public final class RowRuntime {
                     occurrence, Text.safe(siteId), ordinal, outcome, ref,
                     clockReadings(condition)));
         }
-        FocusedReplay.observeDecision(occurrence, siteId, ordinal, outcome);
+        if (FocusedReplay.observeDecision(occurrence, siteId, ordinal,
+                outcome)) {
+            ConcolicResultPublisher.concludeAtRefusal();
+        }
     }
 
     /** One arm's term: the ref in that polarity (the composer lowers). */
@@ -913,7 +916,11 @@ public final class RowRuntime {
         for (ObligationResult result : results) {
             session.obligationResult(result);
         }
-        writeWorkerVerdicts(results);
+        // A replay a refusal decided publishes no session
+        // (FocusedReplay#refusedAt): the wave's row names none, and the
+        // campaign withdraws the directory it opened.
+        writeWorkerVerdicts(FocusedReplay.refusedAt().isEmpty() ? results
+                : FocusedReplay.results(""));
         session.close();
     }
 
