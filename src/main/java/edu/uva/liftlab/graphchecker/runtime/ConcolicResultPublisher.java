@@ -177,16 +177,22 @@ final class ConcolicResultPublisher {
 
     /**
      * The one early end, once, on a thread of its own: admission ends, every
-     * publication in flight settles (the witness's own among them), every
-     * activation still live is stranded now rather than after a grace its
-     * retries keep resetting, one that completes later is not published, and
-     * the replay ends as every replay does ({@link JUnitMethodRunner}).
+     * publication in flight settles, every activation still live is stranded
+     * now rather than after a grace its retries keep resetting, and the
+     * replay ends as every replay does ({@link JUnitMethodRunner}).
+     *
+     * <p>What still publishes differs.  At the witness, every occurrence
+     * completed before it (the witness's own among them): its session is a
+     * corpus session, read whole up to there.  At a refusal, no publication
+     * that has not started: the session is withdrawn, and draining the queue
+     * into it cost a Solr replay two to five minutes past the test's end
+     * (solr-18413 r5, ee).  A withheld one's mints still publish.</p>
      */
     private static void conclude(final Conclusion end) {
         synchronized (PUBLICATION_LOCK) {
             if (concluded != null) return;
             concluded = end;
-            submittedAtEnd = submitted;
+            submittedAtEnd = end == Conclusion.AT_WITNESS ? submitted : 0L;
         }
         ConcolicRegionRuntime.endAdmission();
         if (end == Conclusion.AT_WITNESS) ScheduleLog.witnessed();
@@ -195,10 +201,11 @@ final class ConcolicResultPublisher {
         new Thread(root, new Runnable() {
             @Override
             public void run() {
-                // The replay log's one line saying when and why it ended.
-                System.err.println(String.format("Causynth %tT: the replay"
-                        + " ends %s: %s", System.currentTimeMillis(), end,
-                        end.when));
+                // The replay log's one line saying when and why it ended, as
+                // a UTC instant: a workload may randomize the JVM's zone
+                // (Solr's test framework does).
+                System.err.println("Causynth " + java.time.Instant.now()
+                        + ": the replay ends " + end + ": " + end.when);
                 List<ActiveRegion> stranded = new ArrayList<>();
                 synchronized (PUBLICATION_LOCK) {
                     while (resultPublicationsInFlight > 0) {
@@ -402,8 +409,8 @@ final class ConcolicResultPublisher {
                 configuration().markOccurrenceClaimed(active.activation);
                 RowPublication.publishMints(active);
                 taskUnanswered(active.activation, late + ": this occurrence"
-                        + " completed after " + late.when + ", and the replay"
-                        + " ended there");
+                        + " was still unpublished when " + late.when
+                        + ", and the replay ended there");
                 return;
             }
             assembleRecordedSharedState(active, rawSharedState);

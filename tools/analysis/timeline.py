@@ -23,7 +23,7 @@ the sources are the files the campaign wrote:
 It prints each campaign's stages, its waves and replays, and its top time
 sinks (the phases that took longest, the replays grouped by outcome).
 """
-import glob, json, os, re, statistics, sys, time
+import calendar, glob, json, os, re, statistics, sys, time
 
 
 def mtime(path):
@@ -126,12 +126,13 @@ def replay_outcome(worker, result):
     return "error"
 
 
-EARLY_END = re.compile(r"^Causynth (\d\d):(\d\d):(\d\d): the replay ends (AT_\w+)", re.M)
+EARLY_END = re.compile(r"^Causynth (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?Z: the replay ends (AT_\w+)", re.M)
 
 
 def early_end(worker, replay_end):
-    """(reason, seconds from the end's line to the replay log's last write)
-    when the replay ended early (ConcolicResultPublisher#conclude), else None."""
+    """(reason, seconds from the end's line, a UTC instant, to the replay log's
+    last write) when the replay ended early (ConcolicResultPublisher#conclude),
+    else None."""
     try:
         text = open(os.path.join(worker, "replay.log"), errors="replace").read()
     except OSError:
@@ -139,10 +140,9 @@ def early_end(worker, replay_end):
     found = EARLY_END.search(text)
     if not found or not replay_end:
         return None
-    last = time.localtime(replay_end)
-    said = time.mktime(last[:3] + tuple(int(g) for g in found.groups()[:3]) + last[6:])
-    exit_s = replay_end - said
-    return found.group(4), exit_s + 86400 if exit_s < -60 else exit_s
+    said = calendar.timegm(time.strptime(found.group(1), "%Y-%m-%dT%H:%M:%S")) \
+        + float(found.group(2) or 0)
+    return found.group(3), replay_end - said
 
 
 def wave_rows(iteration):

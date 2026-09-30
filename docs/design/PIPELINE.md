@@ -188,10 +188,12 @@ A focused replay ends early, once, for one of two reasons (`ConcolicResultPublis
 - `AT_REFUSAL`: a refusal decided every obligation the replay carries (`#concludeAtRefusal`,
   `FocusedReplay#refusedAt`, §7.6).
 
-Either way admission ends, `Causynth <time>: the replay ends <reason>` goes to the replay log, the
-publications in flight settle, every activation still live is stranded (`TASK_UNANSWERED` with the
-reason; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and one that
-completes after the end is not published (the reason again). A stranded or late activation's path
+Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
+publications running settle, every activation still live is stranded (`TASK_UNANSWERED` with the
+reason; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and a publication
+not yet started is withheld (the reason again): at the witness, one submitted after it (the
+session is read whole up to the witness); at a refusal, every one (the session is withdrawn, and
+draining the queue into it cost a Solr replay two to five minutes past the test's end). A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
 name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
 `System.exit` ends the in-process cluster (its threads and ports) with the JVM.
