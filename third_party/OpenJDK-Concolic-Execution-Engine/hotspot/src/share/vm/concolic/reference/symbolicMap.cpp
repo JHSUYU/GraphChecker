@@ -6,8 +6,6 @@
 #include "concolic/reference/symbolicMap.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/utils.hpp"
-#include "memory/resourceArea.hpp"
-#include "runtime/signature.hpp"
 
 #include <string.h>
 
@@ -221,13 +219,6 @@ Expression *as_guard(Expression *result) {
             result, new ConExpression((jint) 0), op_ne, true));
 }
 
-bool any_symbolic(std::vector<CallbackResult> &callbacks) {
-  for (size_t index = 0; index < callbacks.size(); ++index) {
-    if (callbacks[index].decided()) return true;
-  }
-  return false;
-}
-
 // The removal condition of one removeIf visit: the predicate's own boolean
 // expression, else what its path decided in the direction it answered;
 // NULL when nothing symbolic decided it.
@@ -236,14 +227,22 @@ Expression *removal_guard(const CallbackResult &visit) {
   return (visit.returned_int & 1) != 0 ? visit.path : visit.path_negation;
 }
 
-// The key and the value a visiting callback's element stands for.  Over a
-// map with a state, its value is the state's READ of the key; otherwise the
-// element's own expression, so an untracked map's concrete content is not
-// made to look symbolic.
+// The value a visiting callback's element stands for: the state's READ of
+// its key when the map has a state, else the value's own expression.
 Expression *element_value(Expression *state, Expression *key,
                           Expression *owner, oop value) {
   if (state == NULL) return ContainerSupport::semantic_value(value);
   return read_of(state, key, owner, value);
+}
+
+// The calls whose callback visits one element per call (forEach,
+// replaceAll, removeIf): each visit is seeded with a READ of the state, so
+// a decision on it is a path condition per element per call.  Past the
+// snapshot bound the visits are not seeded, and the call refuses its map by
+// name (CALLBACK_VISITS_OVER_BOUND) rather than state the rest concretely.
+bool visiting(const std::string &method) {
+  return method == "forEach" || method == "replaceAll"
+      || method == "removeIf";
 }
 
 }  // namespace
@@ -335,14 +334,17 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
   oop container = ContainerSupport::backing_container(target);
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
     // A symbolic value admits the model, and so does a mutation this thread
-    // is performing because of a symbolic decision: see
-    // ContainerSupport::guarded_mutation.  A call with a callback on a
-    // modeled map is admitted too: its body runs muted and the callback
-    // with propagation, so what the callback computes is kept.
-    const bool recording = handle.general_check_param_symbolized()
-        || ContainerSupport::guarded_mutation(callee_name);
+    // is performing because of a symbolic decision (see
+    // ContainerSupport::guarded_mutation), and a call with a callback on a
+    // map whose state is tracked: its body runs muted and the callback with
+    // propagation, so what the callback computes is kept.  Anything else
+    // runs as bytecode.
     const bool callback = takes_callback(callee_name) && container != NULL;
-    if (!recording && !callback) return false;
+    const bool recording = handle.general_check_param_symbolized()
+        || ContainerSupport::guarded_mutation(callee_name)
+        || (callback && SharedFieldVersions::is_tracked(
+                            ContainerSupport::state_location(container)));
+    if (!recording) return false;
     if (container == NULL && map_level(callee_name)) {
       // A subclass of a modeled class, or an access-ordered LinkedHashMap,
       // is refused by name; anything else is no map this model knows, and
@@ -364,32 +366,31 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
                                       "CALLBACK_REENTERS_CONTAINER");
       return false;
     }
-    handle.set_recording(recording);
-    if (recording) {
-      handle.general_prepare_param();
-      // Before the body runs: state what the container already holds, while
-      // the receiver is still untouched by this operation.  A view is not a
-      // location, so the container whose base this is is the one the view
-      // belongs to.
-      ContainerSupport::state_base_before_operation(
-          container != NULL ? container : target);
-      // A removal through a view names the entry the iterator last returned,
-      // and the iterator forgets it inside remove(); read it here, while the
-      // body has not run, and let the publisher consume it.
-      if (container != NULL && container != target
-          && callee_name == "remove") {
-        oop key_object = OopUtils::key_of_map_node(
-            OopUtils::current_node_of_iterator(target));
-        if (key_object != NULL) {
-          ConcolicMngr::ctx->note_view_removal_argument(
-              ContainerSupport::concrete_value(key_object));
-        }
+    handle.general_prepare_param();
+    // Before the body runs: state what the container already holds, while
+    // the receiver is still untouched by this operation.  A view is not a
+    // location, so the container whose base this is is the one the view
+    // belongs to.
+    ContainerSupport::state_base_before_operation(
+        container != NULL ? container : target);
+    // A removal through a view names the entry the iterator last returned,
+    // and the iterator forgets it inside remove(); read it here, while the
+    // body has not run, and let the publisher consume it.
+    if (container != NULL && container != target
+        && callee_name == "remove") {
+      oop key_object = OopUtils::key_of_map_node(
+          OopUtils::current_node_of_iterator(target));
+      if (key_object != NULL) {
+        ConcolicMngr::ctx->note_view_removal_argument(
+            ContainerSupport::concrete_value(key_object));
       }
     }
     if (callback) {
       handle.set_pre_state(
           ConcolicMngr::ctx->find_container_state(container));
       handle.set_seeder(seed_callback);
+      handle.set_mutates_per_callback(callee_name == "removeIf"
+                                      || callee_name == "replaceAll");
     }
     return true;
   }
@@ -411,25 +412,24 @@ void SymMap::seed_callback(MethodSymbolizerHandle &call,
                            const std::vector<oop> &arguments,
                            exp_list_t *seeds, Expression **key) {
   const std::string &method = call.get_callee_name();
-  // A call admitted for its callback alone prepared no parameters: every
-  // one is concrete, and so is what a callback is seeded with.
   exp_list_t &parameters = call.get_param_list();
-  Expression *state = parameters.empty() ? NULL : call.pre_state();
-  Expression *owner = parameters.empty()
-      ? NULL : ContainerSupport::receiver_owner(parameters[0]);
-  if (parameters.empty() && arguments.size() != 1 && arguments.size() != 2) {
+  Expression *state = call.pre_state();
+  Expression *owner = ContainerSupport::receiver_owner(parameters[0]);
+  if (visiting(method) && call.callbacks().size()
+          >= (size_t) ConcolicMngr::initialSnapshotMaxEntries()) {
+    call.refuse_callbacks("CALLBACK_VISITS_OVER_BOUND");
     return;
   }
   if (method == "computeIfAbsent") {
-    seeds->push_back(parameters.empty() ? NULL : parameters[1]);
+    seeds->push_back(parameters[1]);
   } else if (method == "computeIfPresent" || method == "compute") {
-    seeds->push_back(parameters.empty() ? NULL : parameters[1]);
+    seeds->push_back(parameters[1]);
     seeds->push_back(state == NULL ? NULL
         : read_of(state, parameters[1], owner));
   } else if (method == "merge") {
     seeds->push_back(state == NULL ? NULL
         : read_of(state, parameters[1], owner));
-    seeds->push_back(parameters.empty() ? NULL : parameters[2]);
+    seeds->push_back(parameters[2]);
   } else if (arguments.size() == 2) {
     // A map's forEach/replaceAll: (key, value) at the visited position.
     *key = key_expression(arguments[0]);
@@ -457,27 +457,7 @@ void SymMap::seed_callback(MethodSymbolizerHandle &call,
 Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &method = handle.get_callee_name();
   exp_list_t &parameters = handle.get_param_list();
-  if (handle.reentered()) return NULL;
-  if (parameters.empty()) {
-    // Admitted for its callback alone: only a symbolic callback result
-    // makes the call more than concrete, and then its parameters are what
-    // the frame holds.
-    if (!takes_callback(method) || !any_symbolic(handle.callbacks())) {
-      return NULL;
-    }
-    Method *callee = handle.get_callee_method();
-    ResourceMark rm;
-    parameters.push_back(NULL);
-    int offset = 1;
-    for (SignatureStream stream(callee->signature());
-         !stream.at_return_type(); stream.next()) {
-      const BasicType type = stream.type();
-      parameters.push_back(type == T_OBJECT || type == T_ARRAY
-          ? ContainerSupport::concrete_value(handle.get_param<oop>(offset))
-          : handle.get_primitive_exp(offset, type));
-      offset += type2size[type];
-    }
-  }
+  if (parameters.empty() || handle.reentered()) return NULL;
 
   oop receiver_object = handle.get_param<oop>(0);
   // Which object the receiver's own read chose, kept on every relation this
@@ -496,9 +476,12 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
   // ---- calls with a callback: the log of what each callback returned ----
   if (takes_callback(method)) {
     std::vector<CallbackResult> &callbacks = handle.callbacks();
-    // Nothing symbolic went in and nothing symbolic came back: the call was
-    // concrete, and an untracked map stays untracked.
-    if (!handle.is_recording() && !any_symbolic(callbacks)) return NULL;
+    // A callback that ran unlogged (a declined window) or unseeded (past
+    // the visit bound) leaves the call unstated: the map leaves the model.
+    if (handle.callback_refusal() != NULL) {
+      ContainerSupport::abandon_state(container, handle.callback_refusal());
+      return NULL;
+    }
     Expression *state = ConcolicMngr::ctx->container_state(
         container, "ASSOCIATIVE");
     if (state == NULL) return NULL;
@@ -508,13 +491,6 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
         const CallbackResult &visit = callbacks[index];
         if (visit.key == NULL) continue;
         if (method == "replaceAll") {
-          if (visit.result == NULL) {
-            // A concrete result of a call that recorded nothing until a
-            // later callback's result was symbolic.
-            ContainerSupport::abandon_state(container,
-                                            "CALLBACK_RESULT_UNSTATED");
-            return NULL;
-          }
           state = put(container, state, visit.key, visit.result, owner);
           continue;
         }

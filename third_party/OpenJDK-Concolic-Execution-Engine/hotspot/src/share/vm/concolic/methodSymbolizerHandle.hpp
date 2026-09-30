@@ -37,8 +37,6 @@ struct CallbackResult {
   CallbackResult()
       : result(NULL), symbolic(false), returned_null(false), returned_int(0),
         threw(false), key(NULL), path(NULL), path_negation(NULL) {}
-  // Whether anything symbolic decided what it returned.
-  bool decided() const { return symbolic || path != NULL; }
 };
 
 /**
@@ -73,12 +71,19 @@ private:
   Expression *_pre_state;
   // A callback called back into this call's container.
   bool _reentered;
+  // Why this call's callbacks cannot be stated (a declined window, too many
+  // visits), or NULL.
+  const char *_callback_refusal;
+  // The call mutates as each callback answers (removeIf, replaceAll), so an
+  // unwind after one did leaves a change its model cannot state.
+  bool _mutates_per_callback;
 
 public:
   MethodSymbolizerHandle()
       : _caller_frame(NULL), _callee_frame(NULL), _callee_istate(NULL),
         _recording(false), _seeder(NULL), _pre_state(NULL),
-        _reentered(false) {}
+        _reentered(false), _callback_refusal(NULL),
+        _mutates_per_callback(false) {}
 
   inline void set_recording(bool recording) { _recording = recording; }
   inline bool is_recording() const { return _recording; }
@@ -99,6 +104,14 @@ public:
   inline Expression *pre_state() const { return _pre_state; }
   inline void mark_reentered() { _reentered = true; }
   inline bool reentered() const { return _reentered; }
+  inline void refuse_callbacks(const char *reason) {
+    if (_callback_refusal == NULL) _callback_refusal = reason;
+  }
+  inline const char *callback_refusal() const { return _callback_refusal; }
+  inline void set_mutates_per_callback(bool mutates) {
+    _mutates_per_callback = mutates;
+  }
+  inline bool mutates_per_callback() const { return _mutates_per_callback; }
 
   /**
    * returns the being offset of first parameter in callee's local variable
@@ -253,6 +266,8 @@ public:
     _callbacks.clear();
     _pre_state = NULL;
     _reentered = false;
+    _callback_refusal = NULL;
+    _mutates_per_callback = false;
     clear_param_list();
     _callee_holder_name.clear();
     _callee_name.clear();

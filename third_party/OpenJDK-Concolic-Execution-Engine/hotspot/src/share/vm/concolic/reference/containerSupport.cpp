@@ -868,12 +868,15 @@ SharedFieldVersions::Location ContainerSupport::state_base_before_operation(
   SharedFieldVersions::InitialSnapshot snapshot;
   snapshot_for_receiver(container, &snapshot, true);
 
-  // state_location needs the container shadow, which the walk above mints.
+  // The state the walk stated, or -- a refused walk mints none -- the bare
+  // root, so the log still begins here and its INITIAL states the refusal
+  // (a map caught mid-resize is RESIZING, not an unreadable class).
+  Expression *base =
+      ConcolicMngr::ctx->container_state(container, shape(container));
+  if (base == NULL) return none;
   SharedFieldVersions::Location location = state_location(container);
   if (!location.is_valid()) return none;
   if (SharedFieldVersions::is_tracked(location)) return location;
-  Expression *base = ConcolicMngr::ctx->find_container_state(container);
-  if (base == NULL) return none;
   SharedFieldVersions::publish_initial(
       location, base, SharedFieldVersions::ConcreteBits(), snapshot);
   if (started != NULL) *started = snapshot;

@@ -47,8 +47,12 @@ public:
 
   virtual bool is_boolean_expression();
   virtual bool is_guarded_reference_read();
+  // Only a container query's read is the view it returned; a read of a
+  // reference cell is a choice among the objects its writers stored, and a
+  // call through it keeps the read itself as its owner, whatever it holds.
   virtual bool derived_container_value(Expression **owner) {
-    return _observed_value->derived_container_value(owner);
+    return _location_kind == "MAP_STATE"
+        && _observed_value->derived_container_value(owner);
   }
   virtual std::string get_name();
 

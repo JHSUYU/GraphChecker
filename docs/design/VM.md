@@ -97,12 +97,15 @@ muted, a frame whose receiver is one of them is a callback: it runs with propaga
 frame of its own (`ShadowStack::push_callback`), its parameters seeded by the model's contract
 (`CallbackSeeder`), and the muted call's handle is suspended on a stack (at most 4 deep), so a
 model call inside the callback nests. When its frame pops, what it returned (its expression, else
-its concrete value when the call records) and the conditions its path recorded (`path`,
-`path_negation`: a predicate compiled to branches returns a constant) are logged on the call
-(`CallbackResult`), and the model's finish builds the mutation from the log. Its side effects are
-hooked like any interpreted code. A callback that calls back into its call's map is refused
-(`CALLBACK_REENTERS_CONTAINER`). An unmarked JDK branch inside a callback (`maxBy`) chooses a value
-the result then pins by identity.
+its concrete value) and the conditions its path recorded (`path`, `path_negation`: a predicate
+compiled to branches returns a constant) are logged on the call (`CallbackResult`), and the
+model's finish builds the mutation from the log. Its side effects are hooked like any interpreted
+code. A callback the stack declines (a fifth window) runs muted and unlogged, and its call refuses
+its map (`CALLBACK_DEPTH_EXCEEDED`). A callback that calls back into its call's map is refused
+(`CALLBACK_REENTERS_CONTAINER`). A call that mutates as its callbacks answer (`removeIf`,
+`replaceAll`) and unwinds with an exception after one ran refuses its map
+(`CALLBACK_THREW_AFTER_MUTATION`). An unmarked JDK branch inside a callback (`maxBy`) chooses a
+value the result then pins by identity.
 
 **Muted subtrees** run concretely and return no expression: `org/slf4j/`, `org/apache/log4j/`,
 `org/apache/commons/logging/`, `java/util/logging/` (observation only), `com/sun/crypto/provider/`,
@@ -128,10 +131,12 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 Every other collection (`TreeMap`, `TreeSet`, `ConcurrentSkipList*`, `LinkedList`, `CopyOnWrite*`,
 `PriorityQueue`, blocking queues, `IdentityHashMap`, `WeakHashMap`, `EnumMap`) is interpreted as
 plain objects: its elements' fields propagate, but it has no container state and no version log.
-A modeled call with a callback on one of the four maps is admitted even when nothing symbolic
-reached it: its body runs muted and the callback with propagation, and it records only if a
-callback's result or path was symbolic (then an untracked map's log starts at that mutation, its
-base unstated as `MUTATED_BEFORE_FIRST_READ`).
+A modeled call with a callback on one of the four maps is admitted when an argument is symbolic or
+the map's state is tracked; otherwise it runs as bytecode. A visiting callback (`forEach`,
+`replaceAll`, `removeIf`) is seeded with a READ of the state per element, so a decision on it is
+one path condition per element per call; past the snapshot bound (64,
+`-Dcausynth.concolic.initial.snapshot.max`) a call's visits are not seeded and it refuses its map
+(`CALLBACK_VISITS_OVER_BOUND`).
 
 ## 5. Shared-state versioning
 
@@ -240,7 +245,8 @@ modeled call made is aliased to it, and one the program built resolves at `state
 `KeySetView` is aliased at its first model event). A log opens with an INITIAL version stating
 what the container held when tracking began (`ContainerSupport#snapshot_for_receiver`): walkable
 for the modeled classes and `Object[]` -- a `ConcurrentHashMap` by its table's bins, tree bins by
-`first`, a resize in flight refused as `RESIZING`, past 4096 bins over the bound -- capped at 64
+`first`, a resize in flight refused as `RESIZING` (the log still starts, at the bare root), past
+4096 bins over the bound -- capped at 64
 members, else a stated refusal (`NO_MODELLED_SHAPE`, `UNREADABLE_CONTAINER`,
 `MUTATED_BEFORE_FIRST_READ`). `compose/ContainerStateModel` and `compose/ContainerSmtCodec` lower
 the chains (`AssocState` for maps, `IndexedState` for lists and arrays).
@@ -248,8 +254,12 @@ the chains (`AssocState` for maps, `IndexedState` for lists and arrays).
 **The owner of a relation.** A query or mutation whose receiver slot carried a guarded reference
 read -- a tracked reference field, an `AtomicReference`, a container `READ` result -- states that
 read as its `owner` member (`ContainerSupport::receiver_owner`), so the choice the read made
-survives while the relation's receiver stays the observed object's state; relations built on a
-view, iterator or entry inherit their node's owner. Absent otherwise.
+survives while the relation's receiver stays the observed object's state. A read of a reference
+cell is its own owner even when the object it returned is a view (the view's node is not looked
+through); relations built on a view, iterator or entry a container query returned inherit that
+node's owner. Absent otherwise. A `Collections` wrapper held in a cell runs as bytecode and reaches
+its map through its own untracked field, so a query through it carries no owner; the cell's
+`referentState` then names a container that is not the stored object.
 
 **Map operations beyond get/put.** `READ_OR_DEFAULT [k, d]` (`getOrDefault`), `PUT_ALL [source
 state]`, and `ENTRY [k]` -- the entry of key `k` a view's callback visits, whose `getKey`/`getValue`

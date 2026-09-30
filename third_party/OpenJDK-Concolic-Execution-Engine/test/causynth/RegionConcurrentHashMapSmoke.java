@@ -14,7 +14,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * contract, and what it returned is what the mutation stores -- its side
  * effects are versioned like any code's; entrySet().removeIf removes each
  * visited key under the predicate's result; a newKeySet is its map; and
- * the INITIAL walk reads a treeified bin.</p>
+ * the INITIAL walk reads a treeified bin.  A callback call on a map
+ * nothing symbolic reached runs as bytecode; a removeIf whose predicate
+ * throws after removing refuses its map (CALLBACK_THREW_AFTER_MUTATION); a
+ * callback five calls deep, past the window stack, refuses its call's map
+ * (CALLBACK_DEPTH_EXCEEDED).</p>
  */
 public final class RegionConcurrentHashMapSmoke {
     private static final class Input {
@@ -118,6 +122,37 @@ public final class RegionConcurrentHashMapSmoke {
         // The INITIAL walk of a treeified bin.
         tree.put(new Colliding(99), (int) input.generation);
         String treeVersions = System.getSharedMapVersions(tree);
+
+        // A callback call nothing symbolic reached: bytecode, no log.
+        Map<Long, Long> untracked = new ConcurrentHashMap<>();
+        untracked.computeIfAbsent(1L, key -> key + 1);
+        String untrackedLog = System.getSharedMapVersions(untracked);
+
+        // A predicate that throws after the first removal.
+        Map<Long, Long> removing = new ConcurrentHashMap<>();
+        removing.put(input.generation, 1L);
+        removing.put(input.generation + 1, 2L);
+        try {
+            removing.keySet().removeIf(key -> {
+                if (key > 7L) throw new IllegalStateException("partial");
+                return true;
+            });
+        } catch (IllegalStateException expected) {
+            // the map kept what the predicate saw before it threw
+        }
+        String removingLog = System.getSharedMapVersions(removing);
+
+        // Five nested callback calls: the fifth is past the window stack.
+        Map<Long, Long> m1 = new ConcurrentHashMap<>();
+        Map<Long, Long> m2 = new ConcurrentHashMap<>();
+        Map<Long, Long> m3 = new ConcurrentHashMap<>();
+        Map<Long, Long> m4 = new ConcurrentHashMap<>();
+        Map<Long, Long> m5 = new ConcurrentHashMap<>();
+        m1.computeIfAbsent(input.generation, a -> m2.computeIfAbsent(a,
+                b -> m3.computeIfAbsent(b, c -> m4.computeIfAbsent(c,
+                        d -> m5.computeIfAbsent(d, e -> e + 1)))));
+        // Four windows stand open inside m4's callback; m5's is the fifth.
+        String deepest = System.getSharedMapVersions(m5);
         System.endConcolic();
 
         System.out.println("VALUE " + value);
@@ -160,6 +195,12 @@ public final class RegionConcurrentHashMapSmoke {
         require(treeVersions.contains("\"initialSnapshot\":{\"stated\":true,"
                         + "\"entries\":12,"),
                 "the treeified bin was not walked: " + treeVersions);
+        require(untrackedLog.contains("\"selected\":false"),
+                "a concrete callback call was modeled: " + untrackedLog);
+        require(removingLog.contains("CALLBACK_THREW_AFTER_MUTATION"),
+                "a partial removeIf was not refused: " + removingLog);
+        require(deepest.contains("CALLBACK_DEPTH_EXCEEDED"),
+                "a declined callback window was not refused: " + deepest);
         System.out.println("CAUSYNTH_REGION_CONCURRENT_HASH_MAP_SMOKE_OK");
     }
 
