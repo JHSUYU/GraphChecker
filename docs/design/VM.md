@@ -138,22 +138,28 @@ observation read the word they state under the location's lock (`publish_held`,
 
 A read of a tracked location resolves to the newest retained version and states the word it
 loaded. When that version stored another word, a write the hooks never saw came between (a muted
-subtree's store, JNI): the read observes a retained version that stored exactly the loaded word if
-there is one, else publishes an `UNOBSERVED` version holding the loaded constant, minted under the
-lock; either way the location is marked incomplete (`UNOBSERVED_WRITE`). Every read states
-`observedExact` (the loaded word equals its observed version's stored word; never for a reference
-or a container read) and `writerSetComplete` (the location's writer set as of the read); a read that
-returned its version's word shares that version's constant.
+subtree's store, JNI): the read names a retained version that stored exactly the loaded word if
+there is one (ABA: a newer hooked version overwrote it, so the read is not exact), else publishes an
+`UNOBSERVED` version holding the loaded constant, minted under the lock; either way the location is
+marked incomplete (`UNOBSERVED_WRITE`). Every read states `observedExact` (the loaded word equals
+its observed version's stored word and that version is the newest; never for a reference or a
+container read), `writerSetComplete` (the location's writer set as of the read) and, when true,
+`unnamedWriter` (a writer the log never named reached the location: every incompleteness reason
+but `VERSION_BOUND`); a read that returned its version's word shares that version's constant.
 
 ### 5.3 Guarded concrete stores
 
 The session's guarded-store table (`installGuardedStoreSites`, from `runtime/GuardedStoreSites`)
-lists methods with control-dependent stores and their guard branch sites. A concrete store in a
-listed method, after one of its guards decided symbolically on this path, starts the location's log:
-a container mutation (`put`, `remove`, `clear`, `add`, `offer`, `set`;
-`ContainerSupport#guarded_mutation`) publishes a `STATE` version over its stated base; a field or
-array-element store publishes an `INITIAL` of the word it replaced, then its `WRITE` (the owner is
-given a shadow if it has none).
+lists the scope map's control-dependent store sites, one line each: the method, the store (`FIELD
+a/b/C.f`, or `CALL <name>` for a container mutation), and the site's guard branch sites. A concrete
+store at a listed site, after one of that site's guards decided symbolically on this path, starts the
+location's log: a container mutation (`put`, `remove`, `clear`, `add`, `offer`, `set`;
+`ContainerSupport#guarded_mutation`) publishes a `STATE` version over its stated base; a
+`putfield`/`putstatic` publishes an `INITIAL` of the word it replaced, then its `WRITE` (the owner
+is given a shadow if it has none). Neither states a path guard. Another store in the same method is
+not admitted; nor is an array-element store (the scope map lists none). A method's rows are looked
+up once per thread per table (a thread-local memo keyed by the `Method*`), so the map lock is taken
+once per method, not per store.
 
 ### 5.4 Observation
 

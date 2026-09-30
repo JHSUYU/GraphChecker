@@ -284,14 +284,9 @@ jlong SharedFieldVersions::publish_value(const Location &location,
   if (!location.is_valid() || value == NULL) return 0;
   // A location no symbolic value has reached costs one counter read.
   if (!symbolic && path_guard == NULL && !has_carriers()) return 0;
-  // A concrete store is evidence too when it is control-dependent on a
-  // symbolic decision: what the location holds afterwards is a function of
-  // that predicate (HDFS-11741's removeExpiredKeys under a CLOCK root).  The
-  // plan says which store methods are control-dependent on which branch
-  // sites (install_guarded_store_sites); asked only when it can matter.
-  const bool starts_log = symbolic
-      || (path_guard != NULL && !is_tracked(location)
-          && guarded_store_admitted());
+  // A symbolic value starts the log; a guarded concrete publisher (a
+  // container mutation) decides that itself before calling here.
+  const bool starts_log = symbolic;
   Store store;
   prepare_store(&store, location, value, path_guard, symbolic, starts_log,
                 version_kind);
@@ -803,88 +798,151 @@ std::string SharedFieldVersions::version_label(const Version &version) {
 // Guarded stores.
 // ---------------------------------------------------------------------------
 
-// Store method -> the branch sites its stores are control-dependent on.
-// Session state under _mutex, replaced wholesale by an install.
-typedef std::map<std::string, std::vector<std::string> > GuardedStoreTable;
+// Store method -> its store sites -> the branch sites each is
+// control-dependent on.  Session state under _mutex, replaced wholesale by an
+// install; a row is never modified after it, so a pointer to one is good
+// until the next install (the epoch).
+typedef std::map<std::string, std::vector<std::string> > GuardedStores;
+typedef std::map<std::string, GuardedStores> GuardedStoreTable;
 static GuardedStoreTable _guarded_store_sites;
-// Method -> its row of the table, or NULL for a method the table does not
-// name; filled on first ask, emptied with the table.
-typedef std::map<Method *, const std::vector<std::string> *> GuardedMethodMemo;
-static GuardedMethodMemo _guarded_methods;
+
+namespace {
+
+// A thread's memo of a method's rows, direct-mapped by the Method pointer.
+// Read and written by its own thread only, so no lock: a miss takes the map
+// lock once per method per thread per table.
+struct GuardedMemo {
+  Method *method;
+  int epoch;
+  const GuardedStores *stores;
+};
+const int GUARDED_MEMO_SIZE = 64;
+__thread GuardedMemo _guarded_memo[GUARDED_MEMO_SIZE];
+
+// The store method's key, as the table spells it.
+std::string method_key(Method *method) {
+  ResourceMark rm;
+  return std::string(method->method_holder()->name()->as_C_string()) + "#"
+      + method->name()->as_C_string() + method->signature()->as_C_string();
+}
+
+}  // namespace
+
+volatile int SharedFieldVersions::_guarded_store_epoch = 0;
 
 int SharedFieldVersions::install_guarded_store_sites(const char *table) {
   MAP_LOCK;
   _guarded_store_sites.clear();
-  _guarded_methods.clear();
   _guarded_store_count = 0;
+  _guarded_store_epoch = _guarded_store_epoch + 1;
   if (table == NULL) return 0;
   std::string text(table);
   size_t at = 0;
+  int sites = 0;
   while (at < text.size()) {
     size_t end = text.find('\n', at);
     if (end == std::string::npos) end = text.size();
     std::string line = text.substr(at, end - at);
     at = end + 1;
-    size_t tab = line.find('\t');
-    if (tab == std::string::npos || tab == 0) continue;
-    std::string method = line.substr(0, tab);
-    // The remaining TAB-separated fields are the guard ids, which are Soot
-    // signatures with commas in their parameter lists: nothing else splits.
-    std::vector<std::string> guards;
-    size_t from = tab + 1;
+    // TAB-separated, nothing else: a guard id is a Soot signature plus a
+    // unit index, and its parameter list has commas.
+    std::vector<std::string> fields;
+    size_t from = 0;
     while (from <= line.size()) {
       size_t next = line.find('\t', from);
       if (next == std::string::npos) next = line.size();
-      std::string guard = line.substr(from, next - from);
-      if (!guard.empty()) guards.push_back(guard);
+      std::string field = line.substr(from, next - from);
+      if (!field.empty()) fields.push_back(field);
       from = next + 1;
     }
-    // A store method with no guard site admits nothing; drop the row.
-    if (!guards.empty()) _guarded_store_sites[method] = guards;
+    // A site with no guard is control-dependent on nothing: no row.
+    if (fields.size() < 3) continue;
+    std::vector<std::string> &guards =
+        _guarded_store_sites[fields[0]][fields[1]];
+    if (guards.empty()) sites++;
+    guards.insert(guards.end(), fields.begin() + 2, fields.end());
   }
-  _guarded_store_count = (int) _guarded_store_sites.size();
-  return _guarded_store_count;
+  _guarded_store_count = sites;
+  return sites;
 }
 
-bool SharedFieldVersions::guarded_store_admitted(Method *store_method) {
-  if (ConcolicMngr::ctx == NULL || _guarded_store_count == 0) return false;
-  std::vector<std::string> guards;
-  if (store_method != NULL) {
-    MAP_LOCK;
-    GuardedMethodMemo::const_iterator memo = _guarded_methods.find(store_method);
-    const std::vector<std::string> *row = NULL;
-    if (memo != _guarded_methods.end()) {
-      row = memo->second;
-    } else {
-      ResourceMark rm;
-      std::string method = std::string(
-          store_method->method_holder()->name()->as_C_string()) + "#"
-          + store_method->name()->as_C_string()
-          + store_method->signature()->as_C_string();
-      GuardedStoreTable::const_iterator found =
-          _guarded_store_sites.find(method);
-      row = found == _guarded_store_sites.end() ? NULL : &found->second;
-      _guarded_methods[store_method] = row;
+namespace {
+
+// A method's store sites, or NULL: from the thread's memo, else looked up
+// once under the map lock and remembered.
+const GuardedStores *stores_of(Method *method, pthread_mutex_t *map_lock,
+                               int epoch) {
+  GuardedMemo &memo =
+      _guarded_memo[(int)(((uintptr_t) method >> 3) % GUARDED_MEMO_SIZE)];
+  if (memo.method == method && memo.epoch == epoch) return memo.stores;
+  const std::string key = method_key(method);
+  const GuardedStores *stores = NULL;
+  pthread_mutex_lock(map_lock);
+  GuardedStoreTable::const_iterator found = _guarded_store_sites.find(key);
+  if (found != _guarded_store_sites.end()) stores = &found->second;
+  pthread_mutex_unlock(map_lock);
+  memo.method = method;
+  memo.epoch = epoch;
+  memo.stores = stores;
+  return stores;
+}
+
+// Whether one of the site's guards decided on this path.  The row does not
+// change until the next install, so no lock is held while the thread
+// context is asked.
+bool site_decided(const GuardedStores *stores, const std::string &store) {
+  if (stores == NULL) return false;
+  GuardedStores::const_iterator site = stores->find(store);
+  if (site == stores->end()) return false;
+  for (size_t index = 0; index < site->second.size(); ++index) {
+    if (ConcolicMngr::ctx->branch_site_decided(site->second[index])) {
+      return true;
     }
-    if (row == NULL) return false;
-    guards = *row;
-  } else {
-    ThreadContext::CodeSite standing;
-    if (!ConcolicMngr::ctx->current_code_site(&standing)) return false;
-    std::string method = standing.class_name + "#" + standing.method_name
-        + standing.method_descriptor;
-    MAP_LOCK;
-    GuardedStoreTable::const_iterator found =
-        _guarded_store_sites.find(method);
-    if (found == _guarded_store_sites.end()) return false;
-    guards = found->second;
-  }
-  // Outside the lock: asking the thread context is not this store's business
-  // to do while holding the version store.
-  for (size_t index = 0; index < guards.size(); ++index) {
-    if (ConcolicMngr::ctx->branch_site_decided(guards[index])) return true;
   }
   return false;
+}
+
+}  // namespace
+
+bool SharedFieldVersions::guarded_store_admitted(Method *store_method,
+                                                 const std::string &store) {
+  if (ConcolicMngr::ctx == NULL || _guarded_store_count == 0) return false;
+  if (store_method != NULL) {
+    return site_decided(
+        stores_of(store_method, &_mutex, _guarded_store_epoch), store);
+  }
+  ThreadContext::CodeSite standing;
+  if (!ConcolicMngr::ctx->current_code_site(&standing)) return false;
+  const GuardedStores *stores = NULL;
+  {
+    MAP_LOCK;
+    GuardedStoreTable::const_iterator found = _guarded_store_sites.find(
+        standing.class_name + "#" + standing.method_name
+            + standing.method_descriptor);
+    if (found != _guarded_store_sites.end()) stores = &found->second;
+  }
+  return site_decided(stores, store);
+}
+
+bool SharedFieldVersions::guarded_field_store_admitted(
+    Method *store_method, ConstantPoolCacheEntry *entry) {
+  if (ConcolicMngr::ctx == NULL || _guarded_store_count == 0
+      || store_method == NULL || entry == NULL || !entry->is_field_entry()) {
+    return false;
+  }
+  // The method first: almost every store's method has no row, and its
+  // answer is a thread-local lookup.
+  const GuardedStores *stores =
+      stores_of(store_method, &_mutex, _guarded_store_epoch);
+  if (stores == NULL) return false;
+  Klass *holder = entry->f1_as_klass();
+  if (holder == NULL || !holder->oop_is_instance()) return false;
+  ResourceMark rm;
+  const std::string store = std::string("FIELD ")
+      + holder->name()->as_C_string() + "."
+      + InstanceKlass::cast(holder)->field_name(entry->field_index())
+            ->as_C_string();
+  return site_decided(stores, store);
 }
 
 SharedFieldVersions::EventSite SharedFieldVersions::current_site() {

@@ -12,8 +12,11 @@ import java.util.List;
  *       event, so a resume neither repeats nor skips a location.</li>
  *   <li>D4: a reference a thread outside every region stores is a version,
  *       unattributed, naming what it stored.</li>
- *   <li>D5: a concrete store control-dependent on a symbolic decision starts
- *       a scalar field's log, over an INITIAL of the word it replaced.</li>
+ *   <li>D5: a concrete store at a store site the scope map lists as
+ *       control-dependent on a symbolic decision taken on this path starts a
+ *       scalar field's log, over an INITIAL of the word it replaced, with no
+ *       path guard (a guarded container mutation states none); another
+ *       store site under the same guard does not.</li>
  *   <li>D7: attaching a container publishes the attached state, and a
  *       version of each tracked element.</li>
  * </ul>
@@ -30,6 +33,7 @@ public final class RegionVersionDefectsSmoke {
 
     private static final class Flag {
         int on;
+        int off;
     }
 
     private static final class Holder {
@@ -85,9 +89,12 @@ public final class RegionVersionDefectsSmoke {
         System.symbolizeExactField(clock, Clock.class.getName(), "now", "I",
                 "DEFECT.NOW");
         Flag flag = new Flag();
+        // Per store site: the table lists Flag.on's store, not Flag.off's,
+        // though both are in the method under the one guard.
         require(System.installGuardedStoreSites(
                 "RegionVersionDefectsSmoke#guarded(LRegionVersionDefectsSmoke"
                         + "$Clock;LRegionVersionDefectsSmoke$Flag;)V\t"
+                        + "FIELD RegionVersionDefectsSmoke$Flag.on\t"
                         + GUARD + "\n") == 1, "table not installed");
         guarded(clock, flag);
         String guardedLog = System.getSharedFieldVersions(flag,
@@ -96,8 +103,14 @@ public final class RegionVersionDefectsSmoke {
                         && guardedLog.contains("\"versionKind\":\"WRITE\"")
                         && guardedLog.contains("\"Y_I_0\"")
                         && guardedLog.contains("\"Y_I_1\"")
-                        && guardedLog.contains("DEFECT.NOW"),
-                "the guarded store started no log: " + guardedLog);
+                        && !guardedLog.contains("DEFECT.NOW"),
+                "the guarded store started no log, or states the path"
+                        + " condition as its guard: " + guardedLog);
+        String unlistedLog = System.getSharedFieldVersions(flag,
+                Flag.class.getName(), "off", "I");
+        require(!unlistedLog.contains("\"versionKind\""),
+                "a store site the table does not list started a log: "
+                        + unlistedLog);
 
         // D4.
         final Holder holder = new Holder();
@@ -173,6 +186,7 @@ public final class RegionVersionDefectsSmoke {
         long marked = System.markConcolicBranch(GUARD, 1);
         if (clock.now > 50) {
             flag.on = 1;
+            flag.off = 1;
         }
         require(marked > 0L, "branch marker rejected");
     }

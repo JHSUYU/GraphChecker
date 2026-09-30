@@ -321,13 +321,14 @@ An occurrence of a region that reads a tracked cell records its branches from re
 
 ### 5.3 Guarded stores
 
-`runtime/GuardedStoreSites#install` hands the VM one line per method holding a guarded
-`WRITE_SITE` (`methodKey`, then its guard site ids, tab-separated), from the map named by
+`runtime/GuardedStoreSites#install` hands the VM one line per guarded `WRITE_SITE` store
+(`methodKey`, the store as the VM names it -- `CALL <name>` from `declaredCallee`, else `FIELD
+a/b/C.f` from `cell` -- then its guard site ids, tab-separated), from the map named by
 `CAUSYNTH_STATIC_SCOPE_MAP`; a missing or refused table fails the session by name
-(`GUARDED_STORE_SITES_*`). The VM uses it to version a concrete container mutation made under a
-guard of a listed method that decided symbolically (VM.md §5.3). A `publishedFrom` write site's
-guards join its method's line: SOLR-18406's `updateKnownCommitPoints` lists the `isDeleted()`
-branch its `map.put` runs under.
+(`GUARDED_STORE_SITES_*`). The VM uses it to version a concrete store at a listed site made after
+one of that site's guards decided symbolically (VM.md §5.3). A `publishedFrom` write site's guards
+join its store's line: SOLR-18406's `updateKnownCommitPoints` lists the `isDeleted()` branch its
+`map.put` runs under (`CALL put`).
 
 ### 5.4 READ placeholders
 

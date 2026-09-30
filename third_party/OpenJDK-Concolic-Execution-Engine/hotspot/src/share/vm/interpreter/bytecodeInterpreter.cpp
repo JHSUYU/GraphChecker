@@ -2609,24 +2609,19 @@ run:
   SharedFieldVersions::Store astore;                                           \
   bool astore_selected = false;
 
-// A symbolic value is kept, a concrete one where the element is tracked or
-// where the store is control-dependent on a symbolic decision (D5: such a
-// store used to start no log for an element, only for a container).
+// A symbolic value is kept, a concrete one where the element is tracked.
+// (The scope map lists no array-element store sites, so a guarded concrete
+// element store starts no log.)
 #define CONCOLIC_ASTORE_SELECT(value_exp)                                      \
-  if (arrObj->is_symbolic()) {                                                 \
-    const bool astore_guarded = (value_exp) == NULL                            \
-        && ConcolicMngr::ctx->path_guarded()                                   \
-        && SharedFieldVersions::guarded_store_admitted(METHOD);                \
-    if ((value_exp) != NULL || astore_guarded                                  \
-        || SharedFieldVersions::has_carriers()) {                              \
-      SharedFieldVersions::prepare_store(                                      \
-          &astore,                                                             \
-          SharedFieldVersions::Location(arrObj->get_sym_rid(), index,          \
-              SharedFieldVersions::LOC_ARRAY_ELEMENT),                         \
-          (value_exp), ConcolicMngr::ctx->path_guard(), (value_exp) != NULL,   \
-          astore_guarded);                                                     \
-      astore_selected = true;                                                  \
-    }                                                                          \
+  if (arrObj->is_symbolic()                                                    \
+      && ((value_exp) != NULL || SharedFieldVersions::has_carriers())) {       \
+    SharedFieldVersions::prepare_store(                                        \
+        &astore,                                                               \
+        SharedFieldVersions::Location(arrObj->get_sym_rid(), index,            \
+            SharedFieldVersions::LOC_ARRAY_ELEMENT),                           \
+        (value_exp), ConcolicMngr::ctx->path_guard(), (value_exp) != NULL,     \
+        false);                                                                \
+    astore_selected = true;                                                    \
   }
 
 #define CONCOLIC_ASTORE_UNATTRIBUTED                                           \
@@ -3525,9 +3520,12 @@ run:
             // start a log for a container only).  The relaxed counter
             // dismisses the rest outright for a workload that has written
             // nothing symbolic anywhere.
+            // Per store site: this field store must be one the scope map
+            // lists as control-dependent, on a guard decided on this path.
             const bool guarded = sym_exp == NULL
                 && ConcolicMngr::ctx->path_guarded()
-                && SharedFieldVersions::guarded_store_admitted(METHOD);
+                && SharedFieldVersions::guarded_field_store_admitted(
+                       METHOD, cache);
             if (sym_exp != NULL || guarded
                 || SharedFieldVersions::has_carriers()) {
               SymInstance *carrier_shadow = owner_instance;
@@ -3538,7 +3536,10 @@ run:
               if (carrier_shadow != NULL) {
                 // NULL value for a concrete store: its constant is built only
                 // if the location turns out to keep it.  The guard is folded
-                // outside every engine lock.
+                // outside every engine lock.  An admitted guarded store states
+                // no path guard, as a guarded container mutation states none:
+                // its INITIAL is the "did not happen" arm, and the whole path
+                // condition would tie it to decisions it does not depend on.
                 SharedFieldVersions::prepare_store(
                     &carrier_store,
                     SharedFieldVersions::Location(
@@ -3546,8 +3547,8 @@ run:
                         (Bytecodes::Code)opcode == Bytecodes::_putstatic
                             ? SharedFieldVersions::LOC_STATIC_FIELD
                             : SharedFieldVersions::LOC_INSTANCE_FIELD),
-                    sym_exp, ConcolicMngr::ctx->path_guard(), sym_exp != NULL,
-                    guarded);
+                    sym_exp, guarded ? NULL : ConcolicMngr::ctx->path_guard(),
+                    sym_exp != NULL, guarded);
                 carrier_write = true;
               }
             }

@@ -524,19 +524,29 @@ public:
   // ---- guarded stores ------------------------------------------------------
 
   /**
-   * Installs the guarded-store table (store method -> the woven branch
-   * sites its stores are control-dependent on, tab-separated) and returns
-   * how many store methods it names.  Empty admits nothing.
+   * Installs the guarded-store table and returns how many store sites it
+   * names.  One line per store site the scope map lists as control-dependent:
+   * `<internal/Class>#<name><descriptor> TAB <store> (TAB <guard site>)*`,
+   * where <store> is `FIELD <internal/Owner>.<field>` for a field store and
+   * `CALL <method name>` for a container mutation's call, and the guard
+   * sites are the woven branch site ids the runtime passes to
+   * markConcolicBranch.  Empty admits nothing.
    */
   static int install_guarded_store_sites(const char *table);
 
   /**
-   * Whether a concrete store by the calling thread, right here (in
-   * `store_method`, or the innermost frame's method when NULL), is
-   * control-dependent on a symbolic decision it has already taken.  A
-   * method is looked up in the table once per session.
+   * Whether a concrete store by the calling thread at the store site
+   * (`store_method`, or the innermost frame's method when NULL; `store` as
+   * the table spells it) is control-dependent on a symbolic decision one of
+   * that site's guards took on this path.  A method's rows are found once
+   * per thread per table, with no lock.
    */
-  static bool guarded_store_admitted(Method *store_method = NULL);
+  static bool guarded_store_admitted(Method *store_method,
+                                     const std::string &store);
+
+  /** The same for a putfield/putstatic, whose store names its field. */
+  static bool guarded_field_store_admitted(Method *store_method,
+                                           ConstantPoolCacheEntry *entry);
 
   /** Where the calling thread stands, for one logged event to state. */
   static EventSite current_site();
@@ -604,8 +614,10 @@ private:
   static bool _open;
   static SlotStore _slots;
   static volatile int _carrier_count;
-  // Relaxed reader, _mutex writer: the guarded-store table's size.
+  // Relaxed reader, _mutex writer: the guarded-store table's size, and its
+  // install count (thread-local lookups of an older table are discarded).
   static volatile int _guarded_store_count;
+  static volatile int _guarded_store_epoch;
   static pthread_mutex_t _mutex;
   static pthread_mutex_t _stripes[STRIPES];
 
