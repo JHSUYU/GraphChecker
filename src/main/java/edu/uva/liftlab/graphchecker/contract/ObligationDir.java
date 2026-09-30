@@ -15,7 +15,11 @@ import java.util.List;
  */
 public final class ObligationDir {
     public static final String OBLIGATION = "obligation.jsonl";
+    /** The obligation's answer, written once by its worker. */
     public static final String RESULT = "obligation_result.jsonl";
+    /** What a replay stated, which its worker makes the answer once the
+     *  replay's process group is gone. */
+    public static final String REPLAY_VERDICT = "replay_verdict.jsonl";
     public static final String FOCUSED_TASK = "focused_task.jsonl";
 
     /** The wave directories an iteration publishes, by name. */

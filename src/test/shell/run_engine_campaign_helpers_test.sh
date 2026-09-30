@@ -1481,6 +1481,41 @@ $(cat "${withdraw_worker}/obligation_result.jsonl")"
   || fail "withdrawing the session changed the recorded detail: \
 $(cat "${withdraw_worker}/obligation_result.jsonl")"
 
+# REPLAY-BOUND-5: ONE WRITER, after the replay's process group is gone.
+# solr-18406 ra1: a TERM on the bound ended the launcher at once while the
+# JVM below it ran its shutdown hooks, which rewrote the verdict a second
+# after the worker wrote its own, naming the session the worker had just
+# withdrawn.  Here a group member outlives its launcher, shrugs off the TERM
+# and writes the answer file late: the worker's row still stands, because
+# the worker writes only once nothing of the group runs.
+late_dir="${bound_dir}/late"
+late_worker="${late_dir}/obligation"
+mkdir -p "${late_worker}" "${late_dir}/sessions"
+cat >"${late_dir}/replay.sh" <<EOF
+#!/usr/bin/env bash
+( trap '' TERM; sleep 3
+  jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.L",
+    verdict: "ADMITTED", sessionId: "SESSION.late", detail: "late"}' \\
+    >"\${CAUSYNTH_CONCOLIC_WORKER_DIR}/obligation_result.jsonl" ) &
+sleep 120
+EOF
+chmod +x "${late_dir}/replay.sh"
+# Four seconds: the launcher must be running when the bound fires.
+replay_timeout_s=4
+concolic_replay_command="${late_dir}/replay.sh"
+printf '{"taskId":"TASK.1"}\n' >"${late_worker}/focused_task.jsonl"
+(
+  campaign_adapter_kill_grace_s=10
+  campaign_obligation_replay OB.L "${withdraw_dir}/classes" \
+    "${late_worker}" "${late_dir}/sessions" "${withdraw_dir}/seed_plan.jsonl"
+) >"${late_worker}/worker.log" 2>&1 \
+  || fail "REPLAY-BOUND-5: the worker failed: $(cat "${late_worker}/worker.log")"
+[[ "$(jq -r '.verdict + " " + .detail' \
+    "${late_worker}/obligation_result.jsonl")" \
+    == "NOT_ADMITTED replay exceeded replay_timeout_s=4" ]] \
+  || fail "REPLAY-BOUND-5: a member of the replay's group wrote after the \
+worker: $(cat "${late_worker}/obligation_result.jsonl")"
+
 # EARLY-END-1: a replay a refusal decided ended there, and its verdict names
 # no session (RowRuntime.closeSession): the session it opened is a prefix of
 # a run and leaves the corpus on the host that ran it, under the worker; the
@@ -1498,7 +1533,7 @@ jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
   >"\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.cut/manifest.json"
 jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.R",
   verdict: "NOT_ADMITTED", sessionId: "", detail: "wrong decision; ended"}' \\
-  >"\${CAUSYNTH_CONCOLIC_WORKER_DIR}/obligation_result.jsonl"
+  >"\${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
 EOF
 chmod +x "${refused_dir}/replay.sh"
 replay_timeout_s=60
@@ -1650,12 +1685,11 @@ done
   || fail "the work queue does not hold one claim per obligation"
 unset -f campaign_obligation_worker
 
-# POOL-2: a failed obligation still fails the WAVE, and still lets the wave
-# finish.  campaign_wait_workers' semantics are what the barrier had: the
-# remaining obligations ran after one of them failed, and the wave failed at
-# the end.  A pool that stopped its slot on the first failure would discard
-# verdicts the wave had already paid for -- the same loss REPLAY-BOUND-1
-# exists to prevent.
+# POOL-2: an obligation whose worker did not finish is that obligation's own
+# answer, never the wave's death (a remote worker exiting nonzero failed the
+# campaign), and the rest of the wave runs.  A pool that stopped its slot on
+# the first failure would discard verdicts the wave had already paid for --
+# the same loss REPLAY-BOUND-1 exists to prevent.
 pool_fail_dir="${test_tmp}/pool-fail"
 mkdir -p "${pool_fail_dir}/wave"
 for pool_job in A B C D; do mkdir -p "${pool_fail_dir}/wave/${pool_job}"; done
@@ -1668,16 +1702,28 @@ campaign_obligation_worker() {
     >"${worker}/obligation_result.jsonl"
 }
 concolic_worker_count=2
-campaign_dispatch_wave "${pool_fail_dir}/wave" /dev/null /dev/null /dev/null \
-  /dev/null A B C D >"${pool_fail_dir}/dispatch.log" 2>&1 \
-  && fail "one failed obligation did not fail the wave"
+mkdir -p "${pool_fail_dir}/sessions/SESSION.B"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST", sessionId: "SESSION.B",
+  role: "FOCUSED", obligationIds: ["B"]}' \
+  >"${pool_fail_dir}/sessions/SESSION.B/manifest.json"
+campaign_dispatch_wave "${pool_fail_dir}/wave" /dev/null /dev/null \
+  "${pool_fail_dir}/sessions" /dev/null A B C D \
+  >"${pool_fail_dir}/dispatch.log" 2>&1 \
+  || fail "one unfinished obligation failed the wave: \
+$(cat "${pool_fail_dir}/dispatch.log")"
 for pool_job in A B C D; do
   [[ -f "${pool_fail_dir}/wave/${pool_job}/ran" ]] \
     || fail "obligation ${pool_job} never ran: one failure stopped its slot"
 done
-grep -q 'DID NOT FINISH' "${pool_fail_dir}/dispatch.log" \
-  || fail "the failed obligation is not named in the wave's log: \
-$(cat "${pool_fail_dir}/dispatch.log")"
+[[ "$(jq -r '.verdict + "|" + .sessionId + "|" + .detail' \
+    "${pool_fail_dir}/wave/B/obligation_result.jsonl")" \
+    == "NOT_ADMITTED||its worker on "*" did not finish (exit 7); its logs \
+are in ${pool_fail_dir}/wave/B" ]] \
+  || fail "the unfinished obligation is not answered as itself: \
+$(cat "${pool_fail_dir}/wave/B/obligation_result.jsonl" 2>&1)"
+[[ ! -e "${pool_fail_dir}/sessions/SESSION.B" \
+    && -f "${pool_fail_dir}/wave/B/unfinished-sessions/SESSION.B/manifest.json" ]] \
+  || fail "the unfinished obligation's session is still in the corpus"
 unset -f campaign_obligation_worker
 reset_config
 
@@ -2163,7 +2209,7 @@ jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
 jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
   verdict: "NOT_ADMITTED", sessionId: "SESSION.regrown",
   detail: "the grown region refused the flip"}' \
-  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/obligation_result.jsonl"
+  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
 EOF
 chmod +x "${grow_dir}/replay.sh"
 reset_config

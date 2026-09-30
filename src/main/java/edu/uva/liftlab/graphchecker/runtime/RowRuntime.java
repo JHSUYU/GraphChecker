@@ -884,11 +884,13 @@ public final class RowRuntime {
     /**
      * Publishes what only the end of a replay can state, and closes.
      *
-     * <p>The replay owns the verdict and writes it twice: into the session
-     * (evidence) and the worker's {@code obligation_result.jsonl} (what the
-     * wave reads).  A replay a refusal decided withdraws its own session
-     * first, to {@code <worker>/refused-sessions/}, so no stage can read the
-     * prefix of a run it wrote.</p>
+     * <p>The replay owns the verdict and states it twice: into the session
+     * (evidence) and the worker's {@code replay_verdict.jsonl}, which the
+     * worker, the one writer of the obligation's answer, makes that answer
+     * once the replay's process group is gone ({@code run_engine.sh}
+     * {@code campaign_obligation_replay}).  A replay a refusal decided
+     * withdraws its own session first, to {@code <worker>/refused-sessions/},
+     * so no stage can read the prefix of a run it wrote.</p>
      */
     public static void closeSession() {
         SessionPublisher session = publisher;
@@ -942,7 +944,7 @@ public final class RowRuntime {
     /** Where a decided replay's session goes, under its worker. */
     static final String REFUSED_SESSIONS = "refused-sessions";
 
-    /** The wave's own file: one row per obligation this replay ran. */
+    /** The replay's statement to its worker: one row per obligation. */
     private static void writeWorkerVerdicts(String worker,
                                             List<ObligationResult> results) {
         if (results.isEmpty() || worker.isEmpty()) return;
@@ -954,7 +956,7 @@ public final class RowRuntime {
         try {
             Files.write(
                     Paths.get(worker,
-                            ObligationDir.RESULT),
+                            ObligationDir.REPLAY_VERDICT),
                     rows.toString().getBytes(
                             StandardCharsets.UTF_8));
         } catch (IOException unwritable) {

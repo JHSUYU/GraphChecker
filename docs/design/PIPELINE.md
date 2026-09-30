@@ -423,7 +423,12 @@ mark of the flip occurrence, the focused occurrence or a factor member goes to
 (below); the focused set (focused occurrence, factor,
 each assigned root's mint occurrence, inherited flips' occurrences) runs symbolically
 (`runtime.FocusedReplay`). The replay owns the verdict: `RowRuntime.closeSession` writes the session's
-`obligations.jsonl` and rewrites the worker's `obligation_result.jsonl`. `ADMITTED` = the flipped
+`obligations.jsonl` and states the same rows to the worker's `replay_verdict.jsonl`. The worker is
+the one writer of the obligation's answer, `obligation_result.jsonl`, and writes it once the
+replay's process group is gone (`run_under_wall_clock_bound` ends it: whatever of it outlives the
+launcher gets TERM, the kill grace, then KILL), so no replay JVM writes after it (solr-18406 ra1:
+five JVMs past their bound rewrote the answer ADMITTED during their shutdown hooks, naming sessions
+the worker had withdrawn, and the head waited for them until the campaign failed). `ADMITTED` = the flipped
 decision took the other arm, the focused prefix was not abandoned, the session published a mint row
 for every assigned root and clock skew, and every inherited flip held; anything else is
 `NOT_ADMITTED` naming why. A mint that ran without planting its assignment is a BLOCKING
@@ -449,8 +454,8 @@ listing holds no session naming the obligation (`campaign_await_remote_result`),
 wave's gate nor the next planner reads one a cached listing kept.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
-verdict is `NOT_ADMITTED`. A solver JVM that exits nonzero records `NOT_ADMITTED` with its last
-stderr line. A result row still saying `SAT_MODEL_READY` after the replay fails EXPLORE.
+answer is `NOT_ADMITTED` naming the bound. A solver JVM that exits nonzero records `NOT_ADMITTED`
+with its last stderr line. A replay that states no verdict fails EXPLORE.
 
 ### 7.7 The work pool
 
@@ -466,9 +471,14 @@ shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER
 `obligation_memory_mb` for 60 s. The head (`do_campaign`, `campaign_head_charged`) charges each of
 its engine JVMs `engine_memory_mb` (else 8192) for 120 s and its seed and CONFIRM replays
 `obligation_memory_mb` for 300 s, and releases the row when the command returns
-(`campaign_host_release`); an obligation's own JVMs are inside its slot's charge. A slot whose obligation does not finish (nonzero worker exit)
-makes the wave fail, and the campaign fails at EXPLORE after reaping remote workers. Verdicts are
-appended to `obligation_results.jsonl` once the wave settled.
+(`campaign_host_release`); an obligation's own JVMs are inside its slot's charge. An obligation
+whose worker does not finish (a nonzero exit, local or remote, or a result the head cannot see) is
+its own answer and the slot goes on (`campaign_obligation_unfinished`): every process on its host
+whose command line names its worker directory is ended (a peer's replay JVM is in a process group
+the remote wrapper's watchdog does not reach), a session naming it moves to
+`<worker>/unfinished-sessions/`, and its row is `NOT_ADMITTED` naming the host and the exit. Only a
+slot whose host's memory cannot be read fails the wave (the campaign fails at EXPLORE after
+reaping remote workers). Verdicts are appended to `obligation_results.jsonl` once the wave settled.
 
 ### 7.8 GROW
 

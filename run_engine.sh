@@ -1322,19 +1322,45 @@ campaign_adapter_killed_status=137
 # How long a bounded adapter is given to die of SIGTERM before SIGKILL.
 campaign_adapter_kill_grace_s=30
 
-# One command under a wall-clock bound, in its own process group.
+# One command under a wall-clock bound, in its own process group, and that
+# group gone when this returns.
 #
 # `timeout` is not given --foreground, so it puts itself and the command in a
-# NEW process group and signals that whole group on expiry: the adapter's
-# login shell, the workload's launcher and the replay JVM it forked all
-# receive it, which is the point -- a hung replay is a JVM several processes
-# below the worker, and signalling only the shell would leave it running.
-# Verified on coreutils 8.32: a grandchild of the bounded command is gone
-# when it returns 124.
+# NEW process group (its own pid) and signals that whole group on expiry: the
+# adapter's login shell, the workload's launcher and the replay JVM it forked
+# all receive it -- a hung replay is a JVM several processes below the
+# worker.  But `timeout` returns when ITS child does, and a TERM ends the
+# login shell at once while the JVM below it still runs its shutdown hooks:
+# solr-18406 ra1, five obligations past replay_timeout_s=2400, each JVM's
+# close rewrote the verdict ADMITTED, naming the session the worker had
+# withdrawn a second or two before, and the head waited for that session
+# until the wave failed.  So the group is ended here, before the caller reads
+# a byte the command wrote (campaign_end_process_group).
 run_under_wall_clock_bound() {
-  local seconds=$1
+  local seconds=$1 group status=0
   shift
-  timeout --kill-after="${campaign_adapter_kill_grace_s}s" "${seconds}s" "$@"
+  timeout --kill-after="${campaign_adapter_kill_grace_s}s" "${seconds}s" \
+    "$@" &
+  group=$!
+  wait "${group}" || status=$?
+  campaign_end_process_group "${group}"
+  return "${status}"
+}
+
+# Nothing of process group <pgid> runs any more: what is left gets TERM, the
+# kill grace, then KILL.  A KILLed process runs no code of its own again,
+# even while a pending I/O keeps it listed, so KILL is where the wait ends.
+campaign_end_process_group() {
+  local group=$1 waited=0
+  while kill -0 -- "-${group}" 2>/dev/null; do
+    if (( waited >= campaign_adapter_kill_grace_s )); then
+      kill -KILL -- "-${group}" 2>/dev/null || true
+      return 0
+    fi
+    (( waited > 0 )) || kill -TERM -- "-${group}" 2>/dev/null || true
+    sleep 1
+    waited=$((waited + 1))
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -1680,19 +1706,30 @@ campaign_reap_remote_workers() {
   [[ -n "${campaign_root}" ]] || return 0
   for host in ${campaign_worker_hosts}; do
     campaign_host_is_local "${host}" && continue
-    # Not campaign_ssh_options: that list carries -n, and this one speaks to
-    # the far side through stdin.
-    ssh -o BatchMode=yes -o ConnectTimeout=20 -- "${host}" 'bash -s' \
-      >/dev/null 2>&1 <<EOF || true
-pattern=$(printf '%q' "${campaign_root}")
-pkill -TERM -u "\$(id -u)" -f "\${pattern}" 2>/dev/null || true
-sleep ${campaign_adapter_kill_grace_s}
-pkill -KILL -u "\$(id -u)" -f "\${pattern}" 2>/dev/null || true
-EOF
+    campaign_reap_on_host "${host}" "${campaign_root}"
     reaped=$((reaped + 1))
   done
   [[ "${reaped}" -eq 0 ]] || campaign_log "reaped this run's remote workers \
 on ${reaped} host(s) matching ${campaign_root}"
+}
+
+# Every process of this user on <host> whose command line matches <pattern>:
+# TERM, and KILL after the kill grace when any matched.  The pattern goes
+# over stdin, so the shell doing the matching does not carry it.
+campaign_reap_on_host() {
+  local host=$1 pattern=$2 script
+  script="pattern=$(printf '%q' "${pattern}")
+pkill -TERM -u \"\$(id -u)\" -f \"\${pattern}\" 2>/dev/null || exit 0
+sleep ${campaign_adapter_kill_grace_s}
+pkill -KILL -u \"\$(id -u)\" -f \"\${pattern}\" 2>/dev/null || true"
+  if campaign_host_is_local "${host}"; then
+    bash -s <<<"${script}" >/dev/null 2>&1 || true
+  else
+    # Not campaign_ssh_options: that list carries -n, and this one speaks to
+    # the far side through stdin.
+    ssh -o BatchMode=yes -o ConnectTimeout=20 -- "${host}" 'bash -s' \
+      <<<"${script}" >/dev/null 2>&1 || true
+  fi
 }
 
 campaign_run_adapter() {
@@ -2610,6 +2647,7 @@ campaign_obligation_replay() {
   local focus="${worker}/focused_task.jsonl"
   local results="${worker}/concolic_region_results.jsonl"
   local result_row="${worker}/obligation_result.jsonl"
+  local statement="${worker}/replay_verdict.jsonl"
   local outcome replay_tasks
   require_nonempty "obligation focus row" "${focus}"
   ln -f "${seed_plan}" "${plan}"
@@ -2627,6 +2665,11 @@ campaign_obligation_replay() {
     campaign_adapter_timeout_rule="replay_timeout_s=${replay_timeout_s}" \
     campaign_replay worker "${plan}" "${replay_tasks}" "${classes}" \
       "${results}" "${worker}" tolerated
+  # ONE WRITER.  The replay's process group is gone
+  # (run_under_wall_clock_bound), so nothing of it writes after this line,
+  # and the obligation's answer is written below, once: the replay's own
+  # statement (RowRuntime#closeSession writes replay_verdict.jsonl), or the
+  # bound's.
   if [[ -n "${campaign_replay_killed}" ]]; then
     campaign_log "obligation ${obligation_id}: \
 replay ${campaign_replay_killed}"
@@ -2641,28 +2684,29 @@ session"
       >"${result_row}"
     return 0
   fi
-  # THE REPLAY OWNS THE VERDICT.  RowRuntime.closeSession rewrites this file
-  # with the rows FocusedReplay.results built -- the same rows it publishes
-  # into the session, which is the evidence -- so nothing is stamped here.
-  # What is checked is that the replay DID state one: a row still carrying
-  # the solver's SAT_MODEL_READY means the replay published no verdict for
-  # it, which is neither an admission nor a refusal.
-  outcome=$(jq -r '.verdict // ""' "${result_row}")
+  # THE REPLAY OWNS THE VERDICT: the rows FocusedReplay.results built, the
+  # same rows it publishes into the session, which is the evidence.  What is
+  # checked is that the replay DID state one; none is neither an admission
+  # nor a refusal.
+  outcome=$(jq -r '.verdict // ""' "${statement}" 2>/dev/null) || outcome=""
   case "${outcome}" in
     ADMITTED|NOT_ADMITTED|UNSAT) ;;
-    *) campaign_fail EXPLORE ObligationSolverMain "${result_row}" \
-        "the replay of ${obligation_id} published no verdict for it \
-(the row still states \"${outcome}\")" ;;
+    *) campaign_fail EXPLORE ObligationSolverMain "${statement}" \
+        "the replay of ${obligation_id} stated no verdict for it \
+(\"${outcome}\")" ;;
   esac
   # A verdict that names no session published none: a refusal decided every
   # obligation the replay carried, and it ended there (FocusedReplay
   # #refusedAt).  What it wrote before is a prefix of a run, which the replay
   # withdrew itself at its close (RowRuntime#closeSession); one its move left
   # listed leaves the corpus here, on the host that ran the replay.
-  [[ -n "$(jq -r '.sessionId // ""' "${result_row}")" ]] \
+  [[ -n "$(jq -r '.sessionId // ""' "${statement}")" ]] \
     || campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
       "${worker}/refused-sessions" "a refusal decided every obligation its \
 replay carried and the replay ended there, so its rows are a prefix of a run"
+  # In place, as the solver's row was written: a head reading a peer's file
+  # over NFS opens the same inode, fresh on open.
+  cat -- "${statement}" >"${result_row}"
 }
 
 
@@ -3009,37 +3053,57 @@ campaign_run_obligation_on_host() {
 # empty.  A start charged just before the last claim went elsewhere is a
 # ramp window of over-count, never a lost obligation.
 #
-# A failed obligation does not stop the slot: the remaining obligations of
-# the wave still run, and the WAVE fails at the end.  The slot carries the
-# failure out in its own exit status, which campaign_wait_workers reads.
+# An obligation whose worker did not finish is that obligation's own answer
+# (campaign_obligation_unfinished), and the slot goes on.  The slot fails
+# only when its host's memory cannot be read.
 campaign_wave_slot() {
   local host=$1 queue_dir=$2 count=$3 jobs_file=$4 wave_dir=$5
   local obligations=$6 classes=$7 sessions=$8 seed_plan=$9
-  local status=0 gate job worker_dir
+  local status=0 gate=0 job worker_dir
   campaign_claim_cursor=0
   while true; do
     gate=0
     campaign_await_host_memory "${host}" "${queue_dir}" "${count}" \
       || gate=$?
-    (( gate != 1 )) || break
-    (( gate == 0 )) || { status=1; break; }
+    (( gate != 1 )) || { gate=0; break; }
+    (( gate == 0 )) || break
     campaign_claim_next_obligation "${queue_dir}" "${count}" || break
     job=$(sed -n "$((campaign_claimed_index + 1))p" "${jobs_file}")
     [[ -n "${job}" ]] || continue
     worker_dir="${wave_dir}/${job}"
     printf '%s\n' "${host}" >"${worker_dir}/host.txt"
-    if campaign_run_obligation_on_host "${host}" "${job}" \
-          "${obligations}" "${classes}" "${worker_dir}" "${sessions}" \
-          "${seed_plan}"; then
-      campaign_log "obligation ${job}: host=${host} verdict=$(jq -r \
-        '.verdict // "?"' "${worker_dir}/obligation_result.jsonl" \
-        2>/dev/null || echo '?')"
-    else
-      status=1
-      campaign_log "obligation ${job}: host=${host} DID NOT FINISH"
-    fi
+    run_capturing_status campaign_run_obligation_on_host "${host}" \
+      "${job}" "${obligations}" "${classes}" "${worker_dir}" "${sessions}" \
+      "${seed_plan}"
+    [[ "${status}" -eq 0 ]] || campaign_obligation_unfinished "${host}" \
+      "${job}" "${worker_dir}" "${sessions}" "${status}"
+    campaign_log "obligation ${job}: host=${host} verdict=$(jq -r \
+      '.verdict // "?"' "${worker_dir}/obligation_result.jsonl" \
+      2>/dev/null || echo '?')"
   done
-  return "${status}"
+  return "${gate}"
+}
+
+# A slot's obligation whose worker did not finish (it exited <status>, or
+# the head could not see what it wrote), answered as itself: before, a
+# remote worker that exited nonzero, or whose result named a session the
+# head never saw, failed the wave and the campaign.  Nothing of it may still
+# run -- a peer's replay JVM is in a process group of its own, which the
+# remote wrapper's watchdog does not reach -- so every process whose command
+# line names its worker directory is ended on its host first; then a
+# session naming it leaves the corpus, and one row answers it, naming why.
+campaign_obligation_unfinished() {
+  local host=$1 obligation_id=$2 worker=$3 sessions=$4 status=$5 why
+  why="its worker on ${host} did not finish (exit ${status}); its logs are \
+in ${worker}"
+  campaign_log "obligation ${obligation_id}: ${why}"
+  campaign_reap_on_host "${host}" "${worker}"
+  campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
+    "${worker}/unfinished-sessions" "${why}"
+  jq -n -c --arg id "${obligation_id}" --arg detail "${why}" \
+    '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
+      verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
+    >"${worker}/obligation_result.jsonl"
 }
 
 # The whole wave, through the pool.
@@ -3231,11 +3295,14 @@ hosts=${campaign_worker_hosts:-local})"
         "${sessions}" "${seed_plan}" "${jobs[@]}" || status=1
       campaign_log_wave_hosts "${wave_dir}" "${wave}"
       if [[ "${status}" -ne 0 ]]; then
-        # Whatever is still alive on a peer is this run's to end, before the
-        # campaign exits and takes the head's own process group with it.
+        # A slot whose host's memory could not be read (an obligation that
+        # did not finish is its own answer).  Whatever is still alive on a
+        # peer is this run's to end, before the campaign exits and takes the
+        # head's own process group with it.
         campaign_reap_remote_workers
         campaign_fail EXPLORE CAMPAIGN "${wave_dir}" \
-          "obligation wave ${wave} did not finish"
+          "obligation wave ${wave} did not finish: a slot could not read \
+its host's memory"
       fi
       # Every verdict this wave reached, appended once the wave settled, so
       # the next wave sees a complete frontier rather than a partial one.
@@ -3357,7 +3424,7 @@ re-run's session stands in its place"
     "${sessions}/${session}" "the exposing session ${session} does not name \
 obligation ${obligation_id}, so it was not withdrawn from the corpus"
   for file in replay.log concolic_region_results.jsonl \
-      obligation_result.jsonl stdout.log stderr.log; do
+      obligation_result.jsonl replay_verdict.jsonl stdout.log stderr.log; do
     [[ ! -e "${worker}/${file}" ]] || mv -- "${worker}/${file}" "${aside}/"
   done
   printf 'localhost\n' >"${worker}/host.txt"
