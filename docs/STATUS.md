@@ -228,7 +228,6 @@ Harness and declarations:
     refuses, so that case cannot run.
 21. `src/test/resources/external-callers.txt` lists APIs no tree calls, and omits
     `MessageDoors`, which the Solr trees call.
-22. `tools/rounds/launch-round.sh` leaves `lift11` out, while the sweep tools use all ten lifts.
 23. `tools/analysis/confirmrun.sh` calls `campaign_confirm_decide`, which `run_engine.sh` no
     longer has: the decision is `explore.ConfirmMain --sessions`, which also needs the claim.
 
