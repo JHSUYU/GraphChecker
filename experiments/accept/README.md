@@ -50,7 +50,9 @@ when all of these hold:
   fault alone reaches the fatal with every clock where the recording read it.
   hdfs-11741 is the bug that check fixes: `CLOCK_SKEW` (a flipped branch with no
   fault), or `MARKER_FLIPPED` should a fault reach its fatal too. hdfs-17960:
-  `MARKER_FLIPPED` moving `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` to `false`;
+  `MARKER_FLIPPED` moving `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` to `false`.
+  solr-18413 and solr-18406: `CLOCK_SKEW` (a MIGRATE rule that has not expired
+  yet; a commit reservation that has run out);
 * `polarityDecides` is true — the formula is unsatisfiable at the recorded
   valuation, so the mechanism explains the difference between the run that
   failed and the run that did not (only `RECORDED_FAILURE_EXPLAINED` is

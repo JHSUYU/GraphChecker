@@ -49,8 +49,8 @@ as a reported signal.  Nothing gates on them.
 import glob, json, os, re, sys
 
 # ---- the mechanism each case is known to fail by --------------------------
-# DATA, declared once, for the nine cases this harness runs; the only place a
-# case id appears in the gate, and a case it does not name cannot pass.
+# DATA, declared once, for the cases this harness runs; the only place a case
+# id appears in the gate, and a case it does not name cannot pass.
 #
 #   kinds  -- the witness kinds this case may conclude with.
 #   root   -- a root that must appear in movedRoots with that value, declared
@@ -86,6 +86,15 @@ EXPECTED_MECHANISM = {
     "hdfs-17967-pathA": RPC_FAILURE,
     "hdfs-17967-pathB": RPC_FAILURE,
     "hdfs-17967-pathC": RPC_FAILURE,
+    # Solr 8.11 fails by a clock.  SOLR-18413: the MIGRATE routing rule has
+    # not expired yet (RoutingRule.isExpired, expireAt against
+    # currentTimeMillis) when the source leader's update comes after the
+    # target collection's deletion, so the update looks the deleted target
+    # up.  SOLR-18406: the leader's commit reservation runs out before the
+    # follower's filecontent request, so the leader has deleted the
+    # generation the follower asks for.
+    "solr-18413":      {"kinds": ("CLOCK_SKEW",)},
+    "solr-18406":      {"kinds": ("CLOCK_SKEW",)},
 }
 
 
