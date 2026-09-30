@@ -235,8 +235,10 @@ worker's focus row as that session's world, the wave verdicts, the recorded sche
    `ADMISSION_GAP` (DIAGNOSTIC when the witness stop fired).
 4. Reconciles the slot table (`explore.SlotTable`, `iteration-0000/slots.jsonl`): one slot per
    (interaction, world) inside the closure; a WIRE consumer paired with another producer in the same
-   world is a replacement, and a read whose observed write the run orders after it contradicts the
-   order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when the session is admitted, else DIAGNOSTIC); another
+   world is a replacement, and a read whose observed write the run orders after it (the two rows'
+   seqs, the VM's one event clock, whatever threads ran them; never the anchor chain, which orders
+   occurrences, not their events) contradicts the order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when
+   the session is admitted, else DIAGNOSTIC); another
    world's pairing is a new slot.
 5. Builds the ledger (§7.3) and the candidates (§7.4) and opens the wave: `obligations.jsonl`
    (empty = the frontier closed).

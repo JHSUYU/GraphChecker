@@ -3520,7 +3520,7 @@ public class ComposerTest {
     // ------------------------------------------------------------------
 
     @Test
-    public void aThreadOrdersItsOwnActivationsAndWhatStartedIt()
+    public void aThreadOrdersItsOwnActivationsAndNothingElse()
             throws Exception {
         Path iteration = folder.newFolder("threads").toPath();
         OccurrenceAddress earlier = occurrence("case/dn0", "REGION.earlier",
@@ -3543,26 +3543,19 @@ public class ComposerTest {
         session.activation(started, "thread#task", false);
         session.marker("false");
         session.expression("EXPR.v1.k", constant("false"));
-        Endpoint first = Endpoint.of(earlier, "Actor#put#3:WRITE",
-                at("w#1", 0), 0);
-        Endpoint second = Endpoint.of(later, "Actor#put#4:WRITE",
-                at("w#2", 0), 0);
-        Endpoint third = Endpoint.of(started, "Task#put#5:WRITE",
-                at("w#3", 0), 0);
-        long firstAt = session.write(first, keys, 1L, "EXPR.v1.k");
-        long secondAt = session.write(second, keys, 2L, "EXPR.v1.k");
-        long thirdAt = session.write(third, keys, 3L, "EXPR.v1.k");
+        session.write(Endpoint.of(earlier, "Actor#put#3:WRITE",
+                at("w#1", 0), 0), keys, 1L, "EXPR.v1.k");
+        session.write(Endpoint.of(later, "Actor#put#4:WRITE",
+                at("w#2", 0), 0), keys, 2L, "EXPR.v1.k");
+        session.write(Endpoint.of(started, "Task#put#5:WRITE",
+                at("w#3", 0), 0), keys, 3L, "EXPR.v1.k");
         session.target("true", false, true);
         session.write();
 
         edu.uva.liftlab.graphchecker.smt.Arms rule =
                 new edu.uva.liftlab.graphchecker.smt.Arms(
                         Corpus.read(iteration, null));
-        assertTrue("one thread is one order, whatever the occurrence",
-                rule.ancestor(first, firstAt, second, secondAt, "s0"));
-        assertFalse("and it runs one way",
-                rule.ancestor(second, secondAt, first, firstAt, "s0"));
-        assertFalse("so two activations of one thread never interleave",
+        assertFalse("two activations of one thread never interleave",
                 rule.concurrent(earlier, later, "s0"));
         // A third occurrence on a thread of its own: the message chain does
         // not reach it and no recording states a thread-creation edge
@@ -3573,10 +3566,6 @@ public class ComposerTest {
         // a walk that could not fire.
         assertTrue("an occurrence nothing places is concurrent with all",
                 rule.concurrent(earlier, started, "s0"));
-        assertFalse("and no ordering is invented for it either way",
-                rule.ancestor(first, firstAt, third, thirdAt, "s0")
-                        || rule.ancestor(third, thirdAt, first, firstAt,
-                        "s0"));
         // Attestation: instrumented and symbolic in this session -- the seed
         // -- with no decision anywhere in it.
         assertTrue("a symbolic straight-line region is attested",
