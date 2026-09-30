@@ -1,8 +1,9 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * IDENTITY-IMPL A: why an occurrence ran, in exactly three forms (sealed by
- * the private constructor; switch on {@link #form()} exhaustively):
+ * CONTRACT-SPEC §1, IDENTITY §2: why an occurrence ran, in exactly three
+ * forms (sealed by the private constructor; switch on {@link #form()}
+ * exhaustively):
  * {@link Anchor} (producer {@link Endpoint} id plus RPC site), {@link Root}
  * (k-th workload action or daemon tick per (node, role, api) in the window),
  * {@link Lost} (unattributable; degraded but still an identity).

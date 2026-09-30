@@ -8,9 +8,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * IDENTITY-IMPL A: where in a component's control structure a point is --
- * frames from scope root to region entry (occurrence) or region entry to
- * event (site index), plus their 16-hex fold
+ * CONTRACT-SPEC §1, IDENTITY §3: where in a component's control structure a
+ * point is -- frames from scope root to region entry (occurrence) or region
+ * entry to event (site index), plus their 16-hex fold
  * {@code fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)}.
  *
  * <p>The fold and the rendering are derived, each at its first use: most

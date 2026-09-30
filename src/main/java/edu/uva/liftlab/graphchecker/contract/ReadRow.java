@@ -6,7 +6,7 @@ import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
 /**
- * CONTRACT-SPEC 2: one read, the consumer half of a STATE interaction.  An
+ * CONTRACT-SPEC §2.2: one read, the consumer half of a STATE interaction.  An
  * unknown {@code observedVersion} is -1, never 0: a wrong join is a
  * fabricated causal edge.
  */

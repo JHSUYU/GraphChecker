@@ -4,9 +4,10 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.util.List;
 
 /**
- * IDENTITY-IMPL A: one side of an interaction, {@code (occurrence, site,
- * siteIndex, attempt)}.  The site index (frames from region entry to the
- * site) replaces an ordinal, which moves when an unrelated event is inserted.
+ * CONTRACT-SPEC §1, IDENTITY §4: one side of an interaction, {@code
+ * (occurrence, site, siteIndex, attempt)}.  The site index (frames from
+ * region entry to the site) replaces an ordinal, which moves when an
+ * unrelated event is inserted.
  *
  * <p>Site: the declared port id (WIRE), or {@code <class>#<method>#<bci>:KIND}
  * spelled only by {@link #stateSite}, so writer and joiner cannot drift.

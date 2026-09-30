@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
 
 /**
  * The row contract, checked at IMPORT as a gate over one epoch's sessions.
- * Each rule is one sentence of CONTRACT-SPEC SS2 or HANDOVER SS1.3, cited in
+ * Each rule is one row of CONTRACT-SPEC §2.6, cited in
  * its gap; BLOCKING gaps fail the stage closed.  Pure functions over rows: a
  * rule the rows cannot decide reports a DIAGNOSTIC rather than guess.
  */
@@ -124,14 +124,14 @@ public final class RowInvariants {
         gaps.add(GapRow.of(stated.isEmpty()
                         ? sessions.get(0).sessionId() : stated.get(0),
                 GapKind.ADMISSION_GAP, GapClass.BLOCKING, "epoch/sessions",
-                "invariant 1 (CONTRACT-SPEC SS2: every session states its "
+                "invariant 1 (CONTRACT-SPEC §2.6: every session states its "
                         + "role in manifest.json): " + stated.size() + " of "
                         + sessions.size() + " sessions state role SEED "
                         + stated + "; exactly one must"));
     }
 
     /**
-     * Every session was read whole (CONTRACT-SPEC SS2).  BLOCKING: an
+     * Every session was read whole (CONTRACT-SPEC §2.6).  BLOCKING: an
      * unparseable kind reads back as no rows, which later stages take as fact.
      */
     private static void complete(SessionReader session, List<GapRow> gaps) {
@@ -142,7 +142,7 @@ public final class RowInvariants {
                         + session.incomplete()));
     }
 
-    /** Every row's occurrence ran in its session (CONTRACT-SPEC SS2). */
+    /** Every row's occurrence ran in its session (CONTRACT-SPEC §2.6). */
     private static void activated(SessionReader session, List<GapRow> gaps) {
         Set<String> ran = new LinkedHashSet<String>();
         for (ActivationRow row : session.activations()) {
@@ -175,7 +175,7 @@ public final class RowInvariants {
         if (!said.add(kind + "|" + occurrence.id())) return;
         gaps.add(violation(session, GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                 kind, seq, "occurrence", occurrence.render(),
-                "invariant 1 (CONTRACT-SPEC SS2: one ActivationRow per "
+                "invariant 1 (CONTRACT-SPEC §2.6: one ActivationRow per "
                         + "activation): this session published no activation "
                         + "for the occurrence this row is about"));
     }
@@ -183,7 +183,7 @@ public final class RowInvariants {
     // ---- 2. never-neither ---------------------------------------------
 
     /**
-     * HANDOVER SS1.3, verbatim: every ReadRow must have an observedVersion or
+     * CONTRACT-SPEC §2.6: every ReadRow must have an observedVersion or
      * a plain decimal concreteValue, never neither.  An attach is paired by
      * HANDLE or CORRELATION_PORT and nothing else.
      */
@@ -196,8 +196,8 @@ public final class RowInvariants {
                     GapClass.BLOCKING, "reads", row.seq(),
                     "observedVersion/concreteValue",
                     row.endpoint().site() + " " + row.location(),
-                    "invariant 2 (HANDOVER SS1.3: every ReadRow must have an "
-                            + "observedVersion or a plain decimal "
+                    "invariant 2 (CONTRACT-SPEC §2.6: every ReadRow must "
+                            + "have an observedVersion or a plain decimal "
                             + "concreteValue, never both absent)"));
         }
         for (AttachRow row : session.attaches()) {
@@ -209,7 +209,7 @@ public final class RowInvariants {
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "attaches", row.seq(), "pairedBy",
                     row.endpoint().id() + "=" + pairedBy,
-                    "invariant 2 (INTERACTION-ID SS1: an attach is paired by "
+                    "invariant 2 (CONTRACT-SPEC §2.6: an attach is paired by "
                             + "the handle or by correlation+port): this row "
                             + "names a third key, so which evidence paired "
                             + "it has no answer"));
@@ -220,8 +220,8 @@ public final class RowInvariants {
 
     /**
      * Every {@code EXPR.<16hex>} a row cites exists in that session's
-     * expression table, and no other reference spelling appears (HANDOVER
-     * SS1.3).  A reference the session does not hold is unlowerable.
+     * expression table, and no other reference spelling appears (CONTRACT-SPEC
+     * §2.6).  A reference the session does not hold is unlowerable.
      */
     private static void references(SessionReader session, List<GapRow> gaps) {
         ExpressionTable table = session.expressions();
@@ -260,7 +260,7 @@ public final class RowInvariants {
             if (!REFERENCE.matcher(ref).matches()) {
                 say(session, gaps, said, GapKind.UNSTATED_VALUE,
                         GapClass.BLOCKING, kind, seq, field, ref,
-                        "invariant 3 (HANDOVER SS1.3: one symbol spelling): "
+                        "invariant 3 (CONTRACT-SPEC §2.6: one symbol spelling): "
                                 + "an expression reference is EXPR. and "
                                 + "sixteen hex digits; this is not");
                 continue;
@@ -268,7 +268,7 @@ public final class RowInvariants {
             if (table.expression(ref) != null) continue;
             say(session, gaps, said, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, kind, seq, field, ref,
-                    "invariant 3 (HANDOVER SS1.3: a term's references are "
+                    "invariant 3 (CONTRACT-SPEC §2.6: a term's references are "
                             + "resolved through the SESSION's "
                             + "ExpressionTable): this session's "
                             + "expressions.jsonl holds " + table.refs().size()
@@ -279,10 +279,10 @@ public final class RowInvariants {
     // ---- 4. one row per event -----------------------------------------
 
     /**
-     * One row per event (CONTRACT-SPEC SS2): two rows of one kind at one seq
+     * One row per event (CONTRACT-SPEC §2.6): two rows of one kind at one seq
      * and subject are one event stated twice (BLOCKING).  Two events under
      * one endpoint id merge in the skeleton, which keys slots by endpoint;
-     * that is an identity defect (IDENTITY-IMPL A), so only a DIAGNOSTIC.
+     * that is an identity defect (IDENTITY §4), so only a DIAGNOSTIC.
      */
     private static void onePerEvent(SessionReader session,
                                     List<GapRow> gaps) {
@@ -327,7 +327,7 @@ public final class RowInvariants {
         if (seen.add(kind + "|" + key)) return;
         gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                 GapClass.BLOCKING, kind, seq, field, subject,
-                "invariant 4 (CONTRACT-SPEC SS2: one row per event): a "
+                "invariant 4 (CONTRACT-SPEC §2.6: one row per event): a "
                         + "second row of this kind states the same event"));
     }
 
@@ -350,12 +350,12 @@ public final class RowInvariants {
             Set<Long> seqs = entry.getValue();
             if (seqs.size() < 2) continue;
             // Absent index or equal frames: the identity's defect to fix
-            // (IDENTITY-V3 SS1.2), never cured here by an ordinal or counter.
+            // (IDENTITY §4), never cured here by an ordinal or counter.
             int frames = endpoint.siteIndex().frames().size();
             gaps.add(violation(session, GapKind.LINEAGE_LOST,
                     GapClass.DIAGNOSTIC, kind, seqs.iterator().next(),
                     "endpoint.siteIndex", endpoint.site(),
-                    "invariant 4 site index missing (IDENTITY-IMPL A: the "
+                    "invariant 4 site index missing (IDENTITY §4: the "
                             + "site index distinguishes repeated events of "
                             + "one site): " + seqs.size() + " events of this "
                             + "site in one occurrence share one endpoint id, "
@@ -368,7 +368,7 @@ public final class RowInvariants {
 
     // ---- 5. symbol sorts ----------------------------------------------
 
-    /** One name, one spelled sort, = a read's javaType (HANDOVER SS1.3). */
+    /** One name, one spelled sort, = a read's javaType (CONTRACT-SPEC §2.6). */
     private static void sorts(SessionReader session, List<GapRow> gaps) {
         Map<String, String[]> sortOfName = new LinkedHashMap<String, String[]>();
         for (RootMintRow row : session.roots()) {
@@ -388,7 +388,7 @@ public final class RowInvariants {
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "reads", row.seq(), "symbol/javaType",
                     row.symbol(),
-                    "invariant 5 (HANDOVER SS1.3: one symbol spelling): the "
+                    "invariant 5 (CONTRACT-SPEC §2.6: one symbol spelling): the "
                             + "symbol is spelled sort " + spelled
                             + " and the row declares javaType "
                             + row.javaType()));
@@ -410,15 +410,15 @@ public final class RowInvariants {
         if (held[0].equals(spelled)) return;
         gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                 GapClass.BLOCKING, kind, seq, "symbol", symbol,
-                "invariant 5 (HANDOVER SS1.3: one symbol spelling): this name "
-                        + "is spelled sort " + spelled + " here and sort "
+                "invariant 5 (CONTRACT-SPEC §2.6: one symbol spelling): this "
+                        + "name is spelled sort " + spelled + " here and sort "
                         + held[0] + " at " + held[1]));
     }
 
     // ---- 6. decisions: the recorded arm is the recorded arm ------------
 
     /**
-     * CONTRACT-SPEC SS2: {@code outcome} says whether the published term
+     * CONTRACT-SPEC §2.6: {@code outcome} says whether the published term
      * HELD; the runtime never pre-applies the polarity.  A term resting only
      * on declared roots and literals must agree with its row, judged at the
      * valuation the session RAN under ({@link #executed}), not at
@@ -435,7 +435,7 @@ public final class RowInvariants {
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "decisions", row.seq(), "outcome",
                     row.siteId() + "#" + row.ordinal(),
-                    "invariant 6 (CONTRACT-SPEC SS2: outcome says whether the "
+                    "invariant 6 (CONTRACT-SPEC §2.6: outcome says whether the "
                             + "published term HELD; the conjunct is "
                             + "outcome ? term : (not term)): at the root "
                             + "values this session RAN under the term is "
@@ -458,7 +458,7 @@ public final class RowInvariants {
         if (focused && ask == null) {
             gaps.add(GapRow.of(session.sessionId(), GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "epoch/valuation",
-                    "invariant 6 (CONTRACT-SPEC SS3: a focused replay runs "
+                    "invariant 6 (CONTRACT-SPEC §2.6: a focused replay runs "
                             + "at the root values its obligation assigns): "
                             + "this session states role FOCUSED "
                             + manifest.obligationIds() + " and no obligation "
@@ -650,7 +650,7 @@ public final class RowInvariants {
 
     /**
      * An observed version is stated by a WriteRow or a read's
-     * {@code mintVersion} (HANDOVER SS1.4); missing is a DIAGNOSTIC.  A
+     * {@code mintVersion} (CONTRACT-SPEC §2.6); missing is a DIAGNOSTIC.  A
      * WriteRow at a placeholder's minted version is BLOCKING (nobody wrote
      * it); keyed by {@code location@mintVersion}, never by symbol, since
      * {@code x.f = <mint symbol>} is a real write.
@@ -680,9 +680,9 @@ public final class RowInvariants {
             say(session, gaps, said, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, "reads", row.seq(),
                     "observedVersion",
-                    key, "invariant 7 (HANDOVER SS1.4: a read joins the "
-                            + "expression of the write version it observed; "
-                            + "contract v2.4: or the placeholder mint that "
+                    key, "invariant 7 (CONTRACT-SPEC §2.6: a read joins the "
+                            + "expression of the write version it observed, "
+                            + "or the placeholder mint that "
                             + "states it): no WriteRow of this session states "
                             + "this version and no placeholder read mints it");
         }
@@ -692,7 +692,7 @@ public final class RowInvariants {
             if (row.mintVersion() >= 0) continue;
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "reads", row.seq(), "mintVersion",
-                    row.location() + "", "invariant 7 (contract v2.4: a "
+                    row.location() + "", "invariant 7 (CONTRACT-SPEC §2.6: a "
                             + "placeholder ReadRow states the version it "
                             + "mints): this placeholder row states none"));
         }
@@ -712,7 +712,7 @@ public final class RowInvariants {
     // ---- 8. roots ------------------------------------------------------
 
     /**
-     * HANDOVER SS1.3: a RootMintRow is published only for a DECLARED root,
+     * CONTRACT-SPEC §2.6: a RootMintRow is published only for a DECLARED root,
      * MARKER spelled boolean, INTEGRAL/CLOCK plain decimal, one row per
      * (occurrence, rootId).
      */
@@ -723,7 +723,7 @@ public final class RowInvariants {
                 gaps.add(violation(session, GapKind.DECLARATION_MISSING,
                         GapClass.BLOCKING, "roots", row.seq(), "declared",
                         row.rootId(),
-                        "invariant 8 (HANDOVER SS1.3: a RootMintRow is "
+                        "invariant 8 (CONTRACT-SPEC §2.6: a RootMintRow is "
                                 + "published only for a DECLARED root)"));
             }
             String value = row.recordedValue().trim();
@@ -734,7 +734,7 @@ public final class RowInvariants {
                 gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                         GapClass.BLOCKING, "roots", row.seq(),
                         "recordedValue", row.rootId() + "=" + value,
-                        "invariant 8 (HANDOVER SS1.3): a " + row.kind()
+                        "invariant 8 (CONTRACT-SPEC §2.6): a " + row.kind()
                                 + " reading is spelled "
                                 + (row.kind() == RootKind.MARKER
                                         ? "true or false"
@@ -746,7 +746,7 @@ public final class RowInvariants {
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "roots", row.seq(),
                     "occurrence/rootId", row.rootId(),
-                    "invariant 8 (HANDOVER SS1.3): this occurrence already "
+                    "invariant 8 (CONTRACT-SPEC §2.6): this occurrence already "
                             + "minted this root, so the session states two "
                             + "values for one source in one activation"));
         }
@@ -755,7 +755,7 @@ public final class RowInvariants {
     // ---- 9. targets ----------------------------------------------------
 
     /**
-     * CONTRACT-SPEC SS2: {@code phiTerm} is in the FATAL polarity.  A reached
+     * CONTRACT-SPEC §2.6: {@code phiTerm} is in the FATAL polarity.  A reached
      * anchor with no predicate is a concrete branch (DIAGNOSTIC) unless the
      * fatal arm was observed (BLOCKING).  An observed fatal's phi must HOLD
      * at the session's valuation where the roots decide it.
@@ -772,7 +772,7 @@ public final class RowInvariants {
                         row.observedFatal() ? GapClass.BLOCKING
                                 : GapClass.DIAGNOSTIC, "targets", row.seq(),
                         "phiTerm", row.anchorSiteId(),
-                        "invariant 9 (CONTRACT-SPEC SS2: phiTerm is published "
+                        "invariant 9 (CONTRACT-SPEC §2.6: phiTerm is published "
                                 + "in the FATAL polarity): the anchor was "
                                 + "reached and states no predicate"
                                 + (row.observedFatal()
@@ -788,7 +788,7 @@ public final class RowInvariants {
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "targets", row.seq(), "phiTerm",
                     row.anchorSiteId(),
-                    "invariant 9 (CONTRACT-SPEC SS2: phiTerm is published in "
+                    "invariant 9 (CONTRACT-SPEC §2.6: phiTerm is published in "
                             + "the FATAL polarity): the run observed the "
                             + "fatal arm and this term is FALSE at the root "
                             + "values this session RAN under"));
@@ -799,7 +799,7 @@ public final class RowInvariants {
 
     /**
      * A focused replay's session states the arm its focus row {@code flip}
-     * asked for (HANDOVER SS1.5).  DIAGNOSTIC: the result row carries the
+     * asked for (CONTRACT-SPEC §2.6).  DIAGNOSTIC: the result row carries the
      * verdict.
      */
     public static List<GapRow> flipped(JsonObject flip,
@@ -819,7 +819,7 @@ public final class RowInvariants {
         gaps.add(violation(session, GapKind.ADMISSION_GAP,
                 GapClass.DIAGNOSTIC, "decisions", 0L, "outcome",
                 site + "#" + ordinal,
-                "invariant 10 (HANDOVER SS1.5: a focused replay is ADMITTED "
+                "invariant 10 (CONTRACT-SPEC §2.6: a focused replay is ADMITTED "
                         + "when the flip took the other arm): this session "
                         + "states no decision at that site and ordinal with "
                         + "outcome " + outcome + "; the obligation's own "
@@ -830,10 +830,10 @@ public final class RowInvariants {
     // ---- 11. a root symbol without its RootMintRow ---------------------
 
     /**
-     * R4: every root symbol a session names has a RootMintRow in that
-     * session.  The root set is epoch-wide; BLOCKING, since an unrowed
-     * symbol is a root free at every valuation.  "Names" uses the same walk
-     * as COMPOSE ({@link Arms#symbolsIn}).  Runtime half:
+     * CONTRACT-SPEC §2.6: every root symbol a session names has a
+     * RootMintRow in that session.  The root set is epoch-wide; BLOCKING,
+     * since an unrowed symbol is a root free at every valuation.  "Names"
+     * uses the same walk as COMPOSE ({@link Arms#symbolsIn}).  Runtime half:
      * {@code RootMint#mintUnattributed}.
      */
     private static void attributed(SessionReader session,
@@ -852,8 +852,8 @@ public final class RowInvariants {
             gaps.add(GapRow.of(session.sessionId(),
                     GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING,
                     root.getKey(),
-                    "invariant 11 (R4: a root symbol without its "
-                            + "RootMintRow): session "
+                    "invariant 11 (CONTRACT-SPEC §2.6: a root symbol "
+                            + "without its RootMintRow): session "
                             + session.sessionId() + " references symbol "
                             + root.getValue() + " at " + where
                             + " and states no RootMintRow for root "

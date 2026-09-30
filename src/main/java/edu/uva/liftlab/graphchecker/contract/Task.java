@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.List;
 
 /**
- * CONTRACT-SPEC 3: one unit of exploration, one focused occurrence (the rest
+ * CONTRACT-SPEC §3: one unit of exploration, one focused occurrence (the rest
  * runs concretely).  {@code factor}: state-connected co-occurrences run
  * symbolically with it, usually empty.
  */

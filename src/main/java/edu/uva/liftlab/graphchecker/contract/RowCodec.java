@@ -23,7 +23,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 
 /**
- * CONTRACT-SPEC 2: the one codec for the row kinds, one method pair per kind.
+ * CONTRACT-SPEC §2.2: the one codec for the row kinds, one method pair per kind.
  * JSONL, one kind per file.  A nullable field is omitted when null; every
  * other field is always written, so absence never means false or zero.
  * Occurrences are written as parts, not as their render.

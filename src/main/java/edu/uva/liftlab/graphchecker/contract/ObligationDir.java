@@ -8,7 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * CONTRACT-SPEC 2: one obligation worker's directory
+ * CONTRACT-SPEC §3: one obligation worker's directory
  * ({@code <iteration>/obligations-<wave>/<obligationId>/}: ask, answer, focus
  * row) and the session it ran.  The one place the worker-to-session join is
  * written: by the result row, never the directory name.

@@ -3,10 +3,10 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Set;
 
 /**
- * CONTRACT-SPEC 4: one producer path's arm of a family,
+ * CONTRACT-SPEC §4: one producer path's arm of a family,
  * {@code pi_q and guard_q and v_H(I) = e_q}.  {@code guardRoots} is only the
  * roots {@code e_q} depends on, else unrelated arms contradict.
- * {@code attested} (INTERACTION-ID R-I5): only a run with a recorded path
+ * {@code attested} (IDENTITY §4): only a run with a recorded path
  * condition may carry a root move.
  */
 public final class Arm extends Value {

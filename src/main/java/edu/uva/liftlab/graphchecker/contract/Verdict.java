@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 3: how an obligation ended.
+ * CONTRACT-SPEC §3: how an obligation ended.
  */
 public enum Verdict {
     /** The solver produced a model; the replay may be driven from it. */

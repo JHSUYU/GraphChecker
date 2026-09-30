@@ -1,10 +1,11 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * IDENTITY-IMPL A: one execution-index frame -- static {@code callSite}
- * ({@code class#method#bci}) and {@code iteration}, the k-th entry of that
- * site in the enclosing frame ({@code runtime.Identity}).  A call site
- * carries neither {@code /} nor {@code @}, so an index parses back exactly.
+ * CONTRACT-SPEC §1, IDENTITY §3: one execution-index frame -- static
+ * {@code callSite} ({@code class#method#bci}) and {@code iteration}, the
+ * k-th entry of that site in the enclosing frame ({@code runtime.Identity}).
+ * A call site carries neither {@code /} nor {@code @}, so an index parses
+ * back exactly.
  */
 public final class Frame extends Value {
     private final String callSite;
