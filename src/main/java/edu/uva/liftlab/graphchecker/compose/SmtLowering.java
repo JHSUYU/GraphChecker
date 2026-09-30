@@ -283,9 +283,6 @@ public final class SmtLowering {
     /** {@code session|location|class} -> {@link #candidates}. */
     private final Map<String, Map<Long, Candidate>> candidates =
             new HashMap<String, Map<Long, Candidate>>();
-    /** Candidates with no answer, {@code subject -> why} ({@link #fieldOf}). */
-    private final Map<String, String> candidateUnanswered =
-            new LinkedHashMap<String, String>();
     private final Set<String> integralDomains = new LinkedHashSet<String>();
     private boolean usesJavaIntString;
 
@@ -710,7 +707,7 @@ public final class SmtLowering {
      * What one frame raised: REFUSALS (the value does not stand), SIDE
      * CONDITIONS (what its lowering requires of it: definedness, recorded
      * readings, container requires) and GAPS (cuts, sort conflicts, pinned
-     * returns).  Held until committed to the frame enclosing it.
+     * returns, unanswered candidates).  Held until committed to the frame enclosing it.
      */
     private final class Raised {
         private final Set<String> refusals = new LinkedHashSet<String>();
@@ -721,6 +718,9 @@ public final class SmtLowering {
                 new LinkedHashMap<String, String>();
         /** method-return symbol -> the value its node states. */
         private final Map<String, String> pinnedReturns =
+                new LinkedHashMap<String, String>();
+        /** A candidate object with no answer -> why ({@link #fieldOf}). */
+        private final Map<String, String> candidateUnanswered =
                 new LinkedHashMap<String, String>();
 
         private void refusal(String subject) {
@@ -746,6 +746,7 @@ public final class SmtLowering {
             cuts.addAll(other.cuts);
             sortConflicts.putAll(other.sortConflicts);
             pinnedReturns.putAll(other.pinnedReturns);
+            candidateUnanswered.putAll(other.candidateUnanswered);
         }
     }
 
@@ -1776,12 +1777,12 @@ public final class SmtLowering {
             Attempt<Term> written = attempting(() -> dispatch(
                     join.writeExpression(cell, writes.get(0).version()), sort,
                     origin + ":" + cell));
-            if (written.lowered()) field = written.value();
+            if (written.lowered()) field = commit(written);
             why = "its one write, which does not lower to the " + sort
                     + " the projection reads";
         }
         if (field != null && field.sort == sort) return field;
-        candidateUnanswered.put(CANDIDATE_UNANSWERED + ":" + cell + "@"
+        top().candidateUnanswered.put(CANDIDATE_UNANSWERED + ":" + cell + "@"
                 + scope, "a STATE family may re-point " + owner + " to this "
                 + "object, and this session states " + why + ", so no "
                 + "pairing that delivers it is composed");
@@ -1812,7 +1813,7 @@ public final class SmtLowering {
      * the pairings delivering it are refused, not composed.
      */
     public Map<String, String> candidateUnanswered() {
-        return Collections.unmodifiableMap(candidateUnanswered);
+        return Collections.unmodifiableMap(root.candidateUnanswered);
     }
 
     // ------------------------------------------------------------------
