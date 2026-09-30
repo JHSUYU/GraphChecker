@@ -6,7 +6,7 @@ test creates a token with an old key while a delayed ZooKeeper notification
 leaves an issuer's cache stale. It then removes the old key on the leader
 before the token expires and observes the explicit `InvalidToken` exception.
 
-`prepare-analysis.sh` compiles one annotated production class family and the
+`prepare-analysis.sh` compiles one production class family, unedited, and the
 regression test into `overlay/`, using Java 8 and the existing JDK 8 HBase
 worktree. Neither HBase checkout is edited. The analysis scope is this class
 family; the remaining HBase classes and dependencies are on the runtime

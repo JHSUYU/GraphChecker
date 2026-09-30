@@ -1,6 +1,6 @@
 # Symbol scope: what is symbolic, and from where
 
-SEED computes one static slice `S` backwards from the annotated throw and publishes, per site of
+SEED computes one static slice `S` backwards from the declared throw and publishes, per site of
 `S`, what a replay does there: mint a root, observe shared state, export or attach a wire value, or
 nothing. Java paths below are under `src/main/java/edu/uva/liftlab/graphchecker/`.
 
@@ -36,7 +36,8 @@ bind is pinned to its recorded value or refused as `UNSTATED_VALUE` (`compose/Co
 
 ### 2.1 Seeds
 
-- The annotated throw (`@CausynthExceptionTarget`, one Jimple throw or the analysis refuses): the
+- The declared throw (the target spec's class and line, `ExceptionTargetLineResolver`; one Jimple
+  throw or the analysis refuses): the
   thrown value (`exception_throw`) and the operands of every branch from which the throw is
   reachable (`exception_guard`).
 - Every capture of every declared WIRE_FLOW port (`seedDeclaredWireFlows`), whether or not the throw
@@ -181,7 +182,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 
 | role | one row per | extra members |
 |---|---|---|
-| `TARGET_SITE` | the annotated throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
+| `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field) |
@@ -396,9 +397,25 @@ alone (`AtomicInteger.value`) names every object of its type. The replay mints a
 
 For a demanded read, `explore/ClosurePlanner#writers` asks the session's rows for eligible writers
 and the map for the static write sites of the read's carrier (`#carriersAt`, `#writersOf`), on the
-reader's node only. A recorded site's type matches a map row's by sort, or by the value it holds:
+reader's node only, held by an occurrence that may hold the read's object: one whose recorded
+accesses in that session name owners, none of them the location's, holds other objects only and is
+no candidate (Writers_W(ℓ) is per object: every state watcher's parse builds its own `Slice`s). A
+recorded site's type matches a map row's by sort, or by the value it holds:
 a wrapper location agrees with a row of its primitive (a stored box states its value) and with a
-reference row (a stored null) (`StaticScopeMap#sameType`).
+reference row (a stored null) (`StaticScopeMap#sameType`). A reference row states its object's
+runtime class and the map row the carrier's declared type; with no class hierarchy at hand they
+agree where the cell may hold the class (`#mayHold`): the same class, or value sorts that agree (a
+container's shape by interface, `JavaContainerTypes#shape`; a String; a box's value). A declared
+class no sort names (an application class, an interface, `Object`) holds any reference; a runtime
+class no sort names may be a container, never a String or a box, both final. A `Map` field holding
+a `ConcurrentHashMap` is that field's carrier. The site must also store the recorded location's
+kind (`#stores`): a field store, or an atomic's write of its value, a field; any other mutator call
+the state of the container its carrier holds; a read its field or, of a container field, that
+container's state; and no site of the map an array element, whose write joins no carrier. COMPOSE joins a store to its carriers
+by the same rule (`Composer#constructionGuards`). A read of a reference also rests on the container
+each eligible store of it delivered: the closure demands the writers of every state of it the read
+could have seen through that store (`Corpus#referentStates`), the states COMPOSE answers a query
+through the read from.
 
 ### 5.6 Construction guards
 

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-CollectionsHandler-1063
+exception_target: adhoc-CollectionsHandler-1063 org.apache.solr.handler.admin.CollectionsHandler 1063

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-QuorumJournalManager-386
+exception_target: adhoc-QuorumJournalManager-386 org.apache.hadoop.hdfs.qjournal.client.QuorumJournalManager 386

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-JNStorage-275
+exception_target: adhoc-JNStorage-275 org.apache.hadoop.hdfs.qjournal.server.JNStorage 275

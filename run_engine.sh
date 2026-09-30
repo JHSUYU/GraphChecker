@@ -179,7 +179,7 @@ workflow_config_keys=(
   # The composer runs z3 per valuation while it composes, so this bounds the
   # solving a campaign does, not a separate stage's budget.
   "compose_max_valuations CAUSYNTH_COMPOSE_MAX_VALUATIONS krp 16"
-  # The occurrence of the annotated site this campaign is about, as the case
+  # The occurrence of the declared target site this campaign is about, as the case
   # declares it: an occurrence address.  A campaign is target-directed -- the
   # case knows which instance can fail -- and the declaration is what says
   # so; it is the anchor COMPOSE composes and the claim DECIDE publishes.
@@ -418,9 +418,12 @@ run_in_directory() {
   (cd "${directory}" && "$@")
 }
 
-# The engine JVM, with the heap the case states (engine_memory_mb).
+# The engine JVM, with the heap the case states (engine_memory_mb, else the
+# launcher's 8 GB) -- on a campaign's head charged to its host for as long as
+# a JVM takes to reach its size (campaign_head_charged).
 engine_java() {
-  env "$(config_env_assignment engine_memory_mb)" "${java_bin}" "$@"
+  campaign_head_charged "${engine_memory_mb:-8192}" 120 \
+    env "$(config_env_assignment engine_memory_mb)" "${java_bin}" "$@"
 }
 
 run_java_main() {
@@ -700,7 +703,7 @@ campaign_analyze_grown_scope() {
   done
 }
 
-# The occurrence of the annotated site the case declares.  It is a config
+# The occurrence of the declared target site the case declares.  It is a config
 # key rather than a member of the target spec because the spec accepts one
 # entry and three cases share one file: hdfs-17899's per-bug selection lives
 # in case.sh, which exports it, and a single-case experiment states it in its
@@ -2108,7 +2111,7 @@ a truncated run and its log is in ${worker}/replay.log"
     # decision it left by.
     local declared_target reached=""
     local -a target_rows=()
-    # The annotated target's method, off the TARGET_SITE row of the static
+    # The declared target's method, off the TARGET_SITE row of the static
     # scope map, which already states that site.
     declared_target=$(jq -r -s '
       [.[] | select(.role == "TARGET_SITE") | .siteId
@@ -2168,6 +2171,7 @@ campaign_session_replay() {
     campaign_adapter_timeout_rule="${bound}s, seed_replay_time_factor=\
 ${seed_replay_time_factor} x the recording's ${campaign_recorded_workload_s}s \
 workload and at least replay_timeout_s=${replay_timeout_s}" \
+    campaign_head_charged "${obligation_memory_mb}" 300 \
     campaign_replay worker "${plan}" "${ids}" \
     "${iteration_dir}/instrumented-classes" "${results}" "${seed}/focused"
 }
@@ -2398,6 +2402,9 @@ campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
   local seed_plan=$6
   local outcome status=0
+  # Its slot charged the host obligation_memory_mb: a local slot is a
+  # subshell of the head, and its JVMs are not the head's.
+  local campaign_head_charging=0
   local -a domain_args=()
   # The same declaration EXPLORE and COMPOSE read: an answer is only as free
   # as the root domains behind the arm that produces it.
@@ -2454,6 +2461,8 @@ campaign_obligation_worker() {
 # solver and read unchanged by a re-run.
 campaign_obligation_replay() {
   local obligation_id=$1 classes=$2 worker=$3 sessions=$4 seed_plan=$5
+  # Charged as a whole by whoever runs it: a slot, GROW, or CONFIRM.
+  local campaign_head_charging=0
   local plan="${worker}/execution_task_plan.jsonl"
   local focus="${worker}/focused_task.jsonl"
   local results="${worker}/concolic_region_results.jsonl"
@@ -2563,15 +2572,17 @@ campaign_claim_next_obligation() {
 # The hosts are interleaved rather than blocked, so the wave's opening fill
 # -- which is every slot claiming at once -- lands round-robin across the
 # hosts instead of loading the first host to capacity before the second sees
-# any work.
+# any work.  The list starts at host [offset] (mod its length): a wave
+# rotates it, so a one-obligation wave is not always the first host's.
 campaign_worker_slot_hosts() {
+  local offset=${1:-0}
   local -a hosts=()
-  local host slot
+  local slot index
   read -r -a hosts <<<"${campaign_worker_hosts}"
   [[ ${#hosts[@]} -gt 0 ]] || hosts=(localhost)
   for ((slot = 0; slot < concolic_worker_count; slot++)); do
-    for host in "${hosts[@]}"; do
-      printf '%s\n' "${host}"
+    for ((index = 0; index < ${#hosts[@]}; index++)); do
+      printf '%s\n' "${hosts[$(( (offset + index) % ${#hosts[@]} ))]}"
     done
   done
 }
@@ -2594,32 +2605,41 @@ $(hostname -s 2>/dev/null) "
 # MEMORY PER HOST
 #
 # Every lift has 30 GB and every campaign's pool spans every lift, so what
-# decides whether one more obligation fits on a host is the host, not the
-# campaign.  So a slot asks the HOST before it
-# starts an obligation there, through a ledger every campaign shares -- the
-# home directory is the same on every lift -- one directory per host:
+# decides whether one more JVM fits on a host is the host, not the campaign.
+# So every start asks the HOST first -- an obligation's slot, a campaign
+# head's engine JVMs and replays, a fanout job (tools/adhoc/fanout.sh) --
+# through a ledger all of them share, on a filesystem every lift mounts
+# (tools/lib/gc-env.sh, CAUSYNTH_HOST_LEDGER), one directory per host:
 #
 #   ${campaign_host_gate_root}/<host>/lock       an mkdir lock, held for the
 #                                                 few lines that read and
 #                                                 append the ledger
-#   ${campaign_host_gate_root}/<host>/starts     "<epoch> <mb>" per obligation
-#                                                 started in the ramp window
+#   ${campaign_host_gate_root}/<host>/starts     "<epoch> <mb> <ramp_s> <id>"
+#                                                 per start still ramping
 #   ${campaign_host_gate_root}/<host>/available  "<epoch> <mb>": MemAvailable,
 #                                                 read at most every poll
 #
-# An obligation may start when MemAvailable, less what every start of the
-# last ramp window will still grow into, leaves its obligation_memory_mb
-# plus the host's reserve.  A solver JVM takes tens of seconds to reach its
-# size and MemAvailable says nothing about memory a JVM has not touched yet,
-# so a start is charged in full until the window has passed; after it, what
-# it holds is in MemAvailable.  A slot that does not fit WAITS -- the
-# obligation is the wave's and is never skipped -- and says so once.
+# A start of <mb> may go when MemAvailable, less what every start still in
+# its ramp will grow into, leaves <mb> plus the host's reserve.  A JVM takes
+# tens of seconds to reach its size and MemAvailable says nothing about
+# memory a JVM has not touched yet, so a start is charged in full for its own
+# ramp; after it, what it holds is in MemAvailable.  A start whose command
+# returned inside its ramp is released (campaign_host_release), so a head's
+# JVMs, one after another, are never charged twice.  A start that does not
+# fit WAITS -- an obligation is the wave's and is never skipped -- and says
+# so once.
 # ---------------------------------------------------------------------------
 
-campaign_host_gate_root="${HOME}/gc-out/hosts"
-# How long a start is charged in full: the time a solver JVM takes to load
-# its corpus (about half a minute to 5 GB RSS).
+# shellcheck source=tools/lib/gc-env.sh
+source "${graphchecker_dir}/tools/lib/gc-env.sh"
+campaign_host_gate_root=${CAUSYNTH_HOST_LEDGER}
+# How long an obligation's start is charged in full: the time a solver JVM
+# takes to load its corpus (about half a minute to 5 GB RSS).
 campaign_host_ramp_s=60
+# Whether this shell is a campaign's head, whose engine JVMs and replays are
+# charged to its own host (do_campaign); an obligation's work is inside the
+# obligation's charge.
+campaign_head_charging=0
 # What every host keeps free whatever the campaigns ask: the page cache the
 # JVMs read their jars and corpora through, and the owner's own sessions.
 campaign_host_reserve_mb=3072
@@ -2676,65 +2696,116 @@ campaign_host_memory_reading() {
   printf '%s\n' "${mb}"
 }
 
-# One try: 0 when this obligation may start now and is charged to the host,
-# 1 when it does not fit yet (why, in campaign_host_wait_reason), 2 when the
-# host's memory cannot be read, 3 when another slot holds the ledger's lock
-# for the instant it takes to charge a start.
+# Takes the ledger's lock of one host directory: 0, or 3 while another start
+# holds it (a lock older than campaign_host_lock_stale_s is broken).
+campaign_host_lock() {
+  local dir=$1 now=$2 lock_at
+  mkdir "${dir}/lock" 2>/dev/null && return 0
+  lock_at=$(stat -c %Y "${dir}/lock" 2>/dev/null || echo "${now}")
+  if (( now - lock_at >= campaign_host_lock_stale_s )); then
+    rmdir "${dir}/lock" 2>/dev/null || true
+  fi
+  return 3
+}
+
+# campaign_host_try_start <host> [need_mb] [ramp_s]: one try.  0 when the
+# start may go now and is charged to the host, its row named in
+# campaign_host_charge_id; 1 when it does not fit yet (why, in
+# campaign_host_wait_reason); 2 when the host's memory cannot be read; 3 when
+# another start holds the ledger's lock for the instant it takes to charge
+# one.  An obligation's need and ramp are the defaults.
 campaign_host_wait_reason=""
+campaign_host_charge_id=""
 campaign_host_try_start() {
-  local host=$1 key dir now available lock_at charged=0 at mb kept=""
+  local host=$1 need=${2:-${obligation_memory_mb}}
+  local ramp=${3:-${campaign_host_ramp_s}} key dir now available
+  local charged=0 at mb row_ramp id kept=""
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
   now=$(date +%s)
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
-  if ! mkdir "${dir}/lock" 2>/dev/null; then
-    lock_at=$(stat -c %Y "${dir}/lock" 2>/dev/null || echo "${now}")
-    if (( now - lock_at >= campaign_host_lock_stale_s )); then
-      rmdir "${dir}/lock" 2>/dev/null || true
-    fi
-    return 3
-  fi
+  campaign_host_lock "${dir}" "${now}" || return 3
   if [[ -f "${dir}/starts" ]]; then
-    while read -r at mb; do
-      [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ ]] || continue
-      (( now - at < campaign_host_ramp_s )) || continue
+    while read -r at mb row_ramp id; do
+      [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ \
+        && "${row_ramp}" =~ ^[0-9]+$ ]] || continue
+      (( now - at < row_ramp )) || continue
       charged=$((charged + mb))
-      kept+="${at} ${mb}"$'\n'
+      kept+="${at} ${mb} ${row_ramp} ${id}"$'\n'
     done <"${dir}/starts"
   fi
-  if (( available - charged
-        < obligation_memory_mb + campaign_host_reserve_mb )); then
+  if (( available - charged < need + campaign_host_reserve_mb )); then
     printf '%s' "${kept}" >"${dir}/starts"
     rmdir "${dir}/lock"
     campaign_host_wait_reason="${key} has ${available} MB available and \
-${charged} MB charged to obligations started in the last \
-${campaign_host_ramp_s}s; one needs ${obligation_memory_mb} MB beyond a \
-${campaign_host_reserve_mb} MB reserve"
+${charged} MB charged to starts still in their ramp; one needs ${need} MB \
+beyond a ${campaign_host_reserve_mb} MB reserve"
     return 1
   fi
-  printf '%s%s %s\n' "${kept}" "${now}" "${obligation_memory_mb}" \
-    >"${dir}/starts"
+  campaign_host_charge_id="$(hostname -s).${BASHPID}.${now}.${RANDOM}"
+  printf '%s%s %s %s %s\n' "${kept}" "${now}" "${need}" "${ramp}" \
+    "${campaign_host_charge_id}" >"${dir}/starts"
   rmdir "${dir}/lock"
   return 0
 }
 
-# Blocks until one obligation fits on the slot's host, then charges it
-# there: 0.  A slot waits BEFORE it claims, so a host without room holds no
-# obligation while another host could run it (a10: one claim sat 30 min on a
-# lift whose planner held 15 GB while eight lifts had 26 GB free).  1 once
-# every obligation of the wave's queue is claimed -- nothing is left to wait
-# for; without a queue (a GROW re-run, one obligation) never.  2 when the
+# Drops one start's row: what it ran has returned, and whatever it held is
+# back in MemAvailable.
+campaign_host_release() {
+  local host=$1 id=$2 dir kept
+  dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
+  until campaign_host_lock "${dir}" "$(date +%s)"; do
+    sleep 0.$(( (RANDOM % 9) + 1 ))
+  done
+  if [[ -f "${dir}/starts" ]]; then
+    kept=$(awk -v id="${id}" '$4 != id' "${dir}/starts")
+    [[ -z "${kept}" ]] || kept+=$'\n'
+    printf '%s' "${kept}" >"${dir}/starts"
+  fi
+  rmdir "${dir}/lock"
+}
+
+# campaign_head_charged <need_mb> <ramp_s> <command...>: a campaign head's
+# own heavy start -- an engine JVM, the seed or the CONFIRM replay -- waits
+# for room on the head's host, is charged there, and is released when it
+# returns.  Outside a head it runs the command alone.  The command runs as a
+# plain command, so errexit means inside it what it meant before: a failure
+# that ends the shell leaves the charge to lapse with its ramp.
+campaign_head_charged() {
+  local need=$1 ramp=$2 id status
+  shift 2
+  if [[ "${campaign_head_charging}" != 1 ]]; then
+    "$@"
+    return
+  fi
+  # Its words go to stderr: the command's stdout is often its artifact
+  # (ImportGateMain's summary JSON).
+  campaign_await_host_memory localhost "" 0 "${need}" "${ramp}" >&2 || return
+  id=${campaign_host_charge_id}
+  "$@"
+  status=$?
+  campaign_host_release localhost "${id}"
+  return "${status}"
+}
+
+# campaign_await_host_memory <host> [queue] [count] [need_mb] [ramp_s]:
+# blocks until one start fits on the host, then charges it there: 0.  A slot
+# waits BEFORE it claims, so a host without room holds no obligation while
+# another host could run it (a10: one claim sat 30 min on a lift whose
+# planner held 15 GB while eight lifts had 26 GB free).  1 once every
+# obligation of the wave's queue is claimed -- nothing is left to wait for;
+# without a queue (a GROW re-run, a head's own start) never.  2 when the
 # host's memory cannot be read, the waiter's named failure.
 campaign_await_host_memory() {
-  local host=$1 queue_dir=${2:-} count=${3:-0} said=false status=0
-  local unread_since=""
+  local host=$1 queue_dir=${2:-} count=${3:-0} need=${4:-} ramp=${5:-}
+  local said=false status=0 unread_since=""
   while true; do
     [[ -z "${queue_dir}" ]] \
       || (( $(find "${queue_dir}" -mindepth 1 -maxdepth 1 -type d | wc -l) \
         < count )) || return 1
-    run_capturing_status campaign_host_try_start "${host}"
+    run_capturing_status campaign_host_try_start "${host}" "${need}" "${ramp}"
     case "${status}" in
       0) return 0 ;;
       2)
@@ -2834,9 +2905,12 @@ campaign_dispatch_wave() {
   local host slot count=${#jobs[@]} status=0
   mkdir -p "${queue_dir}"
   printf '%s\n' "${jobs[@]}" >"${jobs_file}"
+  # The wave's directory, which names its campaign and its wave, picks the
+  # first host.
   while IFS= read -r host; do
     slot_hosts+=("${host}")
-  done < <(campaign_worker_slot_hosts)
+  done < <(campaign_worker_slot_hosts \
+    "$(printf '%s' "${wave_dir}" | cksum | cut -d ' ' -f 1)")
   # A pool wider than the wave starts only the slots that can claim work; the
   # rest would claim nothing and return immediately anyway, and starting them
   # would put ${hosts} x ${workers} ssh connections on the wire for a wave of
@@ -3263,11 +3337,11 @@ campaign_publish_iteration_manifest() {
 # COMPOSE: one anchor, one formula.
 #
 # The anchor is the occurrence the case declares.  Which execution of the
-# annotated site a campaign answers about is the case's to state, so there is
-# no fan-out over observed occurrences here and nothing to elect afterwards:
-# the composer reads every session this iteration produced, factorizes the paths
-# that reach the declared anchor, and writes one candidate.smt2 beside one
-# manifest.
+# declared target site a campaign answers about is the case's to state, so
+# there is no fan-out over observed occurrences here and nothing to elect
+# afterwards: the composer reads every session this iteration produced,
+# factorizes the paths that reach the declared anchor, and writes one
+# candidate.smt2 beside one manifest.
 campaign_compose() {
   local iteration_dir=$1
   local started ended millis status=0
@@ -3325,7 +3399,7 @@ valuations=$(jq -r '(.solver.valuations // []) | length' "${report}")"
 # DECIDE: the claim the composition reached, checked and printed.
 #
 # There is one anchor and therefore one claim, and no ranking of observed
-# occurrences: which execution of the annotated site the campaign is about
+# occurrences: which execution of the declared target site the campaign is about
 # is the case's declaration, and the claim about it is whatever its own
 # formula decided.
 campaign_decide() {
@@ -3403,7 +3477,8 @@ campaign_confirm() {
     # The replay, exactly as an obligation's.  A campaign_fail inside it
     # ends a wave; here, in a subshell, it ends the confirmation as "no
     # verdict", which is one more way of not agreeing with the model.
-    ( campaign_obligation_replay CONFIRM \
+    ( campaign_head_charged "${obligation_memory_mb}" 300 \
+        campaign_obligation_replay CONFIRM \
         "${iteration_dir}/instrumented-classes" "${worker}" "${sessions}" \
         "${iteration_dir}/seed-replay/execution_task_plan.jsonl" ) \
       >>"${confirm_dir}/confirm.log" 2>&1 || status=$?
@@ -3735,7 +3810,7 @@ campaign_emit() {
      # sat" gets the mechanism narrative here rather than having to rebuild it
      # from the model.
      witnessFindings: ($decided.witnessFindings // []),
-     # Which execution of the annotated target this claim is about: the one
+     # Which execution of the declared target this claim is about: the one
      # the case declares and the composer anchored on.  A campaign answers
      # about one anchor, so there is no ledger of runners-up to publish.
      targetOccurrence: ($c.anchor // ""),
@@ -3940,6 +4015,9 @@ do_campaign() {
   # Named now that the campaign root is claimed, because the root is what
   # makes it this run's and no other run's.
   campaign_init_local_scratch_root
+  # This shell is the head: its engine JVMs and its replays are charged to
+  # its host (campaign_head_charged).
+  campaign_head_charging=1
 
   campaign_stage PREFLIGHT campaign_preflight
   campaign_stage FREEZE_TOOL campaign_freeze_graphchecker_jar

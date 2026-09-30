@@ -66,7 +66,7 @@ import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwn
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 
-/** Static backward data-flow analysis from one annotated exception target. */
+/** Static backward data-flow analysis from one declared exception target. */
 final class SeedBackwardStaticAnalyzer {
     private static final Logger LOG = LoggerFactory.getLogger(
             CausynthPipeline.class);
@@ -248,7 +248,7 @@ final class SeedBackwardStaticAnalyzer {
         SootMethod sootTarget = concreteMethod(targetMethod);
         if (sootTarget == null || !loadMethod(sootTarget)) {
             throw new IllegalStateException(
-                    "Could not load annotated target method: "
+                    "Could not load declared target method: "
                             + targetMethod);
         }
         // Wire flows and fault hooks are seeds by declaration, even outside
@@ -259,7 +259,7 @@ final class SeedBackwardStaticAnalyzer {
         seedExplicitFaultEntries();
         runWorklist();
         if (discoveredExceptionSeedCount != 1) {
-            throw new IllegalStateException("Annotated exception target did "
+            throw new IllegalStateException("Declared exception target did "
                     + "not resolve to exactly one Jimple throw: "
                     + target.exceptionTargetSite.stableIdentity()
                     + "; matches=" + discoveredExceptionSeedCount);
@@ -376,11 +376,11 @@ final class SeedBackwardStaticAnalyzer {
         List<Fact> facts = factsByMethod.get(method);
         if (facts == null) {
             throw new IllegalStateException(
-                    "Annotated target has no loaded Jimple body: " + method);
+                    "Declared target has no loaded Jimple body: " + method);
         }
         for (int throwIndex = 0; throwIndex < facts.size(); throwIndex++) {
             Fact throwFact = facts.get(throwIndex);
-            if (annotatedExceptionAllocation(facts, throwIndex) == null) {
+            if (declaredExceptionAllocation(facts, throwIndex) == null) {
                 continue;
             }
 
@@ -655,7 +655,7 @@ final class SeedBackwardStaticAnalyzer {
                 || loadMethod(method));
     }
 
-    private Fact annotatedExceptionAllocation(
+    private Fact declaredExceptionAllocation(
             List<Fact> facts, int throwIndex) {
         Fact fact = facts.get(throwIndex);
         if (!(fact.unit instanceof ThrowStmt)) {

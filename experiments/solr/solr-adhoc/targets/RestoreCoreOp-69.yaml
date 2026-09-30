@@ -1,1 +1,1 @@
-exception_target_id: adhoc-RestoreCoreOp-69
+exception_target: adhoc-RestoreCoreOp-69 org.apache.solr.handler.admin.RestoreCoreOp 69

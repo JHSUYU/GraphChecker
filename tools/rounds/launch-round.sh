@@ -33,8 +33,9 @@ set -euo pipefail
 snapshot=${1:?usage: launch-round.sh <snapshot> <round> [workers-per-host]}
 round=${2:?usage: launch-round.sh <snapshot> <round> [workers-per-host]}
 workers=${3:-4}
-out=${GC_OUT:-/u/vnr3ne/gc-out}
-LIFTS="lift06 lift07 lift08 lift09 lift10 lift11 lift12 lift13 lift14 lift15"
+# shellcheck source=../lib/gc-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
+out=${GC_OUT}
 
 # head host, then the cases it heads.
 placement=(
@@ -89,7 +90,8 @@ mkdir -p "${out}"
 for launch in "${launches[@]}"; do
   read -r head case_id suffix <<<"${launch}"
   command="setsid nohup env CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' \
-CAUSYNTH_CONCOLIC_JOBS=${workers} GC_OUT=${out} ${vm} \
+CAUSYNTH_CONCOLIC_JOBS=${workers} GC_OUT=${out} \
+CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} ${vm} \
 bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} ${case_id} ${suffix} \
 > ${out}/launch-${suffix}.log 2>&1 < /dev/null &"
   if [[ "${head}" == "$(hostname -s)" ]]; then

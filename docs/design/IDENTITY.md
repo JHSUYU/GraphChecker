@@ -292,7 +292,7 @@ order:
 
 A case names its target occurrence (`declared_target_occurrence`) as a selector
 (`contract/Selector`), `<node>#epoch<N>/region/REGION.x[@<src>#epoch<N>/<api>]#k`, or as `first`,
-the first observed occurrence of the annotated site in the recording (an ad-hoc sweep's default,
+the first observed occurrence of the declared target site in the recording (an ad-hoc sweep's default,
 `plan/RuntimeWorkflowDiscovery.FIRST`). `plan/SelectorResolution#resolve` takes the k-th seed
 activation a selector matches (region, and the anchor's api when given); an already-resolved
 address passes through. No match yields a degraded address, reported downstream as

@@ -50,6 +50,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtName;
@@ -127,13 +129,16 @@ public final class Composer {
         private final String selector;
         private final boolean fatalObserved;
         private final Set<String> interactionIds;
+        private final Set<String> restsOn;
 
         private Disjunct(Corpus.RecordedPath path, String selector,
-                         boolean fatalObserved, Set<String> interactionIds) {
+                         boolean fatalObserved, Set<String> interactionIds,
+                         Set<String> restsOn) {
             this.path = path;
             this.selector = selector;
             this.fatalObserved = fatalObserved;
             this.interactionIds = Collections.unmodifiableSet(interactionIds);
+            this.restsOn = Collections.unmodifiableSet(restsOn);
         }
 
         public Corpus.RecordedPath path() {
@@ -151,6 +156,11 @@ public final class Composer {
         /** Every interaction this path's chain reaches. */
         public Set<String> interactionIds() {
             return interactionIds;
+        }
+
+        /** The tracked locations its fatal predicate rests on. */
+        public Set<String> restsOn() {
+            return restsOn;
         }
     }
 
@@ -341,6 +351,21 @@ public final class Composer {
             return armChoices.get(selector);
         }
 
+        /**
+         * Every nested selector a state arm's stores are chosen among
+         * ({@link ComposedFamilies.ArmChoice#states}), so a claim can say
+         * which state of the delivered object the witness's queries saw.
+         */
+        public List<String> stateSelectors() {
+            Set<String> selectors = new LinkedHashSet<String>();
+            for (ComposedFamilies.ArmChoice arm : armChoices.values()) {
+                for (SmtLowering.StateChoice state : arm.states()) {
+                    selectors.add(state.selector);
+                }
+            }
+            return new ArrayList<String>(selectors);
+        }
+
         /** Every selector, for reading which disjunct a model selected. */
         public List<String> selectors() {
             return Composer.selectors(disjuncts);
@@ -517,7 +542,8 @@ public final class Composer {
             if (disjunct != null) {
                 disjuncts.add(disjunct);
                 entries.add(PathEntry.of(path.pathId, path.sessionId,
-                        disjunct.selector(), disjunct.fatalObserved()));
+                        disjunct.selector(), disjunct.fatalObserved(),
+                        disjunct.restsOn()));
                 ordinal++;
             }
         }
@@ -682,6 +708,7 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
+        lowering.path();
         // (0a) THE CLOSURE (P3): the occurrences of this session the joins
         //      reach, and the seq each prefix runs to.  Row-level, before
         //      any lowering.
@@ -713,6 +740,14 @@ public final class Composer {
         Independence relevant = independence(session,
                 Collections.singletonList(target.phiTerm()),
                 familyBound(session, repaired), reached, conditions);
+        //       What the fatal itself rests on, of phi and the roots alone: a
+        //       location a family binds and nothing else reaches holds the
+        //       formula's alternatives, not the witness (a confirming run is
+        //       held to these only).
+        Set<String> restsOn = independence(session,
+                Collections.singletonList(target.phiTerm()),
+                Collections.<String>emptySet(), reached, conditions)
+                .locations();
 
         // (0b) Reads whose value the row states outright, bound BEFORE any
         //      lowering so every leaf naming them resolves, not just later
@@ -747,8 +782,12 @@ public final class Composer {
                 SmtLowering.locationKey(read.location())));
         //     A field projected, or a container queried, through one a STATE
         //     family may re-point is the object's it is
-        //     ({@link SmtLowering#movable}).
-        for (ReadRow read : joined) lowering.movable(read.symbol());
+        //     ({@link SmtLowering#movable}); through any other, the run's.
+        for (ReadRow read : joined) {
+            if (repaired.contains(SmtLowering.locationKey(read.location()))) {
+                lowering.movable(read.symbol());
+            }
+        }
 
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
         //     decision shares the target's seq; including it would
@@ -844,7 +883,7 @@ public final class Composer {
                 arrivals(corpus.attachesOn(session, anchor)));
         heldArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, target.observedFatal(),
-                interactionIds);
+                interactionIds, restsOn);
     }
 
     private static List<String> selectors(List<Disjunct> disjuncts) {
@@ -867,7 +906,8 @@ public final class Composer {
      * The state joins THIS CONJUNCTION ASKS ABOUT, to a fixed point seeded
      * by the path's terms and its family terms.  An unreached join
      * constrains nothing but drags its theory (e.g. {@code assoc_put}) into
-     * the query, which can cost z3 its whole budget.  Same rule as
+     * the query, which can cost z3 its whole budget; it goes with what its
+     * lowering required ({@link SmtLowering#ownConditions}).  Same rule as
      * {@link SmtLowering#body}, applied to assertions.
      */
     List<String> statedJoins(Map<String, String> joins,
@@ -1394,10 +1434,8 @@ public final class Composer {
                 + write.version(), unused -> {
             String site = write.endpoint().site();
             Set<String> sites = new LinkedHashSet<String>();
-            // A write states its referent's runtime class and a carrier its
-            // declared type; names do not decide subtyping, so the carriers
-            // are matched on the reference sort alone.
-            for (String carrier : scope.carriersAt(site, "L")) {
+            for (String carrier : scope.carriersAt(site,
+                    write.javaType(), write.location().kind())) {
                 for (StaticScopeMap.Guard guard
                         : scope.constructionGuards(site, carrier)) {
                     sites.add(guard.siteId());
@@ -1502,12 +1540,24 @@ public final class Composer {
      * holds a container through an object that is not it (a
      * {@code Collections} wrapper, a view): a query through that object
      * names no owner, so it is the run's container's answer whichever
-     * object the family delivers.
+     * object the family delivers.  Or a field or a query is asked through a
+     * container query's read of it: that read names no object (a query
+     * states no answer's identity), so no case per writer is the run's.
      */
     private Set<String> pinnedOwners(String session,
                                      Map<String, Long> reached,
                                      Set<String> repaired) {
         Set<String> pinned = new LinkedHashSet<String>();
+        for (String key : containerOwners(session, reached)) {
+            if (repaired.contains(key) && pinned.add(key)) {
+                gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        "OWNER_PINNED_BY_CONTAINER_READ:" + key + "@"
+                                + session, "a field or a query of this path "
+                                + "is asked through a query's read of this "
+                                + "container, which names no object, so its "
+                                + "family is held to the arm the run took");
+            }
+        }
         for (Map.Entry<String, Long> at : reached.entrySet()) {
             OccurrenceAddress occurrence = corpus.occurrence(at.getKey());
             if (occurrence == null) continue;
@@ -1560,6 +1610,60 @@ public final class Composer {
         }
         return pinned;
     }
+
+    /**
+     * The container locations whose query reads the anchor or a reached
+     * occurrence asks a field or a query through ({@code owner}), up to its
+     * cutoff.
+     */
+    private Set<String> containerOwners(String session,
+                                        Map<String, Long> reached) {
+        Set<String> owners = new LinkedHashSet<String>();
+        Set<JsonElement> walked = ExpressionWalk.identitySet();
+        Map<String, Long> asked = new LinkedHashMap<String, Long>(reached);
+        TargetRow anchored = corpus.target(session, anchor);
+        if (anchored != null) {
+            asked.merge(anchor.id(), anchored.seq(), Math::max);
+        }
+        for (Map.Entry<String, Long> at : asked.entrySet()) {
+            OccurrenceAddress occurrence = corpus.occurrence(at.getKey());
+            if (occurrence == null) continue;
+            StringBuilder terms = new StringBuilder();
+            for (DecisionRow decision : corpus.decisionsOf(session,
+                    occurrence)) {
+                if (decision.seq() <= at.getValue()) {
+                    terms.append(decision.term()).append(' ');
+                }
+            }
+            for (WriteRow write : corpus.writesOn(session, occurrence)) {
+                if (write.seq() <= at.getValue()) {
+                    terms.append(write.expressionRef()).append(' ');
+                }
+            }
+            TargetRow target = corpus.target(session, occurrence);
+            if (target != null) terms.append(target.phiTerm());
+            Matcher refs = EXPRESSION_REF.matcher(terms);
+            while (refs.find()) {
+                for (ExpressionWalk walk = ExpressionWalk.of(corpus.expression(
+                        session, refs.group()), walked); walk.hasNext(); ) {
+                    JsonElement owner = unwrapped(walk.next().get("owner"));
+                    if (!VmRows.GUARDED_READ_TYPE.equals(
+                            VmExpressionIr.typeOf(owner))) {
+                        continue;
+                    }
+                    String key = SmtLowering.locationKey(JsonFields.object(
+                            owner.getAsJsonObject(), "location"));
+                    if (key.startsWith(LocationKind.MAP + "/")) {
+                        owners.add(key);
+                    }
+                }
+            }
+        }
+        return owners;
+    }
+
+    private static final Pattern EXPRESSION_REF =
+            Pattern.compile("EXPR\\.[0-9a-f]+");
 
     /**
      * Whether a reference store stored a container itself, which a wrapper
@@ -1765,7 +1869,7 @@ public final class Composer {
                                 + "not in this corpus"));
                 continue;
             }
-            lowering.bind(key, version, null, new SmtLowering.Binder<Boolean>() {
+            SmtLowering.Binder<Boolean> binder = new SmtLowering.Binder<Boolean>() {
                 @Override
                 public Term join(JsonElement value) {
                     return lowering.dispatch(value, SmtLowering.whole(value,
@@ -1810,7 +1914,16 @@ public final class Composer {
                             detail));
                     return false;
                 }
-            });
+            };
+            // What binding the read required rides with the join that binds
+            // it: stated where the conjunction asks about it (#statedJoins).
+            List<String> own = lowering.ownConditions(
+                    () -> lowering.bind(key, version, null, binder)
+                            && joins.containsKey(read.symbol()));
+            if (!own.isEmpty()) {
+                own.add(0, joins.get(read.symbol()));
+                joins.put(read.symbol(), VmTermLowering.and(own));
+            }
         }
     }
 

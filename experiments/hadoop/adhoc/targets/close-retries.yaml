@@ -1,1 +1,1 @@
-exception_target_id: adhoc-close-retries
+exception_target: adhoc-close-retries org.apache.hadoop.hdfs.DFSOutputStream 1014

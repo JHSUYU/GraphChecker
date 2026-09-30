@@ -1,1 +1,1 @@
-exception_target_id: adhoc-dzup-collection
+exception_target: adhoc-dzup-collection org.apache.solr.update.processor.DistributedZkUpdateProcessor 757

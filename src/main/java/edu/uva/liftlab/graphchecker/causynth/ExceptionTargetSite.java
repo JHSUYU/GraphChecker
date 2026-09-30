@@ -1,6 +1,9 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-/** Immutable class-file identity for one annotated exception construction. */
+/**
+ * Immutable class-file identity for one declared exception construction
+ * ({@link ExceptionTargetLineResolver}); {@code id} is the target's name.
+ */
 public final class ExceptionTargetSite {
     final String id;
     final String className;

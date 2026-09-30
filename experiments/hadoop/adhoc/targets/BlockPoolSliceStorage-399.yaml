@@ -1,1 +1,1 @@
-exception_target_id: adhoc-BlockPoolSliceStorage-399
+exception_target: adhoc-BlockPoolSliceStorage-399 org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage 399

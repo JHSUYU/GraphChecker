@@ -1,1 +1,1 @@
-exception_target_id: adhoc-del-noversion
+exception_target: adhoc-del-noversion org.apache.solr.update.processor.DistributedUpdateProcessor 977

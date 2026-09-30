@@ -655,7 +655,7 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * The activations the failure's demand reaches, from two authorities
      * only: the DECLARATIONS (symbolic inputs, communication mappings, the
-     * annotated target) and the static scope map, which names the regions
+     * declared target) and the static scope map, which names the regions
      * storing a location, never the writer ({@link
      * StaticScopeMap#writerRegionsByCell}, SYMBOL-SCOPE §3).  Nothing is
      * discovered from recorded field accesses: an undeclared read mints no
@@ -1217,7 +1217,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 new LinkedHashMap<>();
         private final Map<String, Map<String, List<String>>>
                 explicitFatalSeedsBySite = new LinkedHashMap<>();
-        /** The decisions on the way to the annotated throw (the scope map's
+        /** The decisions on the way to the declared throw (the scope map's
          *  TARGET_SITE rows, {@link StaticScopeMap.Site#pathSites}): an
          *  activation that took one is an occurrence the failure is about,
          *  whether or not it went on to the throw.  A {@code failureTarget}

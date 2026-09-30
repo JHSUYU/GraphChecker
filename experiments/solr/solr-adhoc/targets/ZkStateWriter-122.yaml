@@ -1,1 +1,1 @@
-exception_target_id: adhoc-ZkStateWriter-122
+exception_target: adhoc-ZkStateWriter-122 org.apache.solr.cloud.overseer.ZkStateWriter 122

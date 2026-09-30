@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -13,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -30,6 +32,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -330,9 +333,16 @@ public final class ClosurePlanner {
         private final Set<GapRow> gaps = new LinkedHashSet<GapRow>();
         /** what|endpoint id of each delivery said unread. */
         private final Set<String> unread = new LinkedHashSet<String>();
-        /** (reason, site, guards, node) -> whether some occurrence ran it. */
-        private final Map<List<Object>, Boolean> offered =
-                new HashMap<List<Object>, Boolean>();
+        /** (site, node) -> the activated occurrences that hold the site. */
+        private final Map<List<Object>, List<OccurrenceAddress>> holders =
+                new HashMap<List<Object>, List<OccurrenceAddress>>();
+        /** (reason, site, guards, node) -> the occurrences offered under it. */
+        private final Map<List<Object>, Set<String>> offered =
+                new HashMap<List<Object>, Set<String>>();
+        /** session|occurrence id -> the owners of every location it read or
+         *  wrote in that session. */
+        private final Map<String, Set<String>> held =
+                new HashMap<String, Set<String>>();
         private final Map<String, Set<String>> carriers =
                 new HashMap<String, Set<String>>();
         private final Map<String, Set<String>> guards =
@@ -346,9 +356,12 @@ public final class ClosurePlanner {
         }
 
         /** {@link StaticScopeMap#carriersAt}. */
-        private Set<String> carriersAt(String recordedSite, String javaType) {
-            return carriers.computeIfAbsent(recordedSite + "|" + javaType,
-                    key -> map.carriersAt(recordedSite, javaType));
+        private Set<String> carriersAt(String recordedSite, String javaType,
+                                       LocationId location) {
+            return carriers.computeIfAbsent(recordedSite + "|" + javaType
+                            + "|" + location.kind(),
+                    key -> map.carriersAt(recordedSite, javaType,
+                            location.kind()));
         }
 
         /** A writer's flip sites: guards of every static write site in the
@@ -368,25 +381,81 @@ public final class ClosurePlanner {
         private List<StaticScopeMap.Site> writersOf(String carrier) {
             return writers.computeIfAbsent(carrier, map::writersOf);
         }
+
+        /** Every activated occurrence holding one static site, on {@code
+         *  node} (null = any): one scan of the corpus per site and node. */
+        private List<OccurrenceAddress> holders(StaticScopeMap.Site site,
+                                                NodeId node) {
+            return holders.computeIfAbsent(Arrays.<Object>asList(site, node),
+                    key -> {
+                        List<OccurrenceAddress> found =
+                                new ArrayList<OccurrenceAddress>();
+                        for (OccurrenceAddress occurrence
+                                : corpus.occurrences()) {
+                            if (holds(map, occurrence.regionId(), site)
+                                    && (node == null
+                                    || node.equals(occurrence.node()))
+                                    && activated(corpus, occurrence)) {
+                                found.add(occurrence);
+                            }
+                        }
+                        return found;
+                    });
+        }
+
+        /**
+         * Whether one session saw this occurrence hold objects, and not the
+         * one that owns this location: a heap location is one object's
+         * (SYMBOL-SCOPE §5.5), and a store reaches only an object its
+         * occurrence holds.  A static field, an owner that names no one
+         * object ({@link Arms#namedOwner}) or an occurrence the session
+         * states no access of says nothing either way.
+         */
+        private boolean holdsOthersOnly(OccurrenceAddress occurrence,
+                                        String sessionId,
+                                        LocationId location) {
+            if (location.kind() == LocationKind.STATIC
+                    || !Arms.namedOwner(location)) {
+                return false;
+            }
+            Set<String> owners = held.computeIfAbsent(
+                    sessionId + "|" + occurrence.id(), key -> {
+                        Set<String> found = new HashSet<String>();
+                        for (ReadRow read
+                                : corpus.readsOn(sessionId, occurrence)) {
+                            found.add(read.location().owner());
+                        }
+                        for (WriteRow write
+                                : corpus.writesOn(sessionId, occurrence)) {
+                            found.add(write.location().owner());
+                        }
+                        return found;
+                    });
+            return !owners.isEmpty() && !owners.contains(location.owner());
+        }
     }
 
-    /** Everything one demand reaches, by rows and by the static map. */
+    /**
+     * Everything one demand reaches, by rows and by the static map.
+     *
+     * <p>The group (occurrence + state-connected factor) is ONE symbolic
+     * unit: the demanded values are asked of the reads and attaches of every
+     * member.  A member joins the closure only through them -- as a writer
+     * of a demanded read or the producer of a demanded attach -- never for
+     * touching what the occurrence touches: two readers of one location
+     * pass nothing to each other (SOLR-18413 r5: the leader's state watcher
+     * shares the node's cluster-state maps with every other watcher's parse
+     * and every Overseer mutation, and each of those, a member, made its own
+     * group's members members in turn).</p>
+     */
     private static List<Demand> successors(Walk walk, Demand demand) {
         Corpus corpus = walk.corpus;
         List<OccurrenceAddress> group = new ArrayList<OccurrenceAddress>();
         group.add(demand.occurrence);
         group.addAll(stateConnected(corpus, demand.occurrence));
-        // The group (occurrence + state-connected factor) is ONE symbolic unit:
-        // demand is asked of the group, not each member.
         Set<String> demanded = demanded(corpus, demand, group);
         List<Demand> next = new ArrayList<Demand>();
-        List<Demand> factor = new ArrayList<Demand>();
         for (OccurrenceAddress member : group) {
-            if (!member.equals(demand.occurrence)) {
-                // A factor member inherits the reason; being a factor is not
-                // its own.
-                factor.add(new Demand(member, demand.why, false));
-            }
             for (AttachRow attach : corpus.attachesOn(member)) {
                 if (!demanded.contains(attach.symbol())) {
                     unread(walk, attach.sessionId(), attach.endpoint(),
@@ -406,11 +475,6 @@ public final class ClosurePlanner {
         }
         statedReads(walk, demand, next);
         controlProducer(corpus, demand, next);
-        // A demand's causes come before its co-readers: when the task bound
-        // truncates the closure, it is a co-reader that waits (SOLR-18406:
-        // 63 replication requests reading the commit points' flags filled
-        // the bound before the flag's writer).
-        next.addAll(factor);
         return next;
     }
 
@@ -453,8 +517,8 @@ public final class ClosurePlanner {
             for (Corpus.StateRead read : walk.corpus.expressionStateReads(
                     sessionId, contributed.substring(split + 1))) {
                 writersOfVersion(walk, sessionId, demand.occurrence,
-                        read.locationKey(), read.write().version(),
-                        Collections.<String>emptySet(),
+                        read.write().location(), read.write().version(),
+                        Collections.<String>emptySet(), null,
                         demand.occurrence.render(),
                         read.locationKey() + " (read at event "
                                 + read.readEventId() + ")", into);
@@ -463,34 +527,29 @@ public final class ClosurePlanner {
     }
 
     /** The symbols one occurrence's demanded values name: the anchor's fatal
-     *  predicate, decisions at its guard-set sites, and its contributed
-     *  expressions -- then the fixed point over reads and the writes they could
-     *  observe. Terms are EXPR references, resolved by the ONE lowering
-     *  (CONTRACT-SPEC §5). */
+     *  predicate, its decisions at its guard-set sites, and its contributed
+     *  expressions -- then the fixed point over its group's reads and the
+     *  writes they could observe. A factor member deciding the same site
+     *  decides it on its own objects, and demands nothing here. Terms are
+     *  EXPR references, resolved by the ONE lowering (CONTRACT-SPEC §5). */
     private static Set<String> demanded(Corpus corpus, Demand demand,
                                         List<OccurrenceAddress> group) {
         Set<String> named = new LinkedHashSet<String>();
         GroupReads reads = new GroupReads(corpus, group);
-        for (OccurrenceAddress member : group) {
-            for (Corpus.RecordedPath path : corpus.pathsOf(member)) {
-                for (DecisionRow decision : path.decisions) {
-                    if (!demand.flipSites.contains(decision.siteId())) {
-                        continue;
-                    }
-                    reaches(corpus, path.sessionId, FlipQuery.reach(corpus,
-                            path.sessionId, decision.term()), named);
-                    reads.under(corpus, path.sessionId, decision.term(),
-                            named);
-                }
+        for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
+            for (DecisionRow decision : path.decisions) {
+                if (!demand.flipSites.contains(decision.siteId())) continue;
+                reaches(corpus, path.sessionId, FlipQuery.reach(corpus,
+                        path.sessionId, decision.term()), named);
+                reads.under(corpus, path.sessionId, decision.term(), named);
             }
-            if (demand.anchor) {
-                for (TargetRow target : corpus.targetsOn(member)) {
-                    reaches(corpus, target.sessionId(),
-                            FlipQuery.reach(corpus, target.sessionId(),
-                                    target.phiTerm()), named);
-                    reads.under(corpus, target.sessionId(),
-                            target.phiTerm(), named);
-                }
+        }
+        if (demand.anchor) {
+            for (TargetRow target : corpus.targetsOn(demand.occurrence)) {
+                reaches(corpus, target.sessionId(), FlipQuery.reach(corpus,
+                        target.sessionId(), target.phiTerm()), named);
+                reads.under(corpus, target.sessionId(), target.phiTerm(),
+                        named);
             }
         }
         for (String contributed : demand.contributed) {
@@ -650,14 +709,18 @@ public final class ClosurePlanner {
                 : attach.producer().occurrence().node();
         for (StaticScopeMap.Site site : exports) {
             candidates(walk, site, STATIC_CANDIDATE_PRODUCER, guards, into,
-                    attach.sessionId(), "port " + portId, sender);
+                    attach.sessionId(), "port " + portId, sender, null);
         }
     }
 
     /**
      * Who could have written one demanded read: the eligible row writers, and
      * the static write sites of its carrier (joined through a write the
-     * recording did observe; no such write = no carrier, said).
+     * recording did observe; no such write = no carrier, said).  A read of
+     * a reference rests on the container each eligible store delivered, too:
+     * the writers of every state of it the read could have seen through
+     * that store ({@link Corpus#referentStates}), which a query through the
+     * read is answered from (COMPOSE, {@code SmtLowering#query}).
      *
      * <p><b>N1 -- a concrete location lives in ONE process:</b> static
      * candidates only on the reader's node (Writers_W(l) is per concrete
@@ -665,10 +728,10 @@ public final class ClosurePlanner {
      */
     private static void writers(Walk walk, ReadRow row, List<Demand> into) {
         writersOfVersion(walk, row.sessionId(), row.endpoint().occurrence(),
-                SmtLowering.locationKey(row.location()),
-                row.observedVersion(),
-                walk.carriersAt(row.endpoint().site(), row.javaType()),
-                row.endpoint().toString(),
+                row.location(), row.observedVersion(),
+                walk.carriersAt(row.endpoint().site(), row.javaType(),
+                        row.location()),
+                row, row.endpoint().toString(),
                 String.valueOf(row.location()), into);
     }
 
@@ -679,33 +742,38 @@ public final class ClosurePlanner {
      * @param readCarriers the carriers the read's own site names (a read
      *                     of a version no store of the window wrote: its
      *                     INITIAL)
+     * @param read the read's row, or null for a read only an expression
+     *             states: that read is never re-pointed (COMPOSE re-pairs
+     *             the anchor's rows alone), so a query through it is the
+     *             run's, whose container read the expression states too
      * @param subject what a diagnostic about this read is addressed at
      * @param located how the location reads in that diagnostic
      */
     private static void writersOfVersion(Walk walk, String sessionId,
                                          OccurrenceAddress reader,
-                                         String locationKey,
+                                         LocationId location,
                                          long observedVersion,
                                          Set<String> readCarriers,
+                                         ReadRow read,
                                          String subject, String located,
                                          List<Demand> into) {
         Corpus corpus = walk.corpus;
+        String locationKey = SmtLowering.locationKey(location);
         // Every carrier the static map names for the location, and the
         // read's own.
         Set<String> carriers = new LinkedHashSet<String>();
         for (WriteRow write : corpus.writeSitesOf(locationKey)) {
             carriers.addAll(walk.carriersAt(write.endpoint().site(),
-                    write.javaType()));
+                    write.javaType(), write.location()));
         }
         carriers.addAll(readCarriers);
         for (WriteRow write : corpus.eligibleWrites(sessionId, locationKey,
                 observedVersion, reader)) {
-            Demand paired = new Demand(write.endpoint().occurrence(),
-                    CLOSURE_MEMBER, false);
-            paired.contributed.add(write.sessionId() + "|"
-                    + write.expressionRef());
-            paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
-            into.add(paired);
+            wrote(walk, write, into);
+            if (read == null) continue;
+            for (WriteRow state : corpus.referentStates(write, read)) {
+                wrote(walk, state, into);
+            }
         }
         if (carriers.isEmpty() && walk.map.stated()) {
             walk.gaps.add(GapRow.of(sessionId, GapKind.DECLARATION_MISSING,
@@ -720,9 +788,22 @@ public final class ClosurePlanner {
         for (String carrier : carriers) {
             for (StaticScopeMap.Site site : walk.writersOf(carrier)) {
                 candidates(walk, site, STATIC_CANDIDATE_WRITER, site.guards,
-                        into, sessionId, "carrier " + carrier, reader.node());
+                        into, sessionId, "carrier " + carrier, reader.node(),
+                        location);
             }
         }
+    }
+
+    /** One recorded write a demanded value may rest on: its writer, flipped
+     *  at the guards of its method's write sites, contributing what it
+     *  wrote. */
+    private static void wrote(Walk walk, WriteRow write, List<Demand> into) {
+        Demand paired = new Demand(write.endpoint().occurrence(),
+                CLOSURE_MEMBER, false);
+        paired.contributed.add(write.sessionId() + "|"
+                + write.expressionRef());
+        paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
+        into.add(paired);
     }
 
     /**
@@ -730,38 +811,50 @@ public final class ClosurePlanner {
      * {@code node} (N1/N2; null = any). None: named (PIPELINE §7.2), scoped
      * to that node, and no task.
      *
-     * <p>ONCE PER WALK: the candidates of one site, reason, guard set and
-     * node are the same demands whichever read or attach asks for them, and
-     * a demand offered again changes nothing it is folded into ({@link
-     * Demand#absorb}), so only the first ask offers them; the gap names the
+     * <p>A WRITER OF THIS LOCATION, NOT OF ITS CARRIER: a static write site
+     * stands in for a store the recording did not see run (hdfs-17960's
+     * deferred decrement), and a heap location is one object's
+     * (Writers_W(l), SYMBOL-SCOPE §5.5).  An occurrence whose accesses the
+     * read's session states, none of them to that object, holds other
+     * objects only ({@link Walk#holdsOthersOnly}) and is no candidate.
+     * SOLR-18413 r5: the leader's reads of a RoutingRule, a Slice, a
+     * DocCollection and a ClusterState made every occurrence on the node
+     * that builds one (each state watcher's parse, each Overseer mutation) a
+     * candidate writer of those objects' fields.</p>
+     *
+     * <p>ONCE PER WALK: one site's holders on one node are scanned once, and
+     * an occurrence is offered once per reason, site, guard set and node,
+     * whichever read or attach asks for it: a demand offered again changes
+     * nothing it is folded into ({@link Demand#absorb}); the gap names the
      * asking session, so every ask says it.  SOLR-18413 r2: the anchor's 282
      * demanded reads (fields of Slice, SolrInputDocument, IndexSchema, ...)
      * asked for 329,393 writer candidates of 107 occurrences, every walk of
      * the anchor, and the wave-1 planner ran out of an 8 GB heap.</p>
+     *
+     * @param location the location a write site's store is asked about,
+     *                 or null for an export site
      */
     private static void candidates(Walk walk, StaticScopeMap.Site site,
                                    String why, Collection<String> guards,
                                    List<Demand> into, String sessionId,
-                                   String what, NodeId node) {
-        List<Object> key = Arrays.<Object>asList(why, site, guards, node);
-        Boolean offered = walk.offered.get(key);
-        if (offered == null) {
-            boolean ran = false;
-            for (OccurrenceAddress occurrence : walk.corpus.occurrences()) {
-                if (!holds(walk.map, occurrence.regionId(), site)
-                        || (node != null && !node.equals(occurrence.node()))
-                        || !activated(walk.corpus, occurrence)) {
-                    continue;
-                }
-                ran = true;
-                Demand candidate = new Demand(occurrence, why, false);
-                candidate.flipSites.addAll(guards);
-                into.add(candidate);
+                                   String what, NodeId node,
+                                   LocationId location) {
+        List<OccurrenceAddress> holders = walk.holders(site, node);
+        Set<String> offered = walk.offered.computeIfAbsent(
+                Arrays.<Object>asList(why, site, guards, node),
+                key -> new HashSet<String>());
+        for (OccurrenceAddress occurrence : holders) {
+            if (offered.contains(occurrence.id())) continue;
+            if (location != null && walk.holdsOthersOnly(occurrence,
+                    sessionId, location)) {
+                continue;
             }
-            offered = ran;
-            walk.offered.put(key, offered);
+            offered.add(occurrence.id());
+            Demand candidate = new Demand(occurrence, why, false);
+            candidate.flipSites.addAll(guards);
+            into.add(candidate);
         }
-        if (offered) return;
+        if (!holders.isEmpty()) return;
         walk.gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
                 GapClass.DIAGNOSTIC, site.regionId,
                 "a static " + (STATIC_CANDIDATE_WRITER.equals(why)

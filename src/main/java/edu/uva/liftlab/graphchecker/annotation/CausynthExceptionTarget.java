@@ -7,10 +7,12 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Marks the exception construction that starts a Causynth analysis (a
- * {@code throw} cannot be annotated, so it goes on the type):
- * {@code throw new @CausynthExceptionTarget("id") E();}.  Class-retained, no
- * runtime behavior; the value is needed only with several targets.
+ * The marker the system trees' target throws still carry:
+ * {@code throw new @CausynthExceptionTarget("id") E();}.  No engine code
+ * reads it -- a case names its target by class and source line,
+ * {@code exception_target:} in its target spec
+ * (causynth.ExceptionTargetLineResolver) -- so it stays only as the trees'
+ * compile ABI (external-callers.txt).  Class-retained, no runtime behavior.
  */
 @Documented
 @Retention(RetentionPolicy.CLASS)

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-dzup-nodes
+exception_target: adhoc-dzup-nodes org.apache.solr.update.processor.DistributedZkUpdateProcessor 176

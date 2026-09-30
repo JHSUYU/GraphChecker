@@ -1,1 +1,1 @@
-exception_target_id: hdfs-11741
+exception_target: hdfs-11741 org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager 586

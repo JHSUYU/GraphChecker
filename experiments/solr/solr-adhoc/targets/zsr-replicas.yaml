@@ -1,1 +1,1 @@
-exception_target_id: adhoc-zsr-replicas
+exception_target: adhoc-zsr-replicas org.apache.solr.common.cloud.ZkStateReader 1066

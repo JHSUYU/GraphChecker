@@ -1,1 +1,1 @@
-exception_target_id: adhoc-BackupImage-215
+exception_target: adhoc-BackupImage-215 org.apache.hadoop.hdfs.server.namenode.BackupImage 215

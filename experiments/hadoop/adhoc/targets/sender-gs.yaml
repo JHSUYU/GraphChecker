@@ -1,1 +1,1 @@
-exception_target_id: adhoc-sender-gs
+exception_target: adhoc-sender-gs org.apache.hadoop.hdfs.server.datanode.BlockSender 275

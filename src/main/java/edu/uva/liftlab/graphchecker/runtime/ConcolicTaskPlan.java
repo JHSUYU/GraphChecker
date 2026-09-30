@@ -891,7 +891,7 @@ final class ConcolicTaskPlan {
         /** The declared target branch event of a target-reach task. */
         final String targetBranchSite;
         final int targetBranchOccurrence;
-        /** Solver-selected outcome that reaches the annotated failure. */
+        /** Solver-selected outcome that reaches the declared failure. */
         final boolean targetBranchRequiredOutcome;
         /** The helper branch deciding the target branch when it tests the
          *  constant a helper returned ("" if none), and its fatal arm. */
@@ -1325,7 +1325,7 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * The target branch arm that reaches the annotated throw, as computed
+         * The target branch arm that reaches the declared throw, as computed
          * by {@code causynth.SiteControlDependence} and carried on
          * {@code targetBranch}; never recomputed here.
          */

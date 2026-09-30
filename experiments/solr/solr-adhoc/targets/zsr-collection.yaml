@@ -1,1 +1,1 @@
-exception_target_id: adhoc-zsr-collection
+exception_target: adhoc-zsr-collection org.apache.solr.common.cloud.ZkStateReader 1059

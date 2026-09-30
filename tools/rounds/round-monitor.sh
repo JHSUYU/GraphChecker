@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # round-monitor.sh <glob-prefix>... -- one line per finished campaign (DONE ...) and per launcher line.
 #   tools/rounds/round-monitor.sh 'v20-*' | grep --line-buffered "DONE "
-# GC_OUT (default /u/vnr3ne/gc-out) holds accept-<round>-<case>/ per campaign.
+# GC_OUT (tools/lib/gc-env.sh) holds accept-<round>-<case>/ per campaign.
+# shellcheck source=../lib/gc-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
 shopt -s nullglob
 declare -A seen=()
-out=${GC_OUT:-/u/vnr3ne/gc-out}
+out=${GC_OUT}
 while :; do
   for pat in "$@"; do
     for d in ${out}/accept-$pat; do

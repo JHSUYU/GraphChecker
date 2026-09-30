@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
@@ -291,11 +292,13 @@ public class RegionGraphOccurrenceKeyTest {
         // The counter's carrier is found from the site the recording DID
         // write at, spelled the way the VM spells an endpoint site.
         Set<String> carriers = map.carriersAt(
-                "example.Manager#create()Ljava/lang/String;#621:WRITE", "I");
+                "example.Manager#create()Ljava/lang/String;#621:WRITE", "I",
+                LocationKind.INSTANCE);
         assertEquals(Collections.singleton(carrier), carriers);
         // A write row of another type at that method is not that cell.
         assertTrue(map.carriersAt(
-                "example.Manager#create()Ljava/lang/String;#621:WRITE", "Z")
+                "example.Manager#create()Ljava/lang/String;#621:WRITE", "Z",
+                LocationKind.INSTANCE)
                 .isEmpty());
         List<String> writers = new ArrayList<>();
         for (StaticScopeMap.Site site : map.writersOf(carrier)) {
@@ -319,7 +322,7 @@ public class RegionGraphOccurrenceKeyTest {
                 Arrays.asList(decrement + "#u7", decrement + "#u15"), guards);
         assertEquals("and the arm of each guard that reaches it",
                 Arrays.asList(Boolean.TRUE, Boolean.FALSE), arms);
-        // The port's producer side only, and the annotated target.
+        // The port's producer side only, and the declared target.
         assertEquals("the attach in REGION.delete is no export", 1,
                 map.exportsOf("XCH.a.resp.count").size());
         assertEquals("REGION.save",
@@ -347,7 +350,7 @@ public class RegionGraphOccurrenceKeyTest {
         assertFalse("a local-held container mutation names no shared "
                         + "location, so it scopes no writer",
                 writeSites.containsKey(decrement + "::$r5"));
-        assertFalse("the annotated target is not a write site",
+        assertFalse("the declared target is not a write site",
                 writeSites.containsKey(saver
                         + "#u64#exception:java.lang.IllegalState"));
     }
@@ -526,12 +529,14 @@ public class RegionGraphOccurrenceKeyTest {
         String store = "example.Rule#<init>(Ljava/util/Map;)V#376:WRITE";
         for (String javaType : new String[]{"J", "L"}) {
             assertEquals(javaType, Collections.singleton(expireAt),
-                    map.carriersAt(store, javaType));
+                    map.carriersAt(store, javaType, LocationKind.INSTANCE));
         }
-        assertTrue(map.carriersAt(store, "I").isEmpty());
+        assertTrue(map.carriersAt(store, "I", LocationKind.INSTANCE)
+                .isEmpty());
         assertEquals("a read's INITIAL names it too",
                 Collections.singleton(expireAt),
-                map.carriersAt("example.Rule#isExpired()Z#30:READ", "J"));
+                map.carriersAt("example.Rule#isExpired()Z#30:READ", "J",
+                        LocationKind.INSTANCE));
     }
 
     private static List<String> scoped(List<StaticScopeMap.Site> sites) {

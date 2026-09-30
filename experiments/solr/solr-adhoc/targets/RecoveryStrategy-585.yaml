@@ -1,1 +1,1 @@
-exception_target_id: adhoc-RecoveryStrategy-585
+exception_target: adhoc-RecoveryStrategy-585 org.apache.solr.cloud.RecoveryStrategy 585

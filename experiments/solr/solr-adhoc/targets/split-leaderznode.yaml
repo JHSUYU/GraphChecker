@@ -1,1 +1,1 @@
-exception_target_id: adhoc-split-leaderznode
+exception_target: adhoc-split-leaderznode org.apache.solr.cloud.api.collections.SplitShardCmd 167

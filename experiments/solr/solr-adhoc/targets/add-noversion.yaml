@@ -1,1 +1,1 @@
-exception_target_id: adhoc-add-noversion
+exception_target: adhoc-add-noversion org.apache.solr.update.processor.DistributedUpdateProcessor 875

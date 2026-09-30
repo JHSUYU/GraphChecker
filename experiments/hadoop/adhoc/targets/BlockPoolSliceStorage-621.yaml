@@ -1,1 +1,1 @@
-exception_target_id: adhoc-BlockPoolSliceStorage-621
+exception_target: adhoc-BlockPoolSliceStorage-621 org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage 621

@@ -1,1 +1,1 @@
-exception_target_id: solr-18406
+exception_target: solr-18406 org.apache.solr.core.IndexDeletionPolicyWrapper 179

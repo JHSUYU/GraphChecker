@@ -24,7 +24,7 @@ final class SymbolicRegionPlanner {
     static final String STATE_WRITER_ENTRY = "STATE_WRITER_ENTRY";
     /** An explicit fault call is itself a replayable request boundary. */
     static final String EXPLICIT_FAULT_ENTRY = "EXPLICIT_FAULT_ENTRY";
-    /** The annotated target's own method, when no entry encloses it. */
+    /** The declared target's own method, when no entry encloses it. */
     static final String FAILURE_TARGET_ENTRY = "FAILURE_TARGET_ENTRY";
     private SymbolicRegionPlanner() {
     }

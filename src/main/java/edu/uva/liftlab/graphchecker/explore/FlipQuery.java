@@ -46,7 +46,9 @@ import java.util.Set;
  *       replay can be answered) is bound by its family {@code OR_q (pi_q AND
  *       guard_q AND v_H = e_q)}, closed to a fixed point over forwarded
  *       handoffs; no arm = free and {@code unproducible}. EVERY OTHER handoff
- *       is PINNED to its recorded arrival;</li>
+ *       is bound by the arms of its OWN run only (what that run's producer
+ *       computed it from, over roots and clocks the replay plants), and
+ *       PINNED to its recorded arrival where none states it;</li>
  *   <li>a STATE read offers its eligible writers ({@link Arms#stateArms}) as
  *       exactly-one Bool selectors ({@code wchoice_*}), each binding it to
  *       what that writer delivered; with no writer (or none that lowers) it
@@ -664,15 +666,11 @@ final class FlipQuery {
                 return;
             }
             // Only a Control can be answered (ObligationFactory#solve applies
-            // answers at the focused occurrence's attaches only), so every
-            // other handoff is PINNED to this path's recorded arrival; a free
-            // family would let the model pick any recorded arrival that nothing
-            // then plants.
-            if (!control) {
-                pinArrival(attach, variable, "a handoff of an occurrence "
-                        + "this obligation cannot answer at");
-                return;
-            }
+            // answers at the focused occurrence's attaches only).  Any other
+            // handoff moves only as its own run's producer computed it: its
+            // arms from that run alone, over roots and clocks the replay
+            // plants, and pinned to its arrival where none states it.  Another
+            // run's arrival is a value nothing would plant.
             List<String> disjuncts = new ArrayList<String>();
             Set<String> seen = new LinkedHashSet<String>();
             Map<String, List<String>> bySlot =
@@ -683,6 +681,10 @@ final class FlipQuery {
                         attach.producer(), attach.endpoint());
                 for (Arms.Arm arm : corpus.arms().wireArms(slot,
                         attach.symbol())) {
+                    if (!control
+                            && !arm.sessionId().equals(attach.sessionId())) {
+                        continue;
+                    }
                     offered++;
                     String term = arm(arm, variable, attach.symbol());
                     if (term.isEmpty() || !seen.add(arm.slotId() + "|" + term)) {
@@ -703,7 +705,14 @@ final class FlipQuery {
                     disjuncts.addAll(family.getValue());
                 }
             }
-            // Only a control reaches here.
+            if (!control) {
+                if (disjuncts.isEmpty()) {
+                    pinArrival(attach, variable, "a handoff of an occurrence "
+                            + "this obligation cannot answer at, which no arm "
+                            + "of its own run states");
+                }
+                return;
+            }
             if (!disjuncts.isEmpty()) {
                 registerControl(attach, variable, false);
                 return;
@@ -731,9 +740,9 @@ final class FlipQuery {
                     "no producer arm in this corpus for this slot"));
         }
 
-        /** One handoff pinned to its recorded arrival (arm-less nested handoffs
-         *  and non-control handoffs). An arrival with no literal pins nothing
-         *  and is named; the closure check then refuses the obligation. */
+        /** One handoff pinned to its recorded arrival (a handoff no arm of
+         *  its own run states). An arrival with no literal pins nothing and is
+         *  named; the closure check then refuses the obligation. */
         private void pinArrival(AttachRow attach, String variable,
                                 String why) {
             String arrival = SmtText.literal(attach.arrival(),

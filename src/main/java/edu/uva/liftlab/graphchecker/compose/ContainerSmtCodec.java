@@ -651,7 +651,7 @@ public final class ContainerSmtCodec {
      * by name.
      */
     private static Term putAll(Term receiver, JsonElement source, Host host) {
-        List<JsonElement> keys = associativeViewKeys(host.chain(source),
+        List<JsonElement> keys = associativeViewKeys(source,
                 host);
         Term from = associativeState(source, host);
         if (keys == null || from == null) {
@@ -800,7 +800,7 @@ public final class ContainerSmtCodec {
             JsonElement expression, Term key, Host host) {
         JsonElement chain = expression;
         while (true) {
-            Mutation mutation = associativeMutation(chain);
+            Mutation mutation = associativeMutation(host.chain(chain));
             if (mutation == null) {
                 host.unsupported(VmRows.CONTAINER_BASE_UNSTATED + ":"
                         + key.text);
@@ -870,16 +870,17 @@ public final class ContainerSmtCodec {
      * drop another (hdfs-11741's exported block keys).
      *
      * <pre>
-     *   (=&gt; (&lt; p n) (and (has k_p) (= (position k_p) p)))   p in [0, m)
-     *   (=&gt; (&lt; q n) (not (= k_p k_q)))                      p &lt; q &lt; m
-     *   (=&gt; (has K) (or_{p &lt; m} (and (&lt; p n) (= k_p K))))   K a put key
+     *   (=&gt; (&lt; p n) (and (has k_p) (= (position k_p) p)))     p in [0, m)
+     *   (=&gt; (has K) (and (&lt;= 0 (position K)) (&lt; (position K) n)
+     *                   (= k_(position K) K)))                 K a put key
      * </pre>
      *
-     * <p>{@code m}, the chain's put count, bounds {@code n} (from an empty
-     * base the keys are exactly the ones put), so the facts are written at
-     * CONCRETE positions with no quantifier.  Java's iteration ORDER is not
-     * stated: the recording does not state it.  A state with no bounding
-     * chain is refused ({@link #ASSOC_VIEW_SIZE_UNSTATED}).</p>
+     * <p>Two positions name two keys: a key has one position.  {@code m},
+     * the chain's put count, bounds {@code n} (from an empty base the keys
+     * are exactly the ones put), so the facts are written at CONCRETE
+     * positions with no quantifier, linear in the chain.  Java's iteration
+     * ORDER is not stated: the recording does not state it.  A state with
+     * no bounding chain is refused ({@link #ASSOC_VIEW_SIZE_UNSTATED}).</p>
      *
      * @return whether the view's positions are stated
      */
@@ -894,56 +895,47 @@ public final class ContainerSmtCodec {
             return false;
         }
         Term size = associativeSize(state, host);
-        int bound = put.size();
-        Term[] at = new Term[bound];
-        for (int position = 0; position < bound; position++) {
+        for (int position = 0; position < put.size(); position++) {
             Term key = shared(new Term("(assoc_key_at " + state.text + " "
                     + position + ")", Sort.VALUE), host);
-            Term present = associativeHas(state, key, host);
-            Term where = shared(new Term("(select (assoc_position "
-                    + state.text + ") " + key.text + ")", Sort.INT), host);
-            at[position] = key;
             host.require("(=> (< " + position + " " + size.text
-                    + ") (and " + present.text + " (= " + where.text + " "
+                    + ") (and " + associativeHas(state, key, host).text
+                    + " (= " + positionOf(state, key, host).text + " "
                     + position + ")))");
-        }
-        for (int later = 1; later < bound; later++) {
-            for (int earlier = 0; earlier < later; earlier++) {
-                host.require("(=> (< " + later + " " + size.text
-                        + ") (not (= " + at[earlier].text + " "
-                        + at[later].text + ")))");
-            }
         }
         for (JsonElement each : put) {
             Term key = host.box(each);
             if (key == null) return false;
-            Term present = associativeHas(state, key, host);
-            StringBuilder somewhere = new StringBuilder("(or");
-            for (int position = 0; position < bound; position++) {
-                somewhere.append(" (and (< ").append(position).append(' ')
-                        .append(size.text).append(") (= ")
-                        .append(at[position].text).append(' ')
-                        .append(key.text).append("))");
-            }
-            host.require("(=> " + present.text + " "
-                    + somewhere.append(')') + ")");
+            Term where = positionOf(state, key, host);
+            host.require("(=> " + associativeHas(state, key, host).text
+                    + " (and (<= 0 " + where.text + ") (< " + where.text
+                    + " " + size.text + ") (= (assoc_key_at " + state.text
+                    + " " + where.text + ") " + key.text + ")))");
         }
         views.add(stateIr);
         return true;
+    }
+
+    /** The position a state holds one key at. */
+    private static Term positionOf(Term state, Term key, Host host) {
+        return shared(new Term("(select (assoc_position " + state.text + ") "
+                + key.text + ")", Sort.INT), host);
     }
 
     /**
      * The keys a view's state was put with above an exact empty base, in
      * the order put ({@code PUT_ALL}: its source's, at its place), or null
      * when the chain ends anywhere else and so bounds nothing -- or runs
-     * past {@link #VIEW_CHAIN_LIMIT}.
+     * past {@link #VIEW_CHAIN_LIMIT}.  Each state of the chain is the one
+     * it stands for ({@link Host#chain}): a view reached through a read
+     * (a map's {@code values()} a region iterates) is its read's version.
      */
     private static List<JsonElement> associativeViewKeys(
             JsonElement state, Host host) {
         List<JsonElement> keys = new ArrayList<JsonElement>();
         JsonElement chain = state;
         for (int depth = 0; depth < VIEW_CHAIN_LIMIT; depth++) {
-            Mutation mutation = associativeMutation(chain);
+            Mutation mutation = associativeMutation(host.chain(chain));
             if (mutation == null) return null;
             if (emptiesState(mutation.operation)) {
                 Collections.reverse(keys);
@@ -953,7 +945,7 @@ public final class ContainerSmtCodec {
                 keys.add(mutation.arguments.get(0));
             } else if ("PUT_ALL".equals(mutation.operation)) {
                 List<JsonElement> added = associativeViewKeys(
-                        host.chain(mutation.arguments.get(0)), host);
+                        mutation.arguments.get(0), host);
                 if (added == null) return null;
                 for (int index = added.size() - 1; index >= 0; index--) {
                     keys.add(added.get(index));
@@ -1305,6 +1297,9 @@ public final class ContainerSmtCodec {
          * It lets a shift be a finite store chain instead of a lambda.
          */
         public final long indexedSize;
+        /** Whether a String answer is null, as a Bool, or {@code ""} when
+         *  it is no String taken from a cell. */
+        public final String nullness;
 
         public Term(String text, Sort sort) {
             this(text, sort, IntegralWidth.NONE);
@@ -1316,12 +1311,24 @@ public final class ContainerSmtCodec {
 
         public Term(String text, Sort sort, IntegralWidth integralWidth,
                     long indexedSize) {
+            this(text, sort, integralWidth, indexedSize, "");
+        }
+
+        private Term(String text, Sort sort, IntegralWidth integralWidth,
+                     long indexedSize, String nullness) {
             this.text = text;
             this.sort = sort;
             this.integralWidth = sort == Sort.INT
                     && integralWidth != null
                     ? integralWidth : IntegralWidth.NONE;
             this.indexedSize = sort == Sort.INDEXED ? indexedSize : -1L;
+            this.nullness = nullness;
+        }
+
+        /** A String answer a cell holds, null where {@code nullness}. */
+        public static Term string(String text, String nullness) {
+            return new Term(text, Sort.STRING, IntegralWidth.NONE, -1L,
+                    nullness);
         }
 
     }

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SimNodeStateProvider-321
+exception_target: adhoc-SimNodeStateProvider-321 org.apache.solr.cloud.autoscaling.sim.SimNodeStateProvider 321

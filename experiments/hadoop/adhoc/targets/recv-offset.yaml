@@ -1,1 +1,1 @@
-exception_target_id: adhoc-recv-offset
+exception_target: adhoc-recv-offset org.apache.hadoop.hdfs.server.datanode.BlockReceiver 564

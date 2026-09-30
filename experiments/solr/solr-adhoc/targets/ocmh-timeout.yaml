@@ -1,1 +1,1 @@
-exception_target_id: adhoc-ocmh-timeout
+exception_target: adhoc-ocmh-timeout org.apache.solr.cloud.api.collections.OverseerCollectionMessageHandler 719

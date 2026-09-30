@@ -199,7 +199,7 @@ public class ExploreTest {
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         seed.flush();
         // What the wave may flip in the anchor is the guard set of the
-        // annotated target, and nothing else (PIPELINE §7.2).
+        // declared target, and nothing else (PIPELINE §7.2).
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8", "Guard#u19"));
 
@@ -1737,6 +1737,61 @@ public class ExploreTest {
 
     // ---- (5) the closure holds the writer of every version read -------
 
+    /**
+     * A read of a reference rests on the container its store delivered: the
+     * closure demands the writer of each state of it the read could have
+     * seen through that store ({@code Corpus#referentStates}, the rule
+     * COMPOSE answers a query by) -- here a mutation after the store, live
+     * at the read, by an occurrence no row of the anchor joins -- and a
+     * store that states no container demands none.
+     */
+    @Test
+    public void aReferenceReadDemandsTheStateItsStoreDelivered()
+            throws Exception {
+        OccurrenceAddress builder = occurrence("hdfs-case/dn0",
+                "REGION.build", CausalContext.of(Role.of("BUILDER"), "", 1),
+                "o.a.h.Builder#run#2");
+        OccurrenceAddress cleaner = occurrence("hdfs-case/dn0",
+                "REGION.clean", CausalContext.of(Role.of("CLEANER"), "", 1),
+                "o.a.h.Cleaner#run#2");
+        LocationId reference = LocationId.of(LocationKind.INSTANCE, "8",
+                "16");
+        LocationId map = LocationId.of(LocationKind.MAP, "20", "-3");
+        for (boolean referent : new boolean[]{true, false}) {
+            Path iteration = tree.newFolder("referent-" + referent).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            for (OccurrenceAddress at : Arrays.asList(TARGET, WRITER,
+                    builder, cleaner)) {
+                seed.activation(at, false);
+            }
+            seed.symbolic("e.put", "M_PUT");
+            seed.symbolic("e.map", "M_MAP");
+            seed.symbolic("e.removed", "M_REMOVED");
+            seed.write(at(builder, "Map#put#1:WRITE", "Builder#build#1"),
+                    map, 1L, "e.put");
+            seed.writes.add(WriteRow.of("s-seed", ++seed.seq, at(WRITER,
+                    "Policy#update#2:WRITE", "Policy#update#2"), reference,
+                    2L, "e.map", "L", referent ? WriteRow.Referent.of(map,
+                            1L) : null, null));
+            seed.write(at(cleaner, "Map#remove#3:WRITE", "Cleaner#clean#3"),
+                    map, 3L, "e.removed");
+            seed.read(at(TARGET, "Handler#get#4:READ", "Handler#get#4"),
+                    reference, 2L, "M_KC", "0");
+            seed.target(TARGET, "Handler#get#5", "(= M_KC 0)");
+            seed.flush();
+
+            ClosurePlanner.Plan plan = ClosurePlanner.plan(
+                    Corpus.read(iteration, null), TARGET,
+                    ClosurePlanner.DEFAULT_MAX_TASKS, StaticScopeMap.empty());
+            List<String> focused = new ArrayList<String>();
+            for (Task task : plan.tasks) focused.add(task.focused().render());
+            assertTrue("the store's writer: " + focused,
+                    focused.contains(WRITER.render()));
+            assertEquals("the state the read saw through the store: "
+                    + focused, referent, focused.contains(cleaner.render()));
+        }
+    }
+
     @Test
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {
@@ -1844,6 +1899,16 @@ public class ExploreTest {
                 "REGION.refresh",
                 CausalContext.of(Role.of("BALANCER"), "", 4),
                 "o.a.h.h.b.KeyManager#refresh#2");
+        // On the reader's node too, but seen holding another key map only:
+        // a store reaches only an object its occurrence holds.
+        OccurrenceAddress otherMap = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 10),
+                "o.a.h.h.s.d.BPServiceActor#offerService#42");
+        // A second reader of the anchor's map: state-connected to it, and
+        // passing it nothing.
+        OccurrenceAddress coReader = occurrence("hdfs-case/dn0",
+                "REGION.target", CausalContext.of(Role.of("DATA_XCEIVER"),
+                        "", 2), "o.a.h.h.s.d.DataXceiver#run#13");
         Session spread = new Session(perNode, "s-seed");
         spread.activation(target, false);
         spread.activation(writer, false);
@@ -1852,6 +1917,18 @@ public class ExploreTest {
         spread.activation(foreignWriter, false);
         spread.activation(foreignExporter, false);
         spread.activation(elsewhereOnly, false);
+        spread.activation(otherMap, false);
+        spread.activation(coReader, false);
+        spread.constant("e.other", "7");
+        spread.write(at(otherMap, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 12, true), "BlockTokenSecretManager"
+                        + "#addKeys#12"), LocationId.of(LocationKind.MAP, "34",
+                "allKeys"), 6L, "e.other");
+        spread.read(at(coReader, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager"
+                                + "#retrieveDataEncryptionKey#8"), allKeys,
+                5L, "M_READ_KEY_2", "119992");
         spread.constant("e.119992", "119992");
         spread.symbolic("e.stored", "M_HOFF_KEY");
         spread.export(exported, "e.119992", 11L, "119992");
@@ -1869,15 +1946,15 @@ public class ExploreTest {
         spread.flush();
         StaticScopeMap spreadMap = StaticScopeMap.read(scopeMap(perNode,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
                         "BlockTokenSecretManager#u12",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
                         "KeyManager#u4", "KeyManager#refresh",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
+                        "<example.Manager: example.Keys allKeys>", "")),
                 scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
                         "PBHelper#convert#9", "PBHelper#convert", "", "",
                         "XCH.resp.block-key-id")));
@@ -1899,6 +1976,13 @@ public class ExploreTest {
         assertFalse("nor is a write site of the carrier whose region only "
                         + "that other node ran: " + scopedWhy,
                 scopedWhy.containsKey(elsewhereOnly.render()));
+        assertFalse("nor an occurrence on the reader's node the session saw "
+                        + "hold another map only: " + scopedWhy,
+                scopedWhy.containsKey(otherMap.render()));
+        assertFalse("and a co-reader of the map is no task: " + scopedWhy,
+                scopedWhy.containsKey(coReader.render()));
+        assertTrue("though it replays with the anchor, its factor",
+                scoped.tasks.get(0).factor().contains(coReader));
         assertFalse("and neither is a static export site of the port on a "
                         + "node other than the PAIRED producer's: "
                         + scopedWhy,
@@ -2578,18 +2662,18 @@ public class ExploreTest {
         StaticScopeMap ofAllKeys = StaticScopeMap.read(scopeMap(inlined,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120",
                         "BlockTokenSecretManager#u8"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
                         "BlockTokenSecretManager#u27",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Manager: java.util.Map allKeys>",
                         "<example.Manager: java.util.Map allKeys>", "",
-                        "BlockTokenSecretManager#u21"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
+                        "BlockTokenSecretManager#u21")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
                         "BlockTokenSecretManager#u16",
                         "BlockTokenSecretManager#removeExpiredKeys",
                         "<example.Manager: java.util.Map allKeys>",
                         "<example.Manager: java.util.Map allKeys>", "",
-                        "BlockTokenSecretManager#u15")));
+                        "BlockTokenSecretManager#u15"))));
         Corpus vC = Corpus.read(inlined, null);
         SmtLowering lowering = vC.lowering("s-seed");
         String mapGuard = lowering.statedTerm("EXPR.0000000000000005",
@@ -3124,23 +3208,28 @@ public class ExploreTest {
                 skew + 1000L <= 100000L - ClockMargin.margin(1_000_000L));
     }
 
-    // ---- (6b) a handoff nobody can answer is pinned -------------------
+    // ---- (6b) a handoff nobody can answer moves only with its own run --
 
     /**
-     * A handoff that is not a CONTROL is held to what its own path received.
+     * A handoff that is not a CONTROL is held to what its own run's producer
+     * computed it from.
      *
      * <p>An obligation's answers are applied at the attaches of the occurrence
-     * it flips and nowhere else, so a family over a delivery somewhere else
-     * is freedom the replay does not have: the model picks one of the
-     * recorded arrivals, nothing plants it, and the replay receives whatever
-     * its own run produces.  hdfs-11741 campaign #4 has three of those --
-     * the block-key expiry date of a balance-block delivery, free over an OR
-     * of 20 arrivals, answered with the minimum and 105291 to 203751ms below
-     * what the replay then got.  The handoff of the occurrence this
-     * obligation DOES flip is still answered out of its family (case 2).</p>
+     * it flips and nowhere else, so another run's arrival is freedom the
+     * replay does not have: the model picks one of the recorded arrivals,
+     * nothing plants it, and the replay receives whatever its own run
+     * produces.  hdfs-11741 campaign #4 has three of those -- the block-key
+     * expiry date of a balance-block delivery, free over an OR of 20
+     * arrivals, answered with the minimum and 105291 to 203751ms below what
+     * the replay then got.  Its own run's arm moves only with roots and
+     * clocks the replay plants: SOLR-18413's leader parses a routing rule's
+     * expiry in its state watcher, not in the update that checks it, and the
+     * expiry is the Overseer's clock plus the timeout.  The handoff of the
+     * occurrence this obligation DOES flip is still answered out of its
+     * family (case 2).</p>
      */
     @Test
-    public void aHandoffThisObligationCannotAnswerIsPinnedToItsArrival()
+    public void aHandoffThisObligationCannotAnswerMovesOnlyWithItsOwnRun()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("pinned-handoff").toPath();
@@ -3198,23 +3287,67 @@ public class ExploreTest {
                 aboutTheDelivery.add(line);
             }
         }
-        assertEquals("one assertion binds the delivery, and it is the pin "
-                        + "to the arrival this path's own attach row states: "
-                        + aboutTheDelivery, 1,
+        assertEquals("one assertion binds the delivery, and it is the arm of "
+                        + "this path's own run: " + aboutTheDelivery, 1,
                 aboutTheDelivery.size() - countOf(aboutTheDelivery,
                         "wchoice_"));
-        boolean pinned = false;
+        boolean own = false;
         for (String line : aboutTheDelivery) {
             if (line.contains("wchoice_")) continue;
-            pinned = line.endsWith(" 119992))") || line.endsWith(" 119992)");
+            own = line.matches(".*\\(= vH_\\S+ 119992\\).*");
             assertFalse("no other recorded arrival of that slot binds it: "
                     + line, line.contains("119995"));
         }
-        assertTrue("and the value it is pinned to is the one that arrived: "
-                + aboutTheDelivery, pinned);
+        assertTrue("and what it binds it to is what that run's producer "
+                + "sent: " + aboutTheDelivery, own);
         assertEquals("so a flip that needs another delivery is refused, "
                         + "rather than answered with a value nothing would "
                         + "plant", Verdict.UNSAT, worker.verdict);
+
+        // The same delivery, sent as the producer's clock reading: its own
+        // run's arm moves with that clock, which the replay plants.
+        Path clocked = tree.newFolder("own-run-clock").toPath();
+        Session timed = new Session(clocked, "s-seed");
+        timed.activation(TARGET, false);
+        timed.activation(WRITER, false);
+        timed.activation(PRODUCER, false);
+        timed.root(PRODUCER, "CASE.NOW", "M_NOW", RootKind.CLOCK, "119992",
+                null, null, true);
+        timed.symbolic("e.now", "M_NOW");
+        timed.symbolic("e.stored", "M_HOFF_KEY");
+        timed.export(ROTATED, "e.now", 11L, "119992");
+        timed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        timed.write(STORED, ALL_KEYS, 5L, "e.stored");
+        timed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        timed.decision(TARGET, "Lookup#u8", 1, false,
+                "(= M_READ_KEY 119995)");
+        timed.flush();
+        scopeMap(clocked,
+                targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""),
+                scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
+                        "PBHelper#convert#9", "PBHelper#convert", "", "",
+                        "XCH.resp.block-key-id", "Rotate#u3"));
+        Path timedOut = tree.newFolder("own-run-clock-out").toPath();
+        Path timedWave = timedOut.resolve("obligations-0000");
+        plan(clocked, TARGET_SELECTOR, null, timedOut.resolve("results.jsonl"),
+                timedWave, 0);
+        Worker moved = solve(clocked, timedWave,
+                named(obligations(timedWave), "Lookup#u8"), timedOut, "w0");
+        assertEquals(detail(moved), Verdict.SAT_MODEL_READY, moved.verdict);
+        JsonObject focus = RowCodec.readJsonl(moved.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        assertEquals("the flip moves the producer's clock by what the "
+                        + "delivery needs: " + focus, "3",
+                focus.getAsJsonObject("clockDeltas").get("CASE.NOW")
+                        .getAsString());
+        assertEquals("and answers nothing at the delivery it does not "
+                + "flip: " + focus, 0, focus.getAsJsonObject("answers")
+                .size());
     }
 
     /** How many of these lines mention this name. */
@@ -3448,15 +3581,15 @@ public class ExploreTest {
         // addressed as REGION.holder.
         String[] rows = {
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.outer",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.outer",
                         "BlockTokenSecretManager#u12",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.inner",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.inner",
                         "KeyManager#u4", "KeyManager#refresh",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", "")};
+                        "<example.Manager: example.Keys allKeys>", ""))};
         Path mapFile = scopeMap(iteration, rows);
 
         // Without the skeletons beside it the map can say nothing about
@@ -3557,7 +3690,18 @@ public class ExploreTest {
         return row.toString();
     }
 
-    /** The annotated target and the branches it is control-dependent on. */
+    /** The same WRITE_SITE row, stated as a mutator call on the container
+     *  its carrier holds: a store of that container's state, the MAP
+     *  location the fixture's key map is ({@code StaticScopeMap#stores}). */
+    private static String put(String row) {
+        JsonObject site = com.google.gson.JsonParser.parseString(row)
+                .getAsJsonObject();
+        site.addProperty("declaredCallee", "<java.util.Map: java.lang.Object"
+                + " put(java.lang.Object,java.lang.Object)>");
+        return site.toString();
+    }
+
+    /** The declared target and the branches it is control-dependent on. */
     private static String targetSite(String regionId, String siteId,
                                      String... guards) {
         return scopeSite(StaticScopeMap.TARGET_SITE, regionId, siteId, "",

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-FSDirXAttrOp-312
+exception_target: adhoc-FSDirXAttrOp-312 org.apache.hadoop.hdfs.server.namenode.FSDirXAttrOp 312

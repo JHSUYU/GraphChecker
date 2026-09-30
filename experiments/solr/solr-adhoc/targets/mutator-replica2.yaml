@@ -1,1 +1,1 @@
-exception_target_id: adhoc-mutator-replica2
+exception_target: adhoc-mutator-replica2 org.apache.solr.cloud.overseer.ReplicaMutator 147
