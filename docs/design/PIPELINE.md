@@ -593,7 +593,9 @@ are comparisons of a `READ` with null or the argument, lowered as any comparison
 answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
 (`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A view's positions are
 stated linearly in its chain's puts: each position below the size names a present key held at that
-position, and each put key present is held at a position below the size.
+position, and each put key present is held at a position below the size. A view walks the state
+each step of its chain stands for (`Host#chain`: a read's joined version), so a map's `values()` a
+region iterates through a read of it is bounded by that version's keys.
 
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took

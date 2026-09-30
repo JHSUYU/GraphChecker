@@ -651,7 +651,7 @@ public final class ContainerSmtCodec {
      * by name.
      */
     private static Term putAll(Term receiver, JsonElement source, Host host) {
-        List<JsonElement> keys = associativeViewKeys(host.chain(source),
+        List<JsonElement> keys = associativeViewKeys(source,
                 host);
         Term from = associativeState(source, host);
         if (keys == null || from == null) {
@@ -800,7 +800,7 @@ public final class ContainerSmtCodec {
             JsonElement expression, Term key, Host host) {
         JsonElement chain = expression;
         while (true) {
-            Mutation mutation = associativeMutation(chain);
+            Mutation mutation = associativeMutation(host.chain(chain));
             if (mutation == null) {
                 host.unsupported(VmRows.CONTAINER_BASE_UNSTATED + ":"
                         + key.text);
@@ -926,14 +926,16 @@ public final class ContainerSmtCodec {
      * The keys a view's state was put with above an exact empty base, in
      * the order put ({@code PUT_ALL}: its source's, at its place), or null
      * when the chain ends anywhere else and so bounds nothing -- or runs
-     * past {@link #VIEW_CHAIN_LIMIT}.
+     * past {@link #VIEW_CHAIN_LIMIT}.  Each state of the chain is the one
+     * it stands for ({@link Host#chain}): a view reached through a read
+     * (a map's {@code values()} a region iterates) is its read's version.
      */
     private static List<JsonElement> associativeViewKeys(
             JsonElement state, Host host) {
         List<JsonElement> keys = new ArrayList<JsonElement>();
         JsonElement chain = state;
         for (int depth = 0; depth < VIEW_CHAIN_LIMIT; depth++) {
-            Mutation mutation = associativeMutation(chain);
+            Mutation mutation = associativeMutation(host.chain(chain));
             if (mutation == null) return null;
             if (emptiesState(mutation.operation)) {
                 Collections.reverse(keys);
@@ -943,7 +945,7 @@ public final class ContainerSmtCodec {
                 keys.add(mutation.arguments.get(0));
             } else if ("PUT_ALL".equals(mutation.operation)) {
                 List<JsonElement> added = associativeViewKeys(
-                        host.chain(mutation.arguments.get(0)), host);
+                        mutation.arguments.get(0), host);
                 if (added == null) return null;
                 for (int index = added.size() - 1; index >= 0; index--) {
                     keys.add(added.get(index));
