@@ -1038,7 +1038,11 @@ public final class SmtLowering {
             return Term.of("true", Sort.BOOL);
         }
         String javaType = primitiveString(expression, "_java_type");
-        Sort sort = leafSort(javaType, expected);
+        // An object the VM named is an identity whatever its class: only its
+        // state is asked of it as a container ({@link #host}).
+        Sort sort = VmRows.referencedObjectRid(raw) > 0L
+                && (expected == null || !expected.containerState())
+                ? Sort.REF : leafSort(javaType, expected);
         if (sort == null) sort = Sort.REF;
         Declared held = declarations.get(raw);
         if (held != null && held.stated) {
@@ -1803,6 +1807,13 @@ public final class SmtLowering {
         });
     }
 
+    /** Whether a node is an object the VM named ({@code M_L'<class>'_<rid>}). */
+    private static boolean named(JsonElement node) {
+        return VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(node))
+                && VmRows.referencedObjectRid(primitiveString(
+                node.getAsJsonObject(), "_exp")) > 0L;
+    }
+
     /**
      * One candidate's field as its rows state it, a value the object held
      * whenever the owner could be it: the one write of that cell in this
@@ -1918,9 +1929,12 @@ public final class SmtLowering {
                     JsonElement identity, ContainerSmtCodec.Sort shape) {
                 Sort stateSort = shape == ContainerSmtCodec.Sort.INDEXED
                         ? Sort.ARRAY_VALUE : Sort.MAP;
-                Term reference = dispatch(identity, Sort.REF,
-                        origin + ":container-state");
-                if (reference.sort != Sort.REF) {
+                // An object the VM named is its own state's root; any other
+                // receiver is the reference it lowers to, whose state
+                // assoc_state_of names.
+                Term reference = named(identity) ? null : dispatch(identity,
+                        Sort.REF, origin + ":container-state");
+                if (reference == null || reference.sort != Sort.REF) {
                     if (identity != null && identity.isJsonObject()) {
                         String raw = primitiveString(
                                 identity.getAsJsonObject(), "_exp");

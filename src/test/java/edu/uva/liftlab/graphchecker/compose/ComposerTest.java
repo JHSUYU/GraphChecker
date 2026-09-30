@@ -1537,13 +1537,14 @@ public class ComposerTest {
             // sort is ever asked for.
             session.answered(other, "vh_ref", "Lorg/apache/Foo;", "7", null);
             // A read of ONE associative cell, joined to a write of the
-            // WHOLE map at the version it observed.  The location names
-            // its key by hash, so which entry the read returned is not
-            // stated: that is refused by name, and not by passing a
-            // container on to the operator over it, which named the
-            // operator and not the projection.
-            session.expression("EXPR.00000000000000b1",
-                    symbol("M_L'java/util/HashMap'_4", "java/util/HashMap"));
+            // WHOLE map (its state root) at the version it observed.  The
+            // location names its key by hash, so which entry the read
+            // returned is not stated: that is refused by name, and not by
+            // passing a container on to the operator over it, which named
+            // the operator and not the projection.
+            session.expression("EXPR.00000000000000b1", relation(
+                    "ASSOCIATIVE", "STATE", "java/util/HashMap",
+                    symbol("M_L'java/util/HashMap'_4", "java/util/HashMap")));
             session.expression("EXPR.00000000000000b2", binary("==",
                     read("MAP_STATE", 4L, -3L, 1L, "I"), integer("I", 7L)));
             // And a reference-typed field read the VM valued NEITHER way:
