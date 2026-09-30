@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.compose;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;

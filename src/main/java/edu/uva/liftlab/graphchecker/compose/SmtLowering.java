@@ -325,8 +325,8 @@ public final class SmtLowering {
      * lowering in progress raised ({@link Raised}).  Anything is raised into
      * the innermost only, and reaches the one enclosing it only when
      * {@link #commit}ted.  The open conjunction is a frame ({@link #begin});
-     * a memoized lowering is committed on every hit; an {@link #attempt} is
-     * committed or dropped by its caller, and dropped it raised NOTHING --
+     * a memoized lowering is committed on every hit; an attempt (a join,
+     * {@link #bind}) is committed or dropped, and dropped it raised NOTHING --
      * no refusal, no side condition, no gap.  No other route puts anything
      * on a path: a path-level list filled at once kept a join's refusals
      * after its pin bound the read and missed a memo hit's (SOLR-18406 s46),
@@ -843,7 +843,7 @@ public final class SmtLowering {
      * {@link #commit}ted to the frame enclosing it; dropped, it raised
      * nothing.
      */
-    public static final class Attempt<T> {
+    private static final class Attempt<T> {
         private final T value;
         /** Null when it raised nothing. */
         private final Raised raised;
@@ -883,18 +883,8 @@ public final class SmtLowering {
         return new Attempt<T>(value, raised);
     }
 
-    /**
-     * One expression lowered as an attempt: a read's JOIN, whose refusals
-     * are the path's only if neither its mint nor its pin binds the read
-     * ({@code Composer#stateJoins}).
-     */
-    public Attempt<Term> attempt(JsonElement expression, Sort expected,
-                                 String origin) {
-        return attempting(() -> dispatch(expression, expected, origin));
-    }
-
     /** Keeps what an attempt raised, raised where it is committed. */
-    public <T> T commit(Attempt<T> attempt) {
+    private <T> T commit(Attempt<T> attempt) {
         if (attempt.raised != null) top().all(attempt.raised);
         return attempt.value;
     }
