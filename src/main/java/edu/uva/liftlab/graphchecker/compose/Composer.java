@@ -689,6 +689,7 @@ public final class Composer {
         //      any lowering.
         Map<String, Long> reached = closure(session, anchor, target.seq(),
                 null);
+        frameRefusals(session, reached.keySet(), refusals);
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
         List<DecisionRow> conditions = before(path.decisions, target.seq());
@@ -1248,6 +1249,25 @@ public final class Composer {
             }
         }
         return reached;
+    }
+
+    /**
+     * A REFUSAL IS ITS FRAME'S: a value the run refused inside an occurrence
+     * ({@link Corpus#refusedIn}) refuses a path or an arm whose closure
+     * reaches that occurrence, and nothing else.  A refused attach used to
+     * be BLOCKING for the whole campaign, wherever it ran (hdfs-17899-bug1
+     * r1: 55 of them, all in NameNode registration handlers).
+     */
+    void frameRefusals(String session, Set<String> reached,
+                       List<GapRow> refusals) {
+        for (String occurrenceId : reached) {
+            GapRow refused = corpus.refusedIn(session, occurrenceId);
+            if (refused == null) continue;
+            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, refused.subject(), "this closure "
+                            + "reaches an occurrence whose own run refused a "
+                            + "value it computes on: " + refused.detail()));
+        }
     }
 
     /**

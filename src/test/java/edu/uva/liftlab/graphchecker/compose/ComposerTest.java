@@ -1224,6 +1224,34 @@ public class ComposerTest {
                 across.body().contains("(= vh " + MARKER + ")"));
         assertFalse("so the focused replay's own arrival is not the answer",
                 across.body().contains("(= vh true)"));
+
+        // A REFUSAL IS ITS FRAME'S.  The first corpus again, where s1's run
+        // refused an attach at the anchor itself, which then computed on
+        // the arrival as a constant, and s0's run refused one in an
+        // occurrence no closure here reaches: s1's path is refused, by
+        // name, and s0's is composed as before.
+        Path framed = folder.newFolder("framed").toPath();
+        for (String[] each : new String[][]{{"s0", "10", "false"},
+                {"s1", "20", "true"}}) {
+            Session session = new Session(framed, each[0],
+                    "true".equals(each[2]));
+            session.activation(PRODUCER);
+            session.marker("false");
+            session.expression("EXPR.v1.id", integer("I",
+                    Long.parseLong(each[1])));
+            session.export(producer, "EXPR.v1.id", 1L, each[1]);
+            session.attach(consumer, "vh", "I", each[1], producer);
+            session.target("true", false, true);
+            session.refusedAttach("s1".equals(each[0]) ? ANCHOR : UPSTREAM);
+            session.write();
+        }
+        Composer.Composition refusedFrame = compose(framed, 4);
+        assertEquals("only s0's path: " + refusedFrame.gaps(), "s0",
+                refusedFrame.disjuncts().get(0).path().sessionId);
+        assertEquals(1, refusedFrame.disjuncts().size());
+        assertTrue("s1's is refused for its anchor's refusal",
+                says(refusedFrame.gaps(), GapKind.UNSTATED_VALUE,
+                        "whose own run refused a value it computes on"));
     }
 
     // ------------------------------------------------------------------
@@ -4518,6 +4546,7 @@ public class ComposerTest {
         private final List<TargetRow> targets = new ArrayList<TargetRow>();
         private final List<WriteRow> writes = new ArrayList<WriteRow>();
         private final List<ReadRow> reads = new ArrayList<ReadRow>();
+        private final List<GapRow> gaps = new ArrayList<GapRow>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<String, JsonObject>();
 
@@ -4701,6 +4730,13 @@ public class ComposerTest {
                     observedFatal, reached));
         }
 
+        /** The row a VM-refused attach inside {@code at} files. */
+        void refusedAttach(OccurrenceAddress at) {
+            gaps.add(GapRow.of(id, GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    at.render(), "the VM refused the attach of handle 7 at "
+                            + "PORT.id (HANDOFF_FOREIGN_HANDLE)"));
+        }
+
         void write() throws IOException {
             SessionDir dir = SessionDir.of(iteration, id).create();
             RowCodec.writeAll(dir.activations(), activations,
@@ -4714,6 +4750,7 @@ public class ComposerTest {
             RowCodec.writeAll(dir.reads(), reads, RowCodec::writeRead);
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
+            RowCodec.writeAll(dir.gaps(), gaps, RowCodec::writeGap);
             RowCodec.writeExpressions(dir.expressions(),
                     ExpressionTable.of(expressions));
             // The fixture STATES the role, as a campaign's own session

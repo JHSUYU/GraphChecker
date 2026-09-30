@@ -653,6 +653,7 @@ final class ComposedFamilies {
                     }
                 }
             }
+            composer.frameRefusals(session, reached.keySet(), local);
             // What the delivered values and the handoffs a nested family
             // binds rest on (Independence).
             List<String> delivered = new ArrayList<String>();

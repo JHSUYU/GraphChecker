@@ -422,9 +422,11 @@ occurrence, k-th attach, element path), at most 64 leaves per attach. The export
 row are paired by the VM handle, else by correlation and port (`runtime/Interactions#pairing`). A
 refused export or attach files a gap on the occurrence it ran in, with the port and the VM status
 (`WireExport#refused`): an attach no admitted activation runs is a DIAGNOSTIC `ADMISSION_GAP`
-beside that activation, stated unselected; one inside an admitted activation is BLOCKING
+beside that activation, stated unselected; one inside an admitted activation is DIAGNOSTIC
 `UNSTATED_VALUE`, since its rows compute on the arrived value as a constant; a refused export is
 DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTIC `UNSTATED_VALUE`.
+A refusal is its frame's: COMPOSE refuses the paths and arms whose closure reaches an occurrence its
+session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#frameRefusals`).
 
 ## 7. Current limits
 

@@ -415,7 +415,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
 **One path** (`compose(path, ordinal)`), in its own session's scope:
 
 - P3 closure (`closure`): the occurrences the path's joins reach, each with the seq its prefix runs to,
-  including earlier versions of every reached write's location;
+  including earlier versions of every reached write's location; a refusal is its frame's
+  (`frameRefusals`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
+  attach, an attach that minted no `v_H`; `Corpus#refusedIn`) refuses the path, and an arm whose
+  closure reaches one is no option;
 - constraint independence (`compose.Independence`): conditions and reads sharing no variable with phi
   (or a root) stay out;
 - the valuation this session ran each non-clock root at (`valuationOf`; `Corpus.rootValue`: the

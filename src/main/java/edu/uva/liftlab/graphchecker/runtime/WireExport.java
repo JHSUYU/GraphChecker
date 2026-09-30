@@ -279,12 +279,16 @@ final class WireExport {
                                     + " nothing computed from it is a version"
                                     + " until the closure admits this one");
                 } else {
+                    // The refusal is this occurrence's: COMPOSE refuses what
+                    // rests on it (Composer#frameRefusals), not the campaign.
                     refused(site.portId(), "attach of handle " + handle,
                             attached, GapKind.UNSTATED_VALUE,
-                            GapClass.BLOCKING, "the admitted activation here"
+                            GapClass.DIAGNOSTIC, "the admitted activation here"
                                     + " computes on the arrived value as a"
                                     + " constant, and no attach row says a"
-                                    + " producer sent it");
+                                    + " producer sent it, so no path or arm"
+                                    + " whose closure reaches this occurrence"
+                                    + " is composed");
                 }
             } finally {
                 resumeObservation();
