@@ -339,8 +339,22 @@ public final class ContainerSmtCodec {
         }
     }
 
-    /** One {@code ContainerRelation} node, or null once refused by name. */
+    /**
+     * One {@code ContainerRelation} node, or null once refused by name.  An
+     * answer asked through a reference ({@code owner}, a read a STATE family
+     * may re-point) is the host's to answer per object
+     * ({@link Host#query}); a state is never selected by one, since an
+     * array-valued choice over lambda terms is outside what z3 decides.
+     */
     public static Term term(JsonObject expression, Host host) {
+        Term answer = relation(expression, host);
+        return answer == null || !expression.has("owner")
+                || answer.sort == Sort.INDEXED
+                || answer.sort == Sort.ASSOCIATIVE
+                ? answer : host.query(expression, answer);
+    }
+
+    private static Term relation(JsonObject expression, Host host) {
         // The view states whose bijection this call already stated.
         Set<JsonElement> views = Collections.newSetFromMap(
                 new IdentityHashMap<JsonElement, Boolean>());
@@ -563,9 +577,11 @@ public final class ContainerSmtCodec {
         JsonElement receiverIr = associativeStateExpression(
                 expression.get("receiver"));
         if (("READ".equals(operation) || "CONTAINS".equals(operation))
-                && arguments.size() == 1) {
-            return associativeLookup(receiverIr, operation,
-                    arguments.get(0), javaType, host);
+                && arguments.size() == 1
+                || "READ_OR_DEFAULT".equals(operation)
+                && arguments.size() == 2) {
+            return associativeLookup(receiverIr, operation, arguments,
+                    javaType, host);
         }
         Term receiver = associativeState(expression.get("receiver"),
                 host);
@@ -624,7 +640,9 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * A read or membership test at one key.  With a literal key, the chain's
+     * A read, a read with a default ({@code getOrDefault}: the default where
+     * the key is absent) or a membership test at one key.  With a literal
+     * key, the chain's
      * mutations at other literal keys cannot touch it and are passed in the
      * IR, never lowered: a map the recording rebuilt from a store's bytes
      * (Solr's cluster state, one per notification) is a put per entry, and
@@ -637,11 +655,16 @@ public final class ContainerSmtCodec {
      * distinct literals are distinct values.
      */
     private static Term associativeLookup(JsonElement receiverIr,
-                                          String operation, JsonElement key,
+                                          String operation,
+                                          JsonArray arguments,
                                           String javaType, Host host) {
+        JsonElement key = arguments.get(0);
         Term wanted = host.box(key);
         if (wanted == null) return null;
-        boolean read = "READ".equals(operation);
+        boolean read = !"CONTAINS".equals(operation);
+        Term absent = arguments.size() == 2 ? host.box(arguments.get(1))
+                : new Term(NULL_CELL, Sort.VALUE);
+        if (absent == null) return null;
         JsonElement state = receiverIr;
         String literal = literalKey(key);
         if (literal != null) {
@@ -659,7 +682,7 @@ public final class ContainerSmtCodec {
                         return new Term(removed ? "false" : "true",
                                 Sort.BOOL);
                     }
-                    Term value = removed ? new Term(NULL_CELL, Sort.VALUE)
+                    Term value = removed ? absent
                             : host.box(mutation.arguments.get(1));
                     return value == null ? null : host.unbox(value, javaType);
                 }
@@ -670,7 +693,8 @@ public final class ContainerSmtCodec {
         if (receiver == null) return null;
         if (!read) return associativeHas(receiver, wanted, host);
         requireStatedContainerBase(state, wanted, host);
-        return host.unbox(associativeRead(receiver, wanted, host), javaType);
+        return host.unbox(associativeRead(receiver, wanted, absent, host),
+                javaType);
     }
 
     /**
@@ -755,11 +779,12 @@ public final class ContainerSmtCodec {
         }
     }
 
-    /** The value at one key, or the null cell where the key is absent. */
-    private static Term associativeRead(Term state, Term key, Host host) {
+    /** The value at one key, or {@code absent} where the key is. */
+    private static Term associativeRead(Term state, Term key, Term absent,
+                                        Host host) {
         return shared(new Term("(let ((s " + state.text + ")) (ite "
                 + "(assoc_has s " + key.text + ") (assoc_read s " + key.text
-                + ") " + NULL_CELL + "))", Sort.VALUE), host);
+                + ") " + absent.text + "))", Sort.VALUE), host);
     }
 
     private static Term associativeHas(Term state, Term key, Host host) {
@@ -1206,6 +1231,13 @@ public final class ContainerSmtCodec {
          * held there: that cell, unless the owner may be another object.
          */
         Term projection(JsonObject fieldAccess, Term cell);
+
+        /**
+         * One query's answer, given the {@code answer} it has over the run's
+         * own object's state: that answer, unless its owner may be another
+         * object.
+         */
+        Term query(JsonObject relation, Term answer);
 
         void require(String predicate);
 

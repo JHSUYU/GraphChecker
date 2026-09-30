@@ -2129,6 +2129,140 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * What another writer of the reference may have handed the reader, by
+     * variant: a map mutated after its store by a writer concurrent with the
+     * reader is each state the reader could have seen, chosen by nested
+     * selectors; a store whose map state the VM refused is no case, named;
+     * a reader that mutated the map through the reference holds it to the
+     * run's own pairing, named.
+     */
+    @Test
+    public void aReplacedReferencesOtherMapIsEachStateTheReaderCouldSee()
+            throws Exception {
+        String map = "java/util/HashMap";
+        LocationId known = LocationId.of(LocationKind.INSTANCE, "8", "16");
+        LocationId other = LocationId.of(LocationKind.MAP, "20", "-3");
+        LocationId own = LocationId.of(LocationKind.MAP, "30", "-3");
+        for (String variant : new String[]{"mutated", "refused", "put"}) {
+            Path iteration = folder.newFolder("other-map-" + variant)
+                    .toPath();
+            OccurrenceAddress reader = occurrence("solr/leader",
+                    "REGION.fetch", CausalContext.of(Role.of("REPLICATION"),
+                            "", 1), frame("ReplicationHandler#fetch#3", 0));
+            OccurrenceAddress[] writers = new OccurrenceAddress[3];
+            Session session = new Session(iteration, "s0", false);
+            session.occurrence = reader;
+            session.activation(reader);
+            for (int index = 0; index < writers.length; index++) {
+                writers[index] = occurrence("solr/leader", "REGION.commit",
+                        CausalContext.of(Role.of("COMMIT"), "", index + 1),
+                        frame("Policy#onCommit#2", 0));
+                session.activation(writers[index], "commit#" + index, false);
+            }
+            JsonObject base = relation("ASSOCIATIVE", "SNAPSHOT_BASE", map,
+                    null);
+            JsonObject five = putCommit(base, 5L);
+            JsonObject six = putCommit(base, 6L);
+            JsonObject[] states = {base, five, base, six};
+            LocationId[] held = {other, other, own, own};
+            for (int index = 0; index < states.length; index++) {
+                session.expression("EXPR.000000000000001" + index,
+                        states[index]);
+                session.write(Endpoint.of(writers[index / 2], "Map#put#"
+                        + index + ":WRITE", at("m#" + index, 0), 0),
+                        held[index], index + 1L, "EXPR.000000000000001"
+                                + index);
+            }
+            session.expression("EXPR.0000000000000020",
+                    symbol("M_L'" + map + "'_20", map));
+            session.expression("EXPR.0000000000000030",
+                    symbol("M_L'" + map + "'_30", map));
+            session.writes.add(WriteRow.of("s0", ++session.seq,
+                    Endpoint.of(writers[0], UPDATE + "#56:WRITE",
+                            at("kc#1", 0), 0), known, 5L,
+                    "EXPR.0000000000000020", "L", "refused".equals(variant)
+                            ? null : WriteRow.Referent.of(other, 2L),
+                    "refused".equals(variant) ? "RESIZING" : null));
+            session.writes.add(WriteRow.of("s0", ++session.seq,
+                    Endpoint.of(writers[1], UPDATE + "#56:WRITE",
+                            at("kc#2", 0), 0), known, 6L,
+                    "EXPR.0000000000000030", "L", WriteRow.Referent.of(own,
+                            4L), null));
+            JsonObject owner = read("INSTANCE_FIELD", 8L, 16L, 6L,
+                    "Ljava/util/Map;");
+            JsonObject asked = six;
+            long version = 4L;
+            if ("put".equals(variant)) {
+                asked = putCommit(six, 9L);
+                asked.add("owner", owner);
+                session.expression("EXPR.0000000000000040", asked);
+                session.write(Endpoint.of(reader, "Map#put#9:WRITE",
+                        at("m#9", 0), 0), own, version = 7L,
+                        "EXPR.0000000000000040");
+            }
+            session.read(Endpoint.of(reader, "Wrapper#getAndSave#3:READ",
+                    at("kc#3", 0), 0), known, 6L, "kc", "Ljava/util/Map;",
+                    null);
+            JsonObject query = relation("ASSOCIATIVE", "READ", "L", asked,
+                    integer("J", 5L));
+            query.add("owner", owner);
+            JsonObject answered = read("MAP_STATE", 30L, -3L, version, "L");
+            answered.getAsJsonObject("observedVersion").add("expression",
+                    query);
+            session.read(Endpoint.of(reader, "Wrapper#getAndSave#9:READ",
+                    at("q#1", 0), 0), own, version, "q", "L", null);
+            if ("mutated".equals(variant)) {
+                // After the read, on a thread of its own: 5 leaves the map.
+                session.expression("EXPR.0000000000000050", relation(
+                        "ASSOCIATIVE", "REMOVE", map, five,
+                        integer("J", 5L)));
+                session.write(Endpoint.of(writers[2], "Map#remove#1:WRITE",
+                        at("m#10", 0), 0), other, 10L,
+                        "EXPR.0000000000000050");
+            }
+            session.expression("EXPR.0000000000000060", binary("==",
+                    answered, vmNull()));
+            session.target("EXPR.0000000000000060", true, true);
+            session.write();
+
+            Composer.Composition composition = Composer.compose(
+                    Corpus.read(iteration, null), reader,
+                    Collections.<String,
+                            edu.uva.liftlab.graphchecker.contract.RootDomain>
+                            emptyMap(), 4);
+            String path = fatalArm(composition);
+            assertEquals(variant + ": " + path, "mutated".equals(variant),
+                    path.contains("nest__"));
+            // The refused map is no case, and a pinned owner is the run's.
+            assertEquals(variant + ": " + path, "mutated".equals(variant),
+                    path.contains("(ite (= kc "));
+            assertEquals(variant + ": " + composition.gaps(),
+                    "refused".equals(variant), named(composition.gaps(),
+                            "@s0") && says(composition.gaps(),
+                            GapKind.UNSTATED_VALUE, "(RESIZING)"));
+            // A family of the reference binds its read to each writer's map.
+            assertEquals(variant, !"put".equals(variant),
+                    composition.body().contains("(= kc identity__"));
+            assertEquals(variant, "put".equals(variant),
+                    named(composition.gaps(),
+                            "OWNER_PINNED_BY_MUTATION:INSTANCE/8#16@s0"));
+        }
+    }
+
+    private static final String UPDATE = "org.apache.solr.core"
+            + ".IndexDeletionPolicyWrapper#updateKnownCommitPoints"
+            + "(Ljava/util/List;)V";
+
+    /** One {@code put(Long.valueOf(generation), commit)} on a map state. */
+    private static JsonObject putCommit(JsonObject state, long generation) {
+        return relation("ASSOCIATIVE", "PUT", "java/util/Map", state,
+                integer("J", generation), symbol(
+                        "M_L'org/apache/solr/core/IndexCommitWrapper'_"
+                                + (100L + generation),
+                        "org/apache/solr/core/IndexCommitWrapper"));
+    }
+
     @Test
     public void anRpcHandlersChainGoesOnThroughTheSenderItsActivationPlaces()
             throws Exception {

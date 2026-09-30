@@ -471,6 +471,31 @@ refused, and it is named DIAGNOSTIC `CANDIDATE_UNANSWERED:<cell>@<session>`. EXP
 the same rule; its owners are never movable (a joined reference read is inlined), so a projection
 there is the run's cell.
 
+**A container queried through a re-pointable owner** (`SmtLowering#query`, reached from the codec's
+`Host.query` for a relation stating `owner` whose answer is no state; a state is never selected,
+since an array-valued choice over lambda terms is outside what z3 decides). Through a movable owner
+(`#movableOwner`, the projection's own test) the query is asked of the object the owner is, by
+`perCandidate`: the run's answer for the object the owner read returned (its joined write's
+identity, else the one its row states), and for each other object a write of the owner's location
+stored (`candidates`, any class), the same relation over that object's state (`#answerOf`), its
+receiver beneath views and iterators replaced by the state's chain (`#asOf`). That state is the
+write's `referentState` and the later versions of it the reader could have seen (`#statesOf`,
+R3-REFCONT §1.4): the version live at the read in session order (the store's own when every one
+came later), and each later one whose writer is HB-concurrent with the reader (`SessionJoin#concurrent`,
+`Arms#concurrent`); several are chosen among by nested selectors `nest__<digest>`, one per (read,
+object, version), exactly one where the owner is that object. An answer holds only where the owner
+is its object, so what its lowering requires is its case's precondition, never the path's. An
+object whose write states no state (`referentStateRefused`, none, or no version lowers) is no case,
+named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. `READ_OR_DEFAULT`
+(`getOrDefault`) is a read whose absent key answers the default; `PUT_ALL` is refused by name
+(`ContainerRelation:ASSOCIATIVE:PUT_ALL`).
+
+**A mutation through a re-pointable owner** (`Composer#pinnedByMutation`, R3-REFCONT C-4): when a
+reached occurrence's container version is a mutation naming as its `owner` a read of a location a
+STATE family may re-pair, that location keeps the run's pairing (no family, no movable owner), named
+DIAGNOSTIC `OWNER_PINNED_BY_MUTATION:<location>@<session>`: another pairing would mutate an object no
+row records the mutation of.
+
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint
 is a window; otherwise the root is pinned. `clocks`: every clock cell the formula names gets a

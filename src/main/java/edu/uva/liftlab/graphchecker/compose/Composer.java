@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.compose;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
@@ -19,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -29,6 +31,8 @@ import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -670,12 +674,21 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
+        // (0a) THE CLOSURE (P3): the occurrences of this session the joins
+        //      reach, and the seq each prefix runs to.  Row-level, before
+        //      any lowering.
+        Map<String, Long> reached = closure(session, anchor, target.seq(),
+                null);
         // What a family may move at the anchor is no constant anywhere in
         // this path: not a pin after a refused join, not a variable
-        // independence leaves out.
+        // independence leaves out.  A location a reader mutated a container
+        // through is held to the run's pairing.
         Set<String> repaired = repaired(session);
+        Set<String> pinned = pinnedByMutation(session, reached, repaired);
+        repaired.removeAll(pinned);
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
-                corpus.join(session), repaired);
+                corpus.join(session), repaired,
+                (reader, writer) -> arms.concurrent(reader, writer, session));
         lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
@@ -684,11 +697,6 @@ public final class Composer {
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
 
-        // (0a) THE CLOSURE (P3): the occurrences of this session the joins
-        //      reach, and the seq each prefix runs to.  Row-level, before
-        //      any lowering.
-        Map<String, Long> reached = closure(session, anchor, target.seq(),
-                null);
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
         List<DecisionRow> conditions = before(path.decisions, target.seq());
@@ -726,8 +734,11 @@ public final class Composer {
         //     asserted here.
         stateJoins(session, reached.keySet(), relevant, rows, refusals,
                 joined, joins, answered);
-        //     A field projected through one a STATE family may re-point is
-        //     the field of the object it is ({@link SmtLowering#movable}).
+        joined.removeIf(read -> pinned.contains(
+                SmtLowering.locationKey(read.location())));
+        //     A field projected, or a container queried, through one a STATE
+        //     family may re-point is the object's it is
+        //     ({@link SmtLowering#movable}).
         for (ReadRow read : joined) lowering.movable(read.symbol());
 
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
@@ -1322,6 +1333,59 @@ public final class Composer {
                               List<DecisionRow> conditions) {
         return Independence.of(corpus, session, seeds, bound, conditions,
                 statedRows(session, reached.keySet()));
+    }
+
+    /** A value beneath the consumer boundaries around it. */
+    private static JsonElement unwrapped(JsonElement value) {
+        JsonElement found = value;
+        while (VmExpressionIr.consumerBoundary(found)) {
+            found = found.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+        }
+        return found;
+    }
+
+    /**
+     * The anchor locations a reader of this path mutated a container
+     * through (R3-REFCONT C-4): a reached occurrence's container version
+     * whose mutation names, as its owner, a read of a location a family may
+     * re-pair.  Another pairing would mutate an object no row records the
+     * mutation of, so the location keeps the run's own pairing, named.
+     */
+    private Set<String> pinnedByMutation(String session,
+                                         Map<String, Long> reached,
+                                         Set<String> repaired) {
+        Set<String> pinned = new LinkedHashSet<String>();
+        for (Map.Entry<String, Long> at : reached.entrySet()) {
+            OccurrenceAddress occurrence = corpus.occurrence(at.getKey());
+            if (occurrence == null) continue;
+            for (WriteRow write : corpus.writesOn(session, occurrence)) {
+                if (write.seq() > at.getValue()
+                        || write.location().kind() != LocationKind.MAP) {
+                    continue;
+                }
+                JsonObject mutation = corpus.expression(session,
+                        write.expressionRef());
+                JsonElement owner = unwrapped(mutation == null ? null
+                        : mutation.get("owner"));
+                if (!VmRows.GUARDED_READ_TYPE.equals(
+                        VmExpressionIr.typeOf(owner))) {
+                    continue;
+                }
+                String key = SmtLowering.locationKey(JsonFields.object(
+                        owner.getAsJsonObject(), "location"));
+                if (repaired.contains(key) && pinned.add(key)) {
+                    gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                            "OWNER_PINNED_BY_MUTATION:" + key + "@"
+                                    + session, "a reader of this path "
+                                    + "mutated a container through this "
+                                    + "reference, so its family is held to "
+                                    + "the arm the run took: another pairing "
+                                    + "would mutate an object no row "
+                                    + "records the mutation of");
+                }
+            }
+        }
+        return pinned;
     }
 
     /**

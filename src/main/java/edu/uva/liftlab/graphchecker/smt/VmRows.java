@@ -44,6 +44,23 @@ public final class VmRows {
         return writerSetComplete(read) || flag(read, OBSERVED_EXACT, false);
     }
 
+    /** The version a read node states it observed, joinable or not, or
+     *  -1. */
+    public static long recordedVersion(JsonObject read) {
+        JsonElement observed = read == null ? null
+                : read.get(OBSERVED_VERSION);
+        if (observed == null || observed.isJsonNull()) return -1L;
+        if (observed.isJsonObject()) {
+            JsonElement id = observed.getAsJsonObject().get("fieldVersionId");
+            return id == null || !id.isJsonPrimitive() ? -1L : id.getAsLong();
+        }
+        try {
+            return observed.getAsLong();
+        } catch (RuntimeException notANumber) {
+            return -1L;
+        }
+    }
+
     /** Whether a read's location had its whole writer set when it read. */
     private static boolean writerSetComplete(JsonObject read) {
         return flag(read, WRITER_SET_COMPLETE, true);

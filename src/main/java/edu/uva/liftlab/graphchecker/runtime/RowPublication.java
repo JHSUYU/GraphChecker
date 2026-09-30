@@ -376,14 +376,7 @@ final class RowPublication {
 
     /** The version a node observed, or {@code -1}. */
     static long versionOf(JsonObject node) {
-        if (!VmRows.joinable(node)) return -1L;
-        JsonElement stated = node == null ? null : node.get("observedVersion");
-        if (stated == null) return -1L;
-        if (stated.isJsonObject()) {
-            return optionalLongInteger(stated.getAsJsonObject(),
-                    "fieldVersionId", -1L);
-        }
-        return stated.isJsonPrimitive() ? stated.getAsLong() : -1L;
+        return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
     }
 
     /** The VM event a node names, or {@code -1}. */
