@@ -440,8 +440,9 @@ appended to `obligation_results.jsonl` once the wave settled.
 When `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session and its
 obligation), `campaign_grow` runs after the wave's replays: `plan.ExposedRegionPlanMain` synthesizes
 one task row per exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's
-`replayGroupId`), appends them to the task plan, re-runs INSTRUMENT, and re-runs each exposing
-obligation's replay in its own worker directory on the head (under the memory gate). The exposing
+`replayGroupId`), appends them to the task plan, re-runs INSTRUMENT, and re-runs the exposing
+obligations' replays side by side on the head, each in its own worker directory, their starts
+spaced by the head's memory gate; the wave waits for all of them. The exposing
 session and the worker's previous files move to `<worker>/before-<wave>/`, and the re-run's verdict
 replaces the obligation's row in `obligation_results.jsonl`. An exposure no obligation names (seed
 exposure) fails EXPLORE.

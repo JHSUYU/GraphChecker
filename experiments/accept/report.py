@@ -222,8 +222,8 @@ findings = result.get("witnessFindings") or []
 
 
 # ---- PASS criterion -------------------------------------------------------
-# The claim layer is the whole gate.  Four conditions, all read off
-# result.json, none of them re-derived here.
+# The claim layer is the whole gate: the conditions below, all read off
+# result.json (and the cone gate's cone.json), none of them re-derived here.
 #
 # The five mechanisms a composition may conclude.  NO_SUPPORTED_WITNESS is the
 # sixth ClaimKind and is deliberately not among them: it is the honest answer

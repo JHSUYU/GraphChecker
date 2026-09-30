@@ -20,8 +20,8 @@ Classes:
 
 A STOPPED or DEAD case's reason is what its logs state: the campaign's own
 failure, the case timeout, a stage's Java main or trace aggregation that
-failed, a full disk or quota.  LIFTS (default lift06-15) are the hosts
-asked whether a run is still alive."""
+failed, a full disk or quota.  [gc-out] defaults to GC_OUT; LIFTS are the
+hosts asked whether a run is still alive (both tools/lib/gc-env.sh)."""
 import concurrent.futures
 import csv
 import glob
@@ -32,9 +32,16 @@ import subprocess
 import sys
 
 round_name = sys.argv[1]
-out = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser("~/gc-out")
-lifts = os.environ.get("LIFTS", " ".join(
-    "lift%02d" % n for n in range(6, 16))).split()
+# GC_OUT and LIFTS as every tool states them (tools/lib/gc-env.sh), each the
+# environment's when it is set.
+gc_env = subprocess.run(
+    ["bash", "-c", 'source "$1" && printf "%s\\n%s" "$GC_OUT" "$LIFTS"', "-",
+     os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                  "..", "lib", "gc-env.sh")],
+    check=True, stdout=subprocess.PIPE, universal_newlines=True).stdout
+gc_out, lifts = gc_env.split("\n", 1)
+out = sys.argv[2] if len(sys.argv) > 2 else gc_out
+lifts = lifts.split()
 cases = dict(line.rstrip("\n").split("\t", 1)
              for line in open(os.path.join(out, "sweep-%s-cases.tsv" % round_name)))
 
