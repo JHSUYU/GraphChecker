@@ -41,6 +41,13 @@ public final class FrameJournal {
     /** Clock readings, ascending, and the frames live at each. */
     private final List<Long> clocks = new ArrayList<Long>();
     private final List<Frame[]> frames = new ArrayList<Frame[]>();
+    /**
+     * Each entry's index, built at the first event read out on it: an entry
+     * places every event of its interval, and the running thread only
+     * copies its frames.
+     */
+    private final List<ExecutionIndex> indices =
+            new ArrayList<ExecutionIndex>();
 
     private FrameJournal() {
     }
@@ -64,6 +71,7 @@ public final class FrameJournal {
         if (last >= 0 && clocks.get(last) == now) {
             // Empty interval: the previous entry can place no event.
             frames.set(last, copy);
+            indices.set(last, null);
             return;
         }
         if (last >= 0 && clocks.get(last) > now) {
@@ -72,10 +80,11 @@ public final class FrameJournal {
         }
         clocks.add(now);
         frames.add(copy);
+        indices.add(null);
     }
 
     /** The frames live when {@code eventId} happened, or null. */
-    private synchronized Frame[] at(long eventId) {
+    private synchronized ExecutionIndex at(long eventId) {
         int low = 0;
         int high = clocks.size() - 1;
         int found = -1;
@@ -88,7 +97,13 @@ public final class FrameJournal {
                 high = middle - 1;
             }
         }
-        return found < 0 ? null : frames.get(found);
+        if (found < 0) return null;
+        ExecutionIndex index = indices.get(found);
+        if (index == null) {
+            index = ExecutionIndex.of(Arrays.asList(frames.get(found)));
+            indices.set(found, index);
+        }
+        return index;
     }
 
     /**
@@ -100,10 +115,7 @@ public final class FrameJournal {
     public static ExecutionIndex framesAt(long activationKey, long eventId) {
         if (activationKey <= 0L || eventId < 0L) return null;
         FrameJournal journal = JOURNALS.get(Long.valueOf(activationKey));
-        if (journal == null) return null;
-        Frame[] standing = journal.at(eventId);
-        if (standing == null) return null;
-        return ExecutionIndex.of(Arrays.asList(standing));
+        return journal == null ? null : journal.at(eventId);
     }
 
     static void resetForTests() {

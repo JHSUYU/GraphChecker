@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
@@ -56,14 +57,13 @@ final class LoggedEventSites {
         if (id < 0L) return;
         Logged logged = new Logged(node);
         LOGGED.putIfAbsent(Long.valueOf(id), logged);
-        OccurrenceAddress performer = RowRuntime.occurrenceAt(
-                activationOf(node, id));
+        long activation = activationOf(node, id);
+        OccurrenceAddress performer = RowRuntime.occurrenceAt(activation);
         // Every record that states the site files the event, not only the
         // first to name its id: that one may be a record with no site.
         if (performer == null || !logged.states()) return;
         AT_SITE.computeIfAbsent(group(performer, logged.site(write)),
-                key -> new ConcurrentSkipListMap<Long, Long>())
-                .putIfAbsent(id, activationOf(node, id));
+                key -> new Group()).add(id, activation);
     }
 
     /**
@@ -120,41 +120,56 @@ final class LoggedEventSites {
     private static final Map<Long, Logged> LOGGED =
             new ConcurrentHashMap<Long, Logged>();
 
-    /** One occurrence's logged events at one site: event id -> activation. */
-    private static final Map<String, NavigableMap<Long, Long>> AT_SITE =
-            new ConcurrentHashMap<String, NavigableMap<Long, Long>>();
+    /** One occurrence's logged events at one site. */
+    private static final Map<String, Group> AT_SITE =
+            new ConcurrentHashMap<String, Group>();
 
-    /** One {@link #AT_SITE} group ranked: each event's frames and k. */
-    private static final class Ranked {
-        private final int size;
-        private final Map<Long, String> frames = new HashMap<Long, String>();
-        private final Map<Long, Integer> ranks = new HashMap<Long, Integer>();
+    /**
+     * One {@link #AT_SITE} group: event id -&gt; activation, and how many
+     * (a skip list counts itself by walking, once per row it ranked).
+     */
+    private static final class Group {
+        private final NavigableMap<Long, Long> events =
+                new ConcurrentSkipListMap<Long, Long>();
+        private final AtomicInteger size = new AtomicInteger();
 
-        private Ranked(NavigableMap<Long, Long> group) {
-            Map<String, Integer> made = new HashMap<String, Integer>();
-            int counted = 0;
-            for (Map.Entry<Long, Long> logged : group.entrySet()) {
-                Long event = logged.getKey();
-                String stood = framesOf(logged.getValue(), event);
-                String key = stood == null ? "" : stood;
-                Integer k = made.get(key);
-                made.put(key, k == null ? 1 : k + 1);
-                frames.put(event, stood);
-                ranks.put(event, k == null ? 0 : k);
-                counted++;
+        private void add(long id, long activation) {
+            if (events.putIfAbsent(id, activation) == null) {
+                size.incrementAndGet();
             }
-            this.size = counted;
         }
     }
 
     /**
-     * The rendered frames one logged event stood on ({@link FrameJournal}):
-     * null is an event this run cannot place (a gap), {@code ""} one placed
-     * at the region entry on no frames.
+     * One {@link #AT_SITE} group ranked: each event's frames
+     * ({@link FrameJournal}; null is an event this run cannot place) and k.
+     * An event's k counts only the events before it, so a group that grew
+     * after its last ranked event is ranked on from there.
      */
-    private static String framesOf(long activation, long eventId) {
-        ExecutionIndex index = FrameJournal.framesAt(activation, eventId);
-        return index == null ? null : index.render();
+    private static final class Ranked {
+        private int size;
+        private long last = Long.MIN_VALUE;
+        private final Map<String, Integer> made = new HashMap<String, Integer>();
+        private final Map<Long, ExecutionIndex> frames =
+                new HashMap<Long, ExecutionIndex>();
+        private final Map<Long, Integer> ranks = new HashMap<Long, Integer>();
+
+        /** Ranks the group's events after the last one ranked. */
+        private void extend(Group group) {
+            for (Map.Entry<Long, Long> logged
+                    : group.events.tailMap(last, false).entrySet()) {
+                Long event = logged.getKey();
+                ExecutionIndex stood = FrameJournal.framesAt(
+                        logged.getValue(), event);
+                String key = stood == null ? "" : stood.render();
+                Integer k = made.get(key);
+                made.put(key, k == null ? 1 : k + 1);
+                frames.put(event, stood);
+                ranks.put(event, k == null ? 0 : k);
+                last = event;
+                size++;
+            }
+        }
     }
 
     /** Each group ranked once, again only after it grew. */
@@ -222,23 +237,32 @@ final class LoggedEventSites {
      * or not, so a flip that changes which reads are symbolic moves no k;
      * without it one loop's reads at one bytecode share one endpoint id.
      * Frames the journal cannot place are {@code ""}, with a gap.
+     * Synchronized: a {@link Ranked} grows in place.
      */
-    static String siteIndex(JsonObject node, String locationKey,
-                            long eventId, String site, boolean write) {
+    static synchronized String siteIndex(JsonObject node, String locationKey,
+                                         long eventId, String site,
+                                         boolean write) {
         long activation = activationOf(node, eventId);
         OccurrenceAddress performer = RowRuntime.occurrenceAt(activation);
         String group = performer == null ? "" : group(performer, site);
-        NavigableMap<Long, Long> atSite = AT_SITE.get(group);
+        Group atSite = AT_SITE.get(group);
         Ranked ranked = null;
-        if (atSite != null && atSite.containsKey(eventId)) {
+        if (atSite != null && atSite.events.containsKey(eventId)) {
             ranked = RANKED.get(group);
-            if (ranked == null || ranked.size != atSite.size()) {
-                ranked = new Ranked(atSite);
+            int size = atSite.size.get();
+            if (ranked != null && ranked.size != size) {
+                ranked.extend(atSite);
+                // One arrived before the last ranked: every later k moves.
+                if (ranked.size != size) ranked = null;
+            }
+            if (ranked == null) {
+                ranked = new Ranked();
+                ranked.extend(atSite);
                 RANKED.put(group, ranked);
             }
         }
-        String frames = ranked != null ? ranked.frames.get(eventId)
-                : framesOf(activation, eventId);
+        ExecutionIndex frames = ranked != null ? ranked.frames.get(eventId)
+                : FrameJournal.framesAt(activation, eventId);
         if (frames == null) {
             RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                     locationKey + "#" + eventId,
@@ -250,12 +274,11 @@ final class LoggedEventSites {
                             + " with no frame journal entry below its event"
                             + " id")
                             + "; the endpoint carries no frames");
-            frames = "";
+            frames = ExecutionIndex.empty();
         }
         // An event the VM log never named counts none before it.
         int k = ranked == null ? 0 : ranked.ranks.get(eventId);
-        List<Frame> index =
-                new ArrayList<Frame>(ExecutionIndex.parse(frames).frames());
+        List<Frame> index = new ArrayList<Frame>(frames.frames());
         // A frame's site carries no '/': the descriptor's, in source form.
         index.add(Frame.of(site.replace('/', '.'), k));
         return ExecutionIndex.of(index).render();
