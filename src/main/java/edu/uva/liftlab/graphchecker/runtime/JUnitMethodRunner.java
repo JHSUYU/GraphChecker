@@ -7,6 +7,10 @@ package edu.uva.liftlab.graphchecker.runtime;
  * itself is run by {@link JUnitLifecycle}.
  */
 public final class JUnitMethodRunner {
+    private static final Object ENDING = new Object();
+    /** Guarded by {@link #ENDING}: whether some thread ends the run. */
+    private static boolean ending;
+
     private JUnitMethodRunner() {
     }
 
@@ -36,9 +40,23 @@ public final class JUnitMethodRunner {
      * totals close the rows -- nothing is published after them -- and only
      * then the VM session closes.  Non-daemon cluster threads outlive the
      * test, so the exit is explicit.  0 when the method returned, 1 when it,
-     * a publication or the close failed.
+     * a publication or the close failed.  Once: a second ender (an early end
+     * meeting the workload's own) waits for the first's {@code System.exit}
+     * rather than closing the VM session a second time.
      */
     static void exit(int status) {
+        synchronized (ENDING) {
+            if (ending) {
+                while (true) {
+                    try {
+                        ENDING.wait();
+                    } catch (InterruptedException ignored) {
+                        // The run is ending on the other thread regardless.
+                    }
+                }
+            }
+            ending = true;
+        }
         int code = status;
         ConcolicRegionRuntime.endAdmission();
         try {

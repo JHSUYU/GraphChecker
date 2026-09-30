@@ -173,7 +173,10 @@ code is not the gate (a target that throws exits nonzero by design).
 A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
 end and the witness stop alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
 starts after it), live activations settle, the run totals close the session's rows (a closed
-`SessionPublisher` writes nothing more), and only then the VM session closes. Cluster threads
+`SessionPublisher` writes nothing more), and only then the VM session closes. The end runs once: a
+second thread ending the same run (an early end meeting the workload's own) waits for the first's
+`System.exit`, and a caller of the run totals (`ConcolicResultPublisher#publishRunTotals`, also the
+shutdown hook) returns only once they are published, so no exit halts the close half-done. Cluster threads
 outlive the test, and a region started after the close would open a fresh VM session in which
 every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
 
