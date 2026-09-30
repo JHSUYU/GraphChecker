@@ -740,6 +740,7 @@ do_compose() {
     || selection+=(--root-domains "${causynth_root_domains}")
   run_java_main edu.uva.liftlab.graphchecker.compose.ComposeMain \
     --sessions "${compose_sessions_dir}" \
+    --static-scope-map "${causynth_static_scope_map}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
     --solver-timeout-ms "${solver_timeout_ms}" \

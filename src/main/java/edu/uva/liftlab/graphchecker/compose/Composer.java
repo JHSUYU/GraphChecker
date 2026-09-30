@@ -30,9 +30,11 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -354,6 +356,9 @@ public final class Composer {
 
     private final Corpus corpus;
     private final OccurrenceAddress anchor;
+    /** The epoch's static facts: where a reference write's construction
+     *  guard is ({@link #constructionGuards}). */
+    private final StaticScopeMap scope;
     private final Map<String, RootDomain> declaredDomains;
     private final int maxValuations;
     private final SmtLowering lowering;
@@ -397,9 +402,10 @@ public final class Composer {
 
     private Composer(Corpus corpus, OccurrenceAddress anchor,
                      Map<String, RootDomain> declaredDomains,
-                     int maxValuations) {
+                     int maxValuations, StaticScopeMap scope) {
         this.corpus = corpus;
         this.anchor = anchor;
+        this.scope = scope;
         this.declaredDomains = declaredDomains == null
                 ? Collections.<String, RootDomain>emptyMap()
                 : declaredDomains;
@@ -420,9 +426,10 @@ public final class Composer {
     public static Composition compose(Corpus corpus,
                                       OccurrenceAddress anchor,
                                       Map<String, RootDomain> declaredDomains,
-                                      int maxValuations) {
-        return new Composer(corpus, anchor, declaredDomains, maxValuations)
-                .run();
+                                      int maxValuations,
+                                      StaticScopeMap scope) {
+        return new Composer(corpus, anchor, declaredDomains, maxValuations,
+                scope).run();
     }
 
     private Composition run() {
@@ -1326,13 +1333,131 @@ public final class Composer {
 
     /** What {@code seeds} and the variables a family binds ({@code
      *  bound}) rest on among these conditions and the reads of the reached
-     *  occurrences ({@link Independence}). */
+     *  occurrences ({@link Independence}); a read brings the construction
+     *  guard of the write it observed. */
     Independence independence(String session, List<String> seeds,
                               Collection<String> bound,
                               Map<String, Long> reached,
                               List<DecisionRow> conditions) {
         return Independence.of(corpus, session, seeds, bound, conditions,
-                statedRows(session, reached.keySet()));
+                statedRows(session, reached.keySet()),
+                read -> constructionGuards(session, corpus.writeOf(session,
+                        read.location(), read.observedVersion())));
+    }
+
+    /** The construction guards already found, by session and write. */
+    private final Map<String, List<DecisionRow>> built =
+            new LinkedHashMap<String, List<DecisionRow>>();
+
+    /**
+     * THE CONSTRUCTION GUARD of a reference write (R3-REFCONT §1.6, D5):
+     * the decisions its occurrence took before it at the guard sites of the
+     * mutations its method made on a container it then published
+     * ({@link StaticScopeMap#constructionGuards}).  A referent rests on
+     * every decision that shaped it, the ones that skipped a mutation
+     * included, and those leave no node in its state: an arm delivering the
+     * write, or a read joined to it, conjoins them in the polarity they took
+     * ({@link Independence} keeps them), and the reads they name are joined
+     * in turn.  A decision whose condition is a REMOVE_IF guard of the
+     * referent's chain stays free, as that node states it both ways.  None
+     * for a write that stored no container's state.
+     */
+    List<DecisionRow> constructionGuards(String session, WriteRow write) {
+        if (write == null || write.referentState() == null) {
+            return Collections.<DecisionRow>emptyList();
+        }
+        return built.computeIfAbsent(session + "|" + write.location() + "@"
+                + write.version(), unused -> {
+            String site = write.endpoint().site();
+            Set<String> sites = new LinkedHashSet<String>();
+            // A write states its referent's runtime class and a carrier its
+            // declared type; names do not decide subtyping, so the carriers
+            // are matched on the reference sort alone.
+            for (String carrier : scope.carriersAt(site, "L")) {
+                for (StaticScopeMap.Guard guard
+                        : scope.constructionGuards(site, carrier)) {
+                    sites.add(guard.siteId());
+                }
+            }
+            List<DecisionRow> guards = new ArrayList<DecisionRow>();
+            if (sites.isEmpty()) return guards;
+            Set<JsonElement> free = removalGuards(session,
+                    write.referentState());
+            for (DecisionRow decision : corpus.decisionsOf(session,
+                    write.endpoint().occurrence())) {
+                if (decision.seq() < write.seq()
+                        && sites.contains(decision.siteId())
+                        && !decides(session, decision, free)) {
+                    guards.add(decision);
+                }
+            }
+            return guards;
+        });
+    }
+
+    /**
+     * The guards of the REMOVE_IF nodes of one container's chain, down to
+     * its base: each version's mutation and, through the read it rests on,
+     * the version before.
+     */
+    private Set<JsonElement> removalGuards(String session,
+                                           WriteRow.Referent state) {
+        Set<JsonElement> guards = ExpressionWalk.identitySet();
+        Set<JsonElement> walked = ExpressionWalk.identitySet();
+        List<JsonElement> pending = new ArrayList<JsonElement>();
+        WriteRow first = corpus.writeOf(session, state.location(),
+                state.version());
+        if (first != null) {
+            pending.add(corpus.expression(session, first.expressionRef()));
+        }
+        while (!pending.isEmpty()) {
+            for (ExpressionWalk walk = ExpressionWalk.of(pending.remove(
+                    pending.size() - 1), walked); walk.hasNext(); ) {
+                JsonObject node = walk.next();
+                String type = JsonFields.optionalString(node, "_type");
+                if ("REMOVE_IF".equals(JsonFields.optionalString(node,
+                        "operation"))) {
+                    guards.add(unwrapped(node.get("guard")));
+                } else if (VmRows.GUARDED_READ_TYPE.equals(type)) {
+                    WriteRow below = corpus.writeOf(session,
+                            SmtLowering.locationKey(JsonFields.object(node,
+                                    "location")), VmRows.recordedVersion(
+                                    node));
+                    if (below != null) {
+                        pending.add(corpus.expression(session,
+                                below.expressionRef()));
+                    }
+                }
+            }
+        }
+        return guards;
+    }
+
+    /**
+     * Whether a decision's condition is one of these guards: the node
+     * itself, or its complement over the same operands (the arm a removal
+     * that did not fire states).
+     */
+    private boolean decides(String session, DecisionRow decision,
+                            Set<JsonElement> guards) {
+        if (guards.isEmpty()) return false;
+        for (String reference : SmtNames.symbols(decision.term(),
+                new LinkedHashSet<String>())) {
+            JsonElement condition = unwrapped(corpus.expression(session,
+                    reference));
+            if (guards.contains(condition)) return true;
+            for (JsonElement guard : guards) {
+                if (condition != null && condition.isJsonObject()
+                        && guard != null && guard.isJsonObject()
+                        && condition.getAsJsonObject().get("_left")
+                        == guard.getAsJsonObject().get("_left")
+                        && condition.getAsJsonObject().get("_right")
+                        == guard.getAsJsonObject().get("_right")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** A value beneath the consumer boundaries around it. */

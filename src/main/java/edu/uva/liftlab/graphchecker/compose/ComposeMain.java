@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.Claim;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.CompositionManifest;
@@ -37,6 +38,8 @@ import java.util.Map;
  *   --output &lt;file&gt;       the composed query
  *   --manifest &lt;file&gt;     the composition manifest
  *   --root-domains &lt;file&gt; what the CASE says each root may be
+ *   --static-scope-map &lt;file&gt; the epoch's static facts: where a
+ *                          reference write's construction guard is
  *   --z3 &lt;path&gt;           default "z3"
  *   --max-valuations &lt;n&gt;  how many questions to ask, default 64
  *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
@@ -62,7 +65,8 @@ public final class ComposeMain {
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         Composer.Composition composition = Composer.compose(corpus, anchor,
                 RootDomain.declared(arguments.rootDomains),
-                arguments.maxValuations);
+                arguments.maxValuations,
+                StaticScopeMap.read(arguments.scopeMap));
         Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
@@ -379,6 +383,7 @@ public final class ComposeMain {
         final Path iteration;
         final String anchor;
         final Path rootDomains;
+        final Path scopeMap;
         final int maxValuations;
         final Path output;
         final Path manifest;
@@ -392,6 +397,7 @@ public final class ComposeMain {
                     ? sessions : sessions.getParent();
             anchor = options.value("anchor", "");
             rootDomains = options.path("root-domains");
+            scopeMap = options.path("static-scope-map");
             maxValuations = integer(options.value("max-valuations", null),
                     64);
             output = options.path("output");
@@ -414,6 +420,15 @@ public final class ComposeMain {
             if (arguments.output == null || arguments.manifest == null) {
                 throw new IllegalArgumentException(
                         "--output and --manifest are required");
+            }
+            // Fail closed: without the map no reference write is known to
+            // rest on the decisions that built its referent.
+            if (arguments.scopeMap == null
+                    || !Files.isRegularFile(arguments.scopeMap)) {
+                throw new IllegalArgumentException("--static-scope-map "
+                        + "names no file: PLAN publishes "
+                        + StaticScopeMap.FILE + " per epoch, and a reference "
+                        + "write's construction guard is read from it");
             }
             return arguments;
         }

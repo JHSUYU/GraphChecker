@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 
 import edu.uva.liftlab.graphchecker.contract.Arm;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -591,10 +592,17 @@ final class ComposedFamilies {
                     }
                 }
             }
-            // What the delivered values and the handoffs a nested family
-            // binds rest on (Independence).
+            // What the delivered values, the decisions a delivered referent
+            // was built under, and the handoffs a nested family binds rest
+            // on (Independence).
             List<String> delivered = new ArrayList<String>();
-            for (Out out : outs) delivered.add(out.arm.expressionRef());
+            for (Out out : outs) {
+                delivered.add(out.arm.expressionRef());
+                for (DecisionRow built : composer.constructionGuards(session,
+                        out.arm.write())) {
+                    delivered.add(Arms.conjunct(built));
+                }
+            }
             Set<String> bound = new LinkedHashSet<String>();
             for (AttachRow attach : nestedAttaches(session, outs)) {
                 bound.add(attach.symbol());

@@ -43,6 +43,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.explore.ExploreCodec;
 import edu.uva.liftlab.graphchecker.explore.SlotTable;
 
@@ -52,6 +53,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -383,10 +385,7 @@ public class ComposerTest {
             session.write();
         }
 
-        Composer.Composition all = Composer.compose(Corpus.read(three, null),
-                saver, Collections.<String,
-                        edu.uva.liftlab.graphchecker.contract.RootDomain>
-                        emptyMap(), 8);
+        Composer.Composition all = compose(three, saver, 8, StaticScopeMap.empty());
         assertEquals("one path per anchor activation per session", 6,
                 all.paths().size());
         assertEquals("the marker is what the three replays varied", 2,
@@ -1889,11 +1888,7 @@ public class ComposerTest {
         session.target("read_k", false, true);
         session.write();
 
-        Composer.Composition composition = Composer.compose(
-                Corpus.read(iteration, null), reader,
-                Collections.<String,
-                        edu.uva.liftlab.graphchecker.contract.RootDomain>
-                        emptyMap(), 4);
+        Composer.Composition composition = compose(iteration, reader, 4, StaticScopeMap.empty());
         assertEquals("one disjunct", 1, composition.disjuncts().size());
         assertTrue("the concurrent writer is an alternative",
                 composition.body().contains("state_family__"));
@@ -1986,11 +1981,7 @@ public class ComposerTest {
             session.target("EXPR.00000000000000f1", false, true);
             session.write();
 
-            Composer.Composition composition = Composer.compose(
-                    Corpus.read(iteration, null), reader,
-                    Collections.<String,
-                            edu.uva.liftlab.graphchecker.contract.RootDomain>
-                            emptyMap(), 4);
+            Composer.Composition composition = compose(iteration, reader, 4, StaticScopeMap.empty());
             String body = composition.body();
             assertTrue("the other tick is an alternative at v" + observed,
                     body.contains("state_family__"));
@@ -2108,11 +2099,7 @@ public class ComposerTest {
                     false, true);
             session.write();
 
-            Composer.Composition composition = Composer.compose(
-                    Corpus.read(iteration, null), reader,
-                    Collections.<String,
-                            edu.uva.liftlab.graphchecker.contract.RootDomain>
-                            emptyMap(), 4);
+            Composer.Composition composition = compose(iteration, reader, 4, StaticScopeMap.empty());
             assertTrue(row + ": the other writer is an alternative",
                     composition.body().contains("state_family__"));
             ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
@@ -2127,6 +2114,81 @@ public class ComposerTest {
                     each[2] == ClaimKind.NO_SUPPORTED_WITNESS
                             && generation == 7L, named);
         }
+    }
+
+    /**
+     * SOLR-18406's shape (R3-REFCONT §4.3).  Each commit builds a fresh
+     * map, puts every commit whose deleted flag is false, and swaps it into
+     * {@code knownCommits}; a reader asks it for generation 5 and throws on
+     * an absent one.  Generation 5 is deleted when the clock passed its
+     * reservation ({@code nanoTime < reserves.getOrDefault(5, 0L)} failed,
+     * the deadline a reserver's clock plus its duration).  The seed's newer
+     * map holds 5; in the flipped replay the clock ran past the deadline,
+     * the flag was set, the put was skipped, and the reader threw.  The query is asked of the map the reference
+     * holds under each of its writers (one answer per candidate identity),
+     * the newer map rests on the decisions that built it (the construction
+     * guard names the flag), and the claim is CLOCK_SKEW with the clock
+     * moved and polarity deciding.
+     */
+    @Test
+    public void aQueryThroughAReplacedReferenceIsAskedOfTheMapItHolds()
+            throws Exception {
+        Path iteration = folder.newFolder("replaced-map").toPath();
+        OccurrenceAddress reader = occurrence("solr/leader", "REGION.fetch",
+                CausalContext.of(Role.of("REPLICATION"), "", 1),
+                frame("ReplicationHandler#fetch#3", 0));
+        OccurrenceAddress older = occurrence("solr/leader", "REGION.commit",
+                CausalContext.of(Role.of("COMMIT"), "", 1),
+                frame("Policy#onCommit#2", 0));
+        OccurrenceAddress newer = occurrence("solr/leader", "REGION.commit",
+                CausalContext.of(Role.of("COMMIT"), "", 2),
+                frame("Policy#onCommit#2", 0));
+        OccurrenceAddress reserver = occurrence("solr/leader",
+                "REGION.reserve", CausalContext.of(Role.of("RESERVE"), "", 1),
+                frame("Wrapper#setReserveDuration#4", 0));
+        for (String each : new String[]{"s0", "w1"}) {
+            replacedMap(iteration, each, "w1".equals(each), reader, older,
+                    newer, reserver);
+        }
+        Path map = iteration.resolve(StaticScopeMap.FILE);
+        String put = "{\"kind\":\"STATIC_SCOPE_SITE\",\"role\":"
+                + "\"WRITE_SITE\",\"regionId\":\"REGION.commit\","
+                + "\"vmSite\":\"" + UPDATE + "\",\"cell\":\"" + KNOWN
+                + "\",\"carrier\":\"" + KNOWN + "\",";
+        Files.write(map, Arrays.asList(put + "\"siteId\":\"" + UPDATE_SITE
+                        + "56\",\"guards\":[]}",
+                put + "\"siteId\":\"" + UPDATE_SITE + "54\","
+                        + "\"declaredCallee\":\"<java.util.Map: "
+                        + "java.lang.Object put(java.lang.Object,"
+                        + "java.lang.Object)>\",\"publishedFrom\":\"$r18\","
+                        + "\"guards\":[\"" + UPDATE_SITE + "49\"],"
+                        + "\"guardOutcomes\":[false]}"),
+                StandardCharsets.UTF_8);
+
+        Composer.Composition composition = compose(iteration, reader, 4,
+                StaticScopeMap.read(map));
+        String flipped = "";
+        for (String line : composition.body().split("\n")) {
+            if (line.contains("path_fatal__1")) flipped = line;
+        }
+        assertTrue("both writers of the reference are its family: "
+                        + composition.gaps(),
+                composition.body().contains("state_family__"));
+        assertTrue("the query is asked of the map each writer stored: "
+                        + flipped, flipped.contains("(ite (= kc@w1 "));
+        assertTrue("the newer map rests on the flag that left 5 out: "
+                + flipped, flipped.contains("deleted5@w1"));
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals(decision.claim().gaps().toString(), ClaimKind.CLOCK_SKEW,
+                decision.claim().kind());
+        assertTrue(decision.claim().polarityDecides());
+        assertTrue("the reservation clock is what moved: "
+                        + decision.claim().movedRoots(),
+                decision.claim().movedRoots().containsKey(NANO));
+        // Without the static fact, nothing ties the newer map to the flag.
+        assertFalse(compose(iteration, reader, 4, StaticScopeMap.empty())
+                .body().contains("deleted5@w1"));
     }
 
     /**
@@ -2226,11 +2288,8 @@ public class ComposerTest {
             session.target("EXPR.0000000000000060", true, true);
             session.write();
 
-            Composer.Composition composition = Composer.compose(
-                    Corpus.read(iteration, null), reader,
-                    Collections.<String,
-                            edu.uva.liftlab.graphchecker.contract.RootDomain>
-                            emptyMap(), 4);
+            Composer.Composition composition = compose(iteration, reader, 4,
+                    StaticScopeMap.empty());
             String path = fatalArm(composition);
             assertEquals(variant + ": " + path, "mutated".equals(variant),
                     path.contains("nest__"));
@@ -2253,6 +2312,143 @@ public class ComposerTest {
     private static final String UPDATE = "org.apache.solr.core"
             + ".IndexDeletionPolicyWrapper#updateKnownCommitPoints"
             + "(Ljava/util/List;)V";
+    private static final String UPDATE_SITE = "<org.apache.solr.core"
+            + ".IndexDeletionPolicyWrapper: void updateKnownCommitPoints"
+            + "(java.util.List)>#u";
+    private static final String KNOWN = "<org.apache.solr.core"
+            + ".IndexDeletionPolicyWrapper: java.util.Map knownCommits>";
+    private static final String NANO = "M_J_nano_reserve";
+    private static final String RESERVED = "M_J_nano_reserved";
+
+    /**
+     * One run of the replaced-map fixture: the older commit's map of 4 and
+     * 5, the newer commit's map of 6 and, unless the reservation of 5 ran
+     * out, 5; the reader's query of 5 through {@code knownCommits}.
+     */
+    private void replacedMap(Path iteration, String id, boolean expired,
+                             OccurrenceAddress reader,
+                             OccurrenceAddress older,
+                             OccurrenceAddress newer,
+                             OccurrenceAddress reserver) throws IOException {
+        String map = "java/util/concurrent/ConcurrentHashMap";
+        LocationId known = LocationId.of(LocationKind.INSTANCE, "8", "16");
+        LocationId olderMap = LocationId.of(LocationKind.MAP, "20", "-3");
+        LocationId newerMap = LocationId.of(LocationKind.MAP, "30", "-3");
+        LocationId flag = LocationId.of(LocationKind.INSTANCE, "45", "36");
+        Session session = new Session(iteration, id, expired);
+        session.occurrence = reader;
+        for (OccurrenceAddress at : Arrays.asList(reader, older, newer,
+                reserver)) {
+            session.activation(at);
+        }
+        long seed = 1_000_000_000_000L;
+        // The reservation of 5: the reserver's clock plus 6000.
+        LocationId reserves = LocationId.of(LocationKind.MAP, "50", "-3");
+        session.roots.add(RootMintRow.of(id, ++session.seq, reserver,
+                "ROOT.RESERVED", RESERVED, RootKind.CLOCK,
+                Long.toString(seed - 1_000L), null, null, true, 1L));
+        JsonObject deadline = binary("+", symbol(RESERVED, "J"),
+                integer("J", 6_000L));
+        deadline.addProperty("_java_type", "J");
+        JsonObject reserved = relation("ASSOCIATIVE", "PUT", "java/util/Map",
+                relation("ASSOCIATIVE", "SNAPSHOT_BASE",
+                        "java/util/concurrent/ConcurrentHashMap", null),
+                integer("J", 5L), deadline);
+        session.expression("EXPR.00000000000000e1", reserved);
+        session.write(Endpoint.of(reserver, "Map#merge#1:WRITE",
+                at("reserve#1", 0), 0), reserves, 70L,
+                "EXPR.00000000000000e1");
+        session.roots.add(RootMintRow.of(id, ++session.seq, newer,
+                "ROOT.RESERVE", NANO, RootKind.CLOCK, Long.toString(
+                        expired ? seed + 10_000L : seed), null, null, true,
+                1L));
+        // The older commit's map, then its store.
+        JsonObject base = relation("ASSOCIATIVE", "SNAPSHOT_BASE", map, null);
+        JsonObject four = putCommit(base, 4L);
+        JsonObject five = putCommit(four, 5L);
+        session.expression("EXPR.00000000000000a1", base);
+        session.expression("EXPR.00000000000000a2", four);
+        session.expression("EXPR.00000000000000a3", five);
+        session.expression("EXPR.00000000000000a4",
+                symbol("M_L'" + map + "'_20", map));
+        long version = 0L;
+        for (String ref : new String[]{"a1", "a2", "a3"}) {
+            session.write(Endpoint.of(older, "Map#put#" + ref + ":WRITE",
+                    at("m20#" + ref, 0), 0), olderMap, ++version,
+                    "EXPR.00000000000000" + ref);
+        }
+        session.writes.add(WriteRow.of(id, ++session.seq, Endpoint.of(older,
+                UPDATE + "#56:WRITE", at("kc#1", 0), 0), known, ++version,
+                "EXPR.00000000000000a4", "L", WriteRow.Referent.of(olderMap,
+                        3L), null));
+        // The newer commit: the reservation of 5, the flag it set, the
+        // loop over 5 and 6, its map, its store.
+        JsonObject reservation = read("MAP_STATE", 50L, -3L, 70L, "J");
+        reservation.getAsJsonObject("observedVersion").add("expression",
+                relation("ASSOCIATIVE", "READ_OR_DEFAULT", "J", reserved,
+                        integer("J", 5L), integer("J", 0L)));
+        session.read(Endpoint.of(newer, "IndexCommitWrapper#delete#2:READ",
+                at("reserve#2", 0), 0), reserves, 70L, "reserve@" + id,
+                "J", Long.toString(seed + 5_000L));
+        session.expression("EXPR.00000000000000b1", binary("<",
+                symbol(NANO, "J"), reservation));
+        session.decisions.add(DecisionRow.of(id, ++session.seq, newer,
+                "IndexCommitWrapper#delete#u5", 1, !expired,
+                "EXPR.00000000000000b1",
+                Collections.singletonMap(NANO, seed)));
+        long deleted = 90L;
+        if (expired) {
+            session.expression("EXPR.00000000000000b2", constant("true"));
+            deleted = ++version;
+            session.write(Endpoint.of(newer, "CommitPoint#delete#3:WRITE",
+                    at("deleted#1", 0), 0), flag, deleted,
+                    "EXPR.00000000000000b2");
+        }
+        session.read(Endpoint.of(newer, UPDATE + "#40:READ",
+                at("deleted#2", 0), 0), flag, deleted, "deleted5@" + id,
+                "Z", expired ? "1" : "0");
+        session.expression("EXPR.00000000000000b3", binary("==",
+                read("INSTANCE_FIELD", 45L, 36L, deleted, "Z"),
+                integer("Z", 0L)));
+        session.decision(newer, UPDATE_SITE + "49", !expired,
+                "EXPR.00000000000000b3");
+        JsonObject kept = expired ? base : putCommit(base, 5L);
+        JsonObject six = putCommit(kept, 6L);
+        session.expression("EXPR.00000000000000c1", base);
+        session.expression("EXPR.00000000000000c2", kept);
+        session.expression("EXPR.00000000000000c3", six);
+        session.expression("EXPR.00000000000000c4",
+                symbol("M_L'" + map + "'_30", map));
+        long built = 0L;
+        for (String ref : expired ? new String[]{"c1", "c3"}
+                : new String[]{"c1", "c2", "c3"}) {
+            built = ++version;
+            session.write(Endpoint.of(newer, "Map#put#" + ref + ":WRITE",
+                    at("m30#" + ref, 0), 0), newerMap, built,
+                    "EXPR.00000000000000" + ref);
+        }
+        long stored = ++version;
+        session.writes.add(WriteRow.of(id, ++session.seq, Endpoint.of(newer,
+                UPDATE + "#56:WRITE", at("kc#2", 0), 0), known, stored,
+                "EXPR.00000000000000c4", "L", WriteRow.Referent.of(newerMap,
+                        built), null));
+        // The reader: the reference, then the query through it.
+        session.read(Endpoint.of(reader, "Wrapper#getAndSave#3:READ",
+                at("kc#3", 0), 0), known, stored, "kc@" + id,
+                "Ljava/util/Map;", "M_L'" + map + "'_30");
+        JsonObject query = relation("ASSOCIATIVE", "READ", "L", six,
+                integer("J", 5L));
+        query.add("owner", read("INSTANCE_FIELD", 8L, 16L, stored,
+                "Ljava/util/Map;"));
+        JsonObject answered = read("MAP_STATE", 30L, -3L, built, "L");
+        answered.getAsJsonObject("observedVersion").add("expression", query);
+        session.read(Endpoint.of(reader, "Wrapper#getAndSave#9:READ",
+                at("q#1", 0), 0), newerMap, built, "q@" + id, "L", null);
+        session.expression("EXPR.00000000000000d1", binary("==", answered,
+                vmNull()));
+        session.target("EXPR.00000000000000d1", expired, true);
+        session.write();
+    }
 
     /** One {@code put(Long.valueOf(generation), commit)} on a map state. */
     private static JsonObject putCommit(JsonObject state, long generation) {
@@ -2344,11 +2540,7 @@ public class ComposerTest {
             session.write();
         }
 
-        Composer.Composition composition = Composer.compose(
-                Corpus.read(iteration, null), reader,
-                Collections.<String,
-                        edu.uva.liftlab.graphchecker.contract.RootDomain>
-                        emptyMap(), 4);
+        Composer.Composition composition = compose(iteration, reader, 4, StaticScopeMap.empty());
         assertTrue("the read has alternatives, so the family owns it",
                 composition.body().contains("state_family__"));
 
@@ -2457,11 +2649,7 @@ public class ComposerTest {
                 session.target("read_k", false, true);
                 session.write();
             }
-            Composer.Composition composition = Composer.compose(
-                    Corpus.read(iteration, null), reader,
-                    Collections.<String,
-                            edu.uva.liftlab.graphchecker.contract.RootDomain>
-                            emptyMap(), 4);
+            Composer.Composition composition = compose(iteration, reader, 4, StaticScopeMap.empty());
             ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                     solver());
             assertEquals(shape + ": both runs are paths", 2,
@@ -4010,11 +4198,7 @@ public class ComposerTest {
             session.target("EXPR.00000000000000b3", false, true);
             session.write();
 
-            Composer.Composition composition = Composer.compose(
-                    Corpus.read(iteration, null), reader,
-                    Collections.<String,
-                            edu.uva.liftlab.graphchecker.contract.RootDomain>
-                            emptyMap(), 4);
+            Composer.Composition composition = compose(iteration, reader, 4, StaticScopeMap.empty());
             List<GapRow> gaps = composition.gaps();
             String arm = fatalArm(composition);
             switch (name) {
@@ -4362,10 +4546,20 @@ public class ComposerTest {
 
     private Composer.Composition compose(Path iteration, int maxValuations)
             throws IOException {
-        return Composer.compose(Corpus.read(iteration, null), ANCHOR,
+        return compose(iteration, ANCHOR, maxValuations,
+                StaticScopeMap.empty());
+    }
+
+    /** One anchor's composition under the epoch's static facts. */
+    private static Composer.Composition compose(Path iteration,
+                                                OccurrenceAddress anchor,
+                                                int maxValuations,
+                                                StaticScopeMap scope)
+            throws IOException {
+        return Composer.compose(Corpus.read(iteration, null), anchor,
                 Collections.<String,
                         edu.uva.liftlab.graphchecker.contract.RootDomain>
-                        emptyMap(), maxValuations);
+                        emptyMap(), maxValuations, scope);
     }
 
     private Z3 solver() {

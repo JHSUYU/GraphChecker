@@ -490,6 +490,17 @@ named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. `READ_OR
 (`getOrDefault`) is a read whose absent key answers the default; `PUT_ALL` is refused by name
 (`ContainerRelation:ASSOCIATIVE:PUT_ALL`).
 
+**Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
+container states its `referentState`; its referent rests on every decision its occurrence took
+before it at the guard sites of the mutations its method made on a container it then published
+(`StaticScopeMap#constructionGuards`, the scope map's `publishedFrom` write sites, carriers matched on
+the reference sort alone), those that skipped a mutation included. `Independence` keeps them: a kept
+read brings the guards of the write it observed, and an arm (`ComposedFamilies#producerBody`) seeds
+the guards of the writes it delivers (`Arms.Arm#write`); the closure then conjoins them in the
+polarity they took, and the reads they name are joined in turn. A decision whose condition is a
+REMOVE_IF guard of the referent's chain, or that guard's complement, stays free. `ComposeMain`
+reads the epoch's scope map (`--static-scope-map`, required; `run_engine.sh do_compose` passes it).
+
 **A mutation through a re-pointable owner** (`Composer#pinnedByMutation`, R3-REFCONT C-4): when a
 reached occurrence's container version is a mutation naming as its `owner` a read of a location a
 STATE family may re-pair, that location keeps the run's pairing (no family, no movable owner), named
