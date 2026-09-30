@@ -2345,8 +2345,9 @@ campaign_target_reached() {
   jq -r -n --slurpfile map "${map}" '
     [$map[] | select(.role == "TARGET_SITE") | .siteId
      | sub("#u[0-9]+$"; "")] as $methods
-    | [inputs | .anchorSiteId as $site
-       | select(any($methods[]; $site | startswith(. + "#"))) | $site]
+    | [inputs | .anchorSiteId
+       | select(. as $site | any($methods[] + "#"; . as $method
+           | $site | startswith($method)))]
     | first // ""' "${rows[@]}"
 }
 

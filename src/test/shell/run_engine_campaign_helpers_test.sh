@@ -978,6 +978,33 @@ COMPOSE SOLVE DECIDE CONFIRM REPRODUCE EMIT " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
+# REACHED-1: a replay reached its target when a session published a target
+# row at a TARGET_SITE method of the scope map (any of them: a batch group's
+# map names each target's); no session, or rows of another method, is "".
+reached_dir="${test_tmp}/reached"
+mkdir -p "${reached_dir}/sessions/s1"
+jq -n -c '{role: "TARGET_SITE", siteId: "<A: void m()>#u20"},
+  {role: "TARGET_SITE", siteId: "<B: void n()>#u3"},
+  {role: "GUARD", siteId: "<C: void o()>#u1"}' >"${reached_dir}/map.jsonl"
+while IFS='|' read -r reached_anchor reached_expected; do
+  if [[ -n "${reached_anchor}" ]]; then
+    jq -n -c --arg site "${reached_anchor}" '{anchorSiteId: $site}' \
+      >"${reached_dir}/sessions/s1/targets.jsonl"
+  else
+    rm -f -- "${reached_dir}/sessions/s1/targets.jsonl"
+  fi
+  [[ "$(campaign_target_reached "${reached_dir}/sessions" \
+      "${reached_dir}/map.jsonl")" == "${reached_expected}" ]] \
+    || fail "a target row at '${reached_anchor}' is not reached as \
+'${reached_expected}'"
+done <<'EOF'
+<A: void m()>#u8#1|<A: void m()>#u8#1
+<B: void n()>#u1#2|<B: void n()>#u1#2
+<A: void mm()>#u8#1|
+<C: void o()>#u1#1|
+|
+EOF
+
 # BATCH-1: a batch campaign (causynth_static_root) plans every target its
 # recording activated, seed-replays each group of plans once, all groups at
 # once, and runs the campaign of every target its group's seed reached, all
