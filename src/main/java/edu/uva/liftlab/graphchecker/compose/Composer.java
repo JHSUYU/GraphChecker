@@ -50,6 +50,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtName;
@@ -747,8 +749,12 @@ public final class Composer {
                 SmtLowering.locationKey(read.location())));
         //     A field projected, or a container queried, through one a STATE
         //     family may re-point is the object's it is
-        //     ({@link SmtLowering#movable}).
-        for (ReadRow read : joined) lowering.movable(read.symbol());
+        //     ({@link SmtLowering#movable}); through any other, the run's.
+        for (ReadRow read : joined) {
+            if (repaired.contains(SmtLowering.locationKey(read.location()))) {
+                lowering.movable(read.symbol());
+            }
+        }
 
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
         //     decision shares the target's seq; including it would
@@ -1502,12 +1508,24 @@ public final class Composer {
      * holds a container through an object that is not it (a
      * {@code Collections} wrapper, a view): a query through that object
      * names no owner, so it is the run's container's answer whichever
-     * object the family delivers.
+     * object the family delivers.  Or a field or a query is asked through a
+     * container query's read of it: that read names no object (a query
+     * states no answer's identity), so no case per writer is the run's.
      */
     private Set<String> pinnedOwners(String session,
                                      Map<String, Long> reached,
                                      Set<String> repaired) {
         Set<String> pinned = new LinkedHashSet<String>();
+        for (String key : containerOwners(session, reached)) {
+            if (repaired.contains(key) && pinned.add(key)) {
+                gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        "OWNER_PINNED_BY_CONTAINER_READ:" + key + "@"
+                                + session, "a field or a query of this path "
+                                + "is asked through a query's read of this "
+                                + "container, which names no object, so its "
+                                + "family is held to the arm the run took");
+            }
+        }
         for (Map.Entry<String, Long> at : reached.entrySet()) {
             OccurrenceAddress occurrence = corpus.occurrence(at.getKey());
             if (occurrence == null) continue;
@@ -1560,6 +1578,60 @@ public final class Composer {
         }
         return pinned;
     }
+
+    /**
+     * The container locations whose query reads the anchor or a reached
+     * occurrence asks a field or a query through ({@code owner}), up to its
+     * cutoff.
+     */
+    private Set<String> containerOwners(String session,
+                                        Map<String, Long> reached) {
+        Set<String> owners = new LinkedHashSet<String>();
+        Set<JsonElement> walked = ExpressionWalk.identitySet();
+        Map<String, Long> asked = new LinkedHashMap<String, Long>(reached);
+        TargetRow anchored = corpus.target(session, anchor);
+        if (anchored != null) {
+            asked.merge(anchor.id(), anchored.seq(), Math::max);
+        }
+        for (Map.Entry<String, Long> at : asked.entrySet()) {
+            OccurrenceAddress occurrence = corpus.occurrence(at.getKey());
+            if (occurrence == null) continue;
+            StringBuilder terms = new StringBuilder();
+            for (DecisionRow decision : corpus.decisionsOf(session,
+                    occurrence)) {
+                if (decision.seq() <= at.getValue()) {
+                    terms.append(decision.term()).append(' ');
+                }
+            }
+            for (WriteRow write : corpus.writesOn(session, occurrence)) {
+                if (write.seq() <= at.getValue()) {
+                    terms.append(write.expressionRef()).append(' ');
+                }
+            }
+            TargetRow target = corpus.target(session, occurrence);
+            if (target != null) terms.append(target.phiTerm());
+            Matcher refs = EXPRESSION_REF.matcher(terms);
+            while (refs.find()) {
+                for (ExpressionWalk walk = ExpressionWalk.of(corpus.expression(
+                        session, refs.group()), walked); walk.hasNext(); ) {
+                    JsonElement owner = unwrapped(walk.next().get("owner"));
+                    if (!VmRows.GUARDED_READ_TYPE.equals(
+                            VmExpressionIr.typeOf(owner))) {
+                        continue;
+                    }
+                    String key = SmtLowering.locationKey(JsonFields.object(
+                            owner.getAsJsonObject(), "location"));
+                    if (key.startsWith(LocationKind.MAP + "/")) {
+                        owners.add(key);
+                    }
+                }
+            }
+        }
+        return owners;
+    }
+
+    private static final Pattern EXPRESSION_REF =
+            Pattern.compile("EXPR\\.[0-9a-f]+");
 
     /**
      * Whether a reference store stored a container itself, which a wrapper

@@ -494,7 +494,8 @@ is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formul
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
 lowers to the run's cell, except through an owner that is a read `stateJoins` joined at the anchor
-(`SmtLowering#movable`: a state family may bind it to another writer's object). There it is the
+at a location a STATE family re-pairs (`SmtLowering#movable`: the family may bind it to another
+writer's object). There it is the
 field of the object the owner is, by the one rule for what is asked through such an owner
 (`perCandidate`, R3-REFCONT's "answer per candidate identity"):
 `(ite (= owner id_run) cell_run (ite (= owner id_k) cell_k ...))`, conjoined with "the owner is one
@@ -526,9 +527,9 @@ a family arm delivering one store holds them to the states seen through that sto
 (`#storeChoice`, conjoined by `ComposedFamilies#producerBody`). An answer holds only where the
 owner is its object, so what its lowering requires is its case's precondition, never the path's. A
 store that states no state (`referentStateRefused`, none, or no version lowers) delivers no case,
-named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A movable owner that is no
-reference read (a map's own read, `outer.get(k).get(k2)`) names no candidates and refuses the path
-(`UNSTATED_VALUE:OwnerCandidates:<location>`). `ENTRY` is a view to walk through; as a value no
+named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A container query's read
+names no object, so a location a family re-pairs whose query reads a field or a query is asked
+through keeps the run's pairing (`OWNER_PINNED_BY_CONTAINER_READ`, below). `ENTRY` is a view to walk through; as a value no
 `Value` spells it, and it is refused by name.
 
 **New map operations** (`ContainerSmtCodec`). `READ_OR_DEFAULT` (`getOrDefault`) is a read whose
@@ -558,7 +559,9 @@ object no row records the mutation of), or when a store of it states or refuses 
 the object it stored has no container log of its own in the session, a `Collections` wrapper or a
 view (`OWNER_PINNED_BY_WRAPPER:<location>@<session>`: a query through a wrapper reaches its map
 through a field no row records and names no owner, so it would be the run's map's answer whichever
-object the family delivered).
+object the family delivered), or when the anchor or a reached occurrence asks a field or a query
+through a container query's read of it (`OWNER_PINNED_BY_CONTAINER_READ:<location>@<session>`, the
+read names no object, `Composer#containerOwners`).
 
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint
