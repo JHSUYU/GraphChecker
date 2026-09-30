@@ -265,8 +265,9 @@ of the same codec is transparent; and brackets each declared `EXCHANGE` method.
 - **Decode** (`CodecRuntime#decoded`): the message bound to the encoded argument (a stored
   version's read), else the thread's inbound exchange's, else none; the first encode of the codec
   whose paths all resolve in the graph. `HandoffMint#mintHoles` matches each leaf against its
-  template, plants a wave's answer, mints the holes (`mintLeaf`; a JVM-wide leaf is re-homed by a
-  fresh equal object stored through its holder) and publishes one `AttachRow` per hole, paired by
+  template, plants a wave's answer, mints the holes (`mintLeaf`: a String's template on its own
+  object, so any read that returns it hands a parse or split the template itself; a primitive or a
+  box at its slot; a JVM-wide leaf is re-homed by a fresh equal object stored through its holder) and publishes one `AttachRow` per hole, paired by
   `ENVELOPE`. Entries are never consumed: N readers of one version, and one decode twice, each mint
   their own.
 - **Endpoints**: a hole's endpoint site is the port; its event frame is

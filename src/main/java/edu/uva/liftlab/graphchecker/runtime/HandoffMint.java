@@ -607,11 +607,21 @@ final class HandoffMint {
         return new Minted(answer.getAsJsonArray("holes"), root);
     }
 
-    /** The VM's mint at the leaf's slot, else (an unmodeled container) on
-     *  the leaf object. */
+    /**
+     * The VM's mint of one leaf.  A String's template lands on its own
+     * object, whatever holds it: every read that returns the object -- a
+     * field's, an element's, a map's -- hands its parse or split the
+     * template itself, which the lowering identities need (they look through
+     * no read).  A primitive or a box is minted at its slot, else (an
+     * unmodeled container) on the box.
+     */
     private static JsonObject mintAt(CodecWalker.Leaf leaf, String template) {
         try {
             ConcolicVmBroker vm = engine();
+            if (leaf.value instanceof String) {
+                return CodecExport.parse(vm.mintLeaf(leaf.value,
+                        ConcolicVmBroker.SlotKind.VALUE, null, template));
+            }
             JsonObject answer = CodecExport.parse(vm.mintLeaf(
                     CodecRuntime.vmParent(leaf), CodecRuntime.vmSlotKind(leaf),
                     CodecRuntime.vmSlot(leaf), template));
