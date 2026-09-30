@@ -2677,6 +2677,21 @@ campaign_head_charged 7000 120 bash -c "grep -c ' 7000 120 ' \
   || fail "a head's start was not charged while it ran and released after"
 run_capturing_status campaign_head_charged 7000 120 false
 [[ "${status}" -eq 1 ]] || fail "a charged command's exit status was lost"
+# A head that waited for room says so on stderr, never in the stdout that is
+# the charged command's artifact.
+real_try_start=$(declare -f campaign_host_try_start)
+campaign_host_try_start() {
+  if [[ ! -e "${memory_dir}/tried" ]]; then
+    : >"${memory_dir}/tried"
+    campaign_host_wait_reason="no room"
+    return 1
+  fi
+  campaign_host_charge_id=waited
+}
+campaign_host_poll_s=0
+[[ "$(campaign_head_charged 7000 120 printf artifact 2>/dev/null)" \
+    == artifact ]] || fail "a head's wait for memory reached its stdout"
+eval "${real_try_start}"
 campaign_head_charging=0
 campaign_head_charged 999999 120 true \
   || fail "a start outside a head waited for the ledger"

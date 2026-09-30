@@ -2771,7 +2771,9 @@ campaign_head_charged() {
     "$@"
     return
   fi
-  campaign_await_host_memory localhost "" 0 "${need}" "${ramp}" || return
+  # Its words go to stderr: the command's stdout is often its artifact
+  # (ImportGateMain's summary JSON).
+  campaign_await_host_memory localhost "" 0 "${need}" "${ramp}" >&2 || return
   id=${campaign_host_charge_id}
   "$@"
   status=$?
