@@ -35,7 +35,8 @@ import java.util.List;
  *   --obligation-id &lt;id&gt;      which row of it this worker owns
  *   --sessions &lt;dir&gt;          the corpus every wave so far has written
  *   --output-dir &lt;dir&gt;        obligation_result.jsonl, obligation.jsonl,
- *                             obligation_query.smt2, focused_task.jsonl
+ *                             obligation_query.smt2, question.txt,
+ *                             focused_task.jsonl
  *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
  *                             declaration the wave was planned under
  *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt;

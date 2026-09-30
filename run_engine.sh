@@ -3094,8 +3094,9 @@ campaign_wave_slot() {
 # session naming it leaves the corpus, and one row answers it, naming why.
 campaign_obligation_unfinished() {
   local host=$1 obligation_id=$2 worker=$3 sessions=$4 status=$5 why
-  why="its worker on ${host} did not finish (exit ${status}); its logs are \
-in ${worker}"
+  why="its worker on ${host} did not finish (exit ${status}: it failed, or \
+the head could not see what it wrote, as the campaign log says); its logs \
+are in ${worker}"
   campaign_log "obligation ${obligation_id}: ${why}"
   campaign_reap_on_host "${host}" "${worker}"
   campaign_withdraw_sessions "${obligation_id}" "${sessions}" \

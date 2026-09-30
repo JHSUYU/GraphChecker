@@ -165,9 +165,10 @@ final class ConcolicResultPublisher {
     }
 
     /**
-     * What moves while a run settles, as one monotone count: loop bodies
-     * the live activations charged, publications finished, and the CPU
-     * the publication thread spent.  Called under {@link #PUBLICATION_LOCK}.
+     * What moves while a run settles, as one count that changes whenever
+     * something does: loop bodies the live activations charged,
+     * publications finished, and the CPU the publication thread spent.
+     * Called under {@link #PUBLICATION_LOCK}.
      */
     private static long progressLocked() {
         long moved = publicationsFinished;

@@ -1718,8 +1718,8 @@ for pool_job in A B C D; do
 done
 [[ "$(jq -r '.verdict + "|" + .sessionId + "|" + .detail' \
     "${pool_fail_dir}/wave/B/obligation_result.jsonl")" \
-    == "NOT_ADMITTED||its worker on "*" did not finish (exit 7); its logs \
-are in ${pool_fail_dir}/wave/B" ]] \
+    == "NOT_ADMITTED||its worker on "*" did not finish (exit 7: "*"); its \
+logs are in ${pool_fail_dir}/wave/B" ]] \
   || fail "the unfinished obligation is not answered as itself: \
 $(cat "${pool_fail_dir}/wave/B/obligation_result.jsonl" 2>&1)"
 [[ ! -e "${pool_fail_dir}/sessions/SESSION.B" \
