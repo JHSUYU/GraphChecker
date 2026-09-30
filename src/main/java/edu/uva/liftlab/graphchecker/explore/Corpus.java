@@ -779,6 +779,12 @@ public final class Corpus implements Arms.Rows {
         return activationOf(sessionId, occurrence.id());
     }
 
+    /** Every session's activation rows of one occurrence, in read order. */
+    public List<ActivationRow> activationsOf(OccurrenceAddress occurrence) {
+        return activations.getOrDefault(occurrence.id(),
+                Collections.<ActivationRow>emptyList());
+    }
+
     public List<DecisionRow> decisionsOf(String sessionId,
                                          OccurrenceAddress occurrence) {
         return decisions.getOrDefault(sessionId + "|" + occurrence.id(),
