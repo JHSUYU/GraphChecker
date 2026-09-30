@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.compose;
 
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
@@ -23,11 +25,32 @@ public final class VmTermLowering {
     private VmTermLowering() {
     }
 
-    /** One recorded value as an SMT literal of its own sort, or "". */
-    public static String smtLiteral(String value) {
+    /**
+     * One recorded value as an SMT literal of this sort, or "" when it is
+     * none: a Bool {@code true}/{@code false} (the VM's {@code 1}/{@code 0}),
+     * an integral's decimal, a floating value's IEEE bits as the VM records
+     * them, a String's content from its JSON string literal, quoted (Java
+     * null, {@code N}, is no String).
+     */
+    public static String smtLiteral(String value, Sort sort) {
         String text = value == null ? "" : value.trim();
-        if ("true".equals(text) || "false".equals(text)) return text;
-        return JavaPrimitiveSmtSemantics.integralLiteral(text);
+        if (sort == Sort.BOOL) {
+            return "true".equals(text) || "1".equals(text) ? "true"
+                    : "false".equals(text) || "0".equals(text) ? "false" : "";
+        }
+        if (sort == Sort.INT) {
+            return JavaPrimitiveSmtSemantics.integralLiteral(text);
+        }
+        if (sort == Sort.FLOAT32 || sort == Sort.FLOAT64) {
+            String literal = JavaPrimitiveSmtSemantics.floatingLiteral(text,
+                    floatingKind(sort));
+            return literal == null ? "" : literal;
+        }
+        if (sort == Sort.STRING) {
+            String content = ReadRow.stringContent(text);
+            return content == null ? "" : VmExpressionIr.quote(content);
+        }
+        return "";
     }
 
     /** The same text, spelled the way an SMT symbol may be spelled. */
