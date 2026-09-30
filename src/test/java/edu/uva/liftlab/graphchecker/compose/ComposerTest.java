@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Family;
+import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -4904,6 +4905,239 @@ public class ComposerTest {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 18. A codec's hole crosses as its producer's operand (WIRE-CODEC §6).
+    // ------------------------------------------------------------------
+
+    /**
+     * SOLR-18413's chain, on the rows the runtime writes for it: MigrateCmd
+     * puts {@code expireAt = clock_overseer + 1000} on a queue item as a
+     * DEC_LONG hole, the Overseer decodes it ({@code n1}) and re-encodes it
+     * into state.json -- a relay, whose operand is {@code n1} -- and the
+     * leader decodes that ({@code n2}) and expires the rule when {@code n2 <
+     * clock_leader}.  The leader's hole is {@code n1} by a nested family and
+     * {@code n1} the overseer's clock plus 1000, so the fatal is a skew of
+     * two clocks: CLOCK_SKEW.  A second export at the relay's endpoint, of
+     * another state.json version, is no arm of the leader's message (else
+     * one run would state two deliveries there and lose the path), and
+     * neither hole is one CONFIRM can hold to the model's value: both rest
+     * on a clock.
+     */
+    @Test
+    public void aHoleCrossesAsItsProducersOperandAndARelayNests()
+            throws Exception {
+        OccurrenceAddress migrate = occurrence("solr/n1", "REGION.migrate",
+                CausalContext.of(Role.of("OVERSEER_TASK"), "", 1),
+                frame("MigrateCmd#call#196", 0));
+        OccurrenceAddress tick = occurrence("solr/n1", "REGION.tick",
+                CausalContext.of(Role.of("OVERSEER_TICK"), "", 1),
+                frame("SliceMutator#addRoutingRule#80", 0));
+        String queue = "SOLR_ZK /overseer/queue/qn-0000000001@0";
+        String state = "SOLR_ZK /collections/c/state.json@5";
+        Hole item = Hole.of("SOLR_JSON", Collections.singletonList("expireAt"),
+                0);
+        Hole rule = Hole.of("SOLR_JSON", Arrays.<Object>asList("c", "shards",
+                "s1", "routingRules", "k!", "expireAt"), 0);
+        // An endpoint's index names the hole within its message (a frame
+        // site carries no '/' or '@', so the message is digested).
+        String inQueue = "hole#" + ArtifactIO.digest(queue + item.path(), 8);
+        String inState = "hole#" + ArtifactIO.digest(state + rule.path(), 8);
+        Endpoint put = Endpoint.of(migrate, "kv:expireAt", at(inQueue, 0), 0);
+        Endpoint decoded = Endpoint.of(tick, "kv:expireAt", at(inQueue, 0),
+                0);
+        Endpoint written = Endpoint.of(tick, "kv:expireAt", at(inState, 0),
+                0);
+        Endpoint read = Endpoint.of(ANCHOR, "kv:expireAt", at(inState, 0), 0);
+        String n1 = "M_J_field_HOFF.n1";
+        String n2 = "M_J_field_HOFF.n2";
+
+        Path iteration = folder.newFolder("solr-18413").toPath();
+        Session session = new Session(iteration, "s0", false);
+        session.activation(migrate);
+        session.activation(tick);
+        session.root(migrate, "ROOT.OVERSEER", "clk_o", RootKind.CLOCK,
+                "1000");
+        session.root(ANCHOR, "ROOT.LEADER", "clk_l", RootKind.CLOCK, "1500");
+        session.expression("EXPR.v1.expiry", binary("+", symbol("clk_o", "J"),
+                integer("J", 1000L)));
+        session.expression("EXPR.v1.relay", symbol(n1, "J"));
+        session.expression("EXPR.v1.stale", integer("J", 7L));
+        session.export(put, "EXPR.v1.expiry", "J", "2000", item, queue);
+        session.attach(decoded, n1, "J", "2000", put, item, queue);
+        session.export(written, "EXPR.v1.relay", "J", "2000", rule, state);
+        session.export(written, "EXPR.v1.stale", "J", "7", rule,
+                "SOLR_ZK /collections/c/state.json@4");
+        session.attach(read, n2, "J", "2000", written, rule, state);
+        session.decision(ANCHOR, "leader#u1", "(or (> clk_l 0) (not (> clk_l"
+                + " 0)))", "ROOT.LEADER", 1500L);
+        session.target("(< " + n2 + " clk_l)", false, true);
+        session.write();
+
+        Composer.Composition composition = compose(iteration, 4);
+        assertEquals("the leader's path composes -- the other version's "
+                + "export is no second delivery of its message: "
+                + composition.gaps(), 1, composition.disjuncts().size());
+        assertEquals("two crossings, one family each", 2,
+                composition.families().size());
+        String body = composition.body();
+        assertTrue("the leader's hole is the relay's operand, n1: " + body,
+                body.contains("(= " + n2 + " " + n1 + ")"));
+        assertTrue("and n1 the overseer's clock plus 1000",
+                body.contains("clk_o") && body.contains("1000"));
+        assertEquals("each hole's symbol is asked of the model",
+                new LinkedHashSet<String>(Arrays.asList(n1, n2)),
+                new LinkedHashSet<String>(composition.holeSymbols()));
+
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals("the fatal is the two clocks' skew",
+                ClaimKind.CLOCK_SKEW, decision.claim().kind());
+        assertTrue(decision.claim().polarityDecides());
+        for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+            if (!outcome.witness()) continue;
+            assertEquals("a replay reads its clocks afresh, so no hole of a "
+                    + "clock is held to the model's value", 0,
+                    ComposedFamilies.holeTexts(outcome.selectedArms()
+                            .values(), outcome.answer().values()).size());
+        }
+    }
+
+    /**
+     * THE HOLE-ARM RULE (WIRE-CODEC §6.1, §6.3), row by row: an arm of the
+     * decoded sort is equality, a narrower integral is widened, a narrowing
+     * or a change of sort is refused by name, a String operand of a number
+     * or a flag is its canonical rendering read back, a nullable String
+     * holds where it is not null, and Java null is CODEC_MISMATCH
+     * NULL_LEAF.  Then what CONFIRM holds a model to: the value of each
+     * hole that rests on no clock, as the text it decodes to.
+     */
+    @Test
+    public void aHoleIsTakenAtItsDecodedSort() {
+        VmTermLowering.Term integral = VmTermLowering.Term.of("x",
+                VmTermLowering.Sort.INT);
+        VmTermLowering.Term string = VmTermLowering.Term.nonNullString("s",
+                "true");
+        VmTermLowering.Term nullable = VmTermLowering.Term.of("s",
+                VmTermLowering.Sort.STRING,
+                JavaPrimitiveSmtSemantics.IntegralWidth.NONE, "s_null", "",
+                "true");
+        VmTermLowering.Term unknown = VmTermLowering.Term.vm("s",
+                VmTermLowering.Sort.STRING,
+                JavaPrimitiveSmtSemantics.IntegralWidth.NONE);
+        VmTermLowering.Term floating = VmTermLowering.Term.of("f",
+                VmTermLowering.Sort.FLOAT32);
+        VmTermLowering.Term nothing = VmTermLowering.Term.of("nullRef",
+                VmTermLowering.Sort.REF);
+        Object[][] rows = {
+            {integral, "J", "J", "(= v x)"},
+            {integral, "I", "J", "(= v x)"},
+            {integral, "B", "S", "(= v x)"},
+            {integral, "J", "I", "HoleNarrowed"},
+            {integral, "B", "C", "HoleNarrowed"},
+            {integral, "I", "D", "HoleSortChanged"},
+            {floating, "F", "D", "HoleSortChanged"},
+            {string, "Ljava/lang/String;", "Ljava/lang/String;", "(= v s)"},
+            {nullable, "Ljava/lang/String;", "Ljava/lang/String;",
+                    "(and (not s_null) (= v s))"},
+            {unknown, "Ljava/lang/String;", "Ljava/lang/String;",
+                    "JavaStringNullnessUnknown"},
+            {string, "Ljava/lang/String;", "J",
+                    "(and (= (java_int_to_string v) s) (and (<= (- "
+                            + "9223372036854775808) v) (<= v "
+                            + "9223372036854775807)))"},
+            {string, "Ljava/lang/String;", "Z", "(and (or (= s \"true\") "
+                    + "(= s \"false\")) (= v (= s \"true\")))"},
+            {nothing, "Ljava/lang/String;", "Ljava/lang/String;",
+                    "NULL_LEAF"},
+        };
+        for (Object[] row : rows) {
+            VmTermLowering.HoleArm arm = VmTermLowering.holeArm("v",
+                    (VmTermLowering.Term) row[0], (String) row[1],
+                    (String) row[2]);
+            String expected = (String) row[3];
+            String what = row[1] + " -> " + row[2] + ": " + arm.formula
+                    + arm.detail;
+            if (expected.startsWith("(")) {
+                assertEquals(what, expected, arm.formula);
+                assertEquals(what, null, arm.refusal);
+            } else {
+                assertEquals(what, "", arm.formula);
+                assertTrue(what, arm.detail.startsWith(expected));
+                assertEquals(what, "NULL_LEAF".equals(expected)
+                        ? GapKind.CODEC_MISMATCH : GapKind.UNSTATED_VALUE,
+                        arm.refusal);
+            }
+        }
+        // The read-back is the canonical rendering: exact, and nothing else.
+        Z3 solver = solver();
+        String[][] readings = {{"\"-1727\"", "sat", "-1727"},
+                {"\"0042\"", "unsat", ""}, {"\"+5\"", "unsat", ""},
+                {"\"-0\"", "unsat", ""},
+                {"\"9223372036854775808\"", "unsat", ""}};
+        for (String[] reading : readings) {
+            String query = "(set-logic ALL)\n"
+                    + VmTermLowering.JAVA_INT_TO_STRING
+                    + "\n(declare-const v Int)\n(assert "
+                    + VmTermLowering.holeArm("v", VmTermLowering.Term
+                            .nonNullString(reading[0], "true"),
+                    "Ljava/lang/String;", "J").formula + ")\n";
+            Z3.Answer answer = solver.ask(query,
+                    Collections.singletonList("v"), false);
+            assertEquals(reading[0], reading[1], answer.status());
+            if (answer.sat()) {
+                assertEquals(reading[0], reading[2], answer.values().get("v"));
+            }
+        }
+
+        // CONFIRM: a value resting on no clock, through the selected arms.
+        Map<String, ComposedFamilies.BoundHole> own = new LinkedHashMap<
+                String, ComposedFamilies.BoundHole>();
+        own.put("c.num", new ComposedFamilies.BoundHole("h_num",
+                "J", false,
+                Collections.<String>emptySet()));
+        own.put("c.str", new ComposedFamilies.BoundHole("h_str",
+                "Ljava/lang/String;", false,
+                Collections.<String>emptySet()));
+        own.put("c.relay", new ComposedFamilies.BoundHole("h_relay",
+                "J", false,
+                Collections.singleton("h_num")));
+        own.put("c.clock", new ComposedFamilies.BoundHole("h_clock",
+                "J", true,
+                Collections.<String>emptySet()));
+        own.put("c.late", new ComposedFamilies.BoundHole("h_late",
+                "J", false,
+                Collections.singleton("h_clock")));
+        own.put("c.free", new ComposedFamilies.BoundHole("h_free",
+                "J", false,
+                Collections.singleton("h_unbound")));
+        own.put("c.float", new ComposedFamilies.BoundHole("h_float",
+                "D", false, Collections.<String>emptySet()));
+        own.put("c.char", new ComposedFamilies.BoundHole("h_char", "C",
+                false, Collections.<String>emptySet()));
+        Map<String, String> model = new LinkedHashMap<String, String>();
+        model.put("h_num", "-5");
+        model.put("h_str", "\"a\"\"b\\u{e9}\"");
+        model.put("h_relay", "-5");
+        model.put("h_clock", "9");
+        model.put("h_late", "9");
+        model.put("h_free", "3");
+        model.put("h_float", "(fp #b0 #b01111111111 #x0000000000000)");
+        model.put("h_char", "65");
+        Map<String, String> texts = ComposedFamilies.holeTexts(
+                Collections.singletonList(ComposedFamilies.ArmChoice.of(
+                        "f", "g", new ArrayList<String>(own.keySet()), "s0",
+                        Collections.<edu.uva.liftlab.graphchecker.smt.Arms
+                                .Arm>emptyList(), own)), model);
+        Map<String, String> expected = new LinkedHashMap<String, String>();
+        expected.put("c.num", "-5");
+        expected.put("c.str", "a\"bé");
+        expected.put("c.relay", "-5");
+        assertEquals("held: the holes resting on no clock, and on no hole "
+                + "no arm binds; a floating or char one is not rendered",
+                expected,
+                texts);
+    }
+
     private static JsonObject vmLeaf(String type, String exp,
                                      String javaType) {
         JsonObject leaf = new JsonObject();
@@ -5304,6 +5538,30 @@ public class ComposerTest {
             attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
                     value, true, value, producer, "corr-" + symbol,
                     producer == null ? "" : "HANDLE"));
+        }
+
+        /** A codec's hole put on the wire: its operand, sort, message. */
+        void export(Endpoint endpoint, String ref, String javaType,
+                    String recorded, Hole hole, String messageKey) {
+            exports.add(ExportRow.of(id, ++seq, endpoint, ref, javaType, 0L,
+                    recorded, hole, messageKey));
+        }
+
+        /** A codec's hole minted at a decode, paired by its envelope. */
+        void attach(Endpoint endpoint, String symbol, String javaType,
+                    String arrival, Endpoint producer, Hole hole,
+                    String messageKey) {
+            attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
+                    arrival, false, null, producer, messageKey,
+                    AttachRow.ENVELOPE, hole));
+        }
+
+        /** One root, minted where the fixture says. */
+        void root(OccurrenceAddress at, String rootId, String symbol,
+                  RootKind kind, String recorded) {
+            roots.add(RootMintRow.of(id, ++seq, at, rootId, symbol, kind,
+                    recorded, null, null, true,
+                    kind == RootKind.CLOCK ? 1_000_000L : 0L));
         }
 
         /** @return the session event this write was sequenced at. */
