@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -81,17 +82,13 @@ public final class ObligationFactory {
         }
     }
 
-    /** One flip a wave proposes: the path, the decision, its identity and
-     *  the question it asks ({@link #question}). */
+    /** One flip a wave proposes: the path, the decision, and its identity. */
     public static final class Candidate {
         public final String obligationId;
         public final Task task;
         public final Corpus.RecordedPath path;
         public final int index;
         public final DecisionRow decision;
-        /** Its question once {@link #candidates} built it (an earlier wave
-         *  answered its flip), its {@link #flip} before; "" located. */
-        public final String question;
 
         private Candidate(Corpus corpus, Task task,
                           Corpus.RecordedPath path, int index) {
@@ -99,17 +96,16 @@ public final class ObligationFactory {
                     path.decisions.get(index).siteId(),
                     path.decisions.get(index).ordinal(),
                     !path.decisions.get(index).outcome(),
-                    dependence(corpus, task, path, index)), "");
+                    dependence(corpus, task, path, index)));
         }
 
         private Candidate(Task task, Corpus.RecordedPath path, int index,
-                          String obligationId, String question) {
+                          String obligationId) {
             this.task = task;
             this.path = path;
             this.index = index;
             this.decision = path.decisions.get(index);
             this.obligationId = obligationId;
-            this.question = question;
         }
 
         /** The row a wave publishes: what to flip, no model yet (the solver
@@ -147,16 +143,21 @@ public final class ObligationFactory {
         public final List<GapRow> gaps;
         /** The question asked ({@link #question}). */
         public final String question;
+        /** Whether this verdict settles it: a solver's own, or one it
+         *  reused; never a timeout or an undecided solver. */
+        public final boolean settles;
 
         private Outcome(Obligation obligation, ObligationResult result,
                         String smt2, Map<String, String> clockDeltas,
                         Map<String, String> rootMints,
                         List<Corpus.Flip> inheritedFlips,
-                        List<GapRow> gaps, String question) {
+                        List<GapRow> gaps, String question,
+                        boolean settles) {
             this.obligation = obligation;
             this.result = result;
             this.smt2 = smt2;
             this.question = question;
+            this.settles = settles;
             this.clockDeltas = Collections.unmodifiableMap(clockDeltas);
             this.rootMints = Collections.unmodifiableMap(rootMints);
             this.inheritedFlips =
@@ -174,11 +175,20 @@ public final class ObligationFactory {
     private static Outcome refused(Candidate candidate, Verdict verdict,
                                    String detail, String query,
                                    List<GapRow> gaps, String question) {
+        return refused(candidate, verdict, detail, query, gaps, question,
+                true);
+    }
+
+    private static Outcome refused(Candidate candidate, Verdict verdict,
+                                   String detail, String query,
+                                   List<GapRow> gaps, String question,
+                                   boolean settles) {
         return new Outcome(null, ObligationResult.of(candidate.obligationId,
                 verdict, "", detail), query,
                 Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(),
-                Collections.<Corpus.Flip>emptyList(), gaps, question);
+                Collections.<Corpus.Flip>emptyList(), gaps, question,
+                settles);
     }
 
     /** {@code model - recorded} as a decimal, or "" if either is not one. */
@@ -279,43 +289,10 @@ public final class ObligationFactory {
                 rests.locations()), 16);
     }
 
-    /**
-     * THE QUESTION one flip asks, as {@code <flip>:<content>}: the flip
-     * ({@link #flip}), then a digest of the query as its solver is asked it
-     * (or the refusal that leaves none) and the world its replay would plant
-     * -- its path's world, inherited whole.  The ledger answers a question
-     * once ({@link Frontier}): an obligation's id drifts as sessions land
-     * (its dependence's factor grows, {@link Corpus#inputShape}), and its
-     * question does not while the query reads the same (SOLR-18413 r5: 185
-     * questions asked 717 times; 118 of the 166 re-asked came back
-     * byte-identical, 162 answered as before).  Built over fresh lowerings
-     * ({@link Corpus#isolated}), as a solver JVM builds its one query, so
-     * the planner's question is the solver's.  The planner builds it only
-     * for a flip an earlier wave answered: a query can cost a solver most of
-     * a minute (hdfs-17960), and no other flip's question can be answered.
-     */
-    public static String question(Corpus corpus, Candidate candidate) {
-        FlipQuery.Built built;
-        try {
-            built = ask(corpus, candidate);
-        } catch (RuntimeException unbuildable) {
-            // Its solver fails the same way, and says so; a query no one
-            // can build is no question the ledger could hold: its flip.
-            return flip(candidate);
-        }
-        return question(candidate, corpus.world(candidate.path.sessionId),
-                built);
-    }
-
-    /** The one way a flip's query is built, wave planner and solver alike. */
-    private static FlipQuery.Built ask(Corpus corpus, Candidate candidate) {
-        return corpus.isolated(() -> FlipQuery.build(corpus, candidate.task,
-                candidate.path, candidate.index));
-    }
-
     /** The flip a question is about, digested: task, path, site, ordinal
      *  and the outcome asked for -- the first half of its {@link
-     *  #question}. */
+     *  #question}, and what a wave's no-progress stop compares (an id
+     *  drifts, a flip does not). */
     public static String flip(Candidate candidate) {
         return ArtifactIO.digest(candidate.task.taskId() + "|"
                 + candidate.path.pathId + "|" + candidate.decision.siteId()
@@ -323,8 +300,24 @@ public final class ObligationFactory {
                 + !candidate.decision.outcome(), 16);
     }
 
-    private static String question(Candidate candidate, Corpus.World world,
-                                   FlipQuery.Built built) {
+    /**
+     * THE QUESTION one flip asks, as {@code <flip>:<content>}: the flip
+     * ({@link #flip}), then a digest of everything its answer rests on --
+     * the query as its solver is asked it (or the refusal that leaves
+     * none), and all its replay is given: the world it plants (its path's,
+     * inherited whole), the focused occurrence, the factor and the seed
+     * session (the focus row, whose factor grows as sessions land and no
+     * query reads), and {@code given} (the declared occurrence and the plan
+     * generation its class tree is woven from, which GROW moves); the
+     * schedule cut is the path's session cut at the focus and factor.  An
+     * obligation's id drifts as sessions land; its question does not while
+     * all of this reads the same (SOLR-18413 r5: 185 questions asked 717
+     * times; 118 of the 166 re-asked with byte-identical queries).  Its
+     * solver reuses the answer of one a worker settled ({@code
+     * ObligationDir#answered}).
+     */
+    static String question(Candidate candidate, Corpus.World world,
+                           FlipQuery.Built built, String given) {
         StringBuilder text = new StringBuilder();
         text.append(built.ok()
                         ? Z3.modelQuery(built.smt2, built.modelSymbols)
@@ -338,6 +331,12 @@ public final class ObligationFactory {
                     .append(flip.siteId).append('#').append(flip.ordinal)
                     .append(" -> ").append(flip.outcome);
         }
+        text.append("\nfocused ").append(candidate.task.focused().id())
+                .append("\nseed ").append(candidate.task.seedSessionId());
+        for (OccurrenceAddress member : candidate.task.factor()) {
+            text.append("\nfactor ").append(member.id());
+        }
+        text.append('\n').append(given);
         return flip(candidate) + ":" + ArtifactIO.digest(text.toString(), 16);
     }
 
@@ -422,13 +421,6 @@ public final class ObligationFactory {
                 // its prefix.
                 if (!offered.add(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate.obligationId);
-                if (reason.isEmpty()) {
-                    String flip = flip(candidate);
-                    candidate = new Candidate(task, path, index,
-                            candidate.obligationId, owed.answered(flip)
-                            ? question(corpus, candidate) : flip);
-                    reason = owed.asked(candidate.question);
-                }
                 if (!reason.isEmpty()) {
                     gaps.add(GapRow.of(path.sessionId,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
@@ -501,28 +493,111 @@ public final class ObligationFactory {
         return ordered;
     }
 
+    /** What one model plants, or why no replay can plant it. */
+    private static final class Planted {
+        final Map<String, String> roots = new LinkedHashMap<String, String>();
+        final Map<String, String> clockDeltas =
+                new LinkedHashMap<String, String>();
+        final Map<String, String> answers =
+                new LinkedHashMap<String, String>();
+        final List<String> unproducible = new ArrayList<String>();
+        /** Why no replay can run it, or "". */
+        String refusal = "";
+    }
+
+    /** The roots, clock skews and answers one model assigns. */
+    private static Planted planted(Corpus corpus, Candidate candidate,
+                                   FlipQuery.Built built,
+                                   Map<String, String> values,
+                                   List<GapRow> gaps) {
+        Planted planted = new Planted();
+        for (Map.Entry<String, String> variable
+                : built.rootVariables.entrySet()) {
+            String value = values.get(variable.getKey());
+            if (value != null) planted.roots.put(variable.getValue(), value);
+        }
+        // A clock's model is an instant of the recording's window; the replay
+        // is owed the difference.
+        for (Map.Entry<String, String> variable
+                : built.clockVariables.entrySet()) {
+            String rootId = variable.getValue();
+            String recorded = corpus.rootValue(candidate.path.sessionId,
+                    rootId);
+            String delta = skew(values.get(variable.getKey()), recorded);
+            if (delta.isEmpty()) {
+                gaps.add(GapRow.of(candidate.path.sessionId,
+                        GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,
+                        "the model moves this clock but the reading it is "
+                                + "relative to is not an integer, so the "
+                                + "replay is owed no skew and reads its own "
+                                + "instant"));
+                continue;
+            }
+            // Fail closed: a skew or instant outside a Java long can never be
+            // applied (clockDomain's ceiling should make this unreachable).
+            BigInteger skewed = new BigInteger(delta);
+            BigInteger instant =
+                    skewed.add(new BigInteger(recorded.trim()));
+            if (!JavaPrimitiveSmtSemantics.fitsJavaLong(skewed)
+                    || !JavaPrimitiveSmtSemantics.fitsJavaLong(instant)) {
+                gaps.add(GapRow.of(candidate.path.sessionId,
+                        GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,
+                        "the model asks clock root " + rootId + " for "
+                                + "instant " + instant + ", a skew of "
+                                + skewed + " on the " + recorded.trim()
+                                + " this replay read, and a clock is a "
+                                + "millisecond count in a Java long: no "
+                                + "replay could apply it"));
+                planted.refusal = "clock root " + rootId + " is owed a skew "
+                        + "of " + skewed + ", which is not a Java long, so "
+                        + "the obligation states a world no replay can run";
+                return planted;
+            }
+            planted.clockDeltas.put(rootId, delta);
+        }
+        for (FlipQuery.Control control : built.controls) {
+            String value = values.get(control.variable);
+            if (value != null) {
+                String answered = answer(control.sort, value);
+                if (answered == null) {
+                    planted.refusal = "the model's value " + value + " of "
+                            + "the String handoff " + control.attachEndpointId
+                            + " is no string literal, so no replay can be "
+                            + "answered with it";
+                    return planted;
+                }
+                planted.answers.put(control.attachEndpointId, answered);
+            }
+            if (control.unproducible) {
+                planted.unproducible.add(control.attachEndpointId);
+            }
+        }
+        return planted;
+    }
+
     /**
      * Why this model plants nothing its path's own session did not already
      * run, or "": no clock moved, no handoff answered, and every assigned
      * root at the value that session minted (none assigned included).  The
      * replay it asks for then runs the world that session ran -- its path's
-     * world, inherited whole -- and a replay can set nothing else: which
-     * writer a read observes ({@code wchoice_*}), a container's state
-     * ({@code st__*}) and a term the lowering refused ({@code
-     * unsupported__*}) are the run's, never planted.  A moved clock is a
-     * counterfactual of its own and is checked FIRST (a pinned root beside
-     * moved clocks is not that replay).  Asked of the model's own skews,
-     * roots and answers, before the parent's world is laid under them.
+     * world, inherited whole -- and a replay sets nothing else: which writer
+     * a read observes ({@code wchoice_*}), a container's state ({@code
+     * st__*}) and a term the lowering refused ({@code unsupported__*}) are
+     * the run's, never planted.  A moved clock is a counterfactual of its
+     * own and is checked FIRST (a pinned root beside moved clocks is not
+     * that replay).  Asked of the model's own skews, roots and answers,
+     * before the parent's world is laid under them.
      */
     private static String plantsNothing(Corpus corpus, Candidate candidate,
                                         FlipQuery.Built built,
-                                        Map<String, String> modelValues,
-                                        Map<String, String> roots,
-                                        Map<String, String> answers,
-                                        Map<String, String> clockDeltas) {
-        if (movesAClock(clockDeltas) || !answers.isEmpty()) return "";
+                                        Map<String, String> values,
+                                        Planted planted) {
+        if (movesAClock(planted.clockDeltas) || !planted.answers.isEmpty()) {
+            return "";
+        }
         List<String> same = new ArrayList<String>();
-        for (Map.Entry<String, String> assignment : roots.entrySet()) {
+        for (Map.Entry<String, String> assignment
+                : planted.roots.entrySet()) {
             String reading = corpus.rootValue(candidate.path.sessionId,
                     assignment.getKey());
             if (reading.isEmpty()
@@ -542,28 +617,45 @@ public final class ObligationFactory {
                     + "(CONTRACT-SPEC §2.2) -- or the query binds a root the "
                     + "flip does not depend on";
         }
-        Set<String> planted = new LinkedHashSet<String>();
-        planted.addAll(built.rootVariables.keySet());
-        planted.addAll(built.clockVariables.keySet());
+        Set<String> plantable = new LinkedHashSet<String>();
+        plantable.addAll(built.rootVariables.keySet());
+        plantable.addAll(built.clockVariables.keySet());
         for (FlipQuery.Control control : built.controls) {
-            planted.add(control.variable);
+            plantable.add(control.variable);
         }
         List<String> run = new ArrayList<String>();
         for (String symbol : built.modelSymbols) {
-            if (!planted.contains(symbol) && modelValues.containsKey(symbol)) {
+            if (!plantable.contains(symbol) && values.containsKey(symbol)) {
                 run.add(symbol);
             }
         }
         return "EMPTY_WORLD: the model assigns no root, moves no clock and "
-                + "answers no handoff, so the replay it asks for runs the "
-                + "world of " + candidate.path.sessionId + " again, where "
-                + candidate.decision.siteId() + "#"
+                + "answers no handoff, so the replay it asks for would run "
+                + "the world of " + candidate.path.sessionId + " again, "
+                + "where " + candidate.decision.siteId() + "#"
                 + candidate.decision.ordinal() + " took "
-                + candidate.decision.outcome() + "; it takes the other arm "
-                + "only through " + run.size() + " symbol(s) no replay "
-                + "plants" + (run.isEmpty() ? "" : ": " + String.join(", ",
+                + candidate.decision.outcome() + "; the " + run.size()
+                + " symbol(s) it sets are ones no replay plants"
+                + (run.isEmpty() ? "" : " (" + String.join(", ",
                 run.subList(0, Math.min(8, run.size())))
-                + (run.size() > 8 ? ", ..." : ""));
+                + (run.size() > 8 ? ", ..." : "") + ")");
+    }
+
+    /**
+     * The query with every writer choice held to the writer the recording's
+     * read observed ({@link FlipQuery.Built#recordedChoices}); a container
+     * state follows its writer's.  A term the lowering refused ({@code
+     * unsupported__*}) has no recorded value and stays free.  "" when the
+     * query has no writer choice to hold.
+     */
+    private static String heldToRecording(FlipQuery.Built built) {
+        StringBuilder held = new StringBuilder();
+        for (String selector : built.recordedChoices) {
+            if (built.modelSymbols.contains(selector)) {
+                held.append("(assert ").append(selector).append(")\n");
+            }
+        }
+        return held.length() == 0 ? "" : built.smt2 + held;
     }
 
     /** Whether any clock skew is non-zero; a non-integer delta counts as no
@@ -599,22 +691,47 @@ public final class ObligationFactory {
                 if (decision.siteId().equals(obligation.siteId())
                         && decision.ordinal() == obligation.ordinal()) {
                     return new Candidate(task, path, index,
-                            obligation.obligationId(), "");
+                            obligation.obligationId());
                 }
             }
         }
         return null;
     }
 
-    /** Solves one candidate: its query, its verdict and its model. */
+    /**
+     * Solves one candidate: its query, its verdict and its model; or reuses
+     * the answer of the same question a worker settled.
+     *
+     * @param given    what the replay is given besides the corpus, as
+     *                 {@link #question} keys it
+     * @param answered the questions this iteration's workers settled
+     */
     public static Outcome solve(Corpus corpus, Candidate candidate, Path z3,
-                                long timeoutMillis) {
+                                long timeoutMillis, String given,
+                                Map<String, ObligationDir.Answer> answered) {
         String id = candidate.obligationId;
         DecisionRow decision = candidate.decision;
-        FlipQuery.Built built = ask(corpus, candidate);
+        FlipQuery.Built built = FlipQuery.build(corpus, candidate.task,
+                candidate.path, candidate.index);
         Corpus.World inherited = corpus.world(candidate.path.sessionId);
-        String question = question(candidate, inherited, built);
+        String question = question(candidate, inherited, built, given);
         List<GapRow> gaps = new ArrayList<GapRow>(built.gaps);
+        ObligationDir.Answer earlier = answered.get(question);
+        if (earlier != null) {
+            String detail = "question " + question + " was settled "
+                    + earlier.result.verdict() + " by obligation "
+                    + earlier.obligationId
+                    + (earlier.result.sessionId().isEmpty() ? ""
+                    : " (session " + earlier.result.sessionId() + ")")
+                    + ", which asked the same flip and query of the same "
+                    + "world, focus, factor, seed session, declared "
+                    + "occurrence and plan generation: "
+                    + earlier.result.detail();
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id, detail));
+            return refused(candidate, earlier.result.verdict(), detail, "",
+                    gaps, question);
+        }
         if (!built.ok()) {
             return refused(candidate, Verdict.NOT_ADMITTED,
                     "the query was refused: " + built.refusal, "", gaps,
@@ -634,7 +751,7 @@ public final class ObligationFactory {
                             + "unexplored sibling, not a closed one"));
             return refused(candidate, Verdict.NOT_ADMITTED,
                     "SOLVER_TIMEOUT after " + budget + "ms", query, gaps,
-                    question);
+                    question, false);
         }
         // Neither sat nor unsat (error/unknown) is no verdict: refused by name,
         // never read as UNSAT.
@@ -645,7 +762,7 @@ public final class ObligationFactory {
                             : " " + answer.reason())
                             + (solver.errors().isEmpty() ? ""
                             : " " + solver.errors()), query, gaps,
-                    question);
+                    question, false);
         }
         if (!answer.sat()) {
             return refused(candidate, Verdict.UNSAT,
@@ -653,81 +770,50 @@ public final class ObligationFactory {
                             + decision.siteId() + "#" + decision.ordinal(),
                     query, gaps, question);
         }
-        Map<String, String> roots = new LinkedHashMap<String, String>();
-        for (Map.Entry<String, String> variable
-                : built.rootVariables.entrySet()) {
-            String value = answer.values().get(variable.getKey());
-            if (value != null) roots.put(variable.getValue(), value);
-        }
-        // A clock's model is an instant of the recording's window; the replay
-        // is owed the difference.
-        Map<String, String> clockDeltas = new LinkedHashMap<String, String>();
-        for (Map.Entry<String, String> variable
-                : built.clockVariables.entrySet()) {
-            String rootId = variable.getValue();
-            String recorded = corpus.rootValue(candidate.path.sessionId,
-                    rootId);
-            String delta = skew(answer.values().get(variable.getKey()),
-                    recorded);
-            if (delta.isEmpty()) {
-                gaps.add(GapRow.of(candidate.path.sessionId,
-                        GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,
-                        "the model moves this clock but the reading it is "
-                                + "relative to is not an integer, so the "
-                                + "replay is owed no skew and reads its own "
-                                + "instant"));
-                continue;
-            }
-            // Fail closed: a skew or instant outside a Java long can never be
-            // applied (clockDomain's ceiling should make this unreachable).
-            BigInteger skewed = new BigInteger(delta);
-            BigInteger instant =
-                    skewed.add(new BigInteger(recorded.trim()));
-            if (!JavaPrimitiveSmtSemantics.fitsJavaLong(skewed)
-                    || !JavaPrimitiveSmtSemantics.fitsJavaLong(instant)) {
-                gaps.add(GapRow.of(candidate.path.sessionId,
-                        GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,
-                        "the model asks clock root " + rootId + " for "
-                                + "instant " + instant + ", a skew of "
-                                + skewed + " on the " + recorded.trim()
-                                + " this replay read, and a clock is a "
-                                + "millisecond count in a Java long: no "
-                                + "replay could apply it"));
-                return refused(candidate, Verdict.NOT_ADMITTED,
-                        "clock root " + rootId + " is owed a skew of "
-                                + skewed + ", which is not a Java long, so "
-                                + "the obligation states a world no replay "
-                                + "can run", query, gaps, question);
-            }
-            clockDeltas.put(rootId, delta);
-        }
-        Map<String, String> answers = new LinkedHashMap<String, String>();
-        List<String> unproducible = new ArrayList<String>();
-        for (FlipQuery.Control control : built.controls) {
-            String value = answer.values().get(control.variable);
-            if (value != null) {
-                String answered = answer(control.sort, value);
-                if (answered == null) {
-                    return refused(candidate, Verdict.NOT_ADMITTED, "the "
-                            + "model's value " + value + " of the String "
-                            + "handoff " + control.attachEndpointId + " is "
-                            + "no string literal, so no replay can be "
-                            + "answered with it", query, gaps, question);
-                }
-                answers.put(control.attachEndpointId, answered);
-            }
-            if (control.unproducible) {
-                unproducible.add(control.attachEndpointId);
-            }
+        Planted planted = planted(corpus, candidate, built, answer.values(),
+                gaps);
+        if (!planted.refusal.isEmpty()) {
+            return refused(candidate, Verdict.NOT_ADMITTED, planted.refusal,
+                    query, gaps, question);
         }
         // A model that plants nothing its path's session did not run asks
         // for that session's replay again (PIPELINE §7: exploration collects
-        // arms the corpus lacks): refused before any replay.  DIAGNOSTIC
+        // arms the corpus lacks).  Before it is refused, the query is asked
+        // again with every writer choice held to the recorded writer: a
+        // model that then plants something is the one to run.  DIAGNOSTIC
         // under EXPLORATION, never BLOCKING in the recording's ledger.
-        // Asked of the model's own skews/roots/answers, before inheriting the
-        // parent's world (merged values would fake a counterfactual).
         String nothing = plantsNothing(corpus, candidate, built,
-                answer.values(), roots, answers, clockDeltas);
+                answer.values(), planted);
+        if (!nothing.isEmpty()) {
+            String held = heldToRecording(built);
+            String holding = "; with every writer choice held to the "
+                    + "writer the recording observed, ";
+            if (held.isEmpty()) {
+                nothing += "; the query has no writer choice to hold to the "
+                        + "recording";
+            } else {
+                Z3.Answer again = solver.ask(held, built.modelSymbols, false);
+                if (!again.decided()) {
+                    nothing += holding + "the solver did not decide ("
+                            + again.status() + ")";
+                } else if (!again.sat()) {
+                    nothing += holding + "no model takes the other arm";
+                } else {
+                    Planted recorded = planted(corpus, candidate, built,
+                            again.values(), gaps);
+                    if (recorded.refusal.isEmpty() && plantsNothing(corpus,
+                            candidate, built, again.values(), recorded)
+                            .isEmpty()) {
+                        planted = recorded;
+                        query = Z3.modelQuery(held, built.modelSymbols);
+                        nothing = "";
+                    } else {
+                        nothing += holding + "the model still plants "
+                                + "nothing a replay can run";
+                    }
+                }
+            }
+        }
         if (!nothing.isEmpty()) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,
@@ -739,12 +825,15 @@ public final class ObligationFactory {
         // values are the floor, the model overlays them (model wins), and the
         // parent's flips travel whole (enforced by FocusedReplay, asserted by
         // FlipQuery).
-        roots = overlay(inherited.rootAssignments, roots);
-        clockDeltas = overlay(inherited.clockDeltas, clockDeltas);
-        answers = overlay(inherited.answers, answers);
+        Map<String, String> roots =
+                overlay(inherited.rootAssignments, planted.roots);
+        Map<String, String> clockDeltas =
+                overlay(inherited.clockDeltas, planted.clockDeltas);
+        Map<String, String> answers =
+                overlay(inherited.answers, planted.answers);
         Obligation solved = Obligation.of(id, candidate.task.taskId(),
                 candidate.path.pathId, decision.siteId(), decision.ordinal(),
-                !decision.outcome(), roots, answers, unproducible);
+                !decision.outcome(), roots, answers, planted.unproducible);
         // The focused set: each assigned root's mint occurrence, as the
         // RECORDING states it (the run every address is written about). A root
         // the recording mints nowhere cannot be planted: refused by name.
@@ -780,7 +869,8 @@ public final class ObligationFactory {
                         + " root value(s) and " + answers.size()
                         + " answered handoff(s), planted at " + mints.size()
                         + " mint(s)"),
-                query, clockDeltas, mints, inherited.flips, gaps, question);
+                query, clockDeltas, mints, inherited.flips, gaps, question,
+                false);
     }
 
     /**

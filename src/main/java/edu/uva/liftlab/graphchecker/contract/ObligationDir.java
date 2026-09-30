@@ -25,9 +25,17 @@ public final class ObligationDir {
      *  replay's process group is gone. */
     public static final String REPLAY_VERDICT = "replay_verdict.jsonl";
     public static final String FOCUSED_TASK = "focused_task.jsonl";
-    /** The question the worker's solver asked, as one key
-     *  ({@code explore.ObligationFactory#question}). */
+    /**
+     * The question this worker's answer settles
+     * ({@code explore.ObligationFactory#question}): written by the solver
+     * for a verdict of its own, and for a replay's by the worker once the
+     * replay decided it.  A solver timeout, a replay killed on its bound, a
+     * publication the replay ended without, or a worker that did not finish
+     * settles none.
+     */
     public static final String QUESTION = "question.txt";
+    /** The question a SAT solver asked, until its replay decides it. */
+    public static final String QUESTION_ASKED = "question.asked";
 
     /** The wave directories an iteration publishes, by name. */
     private static final String WAVES = "obligations-*";
@@ -57,25 +65,42 @@ public final class ObligationDir {
         return workers;
     }
 
+    /** One settled question's answer: the obligation that asked it, and
+     *  the verdict its worker wrote. */
+    public static final class Answer {
+        public final String obligationId;
+        public final ObligationResult result;
+
+        private Answer(String obligationId, ObligationResult result) {
+            this.obligationId = obligationId;
+            this.result = result;
+        }
+    }
+
     /**
-     * Obligation id -> the question its solver asked, for every worker of
-     * one iteration that states one (a solver that died states none).
+     * Every question one iteration's workers settled ({@link #QUESTION}),
+     * with its first answer in wave and name order.
      */
-    public static Map<String, String> questions(Path iteration)
+    public static Map<String, Answer> answered(Path iteration)
             throws IOException {
-        Map<String, String> asked = new LinkedHashMap<String, String>();
+        Map<String, Answer> answered = new LinkedHashMap<String, Answer>();
         for (Path wave : SessionDir.directories(iteration, WAVES)) {
             for (Path worker : SessionDir.directories(wave, "*")) {
                 Path file = worker.resolve(QUESTION);
                 if (!Files.isRegularFile(file)) continue;
                 String question = new String(Files.readAllBytes(file),
                         StandardCharsets.UTF_8).trim();
-                if (!question.isEmpty()) {
-                    asked.put(worker.getFileName().toString(), question);
-                }
+                List<ObligationResult> rows = RowCodec.readAll(
+                        worker.resolve(RESULT),
+                        RowCodec::readObligationResult);
+                if (question.isEmpty() || rows.isEmpty()) continue;
+                ObligationResult result = rows.get(rows.size() - 1);
+                if (result.verdict() == Verdict.SAT_MODEL_READY) continue;
+                answered.putIfAbsent(question, new Answer(
+                        worker.getFileName().toString(), result));
             }
         }
-        return asked;
+        return answered;
     }
 
     /** The session this worker's replay published, off its result row. */
