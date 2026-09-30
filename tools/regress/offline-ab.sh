@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # offline-ab.sh -- the offline regression gate: does a candidate jar compute
-# anything different from a baseline jar on recorded HDFS campaigns?
+# anything different from a baseline jar on recorded campaigns?
 #
-#   tools/regress/offline-ab.sh [--round TAG|DIR]... <baseline-jar> <candidate-jar> [case...]
+#   tools/regress/offline-ab.sh --round TAG|DIR [--round TAG|DIR]... <baseline-jar> <candidate-jar> [case...]
 #
 # No workload and no concolic replay runs.  Every stage below is a pure
 # function of what a campaign recorded, run once per jar with the arguments
@@ -22,13 +22,11 @@
 #   COMPOSE   COMPOSE     do_compose (+SOLVE, DECIDE)   the recorded final corpus (z3)
 #             CONFIRM     campaign_confirm's ConfirmMain this side's COMPOSE claim, no replay
 #
-# The recorded runs are the rounds named (--round, first holding a case
-# wins): a TAG is ${AB_ACCEPT_ROOT}/accept-<TAG>-<case without hdfs->, as
-# tools/rounds writes them; a DIR is an accept.sh output (DIR/out/<case>).
-# The default, "v94 v93 v92", is the accepted 9/9.  A round of a build whose
-# row contract has moved on is read as the current engine reads it: main
-# (2026-09-29) refuses every v92-v94 corpus row (IMPORT, COMPOSE) and their
-# static artifacts, so give the gate a round produced by a current build.
+# The recorded runs are the rounds named (--round, at least one; the first
+# holding a case wins): a TAG is ${AB_ACCEPT_ROOT}/accept-<TAG>-<case without
+# hdfs->, as tools/rounds writes them; a DIR is an accept.sh output
+# (DIR/out/<case>).  A round is read as the current engine reads it, so name
+# rounds recorded by a build whose row contract HEAD still reads.
 #
 # A stage that reads an iteration reads a private one: the recorded sessions
 # and obligation waves linked, the files a stage rewrites (slots.jsonl)
@@ -81,7 +79,6 @@ source "${ab_self_repo}/tools/lib/gc-env.sh"
 
 AB_CASES=(hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17967-pathA
   hdfs-17967-pathB hdfs-17967-pathC hdfs-17960 hdfs-17897 hdfs-11741)
-AB_DEFAULT_ROUNDS=(v94 v93 v92)
 AB_CHAINS=(SEED IMPORT EXPLORE.N COMPOSE)
 AB_SIDES=(baseline candidate)
 
@@ -526,10 +523,10 @@ ab_main() {
     ab_rounds+=("${2:?--round needs a tag or a directory}")
     shift 2
   done
-  (( ${#ab_rounds[@]} > 0 )) || ab_rounds=("${AB_DEFAULT_ROUNDS[@]}")
   local baseline=${1:-} candidate=${2:-}
-  [[ -f "${baseline}" && -f "${candidate}" ]] || ab_die "usage: offline-ab.sh \
-[--round TAG|DIR]... <baseline-jar> <candidate-jar> [case...]"
+  (( ${#ab_rounds[@]} > 0 )) && [[ -f "${baseline}" && -f "${candidate}" ]] \
+    || ab_die "usage: offline-ab.sh --round TAG|DIR [--round TAG|DIR]... \
+<baseline-jar> <candidate-jar> [case...]"
   shift 2
   local -a cases=("$@") pids=() override
   local case_id dir side acc decl arg chain classpath onlift repo base_repo

@@ -867,8 +867,8 @@ aggregation, a stage's Java main, the engine's `die`, a full disk or quota), `PE
 started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still runs a process naming
 its directory, `DEAD` when none does.
 
-`tools/regress/offline-ab.sh <baseline-jar> <candidate-jar> [case...]` is the offline regression
-gate: per case of a recorded round (`--round`, default `v94 v93 v92`), it runs every stage that is
+`tools/regress/offline-ab.sh --round <round>... <baseline-jar> <candidate-jar> [case...]` is the
+offline regression gate: per case of the first `--round` holding it, it runs every stage that is
 a pure function of the recording once per jar — the static pass, the trace aggregation, PLAN,
 EXPLORE wave 0 and its solves, IMPORT, the closing EXPLORE wave, COMPOSE with SOLVE and DECIDE,
 and CONFIRM's planning — over private iterations that link the recorded sessions, with no
