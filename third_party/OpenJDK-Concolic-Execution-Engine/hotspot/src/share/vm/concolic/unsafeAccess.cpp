@@ -181,6 +181,7 @@ void UnsafeAccess::end_put(Access *access,
     intent->done = true;
     intent->succeeded = true;
     intent->new_value = value;
+    consume(intent);
   }
   update_shadow(*access, value, stored, stored_reference);
 }
@@ -206,6 +207,8 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
   // The read the compare made, of the word it compared -- never a re-read of
   // the heap after the fact.
   Expression *old_value = NULL;
+  // Whether the compare read a tracked location (a read of its version).
+  bool read_tracked = false;
   if (intent != NULL) {
     const std::string type_name(1, type2char(
         witnessed.stated() && !witnessed.is_null() ? witnessed.type
@@ -213,6 +216,7 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
     if (SharedFieldVersions::plan_read_locked(access->location, witnessed,
                                               witnessed_reference,
                                               &access->plan)) {
+      read_tracked = true;
       old_value = SharedFieldVersions::scalar_read(
           access->plan, access->location, type_name, witnessed,
           witnessed_reference);
@@ -256,8 +260,15 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
             intent->expect != NULL
                 ? intent->expect : concrete(witnessed, witnessed_reference),
             op_eq, true);
-        if (intent->model) intent->new_value = matched;
-        else decision = succeeded ? matched : matched->logical_negation();
+        // Recorded only when it compared something symbolic: a tracked
+        // location's read, or a symbolic expected value.  Every concrete CAS
+        // of an unmuted JDK body (a lambda's bootstrap interning its method
+        // types) would otherwise put `x == x` into the path.
+        if (intent->model) {
+          intent->new_value = matched;
+        } else if (read_tracked || intent->expect != NULL) {
+          decision = succeeded ? matched : matched->logical_negation();
+        }
         if (succeeded) {
           guard = guard == NULL ? matched
               : (Expression *) new OpSymExpression(guard, matched, op_land);
@@ -293,8 +304,19 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
     intent->succeeded = succeeded;
     intent->old_value = old_value;
     if (intent->kind != CAS || !intent->model) intent->new_value = value;
+    consume(intent);
   }
   if (succeeded) update_shadow(*access, value, stored, stored_reference);
+}
+
+void UnsafeAccess::consume(Intent *intent) {
+  // A caller's capture names exactly the one write it was taken for.  Its
+  // call is often a native whose primitive result no finish hook reads
+  // (MethodSymbolizerHandle::result_readable), so it is cleared here: left
+  // standing, it refused every later capture of the thread
+  // (AtomicBoolean.compareAndSet twice decided only the first).  The atomic
+  // model reads its intent back at its own finish.
+  if (!intent->model) clear_intent();
 }
 
 void UnsafeAccess::update_shadow(const Access &access, Expression *value,

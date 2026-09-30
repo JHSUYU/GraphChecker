@@ -156,6 +156,8 @@ public:
   }
 
 private:
+  // Clears a caller's capture its write has used.
+  static void consume(Intent *intent);
   static void update_shadow(const Access &access, Expression *value,
                             const SharedFieldVersions::ConcreteBits &stored,
                             oop stored_reference);
