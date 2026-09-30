@@ -449,9 +449,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
   dropped it raises nothing (no refusal, side condition or gap); an object the VM named
   (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a whole value is asked
-  (`SmtLowering#whole`: a join, a published expression, a stated value) or a reference is; an
-  operator asks for its own operands, and a named container there is its state, at its class's
-  sort (`Host#state`: that object's own state root, `container__`);
+  (`SmtLowering#whole`: a join, a published expression, a stated value) or a reference is (a
+  comparison asks a named operand at the other's sort, on either side, `#binary`); an operator
+  asks for its own operands, and a named container there is its state, at its class's sort
+  (`Host#state`: that object's own state root, `container__`);
 - `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the

@@ -3053,9 +3053,18 @@ public final class SmtLowering {
         if (leftExpression == null || leftExpression.isJsonNull()) {
             return unary(expression, operator, origin);
         }
-        Term left = dispatch(leftExpression, null, origin + ":left");
-        Term right = dispatch(expression.get("_right"), left.sort,
-                origin + ":right");
+        // One operand is asked at the other's sort; a named object is the
+        // one asked, on either side (an identity beside a reference).
+        JsonElement rightExpression = expression.get("_right");
+        Term left;
+        Term right;
+        if (named(leftExpression) && !named(rightExpression)) {
+            right = dispatch(rightExpression, null, origin + ":right");
+            left = dispatch(leftExpression, right.sort, origin + ":left");
+        } else {
+            left = dispatch(leftExpression, null, origin + ":left");
+            right = dispatch(rightExpression, left.sort, origin + ":right");
+        }
         // A JVM reference comparison against the integer 0 is a null test.
         if (left.sort != right.sort && right.isZero()
                 && left.sort == Sort.REF) {

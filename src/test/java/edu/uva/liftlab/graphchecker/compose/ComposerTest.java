@@ -2220,6 +2220,32 @@ public class ComposerTest {
     }
 
     /**
+     * A reference compared with an object the VM named is an identity
+     * test whichever side the object is on.
+     */
+    @Test
+    public void aNamedObjectBesideAReferenceIsItsIdentityOnEitherSide() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("r", VmTermLowering.Sort.REF);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        JsonObject reference = symbol("r", "Ljava/lang/Object;");
+        JsonObject named = symbol("M_L'java/util/HashMap'_3",
+                "java/util/HashMap");
+        String left = lowering.dispatch(binary("==", reference, named),
+                VmTermLowering.Sort.BOOL, "test").text;
+        String right = lowering.dispatch(binary("==", named, reference),
+                VmTermLowering.Sort.BOOL, "test").text;
+        lowering.end();
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        assertTrue(left, left.startsWith("(= r identity__"));
+        assertEquals(left, right.replaceFirst("^\\(= (\\S+) r\\)$",
+                "(= r $1)"));
+    }
+
+    /**
      * What another writer of the reference may have handed the reader, by
      * variant: a map mutated after its store by a writer concurrent with the
      * reader is each state the reader could have seen, chosen by nested
