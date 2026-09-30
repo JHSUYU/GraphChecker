@@ -1380,13 +1380,9 @@ public final class ConcolicScheduler {
                     .containsValue(field);
         }
 
-        /** Whether one clock cell is admitted, for tests. */
-        boolean declares(String name) {
-            return clocks.containsKey(name);
-        }
-
         /** The tick, in nanoseconds, of the clock whose cell this action
-         *  names ({@link #names}' cells), or 0 when it names none. */
+         *  names -- its port or any of {@link ConcolicScheduler#actionCells}
+         *  (including the landing local) --, or 0 when it names none. */
         private long clockNanos(JsonObject action) {
             Long tick = clocks.get(actionPort(action));
             for (String cell : actionCells(action)) {
@@ -1394,19 +1390,6 @@ public final class ConcolicScheduler {
                 tick = clocks.get(cell);
             }
             return tick == null ? 0L : tick;
-        }
-
-        /** Whether a name set covers this action's port or any of {@link
-         *  ConcolicScheduler#actionCells} (including the landing local).  Trap:
-         *  a narrower test misses a name for the accessor's return while the
-         *  port names the leaf field. */
-        private static boolean names(Set<String> names, JsonObject action) {
-            if (names.isEmpty()) return false;
-            if (names.contains(actionPort(action))) return true;
-            for (String cell : actionCells(action)) {
-                if (names.contains(cell)) return true;
-            }
-            return false;
         }
 
         /** Soot's own proofs that one dataflow edge is a pure rename. */
