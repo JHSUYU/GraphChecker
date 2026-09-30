@@ -833,7 +833,7 @@ public final class ClaimPolicy {
      * roots; else the claim is about the recording, not a pairing.  No seed
      * path: false.
      */
-    private static boolean seedDisjunctUnsat(
+    static boolean seedDisjunctUnsat(
             Composer.Composition composition, Z3 solver) {
         String seed = composition.seedSessionId();
         if (seed == null) return false;

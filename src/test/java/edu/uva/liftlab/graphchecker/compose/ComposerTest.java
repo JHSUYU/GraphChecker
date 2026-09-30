@@ -1133,6 +1133,34 @@ public class ComposerTest {
     //    attested arm delivers is refused, never pinned to one.
     // ------------------------------------------------------------------
 
+    /**
+     * A session with two target rows at the anchor is two paths, of one
+     * path id.  The seed's are asked one at a time
+     * (ClaimPolicy#seedDisjunctUnsat): asserted together, two selectors
+     * contradict the partition and read "unsat" whatever the roots, and
+     * named by their path they name one label twice, which z3 refuses.
+     */
+    @Test
+    public void theSeedsPathsAreAskedEachAlone() throws Exception {
+        Z3 solver = solver();
+        for (Object[] row : new Object[][]{
+                {"true", false},    // each path is sat: not unsat
+                {"false", true}}) { // each path is unsat
+            Path iteration = folder.newFolder("seed-" + row[0]).toPath();
+            Session seed = new Session(iteration, "s0", false);
+            seed.target((String) row[0], true, true);
+            seed.target((String) row[0], true, true);
+            seed.write();
+            Composer.Composition composition = compose(iteration, 4);
+            assertEquals("two target rows, two paths", 2,
+                    composition.disjuncts().size());
+            assertEquals("phi " + row[0], row[1],
+                    ClaimPolicy.seedDisjunctUnsat(composition, solver));
+            assertTrue("z3 read every question: " + solver.errors(),
+                    solver.errors().isEmpty());
+        }
+    }
+
     @Test
     public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
         Path iteration = folder.newFolder("arrivals").toPath();
