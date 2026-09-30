@@ -305,7 +305,8 @@ public final class RowRuntime {
                             + " the staged expression's");
         }
         // CONFIRM (b): compared with the model's producer, never enforced.
-        String mismatch = Confirmation.attached(endpoint, producer);
+        String mismatch = Confirmation.attached(endpoint, producer, null,
+                null);
         if (!mismatch.isEmpty()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, endpoint.id(),
                     mismatch);
@@ -363,8 +364,10 @@ public final class RowRuntime {
                              String messageKey, Hole hole, String symbol,
                              String javaType, String arrival,
                              boolean answered, String answeredValue) {
-        // CONFIRM (b): compared with the model's producer, never enforced.
-        String mismatch = Confirmation.attached(endpoint, producer);
+        // CONFIRM (b): compared with the model's producer, message and
+        // value, never enforced.
+        String mismatch = Confirmation.attached(endpoint, producer,
+                messageKey, arrival);
         if (!mismatch.isEmpty()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, endpoint.id(),
                     mismatch);

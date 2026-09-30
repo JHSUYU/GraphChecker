@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh <case-dir> <case-id> build|config|validate|campaign [args...]
+# run.sh <case-dir> <case-id> build|config|validate|slice|record|campaign [args...]
 #
 # The one launcher: the case's declarations become the campaign's
 # environment, and run_engine.sh runs the case's workflow.properties.

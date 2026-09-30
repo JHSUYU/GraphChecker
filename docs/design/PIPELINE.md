@@ -183,7 +183,11 @@ end and the witness stop alike): admission ends (`ConcolicRegionRuntime#endAdmis
 starts after it), live activations settle, the run totals close the session's rows (a closed
 `SessionPublisher` writes nothing more), and only then the VM session closes. Cluster threads
 outlive the test, and a region started after the close would open a fresh VM session in which
-every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
+every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`). The run has one end: the first
+of the two to begin it ends the run, and the other waits for its exit; the run totals are
+published whole before any caller of them returns (SOLR-18413 r8: the declared update's throw
+failed the test while its witness stop ran, and the test closed the session and exited while the
+verdict was still being written).
 
 A focused replay ends at its witness: when the focus row's declared occurrence publishes a target row
 that observed the fatal (`ConcolicResultPublisher#concludeAtWitness`), admission ends, its schedule
@@ -363,7 +367,11 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   run only, nested slots closed the same way, so it moves only with the roots and clocks the replay
   plants (SOLR-18413: the leader parses a routing rule's expiry in its state watcher, and the expiry
   is the Overseer's clock plus the timeout); with no such arm it is pinned to its recorded arrival.
-  Another run's arrival never binds it.
+  Another run's arrival never binds it. A codec's hole (WIRE-CODEC) is a handoff like any other: its
+  arms are the exports of its own message and hole at the producer endpoint (`Arms#sameMessage`: the
+  export's `messageKey` and hole are the attach's `correlationId` and hole), bound by COMPOSE's one
+  hole-arm rule (`VmTermLowering#holeArm`, §8) over the query's names, and a relay's operand, the
+  upstream hole's symbol, is a nested slot.
 - READ: the eligible writers (`Arms.stateArms`) become one Bool selector each (`wchoice_*`,
   exactly one); no writer: pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A
   container state behind a guard is one variable at the sort its writers deliver.
@@ -385,7 +393,11 @@ an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest 
 z3 runs with `solver_timeout_ms`. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
 `NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
 read back by root id, the flipped path's clocks as skews (`model − reading`; one outside a Java long
-refuses), controls as answers keyed by attach endpoint id. A model that assigns roots, all at their
+refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#answer`: a String
+control -- a codec's STR hole -- as its JSON string literal, which the replay plants verbatim; one
+whose model value is no string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
+(an arrival, a read's `concreteValue`, a root) is a literal of the sort its variable is declared at
+by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A model that assigns roots, all at their
 recorded values, with no answer and no moved clock, is refused (`NOT_ADMITTED`: it asks for the seed
 replay). The parent world is overlaid (model wins) and its flips inherited. Every assigned root must
 have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`). The worker writes
@@ -517,11 +529,27 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
 Any refusal drops the path and is filed with its own class (an open lowering refusal is a
 DIAGNOSTIC `UNSTATED_VALUE`).
 
-Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id; the eligible senders are the
+Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id --
+a codec hole's is its message key, so the N readers of one stored version, and one decode read
+twice, are one message under one selector; the eligible senders are the
 sessions with an attested arm at every leaf of the message, whose world's flip set contains or is
 contained in the path's; one `message_arm__` selector per sender (identical arm bodies share one),
 exactly one, each arm closed like a path in its own session (producer prefix before the delivery, its
-P3 closure, nested families to depth 16). A message no session can send drops the path. A path's
+P3 closure, nested families to depth 16). A message no session can send drops the path. **A codec's
+hole** (WIRE-CODEC §6.1, §6.3) is bound by `VmTermLowering#holeArm`, never by plain equality: its
+symbol is declared at the DECODED leaf's sort (the attach's `javaType`, also in
+`Composer#attestedArrival`), and the arm is the operand the producer's export cut out of its leaf
+(`ExportRow#javaType` its sort) -- equal when the sorts agree, an integral widened by Java's rule
+(its range inside the hole's), the canonical rendering read back for a String operand of an
+integral (`(= (java_int_to_string v) s)` within the hole's range) or a boolean hole; a narrowing
+(`HoleNarrowed`) or any other change of sort, a float read back as a double included
+(`HoleSortChanged`), is refused `UNSTATED_VALUE` by name; an arm delivering Java null is
+`CODEC_MISMATCH` `NULL_LEAF`; a String operand that may be null holds only where it is not, and one
+whose nullness nothing states is refused (`JavaStringNullnessUnknown`). A relay's operand is the
+upstream hole's symbol, closed as a nested family (SOLR-18413: the leader's `n2` is the Overseer's
+`n1`, which is the overseer's clock plus the timeout). Each hole an arm binds is noted with whether
+its value rests on a clock (`ComposedFamilies.BoundHole`: a CLOCK root the delivered value reaches,
+or a nested hole that does), for CONFIRM. A path's
 families (message and state) are all or nothing: their named assertions, arm choices and families
 are stated as they are made and taken back with a refused path (`ComposedFamilies#discard`,
 `SmtLowering#retract`), so the next path, composed at the ordinal a refused one left free, names
@@ -661,7 +689,11 @@ ClaimPolicy held outcome 0 under (clock pins `clock_pinned__*`, recorded pairing
 with the blocker named when the claim is blocked or there is no path, and `(check-sat)`.
 `candidate_composition_manifest.json`: the `CompositionManifest` fields plus `finalStatus`
 (`FINAL_READY` | `FINAL_REFUSED`), `finalStatusRefusals`, `gaps` and `solver` (§9). `claim.json`:
-`{kind CLAIM, anchor, claim, solverRuns, seedSessionId, valuations, gaps}`, what CONFIRM reads.
+`{kind CLAIM, anchor, claim, solverRuns, seedSessionId, valuations, gaps}`, what CONFIRM reads; a
+selected arm binding codec holes states `holeTexts`, consumer endpoint id -> the model's value of
+the hole as the text it decodes to (an integral's decimal, a boolean's `true`/`false`, a String's
+characters; none for a char or a floating value), for every hole whose value rests on no clock through the valuation's selected arms
+(`ComposedFamilies#holeTexts`; a replay reads its clocks afresh).
 
 ## 9. SOLVE and DECIDE: `compose.ClaimPolicy.decide`
 
@@ -670,7 +702,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
 2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors,
-   the nested state selectors a state arm's stores are chosen among (§8) and clock cells; a selected
+   the nested state selectors a state arm's stores are chosen among (§8), clock cells and the codec
+   holes the arms bind (`Composition#holeSymbols`); a selected
    state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →
    `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
    An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
@@ -742,7 +775,9 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits
   for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
-  as that arm's session paired it), `STATE` per read of the anchor's join closure (each reached
+  as that arm's session paired it; a codec hole's also with `messageKey`, the store version the arm's
+  message was when its key is a store's, `<transport> <path>@<version>`, and `value`, the arm's
+  `holeTexts` entry), `STATE` per read of the anchor's join closure (each reached
   occurrence's reads before its cutoff, the anchor's before its target seq) at a location the
   selected path's fatal rests on (its manifest `restsOn`: `Composer`'s constraint independence of
   phi and the roots alone, without the locations a family merely binds: a read elsewhere holds no
@@ -756,7 +791,8 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   read), at a read that is no read of the closure, or naming a write the session does not state
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
-  `Confirmation` compares WIRE at the attach and STATE at close, and holds each `ORDER` activation's
+  `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, and for a codec
+  hole the message key and the decoded text the mint states), STATE at close, and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
   mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
   are not read by the runtime. A CONFIRM run (`FocusedReplay.confirming`: its obligation flips

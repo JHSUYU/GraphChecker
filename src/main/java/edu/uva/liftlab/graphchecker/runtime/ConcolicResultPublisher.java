@@ -278,16 +278,20 @@ final class ConcolicResultPublisher {
         }
     }
 
-    /** Publishes what only the end of a run can state, once per JVM. */
+    /**
+     * Publishes what only the end of a run can state, once per JVM; a
+     * second caller returns only once the first has published it all, the
+     * verdict among it.
+     */
     static void publishRunTotals() {
         synchronized (RUN_TOTALS_LOCK) {
             if (runTotalsPublished) return;
             runTotalsPublished = true;
+            configuration().publishUnansweredAddresses();
+            CodecRuntime.publishTotals();
+            // Called from every exit path: a halt runs no shutdown hook.
+            RowRuntime.closeSession();
         }
-        configuration().publishUnansweredAddresses();
-        CodecRuntime.publishTotals();
-        // Called from every exit path: a halt runs no shutdown hook.
-        RowRuntime.closeSession();
     }
 
     private static boolean runTotalsPublished;
