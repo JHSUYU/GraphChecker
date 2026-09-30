@@ -230,7 +230,8 @@ void SessionSymbolicHeap::forget_container_state(oop container) {
 }
 
 void SessionSymbolicHeap::write_array_element(arrayOop array, int index,
-                                        Expression *expression) {
+                                        Expression *expression,
+                                        const ElementWord &word) {
   if (array == NULL || expression == NULL || index < 0
       || index >= array->length()) return;
   SymArr *symbolic = get_or_alloc_sym_array(array);
@@ -239,7 +240,8 @@ void SessionSymbolicHeap::write_array_element(arrayOop array, int index,
   arguments.push_back(new ConExpression((jint)index));
   arguments.push_back(expression);
   Expression *next = new ContainerExpression(
-      "INDEXED", "WRITE", container_state(array, "INDEXED"), arguments);
+      "INDEXED", "WRITE", container_state(array, "INDEXED"), arguments,
+      T_OBJECT, std::string(), NULL, word);
   set_container_state(array, next);
   symbolic->store();
 }
@@ -473,16 +475,19 @@ bool SessionSymbolicHeap::requires_detached_object_shadow(oop obj) const {
 }
 
 SymArr *SessionSymbolicHeap::get_or_alloc_sym_array(arrayOop array,
-                                                    Expression *length_exp) {
+                                                    Expression *length_exp,
+                                                    bool named) {
   {
     HeapLock guard(this);
     SymArr *existing = find_sym_array_locked(array);
     if (existing != NULL) return existing;
   }
-  return this->alloc_sym_array(array, length_exp);
+  return this->alloc_sym_array(array, length_exp, named);
 }
 
-SymArr *SessionSymbolicHeap::alloc_sym_array(arrayOop array, Expression *length_exp) {
+SymArr *SessionSymbolicHeap::alloc_sym_array(arrayOop array,
+                                             Expression *length_exp,
+                                             bool named) {
   if (array == NULL) return NULL;
   // Same shape as alloc_sym_inst: build first, then publish under one lock
   // that covers both the header word and the store.  An array shadow needs no
@@ -496,6 +501,7 @@ SymArr *SessionSymbolicHeap::alloc_sym_array(arrayOop array, Expression *length_
   // }
 
   SymArr *sym_arr = new SymArr(sym_rid, length_exp);
+  sym_arr->set_named(named);
 
   SymArr *winner = NULL;
   {

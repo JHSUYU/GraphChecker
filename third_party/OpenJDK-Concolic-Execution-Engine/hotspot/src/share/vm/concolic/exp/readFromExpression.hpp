@@ -22,8 +22,12 @@
  * publishing them cost one full writer DAG per unobserved version.
  *
  * Whether the recorded writer set was complete is separate coverage metadata
- * (`writerSetComplete`) and is unchanged: it still blocks a closed/final
- * conclusion, and it never alters which version this node names.
+ * (`writerSetComplete`): it blocks alternatives and closed conclusions, and
+ * never alters which version this node names.  Whether this one read is
+ * verified is its own member (`observedExact`): the word it loaded equals the
+ * word its observed version stored.  An exact read joins its version even at
+ * an incomplete location; a reference or container read states no word and
+ * is never exact.
  */
 class ReadFromExpression : public Expression {
 public:
@@ -32,7 +36,8 @@ public:
                      Expression *observed_value,
                      const std::string &java_type, jlong read_event_id,
                      sym_rid_t owner, int slot, const char *location_kind,
-                     bool writer_set_complete, const ReturnedValue &returned,
+                     bool writer_set_complete, bool observed_exact,
+                     const ReturnedValue &returned,
                      const std::string &site_class = std::string(),
                      const std::string &site_method = std::string(),
                      const std::string &site_descriptor = std::string(),
@@ -65,6 +70,7 @@ private:
   sym_rid_t _owner;
   int _slot;
   bool _writer_set_complete;
+  bool _observed_exact;
   // What the read returned.  A read joins to the expression of the write it
   // observed, and pins to this when it cannot: the write does not lower, or
   // the writer set is incomplete (an UNOBSERVED version).  SOLR-18406's read

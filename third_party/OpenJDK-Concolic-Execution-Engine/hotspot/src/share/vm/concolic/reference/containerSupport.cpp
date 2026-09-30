@@ -2,11 +2,14 @@
 
 #include "concolic/concolicMngr.hpp"
 #include "classfile/vmSymbols.hpp"
+#include "oops/typeArrayKlass.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/consumerBoundaryExpression.hpp"
 #include "concolic/exp/readFromExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
+#include "concolic/globalSymbolicSession.hpp"
+#include "concolic/sessionSymbolicHeap.hpp"
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/reference/symbolicArray.hpp"
@@ -666,7 +669,7 @@ void ContainerSupport::abandon_state(oop container,
 bool ContainerSupport::mark_state_gap(oop container, const char *reason) {
   if (!SharedFieldVersions::has_carriers()) return false;
   SharedFieldVersions::Location location = state_location(container);
-  return SharedFieldVersions::mark_writer_set_incomplete(location);
+  return SharedFieldVersions::mark_writer_set_incomplete(location, reason);
 }
 
 ContainerSupport::StateQuery ContainerSupport::query_state(
@@ -713,7 +716,8 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
   answer.expression = SharedFieldVersions::build_read_from(
       plan, location, type_name,
       new ContainerExpression(shape, operation, plan.observed.value,
-                              arguments, result_type, type_name));
+                              arguments, result_type, type_name),
+      ReturnedValue());
   return answer;
 }
 
@@ -730,8 +734,11 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
 // before.
 Expression *ContainerSupport::concrete_value(oop value) {
   if (value == NULL) return SymbolExpression::get(Sym_NULL);
+  // The session heap, not the thread context: a thread outside every region
+  // names what it stores into a tracked location too (D4).
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
   if (value->is_array()) {
-    SymArr *array = ConcolicMngr::ctx->find_sym_array((arrayOop)value);
+    SymArr *array = heap->find_sym_array((arrayOop)value);
     if (array != NULL) {
       return array->get_ref_exp() != NULL
           ? array->get_ref_exp()
@@ -741,7 +748,7 @@ Expression *ContainerSupport::concrete_value(oop value) {
     // A named array's version is 0, which is the version a shadow allocated
     // for it now would report: an unshadowed array has no recorded mutation
     // to have moved it on.
-    sym_rid_t named = ConcolicMngr::ctx->name_reference(value);
+    sym_rid_t named = heap->name_reference(value);
     return named == NULL_SYM_RID
         ? static_cast<Expression *>(new PlaceHolderSymbolExp(value))
         : static_cast<Expression *>(
@@ -766,12 +773,12 @@ Expression *ContainerSupport::concrete_value(oop value) {
     return SymPrimitive<jdouble>::get_exp_of(value);
   if (type == vmSymbols::java_lang_String())
     return SymString::get_exp_of(value);
-  SymInstance *identity = ConcolicMngr::ctx->find_sym_inst(value);
+  SymInstance *identity = heap->find_sym_inst(value);
   if (identity != NULL) return identity->get_or_create_ref_exp(value);
   // Named, not shadowed.  InstanceSymbolExp reads the identity straight out
   // of the header, so this is the same spelling the object's own shadow would
   // give it if it ever gets one -- the allocators adopt a named id.
-  sym_rid_t named = ConcolicMngr::ctx->name_reference(value);
+  sym_rid_t named = heap->name_reference(value);
   return named == NULL_SYM_RID
       ? static_cast<Expression *>(new PlaceHolderSymbolExp(value))
       : static_cast<Expression *>(new InstanceSymbolExp(value));
@@ -856,7 +863,8 @@ void ContainerSupport::constrain_position(
       position, size, allow_end ? op_le : op_lt, true));
 }
 
-bool ContainerSupport::recorded_element(SymArr *array, Expression *state,
+bool ContainerSupport::recorded_element(arrayOop heap_array, SymArr *array,
+                                        Expression *state,
                                         Expression *position, jint index,
                                         Expression **stored) {
   jint at = index;
@@ -868,7 +876,31 @@ bool ContainerSupport::recorded_element(SymArr *array, Expression *state,
   // The state itself, not what a consumer boundary around it delegates to:
   // the boundary is the cross-process provenance of every element.
   ContainerExpression *relation = state->as_container_expression();
-  return relation == state && relation->stored_at(at, stored);
+  ElementWord word;
+  if (relation != state || !relation->stored_at(at, stored, &word)) {
+    return false;
+  }
+  if (*stored == NULL || !word.stated) return true;
+  // The element must still hold what the write left: a write no hook saw
+  // (JNI, a muted store) made the log stale.  The heap then decides, as a
+  // concrete read, and the container's log, if it has one, is marked
+  // incomplete by name -- detected, never silently the stale value.
+  jlong held = 0;
+  if (heap_array->is_objArray()) {
+    oop element = objArrayOop(heap_array)->obj_at(at);
+    held = element == NULL ? 0 : (jlong) element->get_sym_rid();
+  } else {
+    held = SharedFieldVersions::element_bits(heap_array, at).bits;
+  }
+  if (held != word.bits) {
+    mark_state_gap(heap_array, "UNHOOKED_ELEMENT_WRITE");
+    *stored = NULL;
+    return true;
+  }
+  // A concrete store left exactly the heap's word: the element is concrete
+  // (a constant as an expression would read as symbolic downstream).
+  if (!word.symbolic) *stored = NULL;
+  return true;
 }
 
 void ContainerSupport::attach_result(oop result, Expression *expression,
@@ -880,13 +912,46 @@ void ContainerSupport::attach_result(oop result, Expression *expression,
     if (array != NULL) array->set_ref_exp(expression);
     return;
   }
-  SymInstance *instance =
-      ConcolicMngr::ctx->get_or_alloc_sym_inst(result);
+  // A JVM-wide object keeps no expression; it rides the result slot (item 5).
+  SymInstance *instance = jvm_shared_object(result) ? NULL
+      : ConcolicMngr::ctx->get_or_alloc_sym_inst(result);
   if (instance == NULL) return;
   instance->set_ref_exp(expression);
   instance->enable_demand_symbolic_fields();
   if (owner != NULL) {
     ConcolicMngr::ctx->alias_container(result, owner);
+  }
+}
+
+void ContainerSupport::publish_attached_state(oop destination,
+                                              Expression *attached) {
+  if (destination == NULL || attached == NULL) return;
+  SharedFieldVersions::Location location = state_location(destination);
+  if (location.is_valid()) {
+    SharedFieldVersions::publish_value(
+        location, attached, SharedFieldVersions::ConcreteBits(), NULL, true,
+        SharedFieldVersions::VERSION_STATE, "ATTACH");
+  }
+  if (!destination->is_array()) return;
+  // An array's tracked elements are locations of their own, read per
+  // element: each gets the attached state's element as a version, with the
+  // word the heap holds.
+  arrayOop array = arrayOop(destination);
+  std::vector<int> slots;
+  SharedFieldVersions::tracked_elements(array->get_sym_rid(), 0,
+                                        array->length(), &slots);
+  const BasicType element_type = array->is_typeArray()
+      ? TypeArrayKlass::cast(array->klass())->element_type() : T_OBJECT;
+  for (size_t index = 0; index < slots.size(); ++index) {
+    exp_list_t position;
+    position.push_back(new ConExpression((jint) slots[index]));
+    SharedFieldVersions::publish_held(
+        SharedFieldVersions::Location(array->get_sym_rid(), slots[index],
+            SharedFieldVersions::LOC_ARRAY_ELEMENT),
+        SharedFieldVersions::Cell(array, element_type),
+        new ContainerExpression("INDEXED", "READ", attached, position,
+                                element_type),
+        NULL, SharedFieldVersions::VERSION_WRITE);
   }
 }
 

@@ -41,9 +41,11 @@ void constrain_position(const char *shape, Expression *state,
 // scanned the NameNode's 2^21-bucket inode map, which an earlier region had
 // stored into under symbolic guards, and built a READ, its index and an
 // `== null` condition for every untouched bucket, a million nodes a second,
-// until the replay JVM passed 24 GB.
-bool recorded_element(SymArr *array, Expression *state, Expression *position,
-                      jint index, Expression **stored);
+// until the replay JVM passed 24 GB.  A recorded write that stored a
+// concrete value, or whose word the element no longer holds (a write no hook
+// saw; the container's log is then marked incomplete), answers concrete too.
+bool recorded_element(arrayOop heap_array, SymArr *array, Expression *state,
+                      Expression *position, jint index, Expression **stored);
 void attach_result(oop result, Expression *expression, oop owner = NULL);
 // True for a call whose body the engine can follow instead of summarizing:
 // a constructor, or a method that only reads its container (its result is
@@ -243,6 +245,10 @@ jlong publish_state(oop container, Expression *new_state,
 // exploration but cannot close coverage.  `reason` names the gap in the
 // evidence report. Returns true when a selected location was marked.
 bool mark_state_gap(oop container, const char *reason);
+// An attach replaced `destination`'s whole state with `attached`: published
+// as its STATE_ATTACH version, and for an array as a version of each tracked
+// element (D7).
+void publish_attached_state(oop destination, Expression *attached);
 // An operation the model cannot follow reached a container: its writer set is
 // marked incomplete (mark_state_gap) and its modeled state is dropped, so it
 // runs concretely until a modeled operation roots it again.  The thread's

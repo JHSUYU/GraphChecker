@@ -369,6 +369,10 @@ jlong ConcolicMngr::attachExpression(
     // its payload.  Later operations still use `attached` as their receiver,
     // so the provenance marker remains in the container expression chain.
     ctx->set_container_state(destination, attached);
+    // And it is a write of the container's whole state, published as one
+    // (D7): a reader of a container whose log had already begun resolved to
+    // the state before the attach.
+    ContainerSupport::publish_attached_state(destination, attached);
   } else {
     instance->set_sym_exp(field.offset(), attached);
     instance->mark_semantic_expression();
@@ -395,13 +399,15 @@ jlong ConcolicMngr::attachExpression(
     // Folded outside every engine lock, as the store's concurrency contract
     // requires; the same guard a putfield of this value would publish.
     Expression *guard = ctx->path_guard();
-    // The attach names the value the field holds, so that word is the one
-    // this version stored.
-    SharedFieldVersions::publish_value(
-        location, attached,
-        SharedFieldVersions::field_bits(owner(), field.offset(),
-                                        field.field_type()),
-        guard, true, SharedFieldVersions::VERSION_WRITE);
+    // The attach names the value the field holds, so that word, read under
+    // the location's stripe, is the one this version stored.
+    SharedFieldVersions::publish_held(
+        location,
+        SharedFieldVersions::Cell(
+            owner(), field.field_type(),
+            SharedFieldVersions::wrapper_value_type(field.signature())
+                != T_ILLEGAL),
+        attached, guard, SharedFieldVersions::VERSION_WRITE);
   }
   ctx->set_pc_admitted(true);
   for (int index = 0; index < pause_depth; ++index) {

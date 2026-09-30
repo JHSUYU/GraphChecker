@@ -93,6 +93,17 @@ public:
     return callee_method->result_type();
   }
 
+  // Whether the finishing call's result can be read at all.  The finish hook
+  // runs inside pop_zero_frame; a native callee's primitive result is then
+  // still in native_entry's C local (it is pushed after the pop), so the
+  // popped frame's stack holds whatever was there before.  Only an oop
+  // result is reachable, in the frame's oop_temp (review1 #3).
+  bool result_readable() {
+    if (!_callee_istate->method()->is_native()) return true;
+    BasicType type = get_result_type();
+    return type == T_VOID || type == T_OBJECT || type == T_ARRAY;
+  }
+
   // A result starts in the slot just above the callee's top of stack
   // whatever its width: a long or double is one VMJavaVal64 at &stack[1],
   // exactly where the bytecodes' STACK_LONG(-1) finds it.  Reading at
@@ -101,6 +112,11 @@ public:
   template<class T>
   T get_result(BasicType type) {
     assert(type2size[type] == 1 || type2size[type] == 2, "what?");
+    guarantee(result_readable(), "a native's primitive result is not "
+              "reachable when its frame is popped");
+    if (_callee_istate->method()->is_native()) {
+      return *(T *) _callee_istate->oop_temp_addr();
+    }
     return *(T *) (_callee_istate->stack() + 1);
   }
 

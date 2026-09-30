@@ -41,6 +41,8 @@ public:
                                   BasicType type, int locals_offset);
 
   static Expression *get_exp_of(oop obj);
+  static void prepare_mutation(MethodSymbolizerHandle &handle);
+  static Expression *mutated(MethodSymbolizerHandle &handle);
 
   static void init_register_class(MethodSymbolizer* m_symbolizer);
 

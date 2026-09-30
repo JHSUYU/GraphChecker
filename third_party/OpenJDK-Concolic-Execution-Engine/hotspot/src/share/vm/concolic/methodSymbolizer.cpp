@@ -215,10 +215,13 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
     BasicType basicType = primitive_target(_handle.get_callee_holder_name());
     const std::string& callee_holder_name = _handle.get_callee_holder_name();
 
-    if (disabled_class(callee_holder_name)) {
+    if (disabled_class(callee_holder_name) || !_handle.result_readable()) {
       // An observation sink returns a concrete value.  In particular, never
       // manufacture a MethodExpression that would reconnect a formatted log
-      // string to its symbolic application argument.
+      // string to its symbolic application argument.  A native's primitive
+      // result cannot be read here (MethodSymbolizerHandle::result_readable),
+      // so it is concrete too: no model mints a symbol for a word it did not
+      // see.
       exp = NULL;
     } else if (basicType != T_ILLEGAL) {
       exp = primitive_finish_method_helper(_handle, basicType);
@@ -405,12 +408,41 @@ MethodReturnSymbolExp::MethodReturnSymbolExp(MethodSymbolizerHandle &handle) {
   this->finalize(buf, ss.size());
   _returned = SharedFieldVersions::returned_value(result_word(handle, type),
                                                   NULL);
+  // Taken before the MethodExpression beside it consumes the list.
+  ResourceMark rm;
+  Method *callee = handle.get_callee_method();
+  _holder = handle.get_callee_holder_name();
+  _name = handle.get_callee_name();
+  _descriptor = callee == NULL ? std::string()
+      : std::string(callee->signature()->as_C_string());
+  _arguments = handle.get_param_list();
 }
 
 void MethodReturnSymbolExp::serialize_internal(
     rapidjson::Writer<rapidjson::StringBuffer> &writer) {
   SymbolExpression::serialize_internal(writer);
   _returned.serialize(writer);
+  writer.Key("call");
+  writer.StartObject();
+  writer.Key("holder");
+  writer.String(_holder.c_str());
+  writer.Key("name");
+  writer.String(_name.c_str());
+  writer.Key("descriptor");
+  writer.String(_descriptor.c_str());
+  writer.Key("arguments");
+  writer.StartArray();
+  for (size_t index = 0; index < _arguments.size(); ++index) {
+    if (_arguments[index] == NULL) {
+      writer.Null();
+    } else {
+      // A child like any other node's: a reference into the expression
+      // table under an artifact scope, the node itself otherwise.
+      _arguments[index]->serialize(writer);
+    }
+  }
+  writer.EndArray();
+  writer.EndObject();
 }
 
 #endif

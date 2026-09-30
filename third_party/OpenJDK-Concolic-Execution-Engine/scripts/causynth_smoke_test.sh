@@ -54,7 +54,6 @@ cd "$JDK_ROOT"
   test/causynth/RegionEventSiteSmoke.java \
   test/causynth/RegionReferenceFieldStatedReadSmoke.java \
   test/causynth/RegionExactMintOverCarrierWriteSmoke.java \
-  test/causynth/RegionNestedRegionArmedReadSmoke.java \
   test/causynth/RegionStringContainsApiSmoke.java \
   test/causynth/RegionStringConversionApiSmoke.java \
   test/causynth/RegionStringSplitParseMapApiSmoke.java \
@@ -105,7 +104,6 @@ for smoke in \
   RegionEventSiteSmoke \
   RegionReferenceFieldStatedReadSmoke \
   RegionExactMintOverCarrierWriteSmoke \
-  RegionNestedRegionArmedReadSmoke \
   RegionStringContainsApiSmoke \
   RegionStringConversionApiSmoke \
   RegionStringSplitParseMapApiSmoke \

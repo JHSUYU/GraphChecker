@@ -29,10 +29,6 @@ bool ConsumerBoundaryExpression::is_guarded_reference_read() {
   return _expression->is_guarded_reference_read();
 }
 
-bool ConsumerBoundaryExpression::is_recorded_container_mutation() {
-  return _expression->is_recorded_container_mutation();
-}
-
 ContainerExpression *ConsumerBoundaryExpression::as_container_expression() {
   // Container users inspect the child's structural shape but keep this wrapper
   // as the state expression they pass into the next operation.  The anchor is

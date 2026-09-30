@@ -10,6 +10,24 @@
 class ElementWrites;
 
 /**
+ * What one INDEXED WRITE left in the heap, so a read that the chain decides
+ * can check that the element still holds it: a primitive's raw bits, or a
+ * reference's session id (0 for null).  A write no hook saw -- JNI, a muted
+ * store -- makes the log stale; the word is how a read finds out.
+ * `symbolic` says the stored value was an expression rather than the
+ * concrete word itself, which a read then returns as concrete.
+ * Unstated for a writer that knows no word: its value is taken as recorded.
+ */
+struct ElementWord {
+  bool symbolic;
+  bool stated;
+  jlong bits;
+  ElementWord() : symbolic(true), stated(false), bits(0) {}
+  ElementWord(bool is_symbolic, jlong word_bits)
+      : symbolic(is_symbolic), stated(true), bits(word_bits) {}
+};
+
+/**
  * One operation in an activation-local shadow container.
  *
  * The VM records Java semantics, not SMT syntax.  Nested expressions form the
@@ -43,14 +61,9 @@ class ContainerExpression : public Expression {
                       Expression *receiver, const exp_list_t &arguments,
                       BasicType result_type = T_OBJECT,
                       const std::string &java_type = std::string(),
-                      Expression *guard = NULL);
+                      Expression *guard = NULL,
+                      const ElementWord &word = ElementWord());
   virtual ~ContainerExpression();
-
-  // STATE names a container; every other operation is one the recorder
-  // watched happen to it.
-  virtual bool is_recorded_container_mutation() {
-    return _operation != "STATE";
-  }
 
   virtual ContainerExpression *as_container_expression() { return this; }
 
@@ -63,12 +76,13 @@ class ContainerExpression : public Expression {
   // What a read at the concrete `position` of this state returns, when the
   // chain alone decides it: the state is a Java array's STATE root with a
   // constant length, or a WRITE at a concrete position over such a state.
-  // `*stored` is then the value the newest WRITE at `position` stored, or
-  // NULL when none did and the element is the root's.  A WRITE at a symbolic
-  // position may have replaced any element, so no state above one decides.
-  // Decided at construction and answered from the one log the chain's WRITEs
-  // share, so a read never walks the chain however long it is.
-  bool stored_at(jint position, Expression **stored) const;
+  // `*stored` is then the value the newest WRITE at `position` stored, and
+  // `*word` what it left in the heap, or NULL when none did and the element
+  // is the root's.  A WRITE at a symbolic position may have replaced any
+  // element, so no state above one decides.  Decided at construction and
+  // answered from the one log the chain's WRITEs share, so a read never
+  // walks the chain however long it is.
+  bool stored_at(jint position, Expression **stored, ElementWord *word) const;
 
   const std::string &get_operation() const { return _operation; }
   const std::string &get_shape() const { return _shape; }
@@ -76,17 +90,13 @@ class ContainerExpression : public Expression {
   Expression *get_guard() const { return _guard; }
   const exp_list_t &get_arguments() const { return _arguments; }
 
-  // This same relation, applied to a different receiver.
-  //
-  // An expression node is immutable once constructed (see expression.hpp), so
-  // re-rooting a recorded mutation history onto a stated base rebuilds the
-  // chain rather than editing it.  Everything but the receiver is copied,
-  // including the guard: a conditionally recorded removal is still
-  // conditional when it stands on a different base.
-  ContainerExpression *rebuilt_on(Expression *receiver) const;
-
   virtual void serialize_internal(
       rapidjson::Writer<rapidjson::StringBuffer> &writer);
+
+ private:
+  // A copy would share the log and free it twice.
+  ContainerExpression(const ContainerExpression &);
+  ContainerExpression &operator=(const ContainerExpression &);
 };
 
 #endif  // ENABLE_CONCOLIC

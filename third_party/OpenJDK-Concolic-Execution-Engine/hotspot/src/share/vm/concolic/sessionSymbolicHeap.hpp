@@ -4,6 +4,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/defs.hpp"
+#include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/expression.hpp"
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicInstance.hpp"
@@ -205,12 +206,19 @@ public:
   SymInstance *find_sym_inst(oop obj) const;
   bool requires_detached_object_shadow(oop obj) const;
 
-  SymArr *get_or_alloc_sym_array(arrayOop array, Expression *length_exp = NULL);
-  SymArr *alloc_sym_array(arrayOop array, Expression *length_exp = NULL);
+  // `named`: the shadow exists only because a load or store named the array
+  // (SymArr::named).  Decided by the call that allocates the shadow, under
+  // the heap lock, and by no later caller: a symbolization that cleared it
+  // must not see a racing load set it back.
+  SymArr *get_or_alloc_sym_array(arrayOop array, Expression *length_exp = NULL,
+                                 bool named = false);
+  SymArr *alloc_sym_array(arrayOop array, Expression *length_exp = NULL,
+                          bool named = false);
   SymArr *get_sym_array(sym_rid_t sym_rid);
   SymArr *find_sym_array(arrayOop array_obj) const;
 
-  void write_array_element(arrayOop array, int index, Expression *expression);
+  void write_array_element(arrayOop array, int index, Expression *expression,
+                           const ElementWord &word = ElementWord());
   Expression *track_container(oop container, const char *shape,
                               const std::string &prefix);
   Expression *container_state(oop container, const char *shape);

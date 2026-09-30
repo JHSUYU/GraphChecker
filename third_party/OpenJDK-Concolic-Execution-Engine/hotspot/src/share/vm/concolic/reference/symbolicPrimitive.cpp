@@ -4,6 +4,13 @@
 #include "symbolicString.hpp"
 #include "concolic/exp/stringExpression.hpp"
 #include "concolic/exp/methodExpression.hpp"
+#include "classfile/javaClasses.hpp"
+#include "classfile/symbolTable.hpp"
+#include "classfile/systemDictionary.hpp"
+#include "runtime/fieldDescriptor.hpp"
+#include "runtime/orderAccess.inline.hpp"
+#include "concolic/globalSymbolicSession.hpp"
+#include "concolic/sessionSymbolicHeap.hpp"
 
 template <>
 const char *SymPrimitive<jchar>::ARRAY_TYPE_NAME = "[Ljava/lang/Character;";
@@ -63,7 +70,8 @@ template <class T> Expression *SymPrimitive<T>::get_exp_of(oop obj) {
   assert(obj->klass()->name()->equals(TYPE_NAME), "should be");
   Expression *exp;
   if (obj->is_symbolic()) {
-    SymInstance *sym_inst = ConcolicMngr::ctx->get_sym_inst(obj);
+    SymInstance *sym_inst =
+        GlobalSymbolicSession::heap()->get_sym_inst(obj->get_sym_rid());
     exp = sym_inst->get_ref_exp();
     assert(exp != NULL, "NOT NULL");
     return exp;
@@ -290,9 +298,122 @@ template <> Expression * SymPrimitive<jdouble>::finish_method_helper(MethodSymbo
     return NULL;
 }
 
+namespace {
+
+// One JDK box cache: the holder class, its static `cache` array, and the
+// value its first entry boxes.  Resolved on first ask and kept: the classes
+// are the bootstrap loader's and never unload.
+struct BoxCache {
+  const char *holder;
+  const char *signature;
+  jlong low;
+  Klass *klass;
+  int offset;
+};
+
+BoxCache BOX_CACHES[] = {
+  { "java/lang/Integer$IntegerCache", "[Ljava/lang/Integer;", -128, NULL, -1 },
+  { "java/lang/Long$LongCache", "[Ljava/lang/Long;", -128, NULL, -1 },
+  { "java/lang/Short$ShortCache", "[Ljava/lang/Short;", -128, NULL, -1 },
+  { "java/lang/Byte$ByteCache", "[Ljava/lang/Byte;", -128, NULL, -1 },
+  { "java/lang/Character$CharacterCache", "[Ljava/lang/Character;", 0, NULL,
+    -1 },
+};
+
+BoxCache *cache_of(BasicType type) {
+  switch (type) {
+    case T_INT:   return &BOX_CACHES[0];
+    case T_LONG:  return &BOX_CACHES[1];
+    case T_SHORT: return &BOX_CACHES[2];
+    case T_BYTE:  return &BOX_CACHES[3];
+    case T_CHAR:  return &BOX_CACHES[4];
+    default:      return NULL;
+  }
+}
+
+// The static field `name` of `klass` holding `signature`, or -1.
+int static_offset(Klass *klass, const char *name, const char *signature) {
+  if (klass == NULL || !klass->oop_is_instance()) return -1;
+  // Probed, not created: a probe takes no reference, so none is released.
+  Symbol *field_name = SymbolTable::probe(name, (int) strlen(name));
+  Symbol *field_signature =
+      SymbolTable::probe(signature, (int) strlen(signature));
+  if (field_name == NULL || field_signature == NULL) return -1;
+  fieldDescriptor fd;
+  if (!InstanceKlass::cast(klass)->find_local_field(field_name,
+                                                     field_signature, &fd)
+      || !fd.is_static()) {
+    return -1;
+  }
+  return fd.offset();
+}
+
+bool cached_box(oop box, BasicType type, jlong value) {
+  BoxCache *cache = cache_of(type);
+  if (cache == NULL) return false;
+  if (cache->klass == NULL) {
+    // Not loaded yet means no entry of it exists yet either.
+    Symbol *name = SymbolTable::probe(cache->holder,
+                                      (int) strlen(cache->holder));
+    if (name == NULL) return false;
+    Thread *thread = Thread::current();
+    Klass *klass = SystemDictionary::find(name, Handle(), Handle(), thread);
+    if (klass == NULL || thread->has_pending_exception()) return false;
+    const int offset = static_offset(klass, "cache", cache->signature);
+    if (offset < 0) return false;
+    cache->offset = offset;
+    OrderAccess::release_store_ptr(&cache->klass, klass);
+  }
+  oop entries = cache->klass->java_mirror()->obj_field(cache->offset);
+  if (entries == NULL || !entries->is_objArray()) return false;
+  const jlong index = value - cache->low;
+  objArrayOop array = objArrayOop(entries);
+  return index >= 0 && index < array->length()
+      && array->obj_at((int) index) == box;
+}
+
+bool shared_boolean(oop box) {
+  static int true_offset = -1;
+  static int false_offset = -1;
+  Klass *klass = SystemDictionary::Boolean_klass();
+  if (true_offset < 0) {
+    true_offset = static_offset(klass, "TRUE", "Ljava/lang/Boolean;");
+    false_offset = static_offset(klass, "FALSE", "Ljava/lang/Boolean;");
+    if (true_offset < 0 || false_offset < 0) return false;
+  }
+  oop mirror = klass->java_mirror();
+  return mirror->obj_field(true_offset) == box
+      || mirror->obj_field(false_offset) == box;
+}
+
+} // anonymous namespace
+
+bool jvm_shared_object(oop obj) {
+  if (obj == NULL || obj->is_array()) return false;
+  if (obj->klass() == SystemDictionary::String_klass()) {
+    return OopUtils::is_java_string_interned(obj);
+  }
+  jvalue value;
+  const BasicType type = java_lang_boxing_object::get_value(obj, &value);
+  switch (type) {
+    case T_BOOLEAN: return shared_boolean(obj);
+    case T_BYTE:    return cached_box(obj, type, value.b);
+    case T_CHAR:    return cached_box(obj, type, value.c);
+    case T_SHORT:   return cached_box(obj, type, value.s);
+    case T_INT:     return cached_box(obj, type, value.i);
+    case T_LONG:    return cached_box(obj, type, value.j);
+    default:        return false;
+  }
+}
+
 template<class T>
 void
 SymPrimitive<T>::set_symbolic_field(oop obj, Symbol *fld_name, Symbol *fld_tp_sig, MethodSymbolizerHandle &handle) {
+  // A shared box keeps no expression: valueOf's value travels on the result
+  // slot (MethodSymbolizer::finish_method), which is where an unboxing reads
+  // it back.  Boolean.valueOf of a symbolic flag used to mark Boolean.TRUE for
+  // the whole JVM.
+  if (jvm_shared_object(obj)) return;
   Expression *exp = handle.get_param_list()[0];
   SymInstance *sym_inst = ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
   fieldDescriptor fd;

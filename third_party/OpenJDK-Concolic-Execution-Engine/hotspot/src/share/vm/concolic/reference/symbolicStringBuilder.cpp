@@ -30,12 +30,40 @@ std::map<std::string, bool> SymStrBuilder::init_skip_method_names() {
   // constructor as symbolic retains one dead expression per log message and
   // lets unrelated formatting dominate a bounded concolic session.
   map["<init>"] = false;
-  map["setLength"] = false;
   return map;
 }
 
+// The builder's mutators other than append.  Their bodies write the
+// builder's value/count, which this model does not follow (set_sym_exp
+// keeps nothing), so the builder's expression used to go stale: a setLength(0)
+// left the old content's concat standing for an empty builder.  Each is now
+// summarized over the builder's content -- a concat of substrings of it --
+// or, where no summary is exact, the expression is dropped and the next use
+// states the builder's concrete content (get_exp_of).
+static bool is_mutator(const std::string &name) {
+  return name == "insert" || name == "delete" || name == "deleteCharAt"
+      || name == "replace" || name == "setCharAt" || name == "setLength"
+      || name == "reverse" || name == "appendCodePoint";
+}
+
+// The concrete length of a builder: AbstractStringBuilder.count.
+static jint builder_length(oop builder) {
+  typeArrayOop value = OopUtils::java_string_to_char_array(builder);
+  if (value == NULL) return -1;
+  fieldDescriptor count;
+  if (OopUtils::get_fd_by_name(builder, "count", "I", count) == NULL) {
+    return -1;
+  }
+  return builder->int_field(count.offset());
+}
+
+static const char *ABSTRACT_BUILDER = "java/lang/AbstractStringBuilder";
+
 void SymStrBuilder::init_register_class(MethodSymbolizer *m_symbolizer) {
-  const char *const classes[] = { SymStrBuilder::TYPE_NAME, NULL };
+  // AbstractStringBuilder too: setLength and setCharAt are declared only
+  // there, so a call on a StringBuilder names that holder.
+  const char *const classes[] = { SymStrBuilder::TYPE_NAME, ABSTRACT_BUILDER,
+                                  NULL };
   m_symbolizer->register_model(classes, invoke_method_helper,
                                finish_method_helper);
 }
@@ -68,6 +96,21 @@ bool SymStrBuilder::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &callee_name = handle.get_callee_name();
   bool need_symbolize = false;
   ResourceMark mr;
+  Method *callee = handle.get_callee_method();
+  if (handle.get_callee_holder_name() == ABSTRACT_BUILDER) {
+    // Only a StringBuilder's: a StringBuffer is not modeled.
+    oop receiver = callee->is_static() ? (oop) NULL
+        : handle.get_param<oop>(0);
+    if (receiver == NULL
+        || !receiver->klass()->name()->equals(SymStrBuilder::TYPE_NAME)) {
+      return false;
+    }
+  }
+  if (is_mutator(callee_name) && !callee->is_static()) {
+    need_symbolize = handle.general_check_param_symbolized();
+    if (need_symbolize) prepare_mutation(handle);
+    return need_symbolize;
+  }
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
     need_symbolize = handle.general_check_param_symbolized();
     if (need_symbolize) {
@@ -184,6 +227,17 @@ SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
   oop result = type == T_OBJECT ? handle.get_result<oop>(type) : NULL;
 
   const std::string &callee_name = handle.get_callee_name();
+  if (is_mutator(callee_name)) {
+    exp = mutated(handle);
+    oop receiver = handle.get_param<oop>(0);
+    SymStrBuilder *builder = static_cast<SymStrBuilder *>(
+        ConcolicMngr::ctx->get_or_alloc_sym_inst(receiver));
+    if (builder != NULL) {
+      builder->set_ref_exp(exp);
+      if (exp == NULL) builder->clear_semantic_expression();
+    }
+    return type == T_VOID ? NULL : exp;
+  }
   if (callee_name == "append") {
     exp_list_t string_exp_list;
     add_to_string_for_param_list(handle, string_exp_list);
@@ -211,6 +265,124 @@ SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
     exp = new OpStrExpression(callee_name, handle.get_param_list());
   }
   return exp;
+}
+
+void SymStrBuilder::prepare_mutation(MethodSymbolizerHandle &handle) {
+  // [content, argument..., length before the call]: indices as the int
+  // expressions they are, a value as the String append would make of it.
+  exp_list_t &params = handle.get_param_list();
+  oop receiver = handle.get_param<oop>(0);
+  params.push_back(get_exp_of(receiver));
+  Method *callee = handle.get_callee_method();
+  ResourceMark rm;
+  SignatureStream ss(callee->signature());
+  int offset = 1;
+  bool summarizable = true;
+  // Leading positions: delete and replace take two, the others one.
+  const std::string &name = handle.get_callee_name();
+  const int positions = name == "delete" || name == "replace" ? 2 : 1;
+  for (int index = 0; !ss.at_return_type(); ss.next(), ++index) {
+    const BasicType type = ss.type();
+    Expression *exp = NULL;
+    if (type == T_INT && index < positions) {
+      exp = handle.get_primitive_exp(offset, T_INT);
+    } else if (is_java_primitive(type)) {
+      exp = OpStrExpression::to_string(handle.get_primitive_exp(offset, type));
+    } else if (type == T_OBJECT) {
+      oop value = handle.get_param<oop>(offset);
+      exp = value == NULL ? new ConStringSymbolExp(std::string("null"))
+          : (value->klass()->name()->equals(SymString::TYPE_NAME)
+             || value->klass()->name()->equals(SymStrBuilder::TYPE_NAME))
+              ? get_exp_of(value) : NULL;
+    }
+    if (exp == NULL) summarizable = false;
+    params.push_back(exp);
+    offset += type2size[type];
+  }
+  const jint length = builder_length(receiver);
+  params.push_back(summarizable && length >= 0
+                       ? new ConExpression(length) : (Expression *) NULL);
+}
+
+namespace {
+
+Expression *substring(Expression *content, Expression *begin,
+                      Expression *end) {
+  exp_list_t arguments;
+  arguments.push_back(content);
+  arguments.push_back(begin);
+  if (end != NULL) arguments.push_back(end);
+  return new OpStrExpression("substring", arguments);
+}
+
+Expression *concat(Expression *first, Expression *second,
+                   Expression *third = NULL) {
+  exp_list_t arguments;
+  arguments.push_back(first);
+  arguments.push_back(second);
+  if (third != NULL) arguments.push_back(third);
+  return new OpStrExpression("concat", arguments);
+}
+
+Expression *plus_one(Expression *index) {
+  return new OpSymExpression(index, new ConExpression((jint) 1), op_add);
+}
+
+// `end` clamped to the length as Java clamps it, when both are concrete.
+Expression *clamped(Expression *end, Expression *length) {
+  jint at = 0;
+  jint bound = 0;
+  if (end->concrete_int_value(&at) && length->concrete_int_value(&bound)
+      && at > bound) {
+    return length;
+  }
+  return end;
+}
+
+}  // namespace
+
+Expression *SymStrBuilder::mutated(MethodSymbolizerHandle &handle) {
+  const exp_list_t &params = handle.get_param_list();
+  const std::string &name = handle.get_callee_name();
+  if (params.size() < 2 || params.back() == NULL) return NULL;
+  Expression *content = params[0];
+  Expression *length = params.back();
+  const size_t arguments = params.size() - 2;
+  if (name == "setLength" && arguments == 1) {
+    jint to = 0;
+    jint from = 0;
+    // Shorter: a prefix.  Longer pads with '\0', which no summary states.
+    if (params[1]->concrete_int_value(&to) && to == 0) {
+      return new ConStringSymbolExp(std::string());
+    }
+    if (params[1]->concrete_int_value(&to)
+        && length->concrete_int_value(&from) && to <= from) {
+      return substring(content, new ConExpression((jint) 0), params[1]);
+    }
+    return NULL;
+  }
+  if (name == "delete" && arguments == 2) {
+    return concat(substring(content, new ConExpression((jint) 0), params[1]),
+                  substring(content, clamped(params[2], length), NULL));
+  }
+  if (name == "deleteCharAt" && arguments == 1) {
+    return concat(substring(content, new ConExpression((jint) 0), params[1]),
+                  substring(content, plus_one(params[1]), NULL));
+  }
+  if (name == "insert" && arguments == 2) {
+    return concat(substring(content, new ConExpression((jint) 0), params[1]),
+                  params[2], substring(content, params[1], NULL));
+  }
+  if (name == "replace" && arguments == 3) {
+    return concat(substring(content, new ConExpression((jint) 0), params[1]),
+                  params[3],
+                  substring(content, clamped(params[2], length), NULL));
+  }
+  if (name == "setCharAt" && arguments == 2) {
+    return concat(substring(content, new ConExpression((jint) 0), params[1]),
+                  params[2], substring(content, plus_one(params[1]), NULL));
+  }
+  return NULL;
 }
 
 Expression *SymStrBuilder::get_exp_of(oop obj) {

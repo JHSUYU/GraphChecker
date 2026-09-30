@@ -26,34 +26,45 @@ class ElementWrites {
   // Records `value` stored at `position` by the state after the one with
   // `ordinal`, and returns the new state's ordinal; 0 when `ordinal` is not
   // the newest, which is a fork.
-  uint extend(uint ordinal, jint position, Expression *value) {
+  uint extend(uint ordinal, jint position, Expression *value,
+              const ElementWord &word) {
     pthread_mutex_lock(&_mutex);
     uint next = 0;
     if (ordinal == _newest) {
       next = ++_newest;
-      _writes[std::make_pair(position, next)] = value;
+      _writes[std::make_pair(position, next)] = Entry(value, word);
     }
     pthread_mutex_unlock(&_mutex);
     return next;
   }
 
-  // What the newest write at `position` no later than `ordinal` stored, or
-  // NULL when none did.
-  Expression *stored(uint ordinal, jint position) {
+  // What the newest write at `position` no later than `ordinal` stored, and
+  // the word it left, or NULL when none did.
+  Expression *stored(uint ordinal, jint position, ElementWord *word) {
     pthread_mutex_lock(&_mutex);
     Expression *value = NULL;
     Writes::const_iterator write =
         _writes.upper_bound(std::make_pair(position, ordinal));
     if (write != _writes.begin()) {
       --write;
-      if (write->first.first == position) value = write->second;
+      if (write->first.first == position) {
+        value = write->second.value;
+        *word = write->second.word;
+      }
     }
     pthread_mutex_unlock(&_mutex);
     return value;
   }
 
  private:
-  typedef std::map<std::pair<jint, uint>, Expression *> Writes;
+  struct Entry {
+    Expression *value;
+    ElementWord word;
+    Entry() : value(NULL) {}
+    Entry(Expression *stored, const ElementWord &left)
+        : value(stored), word(left) {}
+  };
+  typedef std::map<std::pair<jint, uint>, Entry> Writes;
   pthread_mutex_t _mutex;
   uint _newest;
   Writes _writes;
@@ -81,7 +92,8 @@ bool constant_size(const std::string &shape, const std::string &operation,
 ContainerExpression::ContainerExpression(
     const char *shape, const char *operation, Expression *receiver,
     const exp_list_t &arguments, BasicType result_type,
-    const std::string &java_type, Expression *guard)
+    const std::string &java_type, Expression *guard,
+    const ElementWord &word)
     : _shape(shape == NULL ? "" : shape),
       _operation(operation == NULL ? "" : operation),
       _receiver(receiver),
@@ -115,7 +127,7 @@ ContainerExpression::ContainerExpression(
     return;
   }
   _writes = base->_writes == NULL ? new ElementWrites() : base->_writes;
-  _ordinal = _writes->extend(base->_ordinal, position, _arguments[1]);
+  _ordinal = _writes->extend(base->_ordinal, position, _arguments[1], word);
   if (_ordinal == 0) {
     _writes = NULL;
     return;
@@ -127,20 +139,13 @@ ContainerExpression::~ContainerExpression() {
   if (_ordinal == 1) delete _writes;
 }
 
-bool ContainerExpression::stored_at(jint position,
-                                    Expression **stored) const {
+bool ContainerExpression::stored_at(jint position, Expression **stored,
+                                    ElementWord *word) const {
   if (!_decides_reads) return false;
-  *stored = _writes == NULL ? NULL : _writes->stored(_ordinal, position);
+  *word = ElementWord();
+  *stored = _writes == NULL ? NULL
+      : _writes->stored(_ordinal, position, word);
   return true;
-}
-
-ContainerExpression *ContainerExpression::rebuilt_on(
-    Expression *receiver) const {
-  // _java_type is never empty -- the constructor derives one from the result
-  // type when it is -- so passing it back reproduces this node's own type
-  // whatever the T_OBJECT placeholder says.
-  return new ContainerExpression(_shape.c_str(), _operation.c_str(), receiver,
-                                 _arguments, T_OBJECT, _java_type, _guard);
 }
 
 void ContainerExpression::serialize_internal(

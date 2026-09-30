@@ -8,6 +8,7 @@
 #include "concolic/reference/symbolicInstance.hpp"
 #include "concolic/sharedFieldVersions.hpp"
 #include "concolic/threadContext.hpp"
+#include "concolic/unsafeAccess.hpp"
 #include "runtime/fieldDescriptor.hpp"
 
 namespace {
@@ -89,100 +90,27 @@ bool value_field(oop receiver, BasicType type, fieldDescriptor *field) {
 }
 
 /**
- * The atomic's pre-state, as an expression.
- *
- * For a selected carrier, defer the guarded read until after the method so the
- * Java atomic operation remains the concrete linearization point. For an
- * unselected field, preserve the ordinary shadow behavior.
+ * The atomic's pre-state for a field with no log: its shadow, or a stated
+ * projection of it.  A tracked field's pre-state is instead the read the
+ * compare-and-swap performs (UnsafeAccess), so it is never taken here.
  */
-Expression *prepare_current_value(oop receiver, BasicType type,
-                                  fieldDescriptor *field,
-                                  SymInstance **receiver_instance,
-                                  bool *deferred_selected_read) {
-  if (deferred_selected_read == NULL) return NULL;
-  *deferred_selected_read = false;
-  if (!value_field(receiver, type, field)) return NULL;
-  SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(receiver);
-  if (instance == NULL) return NULL;
-  *receiver_instance = instance;
-
-  SharedFieldVersions::Location location(
-      instance->get_sym_rid(), field->offset(),
-      SharedFieldVersions::LOC_INSTANCE_FIELD);
-  if (SharedFieldVersions::is_tracked(location)) {
-    *deferred_selected_read = true;
-    return NULL;
-  }
-
-  Expression *value = instance->get(field->offset());
+Expression *untracked_pre_state(oop receiver, BasicType type,
+                                const fieldDescriptor &field,
+                                SymInstance *instance) {
+  Expression *value = instance->get(field.offset());
   if (value != NULL) return value;
-
   Expression *owner = instance->get_ref_exp();
   if (owner == NULL && receiver->is_symbolic()) {
     owner = instance->get_or_create_ref_exp(receiver);
   }
   if (owner == NULL) return NULL;
-
   ResourceMark rm;
-  // Same evidence every other primitive field read now states: the object this
-  // pre-state was read from and the value it held.  Without it the projection
-  // of an untracked atomic reaches the composer unpinned.
+  // Same evidence every other primitive field read states: the object this
+  // pre-state was read from and the value it held.
   return new FieldAccessExpression(
-      owner, receiver->klass()->name()->as_C_string(), field->offset(), type,
+      owner, receiver->klass()->name()->as_C_string(), field.offset(), type,
       std::string(), SharedFieldVersions::reference_expression(receiver),
-      SharedFieldVersions::field_value(receiver, field->offset(), type));
-}
-
-
-/**
- * The concrete words an atomic read and left, taken from the call's own
- * arguments and result.  The heap after the call cannot say what the
- * linearization read -- the operation has overwritten it -- and may already
- * hold a later writer's word.
- */
-SharedFieldVersions::ConcreteBits argument_word(MethodSymbolizerHandle &handle,
-                                                int offset, BasicType type) {
-  // The offset get_primitive_exp takes: a long spans two local slots.
-  offset += type2size[type] - 1;
-  return SharedFieldVersions::ConcreteBits(type, type == T_INT
-      ? SharedFieldVersions::raw_bits(handle.get_param<jint>(offset))
-      : SharedFieldVersions::raw_bits(handle.get_param<jlong>(offset)));
-}
-
-jlong result_bits(MethodSymbolizerHandle &handle, BasicType type) {
-  return type == T_INT
-      ? SharedFieldVersions::raw_bits(handle.get_result<jint>(T_INT))
-      : SharedFieldVersions::raw_bits(handle.get_result<jlong>(T_LONG));
-}
-
-// `word + delta` or `word - delta` in the atomic's own width, wrapping as
-// Java does.
-jlong apply_delta(BasicType type, bool add, jlong word, jlong delta) {
-  if (type == T_INT) {
-    return SharedFieldVersions::raw_bits(add
-        ? java_add((jint) word, (jint) delta)
-        : java_subtract((jint) word, (jint) delta));
-  }
-  return add ? java_add(word, delta) : java_subtract(word, delta);
-}
-
-Expression *resolve_selected_old(SymInstance *receiver_instance,
-                                 const fieldDescriptor &field,
-                                 BasicType type,
-                                 const SharedFieldVersions::ConcreteBits &read) {
-  if (receiver_instance == NULL) return NULL;
-  SharedFieldVersions::Location location(
-      receiver_instance->get_sym_rid(), field.offset(),
-      SharedFieldVersions::LOC_INSTANCE_FIELD);
-  SharedFieldVersions::ReadResult resolved;
-  if (!SharedFieldVersions::resolve_read(
-          location, type, read,
-          SharedFieldVersions::returned_value(read, NULL), &resolved)
-      || resolved.expression == NULL) {
-    SharedFieldVersions::mark_writer_set_incomplete(location);
-    return NULL;
-  }
-  return resolved.expression;
+      SharedFieldVersions::field_value(receiver, field.offset(), type));
 }
 
 Expression *unit_delta(BasicType type) {
@@ -191,162 +119,79 @@ Expression *unit_delta(BasicType type) {
       : static_cast<Expression *>(new ConExpression((jlong)1));
 }
 
-/**
- * Publishes the write half of one linearized atomic operation.
- *
- * The relation is already built by the caller (`new = old + delta`, or the
- * CAS's `update`); this is what makes it a version other threads' reads can
- * select, with the same evidence an ordinary store would carry.
- */
-void publish_linearization(SymInstance *receiver_instance,
-                           const fieldDescriptor &field,
-                           Expression *new_value,
-                           const SharedFieldVersions::ConcreteBits &stored,
-                           Expression *extra_guard) {
-  SharedFieldVersions::Location location(
-      receiver_instance->get_sym_rid(), field.offset(),
-      SharedFieldVersions::LOC_INSTANCE_FIELD);
-  Expression *guard = ConcolicMngr::ctx->path_guard();
-  if (extra_guard != NULL) {
-    guard = guard == NULL
-        ? extra_guard
-        : (Expression *) new OpSymExpression(guard, extra_guard, op_land);
-  }
-  // An atomic's new value is built from its old one, so it is symbolic by
-  // construction and is kept by value like any other symbolic store.
-  SharedFieldVersions::publish_value(
-      location, new_value, stored, guard, true,
-      SharedFieldVersions::VERSION_RMW);
-}
-
 }  // namespace
 
+/**
+ * The linearization is the compare-and-swap the muted body performs
+ * (Unsafe.getAndAddInt's loop, or compareAndSwapInt itself), and it is
+ * versioned there, in one critical section with the concrete operation
+ * (UnsafeAccess::end_cas).  This hook states what that operation means --
+ * `new = old op delta`, or a CAS's expect and update -- as the thread's
+ * intent; finish reads back what the operation resolved.  It used to resolve
+ * the old value and publish the new one after the body, from the words the
+ * call returned: two racing increments published out of order and each read
+ * the other's word as an UNOBSERVED write, and a failed CAS re-read the heap
+ * to decide what it had lost to.
+ */
 bool SymbolicAtomic::invoke_method_helper(MethodSymbolizerHandle &handle) {
   AtomicOperation operation;
   if (!decode_operation(handle, &operation)) return false;
 
   oop receiver = handle.get_param<oop>(0);
   fieldDescriptor value;
-  SymInstance *receiver_instance = NULL;
-  bool deferred_selected_read = false;
-  Expression *old_value = prepare_current_value(
-      receiver, operation.type, &value, &receiver_instance,
-      &deferred_selected_read);
-  if ((!deferred_selected_read && old_value == NULL)
-      || receiver_instance == NULL) {
+  if (!value_field(receiver, operation.type, &value)) return false;
+  SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(receiver);
+  if (instance == NULL) return false;
+  SharedFieldVersions::Location location(
+      instance->get_sym_rid(), value.offset(),
+      SharedFieldVersions::LOC_INSTANCE_FIELD);
+  Expression *prior = SharedFieldVersions::is_tracked(location)
+      ? NULL : untracked_pre_state(receiver, operation.type, value, instance);
+  if (prior == NULL && !SharedFieldVersions::is_tracked(location)) {
     return false;
   }
 
+  UnsafeAccess::clear_intent();
+  UnsafeAccess::Intent *intent = UnsafeAccess::intent();
+  intent->model = true;
+  intent->owner = instance->get_sym_rid();
+  intent->offset = value.offset();
+  intent->prior = prior;
   if (operation.is_cas) {
-    Expression *expect = handle.get_primitive_exp(1, operation.type);
-    Expression *update =
+    intent->kind = UnsafeAccess::CAS;
+    intent->expect = handle.get_primitive_exp(1, operation.type);
+    intent->operand =
         handle.get_primitive_exp(operation.update_offset, operation.type);
-    if (expect == NULL || update == NULL) return false;
-    handle.get_param_list().push_back(old_value);
-    handle.get_param_list().push_back(expect);
-    handle.get_param_list().push_back(update);
-    return true;
+  } else {
+    intent->kind = UnsafeAccess::ADD;
+    intent->op = operation.operation;
+    intent->operand = operation.takes_delta
+        ? handle.get_primitive_exp(1, operation.type)
+        : unit_delta(operation.type);
   }
-
-  Expression *delta = operation.takes_delta
-      ? handle.get_primitive_exp(1, operation.type)
-      : unit_delta(operation.type);
-  if (delta == NULL) return false;
-
-  // The concrete Atomic method still executes.  For a selected carrier the
-  // first slot is deliberately NULL: finish resolves the returned concrete
-  // pre-state, while the second slot preserves the symbolic operand.
-  handle.get_param_list().push_back(old_value);
-  handle.get_param_list().push_back(delta);
   return true;
 }
 
 Expression *SymbolicAtomic::finish_method_helper(
     MethodSymbolizerHandle &handle) {
   AtomicOperation operation;
-  if (!decode_operation(handle, &operation)) return NULL;
-
+  UnsafeAccess::Intent result = *UnsafeAccess::intent();
+  UnsafeAccess::clear_intent();
+  if (!decode_operation(handle, &operation) || !result.model || !result.done) {
+    return NULL;
+  }
+  if (operation.is_cas) {
+    // `old == expect`: the branch on the result selects its arm.
+    return result.new_value;
+  }
+  // The field's shadow is the new value (UnsafeAccess::update_shadow).
   oop receiver = handle.get_param<oop>(0);
   fieldDescriptor value;
-  if (!value_field(receiver, operation.type, &value)) return NULL;
-  SymInstance *receiver_instance = ConcolicMngr::ctx->find_sym_inst(receiver);
-  if (receiver_instance == NULL) return NULL;
-
-  if (operation.is_cas) {
-    if (handle.get_param_list().size() != 3) return NULL;
-    Expression *old_value = handle.get_param_list()[0];
-    Expression *expect = handle.get_param_list()[1];
-    Expression *update = handle.get_param_list()[2];
-    const bool succeeded = handle.get_result<jint>(T_BOOLEAN) != 0;
-    SharedFieldVersions::Location location(
-        receiver_instance->get_sym_rid(), value.offset(),
-        SharedFieldVersions::LOC_INSTANCE_FIELD);
-    if (SharedFieldVersions::is_tracked(location)) {
-      // The word the compare read: `expect` when it matched.  A failed CAS
-      // stored nothing, so the heap still holds the word it lost to unless a
-      // later writer has stored since; it is the one place that word is.
-      const SharedFieldVersions::ConcreteBits compared = succeeded
-          ? argument_word(handle, 1, operation.type)
-          : SharedFieldVersions::field_bits(receiver, value.offset(),
-                                            operation.type);
-      old_value = resolve_selected_old(
-          receiver_instance, value, operation.type, compared);
-      if (old_value == NULL) return NULL;
-    }
-    Expression *matched = new OpSymExpression(
-        old_value, expect, op_eq, true);
-    if (succeeded) {
-      // Only the arm this run actually took is published.  The failing arm is
-      // not modeled at all: writing a version for a store that did not happen
-      // would put a value into the read-from choice of every later reader of
-      // this location on the strength of a branch nothing executed.  The arm
-      // that did happen carries `old == expect` as part of its guard, so a
-      // solver cannot select this writer while denying the comparison that
-      // let it win.
-      receiver_instance->mark_field_written(value.offset());
-      receiver_instance->set_sym_exp(value.offset(), update);
-      publish_linearization(
-          receiver_instance, value, update,
-          argument_word(handle, operation.update_offset, operation.type),
-          matched);
-      return matched;
-    }
-    // A failed CAS publishes no writer version. Its boolean result still uses
-    // the same guarded pre-state expression, so the recorded branch selects
-    // the `old != expect` arm without pinning a replay writer.
-    return matched;
+  SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(receiver);
+  if (instance != NULL && value_field(receiver, operation.type, &value)) {
+    instance->mark_field_written(value.offset());
   }
-
-  if (handle.get_param_list().size() != 2) return NULL;
-  Expression *old_value = handle.get_param_list()[0];
-  Expression *delta = handle.get_param_list()[1];
-  // The words either side of the linearization, from the result and the
-  // concrete delta: getAndX returns the old word, xAndGet the new one.
-  const bool add = operation.operation == op_add;
-  const jlong delta_bits = operation.takes_delta
-      ? argument_word(handle, 1, operation.type).bits : 1;
-  const jlong returned = result_bits(handle, operation.type);
-  const SharedFieldVersions::ConcreteBits before(operation.type,
-      operation.returns_old_value
-          ? returned : apply_delta(operation.type, !add, returned, delta_bits));
-  const SharedFieldVersions::ConcreteBits after(operation.type,
-      operation.returns_old_value
-          ? apply_delta(operation.type, add, returned, delta_bits) : returned);
-  SharedFieldVersions::Location location(
-      receiver_instance->get_sym_rid(), value.offset(),
-      SharedFieldVersions::LOC_INSTANCE_FIELD);
-  if (SharedFieldVersions::is_tracked(location)) {
-    old_value = resolve_selected_old(
-        receiver_instance, value, operation.type, before);
-    if (old_value == NULL) return NULL;
-  }
-  Expression *new_value = new OpSymExpression(
-      old_value, delta, operation.operation);
-  receiver_instance->mark_field_written(value.offset());
-  receiver_instance->set_sym_exp(value.offset(), new_value);
-  publish_linearization(
-      receiver_instance, value, new_value, after, NULL);
-  return operation.returns_old_value ? old_value : new_value;
+  return operation.returns_old_value ? result.old_value : result.new_value;
 }
 
 void SymbolicAtomic::init_register_class(

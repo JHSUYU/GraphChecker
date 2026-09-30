@@ -2,25 +2,28 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 /**
- * A read of a tracked location states what it loaded.
+ * A read of a tracked location states what it loaded, and whether that is
+ * the word its observed version stored.
  *
- * <p>A write no hook sees still changes what the location holds.  An
- * AtomicInteger bumped by a thread outside every region runs no atomic model
- * (the model needs a context), and a field updater writes through Unsafe;
- * neither leaves a version.  Solr's SolrCore.close() is the incident: the
- * HTTP request's open() increment ran before any region, the region's
- * decrementAndGet resolved to a stale version, and the term said
- * `count <= 0` while the run returned early.  A read that loads a word the
- * newest version did not store publishes an UNOBSERVED version holding the
- * loaded constant, with no writer, and the location's writer set is no
- * longer complete.  A second read of the same word finds that version and
- * publishes nothing.</p>
+ * <p>Writes outside every region are versioned where they happen, bytecode
+ * or not: an AtomicInteger bumped by a thread with no context and a field
+ * updater both write through Unsafe, whose compare-and-swap now publishes an
+ * unattributed version in the same critical section as the concrete swap.
+ * Solr's SolrCore.close() is the incident: the HTTP request's open()
+ * increment ran before any region and left no version, so the region's
+ * decrementAndGet resolved to a stale one.</p>
+ *
+ * <p>A write no hook sees -- here a store while the thread's recording is
+ * paused -- still changes the heap.  The read that loads its word publishes
+ * an UNOBSERVED version holding the loaded constant, and the location's
+ * writer set is no longer complete; the read itself is exact, since it
+ * returned exactly what that version holds.  When such a write puts back a
+ * word a retained version stored, the read observes that version instead
+ * (ABA) and publishes nothing new.</p>
  *
  * <p>Every such read states the value it returned when it is one -- a
  * primitive's constant, a String's content, or null -- which is what a
- * reader pins to when it cannot join its write: SOLR-18406's read of a
- * String field whose observed write did not lower had nothing to pin to,
- * and the composition refused every path to the anchor.</p>
+ * reader pins to when it cannot join its write.</p>
  */
 public final class RegionLoadedValueSmoke {
     private static final class Core {
@@ -43,6 +46,9 @@ public final class RegionLoadedValueSmoke {
         String name;
     }
 
+    private static final String UNATTRIBUTED =
+            "\"versionKind\":\"WRITE\",\"writerContextId\":0,"
+            + "\"regionId\":\"\",\"taskId\":\"\",\"regionEnterEventId\":0";
     private static final String UNOBSERVED =
             "\"versionKind\":\"UNOBSERVED\",\"writerContextId\":0,"
             + "\"regionId\":\"\",\"taskId\":\"\",\"regionEnterEventId\":0";
@@ -67,13 +73,24 @@ public final class RegionLoadedValueSmoke {
         outside.start();
         outside.join();
 
-        // getfield: the heap holds 2, the newest version stored 1.
+        // The outside increment is a version: the read joins it, exactly.
         Sink sink = new Sink();
         sink.value = core.count;
-        String read = System.getSymbolicFieldExpression(sink,
-                Sink.class.getName(), "value", "I",
-                Integer.valueOf(sink.value));
+        String read = expression(sink);
+
+        // A store no hook sees: the read names it as an UNOBSERVED write.
+        System.pauseConcolicPathCondition();
+        core.count = 5;
+        System.resumeConcolicPathCondition();
         sink.value = core.count;
+        String unobserved = expression(sink);
+
+        // An unseen store that puts back 2: the version that stored 2.
+        System.pauseConcolicPathCondition();
+        core.count = 2;
+        System.resumeConcolicPathCondition();
+        sink.value = core.count;
+        String putBack = expression(sink);
         String field = System.getSharedFieldVersions(core,
                 Core.class.getName(), "count", "I");
 
@@ -101,24 +118,35 @@ public final class RegionLoadedValueSmoke {
 
         require(sink.value == 2 && left == 1,
                 "the outside increments did not run");
-        require(read.contains("\"versionKind\":\"UNOBSERVED\"")
-                        && read.contains("\"writerSetComplete\":false")
-                        && read.contains("\"concreteValue\":{")
-                        && read.contains("\"Y_I_2\""),
-                "the read names no unobserved write: " + read);
+        require(read.contains("\"versionKind\":\"WRITE\"")
+                        && read.contains("\"writerSetComplete\":true")
+                        && read.contains("\"observedExact\":true")
+                        && count(read, "\"Y_I_2\"") == 1,
+                "the read names no unattributed write, or states the word"
+                        + " it returned twice: " + read);
+        require(unobserved.contains("\"versionKind\":\"UNOBSERVED\"")
+                        && unobserved.contains("\"writerSetComplete\":false")
+                        && unobserved.contains("\"observedExact\":true")
+                        && unobserved.contains("\"Y_I_5\""),
+                "the read names no unobserved write: " + unobserved);
+        require(putBack.contains("\"versionKind\":\"WRITE\"")
+                        && putBack.contains("\"writerSetComplete\":false")
+                        && putBack.contains("\"observedExact\":true"),
+                "the put-back read names no retained version: " + putBack);
         require(count(field, UNOBSERVED) == 1
+                        && count(field, UNATTRIBUTED) == 1
                         && field.contains("\"writerSetComplete\":false")
-                        && count(field, "\"readerContextId\"") == 2,
-                "the field log states no single unobserved write: " + field);
+                        && field.contains(
+                                "\"incompleteReason\":\"UNOBSERVED_WRITE\"")
+                        && count(field, "\"readerContextId\"") == 3,
+                "the field log is not INITIAL, WRITE, UNOBSERVED: " + field);
         int initial = atomic.indexOf("\"versionKind\":\"INITIAL\"");
-        int unobserved = atomic.indexOf(UNOBSERVED);
+        int outsideWrite = atomic.indexOf(UNATTRIBUTED);
         int rmw = atomic.indexOf("\"versionKind\":\"RMW\"");
-        require(initial >= 0 && initial < unobserved && unobserved < rmw
-                        && count(atomic, UNOBSERVED) == 1
-                        && atomic.contains("\"Y_I_2\"")
-                        && atomic.contains("\"writerSetComplete\":false"),
-                "the atomic's old value is not the unobserved write: "
-                        + atomic);
+        require(initial >= 0 && initial < outsideWrite && outsideWrite < rmw
+                        && !atomic.contains("UNOBSERVED")
+                        && atomic.contains("\"writerSetComplete\":true"),
+                "the atomic's old value is not the outside write: " + atomic);
         require(stated.contains("\"_type\":\"ReadFromExpression\"")
                         && stated.contains("\"concreteValue\":\"3\""),
                 "the String read states no value: " + stated);
@@ -126,6 +154,11 @@ public final class RegionLoadedValueSmoke {
                         && nulled.contains("\"concreteValue\":null"),
                 "the null read states no value: " + nulled);
         System.out.println("RegionLoadedValueSmoke OK");
+    }
+
+    private static String expression(Sink sink) {
+        return System.getSymbolicFieldExpression(sink, Sink.class.getName(),
+                "value", "I", Integer.valueOf(sink.value));
     }
 
     private static int count(String value, String needle) {

@@ -800,6 +800,15 @@ void ReturnedValue::serialize(
       writer.Key("concreteValue");
       writer.String(content.c_str(), (rapidjson::SizeType) content.size());
       break;
+    case TRUNCATED_STRING:
+      writer.Key("concreteValue");
+      writer.StartObject();
+      writer.Key("_type");
+      writer.String("TruncatedValue");
+      writer.Key("length");
+      writer.Int(length);
+      writer.EndObject();
+      break;
     case UNSTATED:
       break;
   }

@@ -13,127 +13,101 @@
 #include <string>
 #include <vector>
 
+class ConstantPoolCacheEntry;
+class Method;
+
 /**
- * Versioned writes to the session's selected shared locations.
+ * Versioned writes to the session's tracked shared locations.
  *
- * Phase 1 gave a field shadow exactly one expression -- the most recently
- * completed write -- and recorded nothing about who wrote it.  That is the
- * named CONCURRENT_FIELD_SHADOW_WRITE gap, and this class is what replaces it:
- * every write to a *selected* location appends an immutable version carrying
- * the writer's evidence, so a later read can name its provenance instead of
- * inheriting whatever pointer happened to survive.
+ * Every write to a *tracked* location appends an immutable version carrying
+ * the writer's evidence, so a later read names its provenance instead of
+ * inheriting whatever pointer happened to survive in a field shadow.
  *
  * ---------------------------------------------------------------------------
  * What is versioned, and why not everything
  * ---------------------------------------------------------------------------
  *
- * The field hooks in the interpreter fire for every field of every shadowed
- * object.  Versioning all of them would append a record and a folded path
- * guard on a bytecode that a workload executes millions of
- * times, which is a cost no bounded analysis can pay for state it will never
- * ask about.  A location is therefore *tracked* before it is versioned, and
- * tracking is by value: the first symbolic value stored here starts the log
- * (`is_tracked`, `publish_value`).  Nothing declares a location in advance,
- * because a declaration is a guess about what will matter and a symbolic
- * store is evidence that it already does.
- *
- * Tracking by value is what makes the hook affordable.  When no location is
- * tracked at all the hooks read one relaxed counter and stop, which is why
- * every pre-existing workload keeps its old cost exactly.  When tracked
- * locations do exist, an untracked one is still rejected by one map lookup,
- * and only a tracked location pays for a version.
+ * A location is tracked before it is versioned, and tracking is by value:
+ * the first symbolic value stored here starts the log, as does a concrete
+ * store control-dependent on a symbolic decision (`publish_value`), a mint,
+ * an attach, or a woven observation (`publish_initial`).  Nothing declares a
+ * location in advance.  When no location is tracked the hooks read one
+ * relaxed counter and stop; an untracked location is rejected by one lookup.
  *
  * A container's log opens with an INITIAL version holding the state the
- * location started in (`publish_initial`).  Without it the mutation chain
- * would have no receiver a reader can resolve, and the resolver would have to
- * invent one.  With it, "the state this location started in" is an ordinary
- * candidate with ordinary evidence.
+ * location started in; so does a scalar's whose log a guarded concrete store
+ * starts (the word the store replaced), so that "this store did not happen"
+ * is an ordinary candidate with ordinary evidence.
  *
  * ---------------------------------------------------------------------------
- * Ordering the concrete access and the version
+ * One critical section per tracked access
  * ---------------------------------------------------------------------------
  *
- * A version is published *after* the concrete store has completed, and it
- * records the value that store wrote, taken from the operand stack rather than
- * re-read from the heap.  Re-reading would report whatever a concurrent writer
- * left behind and attribute it to this thread; taking the operand it actually
- * stored is exact regardless of what else is running.  No version exists for
- * a store that did not happen.
+ * A tracked scalar access and its log entry are one critical section under
+ * the location's lock (a stripe, `lock`): a store does the concrete store,
+ * mints its version id and appends; a load does the concrete load, compares
+ * the word it loaded with the newest version's `stored` word, and records
+ * the read.  Log order is therefore heap order.  It used to be two sections
+ * -- a store published after its concrete store, a read compared after its
+ * concrete load -- and both windows produced spurious UNOBSERVED versions
+ * (a reader that loaded the new word before its version landed, or the old
+ * word after it had): unobs/results-s48.txt and review1.
  *
- * The converse does not hold, and a scalar version says so by carrying the
- * concrete word its store left (`Version::stored`).  A write the hooks never
- * see still changes the heap: an AtomicInteger bumped by a thread outside
- * every region (the atomic model runs only under a context), Unsafe,
- * reflection.  Solr's SolrCore.close() decrements `refCount` and returns
- * early while the count stays positive; the HTTP request's open() increment
- * ran before any region, so the read resolved to a stale version, the term
- * said `count <= 0` while the run returned, and IMPORT refused the session.
- * A scalar read therefore states the word it loaded, and when the newest
- * version's word differs the read publishes a VERSION_UNOBSERVED version
- * holding the loaded constant, with no writer, and clears
- * `writer_set_complete` (`plan_read`).  Whole-state versions carry no word:
- * a container state is not one.
+ * So a mismatch can only mean a writer no hook saw (a muted subtree, JNI).
+ * The read first accepts a retained version whose stored word equals the
+ * loaded one: it returns exactly what that version stored, so joining it
+ * states a relation that holds at the recorded valuation, and an unhooked
+ * writer that put an older word back is the only way to reach it -- the
+ * location is marked incomplete either way, which keeps alternatives and
+ * closed claims gated on the join.  Only when no retained version stored the
+ * word does the read publish a VERSION_UNOBSERVED version holding the loaded
+ * constant, minted under the lock so that it precedes the read on the
+ * session clock and lands before any later store.
+ *
+ * Every read states whether its observation is exact (`observed_exact`): the
+ * word it loaded equals its observed version's stored word.  An exact read
+ * joins its version even at an incomplete location; `writer_set_complete`
+ * keeps its meaning, the location's writer set, and gates alternatives.
+ *
+ * Whole-state (container) versions carry no word: a container's mutation is
+ * a Java call no lock can span, so its version is published by the model
+ * after the call, and its reads are never exact.
  *
  * ---------------------------------------------------------------------------
  * Retention, and what an incomplete writer set means
  * ---------------------------------------------------------------------------
  *
- * A location keeps at most MAX_VERSIONS_PER_LOCATION versions.  Dropping the
- * oldest is not free: it makes the writer set incomplete, and a resolver that
- * treated an incomplete set as complete could omit a feasible writer.
- * Truncation therefore clears
- * `writer_set_complete`, which is a permanent property of the location and is
- * reported with every answer derived from it.
- *
- * The read log is bounded the same way and is *not* silent about it.  A read
- * is evidence of a decision that was already made, so losing one leaves every
- * writer set exactly as complete as it was; what it does destroy is the claim
- * that the log is the whole record.  A consumer that counted the retained
- * rows would otherwise read a truncated log as closed read coverage, which is
- * a stronger statement than the store can make.  Truncation therefore clears
- * `read_log_complete` permanently, reported as `readLogTruncated`.  The two
- * completeness flags stay separate because losing a read record does not
- * remove a writer candidate.
+ * A location keeps at most MAX_VERSIONS_PER_LOCATION versions; dropping the
+ * oldest clears `writer_set_complete` permanently, as does a writer the VM
+ * detected but could not version (`mark_writer_set_incomplete`).  The first
+ * reason is kept and published (`incompleteReason`).  The read log is
+ * bounded too and says so (`readLogTruncated`).
  *
  * ---------------------------------------------------------------------------
- * Concurrency
+ * Locks
  * ---------------------------------------------------------------------------
  *
- * `_mutex` guards the carrier set, the version store and the read log.  It is
- * a leaf lock in the same sense as ExpressionBroker's: no Expression is
- * constructed under it, no HotSpot Mutex is taken under it, and it is never
- * held while the session heap lock or the broker lock is held.  Callers
- * resolve object shadows (which takes and releases the heap lock) and fold
- * path guards (which takes and releases the arena lock) *before* entering it.
- * The engine-wide order is therefore unchanged:
+ * A stripe guards the contents of every Slot that hashes to it and the heap
+ * word of every location that does.  `_mutex` guards the slot map's shape
+ * (find/insert), the carrier count and the guarded-store table, and is taken
+ * inside a stripe, never around one.  Nothing that can block is done under
+ * either; an Expression may be built under a stripe (the arena lock is a
+ * leaf), which is how a concrete store's constant or an UNOBSERVED constant
+ * is made only when the location turns out to be tracked.  The engine-wide
+ * order is
  *
- *     membership -> {heap, broker, versions} -> arena
+ *     membership -> {heap, broker, stripe -> versions} -> arena
  *
- * `has_carriers()` reads a plain counter without the lock on purpose.  It is
- * an advisory early-out on the hottest bytecode in the interpreter; every
- * operation that acts on the answer re-checks under the lock, so a stale read
- * costs one wasted lookup and can never produce a wrong version.
+ * and a caller holding several stripes takes them in ascending index order
+ * (`lock_stripes`).  `has_carriers()` reads a plain counter on purpose: an
+ * advisory early-out on the hottest bytecodes, re-checked under the lock.
  */
 class SharedFieldVersions {
 public:
   /**
-   * The four addressable shapes.
-   *
-   * An array element is the fixed-shape container case: its identity is
-   * (array shadow, index), which is stable for the array's life.  A resizable
-   * collection has no such slot -- its members move under insertion and
-   * removal -- so per-member read-from over one is not something this store
-   * can express, and asking it to would be inventing a slot the program does
-   * not have.
-   *
-   * LOC_MAP_STATE is the answer to that, and it deliberately does not try to
-   * be a slot: it addresses the container's *whole state*, not one member.  A
-   * mutation publishes the immutable state that mutation produced, and a query
-   * resolves to the state it may have observed; which member the query then
-   * reads out of that state is the container algebra's business and stays in
-   * the container code.  The owner is the canonical container id, so a view
-   * and the map it views are one location; the slot is SLOT_WHOLE_STATE,
-   * because a whole state has no offset.
+   * The four addressable shapes.  LOC_MAP_STATE addresses a container's
+   * whole state: its owner is the canonical container id (a view and the map
+   * it views are one location) and its slot is SLOT_WHOLE_STATE.
    */
   enum LocationKind {
     LOC_INSTANCE_FIELD = 0,
@@ -142,49 +116,17 @@ public:
     LOC_MAP_STATE = 3
   };
 
-  /**
-   * The slot of a location that has no offset.
-   *
-   * Negative on purpose: every real field offset and every array index is
-   * non-negative, so this can never be mistaken for one even by a consumer
-   * that reads the slot without the kind.
-   */
+  /** The slot of a location that has no offset; never a real offset. */
   static const int SLOT_WHOLE_STATE = -3;
-
-  /** Negative values are refusals; see the Java API. */
-  enum SelectStatus {
-    SELECT_ALREADY_SELECTED   = 0,
-    SELECT_NO_ACTIVE_CONTEXT  = -1,
-    SELECT_MISSING_METADATA   = -2,
-    SELECT_FIELD_NOT_FOUND    = -3,
-    SELECT_UNSUPPORTED_TARGET = -4
-  };
-
-  /** Refusals for one replay-only concrete primitive read operand. */
-  enum ReplayReadStatus {
-    REPLAY_READ_PENDING          = 0,
-    REPLAY_READ_NO_CONTEXT       = -1,
-    REPLAY_READ_MISSING_METADATA = -2,
-    REPLAY_READ_FIELD_NOT_FOUND  = -3,
-    REPLAY_READ_UNSUPPORTED      = -4,
-    REPLAY_READ_NOT_SELECTED     = -5,
-    REPLAY_READ_ALREADY_PENDING  = -6,
-    REPLAY_READ_UNKNOWN_TOKEN    = -7,
-    REPLAY_READ_WRONG_CONTEXT    = -8
-  };
 
   enum VersionKind {
     VERSION_INITIAL = 0,
     VERSION_WRITE = 1,
-    // One linearized read-modify-write, published as `new = f(old)` by the
-    // atomic model rather than by the field store hook.
+    // One linearized read-modify-write, `new = f(old)`, published by the
+    // compare-and-swap that performed it (see UnsafeWrite).
     VERSION_RMW = 2,
-    // One immutable whole-state publication.  The mutation that produced the
-    // state is named by the publisher and travels in Version::operation
-    // rather than as an enumerator here: the operation vocabulary belongs to
-    // whichever model published the state, and baking a collection's verbs
-    // into this store would make a generic service the owner of one model's
-    // semantics.
+    // One immutable whole-state publication; the mutation is named by the
+    // publisher in Version::operation.
     VERSION_STATE = 3,
     // A write no hook saw, published by the read that found its word in the
     // heap: the loaded constant, no writer, no region, no guard.
@@ -192,13 +134,12 @@ public:
   };
 
   /**
-   * The concrete word one scalar store left, or one scalar read loaded.
-   *
-   * In the raw_bits() encoding, typed so that the word can be turned back
-   * into the constant it denotes.  T_ILLEGAL means no word is stated: a
-   * reference (its word is an address the collector moves) and a whole
-   * container state have none, and two words compare only when both are
-   * stated.
+   * The concrete word one scalar store left, or one scalar read loaded, in
+   * the raw_bits() encoding.  T_ILLEGAL means no word is stated: a reference
+   * (an address the collector moves) and a whole container state have none.
+   * A box of an integral wrapper stored in a wrapper-typed field states its
+   * primitive (boxed_word), and null states the null word (T_OBJECT, 0): the
+   * field holds a value or nothing, and the two are different words.
    */
   struct ConcreteBits {
     BasicType type;
@@ -207,28 +148,21 @@ public:
     ConcreteBits(BasicType word_type, jlong word_bits)
         : type(word_type), bits(word_bits) {}
     bool stated() const { return type != T_ILLEGAL; }
+    bool is_null() const { return type == T_OBJECT; }
     bool contradicts(const ConcreteBits &other) const {
-      return stated() && other.stated() && bits != other.bits;
+      return stated() && other.stated()
+          && (bits != other.bits || type != other.type);
+    }
+    bool equals(const ConcreteBits &other) const {
+      return stated() && other.stated() && bits == other.bits
+          && type == other.type;
     }
   };
 
   /**
-   * The bytecode site one logged event stood at.
-   *
-   * Identity v3 asks every read and write endpoint where in the region's
-   * control structure it happened, and the frames are the runtime's to
-   * journal -- but the innermost one is a bytecode site, and only the VM
-   * stands at it.  The log used to record no site at all, so two reads of one
-   * location by one occurrence at different places in the code were
-   * indistinguishable and collapsed onto one endpoint id.
-   *
-   * Kept as the JVM's own components, never as a rendered site id: the
-   * consumer spells the method part its own way and must be the only place
-   * that does.  `bci` is -1, and every member empty, when the event was
+   * The bytecode site one logged event stood at, in the JVM's own
+   * components.  `bci` is -1, and every member empty, when the event was
    * published from a VM entry with no bytecode under it.
-   *
-   * No loop iteration count: this engine does not count loop back edges, so
-   * it has nothing to say about LOOPOWN and says nothing rather than 0.
    */
   struct EventSite {
     std::string class_name;
@@ -256,29 +190,14 @@ public:
 
   /**
    * What one whole-state carrier's INITIAL value says about the content the
-   * container held before the region selected it.
-   *
-   * Three states, not two, and the third is the one that used to be missing.
-   * `stated` means the value stands on a SNAPSHOT_BASE this recorder
-   * installed, so the content is exactly `entries` members and zero is a real
-   * answer - the exact empty collection, which is the most constrained
-   * initial state there is.  `truncated` means the engine knows it did not
-   * state the content: the entry bound refused it, or the container already
-   * carried a recorded mutation history whose base could not be recovered.
-   * Neither means nothing was ever offered, and a reader must then treat the
-   * contents as unknown for want of an offer rather than for want of an
-   * answer.
+   * container held before its log began: `stated` (exactly `entries`
+   * members), `truncated` (over the bound), or refused by name
+   * (`unsupported_class`).  Only `stated` is a statement of content.
    */
   struct InitialSnapshot {
     bool stated;
     bool truncated;
-    // Set when the container's class is admitted by a model but is not one
-    // the engine can read the members of.  Published by name so the runtime
-    // raises a blocking gap instead of reading an absent snapshot as "held
-    // nothing".
     std::string unsupported_class;
-    // Members the INITIAL value states, or the count that went unstated, or
-    // -1 when even the count is unknown.
     int entries;
     InitialSnapshot() : stated(false), truncated(false), entries(0) {}
     // Whether the version should publish an `initialSnapshot` block at all.
@@ -287,258 +206,161 @@ public:
     }
   };
 
-  struct Version {
-    // Drawn from the session's single event-id space, so a fieldVersionId and
-    // an event id are the same kind of thing and are directly comparable.
-    jlong version_id;
-    int version_kind;
-    // The publisher's own name for the mutation, for a version whose kind does
-    // not name it by itself (VERSION_STATE).  Empty otherwise.
-    std::string operation;
-    jlong writer_context_id;
+  /** Who wrote or read: the calling thread's region, and where it stood. */
+  struct Attribution {
+    jlong context_id;
     std::string region_id;
     std::string task_id;
     jlong region_enter_event_id;
-    // The value written.  Never NULL: a concrete store publishes a constant.
+    EventSite site;
+    Attribution() : context_id(0), region_enter_event_id(0) {}
+  };
+
+  struct Version {
+    // Drawn from the session's single event-id space.
+    jlong version_id;
+    int version_kind;
+    // The publisher's own name for a whole-state mutation; empty otherwise.
+    std::string operation;
+    Attribution writer;
+    // The value written.  Never NULL.
     Expression *value;
-    // The concrete word the store left, when it is a scalar's; what a later
-    // read of the heap is checked against (see plan_read).
+    // The concrete word the store left, when it is a scalar's.
     ConcreteBits stored;
-    // Conjunction of the writer's path condition at the write, or NULL for the
-    // empty conjunction (true).
+    // `stored` as a constant, built once for the reads that return it
+    // (item 6: a read of a matching word shares it instead of minting one).
+    Expression *stored_constant;
+    // Conjunction of the writer's path condition, or NULL for true.
     Expression *path_guard;
-    // Set only on the INITIAL version of a whole-state carrier the recorder
-    // was told the contents of.  `entries` is how many the container held;
-    // `truncated` says the snapshot was refused for holding too many, so the
-    // value above is still the opaque state root and a reader must treat the
-    // pre-selection contents as unknown rather than empty.
     bool initial_snapshot_present;
+    bool initial_snapshot_stated;
     int initial_snapshot_entries;
     bool initial_snapshot_truncated;
-    // Non-empty when the snapshot was refused because the container's class
-    // is not one this engine walks.
     std::string initial_snapshot_unsupported_class;
-    // Where this event stood; see EventSite.
-    EventSite site;
     Version()
-        : version_id(0), version_kind(VERSION_WRITE), writer_context_id(0),
-          region_enter_event_id(0), value(NULL), path_guard(NULL),
-          initial_snapshot_present(false), initial_snapshot_entries(0),
-          initial_snapshot_truncated(false) {}
+        : version_id(0), version_kind(VERSION_WRITE), value(NULL),
+          stored_constant(NULL), path_guard(NULL),
+          initial_snapshot_present(false), initial_snapshot_stated(false),
+          initial_snapshot_entries(0), initial_snapshot_truncated(false) {}
   };
 
   typedef std::vector<Version> VersionList;
 
   /**
-   * What a read of a selected location resolved to.
-   *
-   * RESOLVE_NONE means the location is not selected and the caller keeps
-   * whatever answer it already had; the read is not recorded and nothing about
-   * it is claimed.
+   * One store, prepared outside the lock: its value (NULL for a concrete
+   * store, whose constant is built only if the location turns out tracked),
+   * its guard and attribution, and whether it may start the location's log.
    */
-  struct ReadResult {
-    // A boundary over a ReadFromExpression containing every retained writer.
-    Expression *expression;
-    ReadResult() : expression(NULL) {}
+  struct Store {
+    Location location;
+    Expression *value;
+    Expression *path_guard;
+    bool symbolic;
+    // Symbolic, or control-dependent on a decision the thread took (D5).
+    bool starts_log;
+    int version_kind;
+    std::string operation;
+    Attribution writer;
+    // Filled under the lock by begin_store_locked: whether the store is
+    // versioned, and, when it starts the log, the value it replaced, which
+    // is published first as the INITIAL.
+    bool versioned;
+    Expression *base_value;
+    ConcreteBits base;
+    Store()
+        : value(NULL), path_guard(NULL), symbolic(false), starts_log(false),
+          version_kind(VERSION_WRITE), versioned(false), base_value(NULL) {}
   };
 
   /**
-   * The decision, without the expression.
-   *
-   * `resolve_read` below answers a scalar read, and the expression it builds
-   * has a scalar's shape: the arm of candidate W is W's own value.  That shape
-   * is wrong for a location whose versions are whole states -- there the arm
-   * has to be *the query applied to* W's state, and only the model that owns
-   * the query knows how to write one.  Splitting the decision from the node
-   * lets that model reuse the same complete retained writer set without this
-   * file learning what a map read is.  Runtime order and concrete equality do
-   * not filter the set.
+   * One heap cell a location names: its holder (the owner object, a static
+   * mirror, or the array) and what it holds.  `type` is the field's or
+   * element's BasicType; `boxed` marks a wrapper-typed field
+   * (wrapper_value_type), whose word is its box's primitive.
+   */
+  struct Cell {
+    oop holder;
+    BasicType type;
+    bool boxed;
+    Cell() : holder(NULL), type(T_ILLEGAL), boxed(false) {}
+    Cell(oop cell_holder, BasicType cell_type, bool cell_boxed = false)
+        : holder(cell_holder), type(cell_type), boxed(cell_boxed) {}
+  };
+
+  /**
+   * The decision one read made, without the expression.  A container query
+   * reuses it and substitutes its own observed value.
    */
   struct ReadPlan {
     jlong read_event_id;
-    // The site the read stood at, for the node build_read_from emits.
-    EventSite site;
-    // The version live when the read ran: the newest one retained for the
-    // location, or the UNOBSERVED one the read published when the word it
-    // loaded is not that version's.  The run performed one read and the
-    // location held one value; the set of versions it did not hold was never
-    // evidence about it.
+    Attribution reader;
+    // The version live when the read ran (see the class comment).
     Version observed;
-    // Coverage metadata.  False once a writer has been lost or an untracked
-    // one was detected; it blocks closed/final claims but never changes which
-    // version the read observed.
+    // The word the read loaded equals `observed.stored`.
+    bool observed_exact;
+    // The location's writer set, as of this read.
     bool writer_set_complete;
-    // What the read returned; see ReturnedValue.
-    ReturnedValue returned;
-    ReadPlan() : read_event_id(0), writer_set_complete(true) {}
+    ReadPlan()
+        : read_event_id(0), observed_exact(false),
+          writer_set_complete(true) {}
   };
 
-  /**
-   * The version live at `location` right now, without selecting or recording.
-   *
-   * Returns 0 when the location is not a tracked carrier or holds no version.
-   * `version_kind`, when non-NULL, receives that version's label.
-   */
-  static jlong live_version(const Location &location,
-                            std::string *version_kind);
-
-  /**
-   * Decides and records one read of a tracked location.
-   *
-   * `loaded` is the word the read took from the heap (unstated for a
-   * reference or a container query).  When the newest version stated a
-   * different word, a write no hook saw came between, and the read publishes
-   * it as a VERSION_UNOBSERVED version and observes that.
-   */
-  static bool plan_read(const Location &location, const ConcreteBits &loaded,
-                        ReadPlan *plan);
-
-  /**
-   * The read-from node every reader of a selected location publishes.
-   *
-   * `observed_value` is what the observed version resolves to for this
-   * particular read: its own value for a scalar location, the query applied to
-   * its state for a container one.  That one substitution is the whole
-   * difference between the scalar reader here and the container reader in
-   * containerSupport.cpp -- the version id, version label and the consumer
-   * boundary around it are identical.
-   *
-   * `type_name` is the emitted Java type for both the node and the boundary.
-   */
-  static Expression *build_read_from(
-      const ReadPlan &plan, const Location &location,
-      const std::string &type_name, Expression *observed_value);
-
-  /**
-   * Resolves one read of a selected location against its versions.
-   * `loaded` is the word the read took from the heap, as for plan_read;
-   * `returned` is what the read handed the program (returned_value), which a
-   * replay's armed override can make a different word.
-   *
-   * Returns false when the location is not selected, leaving *result at
-   * its empty value.
-   */
-  static bool resolve_read(const Location &location, BasicType type,
-                           const ConcreteBits &loaded,
-                           const ReturnedValue &returned,
-                           ReadResult *result);
-
-  /**
-   * What a scalar read or a call returned, as its node states it: the
-   * constant of a stated `word`, else null or a String's content for
-   * `reference`, else nothing.
-   */
-  static ReturnedValue returned_value(const ConcreteBits &word,
-                                      oop reference);
-
-  /**
-   * One-shot concrete operand override; symbolic resolve_read is unchanged.
-   *
-   * `region_enter_event_id` is the region occurrence that armed the read, so
-   * that closing that region -- and only that region -- abandons it.
-   */
-  static jlong arm_primitive_read(jlong context_id,
-                                  jlong region_enter_event_id,
-                                  const Location &location,
-                                  BasicType type, jlong value_bits);
-  static bool consume_primitive_read(jlong context_id,
-                                     const Location &location,
-                                     BasicType type, jlong *value_bits);
-  /** Positive iff consumed; zero cancels an armed but unconsumed receipt. */
-  static jlong confirm_primitive_read(jlong context_id, jlong token);
-
-  /**
-   * Drops the arms one region left behind when it ended.
-   *
-   * An arm is a one-shot override of *the read that the arming code is about
-   * to perform*.  If that read never happens -- the branch was not taken, the
-   * frame threw, the replay decided otherwise -- the entry used to survive
-   * keyed only by (context, location), so the next read of the same field,
-   * arbitrarily later and in a different region of the same thread, silently
-   * consumed a value that was never meant for it.  A region boundary is the
-   * point at which such an arm is provably abandoned, so it is dropped there.
-   *
-   * Regions nest on one thread context, so the boundary that abandons an arm
-   * is the region that armed it and not merely the thread it ran on: purging
-   * every arm of the context when an INNER region closes would drop the
-   * enclosing region's still-pending arms.  `region_enter_event_id` names the
-   * closing region occurrence; zero means every region of this context, which
-   * is what forget_context() needs.
-   *
-   * Receipts for arms that *were* consumed are deliberately kept: they are
-   * evidence the caller still has to confirm, and confirmation happens during
-   * region close.  forget_context() below is what retires those, at the point
-   * where no caller can reach them any more.
-   */
-  static void discard_armed_reads(jlong context_id,
-                                  jlong region_enter_event_id);
-
-  /**
-   * Retires every replay-read record owned by one thread context.
-   *
-   * Called when the context itself goes away (detach, or an owner thread that
-   * exited).  Both stores are keyed by context id and were previously purged
-   * only in close_session(), so a workload session that outlived many thread
-   * contexts accumulated their records and let a later context with a
-   * recycled id observe them.
-   */
-  static void forget_context(jlong context_id);
+  // ---- sessions ------------------------------------------------------------
 
   static void open_session();
   static void close_session();
 
-  /**
-   * Advisory: false means no location in this session is selected, so a hook
-   * may skip every version question.  See the concurrency note above.
-   */
+  /** Advisory: false means no location in this session is tracked. */
   static bool has_carriers() { return _carrier_count > 0; }
 
-  /**
-   * Whether this location's contents are being kept.
-   *
-   * They are, from the first symbolic value written here onwards.  There is
-   * no declaration: a location is tracked because of what was stored in it,
-   * not because anything said in advance that it might matter.
-   */
+  /** Whether this location's contents are being kept. */
   static bool is_tracked(const Location &location);
 
-  /**
-   * Every tracked location, as the envelopes `describe()` emits.
-   *
-   * The read-out the runtime needs once retention is by value: it no longer
-   * knows which locations exist, because it never saw the writes that started
-   * them.  One document, `SHARED_TRACKED_LOCATIONS`, holding one
-   * `SHARED_FIELD_VERSIONS` envelope per location and one expression table
-   * for all of them.
-   *
-   * `after_event_id` selects every location carrying a version or a read at
-   * or after that point on the session clock, and each selected location is
-   * returned with its *complete* retained version list -- a read that
-   * observed an older version still needs that version's expression.  0 means
-   * everything.  A region scopes itself by passing its entry event.
-   *
-   * `max_bytes` bounds one answer: the read-out stops at a location boundary,
-   * reports `complete: false` and names `nextAfterEventId` to resume from.  0
-   * means no budget.  The first location is always emitted, so a budget
-   * smaller than one envelope makes progress rather than looping.
-   *
-   * Locations ascend by their lowest event id, so a resume is well defined.
-   */
-  static std::string tracked_locations(jlong after_event_id, jint max_bytes);
+  // ---- the location lock ---------------------------------------------------
+
+  /** Takes / releases the stripe guarding `location`.  Not reentrant. */
+  static void lock(const Location &location);
+  static void unlock(const Location &location);
+  /** The stripe index of a location; for callers holding several. */
+  static int stripe_of(const Location &location);
+  /** Takes each stripe of `stripes` (sorted, distinct) in order. */
+  static void lock_stripes(const std::vector<int> &stripes);
+  static void unlock_stripes(const std::vector<int> &stripes);
+
+  // ---- writes --------------------------------------------------------------
 
   /**
-   * Versions one completed write, by value.
-   *
-   * `symbolic` says whether the value being stored is itself symbolic.  A
-   * symbolic store is always kept, and starts this location's log if it is
-   * the first.  A concrete store is kept only where a log already exists --
-   * there it must be, or a later read would resolve to an expression this
-   * store has overwritten -- and is free everywhere else.
-   *
-   * `stored` is the concrete word the store left, unstated for a reference
-   * or a whole state.
-   *
-   * Returns the new fieldVersionId, or 0 when nothing was recorded.
+   * Prepares one store outside every lock: nothing is built here, so a
+   * store the location turns out not to keep costs nothing more.  `value`
+   * NULL is a concrete store; `path_guard` is the writer's guard, already
+   * folded; `starts_log` says the store may start the location's log
+   * (symbolic, or an admitted guarded store).  The writer's attribution is
+   * taken under the lock, and only for a version.
+   */
+  static void prepare_store(Store *store, const Location &location,
+                            Expression *value, Expression *path_guard,
+                            bool symbolic, bool starts_log,
+                            int version_kind = VERSION_WRITE);
+
+  /**
+   * Under the location's stripe, before the concrete store: whether the
+   * store is versioned at all (tracked, or starting the log), and the value
+   * a starting log publishes as its INITIAL, read from `cell`.
+   */
+  static bool begin_store_locked(Store *store, const Cell &cell);
+
+  /**
+   * Under the stripe, after the concrete store: appends the version.  A
+   * concrete store's value is the constant of `stored`, else (a reference)
+   * the identity of `stored_reference`.
+   */
+  static jlong end_store_locked(Store *store, const ConcreteBits &stored,
+                                oop stored_reference);
+
+  /**
+   * One complete write that is not a bytecode store (a mint, an attach, a
+   * container mutation): prepared, locked and appended here.  `symbolic`
+   * starts the log.  Returns the version id, or 0 when nothing was kept.
    */
   static jlong publish_value(const Location &location, Expression *value,
                              const ConcreteBits &stored,
@@ -547,52 +369,96 @@ public:
                              const char *operation = NULL);
 
   /**
-   * Starts an untracked location's log with an INITIAL base version.
-   *
-   * A container's relation chain resolves as base + PUT/REMOVE..., so the
-   * base has to be a version of its own or the first mutation has no
-   * receiver a reader can resolve.  Under retention by value the log begins
-   * at the first symbolic write, so the base is published there rather than
-   * at a declaration that may never come or may come later.
-   *
-   * Returns 0 when the location is already tracked.
+   * Starts an untracked location's log with an INITIAL base version whose
+   * word is `stored`.  Returns 0 when the location is already tracked.
    */
   static jlong publish_initial(const Location &location, Expression *base,
                                const ConcreteBits &stored,
                                const InitialSnapshot &snapshot);
 
   /**
-   * Appends one version for a completed write.  `value` and `path_guard` must
-   * already exist; nothing is constructed under the lock.  Returns the new
-   * fieldVersionId, or 0 when the location has no log and `start_tracking` is
-   * false.
-   *
-   * `operation` is the publisher's name for a whole-state mutation; NULL
-   * falls back to the version kind.  Prefer publish_value(): it is the one
-   * that decides, from the value, whether the write is kept at all.
+   * The same for a value a cell already holds: the word and its constant are
+   * read under the stripe, so no store can fall between them and the log's
+   * start.  `*base_out` receives the INITIAL's value (NULL when the location
+   * was already tracked).
    */
-  static jlong publish(const Location &location, Expression *value,
-                       const ConcreteBits &stored,
-                       Expression *path_guard, int version_kind,
-                       const char *operation = NULL,
-                       bool start_tracking = false,
-                       const InitialSnapshot *snapshot = NULL);
+  static jlong publish_initial_held(const Location &location,
+                                    const Cell &cell, Expression **base_out);
 
   /**
-   * Records that this location has a writer nobody can name.
-   *
-   * An operation the engine does not model is still a write: it changed the
-   * location and left no version behind.  Saying so permanently prevents a
-   * later query over the retained candidates from being published as closed.
-   * Returns false when the location is not selected, which is the case where
-   * there is nothing to keep honest.
+   * A version stating the value a cell already holds, read under the stripe
+   * (a mint, an attach): `value` is its expression.
    */
-  static bool mark_writer_set_incomplete(const Location &location);
+  static jlong publish_held(const Location &location, const Cell &cell,
+                            Expression *value, Expression *path_guard,
+                            int version_kind);
 
-  // Raw bits of one stored primitive, in the one encoding both the version
-  // and the read compare against.  Float and double go through their bit
-  // patterns rather than a numeric widening, so that -0.0 and NaN compare as
-  // the values the program actually stored.
+  /**
+   * Records that this location has a writer nobody can name, and why.
+   * Returns false when the location is not tracked.
+   */
+  static bool mark_writer_set_incomplete(const Location &location,
+                                         const char *reason);
+  static bool mark_writer_set_incomplete_locked(const Location &location,
+                                                const char *reason);
+
+  // ---- reads ---------------------------------------------------------------
+
+  /** Fills the reader's attribution outside every lock. */
+  static void prepare_read(ReadPlan *plan);
+
+  /**
+   * Decides and records one read of a tracked location, under its stripe,
+   * right after the concrete load.  `loaded` is the word the load took
+   * (unstated for a reference or a container query).  False when the
+   * location is not tracked.
+   */
+  static bool plan_read_locked(const Location &location,
+                               const ConcreteBits &loaded, ReadPlan *plan);
+
+  /** prepare_read + lock + plan_read_locked + unlock, for a container. */
+  static bool plan_read(const Location &location, const ConcreteBits &loaded,
+                        ReadPlan *plan);
+
+  /**
+   * The read-from node every reader of a tracked location publishes, around
+   * `observed_value` (a scalar's own version value, or a container query
+   * applied to the observed state), stating `returned`.
+   */
+  static Expression *build_read_from(
+      const ReadPlan &plan, const Location &location,
+      const std::string &type_name, Expression *observed_value,
+      const ReturnedValue &returned);
+
+  /**
+   * The expression of one scalar read, built after the stripe is released:
+   * `loaded` and `reference` are what the load returned.  A read that
+   * returned its observed version's word states that version's constant.
+   */
+  static Expression *scalar_read(const ReadPlan &plan,
+                                 const Location &location,
+                                 const std::string &type_name,
+                                 const ConcreteBits &loaded, oop reference);
+
+  /**
+   * What a scalar read or a call returned, as its node states it: the
+   * constant of a stated `word`, else null or a String's content (capped at
+   * MAX_RETURNED_STRING_BYTES, past which it says only that it was cut) for
+   * `reference`, else nothing.
+   */
+  static ReturnedValue returned_value(const ConcreteBits &word,
+                                      oop reference);
+
+  /** The version live at `location` right now, without recording. */
+  static jlong live_version(const Location &location,
+                            std::string *version_kind);
+
+  /** The tracked element slots of array `owner` in [from, to), ascending. */
+  static void tracked_elements(sym_rid_t owner, int from, int to,
+                               std::vector<int> *slots);
+
+  // ---- words and constants -------------------------------------------------
+
   static jlong raw_bits(jboolean value) { return (jlong)(value & 1); }
   static jlong raw_bits(jbyte value)    { return (jlong) value; }
   static jlong raw_bits(jchar value)    { return (jlong) value; }
@@ -602,192 +468,132 @@ public:
   static jlong raw_bits(jfloat value)   { return (jlong) jint_cast(value); }
   static jlong raw_bits(jdouble value)  { return jlong_cast(value); }
 
-  /** Builds the constant/reference expression that describes a stored value. */
   static Expression *primitive_expression(BasicType type, jlong bits);
+  /** A referent's identity (or its value, for a box or a String). */
   static Expression *reference_expression(oop value);
 
-  /**
-   * The word a primitive field holds right now; unstated for a reference.
-   * For a publisher that states the value a field already holds (a mint, an
-   * observation, an attach) rather than one it is storing.
-   */
+  /** The word a field holds right now, as `type`; unstated for a reference. */
   static ConcreteBits field_bits(oop owner, int field_offset, BasicType type);
-
-  /**
-   * What a field holds right now, as an expression.
-   *
-   * Read straight from the object rather than from an operand stack, so a
-   * projection can state the value this run observed wherever it is built --
-   * including before the concrete load has been pushed.
-   *
-   * A primitive field answers with its constant.  A reference-typed one
-   * answers with the referent's identity in the one spelling an owner
-   * identity has (`reference_expression`), so that a read reference and the
-   * owner of another read are the same term, and with the null symbol when
-   * the field held null.  Either way the read states what it read: a
-   * reference-typed field used to answer NULL, which left its projection
-   * with nothing for the composer to value it by.
-   */
+  /** The word an array element holds right now; unstated for a reference. */
+  static ConcreteBits element_bits(arrayOop array, int index);
+  /** The word a cell holds right now. */
+  static ConcreteBits cell_word(const Location &location, const Cell &cell);
+  /** What a cell holds right now, as an expression (its word's constant,
+   *  else the referent's identity). */
+  static Expression *cell_value(const Location &location, const Cell &cell,
+                                const ConcreteBits &word);
+  /** What a field holds right now, as an expression. */
   static Expression *field_value(oop owner, int field_offset,
                                  BasicType type);
 
+  /**
+   * The word a wrapper-typed cell holds: the primitive of a box of
+   * Boolean/Byte/Character/Short/Integer/Long, the null word for null, and
+   * unstated for any other object.
+   */
+  static ConcreteBits boxed_word(oop box);
+  /** The primitive a wrapper-typed field holds, or T_ILLEGAL. */
+  static BasicType wrapper_value_type(Symbol *field_signature);
+  /** The same, for the field a getfield/putfield cache entry names. */
+  static BasicType wrapper_value_type(ConstantPoolCacheEntry *entry);
+
   static const char *location_kind_name(int kind);
   static const char *version_kind_name(int kind);
-  /**
-   * What one version's `versionKind` reads as.
-   *
-   * The kind's own name, except for a whole-state version, which reads as
-   * `STATE_<operation>` so that the mutation is named where a consumer
-   * already looks for the kind.  This is a wider vocabulary in an existing
-   * string member, not a new member: the record's shape is unchanged and
-   * schemaVersion stays 1.
-   */
+  /** A version's `versionKind`: its kind, or STATE_<operation>. */
   static std::string version_label(const Version &version);
 
+  // ---- guarded stores ------------------------------------------------------
+
   /**
-   * Installs the guarded-store table for this session and returns how many
-   * store methods it names.
-   *
-   * A concrete store is evidence only when it is CONTROL-DEPENDENT on a
-   * symbolic decision -- the store a flipped branch would change.  "Anything
-   * after any symbolic branch" is not that: on 17960's seed it logged
-   * DigestBase#engineUpdate, HeapByteBuffer#_put and nine more protobuf
-   * serialization internals reached from the anchor's own decision, and the
-   * explorer read those versions as six BLOCKING TOPOLOGY_DIVERGENCE.
-   *
-   * Control dependence is a static fact the PLAN stage already computes by
-   * post-dominance and publishes per write site, so the VM is told it rather
-   * than guessing: one line per store method,
-   * `<internal/Class>#<name><descriptor>` followed by that method's guard
-   * sites as the remaining tab-separated fields,
-   * where the guard sites are the woven branch site ids the runtime passes to
-   * markConcolicBranch.  A method the table does not name never starts a log
-   * by a concrete store, and neither does one whose guard sites have all not
-   * decided anything on this path.
-   *
-   * Installing replaces the whole table; an empty one admits nothing, which
-   * is the fail-closed state before a plan has been installed.
+   * Installs the guarded-store table (store method -> the woven branch
+   * sites its stores are control-dependent on, tab-separated) and returns
+   * how many store methods it names.  Empty admits nothing.
    */
   static int install_guarded_store_sites(const char *table);
 
   /**
-   * Whether a concrete store by the calling thread, right here, is
-   * control-dependent on a symbolic decision it has already taken.
+   * Whether a concrete store by the calling thread, right here (in
+   * `store_method`, or the innermost frame's method when NULL), is
+   * control-dependent on a symbolic decision it has already taken.  A
+   * method is looked up in the table once per session.
    */
-  static bool guarded_store_admitted();
+  static bool guarded_store_admitted(Method *store_method = NULL);
 
   /** Where the calling thread stands, for one logged event to state. */
   static EventSite current_site();
+  /** The calling thread's attribution (empty without a context). */
+  static Attribution current_attribution();
 
   /** The one writer of a logged event's `site` member. */
   static void write_site(
       rapidjson::Writer<rapidjson::StringBuffer> &writer,
       const EventSite &site);
 
+  // ---- read-outs -----------------------------------------------------------
+
+  /**
+   * Every tracked location with an event at or after `after_event_id` (0:
+   * all), as SHARED_FIELD_VERSIONS envelopes with one expression table.
+   * Locations ascend by their highest event id and `max_bytes` stops the
+   * answer at a location boundary: `nextAfterEventId` is one past the last
+   * emitted location's highest event, so a resume neither repeats nor skips
+   * a location (event ids are unique per location) and never goes back.
+   */
+  static std::string tracked_locations(jlong after_event_id, jint max_bytes);
+
+  /** One location's versions as evidence, for tests and tracing. */
+  static std::string describe(const Location &location);
+
   /** One resolved read, kept so that a consumer can audit the decision. */
   struct ReadRecord {
     jlong read_event_id;
-    jlong reader_context_id;
-    std::string region_id;
-    std::string task_id;
-    jlong region_enter_event_id;
-    // Where this event stood; see EventSite.
-    EventSite site;
-    ReadRecord()
-        : read_event_id(0), reader_context_id(0),
-          region_enter_event_id(0) {}
+    Attribution reader;
+    ReadRecord() : read_event_id(0) {}
   };
 
-  /**
-   * One location's retained history.
-   *
-   * Public only because the read-out's ordering helpers take one by
-   * reference; it is engine-internal state and nothing outside this file
-   * constructs or mutates one.
-   */
+  /** One location's retained history; guarded by its stripe. */
   struct Slot {
     VersionList versions;
     std::vector<ReadRecord> reads;
     bool writer_set_complete;
     bool read_log_complete;
+    std::string incomplete_reason;
     Slot() : writer_set_complete(true), read_log_complete(true) {}
   };
 
-  /** Serializes one location's versions as evidence, for tests and tracing. */
-  static std::string describe(const Location &location);
+  // Bounded on purpose; see the retention note above.
+  static const size_t MAX_VERSIONS_PER_LOCATION = 64;
+  static const size_t MAX_READS_PER_LOCATION = 1024;
+  // A String a read returned is stated up to this many bytes (item 6).
+  static const size_t MAX_RETURNED_STRING_BYTES = 4096;
+  static const int STRIPES = 64;
 
 private:
-  /**
-   * Writes one SHARED_FIELD_VERSIONS envelope, without closing its object and
-   * without an expression table: the caller owns both, so a single-location
-   * answer and the whole read-out emit byte-identical envelopes.  Returns
-   * true when the envelope was cut short by `budget_bytes` (0 = the default
-   * per-envelope bound).
-   */
   static bool write_versions_envelope(
       rapidjson::Writer<rapidjson::StringBuffer> &writer,
       const rapidjson::StringBuffer &buffer,
       VmExpressionArtifactScope &expression_artifact,
-      const Location &location, const VersionList &versions,
-      const std::vector<ReadRecord> &reads, bool selected, bool complete,
-      bool read_log_complete, size_t budget_bytes);
-
-  // Bounded on purpose; see the retention note above.  A location that needs
-  // more than this many live writers is not a bounded carrier.
-  static const size_t MAX_VERSIONS_PER_LOCATION = 64;
-  // The read log is evidence rather than a constraint, so its bound is larger
-  // and its truncation is reported separately from the writer set.  Sized for
-  // a service workload in which one selected map is read by the target path
-  // and by every observer of it: a few hundred reads per location is ordinary,
-  // so this is generous enough that hitting it means something unexpected.
-  static const size_t MAX_READS_PER_LOCATION = 1024;
+      const Location &location, const Slot &slot, bool selected,
+      size_t budget_bytes);
 
   typedef std::map<Location, Slot> SlotStore;
 
-  struct PendingReadKey {
-    jlong context_id;
-    Location location;
-    PendingReadKey() : context_id(0) {}
-    PendingReadKey(jlong context, const Location &field)
-        : context_id(context), location(field) {}
-    bool operator<(const PendingReadKey &other) const {
-      if (context_id != other.context_id) return context_id < other.context_id;
-      return location < other.location;
-    }
-  };
-
-  struct PendingPrimitiveRead {
-    jlong token;
-    // The region occurrence that armed this read.  Consumption does not look
-    // at it -- the arming code's own read is the consumer wherever it is --
-    // but a region-boundary purge drops only what that region armed.
-    jlong region_enter_event_id;
-    BasicType type;
-    jlong value_bits;
-    PendingPrimitiveRead()
-        : token(0), region_enter_event_id(0), type(T_ILLEGAL),
-          value_bits(0) {}
-  };
-
-  typedef std::map<PendingReadKey, PendingPrimitiveRead> PendingReadStore;
-  /** receipt token -> the armed entry it names, so confirm is a lookup. */
-  typedef std::map<jlong, PendingReadKey> ArmedTokenIndex;
-  typedef std::map<jlong, jlong> ConsumedReadStore;
-
   static bool _open;
   static SlotStore _slots;
-  static PendingReadStore _pending_primitive_reads;
-  static ArmedTokenIndex _armed_read_tokens;
-  /** receipt token -> consuming context */
-  static ConsumedReadStore _consumed_primitive_reads;
-  // Relaxed reader, mutex-guarded writer.  Deliberately not the map's size:
-  // reading std::map::size() without the lock is not safe.
   static volatile int _carrier_count;
+  // Relaxed reader, _mutex writer: the guarded-store table's size.
+  static volatile int _guarded_store_count;
   static pthread_mutex_t _mutex;
+  static pthread_mutex_t _stripes[STRIPES];
 
-  static Slot *find_slot_locked(const Location &location);
-  // Appends under _mutex, dropping the oldest version past the bound.
-  static void append_locked(Slot *slot, const Version &version);
+  // Under the stripe: the slot, or NULL (takes _mutex for the lookup).
+  static Slot *find_slot(const Location &location);
+  // Under the stripe: the slot, created when absent (takes _mutex).
+  static Slot *find_or_create_slot(const Location &location);
+  // Under the stripe: appends, dropping the oldest version past the bound.
+  static jlong append_locked(Slot *slot, Version *version);
+  static void incomplete_locked(Slot *slot, const char *reason);
+  static void fill_version(Version *version, const Store &store);
 };
 
 #endif // ENABLE_CONCOLIC

@@ -28,6 +28,7 @@
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/fieldAccessExpression.hpp"
 #include "concolic/reference/containerSupport.hpp"
+#include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/sharedFieldVersions.hpp"
 #include "gc_interface/collectedHeap.hpp"
 #include "interpreter/bytecodeHistogram.hpp"
@@ -2365,16 +2366,25 @@ run:
   (ConcolicMngr::ctx == NULL && SharedFieldVersions::has_carriers()           \
    && (owner)->is_named())
 
-// Carrier state for one array element load, split across the concrete load
-// exactly as the field read is: the shadow slot is addressed with the pre-load
-// stack shape, and the value the read returned is only known afterwards.
+// Carrier state for one array element load.  A tracked element's concrete
+// load and its log entry are one critical section (SharedFieldVersions): the
+// stripe is taken just before the load (CONCOLIC_ALOAD_LOCK) and released
+// right after the read is planned (CONCOLIC_ALOAD_RESOLVE); the node is built
+// outside it.
 #define CONCOLIC_ALOAD_CARRIER                                                 \
   CONCOLIC_EVENT_PC();                                                         \
   SharedFieldVersions::Location aload_location;                                \
+  SharedFieldVersions::ReadPlan aload_plan;                                    \
   int aload_anchor = 0;                                                        \
   int aload_slots = 0;                                                         \
   int aload_index = 0;                                                         \
   bool aload_selected = false;
+
+#define CONCOLIC_ALOAD_LOCK                                                    \
+  if (aload_selected) {                                                        \
+    SharedFieldVersions::prepare_read(&aload_plan);                            \
+    SharedFieldVersions::lock(aload_location);                                 \
+  }
 
 #define CONCOLIC_ALOAD_SELECT(res_off, res_slots)                              \
   if (SharedFieldVersions::has_carriers() && arrObj->is_symbolic()) {          \
@@ -2391,25 +2401,29 @@ run:
   }
 
 // `bits` is the word the load pushed: what the element held, and what the
-// read returned.
-#define CONCOLIC_ALOAD_RESOLVE(T, bits)                                        \
+// read returned.  `reference` is the element an object-array load pushed.
+#define CONCOLIC_ALOAD_RESOLVE_WORD(element_type, word, reference)             \
   if (aload_selected) {                                                        \
-    BasicType element_type =                                                   \
-        arrObj->klass() == Universe::boolArrayKlassObj() ? T_BOOLEAN : (T);    \
-    const SharedFieldVersions::ConcreteBits aload_word(element_type, (bits));  \
-    SharedFieldVersions::ReadResult resolved;                                  \
-    if (SharedFieldVersions::resolve_read(                                     \
-            aload_location, element_type, aload_word,                          \
-            SharedFieldVersions::returned_value(aload_word, NULL),             \
-            &resolved)) {                                                      \
-      if (resolved.expression != NULL) {                                       \
-        ConcolicMngr::ctx->set_stack_value(                                    \
-            aload_anchor, aload_slots, resolved.expression,                    \
-            aload_location.owner, aload_index);                                \
-      } else {                                                                 \
-        ConcolicMngr::ctx->clear_stack_value(aload_anchor, aload_slots);        \
-      }                                                                        \
+    const bool aload_planned = SharedFieldVersions::plan_read_locked(          \
+        aload_location, (word), &aload_plan);                                  \
+    SharedFieldVersions::unlock(aload_location);                               \
+    if (aload_planned) {                                                       \
+      ConcolicMngr::ctx->set_pc_admitted(true);                                \
+      ConcolicMngr::ctx->set_stack_value(                                      \
+          aload_anchor, aload_slots,                                           \
+          SharedFieldVersions::scalar_read(                                    \
+              aload_plan, aload_location,                                      \
+              std::string(1, type2char(element_type)), (word), (reference)),   \
+          aload_location.owner, aload_index);                                  \
     }                                                                          \
+  }
+
+#define CONCOLIC_ALOAD_RESOLVE(T, bits)                                        \
+  {                                                                            \
+    const BasicType element_type =                                             \
+        arrObj->klass() == Universe::boolArrayKlassObj() ? T_BOOLEAN : (T);    \
+    CONCOLIC_ALOAD_RESOLVE_WORD(element_type,                                  \
+        SharedFieldVersions::ConcreteBits(element_type, (bits)), (oop) NULL)   \
   }
 
 #define CONCOLIC_ALOAD(T, T2, arrayOff, res_off, res_slots)                    \
@@ -2422,13 +2436,13 @@ run:
         stack_offset + arrayOff + 1, 1);                                      \
     Expression *value_exp = NULL;                                              \
     if (index_exp != NULL || arrObj->is_symbolic()) {                          \
-      bool named_now = !arrObj->is_symbolic();                                 \
-      SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);     \
-      if (named_now) sym_arr->set_named(true);                                 \
+      SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(            \
+          arrObj, NULL, true);                                                 \
       Expression *container_state =                                           \
           ConcolicMngr::ctx->container_state(arrObj, "INDEXED");              \
       if (!ContainerSupport::recorded_element(                                \
-              sym_arr, container_state, index_exp, index, &value_exp)) {      \
+              arrObj, sym_arr, container_state, index_exp, index,             \
+              &value_exp)) {                                                   \
         if (!index_exp) {                                                      \
           index_exp = new ConExpression(index);                                \
         }                                                                      \
@@ -2461,6 +2475,7 @@ run:
   }
 #else
 #define CONCOLIC_ALOAD_CARRIER
+#define CONCOLIC_ALOAD_LOCK
 #define CONCOLIC_ALOAD_RESOLVE(T, bits)
 #define CONCOLIC_ALOAD(T, T2, arrayOff, res_off, res_slots)
 #endif
@@ -2472,6 +2487,7 @@ run:
           CONCOLIC_ALOAD_CARRIER                                                      \
           CONCOLIC_ALOAD(T, T2, -2, -2, 1);                                           \
           (void)extra;                                                                \
+          CONCOLIC_ALOAD_LOCK                                                         \
           SET_ ## stackRes(*(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)), \
                            -2);                                                       \
           CONCOLIC_ALOAD_RESOLVE(                                                     \
@@ -2485,6 +2501,7 @@ run:
           ARRAY_INTRO(-2);                                                                 \
           CONCOLIC_ALOAD_CARRIER                                                           \
           CONCOLIC_ALOAD(T, T2, -2, -1, 2);                                                \
+          CONCOLIC_ALOAD_LOCK                                                              \
           SET_ ## stackRes(*(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)), -1); \
           CONCOLIC_ALOAD_RESOLVE(                                                          \
               T, SharedFieldVersions::raw_bits((T2) stackRes(-1)));                        \
@@ -2511,14 +2528,12 @@ run:
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 1, 1);
             Expression *value_exp = NULL;
             if (index_exp != NULL || arrObj->is_symbolic()) {
-              bool named_now = !arrObj->is_symbolic();
-              SymArr *sym_arr =
-                  ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);
-              if (named_now) sym_arr->set_named(true);
+              SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(
+                  arrObj, NULL, true);
               Expression *container_state =
                   ConcolicMngr::ctx->container_state(arrObj, "INDEXED");
               if (!ContainerSupport::recorded_element(
-                      sym_arr, container_state, index_exp, index,
+                      arrObj, sym_arr, container_state, index_exp, index,
                       &value_exp)) {
                 if (!index_exp) {
                   index_exp = new ConExpression(index);
@@ -2545,8 +2560,11 @@ run:
             ConcolicMngr::ctx->set_stack_value(
                 stack_offset - 2, 1, value_exp, arrObj->get_sym_rid(), index);
             CONCOLIC_ALOAD_SELECT(-2, 1)
+            // A JVM-wide element (a cached box, an interned String) keeps
+            // no expression: the value rides the loaded slot (item 5).
             if (value_exp != NULL && !isElemNull
-                && !ConcolicMngr::ctx->requires_detached_object_shadow(obj)) {
+                && !ConcolicMngr::ctx->requires_detached_object_shadow(obj)
+                && !jvm_shared_object(obj)) {
               SymInstance* sym_inst =
                   ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
               if (sym_inst != NULL) {
@@ -2559,27 +2577,13 @@ run:
               }
             }
           }
+          CONCOLIC_ALOAD_LOCK
 #endif
           SET_STACK_OBJECT(((objArrayOop) arrObj)->obj_at(index), -2);
 #ifdef ENABLE_CONCOLIC
-          if (aload_selected) {
-            SharedFieldVersions::ReadResult resolved;
-            if (SharedFieldVersions::resolve_read(
-                    aload_location, T_OBJECT,
-                    SharedFieldVersions::ConcreteBits(),
-                    SharedFieldVersions::returned_value(
-                        SharedFieldVersions::ConcreteBits(), STACK_OBJECT(-2)),
-                    &resolved)) {
-              if (resolved.expression != NULL) {
-                ConcolicMngr::ctx->set_stack_value(
-                    aload_anchor, aload_slots, resolved.expression,
-                    aload_location.owner, aload_index);
-              } else {
-                ConcolicMngr::ctx->clear_stack_value(
-                    aload_anchor, aload_slots);
-              }
-            }
-          }
+          CONCOLIC_ALOAD_RESOLVE_WORD(T_OBJECT,
+                                      SharedFieldVersions::ConcreteBits(),
+                                      STACK_OBJECT(-2))
 #endif
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);
       }
@@ -2595,48 +2599,60 @@ run:
           ARRAY_LOADTO64(T_DOUBLE, jdouble, STACK_DOUBLE, 0);
 
 #ifdef ENABLE_CONCOLIC
-// Carrier state for one array element store.  Declared in the store's own
-// block so that the decision survives the concrete store and the version is
-// published only after it, exactly as putfield does.
+// Carrier state for one array element store.  Decided while the shadow
+// stack still holds the value (CONCOLIC_ASTORE_SELECT); then the concrete
+// store and its version are one critical section under the element's stripe
+// (CONCOLIC_ASTORE_LOCK before the store, CONCOLIC_ASTORE_PUBLISH after it),
+// exactly as putfield does.
 #define CONCOLIC_ASTORE_CARRIER                                                \
   CONCOLIC_EVENT_PC();                                                         \
-  SharedFieldVersions::Location astore_location;                               \
-  Expression *astore_value = NULL;                                             \
-  Expression *astore_guard = NULL;                                             \
-  bool astore_selected = false;                                                \
-  bool astore_symbolic = false;
+  SharedFieldVersions::Store astore;                                           \
+  bool astore_selected = false;
 
+// A symbolic value is kept, a concrete one where the element is tracked or
+// where the store is control-dependent on a symbolic decision (D5: such a
+// store used to start no log for an element, only for a container).
 #define CONCOLIC_ASTORE_SELECT(value_exp)                                      \
-  if (arrObj->is_symbolic()                                                    \
-      && ((value_exp) != NULL || SharedFieldVersions::has_carriers())) {       \
-    SharedFieldVersions::Location location(                                    \
-        arrObj->get_sym_rid(), index,                                          \
-        SharedFieldVersions::LOC_ARRAY_ELEMENT);                               \
-    astore_symbolic = (value_exp) != NULL;                                     \
-    if (astore_symbolic || SharedFieldVersions::is_tracked(location)) {        \
+  if (arrObj->is_symbolic()) {                                                 \
+    const bool astore_guarded = (value_exp) == NULL                            \
+        && ConcolicMngr::ctx->path_guarded()                                   \
+        && SharedFieldVersions::guarded_store_admitted(METHOD);                \
+    if ((value_exp) != NULL || astore_guarded                                  \
+        || SharedFieldVersions::has_carriers()) {                              \
+      SharedFieldVersions::prepare_store(                                      \
+          &astore,                                                             \
+          SharedFieldVersions::Location(arrObj->get_sym_rid(), index,          \
+              SharedFieldVersions::LOC_ARRAY_ELEMENT),                         \
+          (value_exp), ConcolicMngr::ctx->path_guard(), (value_exp) != NULL,   \
+          astore_guarded);                                                     \
       astore_selected = true;                                                  \
-      astore_location = location;                                              \
-      astore_value = (value_exp);                                              \
-      astore_guard = ConcolicMngr::ctx->path_guard();                          \
     }                                                                          \
   }
 
 #define CONCOLIC_ASTORE_UNATTRIBUTED                                           \
-  astore_location = SharedFieldVersions::Location(                             \
-      arrObj->get_sym_rid(), index, SharedFieldVersions::LOC_ARRAY_ELEMENT);   \
-  astore_selected = SharedFieldVersions::is_tracked(astore_location);
+  SharedFieldVersions::prepare_store(                                          \
+      &astore,                                                                 \
+      SharedFieldVersions::Location(arrObj->get_sym_rid(), index,              \
+                                    SharedFieldVersions::LOC_ARRAY_ELEMENT),   \
+      NULL, NULL, false, false);                                               \
+  astore_selected = true;
+
+#define CONCOLIC_ASTORE_LOCK(T)                                                \
+  if (astore_selected) {                                                       \
+    SharedFieldVersions::lock(astore.location);                                \
+    SharedFieldVersions::begin_store_locked(                                   \
+        &astore, SharedFieldVersions::Cell(arrObj, (T)));                      \
+  }
+
+#define CONCOLIC_ASTORE_PUBLISH_WORD(word, reference)                          \
+  if (astore_selected) {                                                       \
+    SharedFieldVersions::end_store_locked(&astore, (word), (reference));       \
+    SharedFieldVersions::unlock(astore.location);                              \
+  }
 
 #define CONCOLIC_ASTORE_PUBLISH(T, bits)                                       \
-  if (astore_selected) {                                                       \
-    Expression *published = astore_value;                                      \
-    if (published == NULL) {                                                   \
-      published = SharedFieldVersions::primitive_expression(T, (bits));        \
-    }                                                                          \
-    SharedFieldVersions::publish_value(                                        \
-        astore_location, published,                                            \
-        SharedFieldVersions::ConcreteBits(T, (bits)), astore_guard,            \
-        astore_symbolic, SharedFieldVersions::VERSION_WRITE);                  \
-  }
+  CONCOLIC_ASTORE_PUBLISH_WORD(SharedFieldVersions::ConcreteBits(T, (bits)),   \
+                               (oop) NULL)
 
 #define CONCOLIC_ASTORE(arrayOff, delta, value_slots, value, T)                \
   if (ConcolicMngr::can_do_concolic()) {                                       \
@@ -2647,9 +2663,11 @@ run:
         ConcolicMngr::ctx->get_stack_slot(stack_offset + delta);    \
     CONCOLIC_ASTORE_SELECT(value_exp)                                          \
     if (arrObj->is_symbolic() || index_exp != NULL || value_exp != NULL) {     \
-      bool named_now = !arrObj->is_symbolic();                                 \
-      SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);     \
-      if (named_now) sym_arr->set_named(true);                                 \
+      SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(            \
+          arrObj, NULL, true);                                                 \
+      /* What the store leaves, so a read the log decides can check it. */    \
+      const ElementWord astore_word(value_exp != NULL,                         \
+                                    SharedFieldVersions::raw_bits(value));     \
       if (!value_exp) {                                                        \
         value_exp = new ConExpression(value);                                  \
       }                                                                        \
@@ -2667,7 +2685,7 @@ run:
       Expression *next_container_state = new ContainerExpression(             \
           "INDEXED", "WRITE",                                                \
           container_state,                                                     \
-          container_arguments, T);                                            \
+          container_arguments, T, std::string(), NULL, astore_word);          \
       ConcolicMngr::ctx->set_container_state(                                 \
           arrObj, next_container_state);                                      \
                                                                                \
@@ -2683,6 +2701,7 @@ run:
 #else
 #define CONCOLIC_ASTORE_CARRIER
 #define CONCOLIC_ASTORE_UNATTRIBUTED
+#define CONCOLIC_ASTORE_LOCK(T)
 #define CONCOLIC_ASTORE_PUBLISH(T, bits)
 #define CONCOLIC_ASTORE(arrayOff, delta, value_slots, value, T)
 #endif
@@ -2694,6 +2713,7 @@ run:
           CONCOLIC_ASTORE_CARRIER                                                       \
           CONCOLIC_ASTORE(-3, -1, 1, (T2) stackSrc(-1), T);                             \
           (void)extra;                                                                  \
+          CONCOLIC_ASTORE_LOCK(T)                                                       \
           *(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)) = stackSrc( -1);    \
           CONCOLIC_ASTORE_PUBLISH(                                                      \
               T, SharedFieldVersions::raw_bits((T2) stackSrc(-1)));                     \
@@ -2707,6 +2727,7 @@ run:
           CONCOLIC_ASTORE_CARRIER                                                       \
           CONCOLIC_ASTORE(-4, -1, 2, (T2) stackSrc(-1), T);                             \
           (void)extra;                                                                  \
+          CONCOLIC_ASTORE_LOCK(T)                                                       \
           *(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)) = stackSrc( -1);    \
           CONCOLIC_ASTORE_PUBLISH(                                                      \
               T, SharedFieldVersions::raw_bits((T2) stackSrc(-1)));                     \
@@ -2768,16 +2789,19 @@ run:
             CONCOLIC_ASTORE_SELECT(value_exp)
             if (arrObj->is_symbolic() || index_exp != NULL
                 || value_exp != NULL) {
-              bool named_now = !arrObj->is_symbolic();
-              SymArr *sym_arr =
-                  ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);
-              if (named_now) sym_arr->set_named(true);
+              SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(
+                  arrObj, NULL, true);
               if (index_exp == NULL) {
                 index_exp = new ConExpression(index);
               }
+              // What the store leaves: the referent's session id, 0 for null.
+              const bool symbolic_value = value_exp != NULL;
               if (value_exp == NULL) {
                 value_exp = ContainerSupport::concrete_value(rhsObject);
               }
+              const ElementWord astore_word(symbolic_value,
+                  rhsObject == NULL ? 0
+                      : (jlong) ConcolicMngr::ctx->name_reference(rhsObject));
               exp_list_t container_arguments;
               container_arguments.push_back(index_exp);
               container_arguments.push_back(value_exp);
@@ -2788,7 +2812,8 @@ run:
               ConcolicMngr::ctx->set_container_state(
                   arrObj, new ContainerExpression(
                       "INDEXED", "WRITE", container_state,
-                      container_arguments, T_OBJECT));
+                      container_arguments, T_OBJECT, std::string(), NULL,
+                      astore_word));
               sym_arr->store();
             }
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 3, 1);
@@ -2797,20 +2822,12 @@ run:
           } else if (CONCOLIC_OUTSIDE_EVERY_REGION(arrObj)) {
             CONCOLIC_ASTORE_UNATTRIBUTED
           }
+          CONCOLIC_ASTORE_LOCK(T_OBJECT)
 #endif
           ((objArrayOop) arrObj)->obj_at_put(index, rhsObject);
 #ifdef ENABLE_CONCOLIC
-          if (astore_selected) {
-            Expression *published = astore_value;
-            if (published == NULL) {
-              published =
-                  SharedFieldVersions::reference_expression(STACK_OBJECT(-1));
-            }
-            SharedFieldVersions::publish_value(
-                astore_location, published,
-                SharedFieldVersions::ConcreteBits(), astore_guard,
-                astore_symbolic, SharedFieldVersions::VERSION_WRITE);
-          }
+          CONCOLIC_ASTORE_PUBLISH_WORD(SharedFieldVersions::ConcreteBits(),
+                                       rhsObject)
 #endif
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -3);
       }
@@ -2830,6 +2847,7 @@ run:
           } else {
             CONCOLIC_ASTORE(-3, -1, 1, (jbyte) item, T_BYTE);
           }
+          CONCOLIC_ASTORE_LOCK(T_BYTE)
           ((typeArrayOop)arrObj)->byte_at_put(index, item);
           if (arrObj->klass() == Universe::boolArrayKlassObj()) {
             CONCOLIC_ASTORE_PUBLISH(
@@ -3104,12 +3122,14 @@ run:
           // Capture the selected location before the concrete load so its
           // guarded expression can replace the ordinary field shadow below.
           SharedFieldVersions::Location carrier_location;
+          SharedFieldVersions::ReadPlan carrier_plan;
           sym_rid_t carrier_owner_rid = NULL_SYM_RID;
           int carrier_anchor = 0;
           int carrier_slots = 0;
           bool carrier_read = false;
-          bool replay_primitive_read = false;
-          jlong replay_primitive_bits = 0;
+          // The primitive a wrapper-typed carrier holds (its word is its
+          // box's value), else T_ILLEGAL.
+          BasicType carrier_boxed = T_ILLEGAL;
           // The receiver's own shadow, captured before the result overwrites
           // its slot.  When it is a read through a reference-typed carrier,
           // this field read is dependent on *which writer's object* the
@@ -3127,12 +3147,27 @@ run:
                 - (result_slots == 1 ? 1 : 0);
             dependent_anchor = result_anchor;
             dependent_slots = result_slots;
+            // A box's value read out of it (the unboxing accessors): the
+            // expression a box's slot carries is its value, so it is the
+            // value read when the box object itself carries none.  A shared
+            // box (a JDK cache entry, Boolean.TRUE) never does: its value
+            // rides the slot only (item 5).
+            Expression *box_value = NULL;
             if ((Bytecodes::Code)opcode == Bytecodes::_getfield) {
               Expression *owner_shadow =
                   ConcolicMngr::ctx->get_stack_slot(stack_offset - 1);
               if (owner_shadow != NULL
                   && owner_shadow->is_guarded_reference_read()) {
                 reference_owner = owner_shadow;
+              } else if (owner_shadow != NULL) {
+                const BasicType boxed =
+                    java_lang_boxing_object::basic_type(obj);
+                if (boxed != T_ILLEGAL
+                    && field_offset
+                       == java_lang_boxing_object::value_offset_in_bytes(
+                              boxed)) {
+                  box_value = owner_shadow;
+                }
               }
             }
             SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
@@ -3148,11 +3183,16 @@ run:
                 carrier_owner_rid = sym_inst->get_sym_rid();
                 carrier_anchor = result_anchor;
                 carrier_slots = result_slots;
+                if (tos_type == atos) {
+                  carrier_boxed =
+                      SharedFieldVersions::wrapper_value_type(cache);
+                }
               }
             }
             if (sym_inst != NULL) {
               sym_rid_t sym_rid = sym_inst->get_sym_rid();
               Expression* sym_exp = sym_inst->get(field_offset);
+              if (sym_exp == NULL) sym_exp = box_value;
               if (sym_exp == NULL
                   && sym_inst->demand_symbolic_fields_enabled()
                   && !sym_inst->field_written(field_offset)) {
@@ -3220,14 +3260,15 @@ run:
               ConcolicMngr::ctx->set_stack_value(
                   result_anchor, result_slots, sym_exp, sym_rid, field_offset);
             } else {
+              if (box_value != NULL) ConcolicMngr::ctx->set_pc_admitted(true);
               ConcolicMngr::ctx->set_stack_value(
-                  result_anchor, result_slots, NULL);
+                  result_anchor, result_slots, box_value);
             }
             if (carrier_read) {
-              replay_primitive_read =
-                  SharedFieldVersions::consume_primitive_read(
-                      ConcolicMngr::ctx->get_context_id(), carrier_location,
-                      as_BasicType(tos_type), &replay_primitive_bits);
+              // The concrete load below and the read's log entry are one
+              // critical section under the location's stripe.
+              SharedFieldVersions::prepare_read(&carrier_plan);
+              SharedFieldVersions::lock(carrier_location);
             }
           }
 #endif
@@ -3280,52 +3321,31 @@ run:
           }
 
 #ifdef ENABLE_CONCOLIC
-          // The word the load took is what the location held; taken before a
-          // replay override replaces the operand, and from the operand rather
-          // than the heap, which a concurrent writer may have moved on since.
-          const SharedFieldVersions::ConcreteBits loaded_word = carrier_read
-              ? concolic_top_word(tos_type, topOfStack)
-              : SharedFieldVersions::ConcreteBits();
-          // Change only the concrete operand consumed by this execution.
-          // resolve_read below still installs the complete guarded
-          // ReadFromExpression as the shadow value.
-          if (replay_primitive_read) {
-            switch (tos_type) {
-              case ztos:
-              case btos:
-              case ctos:
-              case stos:
-              case itos:
-                SET_STACK_INT((jint) replay_primitive_bits, -1);
-                break;
-              case ltos:
-                SET_STACK_LONG((jlong) replay_primitive_bits, -1);
-                break;
-              default:
-                ShouldNotReachHere();
-            }
-          }
           if (carrier_read) {
-            BasicType read_type = as_BasicType(tos_type);
-            SharedFieldVersions::ReadResult resolved;
-            // What the program was handed: the override's word, if any.
-            if (SharedFieldVersions::resolve_read(
-                    carrier_location, read_type, loaded_word,
-                    SharedFieldVersions::returned_value(
-                        concolic_top_word(tos_type, topOfStack),
-                        tos_type == atos ? STACK_OBJECT(-1) : (oop) NULL),
-                    &resolved)) {
-              if (resolved.expression != NULL) {
-                ConcolicMngr::ctx->set_stack_value(
-                    carrier_anchor, carrier_slots, resolved.expression,
-                    carrier_owner_rid, field_offset);
-              } else {
-                // The concrete read came from no recorded candidate.  Its VM
-                // evidence is an open coverage gap; retaining the location's
-                // previous shadow here would silently invent provenance.
-                ConcolicMngr::ctx->clear_stack_value(
-                    carrier_anchor, carrier_slots);
-              }
+            // The word the load took, from the operand rather than the heap:
+            // for a wrapper-typed carrier its box's value (or the null word).
+            const SharedFieldVersions::ConcreteBits loaded_word =
+                carrier_boxed != T_ILLEGAL
+                    ? SharedFieldVersions::boxed_word(STACK_OBJECT(-1))
+                    : concolic_top_word(tos_type, topOfStack);
+            const bool planned = SharedFieldVersions::plan_read_locked(
+                carrier_location, loaded_word, &carrier_plan);
+            SharedFieldVersions::unlock(carrier_location);
+            if (planned) {
+              ConcolicMngr::ctx->set_pc_admitted(true);
+              // A wrapper carrier's read is its value's sort when it read a
+              // box; null reads as the reference it is.
+              const char read_type = carrier_boxed != T_ILLEGAL
+                  && loaded_word.stated() && !loaded_word.is_null()
+                  ? type2char(loaded_word.type)
+                  : type2char(as_BasicType(tos_type));
+              ConcolicMngr::ctx->set_stack_value(
+                  carrier_anchor, carrier_slots,
+                  SharedFieldVersions::scalar_read(
+                      carrier_plan, carrier_location,
+                      std::string(1, read_type), loaded_word,
+                      tos_type == atos ? STACK_OBJECT(-1) : (oop) NULL),
+                  carrier_owner_rid, field_offset);
             }
           }
           // The dependent read of a reference carrier.  `owner` keeps the
@@ -3445,17 +3465,14 @@ run:
 
 #ifdef ENABLE_CONCOLIC
           CONCOLIC_EVENT_PC();
-          // A selected carrier's version is decided here, while the shadow
-          // operand stack still holds the value being stored, and published
-          // after the concrete store below.  Splitting it across the store is
-          // the whole point: no version may exist for a store that did not
-          // happen, and a reader must not be able to select a writer whose
-          // value is not yet in the heap.
-          SharedFieldVersions::Location carrier_location;
-          Expression *carrier_value = NULL;
-          Expression *carrier_guard = NULL;
+          // A carrier's store is decided here, while the shadow operand
+          // stack still holds the value being stored; then the concrete store
+          // and its version are one critical section under the location's
+          // stripe (SharedFieldVersions), so no version exists for a store
+          // that did not happen and no reader sees a word whose version has
+          // not landed.
+          SharedFieldVersions::Store carrier_store;
           bool carrier_write = false;
-          bool carrier_symbolic = false;
 
           if (ConcolicMngr::can_do_concolic()) {
             int stack_offset = GET_STACK_OFFSET;
@@ -3497,33 +3514,36 @@ run:
               }
             }
             // What is kept is decided by the value, not by any declaration.
-            // A symbolic store is always kept; a concrete one only where a
-            // log already exists, and the relaxed counter dismisses that case
-            // outright for a workload that has written nothing symbolic
-            // anywhere -- which is what keeps this bytecode at its old cost.
-            if (sym_exp != NULL || SharedFieldVersions::has_carriers()) {
-              SymInstance *carrier_shadow = owner_instance != NULL
-                  ? owner_instance : ConcolicMngr::ctx->find_sym_inst(obj);
+            // A symbolic store is always kept; a concrete one where a log
+            // already exists, or where the store is control-dependent on a
+            // symbolic decision this thread took (D5: such a store used to
+            // start a log for a container only).  The relaxed counter
+            // dismisses the rest outright for a workload that has written
+            // nothing symbolic anywhere.
+            const bool guarded = sym_exp == NULL
+                && ConcolicMngr::ctx->path_guarded()
+                && SharedFieldVersions::guarded_store_admitted(METHOD);
+            if (sym_exp != NULL || guarded
+                || SharedFieldVersions::has_carriers()) {
+              SymInstance *carrier_shadow = owner_instance;
+              if (carrier_shadow == NULL && guarded) {
+                // The log is keyed by the owner's identity.
+                carrier_shadow = ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
+              }
               if (carrier_shadow != NULL) {
-                SharedFieldVersions::Location location(
-                    carrier_shadow->get_sym_rid(), field_offset,
-                    (Bytecodes::Code)opcode == Bytecodes::_putstatic
-                        ? SharedFieldVersions::LOC_STATIC_FIELD
-                        : SharedFieldVersions::LOC_INSTANCE_FIELD);
-                carrier_symbolic = sym_exp != NULL;
-                if (carrier_symbolic
-                    || SharedFieldVersions::is_tracked(location)) {
-                  carrier_write = true;
-                  carrier_location = location;
-                  // NULL for a purely concrete store into a location that is
-                  // already tracked; the publisher below turns that into the
-                  // constant written, because it supersedes the expression a
-                  // reader would otherwise still see there.
-                  carrier_value = sym_exp;
-                  // Folded outside every engine lock, as the store's
-                  // concurrency contract requires.
-                  carrier_guard = ConcolicMngr::ctx->path_guard();
-                }
+                // NULL value for a concrete store: its constant is built only
+                // if the location turns out to keep it.  The guard is folded
+                // outside every engine lock.
+                SharedFieldVersions::prepare_store(
+                    &carrier_store,
+                    SharedFieldVersions::Location(
+                        carrier_shadow->get_sym_rid(), field_offset,
+                        (Bytecodes::Code)opcode == Bytecodes::_putstatic
+                            ? SharedFieldVersions::LOC_STATIC_FIELD
+                            : SharedFieldVersions::LOC_INSTANCE_FIELD),
+                    sym_exp, ConcolicMngr::ctx->path_guard(), sym_exp != NULL,
+                    guarded);
+                carrier_write = true;
               }
             }
             ConcolicMngr::ctx->clear_stack_value(
@@ -3532,12 +3552,25 @@ run:
               ConcolicMngr::ctx->clear_stack_value(stack_offset + count, 1);
             }
           } else if (CONCOLIC_OUTSIDE_EVERY_REGION(obj)) {
-            carrier_location = SharedFieldVersions::Location(
-                obj->get_sym_rid(), field_offset,
-                (Bytecodes::Code)opcode == Bytecodes::_putstatic
-                    ? SharedFieldVersions::LOC_STATIC_FIELD
-                    : SharedFieldVersions::LOC_INSTANCE_FIELD);
-            carrier_write = SharedFieldVersions::is_tracked(carrier_location);
+            SharedFieldVersions::prepare_store(
+                &carrier_store,
+                SharedFieldVersions::Location(
+                    obj->get_sym_rid(), field_offset,
+                    (Bytecodes::Code)opcode == Bytecodes::_putstatic
+                        ? SharedFieldVersions::LOC_STATIC_FIELD
+                        : SharedFieldVersions::LOC_INSTANCE_FIELD),
+                NULL, NULL, false, false);
+            carrier_write = true;
+          }
+          // A wrapper-typed field holds a value: its word is its box's.
+          const BasicType carrier_boxed = carrier_write && tos_type == atos
+              ? SharedFieldVersions::wrapper_value_type(cache) : T_ILLEGAL;
+          if (carrier_write) {
+            SharedFieldVersions::lock(carrier_store.location);
+            SharedFieldVersions::begin_store_locked(
+                &carrier_store,
+                SharedFieldVersions::Cell(obj, as_BasicType(tos_type),
+                                          carrier_boxed != T_ILLEGAL));
           }
 #endif
 
@@ -3589,23 +3622,17 @@ run:
           }
 
 #ifdef ENABLE_CONCOLIC
-          // The concrete store has completed.  Publish the version it wrote,
-          // taken from the operand it stored rather than re-read from the
-          // heap: re-reading would report whatever a concurrent writer left
-          // there and attribute it to this thread.
+          // The concrete store has completed; its version is the operand it
+          // stored.  A concrete box into a wrapper-typed field is its
+          // primitive's constant, null the null word.
           if (carrier_write) {
-            const SharedFieldVersions::ConcreteBits stored =
-                concolic_top_word(tos_type, topOfStack);
-            Expression *published = carrier_value;
-            if (published == NULL) {
-              published = tos_type == atos
-                  ? SharedFieldVersions::reference_expression(STACK_OBJECT(-1))
-                  : SharedFieldVersions::primitive_expression(stored.type,
-                                                              stored.bits);
-            }
-            SharedFieldVersions::publish_value(
-                carrier_location, published, stored, carrier_guard,
-                carrier_symbolic, SharedFieldVersions::VERSION_WRITE);
+            SharedFieldVersions::end_store_locked(
+                &carrier_store,
+                carrier_boxed != T_ILLEGAL
+                    ? SharedFieldVersions::boxed_word(STACK_OBJECT(-1))
+                    : concolic_top_word(tos_type, topOfStack),
+                tos_type == atos ? STACK_OBJECT(-1) : (oop) NULL);
+            SharedFieldVersions::unlock(carrier_store.location);
           }
 #endif
 

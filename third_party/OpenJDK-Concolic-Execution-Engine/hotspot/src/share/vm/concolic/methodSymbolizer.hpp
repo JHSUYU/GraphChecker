@@ -82,19 +82,27 @@ private:
 };
 
 /**
- * The primitive result of a call the VM does not model: a fresh symbol, tied
- * to the call's arguments only by the MethodExpression recorded beside it.
+ * The primitive result of a call the VM does not model: a fresh symbol.
  *
  * It states the value the call returned, because nothing else declares the
  * symbol: SOLR-18406's SolrParams.getLong of a request parameter
  * (Long.parseLong) minted M_J_return28, and the composer cut it as an
- * undeclared free symbol.
+ * undeclared free symbol.  And it states the call it is the result of --
+ * callee and argument expressions, serialized as every node's children are
+ * -- so that a consumer can lower a known function as a relation, and can
+ * tell a pin of the returned value that would cut a moved root (an argument
+ * that names one) from one that would not.  The same relation used to live
+ * only in the path condition's MethodExpression, out of reach of the node.
  */
 class MethodReturnSymbolExp : public SymbolExpression {
   // Minted atomically: any attached thread may symbolize a method return.
   static volatile intptr_t sym_method_count;
 
   ReturnedValue _returned;
+  std::string _holder;
+  std::string _name;
+  std::string _descriptor;
+  exp_list_t _arguments;
 
 public:
   // Mints the result of the call `handle` is finishing.

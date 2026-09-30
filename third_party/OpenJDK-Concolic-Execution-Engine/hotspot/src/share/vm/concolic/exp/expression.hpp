@@ -55,11 +55,6 @@ public:
   // Boolean constant (rather than an integer 0/1) and to preserve Java
   // boolean &, | and ^ when the bytecode is shared with integer operations.
   virtual bool is_boolean_expression() { return false; }
-  // True for a container state some recorded operation produced, as opposed
-  // to the bare STATE root ThreadContext creates on first contact with a
-  // container.  It tells a container whose contents the recording already
-  // decides from one the recording has only named.
-  virtual bool is_recorded_container_mutation() { return false; }
   // Container algebra is the one place a shadow value has to be read back
   // structurally rather than only serialized, and HotSpot is built without
   // RTTI, so the downcast is declared here instead of guessed at.
@@ -276,11 +271,15 @@ public:
  * model (MethodReturnSymbolExp).  Both spell it one way, as `concreteValue`.
  */
 struct ReturnedValue {
-  enum Kind { UNSTATED, CONSTANT, NULL_REFERENCE, STRING };
+  // TRUNCATED_STRING: a String longer than the VM states, spelled as a
+  // `TruncatedValue` object with its UTF-8 length; a consumer reads it as
+  // unstated, never as a prefix.
+  enum Kind { UNSTATED, CONSTANT, NULL_REFERENCE, STRING, TRUNCATED_STRING };
   Kind kind;
   Expression *constant;
   std::string content;
-  ReturnedValue() : kind(UNSTATED), constant(NULL) {}
+  int length;
+  ReturnedValue() : kind(UNSTATED), constant(NULL), length(0) {}
 
   // Writes the `concreteValue` member of the node being serialized.
   void serialize(rapidjson::Writer<rapidjson::StringBuffer> &writer) const;
