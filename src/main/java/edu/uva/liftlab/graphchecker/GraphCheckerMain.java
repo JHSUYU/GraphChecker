@@ -15,6 +15,7 @@ import soot.SootClass;
 import soot.Timers;
 import soot.Transform;
 import soot.options.Options;
+import soot.util.Chain;
 
 import java.io.File;
 import java.io.PrintStream;
@@ -82,6 +83,8 @@ public class GraphCheckerMain {
             Timers.v().totalTimer.start();
 
             Scene.v().loadNecessaryClasses();
+            orderClassesByName();
+            LambdaClassNames.install();
             PackManager.v().runPacks();
             PackManager.v().writeOutput();
 
@@ -121,6 +124,20 @@ public class GraphCheckerMain {
         Options.v().set_soot_classpath(classPath);
         Options.v().set_keep_line_number(true);
         Options.v().set_whole_program(true);
+        // Identity must not depend on the host or the run.  Soot runs on one
+        // thread, over the classes by name (orderClassesByName): its body
+        // phases break ties in identity-hash order (jb.sils hands the uses
+        // of a local it splits to its copies so), and HotSpot draws an
+        // identity hash from the thread that first asks for it, so one
+        // thread doing the same work in the same order sees the same hashes
+        // in every run.  Each lambda class is named by what it is
+        // (LambdaClassNames, installed once the classes are loaded), and a
+        // body's locals are numbered by type and first definition, not in
+        // the order the phases left them (Balancer.runOneIteration's z6..z8
+        // and FileChecksumHelper.checksumBlock's z1, z2 swapped between
+        // runs).
+        Options.v().set_num_threads(1);
+        PhaseOptions.v().setPhaseOption("jb.lns", "sort-locals:true");
         boolean concolicInstrumentation = ConcolicInstrumentationSelections
                 .instrumentationRequested();
         if (!configuredTestDirs.isEmpty()) {
@@ -151,6 +168,24 @@ public class GraphCheckerMain {
 
         if (options.getArgs().length == 0) {
             Options.v().set_unfriendly_mode(true);
+        }
+    }
+
+    /**
+     * Soot lists the classes it loaded in the order the process dirs'
+     * listings returned them, which is the filesystem's; every pass after
+     * this one (the bodies Soot builds first, lambda classes included, and
+     * each walk of ours over the Scene) meets them by name instead.
+     */
+    private static void orderClassesByName() {
+        Scene scene = Scene.v();
+        for (Chain<SootClass> chain : Arrays.asList(scene.getClasses(),
+                scene.getApplicationClasses(), scene.getLibraryClasses(),
+                scene.getPhantomClasses())) {
+            List<SootClass> named = new ArrayList<>(chain);
+            named.sort(Comparator.comparing(SootClass::getName));
+            chain.clear();
+            chain.addAll(named);
         }
     }
 

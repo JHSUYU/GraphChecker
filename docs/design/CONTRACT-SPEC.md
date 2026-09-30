@@ -27,8 +27,9 @@ of a SHA-256 (`smt.ArtifactIO.digest(text, 16)`) unless stated. Stages and gates
 | `LocationId(kind, owner, slot)` | the storage a STATE edge joins on: `owner` is the class for `STATIC`, else the VM's symbolic rid of the object — a per-run counter, so it names one object only inside one session (a class name on a heap location names every instance; `smt.Arms.namedOwner` decides); `slot` is the field, index or container state slot | join key `KIND/<owner>#<slot>` (`compose.SmtLowering.locationKey`) |
 
 No cross-session object identity exists: the same field in two sessions is two locations.
-`JvmNames` strips run-minted numbers from class names (reflection accessors, lambda proxies, weave
-lambda classes) where the runtime mints a site; parsing never applies it.
+`JvmNames` strips JVM-minted numbers from class names (reflection accessors, lambda proxies) where
+the runtime mints a site; parsing never applies it.  A weave's lambda class keeps its number: every
+Soot run names it by content (`GraphCheckerMain`'s `LambdaClassNames`).
 
 ## 2. Rows and the session directory
 

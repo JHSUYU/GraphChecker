@@ -296,8 +296,9 @@ address passes through. No match yields a degraded address, reported downstream 
 The address is one function of one input set in both passes. The hooks that push a frame or count
 an event (`startWork`, `claimStart`, `enterMethodFrame`, `exitMethodFrame`, `throwMethodFrame`) are
 in both hook catalogs (`CausynthPipeline.HookCatalog#shared`); every site string is stabilized once
-by `contract/JvmNames#stable` (reflection accessors, lambda proxies and desugared lambda classes lose
-their run-minted counters); randomness is seeded by endpoint (SYMBOL-SCOPE.md §4.5).
+by `contract/JvmNames#stable` (reflection accessors and lambda proxies lose their JVM-minted
+counters; a desugared lambda class is named by content in every weave, `LambdaClassNames`);
+randomness is seeded by endpoint (SYMBOL-SCOPE.md §4.5).
 
 ## 11. Current limits
 
