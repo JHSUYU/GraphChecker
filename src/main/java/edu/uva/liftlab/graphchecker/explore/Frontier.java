@@ -33,6 +33,10 @@ import java.util.Set;
  *       instead of five).</li>
  *   <li><b>a wave answered it</b>: ADMITTED, UNSAT or NOT_ADMITTED. {@link
  *       Verdict#SAT_MODEL_READY} is NOT an answer (replay not run).</li>
+ *   <li><b>a wave answered its question</b> ({@link
+ *       ObligationFactory#question}: the query as asked and the world it
+ *       plants) under another id: an id drifts as sessions land, and one
+ *       question gets one answer.</li>
  * </ul>
  *
  * <p>Trap: keying by session ({@code pathId}) re-proposes every answered arm
@@ -69,6 +73,12 @@ public final class Frontier {
             new LinkedHashMap<String, Verdict>();
     /** arm key -> proposing task, this wave. */
     private final Map<String, String> proposedBy =
+            new LinkedHashMap<String, String>();
+    /** question -> the reason it is answered, as a gap row prints it. */
+    private final Map<String, String> askedBefore =
+            new LinkedHashMap<String, String>();
+    /** obligation id -> its question, for what this wave proposes. */
+    private final Map<String, String> questions =
             new LinkedHashMap<String, String>();
 
     /** Indexes every arm the corpus recorded for these tasks, over all paths:
@@ -107,20 +117,36 @@ public final class Frontier {
         }
     }
 
-    /** Takes earlier waves' verdicts; a recording, if any, stays the stated
-     *  reason. */
-    public void consume(Collection<ObligationResult> results) {
+    /** Takes earlier waves' verdicts, and the questions their solvers
+     *  asked (obligation id -> question, {@code ObligationDir#questions});
+     *  a recording, if any, stays the stated reason. */
+    public void consume(Collection<ObligationResult> results,
+                        Map<String, String> asked) {
         for (ObligationResult result : results) {
             answered.put(result.obligationId(), result.verdict());
             if (result.verdict() == Verdict.SAT_MODEL_READY) continue;
+            String session = result.sessionId().isEmpty() ? ""
+                    : " (session " + result.sessionId() + ")";
             settle(result.obligationId(), "arm already answered "
-                    + result.verdict() + " by an earlier wave"
-                    + (result.sessionId().isEmpty() ? ""
-                    : " (session " + result.sessionId() + ")")
+                    + result.verdict() + " by an earlier wave" + session
                     + ": an arm is owed once per planned occurrence, and this "
                     + "one is a fact about the occurrence, not about the "
                     + "session whose path it was cut from");
+            String question = asked.getOrDefault(result.obligationId(), "");
+            if (question.isEmpty()) continue;
+            askedBefore.putIfAbsent(question, "question " + question
+                    + " already answered " + result.verdict() + " by an "
+                    + "earlier wave, as obligation " + result.obligationId()
+                    + session + ": the same query in the same world gets "
+                    + "the same answer");
         }
+    }
+
+    /** Why this question needs no asking, or {@code ""} while it does (or
+     *  while there is none). */
+    public String asked(String question) {
+        return question.isEmpty() ? ""
+                : askedBefore.getOrDefault(question, "");
     }
 
     /** The first reason this arm is settled, or {@code ""} while it is owed. */
@@ -142,9 +168,15 @@ public final class Frontier {
             if (!proposed.add(candidate.obligationId)) continue;
             proposedBy.put(candidate.obligationId,
                     candidate.task.taskId());
+            questions.put(candidate.obligationId, candidate.question);
             obligations.add(candidate.proposal());
         }
         return new Wave(index, obligations);
+    }
+
+    /** Obligation id -> the question it asks, for this wave's proposals. */
+    public Map<String, String> questions() {
+        return Collections.unmodifiableMap(questions);
     }
 
     /** Per task: how many obligations this wave proposes. */
@@ -168,5 +200,10 @@ public final class Frontier {
 
     public int answeredCount() {
         return answered.size();
+    }
+
+    /** How many distinct questions earlier waves answered. */
+    public int answeredQuestions() {
+        return askedBefore.size();
     }
 }

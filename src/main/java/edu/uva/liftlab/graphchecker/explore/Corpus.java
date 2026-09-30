@@ -729,6 +729,29 @@ public final class Corpus implements Arms.Rows {
         return loweringById.get(sessionId);
     }
 
+    /**
+     * One computation over fresh session lowerings, the ones a solver JVM
+     * builds its one query with.  A lowering names what it cannot state by a
+     * running count ({@code SmtLowering#free}) and states its facts in the
+     * order they came, so a query built after others in one JVM reads
+     * differently from the same query built alone.  The lowerings in use
+     * before are restored after.
+     */
+    public <T> T isolated(Supplier<T> computation) {
+        Map<String, SmtLowering> held =
+                new LinkedHashMap<String, SmtLowering>(loweringById);
+        for (SessionReader session : sessions) {
+            loweringById.put(session.sessionId(), SmtLowering.forSession(
+                    session, joinById.get(session.sessionId())));
+        }
+        try {
+            return computation.get();
+        } finally {
+            loweringById.clear();
+            loweringById.putAll(held);
+        }
+    }
+
     /** One session's state join; a session this corpus lacks joins nothing. */
     public SmtLowering.SessionJoin join(String sessionId) {
         return joinById.getOrDefault(sessionId, SmtLowering.NO_JOIN);

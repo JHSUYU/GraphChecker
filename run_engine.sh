@@ -3245,13 +3245,18 @@ campaign_explore() {
       break
     fi
 
-    # Obligation identity is stable across waves, so an unchanged signature
-    # over the ids, the verdicts recorded so far AND the exposures is a fixed
-    # point the counts alone cannot see.
+    # An unchanged signature over the QUESTIONS the wave asks (the planner's
+    # questions.tsv: the query and the world it plants, ObligationFactory
+    # #question), the distinct questions answered so far AND the exposures
+    # is a fixed point the counts alone cannot see: the wave before asked
+    # the same and learned no answer it did not have.  Not over the ids,
+    # nor over every verdict row: an obligation's id drifts as sessions
+    # land, and SOLR-18413 r5 asked 185 questions 717 times under ids that
+    # never repeated, each re-ask one more row.
     wave_signature=$({
-        printf '%s\n' "${jobs[@]}" | LC_ALL=C sort
+        cut -f2 "${wave_dir}/questions.tsv" | LC_ALL=C sort
         printf -- '--\n'
-        jq -r '.verdict // ""' "${results}" | LC_ALL=C sort | uniq -c
+        jq -r '.answeredQuestions' "${wave_dir}/explore_manifest.json"
         printf -- '--\n'
         printf '%s\n' "${exposures}"
       } | sha256sum | cut -d' ' -f1) \
@@ -3265,8 +3270,9 @@ region_path_max_waves=${region_path_max_waves} with ${pending} obligation(s) \
 still open and ${exposed} region exposure(s) not yet woven"
     elif [[ "${wave_signature}" == "${previous_signature}" ]]; then
       stop_kind=REGION_PATH_CLOSURE_NO_PROGRESS
-      stop_reason="wave ${wave} proposes the same ${pending} obligation(s) \
-and ${exposed} exposure(s) as the wave before it with no new verdict"
+      stop_reason="wave ${wave} asks the same ${pending} question(s) \
+and ${exposed} exposure(s) as the wave before it, which answered no \
+question not answered before"
     fi
     if [[ -n "${stop_kind}" ]]; then
       jq -n -c --arg kind "${stop_kind}" --arg detail "${stop_reason}" \
