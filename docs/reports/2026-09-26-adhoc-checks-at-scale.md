@@ -1026,6 +1026,57 @@ ledger（`$GC_OUT/findings/ledger.jsonl`）把每个签名标为 new / known / d
 请求门、17899-bug2 的 target-dn 响应门），17960 的配置标记 1 个。第二遍同一 ledger 全部为 known。v93-11741 的
 CLOCK 根行早于 `clockNanos` 契约，按名拒读。h4/q* 没有确认见证。
 
+## 16. 每个测试只预筛一次（2026-09-30）
+
+以前一个 (检查, 测试) 对要跑到 campaign 的 SEED 才知道测试在录制窗口里到不到检查：h4 的 111 个 case 里有 31 个、q5 的
+154 个里 12 个就停在这里。现在在排 campaign 之前，每个测试只录一次，同时服务它覆盖到的所有已选检查：
+
+1. `workloads.py <system> <repo>`：读编译好的测试类（自带的 class 文件解析，不用 javap），列出引擎的 runner 能调用的
+   JUnit 4 / Jupiter `@Test` 方法（包括从父类继承的），且测试类或其父类的常量池里出现 `system_cluster_class`。
+   HDFS 17967-c 上 4176 个（覆盖率 sweep 用过的树外清单 2818 个，其中 2693 个都在；清单多出的 125 个里 121 个的类
+   没有无参构造器，runner 跑不了，4 个是 @Disabled。新增的 1483 个里 757 个旧的源码扫描也认为能跑、只是没进清单，
+   726 个旧扫描找不到，大多是集群来自父类的测试类）；Solr 606 个（旧的 429 个全在其中）。
+2. `cover.py <sweep> <exp> jobs`：用贪心覆盖挑测试：每次选"还缺预筛测试（每个检查要 2 个）的已选检查数 / 覆盖率耗时"
+   最大的测试，一次录制最多 16 个检查。HDFS 的 64 个已选检查用 29 次录制覆盖（R=2）；Solr 46 个检查 29 次录制，
+   另有 6 个旧的手写检查没有可用测试。
+3. `prescreen.sh <exp> <key> <jobs>`：每行成为一个批 `B<n>`（`batches.tsv` 一行，加上 `targets/B<n>.yaml`，每个
+   检查一行、以检查命名），在各台 lift 上跑 `run.sh <exp> B<n> record`。`record`（`run_engine.sh`）把各检查的静态
+   切片（`$GC_OUT/static/<key>/<check>/`）的 region 骨架按 regionId 合并、生长出的作用域取并集，只织入一次、只录
+   一次（墙钟上限为覆盖率耗时的 5 倍，至少 300 s），再逐个检查在它**自己的**切片和骨架上聚合（`CausynthTraceRecorder
+   --target`，trace 只读一次）。每个检查得到 ACTIVATED 或具名拒绝（NOT_IN_WINDOW、TARGET_BRANCH_NOT_OBSERVED、
+   POLICY_ABSENT、NO_REGION、ERROR），一个检查被拒不影响其余检查。结果写进 `runtime/record-summary.json`。
+   各检查在自己的骨架上聚合是必要的：合并后的骨架里，一个检查的 EXCEPTION_CONTEXT region 在另一个检查眼里只是状态
+   region，用合并骨架聚合会把别人的异常 region 当成自己的。
+4. `cover.py <sweep> <exp> cases <prescreen>`：`cases.txt`，只收测试通过且录制激活了检查的对；每个激活的检查至少一个
+   case（最快的录制），每个测试最多 4 个检查只限制第二个 case。
+
+ad-hoc 检查的起始作用域也改了：不再是 block-key 族的 12 个类（`blockkey_scope`），而是实验的 communication
+mappings 点名的类（`system_mapping_scope`：HDFS 的 IPC、SASL、DataTransfer 门和 block key 的 WIRE_FLOW 所在类；
+Solr 的 HTTP、ZK 门），加上检查自己的类，其余由作用域生长补上。ad-hoc 的 `loop-bounds.jsonl` 去掉了
+`removeExpiredKeys` 的声明：它只在长进 key manager 的切片里才会被保留，而没人认领的声明会被拒绝；原来声明的就是
+默认值 8。
+
+实测（新作用域下重切的 33 + 20 个检查，全部成功）：
+
+| 批 | 测试 | K | 测试退出 | 负载 s | 整个作业 s | ACTIVATED | NOT_IN_WINDOW |
+|---|---|---|---|---|---|---|---|
+| HDFS B1 | TestFileAppend2-testAppendLessThanChecksumChunk | 16 | 0 | 13 | 156 | 10 | 6 |
+| HDFS B2 | TestHDFSConcat-testConcatNotCompleteBlock | 16 | 0 | 14 | 147 | 9 | 7 |
+| HDFS B3 | TestHAAppend-testMultipleAppendsDuringCatchupTailing | 12 | 0 | 110 | 783 | 8 | 4 |
+| HDFS B4 | TestStandbyInProgressTail-testHalfStartInProgressTail | 8 | 0 | 13 | 106 | 6 | 2 |
+| HDFS B5 | 同 B1，只带 B1 的第一个检查 | 1 | 0 | 7 | 55 | 0 | 1 |
+| Solr B1 | TestWithCollection-testMoveReplicaMainCollection | 14 | 0 | 27 | 446 | 11 | 3 |
+| Solr B2 | SplitShardTest-testLiveSplit | 13 | 0 | 45 | 341 | 8 | 5 |
+
+* 80 个 (检查, 测试) 对里 28 个（35%）是 NOT_IN_WINDOW：覆盖率说到了（整个 JVM，包括开窗前的准备），录制窗口里没到。
+  这些以前要跑到 SEED 才会停；现在在排期前就被去掉。`cases.txt`：HDFS 20 个 case（20 个激活的检查），Solr 13 个。
+* K=1 对照（HDFS B5）与 K=16 的 B1 对同一个检查给出同一个状态。campaign 的 SEED 用的是同一个聚合的单目标形式：
+  用 `tools/regress/offline-ab.sh` 在 r8 的 hdfs-17960 录制上重放，runtime plan 与选中的骨架和录制时逐字节相同。
+* 成本：K=16 的批每个检查约 10 s（HDFS），K=1 是 55 s。Solr B1 的 446 s 里织入 66 s、录制 28 s、按检查聚合
+  336 s（14 个检查，每个 6–58 s）：批大时聚合占大头，逐检查聚合可以并行，这是下一步的一个旋钮。
+* 录制的 occurrence 地址带着其他检查的 region 根的帧，所以不是单检查 campaign 的地址；预筛只用状态，不受影响
+  （共享同一次录制做 campaign 是 WP3 的事）。
+
 ## 8. 下一步
 
 **2026-09-28 这一轮留下的**（§13）：

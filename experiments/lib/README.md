@@ -11,12 +11,16 @@ A case directory under `experiments/<system>/` holds DECLARATIONS only:
 Everything executable is here, one copy for every case:
 
 ```bash
-lib/run.sh <case dir> <case id> build|config|validate|slice|campaign
+lib/run.sh <case dir> <case id> build|config|validate|slice|record|campaign
 ```
 
 `slice` runs SEED's static half alone (the case's scope copied in, the seed
 analysis with the scope grown): the static artifacts an ad-hoc selection
-scores (`tools/adhoc/slice.sh`, `score.py`), with no workload run.
+scores (`tools/adhoc/slice.sh`, `score.py`), with no workload run.  `record`
+pre-screens one workload for every target of the case's spec: one recording
+woven with their slices' skeletons and grown scope, each target aggregated
+on its own slice (`CAUSYNTH_STATIC_ROOT/<target name>/`), and
+`runtime/record-summary.json` (`tools/adhoc/prescreen.sh`).
 
 | script | role |
 | --- | --- |

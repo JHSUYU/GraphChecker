@@ -669,8 +669,9 @@ public final class RuntimeSelectedRegionFinalizer {
             throws IOException {
         Map<String, Map<String, Object>> instances = program.activations;
         if (instances.isEmpty()) {
-            throw new IOException("runtime failure closure requires concrete "
-                    + "region activations: " + source);
+            throw new IOException("NO_REGION_ACTIVATION: runtime failure "
+                    + "closure requires concrete region activations: "
+                    + source);
         }
         // Every activation of an exception-context region inherits its
         // skeleton's `selection`, and so does every occurrence such a region
@@ -694,8 +695,9 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         if (contexts.isEmpty()) {
-            throw new IOException("runtime failure closure found no observed "
-                    + "exception-context activation: " + source);
+            throw new IOException("FATAL_TARGET_NOT_IN_WINDOW: runtime "
+                    + "failure closure found no observed exception-context "
+                    + "activation: " + source);
         }
         if (targets.isEmpty() && !policylessRegions.isEmpty()) {
             // Target existence binds to a selected concrete branch event.

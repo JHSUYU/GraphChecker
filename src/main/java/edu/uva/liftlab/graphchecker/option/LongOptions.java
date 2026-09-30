@@ -2,44 +2,60 @@ package edu.uva.liftlab.graphchecker.option;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * An engine main's {@code --name value} options ({@code --name=value} too; a
  * bare {@code --flag} is {@code "true"}).  Anything not starting with
- * {@code --} is skipped.
+ * {@code --} is skipped.  An option given more than once has every value in
+ * {@link #all}, and its last one everywhere else.
  */
 public final class LongOptions {
-    private final Map<String, String> values;
+    private final Map<String, List<String>> values;
 
-    private LongOptions(Map<String, String> values) {
+    private LongOptions(Map<String, List<String>> values) {
         this.values = values;
     }
 
     public static LongOptions parse(String[] argv) {
-        Map<String, String> values = new LinkedHashMap<String, String>();
+        Map<String, List<String>> values =
+                new LinkedHashMap<String, List<String>>();
         for (int index = 0; index < argv.length; index++) {
             if (!argv[index].startsWith("--")) continue;
             String name = argv[index].substring(2);
             int equals = name.indexOf('=');
+            String value;
             if (equals >= 0) {
-                values.put(name.substring(0, equals),
-                        name.substring(equals + 1));
+                value = name.substring(equals + 1);
+                name = name.substring(0, equals);
             } else if (index + 1 < argv.length
                     && !argv[index + 1].startsWith("--")) {
-                values.put(name, argv[++index]);
+                value = argv[++index];
             } else {
-                values.put(name, "true");
+                value = "true";
             }
+            values.computeIfAbsent(name, ignored -> new ArrayList<String>())
+                    .add(value);
         }
         return new LongOptions(values);
     }
 
     /** The option's value; {@code fallback} when absent or blank. */
     public String value(String name, String fallback) {
-        String value = values.get(name);
+        List<String> given = values.get(name);
+        String value = given == null ? null : given.get(given.size() - 1);
         return value == null || value.trim().isEmpty() ? fallback : value;
+    }
+
+    /** Every value the option was given, in order; none when absent. */
+    public List<String> all(String name) {
+        List<String> given = values.get(name);
+        return given == null ? Collections.<String>emptyList()
+                : Collections.unmodifiableList(given);
     }
 
     /** The option as a path; null when absent or blank. */
