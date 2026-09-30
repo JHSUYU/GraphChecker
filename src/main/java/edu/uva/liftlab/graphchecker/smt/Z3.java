@@ -359,6 +359,65 @@ public final class Z3 {
         return text;
     }
 
+    /**
+     * The Java String a model's String value denotes, or null when the value
+     * is no SMT-LIB string literal: {@code ""} inside it is one quote, and
+     * a backslash, {@code u} and {@code {h..}} or four hex digits the
+     * character with that code point, as z3 prints what is not printable
+     * ASCII.
+     */
+    public static String javaString(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.length() < 2 || text.charAt(0) != '"'
+                || text.charAt(text.length() - 1) != '"') {
+            return null;
+        }
+        String body = text.substring(1, text.length() - 1);
+        StringBuilder string = new StringBuilder();
+        for (int at = 0; at < body.length(); at++) {
+            char c = body.charAt(at);
+            if (c == '"') {
+                if (at + 1 >= body.length() || body.charAt(at + 1) != '"') {
+                    return null;
+                }
+                string.append('"');
+                at++;
+                continue;
+            }
+            int end = escapeEnd(body, at);
+            if (end < 0) {
+                string.append(c);
+                continue;
+            }
+            String hex = body.charAt(at + 2) == '{'
+                    ? body.substring(at + 3, end - 1)
+                    : body.substring(at + 2, end);
+            string.appendCodePoint(Integer.parseInt(hex, 16));
+            at = end - 1;
+        }
+        return string.toString();
+    }
+
+    /** Where a code-point escape ({@link #javaString}) at {@code at} ends,
+     *  or -1 when none starts there. */
+    private static int escapeEnd(String body, int at) {
+        if (!body.startsWith("\\u", at)) return -1;
+        if (body.startsWith("{", at + 2)) {
+            int close = body.indexOf('}', at + 3);
+            return close > at + 3 && close <= at + 8
+                    && hex(body.substring(at + 3, close)) ? close + 1 : -1;
+        }
+        return at + 6 <= body.length() && hex(body.substring(at + 2, at + 6))
+                ? at + 6 : -1;
+    }
+
+    private static boolean hex(String digits) {
+        for (char c : digits.toCharArray()) {
+            if (Character.digit(c, 16) < 0) return false;
+        }
+        return !digits.isEmpty();
+    }
+
     /** The text of one {@code (:reason-unknown "…")} line, or "". */
     private static String parseReason(String output) {
         if (output == null) return "";

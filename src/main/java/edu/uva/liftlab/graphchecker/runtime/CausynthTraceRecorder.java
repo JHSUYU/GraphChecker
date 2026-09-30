@@ -105,25 +105,176 @@ public final class CausynthTraceRecorder {
         return RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT;
     }
 
+    /**
+     * Aggregates one recording for every target it was made for: {@code
+     * --trace-dir --test}, one {@code --target <name>=<candidate-graph>,
+     * <static-scope-map>,<region-skeletons>,<output-dir>} per target (its
+     * static slice, and where its runtime region plan goes), and optionally
+     * {@code --summary <file>}, where each target's {@link TargetOutcome} is
+     * written.  A target the recording does not serve fails alone, named on
+     * stderr; the run exits 1 when no target was served, or when the trace
+     * itself cannot be read.
+     */
     public static void main(String[] args) {
         LongOptions options = LongOptions.parse(args);
         File directory = new File(required(options, "trace-dir"));
         String test = required(options, "test");
-        File candidateSkeletons =
-                new File(required(options, "region-skeletons"));
-        File graph = new File(required(options, "candidate-graph"));
-        String configuredOutput = options.value("output-dir", null);
-        File planOutputDirectory = configuredOutput == null
-                ? directory : new File(configuredOutput.trim());
+        List<AggregationTarget> targets = new ArrayList<>();
+        for (String target : options.all("target")) {
+            targets.add(AggregationTarget.parse(target));
+        }
+        if (targets.isEmpty()) {
+            throw new IllegalArgumentException("--target is required");
+        }
+        Map<String, TargetOutcome> outcomes = new LinkedHashMap<>();
+        Throwable unread = null;
         try {
-            aggregateStateTrace(directory, graph, candidateSkeletons,
-                    test, planOutputDirectory,
-                    new File(required(options, "static-scope-map")));
+            outcomes = aggregateStateTrace(directory, test, targets);
         } catch (Throwable throwable) {
+            // The trace itself: every target's outcome.
+            unread = throwable;
+            for (AggregationTarget target : targets) {
+                outcomes.put(target.name,
+                        TargetOutcome.refused(target.name, throwable));
+            }
+        }
+        String summary = options.value("summary", null);
+        if (summary != null) {
+            JsonObject rows = new JsonObject();
+            for (TargetOutcome outcome : outcomes.values()) {
+                rows.add(outcome.name, outcome.json());
+            }
+            JsonObject json = new JsonObject();
+            json.add("targets", rows);
+            try {
+                writeFile(new File(summary.trim()), json + "\n");
+            } catch (IOException failure) {
+                unread = unread == null ? failure : unread;
+            }
+        }
+        if (unread != null) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
-                    + throwable);
-            throwable.printStackTrace(System.err);
+                    + unread);
+            unread.printStackTrace(System.err);
             System.exit(1);
+            return;
+        }
+        boolean served = false;
+        for (TargetOutcome outcome : outcomes.values()) {
+            served |= outcome.activated();
+            if (!outcome.activated()) {
+                System.err.println("Failed to aggregate Causynth runtime "
+                        + "trace: " + outcome.name + ": " + outcome.detail);
+            }
+        }
+        if (!served) System.exit(1);
+    }
+
+    /** One target of an aggregation: its name, its static slice (candidate
+     *  graph, scope map, candidate region skeletons) and where its runtime
+     *  region plan goes. */
+    static final class AggregationTarget {
+        final String name;
+        final File graph;
+        final File scopeMap;
+        final File skeletons;
+        final File outputDir;
+
+        AggregationTarget(String name, File graph, File scopeMap,
+                          File skeletons, File outputDir) {
+            this.name = name;
+            this.graph = graph;
+            this.scopeMap = scopeMap;
+            this.skeletons = skeletons;
+            this.outputDir = outputDir;
+        }
+
+        /** {@code <name>=<candidate-graph>,<static-scope-map>,
+         *  <region-skeletons>,<output-dir>}. */
+        static AggregationTarget parse(String spec) {
+            int equals = spec.indexOf('=');
+            String[] files = equals < 0 ? new String[0]
+                    : spec.substring(equals + 1).split(",", -1);
+            if (equals <= 0 || files.length != 4) {
+                throw new IllegalArgumentException("--target must be "
+                        + "<name>=<candidate-graph>,<static-scope-map>,"
+                        + "<region-skeletons>,<output-dir>: " + spec);
+            }
+            return new AggregationTarget(spec.substring(0, equals).trim(),
+                    new File(files[0].trim()), new File(files[1].trim()),
+                    new File(files[2].trim()), new File(files[3].trim()));
+        }
+    }
+
+    /**
+     * What a recording holds for one target: {@code ACTIVATED} (its plan is
+     * written), or the refusal that stopped it -- {@code NOT_IN_WINDOW} (no
+     * region of the throw ran in the window), {@code
+     * TARGET_BRANCH_NOT_OBSERVED} (one ran, and never decided the throw's
+     * branch), {@code POLICY_ABSENT} (its region declares no fatal branch),
+     * {@code NO_REGION} (no candidate region ran) or {@code ERROR} -- with
+     * the target occurrences, whether any of them took the throw's fatal arm
+     * (the TARGET_SITE guards' outcomes), and the refusal's words.
+     */
+    static final class TargetOutcome {
+        /** A finalizer refusal's code -> the state it is. */
+        private static final Map<String, String> REFUSALS;
+        static {
+            Map<String, String> refusals = new LinkedHashMap<>();
+            refusals.put("FATAL_TARGET_NOT_IN_WINDOW", "NOT_IN_WINDOW");
+            refusals.put("FATAL_TARGET_OBSERVATION_GAP",
+                    "TARGET_BRANCH_NOT_OBSERVED");
+            refusals.put("FATAL_TARGET_POLICY_ABSENT", "POLICY_ABSENT");
+            refusals.put("NO_REGION_ACTIVATION", "NO_REGION");
+            REFUSALS = Collections.unmodifiableMap(refusals);
+        }
+
+        final String name;
+        final String state;
+        final boolean fatalArmObserved;
+        final List<String> occurrences;
+        final String detail;
+
+        private TargetOutcome(String name, String state,
+                              boolean fatalArmObserved,
+                              List<String> occurrences, String detail) {
+            this.name = name;
+            this.state = state;
+            this.fatalArmObserved = fatalArmObserved;
+            this.occurrences = occurrences;
+            this.detail = detail;
+        }
+
+        static TargetOutcome activated(String name, List<String> occurrences,
+                                       boolean fatalArmObserved) {
+            return new TargetOutcome(name, "ACTIVATED", fatalArmObserved,
+                    occurrences, "");
+        }
+
+        /** A refusal: its state by the code its message starts with. */
+        static TargetOutcome refused(String name, Throwable refusal) {
+            String message = String.valueOf(refusal.getMessage());
+            int colon = message.indexOf(':');
+            String state = colon < 0 ? null
+                    : REFUSALS.get(message.substring(0, colon));
+            return new TargetOutcome(name, state == null ? "ERROR" : state,
+                    false, Collections.<String>emptyList(),
+                    state == null ? refusal.toString() : message);
+        }
+
+        boolean activated() {
+            return "ACTIVATED".equals(state);
+        }
+
+        JsonObject json() {
+            JsonObject json = new JsonObject();
+            json.addProperty("state", state);
+            json.addProperty("fatalArmObserved", fatalArmObserved);
+            JsonArray addresses = new JsonArray();
+            for (String occurrence : occurrences) addresses.add(occurrence);
+            json.add("occurrences", addresses);
+            json.addProperty("detail", detail);
+            return json;
         }
     }
 
@@ -1147,9 +1298,9 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void aggregateStateTrace(
-            File directory, File candidateGraph, File candidateSkeletons,
-            String test, File planOutputDirectory, File staticScopeMap)
+    /** The trace is read once, then aggregated for every target. */
+    private static Map<String, TargetOutcome> aggregateStateTrace(
+            File directory, String test, List<AggregationTarget> targets)
             throws IOException {
         synchronized (LOCK) {
             clearInMemoryTrace();
@@ -1161,71 +1312,136 @@ public final class CausynthTraceRecorder {
             // No offline reattribution: runtime.Attribution stamped every
             // METHOD_ENTER live, as the replay does.
             nameObservedObjectsFromContent(trace);
-            Set<String> observedMethods = new LinkedHashSet<>();
-            for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
-                observedMethods.add(event.method);
-            }
-            // Regions exercised: root entered and an anchor reached, anchors
-            // narrowed to those reached.  Asked of entries folded or not: a
-            // fold is about occurrences, this is about the region having run.
-            File selectedSkeletons = new File(planOutputDirectory,
-                    "region_skeletons.jsonl");
-            List<RuntimeRegionPlanner.MethodEvent> entries =
-                    new ArrayList<>(trace.methods.size());
-            for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
-                entries.add(event.unfolded());
-            }
-            RuntimeRegionPlanner.Result exercised =
-                    RuntimeRegionPlanner.planSkeletonGraph(
-                            StaticProgram.regionRows(
-                                    MapFields.readRows(candidateSkeletons),
-                                    RuntimeSelectedRegionFinalizer
-                                            .SKELETON_KIND,
-                                    candidateSkeletons),
-                            entries, Collections.emptyList(),
-                            Collections.emptyList(),
-                            Collections.<String>emptySet());
-            if (exercised.staticRegionCount == 0
-                    || exercised.runtimeInstances.isEmpty()) {
-                throw new IOException("the recording exercised no candidate"
-                        + " region: " + exercised.staticRegionCount
-                        + " region(s), " + exercised.runtimeInstances.size()
-                        + " activation(s)");
-            }
-            writeSelectedSkeletons(candidateSkeletons, selectedSkeletons,
-                    exercised.runtimeInstances);
-            // Decoded once for planner and finalizer.
-            List<StaticProgram.RegionRow> skeletons =
-                    StaticProgram.regionRows(
-                            MapFields.readRows(selectedSkeletons),
-                            RuntimeSelectedRegionFinalizer.SKELETON_KIND,
-                            selectedSkeletons);
-            // Parsed once: planner reads DECLARED_SITE, finalizer WRITE_SITE.
-            StaticScopeMap scopeMap = readScopeMap(staticScopeMap);
-            RuntimeRegionPlanner.Result activationGraph =
-                    RuntimeRegionPlanner.planSkeletonGraph(
-                            skeletons, trace.methods,
-                            trace.execution, trace.protocol,
-                            declaredSites(scopeMap));
-            // The finalizer reads the candidate graph itself
-            // (StaticProgram#skeletonRegionsHolding).
-            List<Map<String, Object>> candidateRows =
-                    MapFields.readRows(candidateGraph);
-            RuntimeSelectedRegionFinalizer.Result closure =
-                    RuntimeSelectedRegionFinalizer.finalizeRegions(
-                    candidateRows, skeletons,
-                    String.valueOf(selectedSkeletons),
-                    observedMethods, activationGraph.runtimeInstances,
-                    runtimeObservations(trace.execution, trace.methods),
-                    scopeMap);
-            // Plan gaps = this pass's plus those the recording stated.
-            List<Map<String, Object>> planGaps =
-                    new ArrayList<>(closure.gaps);
-            planGaps.addAll(trace.lineageGaps);
-            writeRuntimeRegionPlans(planOutputDirectory,
-                    closure.regions, trace,
-                    activationGraph.runtimeInstances, planGaps);
+            return aggregateTargets(trace, targets);
         }
+    }
+
+    /**
+     * Each target aggregated over one trace on its own static slice and its
+     * own skeletons ({@link #aggregateTarget}).  A target the finalizer
+     * refuses is that target's outcome, never the others'.
+     */
+    static Map<String, TargetOutcome> aggregateTargets(
+            TraceData trace, List<AggregationTarget> targets) {
+        Map<String, TargetOutcome> outcomes = new LinkedHashMap<>();
+        for (AggregationTarget target : targets) {
+            try {
+                outcomes.put(target.name, aggregateTarget(trace, target));
+            } catch (IOException | RuntimeException refusal) {
+                TargetOutcome outcome =
+                        TargetOutcome.refused(target.name, refusal);
+                // An unnamed failure is a defect: its stack says where.
+                if ("ERROR".equals(outcome.state)) {
+                    refusal.printStackTrace(System.err);
+                }
+                outcomes.put(target.name, outcome);
+            }
+        }
+        return outcomes;
+    }
+
+    /**
+     * One target's runtime region plan, written to its output directory: the
+     * regions of its own skeletons the recording exercised, then its
+     * activations, closure and plan over its own slice.  A recording woven
+     * for several targets opens every target's regions; asked of this
+     * target's skeletons alone, no other target's exception context is
+     * taken for its own.
+     */
+    private static TargetOutcome aggregateTarget(
+            TraceData trace, AggregationTarget target) throws IOException {
+        // Regions exercised: root entered and an anchor reached, anchors
+        // narrowed to those reached.  Asked of entries folded or not: a fold
+        // is about occurrences, this is about the region having run.
+        List<RuntimeRegionPlanner.MethodEvent> entries =
+                new ArrayList<>(trace.methods.size());
+        for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+            entries.add(event.unfolded());
+        }
+        RuntimeRegionPlanner.Result exercised =
+                RuntimeRegionPlanner.planSkeletonGraph(
+                        StaticProgram.regionRows(
+                                MapFields.readRows(target.skeletons),
+                                RuntimeSelectedRegionFinalizer.SKELETON_KIND,
+                                target.skeletons),
+                        entries, Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.<String>emptySet());
+        if (exercised.staticRegionCount == 0
+                || exercised.runtimeInstances.isEmpty()) {
+            throw new IOException("NO_REGION_ACTIVATION: the recording "
+                    + "exercised no candidate region: "
+                    + exercised.staticRegionCount + " region(s), "
+                    + exercised.runtimeInstances.size() + " activation(s)");
+        }
+        Files.createDirectories(target.outputDir.toPath());
+        File selectedSkeletons = new File(target.outputDir,
+                "region_skeletons.jsonl");
+        writeSelectedSkeletons(target.skeletons, selectedSkeletons,
+                exercised.runtimeInstances);
+        // Decoded once for planner and finalizer.
+        List<StaticProgram.RegionRow> skeletons =
+                StaticProgram.regionRows(
+                        MapFields.readRows(selectedSkeletons),
+                        RuntimeSelectedRegionFinalizer.SKELETON_KIND,
+                        selectedSkeletons);
+        // Parsed once: planner reads DECLARED_SITE, finalizer WRITE_SITE.
+        StaticScopeMap scopeMap = readScopeMap(target.scopeMap);
+        RuntimeRegionPlanner.Result activationGraph =
+                RuntimeRegionPlanner.planSkeletonGraph(
+                        skeletons, trace.methods,
+                        trace.execution, trace.protocol,
+                        declaredSites(scopeMap));
+        Set<String> observedMethods = new LinkedHashSet<>();
+        for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+            observedMethods.add(event.method);
+        }
+        // The finalizer reads the candidate graph itself
+        // (StaticProgram#skeletonRegionsHolding).  It marks the target
+        // occurrences and binds their fatal-branch evidence on these
+        // activations, which the plan below reads.
+        RuntimeSelectedRegionFinalizer.Result closure =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        MapFields.readRows(target.graph), skeletons,
+                        String.valueOf(selectedSkeletons),
+                        observedMethods, activationGraph.runtimeInstances,
+                        runtimeObservations(trace.execution, trace.methods),
+                        scopeMap);
+        // Plan gaps = this pass's plus those the recording stated.
+        List<Map<String, Object>> planGaps = new ArrayList<>(closure.gaps);
+        planGaps.addAll(trace.lineageGaps);
+        writeRuntimeRegionPlans(target.outputDir, closure.regions, trace,
+                activationGraph.runtimeInstances, planGaps);
+        List<String> occurrences = new ArrayList<>();
+        boolean fatalArm = false;
+        for (Map<String, Object> activation
+                : activationGraph.runtimeInstances) {
+            if (!Boolean.TRUE.equals(MapFields.booleanValue(activation.get(
+                    RuntimeSelectedRegionFinalizer
+                            .FAILURE_TARGET_OCCURRENCE)))) {
+                continue;
+            }
+            occurrences.add(String.valueOf(activation.get("occurrenceId")));
+            for (Map<String, Object> evidence
+                    : MapFields.rows(activation.get("observedFatalTargets"))) {
+                fatalArm |= tookFatalArm(scopeMap, evidence);
+            }
+        }
+        return TargetOutcome.activated(target.name, occurrences, fatalArm);
+    }
+
+    /** Whether one observed decision of a TARGET_SITE guard took the arm
+     *  that reaches the throw. */
+    private static boolean tookFatalArm(StaticScopeMap scopeMap,
+                                        Map<String, Object> evidence) {
+        String site = String.valueOf(evidence.get("siteId"));
+        for (StaticScopeMap.Site target : scopeMap.targetSites()) {
+            Boolean arm = target.outcomeOf(site);
+            if (arm != null && arm.equals(evidence.get("observedOutcome"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Compact branch and primitive call-return rows used by the finalizer. */

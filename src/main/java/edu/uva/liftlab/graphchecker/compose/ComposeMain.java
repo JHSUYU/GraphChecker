@@ -326,6 +326,9 @@ public final class ComposeMain {
                     && outcome.selected().fatalObserved());
             // The arm of each family the model took: the causal chain.
             JsonArray arms = new JsonArray();
+            Map<String, String> holeTexts = ComposedFamilies.holeTexts(
+                    outcome.selectedArms().values(),
+                    outcome.answer().values());
             for (Map.Entry<String, ComposedFamilies.ArmChoice> taken
                     : outcome.selectedArms().entrySet()) {
                 ComposedFamilies.ArmChoice arm = taken.getValue();
@@ -345,6 +348,13 @@ public final class ComposeMain {
                 row.addProperty("attested", arm.attested());
                 JsonArray states = referentStates(arm);
                 if (states.size() > 0) row.add("referentStates", states);
+                // What each of its holes must decode to in CONFIRM.
+                JsonObject texts = new JsonObject();
+                for (String consumer : arm.holes().keySet()) {
+                    String text = holeTexts.get(consumer);
+                    if (text != null) texts.addProperty(consumer, text);
+                }
+                if (texts.size() > 0) row.add("holeTexts", texts);
                 arms.add(row);
             }
             answer.add("selectedArms", arms);

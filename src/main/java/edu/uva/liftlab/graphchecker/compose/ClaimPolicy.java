@@ -649,9 +649,10 @@ public final class ClaimPolicy {
 
     /**
      * One valuation asked for every path selector, family arm selector,
-     * nested state selector and clock cell (legalized: {@code Z3.modelQuery}
-     * appends names raw), so the claim can read path, delivery, the states
-     * a delivered object was queried at, and clocks off the model.
+     * nested state selector, clock cell and codec hole (legalized: {@code
+     * Z3.modelQuery} appends names raw), so the claim can read path,
+     * delivery, the states a delivered object was queried at, clocks, and
+     * what each hole carried off the model.
      */
     private static Outcome outcome(Composer.Composition composition,
                                    Z3 solver, Composer.Valuation valuation,
@@ -661,6 +662,9 @@ public final class ClaimPolicy {
         asked.addAll(composition.stateSelectors());
         for (String cell : composition.clockCells()) {
             asked.add(SmtNames.legalSymbols(cell));
+        }
+        for (String hole : composition.holeSymbols()) {
+            asked.add(SmtNames.legalSymbols(hole));
         }
         List<String> assertions =
                 new ArrayList<String>(valuation.assertions());
