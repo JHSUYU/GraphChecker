@@ -25,7 +25,7 @@ import java.util.Set;
  * The guard set of a site: the branches it is control-dependent on.  The one
  * guard computation in the engine.
  *
- * <p>CLOSURE-V2 SS1: site {@code t} is control-dependent on branch {@code b}
+ * <p>SYMBOL-SCOPE §3: site {@code t} is control-dependent on branch {@code b}
  * when some successor of {@code b} is post-dominated by {@code t} and {@code
  * b} is not.  Unlike a may-reach rule, this keeps a branch both of whose arms
  * can reach the site but only one makes it unavoidable -- and so NAMES that

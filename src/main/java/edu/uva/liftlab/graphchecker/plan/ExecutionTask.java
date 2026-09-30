@@ -254,7 +254,7 @@ public final class ExecutionTask extends PlanRow {
     public InputActionCatalog inputActions() { return inputActions; }
 
     /** The methods whose conditional branches INSTRUMENT weaves; which branches
-     *  is the Soot bodies' answer (LEAN section 1: every symbolic-operand
+     *  is the Soot bodies' answer (every symbolic-operand
      *  decision is recorded, so there is no per-branch selection). */
     public JsonArray branchMethods() {
         return array(encoded, BRANCH_METHODS).deepCopy();

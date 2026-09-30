@@ -133,7 +133,7 @@ public class GraphCheckerMain {
         }
         // ONE application scope for every pass: PackManager writes only
         // application classes, so a narrower scope drops woven bodies and
-        // shifts every index below them (G9).
+        // shifts every index below them (IDENTITY §10).
         Options.v().set_process_dir(productionProcessDirs);
         LOG.info("Soot application scope is the case's {} production "
                         + "root(s){}", productionProcessDirs.size(),

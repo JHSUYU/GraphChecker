@@ -30,14 +30,13 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
 
 /**
  * What the static slice knows about the sites the target's demand can reach:
- * one artifact, one row shape (CLOSURE-V2 SS4). The demand is dynamic, so this
+ * one artifact, one row shape (SYMBOL-SCOPE §3). The demand is dynamic, so this
  * side publishes only what program text states; exploration joins the two.
  *
  * <ul>
  *   <li>{@code WRITE_SITE}: a store into a declared field the slice names,
- *       with its {@code carrier} field, versioned leaf {@code cell} and region
- *       (generalises REPORT-P2N's {@code observedWriteSites} to every cell of
- *       the slice).</li>
+ *       with its {@code carrier} field, versioned leaf {@code cell} and region,
+ *       for every cell of the slice.</li>
  *   <li>{@code READ_SITE}: a read of a TRACKED cell -- an instance field
  *       holding an integral value, boxed or not (an atomic's value included),
  *       the slice both reads and stores (SYMBOL-SCOPE F2) -- whose value a
@@ -68,7 +67,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  * </ul>
  *
  * <p>Every row carries {@code guards}: the branch sites it is control-dependent
- * on by post-dominance (CLOSURE-V2 SS1), i.e. what exploration may flip;
+ * on by post-dominance (SYMBOL-SCOPE §3), i.e. what exploration may flip;
  * computed where Soot is, supplied via {@link Guards}.</p>
  *
  * <p>Scoping only: never what a site wrote, a port carried, or which occurrence
@@ -1098,10 +1097,10 @@ public final class StaticScopeMap {
     /** Every access of a tracked cell ({@link #READ_SITE}), each observed
      *  before it runs: a store, so the replay versions the cell from it and
      *  a read of the cell has a writer to join whatever value the store
-     *  wrote (REPORT-P2N, for every cell); and a read, so a location no store
+     *  wrote (for every cell); and a read, so a location no store
      *  of the window reached still has a log -- its INITIAL -- that the read
-     *  states and the closure asks the cell's writers about (SS3.1's
-     *  Writers_W(l), SYMBOL-SCOPE SS6). */
+     *  states and the closure asks the cell's writers about (GreyGraph
+     *  §3.1's Writers_W(l), SYMBOL-SCOPE §5.5). */
     public JsonArray observedSites() {
         Set<String> tracked = new LinkedHashSet<String>();
         for (Site site : ofRole(READ_SITE, read -> true)) {

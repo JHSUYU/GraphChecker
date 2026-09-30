@@ -44,7 +44,7 @@ public final class RegionInstancePlan extends PlanRow {
             }
             decoded.add(each);
         }
-        // README REGION-1: one occurrence = one task = one guarded summary.
+        // One occurrence = one task = one guarded summary.
         if (decoded.size() != 1) {
             throw new IllegalArgumentException(
                     "region occurrence requires exactly one closure goal, "

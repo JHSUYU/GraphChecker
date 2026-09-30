@@ -164,8 +164,9 @@ public final class CausynthPipeline {
                 result.traceMethods);
         StaticSymbolicSourceDiscovery.discover(result);
         long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
-        // CLOSURE-V2 SS4: before ANY weaving, so site and guard ids are the
-        // original unit indices a replay decides at.
+        // SYMBOL-SCOPE §2.3: over the door-woven bodies, before any hook is
+        // woven, so site and guard ids are the unit indices a replay decides
+        // at.
         Map<String, Long> clockTicks = RootCatalog.clockTicks(result.edges);
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
                 result.edges, result.regions, clockTicks,
@@ -316,7 +317,7 @@ public final class CausynthPipeline {
     private void instrumentRuntimeState(StaticProgram result) {
         HookCatalog refs = HookCatalog.trace();
         SootMethodRef recordFieldRef = refs.ref(Hook.RECORD_FIELD);
-        // Same skeleton file as the concolic pass (IDENTITY-IMPL B).
+        // Same skeleton file as the concolic pass (IDENTITY §10).
         Map<String, String> regionRoots =
                 RegionSkeletonInstrumentationSelection
                         .regionRootsFromEnvironment();
@@ -469,7 +470,7 @@ public final class CausynthPipeline {
 
     }
 
-    /** Rewrites one campaign's deduplicated envelope once (README s.1). */
+    /** Rewrites one campaign's deduplicated envelope once (PIPELINE §4). */
     private void instrumentConcolicCampaign(
             List<InstrumentationPlan> campaign) {
         HookCatalog refs = HookCatalog.concolic();
@@ -1025,7 +1026,7 @@ public final class CausynthPipeline {
     /**
      * Every edge ending one iteration: all backedges, plus the normal exits
      * the control sites select.  A dropped backedge yields one activation
-     * per thread, not README {@code OCC-1}'s one per iteration.
+     * per thread, not one per iteration (IDENTITY §1).
      */
     private static List<CfgLoopControl.Edge> loopBodyClosingEdges(
             SootMethod method, CfgLoopControl.NaturalLoop loop,
@@ -1501,15 +1502,15 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Files the start-site frame of every work start (IDENTITY-V3 SS1
-     * "scope transfer") and claims it at the work's own entry.
+     * Files the start-site frame of every work start (IDENTITY §3, start
+     * frames) and claims it at the work's own entry.
      *
      * <p>A thread inherits its creator's index at construction, not at the
      * start, so the start itself is the frame; without it sibling starts
      * mint one address.  Woven by BOTH passes over the WHOLE application
-     * scope (G9), shapes from {@link WorkStartSites}.  The claim sits at
-     * {@link WorkStartSites#entersWork}: a pool worker may send before any
-     * region entry, and each task needs its own k (G8).</p>
+     * scope (IDENTITY §10), shapes from {@link WorkStartSites}.  The claim
+     * sits at {@link WorkStartSites#entersWork}: a pool worker may send before
+     * any region entry, and each task needs its own k (IDENTITY §3).</p>
      */
     private void instrumentApplicationScope(HookCatalog refs) {
         int filed = 0;
@@ -1761,7 +1762,7 @@ public final class CausynthPipeline {
     /**
      * Opens the execution-index level of ONE application-scope method.
      *
-     * <p>THE frame rule (G11, IDENTITY-V3 §1): every application-scope
+     * <p>THE frame rule (IDENTITY §3): every application-scope
      * method opens a level at entry and closes it at every exit, in BOTH
      * passes; only region roots push more.  Woven LAST, so it brackets every
      * other woven hook and its trap runs after every inner handler.</p>
@@ -2545,7 +2546,7 @@ public final class CausynthPipeline {
 
     /**
      * Weaves the decision marker at EVERY original conditional branch of
-     * every instrumented method (LEAN section 1: the plan picks methods, not
+     * every instrumented method (the plan picks methods, not
      * branches) -- but a constructor's branch before its this/super call,
      * which runs before the region it is in is entered.
      */

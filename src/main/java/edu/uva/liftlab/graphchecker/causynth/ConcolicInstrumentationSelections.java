@@ -325,7 +325,7 @@ public final class ConcolicInstrumentationSelections {
         }
 
         /**
-         * README section 1's per-task envelope, before the replay entry: the
+         * The per-task envelope, before the replay entry: the
          * methods whose effects a delayed engine arm may not skip, then the
          * root, the instrumented methods and the target.
          */

@@ -16,7 +16,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Predicate;
 
-/** IDENTITY-IMPL D: which occurrence a case's v1 {@link Selector} ({@code
+/** IDENTITY §9: which occurrence a case's v1 {@link Selector} ({@code
  *  node#epoch0/region/REGION.x@src#epoch0/api#k}) names; resolved once, against
  *  the SEED, counting the k-th match in seed activation order. No match yields
  *  a degraded address (composition: DECLARATION_MISSING). The only resolver of

@@ -94,7 +94,7 @@ public final class RuntimePlanArtifact {
             throw new IOException("invalid runtime plan row: " + path,
                     malformed);
         }
-        // README REGION-1: one coarse occurrence is one row.
+        // One coarse occurrence is one row (IDENTITY §5).
         Set<String> occurrences = new LinkedHashSet<>();
         for (RegionInstancePlan plan : decoded) {
             if (!occurrences.add(plan.occurrenceId())) {
