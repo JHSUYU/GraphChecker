@@ -175,7 +175,11 @@ end and the witness stop alike): admission ends (`ConcolicRegionRuntime#endAdmis
 starts after it), live activations settle, the run totals close the session's rows (a closed
 `SessionPublisher` writes nothing more), and only then the VM session closes. Cluster threads
 outlive the test, and a region started after the close would open a fresh VM session in which
-every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
+every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`). The run has one end: the first
+of the two to begin it ends the run, and the other waits for its exit; the run totals are
+published whole before any caller of them returns (SOLR-18413 r8: the declared update's throw
+failed the test while its witness stop ran, and the test closed the session and exited while the
+verdict was still being written).
 
 A focused replay ends at its witness: when the focus row's declared occurrence publishes a target row
 that observed the fatal (`ConcolicResultPublisher#concludeAtWitness`), admission ends, its schedule

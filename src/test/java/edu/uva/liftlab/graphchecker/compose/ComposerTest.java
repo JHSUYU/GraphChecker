@@ -4495,9 +4495,11 @@ public class ComposerTest {
      *       join raised (its recorded reading, its cut) went with it;</li>
      *   <li>unstated: the same with no value stated: the path is refused,
      *       the join's refusal beside the read's;</li>
-     *   <li>H1: the write is {@code parseInt(valueOf(R))}, R a declared
-     *       root: pinned, phi {@code x != R} would move R past a constant,
-     *       so no pin stands and there is no path to move it in;</li>
+     *   <li>H1: the write is a call no lowering models over R, a declared
+     *       root (the review's {@code parseInt(valueOf(R))} is R now,
+     *       {@link #aMethodReturnIsItsCall}): pinned, phi {@code x != R}
+     *       would move R past a constant, so no pin stands and there is no
+     *       path to move it in;</li>
      *   <li>H2a: the node's own projection lowers where the write refused:
      *       phi reads the projection, never the pinned constant;</li>
      *   <li>H2b: the write joins and a STATE family may re-pair the read,
@@ -4537,7 +4539,7 @@ public class ComposerTest {
             refused.add(VmRows.RECORDED_READING, integer("I", 4242L));
             JsonObject parsed = new JsonObject();
             parsed.addProperty("_type", "MethodExpression");
-            parsed.addProperty("_name", "java/lang/Integer parseInt");
+            parsed.addProperty("_name", "org/apache/Foo parse");
             JsonArray arguments = new JsonArray();
             arguments.add(vmString("toString", symbol(SERIAL, "I")));
             parsed.add("_param_list", arguments);
@@ -4662,9 +4664,10 @@ public class ComposerTest {
      * <ul>
      *   <li>parse: {@code Long.parseLong} of a String is its decimal
      *       reading, a relation and no pin;</li>
-     *   <li>round-trip: {@code parseInt(valueOf(R))}, R a declared root, is
-     *       R itself, so phi {@code x != R} holds under no valuation: no
-     *       moved-root witness (the pin C1 made gave one);</li>
+     *   <li>round-trip: {@code parseInt(toString(R))}, R a declared root, is
+     *       R itself (a WIRE-CODEC §6.2 identity: no String theory), so phi
+     *       {@code x != R} holds under no valuation: no moved-root witness
+     *       (the pin C1 made gave one);</li>
      *   <li>pinned: a callee the lowering does not know, over nothing that
      *       moves, is pinned by a NAMED assertion an unsat core shows;</li>
      *   <li>moving: the same over R refuses: a pin would carry a moved R
@@ -4715,10 +4718,11 @@ public class ComposerTest {
             assertEquals(name + ": composed", composed ? 1 : 0,
                     composition.disjuncts().size());
             if ("parse".equals(name) || integer) {
-                assertTrue(name + ": the call is its relation: " + body,
-                        body.contains("str.to_int")
-                                && !named(gaps, "MethodReturnPinned:"
-                                + RETURNED));
+                assertEquals(name + ": the call is its relation, and a parse "
+                                + "of a rendering the value rendered: " + body,
+                        !integer, body.contains("str.to_int"));
+                assertFalse(name + ": no pin",
+                        named(gaps, "MethodReturnPinned:" + RETURNED));
             }
             if (integer) {
                 ClaimPolicy.Decision decision = ClaimPolicy.decide(

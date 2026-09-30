@@ -1137,8 +1137,7 @@ public final class Composer {
                 continue;
             }
             if (!corpus.varied(row.rootId())) continue;
-            lowering.declareStated(row.symbol(),
-                    row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT);
+            lowering.declareStated(row.symbol(), sortOf(row));
             // A declared domain is a window around THIS replay's reading;
             // pinning the exact value would answer the question in advance.
             String window = windowOf(row);
@@ -1146,7 +1145,7 @@ public final class Composer {
                 valuation.add(window);
                 continue;
             }
-            String literal = smtLiteral(ran);
+            String literal = smtLiteral(ran, sortOf(row));
             if (literal.isEmpty()) continue;
             valuation.add("(= " + row.symbol() + " " + literal + ")");
         }
@@ -1276,15 +1275,7 @@ public final class Composer {
             composedFamilies.unpaired(session, attach);
         }
         if (attach.answered()) {
-            String literal = smtLiteral(attach.answeredValue());
-            if (literal.isEmpty()) {
-                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, attach.symbol(),
-                        "an answered attach whose value is not a "
-                                + "literal: " + attach.answeredValue()));
-                return;
-            }
-            String read = bind(attach.symbol(), literal, attach, refusals);
+            String read = bind(attach, refusals);
             if (!read.isEmpty()) reads.add(read);
             return;
         }
@@ -1304,16 +1295,30 @@ public final class Composer {
     }
 
     /**
-     * One handoff read, at the sort the MINT declared, never the one the
-     * value's spelling suggests ("0" fits many sorts).
+     * One answered handoff read, its answer a literal of the sort the MINT
+     * declared, never of the one the value's spelling suggests ("0" fits
+     * many sorts).
      */
-    private String bind(String symbol, String literal, AttachRow attach,
-                        List<GapRow> refusals) {
+    private String bind(AttachRow attach, List<GapRow> refusals) {
+        String symbol = attach.symbol();
         Sort sort = scalarSort(attach.javaType(), attach.sessionId(),
                 symbol, refusals);
         if (sort == null) return "";
+        String literal = smtLiteral(attach.answeredValue(), sort);
+        if (literal.isEmpty()) {
+            refusals.add(GapRow.of(attach.sessionId(),
+                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, symbol,
+                    "an answered attach whose value is not a " + sort.smt
+                            + " literal: " + attach.answeredValue()));
+            return "";
+        }
         lowering.declareStated(symbol, sort);
         return "(= " + symbol + " " + literal + ")";
+    }
+
+    /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
+    private static Sort sortOf(RootMintRow row) {
+        return row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT;
     }
 
     /**
@@ -2113,7 +2118,8 @@ public final class Composer {
         for (AttachRow attach : attaches) {
             if (!seen.add(attach.symbol())) continue;
             String literal = smtLiteral(JsonFields.firstNonBlank(
-                    attach.answeredValue(), attach.arrival()));
+                    attach.answeredValue(), attach.arrival()),
+                    JavaSmtSorts.sortOfJava(attach.javaType()));
             if (literal.isEmpty()) continue;
             stated.add("(= " + attach.symbol() + " " + literal + ")");
         }
@@ -2164,7 +2170,7 @@ public final class Composer {
                                 + "what it is and the mint pins nothing");
                 continue;
             }
-            String literal = smtLiteral(row.recordedValue());
+            String literal = smtLiteral(row.recordedValue(), sortOf(row));
             if (literal.isEmpty()) continue;
             lowering.assertNamed("root_domain__" + ordinal++,
                     "(= " + row.symbol() + " " + literal + ")");
@@ -2419,7 +2425,7 @@ public final class Composer {
         for (Map.Entry<String, String> entry : assignment.entrySet()) {
             RootMintRow row = corpus.anyRoot(entry.getKey());
             if (row == null) continue;
-            String literal = smtLiteral(entry.getValue());
+            String literal = smtLiteral(entry.getValue(), sortOf(row));
             if (literal.isEmpty()) continue;
             assertions.add("(assert (! (= " + row.symbol() + " " + literal
                     + ") :named valuation__" + smtName(row.symbol())
