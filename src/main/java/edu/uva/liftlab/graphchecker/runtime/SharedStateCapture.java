@@ -3,10 +3,15 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
+import java.io.IOException;
+import java.io.StringReader;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -65,16 +70,15 @@ final class SharedStateCapture {
                 break;
             }
             pages.add(serialized);
-            JsonElement parsed = parseJson(serialized);
-            if (!parsed.isJsonObject()) {
+            JsonObject header = pageHeader(serialized);
+            if (header == null) {
                 fault = "tracked-location read-out returned no JSON object";
                 break;
             }
-            JsonObject document = parsed.getAsJsonObject();
-            if (optionalBool(document, "complete", false)) {
+            if (optionalBool(header, COMPLETE, false)) {
                 return new RawSharedStateReadOut(pages, "");
             }
-            long next = optionalLongInteger(document, "nextAfterEventId", 0L);
+            long next = optionalLongInteger(header, NEXT_AFTER_EVENT_ID, 0L);
             if (next <= after) {
                 fault = "a partial tracked-location read-out states no event "
                         + "to resume from after " + after;
@@ -87,6 +91,43 @@ final class SharedStateCapture {
                     + MAX_READ_OUT_PAGES + " pages";
         }
         return new RawSharedStateReadOut(pages, fault);
+    }
+
+    /** A page's members that say whether it is the last, and where the
+     *  next one resumes. */
+    private static final String COMPLETE = "complete";
+    private static final String NEXT_AFTER_EVENT_ID = "nextAfterEventId";
+
+    /**
+     * What one page says of itself ({@link #COMPLETE},
+     * {@link #NEXT_AFTER_EVENT_ID}), streamed off its top-level members:
+     * the locations before them are skipped, never built, and the
+     * expression table after them is not read.  The owner thread holds the
+     * VM context meanwhile; parsed whole, a 64 MB page took it eight times
+     * as long.  A blank page says nothing; null when it is no JSON object.
+     */
+    static JsonObject pageHeader(String serialized) {
+        JsonObject header = new JsonObject();
+        if (serialized == null || serialized.trim().isEmpty()) return header;
+        try {
+            JsonReader reader = new JsonReader(new StringReader(serialized));
+            reader.setLenient(true);
+            if (reader.peek() != JsonToken.BEGIN_OBJECT) return null;
+            reader.beginObject();
+            while (reader.hasNext() && !(header.has(COMPLETE)
+                    && header.has(NEXT_AFTER_EVENT_ID))) {
+                String name = reader.nextName();
+                if (COMPLETE.equals(name)
+                        || NEXT_AFTER_EVENT_ID.equals(name)) {
+                    header.add(name, JsonParser.parseReader(reader));
+                } else {
+                    reader.skipValue();
+                }
+            }
+            return header;
+        } catch (IOException | RuntimeException malformed) {
+            return null;
+        }
     }
 
     /**
