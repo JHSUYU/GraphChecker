@@ -399,7 +399,10 @@ mark of the flip occurrence, the focused occurrence or a factor member goes to
 `campaign_obligation_replay` links the seed plan into the worker directory and runs the adapter under
 `replay_timeout_s`. The replay runs the whole workload; the focused set (focused occurrence, factor,
 each assigned root's mint occurrence, inherited flips' occurrences) runs symbolically
-(`runtime.FocusedReplay`). The replay owns the verdict: `RowRuntime.closeSession` writes the session's
+(`runtime.FocusedReplay`). A clock skew is planted at its mint and sets that node's clock (same
+tick), which runs on from there: a later clock mint on the node that no skew is asked of reads the
+host's clock plus the latest plant's skew, so no replay runs a clock back behind a plant; skews and
+mint rows stay relative to the host's reading (`runtime.RootMint`). The replay owns the verdict: `RowRuntime.closeSession` writes the session's
 `obligations.jsonl` and rewrites the worker's `obligation_result.jsonl`. `ADMITTED` = the flipped
 decision took the other arm, the focused prefix was not abandoned, the session published a mint row
 for every assigned root and clock skew, and every inherited flip held; anything else is
