@@ -308,12 +308,6 @@ public final class WireDeclarations {
         return null;
     }
 
-    /** Whether nothing is declared: no codec runs, no door walks. */
-    public boolean empty() {
-        return codecs.isEmpty() && transports.isEmpty()
-                && exchanges.isEmpty();
-    }
-
     public List<Exchange> exchanges() {
         return exchanges;
     }

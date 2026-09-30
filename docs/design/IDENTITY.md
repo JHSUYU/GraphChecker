@@ -365,6 +365,9 @@ randomness is seeded by endpoint (SYMBOL-SCOPE.md §4.5).
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
+- A codec decode on a thread no node is attributed to mints its holes under the unregistered
+  address (the Solr Overseer reads its queue item before its tick opens, so the queue's holes are
+  minted there, not in the tick).
 - Contexts and anchors exist only where a transport calls the doors. In the HDFS trees a
   DataTransfer operation is a tick root, not anchored to its sender; Solr's Overseer queue turns
   keep their own context; ZooKeeper watch work is outside the schedule.
