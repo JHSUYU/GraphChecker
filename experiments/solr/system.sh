@@ -17,15 +17,18 @@ solr_seed=F0993D5343E20BA4
 # GraphChecker's jar follows the tree's classpath: the tree's own libraries
 # (Guava, protobuf, commons-io) are not the engine's versions.
 system_jar_first=false
-# The classes the fault doors live in (the ad-hoc case's
-# communication-mappings.jsonl: DOOR rows): the HTTP client's send and
-# receive, and ZooKeeper writes.  No door on ZooKeeper reads: every
-# cluster-state read and watch is one, and a door per read admits an
-# occurrence per read.
-solr_door_scope=(
+# The scope every ad-hoc check starts from: each class the ad-hoc
+# communication mappings name, which the static pass refuses to find out of
+# scope -- the fault doors (DOOR rows): the HTTP client's send and receive,
+# and ZooKeeper writes.  No door on ZooKeeper reads: every cluster-state read
+# and watch is one, and a door per read admits an occurrence per read.
+system_mapping_scope=(
   solrj:org/apache/solr/client/solrj/impl/HttpSolrClient
   solrj:org/apache/solr/common/cloud/SolrZkClient
 )
+# The class a cluster test names: tools/adhoc/workloads.py lists the tests
+# of the classes that do.
+system_cluster_class=org/apache/solr/cloud/MiniSolrCloudCluster
 # The cluster state's family: the classes that hold it (every node parses
 # ClusterState and its collections, slices and replicas out of ZooKeeper) and
 # the Overseer's writers of it.  A guard over the state then reads a tracked
@@ -51,9 +54,6 @@ system_sources=(
   solrj:solr/solrj/src/java
   core:solr/core/src/java
 )
-# Where the nodes coordinate: an ad-hoc sweep ranks these classes' checks
-# first (tools/adhoc/select.py).
-system_focus='\.cloud\.|\.update\.|ReplicationHandler|IndexFetcher|IndexDeletionPolicy|\.core\.(SolrCore|CoreContainer|ZkContainer)|servlet\.HttpSolrCall'
 # A class a workload runs only if it starts a node of the system: a test
 # that starts none opens no recording window, so an ad-hoc sweep does not
 # choose it (tools/adhoc/select.py).

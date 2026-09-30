@@ -12,6 +12,8 @@ usage() {
   cat <<'EOF'
 Usage:
   ./run_engine.sh --config FILE campaign
+  ./run_engine.sh --config FILE slice
+  ./run_engine.sh --config FILE record
   ./run_engine.sh --config FILE config|validate
   ./run_engine.sh --config FILE --run-obligation \
       --graphchecker-jar JAR --graphchecker-jar-sha256 SHA -- \
@@ -23,6 +25,14 @@ Commands:
               then one iteration of plan/instrument/replay/import/explore
               (waves of obligations, growing the woven region set inside
               the wave) and compose/solve/decide/emit
+  slice       Run SEED's static half alone: the setup adapter, then the
+              seed analysis with the scope grown until nothing is added,
+              into causynth_output_dir.  No workload runs and nothing is
+              frozen (tools/adhoc/slice.sh scores what it writes)
+  record      Pre-screen one workload for every target of the spec: one
+              recording woven for all of them, each aggregated on its own
+              static slice (causynth_static_root/<name>), and
+              runtime/record-summary.json (tools/adhoc/prescreen.sh)
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
   help        Print this help message
@@ -133,6 +143,11 @@ workflow_config_keys=(
   # where the slice stops at it (plan.ScopeGrowth, SYMBOL-SCOPE §2.4),
   # nearest the throw first; 0 keeps the declared scope as it is.
   "causynth_scope_growth_budget CAUSYNTH_SCOPE_GROWTH_BUDGET krp 24"
+  # `record` (a pre-screen): the directory holding each target's static
+  # slice, <root>/<target name>/, as `slice` wrote it (tools/adhoc/slice.sh),
+  # and the wall clock the recording's workload may take.
+  "causynth_static_root CAUSYNTH_STATIC_ROOT krp -"
+  "record_timeout_s CAUSYNTH_RECORD_TIMEOUT_S krp 300"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -390,6 +405,9 @@ initialize_config() {
   if [[ -n "${causynth_root_domains}" ]]; then
     causynth_root_domains=$(resolve_path "${causynth_root_domains}")
   fi
+  if [[ -n "${causynth_static_root}" ]]; then
+    causynth_static_root=$(resolve_path "${causynth_static_root}")
+  fi
   # The discovery artifacts, one layout under the resolved output directory.
   candidate_graph="${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz"
   causynth_static_scope_map="${causynth_output_dir}/static_scope_map.jsonl"
@@ -495,7 +513,7 @@ validate_config() {
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
       schedule_max_jobs concolic_worker_count region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound \
-      obligation_memory_mb; do
+      obligation_memory_mb record_timeout_s; do
     require_positive_integer "${key}"
   done
   # The one stage a campaign may be asked to stop after.  Refused here rather
@@ -694,6 +712,20 @@ campaign_analyze_grown_scope() {
   done
 }
 
+# slice: SEED's static half alone -- the case's scope copied in by the setup
+# adapter, then campaign_analyze_grown_scope -- writing what SEED's does into
+# causynth_output_dir: candidate_dataflow_edges.jsonl.gz,
+# static_scope_map.jsonl, region_skeletons.jsonl.gz, scope_frontier.jsonl
+# and scope-classes/.  No workload runs and nothing is frozen: an ad-hoc
+# selection reads it (tools/adhoc/slice.sh, score.py).  The discovery pass's
+# woven classes go: the recording weaves its own (do_workload).
+do_slice() {
+  validate_config >/dev/null
+  [[ -z "${campaign_setup_command}" ]] || campaign_setup
+  campaign_analyze_grown_scope
+  rm -rf -- "${analysis_classes_dir}"
+}
+
 # The occurrence of the declared target site the case declares.  It is a config
 # key rather than a member of the target spec because the spec accepts one
 # entry and three cases share one file: hdfs-17899's per-bug selection lives
@@ -752,8 +784,10 @@ do_compose() {
     "${selection[@]}"
 }
 
+# The recording's workload, under a wall-clock bound of <seconds> when one is
+# given (run_under_wall_clock_bound).
 run_configured_workload() {
-  local -a workload_env
+  local -a workload_env bound=()
   local trace_dir
   trace_dir=$(dirname "${runtime_region_plan}")
   workload_env=(
@@ -762,7 +796,8 @@ run_configured_workload() {
     "CAUSYNTH_INSTRUMENTED_CLASSES_DIR=${analysis_classes_dir}"
     "CAUSYNTH_TRACE_OUTPUT_DIR=${trace_dir}"
   )
-  (cd "${workload_work_dir}" && \
+  [[ -z "${1:-}" ]] || bound=(run_under_wall_clock_bound "$1")
+  (cd "${workload_work_dir}" && "${bound[@]+"${bound[@]}"}" \
     env "${workload_env[@]}" bash -lc "${workload_command}")
 }
 
@@ -787,11 +822,102 @@ do_workload() {
     "never opened a recording window (its output is above)"
   require_file "static scope map" "${causynth_static_scope_map}"
   run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
-    --trace-dir "${trace_dir}" \
-    --candidate-graph "${candidate_graph}" \
-    --region-skeletons "${causynth_region_skeletons}" \
-    --static-scope-map "${causynth_static_scope_map}" \
-    --test "${trace_test}"
+    --trace-dir "${trace_dir}" --test "${trace_test}" \
+    --target "$(campaign_target_names | head -n 1)=${candidate_graph},\
+${causynth_static_scope_map},${causynth_region_skeletons},${trace_dir}"
+}
+
+# The names of the targets the case's target spec declares, one per line.
+campaign_target_names() {
+  awk '$1 == "exception_target:" {print $2}' "${causynth_target_spec}"
+}
+
+# record: the pre-screen of one workload for every target of the case's
+# spec (tools/adhoc/prescreen.sh).  Each target's static slice is
+# ${causynth_static_root}/<name>/, as `slice` wrote it (tools/adhoc/slice.sh);
+# a target without one is refused before any work.  ONE recording is woven
+# for all of them (campaign_union_static) and its workload bounded by
+# record_timeout_s; then each target is aggregated on its own slice into
+# runtime/<name>/.  runtime/record-summary.json states the workload's exit,
+# its seconds, whether the bound ended it, and each target's outcome
+# (runtime.CausynthTraceRecorder: ACTIVATED, or the refusal).
+do_record() {
+  validate_config >/dev/null
+  [[ -n "${causynth_static_root}" ]] \
+    || die "record requires causynth_static_root"
+  local trace_dir name static exit_status wall timed_out=false
+  local -a names targets=()
+  trace_dir=$(dirname "${runtime_region_plan}")
+  mapfile -t names < <(campaign_target_names)
+  (( ${#names[@]} > 0 )) \
+    || die "the target spec names no target: ${causynth_target_spec}"
+  for name in "${names[@]}"; do
+    static="${causynth_static_root}/${name}"
+    require_file "static slice of ${name}" "${static}/static_scope_map.jsonl"
+    targets+=(--target "${name}=${static}/candidate_dataflow_edges.jsonl.gz,\
+${static}/static_scope_map.jsonl,${static}/region_skeletons.jsonl.gz,\
+${trace_dir}/${name}")
+  done
+  [[ -z "${campaign_setup_command}" ]] || campaign_setup
+  campaign_union_static "${names[@]}"
+  CAUSYNTH_TRACE_MODE=region-state do_analyze
+  ensure_output_directory "${trace_dir}"
+  local started=${SECONDS} status
+  run_capturing_status run_configured_workload "${record_timeout_s}"
+  exit_status=${status}
+  wall=$(( SECONDS - started ))
+  case "${exit_status}" in
+    "${campaign_adapter_timeout_status}"|"${campaign_adapter_killed_status}")
+      timed_out=true ;;
+  esac
+  # A target the recording does not serve is its own outcome: the
+  # aggregation's status says only whether any was served.
+  run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+    --trace-dir "${trace_dir}" --test "${trace_test}" "${targets[@]}" \
+    --summary "${trace_dir}/targets.json"
+  jq -n --argjson exit "${exit_status}" --argjson wall "${wall}" \
+    --argjson timedOut "${timed_out}" \
+    --slurpfile outcomes "${trace_dir}/targets.json" \
+    '{exit: $exit, wallSeconds: $wall, timedOut: $timedOut,
+      targets: $outcomes[0].targets}' >"${trace_dir}/record-summary.json"
+  rm -f -- "${trace_dir}/targets.json"
+}
+
+# A batch's one recording weave (do_record): the case's skeleton file is
+# every target's region skeletons merged by region -- a region's id is its
+# authority and root, whatever the target, so one root is one region -- with
+# their lists united; its grown scope is every target's grown classes, the
+# GROWN manifest one row per class.
+campaign_union_static() {
+  local name static grown
+  grown=$(campaign_grown_scope)
+  rm -rf -- "${grown}"
+  mkdir -p "${grown}"
+  local -a skeletons=()
+  for name in "$@"; do
+    static="${causynth_static_root}/${name}"
+    skeletons+=("${static}/region_skeletons.jsonl.gz")
+    [[ -d "${static}/scope-classes" ]] || continue
+    cp -R -- "${static}/scope-classes/." "${grown}/"
+    [[ ! -s "${static}/scope-classes/${scope_growth_manifest}" ]] \
+      || cat "${static}/scope-classes/${scope_growth_manifest}" \
+        >>"${grown}/${scope_growth_manifest}.all"
+  done
+  rm -f -- "${grown}/${scope_growth_manifest}"
+  if [[ -s "${grown}/${scope_growth_manifest}.all" ]]; then
+    awk -F'\t' '!seen[$1]++' "${grown}/${scope_growth_manifest}.all" \
+      >"${grown}/${scope_growth_manifest}"
+  fi
+  rm -f -- "${grown}/${scope_growth_manifest}.all"
+  zcat -- "${skeletons[@]}" | jq -c -s '
+    def unite($a; $b): reduce $b[] as $x ($a;
+      if any(.[]; . == $x) then . else . + [$x] end);
+    reduce .[] as $row ({}; .[$row.regionId] |=
+      (if . == null then $row else
+        reduce ($row | to_entries[] | select(.value | type == "array")) as $e
+          (.; .[$e.key] = unite(.[$e.key] // []; $e.value)) end))
+    | .[]' | gzip -c >"${causynth_region_skeletons}"
 }
 
 # ---------------------------------------------------------------------------
@@ -4102,13 +4228,13 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|config|validate|--run-obligation)
+  campaign|slice|record|config|validate|--run-obligation)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
-      campaign)
-        [[ $# -eq 0 ]] || die "campaign takes no extra arguments"
-        do_campaign
+      campaign|slice|record)
+        [[ $# -eq 0 ]] || die "${command_name} takes no extra arguments"
+        "do_${command_name}"
         ;;
       config) print_normalized_config ;;
       validate) validate_config ;;

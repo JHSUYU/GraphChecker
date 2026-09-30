@@ -40,9 +40,13 @@ public final class JUnitMethodRunner {
      * totals close the rows -- nothing is published after them -- and only
      * then the VM session closes.  Non-daemon cluster threads outlive the
      * test, so the exit is explicit.  0 when the method returned, 1 when it,
-     * a publication or the close failed.  Once: a second ender (an early end
-     * meeting the workload's own) waits for the first's {@code System.exit}
-     * rather than closing the VM session a second time.
+     * a publication or the close failed.
+     *
+     * <p>ONE END: the first caller ends the run and a later one waits for its
+     * exit.  SOLR-18413 r8: the declared update's throw failed the test, and
+     * its witness stop and the failed test both ended the run; the witness
+     * began the run totals, the test found them begun, closed the session
+     * and exited while the verdict was still being written.</p>
      */
     static void exit(int status) {
         synchronized (ENDING) {
@@ -51,7 +55,7 @@ public final class JUnitMethodRunner {
                     try {
                         ENDING.wait();
                     } catch (InterruptedException ignored) {
-                        // The run is ending on the other thread regardless.
+                        // The first end exits the JVM; nothing else does.
                     }
                 }
             }

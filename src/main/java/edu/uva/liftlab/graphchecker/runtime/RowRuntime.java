@@ -307,7 +307,8 @@ public final class RowRuntime {
                             + " the staged expression's");
         }
         // CONFIRM (b): compared with the model's producer, never enforced.
-        String mismatch = Confirmation.attached(endpoint, producer);
+        String mismatch = Confirmation.attached(endpoint, producer, null,
+                null);
         if (!mismatch.isEmpty()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, endpoint.id(),
                     mismatch);

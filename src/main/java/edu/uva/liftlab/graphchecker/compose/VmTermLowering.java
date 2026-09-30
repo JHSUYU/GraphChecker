@@ -1,7 +1,10 @@
 package edu.uva.liftlab.graphchecker.compose;
 
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
@@ -9,6 +12,7 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -23,11 +27,155 @@ public final class VmTermLowering {
     private VmTermLowering() {
     }
 
-    /** One recorded value as an SMT literal of its own sort, or "". */
-    public static String smtLiteral(String value) {
+    /**
+     * One recorded value as an SMT literal of this sort, or "" when it is
+     * none: a Bool {@code true}/{@code false} (the VM's {@code 1}/{@code 0}),
+     * an integral's decimal, a floating value's IEEE bits as the VM records
+     * them, a String's content from its JSON string literal, quoted (Java
+     * null, {@code N}, is no String).
+     */
+    public static String smtLiteral(String value, Sort sort) {
         String text = value == null ? "" : value.trim();
-        if ("true".equals(text) || "false".equals(text)) return text;
-        return JavaPrimitiveSmtSemantics.integralLiteral(text);
+        if (sort == Sort.BOOL) {
+            return "true".equals(text) || "1".equals(text) ? "true"
+                    : "false".equals(text) || "0".equals(text) ? "false" : "";
+        }
+        if (sort == Sort.INT) {
+            return JavaPrimitiveSmtSemantics.integralLiteral(text);
+        }
+        if (sort == Sort.FLOAT32 || sort == Sort.FLOAT64) {
+            String literal = JavaPrimitiveSmtSemantics.floatingLiteral(text,
+                    floatingKind(sort));
+            return literal == null ? "" : literal;
+        }
+        if (sort == Sort.STRING) {
+            String content = ReadRow.stringContent(text);
+            return content == null ? "" : VmExpressionIr.quote(content);
+        }
+        return "";
+    }
+
+    /**
+     * What binds one codec hole to one arm (WIRE-CODEC §6.1, §6.3): the
+     * formula, or the gap that refuses the arm by name.
+     */
+    public static final class HoleArm {
+        /** The binding, or "" when the arm is refused. */
+        public final String formula;
+        /** Null when bound, else the kind of the refusal. */
+        public final GapKind refusal;
+        public final String detail;
+
+        private HoleArm(String formula, GapKind refusal, String detail) {
+            this.formula = formula;
+            this.refusal = refusal;
+            this.detail = detail;
+        }
+
+        private static HoleArm refused(GapKind kind, String detail) {
+            return new HoleArm("", kind, detail);
+        }
+    }
+
+    /**
+     * THE HOLE-ARM RULE (WIRE-CODEC §6.1, §6.3): {@code target}, the hole's
+     * symbol at the DECODED leaf's {@code holeType}, bound to what one arm
+     * delivered -- the operand the producer's export cut out of its leaf,
+     * of {@code operandType}.
+     * <ul>
+     *   <li>The same sort is equality; an integral operand of a narrower
+     *       type is widened by Java's rule (its range lies inside the
+     *       hole's: JSON writes an {@code Integer} and decodes a
+     *       {@code Long}).  A narrowing, or any other change of sort
+     *       (integral and floating, a float read back as a double through
+     *       its decimal text), refuses the arm by name.</li>
+     *   <li>A String operand of an integral or boolean hole is its
+     *       canonical rendering read back: {@code (java_int_to_string v)}
+     *       or {@code "true"}/{@code "false"} is the operand, within the
+     *       hole's range -- the only place the String theory stands for a
+     *       hole, for an arm whose leaf was not cut at a rendering.</li>
+     *   <li>A hole is minted only on a present, non-null leaf: an arm that
+     *       delivers Java null refuses ({@code CODEC_MISMATCH NULL_LEAF}), a
+     *       String that may be null holds only where it is not, and one
+     *       whose nullness nothing states is refused by name.</li>
+     * </ul>
+     */
+    public static HoleArm holeArm(String target, Term delivered,
+                                  String operandType, String holeType) {
+        Sort hole = JavaSmtSorts.sortOfJava(holeType);
+        if (delivered.isNullReference()) {
+            return HoleArm.refused(GapKind.CODEC_MISMATCH, "NULL_LEAF: the "
+                    + "arm delivers Java null, and a hole is minted only on "
+                    + "a present, non-null leaf");
+        }
+        if (delivered.sort == Sort.STRING) {
+            if (delivered.stringNullness.isEmpty()) {
+                return HoleArm.refused(GapKind.UNSTATED_VALUE,
+                        Reason.JAVA_STRING_NULLNESS_UNKNOWN.composed + ": the"
+                                + " arm delivers a String whose nullness "
+                                + "nothing states, and the hole holds only "
+                                + "where it is not null");
+            }
+            String read = reading(target, delivered.text, hole, holeType);
+            if (read == null) return changed(operandType, holeType);
+            List<String> held = new ArrayList<String>();
+            if (!"false".equals(delivered.stringNullness)) {
+                held.add("(not " + delivered.stringNullness + ")");
+            }
+            held.add(read);
+            return new HoleArm(and(held), null, "");
+        }
+        if (delivered.sort != hole) return changed(operandType, holeType);
+        if (hole == Sort.INT && !widens(operandType, holeType)) {
+            return HoleArm.refused(GapKind.UNSTATED_VALUE, "HoleNarrowed: "
+                    + "the arm delivers a " + operandType + " to a hole the "
+                    + "consumer decoded as " + holeType + ", which holds "
+                    + "fewer values, so Java widening does not bind it");
+        }
+        return new HoleArm("(= " + target + " " + delivered.text + ")",
+                null, "");
+    }
+
+    /** A hole of this sort read off a String operand, or null for none. */
+    private static String reading(String target, String string, Sort hole,
+                                  String holeType) {
+        if (hole == Sort.STRING) return "(= " + target + " " + string + ")";
+        if (hole == Sort.BOOL) {
+            return "(and (or (= " + string + " \"true\") (= " + string
+                    + " \"false\")) (= " + target + " (= " + string
+                    + " \"true\")))";
+        }
+        JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                JavaPrimitiveSmtSemantics.domainOfJavaType(holeType);
+        if (hole != Sort.INT || domain == null) return null;
+        return "(and (= (java_int_to_string " + target + ") " + string + ") "
+                + integralRange(domain.lower, target, domain.upper) + ")";
+    }
+
+    private static HoleArm changed(String operandType, String holeType) {
+        return HoleArm.refused(GapKind.UNSTATED_VALUE, "HoleSortChanged: the "
+                + "arm delivers a " + operandType + " to a hole the consumer "
+                + "decoded as " + holeType + ": no Java widening and no "
+                + "reading of a rendering takes the one to the other");
+    }
+
+    /** Whether every value of one integral type is one of another's. */
+    private static boolean widens(String narrower, String wider) {
+        JavaPrimitiveSmtSemantics.IntegralDomain from =
+                JavaPrimitiveSmtSemantics.domainOfJavaType(narrower);
+        JavaPrimitiveSmtSemantics.IntegralDomain to =
+                JavaPrimitiveSmtSemantics.domainOfJavaType(wider);
+        return from != null && to != null
+                && numeral(to.lower).compareTo(numeral(from.lower)) <= 0
+                && numeral(from.upper).compareTo(numeral(to.upper)) <= 0;
+    }
+
+    /** An SMT integer numeral, {@code (- n)} for a negative one. */
+    private static BigInteger numeral(String smt) {
+        String text = smt.trim();
+        if (!text.startsWith("(-")) return new BigInteger(text);
+        return new BigInteger(text.substring(2, text.length() - 1).trim())
+                .negate();
     }
 
     /** The same text, spelled the way an SMT symbol may be spelled. */

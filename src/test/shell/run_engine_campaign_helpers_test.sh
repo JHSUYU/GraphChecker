@@ -715,7 +715,10 @@ done
 # at its declared occurrence's first witness.
 # 48: `seed_replay_time_factor` joined it when the seed replay got a wall
 # clock: how long the seed may replay decides whether a slow one is a case.
-[[ "$(print_normalized_config | wc -l)" -eq 48 ]] \
+# 50: `causynth_static_root` and `record_timeout_s` joined it with `record`,
+# the pre-screen: which static slices it aggregates each target on, and how
+# long its recording may run.
+[[ "$(print_normalized_config | wc -l)" -eq 50 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -2792,5 +2795,39 @@ grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
 ! grep -q . "${fanout_dir}/ledger/$(command hostname -s)/starts" \
   || fail "a returned job is still charged: \
 $(cat "${fanout_dir}/ledger/$(command hostname -s)/starts")"
+
+# UNION-1: a batch's one recording weave (do_record) is woven with every
+# target's skeletons merged by region, their lists united and the first
+# target's words kept, and over every target's grown classes with one GROWN
+# row per class.
+union_dir="${test_tmp}/union"
+causynth_static_root="${union_dir}/static"
+causynth_output_dir="${union_dir}/out"
+causynth_region_skeletons="${causynth_output_dir}/region_skeletons.jsonl.gz"
+for target in a b; do
+  mkdir -p "${causynth_static_root}/${target}/scope-classes/p"
+  : >"${causynth_static_root}/${target}/scope-classes/p/${target^}.class"
+  printf 'p.%s\tCALLEE\tm\t1\np.Shared\tFIELD\tf\t2\n' "${target^}" \
+    >"${causynth_static_root}/${target}/scope-classes/GROWN"
+done
+printf '%s\n' \
+  '{"regionId":"R1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2"]}' \
+  '{"regionId":"R2","selection":"STATE_CONTEXT","methods":["m3"]}' \
+  | gzip -c >"${causynth_static_root}/a/region_skeletons.jsonl.gz"
+printf '%s\n' \
+  '{"regionId":"R1","selection":"STATE_CONTEXT","methods":["m2","m4"]}' \
+  | gzip -c >"${causynth_static_root}/b/region_skeletons.jsonl.gz"
+campaign_union_static a b
+[[ "$(zcat "${causynth_region_skeletons}" | jq -c .)" == \
+    '{"regionId":"R1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2","m4"]}
+{"regionId":"R2","selection":"STATE_CONTEXT","methods":["m3"]}' ]] \
+  || fail "the union skeletons: $(zcat "${causynth_region_skeletons}")"
+[[ -e "${causynth_output_dir}/scope-classes/p/A.class" \
+    && -e "${causynth_output_dir}/scope-classes/p/B.class" ]] \
+  || fail "a target's grown classes are missing from the union"
+[[ "$(cut -f1 "${causynth_output_dir}/scope-classes/GROWN")" == \
+    $'p.A\np.Shared\np.B' ]] \
+  || fail "the union GROWN: $(cat "${causynth_output_dir}/scope-classes/GROWN")"
+reset_config
 
 echo "run_engine campaign helper tests passed"
