@@ -1899,6 +1899,16 @@ public class ExploreTest {
                 "REGION.refresh",
                 CausalContext.of(Role.of("BALANCER"), "", 4),
                 "o.a.h.h.b.KeyManager#refresh#2");
+        // On the reader's node too, but seen holding another key map only:
+        // a store reaches only an object its occurrence holds.
+        OccurrenceAddress otherMap = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 10),
+                "o.a.h.h.s.d.BPServiceActor#offerService#42");
+        // A second reader of the anchor's map: state-connected to it, and
+        // passing it nothing.
+        OccurrenceAddress coReader = occurrence("hdfs-case/dn0",
+                "REGION.target", CausalContext.of(Role.of("DATA_XCEIVER"),
+                        "", 2), "o.a.h.h.s.d.DataXceiver#run#13");
         Session spread = new Session(perNode, "s-seed");
         spread.activation(target, false);
         spread.activation(writer, false);
@@ -1907,6 +1917,18 @@ public class ExploreTest {
         spread.activation(foreignWriter, false);
         spread.activation(foreignExporter, false);
         spread.activation(elsewhereOnly, false);
+        spread.activation(otherMap, false);
+        spread.activation(coReader, false);
+        spread.constant("e.other", "7");
+        spread.write(at(otherMap, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 12, true), "BlockTokenSecretManager"
+                        + "#addKeys#12"), LocationId.of(LocationKind.MAP, "34",
+                "allKeys"), 6L, "e.other");
+        spread.read(at(coReader, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager"
+                                + "#retrieveDataEncryptionKey#8"), allKeys,
+                5L, "M_READ_KEY_2", "119992");
         spread.constant("e.119992", "119992");
         spread.symbolic("e.stored", "M_HOFF_KEY");
         spread.export(exported, "e.119992", 11L, "119992");
@@ -1954,6 +1976,13 @@ public class ExploreTest {
         assertFalse("nor is a write site of the carrier whose region only "
                         + "that other node ran: " + scopedWhy,
                 scopedWhy.containsKey(elsewhereOnly.render()));
+        assertFalse("nor an occurrence on the reader's node the session saw "
+                        + "hold another map only: " + scopedWhy,
+                scopedWhy.containsKey(otherMap.render()));
+        assertFalse("and a co-reader of the map is no task: " + scopedWhy,
+                scopedWhy.containsKey(coReader.render()));
+        assertTrue("though it replays with the anchor, its factor",
+                scoped.tasks.get(0).factor().contains(coReader));
         assertFalse("and neither is a static export site of the port on a "
                         + "node other than the PAIRED producer's: "
                         + scopedWhy,
@@ -3179,23 +3208,28 @@ public class ExploreTest {
                 skew + 1000L <= 100000L - ClockMargin.margin(1_000_000L));
     }
 
-    // ---- (6b) a handoff nobody can answer is pinned -------------------
+    // ---- (6b) a handoff nobody can answer moves only with its own run --
 
     /**
-     * A handoff that is not a CONTROL is held to what its own path received.
+     * A handoff that is not a CONTROL is held to what its own run's producer
+     * computed it from.
      *
      * <p>An obligation's answers are applied at the attaches of the occurrence
-     * it flips and nowhere else, so a family over a delivery somewhere else
-     * is freedom the replay does not have: the model picks one of the
-     * recorded arrivals, nothing plants it, and the replay receives whatever
-     * its own run produces.  hdfs-11741 campaign #4 has three of those --
-     * the block-key expiry date of a balance-block delivery, free over an OR
-     * of 20 arrivals, answered with the minimum and 105291 to 203751ms below
-     * what the replay then got.  The handoff of the occurrence this
-     * obligation DOES flip is still answered out of its family (case 2).</p>
+     * it flips and nowhere else, so another run's arrival is freedom the
+     * replay does not have: the model picks one of the recorded arrivals,
+     * nothing plants it, and the replay receives whatever its own run
+     * produces.  hdfs-11741 campaign #4 has three of those -- the block-key
+     * expiry date of a balance-block delivery, free over an OR of 20
+     * arrivals, answered with the minimum and 105291 to 203751ms below what
+     * the replay then got.  Its own run's arm moves only with roots and
+     * clocks the replay plants: SOLR-18413's leader parses a routing rule's
+     * expiry in its state watcher, not in the update that checks it, and the
+     * expiry is the Overseer's clock plus the timeout.  The handoff of the
+     * occurrence this obligation DOES flip is still answered out of its
+     * family (case 2).</p>
      */
     @Test
-    public void aHandoffThisObligationCannotAnswerIsPinnedToItsArrival()
+    public void aHandoffThisObligationCannotAnswerMovesOnlyWithItsOwnRun()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("pinned-handoff").toPath();
@@ -3253,23 +3287,67 @@ public class ExploreTest {
                 aboutTheDelivery.add(line);
             }
         }
-        assertEquals("one assertion binds the delivery, and it is the pin "
-                        + "to the arrival this path's own attach row states: "
-                        + aboutTheDelivery, 1,
+        assertEquals("one assertion binds the delivery, and it is the arm of "
+                        + "this path's own run: " + aboutTheDelivery, 1,
                 aboutTheDelivery.size() - countOf(aboutTheDelivery,
                         "wchoice_"));
-        boolean pinned = false;
+        boolean own = false;
         for (String line : aboutTheDelivery) {
             if (line.contains("wchoice_")) continue;
-            pinned = line.endsWith(" 119992))") || line.endsWith(" 119992)");
+            own = line.matches(".*\\(= vH_\\S+ 119992\\).*");
             assertFalse("no other recorded arrival of that slot binds it: "
                     + line, line.contains("119995"));
         }
-        assertTrue("and the value it is pinned to is the one that arrived: "
-                + aboutTheDelivery, pinned);
+        assertTrue("and what it binds it to is what that run's producer "
+                + "sent: " + aboutTheDelivery, own);
         assertEquals("so a flip that needs another delivery is refused, "
                         + "rather than answered with a value nothing would "
                         + "plant", Verdict.UNSAT, worker.verdict);
+
+        // The same delivery, sent as the producer's clock reading: its own
+        // run's arm moves with that clock, which the replay plants.
+        Path clocked = tree.newFolder("own-run-clock").toPath();
+        Session timed = new Session(clocked, "s-seed");
+        timed.activation(TARGET, false);
+        timed.activation(WRITER, false);
+        timed.activation(PRODUCER, false);
+        timed.root(PRODUCER, "CASE.NOW", "M_NOW", RootKind.CLOCK, "119992",
+                null, null, true);
+        timed.symbolic("e.now", "M_NOW");
+        timed.symbolic("e.stored", "M_HOFF_KEY");
+        timed.export(ROTATED, "e.now", 11L, "119992");
+        timed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        timed.write(STORED, ALL_KEYS, 5L, "e.stored");
+        timed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        timed.decision(TARGET, "Lookup#u8", 1, false,
+                "(= M_READ_KEY 119995)");
+        timed.flush();
+        scopeMap(clocked,
+                targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""),
+                scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
+                        "PBHelper#convert#9", "PBHelper#convert", "", "",
+                        "XCH.resp.block-key-id", "Rotate#u3"));
+        Path timedOut = tree.newFolder("own-run-clock-out").toPath();
+        Path timedWave = timedOut.resolve("obligations-0000");
+        plan(clocked, TARGET_SELECTOR, null, timedOut.resolve("results.jsonl"),
+                timedWave, 0);
+        Worker moved = solve(clocked, timedWave,
+                named(obligations(timedWave), "Lookup#u8"), timedOut, "w0");
+        assertEquals(detail(moved), Verdict.SAT_MODEL_READY, moved.verdict);
+        JsonObject focus = RowCodec.readJsonl(moved.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        assertEquals("the flip moves the producer's clock by what the "
+                        + "delivery needs: " + focus, "3",
+                focus.getAsJsonObject("clockDeltas").get("CASE.NOW")
+                        .getAsString());
+        assertEquals("and answers nothing at the delivery it does not "
+                + "flip: " + focus, 0, focus.getAsJsonObject("answers")
+                .size());
     }
 
     /** How many of these lines mention this name. */

@@ -253,13 +253,17 @@ worker's focus row as that session's world, the wave verdicts, the recorded sche
 
 Demand starts at the anchor: its flip sites are the target sites' guards
 (`StaticScopeMap.Site.guards`) when some run reached the anchor, else the sites of the target's path
-chain (`pathSites`). The demanded symbols of an occurrence (with its state-connected factor) are those
-its demanded values reach (`SmtLowering.reachedSymbols` over the lowered terms and, where a read's
-refused join gave way to its mint or its value, over what that join lowered: `Lowered.reach`; such a
-lowering is no `Lowered.ok` value a flip query stands on): the anchor's `phiTerm`,
-its decisions at its flip sites, and the values it contributed (the exports a demanded attach paired
-with, the write a demanded read could observe), closed over the reads those name and the writes they
-could observe. Each demanded boundary input grows the closure:
+chain (`pathSites`). The demanded symbols of an occurrence are those its demanded values reach
+(`SmtLowering.reachedSymbols` over the lowered terms and, where a read's refused join gave way to its
+mint or its value, over what that join lowered: `Lowered.reach`; such a lowering is no `Lowered.ok`
+value a flip query stands on): the anchor's `phiTerm`, its own decisions at its flip sites (a factor
+member deciding the same site decides it on its own objects), and the values it contributed (the
+exports a demanded attach paired with, the write a demanded read could observe), closed over the
+reads those name and the writes they could observe. The occurrence and its state-connected factor are
+one symbolic unit: every member's attaches and reads are asked whether a demanded value rests on them,
+and a member joins the closure only through them, as a writer or a producer below, never for touching
+what the occurrence touches (two readers of one location pass each other nothing). Each demanded
+boundary input grows the closure:
 
 - an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
   sites = the guards of the port's static export sites, contributed = its exports), and every activated
@@ -270,10 +274,15 @@ could observe. Each demanded boundary input grows the closure:
   version, and writes of the same session by HB-concurrent occurrences — `Arms.concurrent`: not the
   same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root, neither
   Lost), and every activated occurrence on the reader's node holding a static write site of the
-  location's carrier (`STATIC_CANDIDATE_WRITER`; `StaticScopeMap#carriersAt`: a recorded write joins
-  a carrier in its method whose site stores its location's kind, `#stores` — a field store or an
-  atomic's value a field, another mutator call a container's state, a read its field or a container
-  field's state, no site an array element — and whose declared type may hold the row's: the same
+  location's carrier, unless the read's session states it holding other objects only
+  (`STATIC_CANDIDATE_WRITER`; a heap location is one object's, and a store reaches only an object its
+  occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
+  location's, is no candidate; a static field, an owner that names no one object, or an occurrence
+  with no recorded access is, `ClosurePlanner.Walk#holdsOthersOnly`; `StaticScopeMap#carriersAt`: a
+  recorded write joins a carrier in its method whose site stores its location's kind, `#stores` — a
+  field store or an atomic's value a field, another mutator call a container's state, a read its
+  field or a container field's state, no site an array element — and whose declared type may hold
+  the row's: the same
   class, the bare sort, or, with no hierarchy at hand, value sorts that agree; a declared class no
   sort names holds any reference, and a runtime class no sort names may be a container, never a
   String or a box);
@@ -292,9 +301,10 @@ row (a port event outside every admitted activation, `RowRuntime#ambientActivati
 event ran, not a region that ran the site, so it makes no static candidate
 (`ClosurePlanner#activated`); an ambient occurrence joins the closure only through the rows that name
 it. A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
-not a task. One anchor's walk offers the static candidates of one (reason, site, guard set, node)
-once, whichever read or attach asks for them: asked again they are the same demands, and folding
-them changes nothing (`ClosurePlanner#candidates`); the walk says each gap once. Each demanded occurrence becomes a `Task` (id =
+not a task. One anchor's walk scans one site's holders on one node once and offers an occurrence
+once per (reason, site, guard set, node), whichever read or attach asks for it: asked again it is the
+same demand, and folding it changes nothing (`ClosurePlanner#candidates`); the walk says each gap
+once. Each demanded occurrence becomes a `Task` (id =
 `digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
 the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
 plus every fault site (`Corpus.faultSites`: a decision whose lowered term reaches a MARKER root). A
@@ -341,7 +351,11 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
 - HANDOFF: an attach of the focused occurrence (a *control*) is bound per slot by
   `OR(pi_q ∧ guard_q ∧ v_H = e_q)` over `Arms.wireArms` (nested slots closed); a paired control whose
   every arm is dropped refuses the query (`UNPRODUCIBLE_ANSWER`); an unpaired one is free and listed
-  `unproducible`. Every other attach is pinned to its recorded arrival.
+  `unproducible`. Every other attach (no answer is planted there) is bound by the arms of its own
+  run only, nested slots closed the same way, so it moves only with the roots and clocks the replay
+  plants (SOLR-18413: the leader parses a routing rule's expiry in its state watcher, and the expiry
+  is the Overseer's clock plus the timeout); with no such arm it is pinned to its recorded arrival.
+  Another run's arrival never binds it.
 - READ: the eligible writers (`Arms.stateArms`) become one Bool selector each (`wchoice_*`,
   exactly one); no writer: pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A
   container state behind a guard is one variable at the sort its writers deliver.

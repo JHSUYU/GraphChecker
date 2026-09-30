@@ -339,7 +339,10 @@ alone (`AtomicInteger.value`) names every object of its type. The replay mints a
 
 For a demanded read, `explore/ClosurePlanner#writers` asks the session's rows for eligible writers
 and the map for the static write sites of the read's carrier (`#carriersAt`, `#writersOf`), on the
-reader's node only. A recorded site's type matches a map row's by sort, or by the value it holds:
+reader's node only, held by an occurrence that may hold the read's object: one whose recorded
+accesses in that session name owners, none of them the location's, holds other objects only and is
+no candidate (Writers_W(ℓ) is per object: every state watcher's parse builds its own `Slice`s). A
+recorded site's type matches a map row's by sort, or by the value it holds:
 a wrapper location agrees with a row of its primitive (a stored box states its value) and with a
 reference row (a stored null) (`StaticScopeMap#sameType`). A reference row states its object's
 runtime class and the map row the carrier's declared type; with no class hierarchy at hand they

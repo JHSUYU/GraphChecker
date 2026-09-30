@@ -42,7 +42,7 @@ The last evidence per case:
 | hdfs-17899-bug2 | `accept-v94-17899-bug2` | PASS | MARKER_FLIPPED: the SPS's IPC response door |
 | hdfs-17967-pathA, B, C | `accept-v92-17967-path{A,B,C}` | PASS | MARKER_FLIPPED: the IPC request door |
 | hdfs-11741 | `accept-v93-11741` | **FAIL** (see below) | CLOCK_SKEW, `polarityDecides`, confirmed |
-| solr-18413 | `accept-s45-solr-18413` | FAIL | `NO_SUPPORTED_WITNESS`. `accept-r1` and `accept-r2-solr-18413` died in the wave-1 planner (exit 137): the closure built one static candidate writer per demanded read and holding occurrence, 329,393 for the anchor's 282 demanded reads, and more for the Overseer's `ClusterState.load` (3,417 demanded reads). A walk now offers one site's candidates once (`gc/explore/ClosurePlanner#candidates`) and indexes a group's reads once per demand (`ClosurePlanner.GroupReads`): r2's wave 1 plans offline in 60 s at a 5.8 GB peak under an 8 GB heap. Over `accept-r1`'s final corpus (40 sessions, 2.2 GB of rows) the closing wave's EXPLORE and COMPOSE then ran out of the 8 GB heap reading it: each row held its own copy of every string it spells (52M strings, 5.5 GB of EXPLORE's 9.1 GB). A read now shares them, and the occurrences, indices and frames rows are built of (`gc/contract/RowPool`): EXPLORE peaks at 4.2 GB and COMPOSE at 2.9 GB, outputs unchanged. No run since. |
+| solr-18413 | `accept-r5-solr-18413` | FAIL | `NO_SUPPORTED_WITNESS`, INCONCLUSIVE_PARTIAL: no replay reached the declared update's throw, since every `isExpired` flip was UNSAT (the expiry the leader's state watcher attached was pinned to its arrival), and the closure was truncated at 64 tasks with 42 more demanded (every parse and Overseer mutation on the node as a static candidate writer of the leader's `Slice`/`RoutingRule` fields, and as a factor member). Both are fixed on HEAD (R5 below); no round since. |
 | solr-18406 | `accept-s30-solr-18406` | FAIL | `NO_SUPPORTED_WITNESS`. Every later run (`s31`…`s48`) ended before EMIT. |
 
 So HDFS stands at 8 of 9.
@@ -136,8 +136,16 @@ See Acceptance above. What remains:
 - HEAD must read a fresh recording: every case needs a new round.
 - 11741's clock must cross the wire into the DataNode's expiry check.
 - SOLR-18406 needs reference-carried container state and a `ConcurrentHashMap` model (R3).
-- SOLR-18413's clock flip needs a backward skew. A clock's window is
-  `[reading, reading + 30 days]` unless `root-domains.jsonl` bounds it.
+- SOLR-18413 needs a round on HEAD. Its expiry check flips by the Overseer's clock moving forward:
+  the leader's state watcher parses the rule's expiry, so the update that checks it is not where the
+  handoff attaches, and a flip query now binds such a handoff by its own run's arms
+  (`gc/explore/FlipQuery`). Over `accept-r7-solr-18413`'s seed the `isExpired` flip is SAT with
+  MigrateCmd's clock skewed by +262,666 ms and nothing answered. Its closure is 6 tasks, not 64
+  truncated (`gc/explore/ClosurePlanner`: a static candidate writer must be able to hold the read's
+  object; a factor member joins only as a writer or producer; a demand's own decisions only). The
+  seed of `accept-r5` left the Overseer queue's attach unpaired (2 of its 68 sessions): the store
+  door files what a write carried after the schedule's SEND lets the queue's consumer run
+  (`gc/runtime/MessageDoors#stored`).
 
 The offline regression gate `tools/regress/offline-ab.sh` (with `ab_compare.py`) compares a
 candidate jar against a baseline on a recorded round, stage by stage, with no replay. It reads a
@@ -195,6 +203,10 @@ Correctness:
    a versioned read.
 7. VM: implicit exceptions (NPE, AIOOBE, division by zero, a failed cast) and `instanceof` are
    never symbolic branch outcomes.
+28. `gc/runtime/MessageDoors#stored` files what a store's write carried after
+    `CausynthTraceRecorder#outboundExchange` observed its SEND, and the schedule may run the
+    version's reader from that SEND on: `consumed` or `fetched` can find nothing, and the
+    delivery pairs with no export (SOLR-18413 r5's seed, the Overseer's queue item).
 
 Scale and robustness:
 
