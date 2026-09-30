@@ -74,7 +74,10 @@ when all of these hold:
 A case the table does not name cannot pass. The z3 probe is reported, never
 gated on: it asks the published formula, unpinned, about the accepted
 assignment and about the other polarity, which is a statement about the whole
-formula rather than the slice the campaign solved.
+formula rather than the slice the campaign solved. Each question is asked
+whole within `PROBE_WHOLE_SECONDS` (60) and, undecided, one path at a time as
+the composer asks a valuation (`ClaimPolicy#byDisjunct`), each path within
+`Z3_TIMEOUT_SECONDS`.
 
 ## Results
 
