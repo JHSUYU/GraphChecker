@@ -21,6 +21,9 @@ public final class InputActionCatalog {
      *  the tick rides on the input row and no later stage recognises a
      *  clock, or its unit, again. */
     public static final String DECLARED_WALL_CLOCK = "clock";
+    /** The JVM clock a clock input wraps ({@code contract.Clock#source}),
+     *  beside its tick: the two are one clock's identity. */
+    public static final String DECLARED_CLOCK_SOURCE = "clockSource";
 
     public enum Mode {
         SYMBOLIC, CONCRETE, DECLARATION_ONLY

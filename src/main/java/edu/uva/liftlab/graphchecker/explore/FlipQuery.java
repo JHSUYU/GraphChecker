@@ -38,10 +38,13 @@ import java.util.Set;
  *       domain (a marker over both values), else PINNED to the recorded read,
  *       as the composition pins it;</li>
  *   <li>a CLOCK is per path, never equal across paths, with domain {@code
- *       [that execution's reading, reading + 30 days]} in the clock's own
- *       ticks ({@link JavaPrimitiveSmtSemantics#clockSkewCeiling}; no
- *       reading: {@code [0, Long.MAX_VALUE]}); clocks never go back
- *       (PIPELINE §7.5);</li>
+ *       [host reading, host reading + 30 days]} in the clock's own ticks:
+ *       the host's reading of that execution ({@code
+ *       RootMintRow#hostReading}), which a skew is off, so no model skews a
+ *       clock behind its host ({@link
+ *       JavaPrimitiveSmtSemantics#clockSkewCeiling}; no reading: {@code [0,
+ *       Long.MAX_VALUE]}); its nearest world is the instant the execution
+ *       ran it at (PIPELINE §7.5);</li>
  *   <li>a CONTROL handoff (attached at the flipped occurrence, where a
  *       replay can be answered) is bound by its family {@code OR_q (pi_q AND
  *       guard_q AND v_H = e_q)} (a codec's hole by COMPOSE's hole-arm rule,

@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -75,6 +77,8 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
     private static final String CLOCK_SYMBOL =
             "M_J_field_" + CLOCK_LABEL + "_java/lang/Long";
     private static final String INSTANT = "1789965233929";
+    /** The node's clock ran an hour ahead of the host at that mint. */
+    private static final long SKEW = 3_600_000L;
 
     /** The configured source the second half of the fixture declares. */
     private static final String SOURCE_ID = "CFG.ORDERED";
@@ -148,8 +152,15 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 1, roots.size());
         assertEquals(RootKind.CLOCK, roots.get(0).kind());
         assertEquals(CLOCK_SYMBOL, roots.get(0).symbol());
-        assertEquals("and the instant this execution read", INSTANT,
+        assertEquals("and the instant this execution ran it at", INSTANT,
                 roots.get(0).recordedValue());
+        assertEquals("how far its node's clock ran off the host there",
+                SKEW, roots.get(0).clockSkew());
+        assertEquals("so the host read the instant less that skew",
+                Long.toString(Long.parseLong(INSTANT) - SKEW),
+                roots.get(0).hostReading());
+        assertEquals("and the clock it is: the JVM clock it wraps, its tick",
+                Clock.of(1_000_000L, Clock.WALL), roots.get(0).clock());
 
         List<ReadRow> reads = reads();
         assertEquals("and the read that states the version it minted",
@@ -396,7 +407,8 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 new SymbolizeAction(clockAction()), "PORT.now",
                 Collections.<String>emptyList(),
                 "<org.apache.hadoop.util.Timer: long now()>.return",
-                symbolExpression(CLOCK_SYMBOL, "J"), true, false, INSTANT, 0L);
+                symbolExpression(CLOCK_SYMBOL, "J"), true, false, INSTANT,
+                SKEW);
     }
 
     /** {@code RowPublication#writes}, the one publisher of WriteRows. */
@@ -494,6 +506,8 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 "<org.apache.hadoop.util.Timer: long now()>.return");
         encoded.addProperty("rootKind", "CALL_RETURN");
         encoded.addProperty("clock", 1_000_000L);
+        encoded.addProperty(InputActionCatalog.DECLARED_CLOCK_SOURCE,
+                Clock.WALL);
         encoded.addProperty("observed", true);
         encoded.addProperty("primitiveValue", INSTANT);
         encoded.addProperty("eventSeq", 7L);

@@ -95,8 +95,15 @@ def node_role(node):
     return re.sub(r"\d+", "", node.rsplit("/", 1)[-1].split("#", 1)[0])
 
 
-def skew_bucket(row, model):
-    nanos = abs(int(model) - int(row["recordedValue"])) * row["clockNanos"]
+def skew_bucket(row, model, readings):
+    """How far the model moved a clock cell, off the reading the composition
+    anchored it to (the manifest's roots, the recording's timeline): the
+    session's own recordedValue is the instant its replay ran, on its host's
+    timeline, plant included."""
+    if row["rootId"] not in readings:
+        raise ValueError("the composition anchors no reading of clock %s"
+                         % row["rootId"])
+    nanos = abs(int(model) - int(readings[row["rootId"]])) * row["clockNanos"]
     return next((name for bound, name in BUCKETS if nanos <= bound), ">1h")
 
 
@@ -109,6 +116,11 @@ def witness(final):
     schedule = os.path.dirname(final)
     case_dir = os.path.dirname(schedule)
     moved = result["movedRoots"]
+    manifest = json.load(open(os.path.join(
+        final, "candidate_composition_manifest.json")))
+    readings = {root["rootId"]: root["recordedValue"]
+                for root in manifest.get("roots") or []
+                if root.get("kind") == "CLOCK"}
     session = next(v["selectedSessionId"] for v in result["valuations"]
                    if v["ordinal"] == result["valuationOrdinal"])
     rows = {}
@@ -140,7 +152,7 @@ def witness(final):
         if kind == "CLOCK":
             if "clockNanos" not in row:
                 raise ValueError("clock root %s states no clockNanos" % row["rootId"])
-            bucket = skew_bucket(row, model)
+            bucket = skew_bucket(row, model, readings)
             clocks.append(bucket)
         context = row["occurrence"].get("context", {})
         parts.append((kind, action["siteId"].rsplit("#", 1)[0],

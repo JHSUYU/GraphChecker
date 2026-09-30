@@ -139,7 +139,7 @@ public class MultiTargetAggregationTest {
         for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(
                 Collections.singletonList(thrown),
                 Collections.singletonList(region),
-                Collections.<String, Long>emptyMap(), method -> false,
+                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), method -> false,
                 cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false),
                 site -> Collections.singletonList(
                         new StaticScopeMap.Guard(guard, fatalArm)))) {

@@ -9,6 +9,8 @@ package edu.uva.liftlab.graphchecker.contract;
 public final class RootMintRow extends Value {
     /** The member a CLOCK row states its skew in; absent when 0. */
     public static final String CLOCK_SKEW = "clockSkew";
+    /** The member a CLOCK row states its JVM clock in; absent when none. */
+    public static final String CLOCK_SOURCE = "clockSource";
 
     private final String sessionId;
     private final long seq;
@@ -20,14 +22,14 @@ public final class RootMintRow extends Value {
     private final String domainMin;
     private final String domainMax;
     private final boolean declared;
-    private final long clockNanos;
+    private final Clock clock;
     private final long clockSkew;
 
     private RootMintRow(String sessionId, long seq,
                         OccurrenceAddress occurrence, String rootId,
                         String symbol, RootKind kind, String recordedValue,
                         String domainMin, String domainMax, boolean declared,
-                        long clockNanos, long clockSkew) {
+                        Clock clock, long clockSkew) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.occurrence = occurrence;
@@ -38,32 +40,26 @@ public final class RootMintRow extends Value {
         this.domainMin = domainMin;
         this.domainMax = domainMax;
         this.declared = declared;
-        this.clockNanos = clockNanos;
+        this.clock = clock;
         this.clockSkew = clockSkew;
     }
 
+    /**
+     * @param clock     a CLOCK's clock, null for any other root
+     * @param clockSkew how far a CLOCK's node clock ran off the host's
+     *                  reading here ({@link #clockSkew}); 0 for any other
+     */
     public static RootMintRow of(String sessionId, long seq,
                                  OccurrenceAddress occurrence, String rootId,
                                  String symbol, RootKind kind,
                                  String recordedValue, String domainMin,
                                  String domainMax, boolean declared,
-                                 long clockNanos) {
-        return of(sessionId, seq, occurrence, rootId, symbol, kind,
-                recordedValue, domainMin, domainMax, declared, clockNanos,
-                0L);
-    }
-
-    public static RootMintRow of(String sessionId, long seq,
-                                 OccurrenceAddress occurrence, String rootId,
-                                 String symbol, RootKind kind,
-                                 String recordedValue, String domainMin,
-                                 String domainMax, boolean declared,
-                                 long clockNanos, long clockSkew) {
+                                 Clock clock, long clockSkew) {
         RootKind stated = Fields.required(kind, "kind");
-        if ((stated == RootKind.CLOCK) != (clockNanos > 0L)) {
-            throw new IllegalArgumentException("clockNanos: a CLOCK root "
-                    + "states its tick and no other root does: " + stated
-                    + " " + clockNanos);
+        if ((stated == RootKind.CLOCK) != (clock != null)) {
+            throw new IllegalArgumentException("clock: a CLOCK root states "
+                    + "its clock and no other root does: " + stated + " "
+                    + clock);
         }
         if (clockSkew != 0L && (stated != RootKind.CLOCK
                 || !Fields.required(recordedValue, "recordedValue").trim()
@@ -80,7 +76,7 @@ public final class RootMintRow extends Value {
                 stated,
                 Fields.required(recordedValue, "recordedValue"),
                 Fields.optional(domainMin), Fields.optional(domainMax),
-                declared, clockNanos, clockSkew);
+                declared, clock, clockSkew);
     }
 
     public String sessionId() {
@@ -132,6 +128,12 @@ public final class RootMintRow extends Value {
         return declared;
     }
 
+    /** A CLOCK's clock: the JVM clock it wraps and its tick; null for
+     *  any other root. */
+    public Clock clock() {
+        return clock;
+    }
+
     /**
      * A CLOCK's tick: the nanoseconds one unit of its reading is (1 for
      * {@code nanoTime}, 1,000,000 for {@code currentTimeMillis}); 0 for any
@@ -139,7 +141,7 @@ public final class RootMintRow extends Value {
      * its own ticks.
      */
     public long clockNanos() {
-        return clockNanos;
+        return clock == null ? 0L : clock.nanos();
     }
 
     /**
@@ -172,7 +174,7 @@ public final class RootMintRow extends Value {
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, occurrence, rootId, symbol, kind,
-                recordedValue, domainMin, domainMax, declared, clockNanos,
+                recordedValue, domainMin, domainMax, declared, clock,
                 clockSkew};
     }
 

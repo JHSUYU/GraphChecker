@@ -541,9 +541,10 @@ public final class SmtLowering {
     }
 
     /**
-     * One expression of this session, lowered to text, or a named refusal; {@link #reference} is the rule, so its definedness is a fact
-     * of this lowering ({@link #facts}).  Callers ask
-     * {@link #declarations()} for the names it reaches.
+     * One expression of this session, lowered to text, or a named refusal;
+     * {@link #reference} is the rule, so its definedness is a fact of this
+     * lowering ({@link #facts}).  Callers ask {@link #declarations()} for
+     * the names it reaches.
      */
     public Lowered lower(String expressionRef) {
         Attempt<Term> lowered = attempting(
@@ -660,8 +661,8 @@ public final class SmtLowering {
     }
 
     /**
-     * One lowered expression: its text, its value (facts), what it reaches, and why
-     * it is refused.  A refused construct inside it is a fresh name, so the
+     * One lowered expression: its text, its value (facts), what it reaches,
+     * and why it is refused.  A refused construct inside it is a fresh name, so the
      * text still names what the rest reaches (the closure's question); only
      * an unrefused one may stand in a query ({@link #ok}).  A read bound by
      * its mint or its pin after its join refused is a constant in the text;

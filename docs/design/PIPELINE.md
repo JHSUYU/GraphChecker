@@ -414,8 +414,9 @@ and is a jump of that node's clock (`runtime.NodeClocks`): a declared clock read
 of reads the host plus the skew of the jump on its clock latest at or before it in the RECORDING's
 order (its place is the event the recording read it at, `SymbolizeAction#eventSeq`, the seq its mint
 row states), never this replay's order, so two threads that plant either way round run one clock.
-One clock is one node, one tick and readings within one window (`JavaPrimitiveSmtSemantics#oneClock`,
-COMPOSE's rule: a node's wall clock and monotonic clock are two). A value carrying an expression is
+One clock is one node, one JVM clock and one tick (`contract.Clock#same`, COMPOSE's rule too: the
+source is the plan's `clockSource`, read off the wrapper's body, never a reading's value; a node's
+wall clock and monotonic clock are two, and a clock stating no source is on no order). A value carrying an expression is
 computed from a reading and is never moved again; an unattributed mint is on no node's clock and
 reads the host (`MINT_UNATTRIBUTED`). A clock's mint row states the instant the run used and, as
 `clockSkew`, how far its clock ran off the host there; skews stay relative to the host's reading. The replay owns the verdict: `RowRuntime.closeSession` writes the session's
@@ -686,8 +687,8 @@ reading it also read, plus the time that session's host read between the two; a 
 place is BLOCKING (`DECLARATION_MISSING`) -- and a domain, floor = the reading, ceiling = reading +
 30 days (in its ticks), unless the case declares bounds. On one node, each cell is no earlier than
 the nearest earlier cell by seq (the recording's event, the order a replay runs a plant on in) of the
-same clock (`JavaPrimitiveSmtSemantics#oneClock`: same tick, readings within one window)
-(`clock_order__`); where the recording read the two the other way round, the link gives way by that
+same clock (`contract.Clock#same`: the JVM clock its row states and the same tick; a cell stating
+none is on no order, DIAGNOSTIC) (`clock_order__`); where the recording read the two the other way round, the link gives way by that
 much (`(<= (- earlier later) d)`), so the recording always satisfies it. The cells are listed in seq
 order (`Composition#clockCells`), each with its reading and the cell before it (`clockBefore`).
 
@@ -786,13 +787,17 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
 
 - **Realized**: when that target row observed the fatal, every selected arm is the session's own
   delivery, every write the model chose for a read of the join closure at a location the fatal
-  rests on (`restsOn`, below) is the one that read saw (`StateClosure#ran`), and the session minted
-  every moved root at the model's value, the session
-  is the confirmation (`realized.json`, no replay).
+  rests on (`restsOn`, below) is the one that read saw (`StateClosure#ran`), the session minted
+  every moved non-clock root at the model's value, and its clocks are the model's (on every cell
+  the composition anchors, the skews its world planted are exactly the claim's jumps; skews compare,
+  each off its own run's host), the session is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
-  overlaid with the model's moved roots (`plantModel`: a clock as a skew off the reading the
-  composition anchored its cell to, the manifest's `roots` -- a moved clock it anchors nowhere is
-  refused; any other root as its value; at the recording's mint occurrence). The focus row focuses the anchor
+  overlaid with the model (`ConfirmMain.Moved`): every moved root, by root id, at the recording's
+  mint occurrence -- any other root as its value, a clock as its skew off the reading the
+  composition anchored its cell to (the manifest's `roots`) -- and, on every clock cell the
+  composition anchors, the model's jumps alone: the session's own skews there are dropped, since
+  the model runs those cells on from the jump before them. A moved root the recording mints
+  nowhere, or a moved clock the composition anchors nowhere, refuses the confirmation by name. The focus row focuses the anchor
   with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits

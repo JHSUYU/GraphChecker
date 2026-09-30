@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import java.util.ArrayList;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -79,7 +80,8 @@ public class ConfirmMainTest {
     private RootMintRow root(String session, String id, String symbol,
                              RootKind kind, String value) {
         return RootMintRow.of(session, 1L, mint, id, symbol, kind, value,
-                null, null, true, kind == RootKind.CLOCK ? 1_000_000L : 0L);
+                null, null, true, kind == RootKind.CLOCK
+                ? Clock.of(1_000_000L, Clock.WALL) : null, 0L);
     }
 
     /** The recording and the selected session, as the corpus holds them. */
@@ -148,8 +150,10 @@ public class ConfirmMainTest {
         assignments.addProperty("HDFS.SERIAL", "119980");
         assignments.addProperty("FAULT:IPC", "true");
         world.add("rootAssignments", assignments);
+        // A skew on a cell the composition does not anchor: outside the
+        // model, so the world keeps it.
         JsonObject deltas = new JsonObject();
-        deltas.addProperty("CLOCK.a", "43000");
+        deltas.addProperty("CLOCK.gone", "7000");
         world.add("clockDeltas", deltas);
         world.add("answers", new JsonObject());
         JsonObject mints = new JsonObject();
@@ -457,6 +461,31 @@ public class ConfirmMainTest {
                         RootKind.INTEGRAL, "119978"),
                 root("sel", "FAULT:IPC", "M_Z_fault.sel", RootKind.MARKER,
                         "true")), RowCodec::writeRootMint);
+        // Had its world planted a skew on a clock cell the composition
+        // anchors and the model does not move, the model's clock runs on
+        // there: that session ran another world, and the replay plants the
+        // model's clocks alone.
+        Path worker = iteration.resolve("obligations-0000").resolve("w1");
+        JsonObject world = RowCodec.readJsonl(worker.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        JsonObject skewed = world.deepCopy();
+        skewed.getAsJsonObject("clockDeltas").addProperty("CLOCK.a",
+                "43000");
+        RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
+                Collections.singletonList(skewed));
+        Path replayed = folder.newFolder("replayed").toPath();
+        JsonObject planned = ConfirmMain.write(iteration,
+                claim("FAULT:IPC", "true"), manifest(), replayed);
+        assertTrue("not realized: " + planned, !planned.has("realizedBy"));
+        JsonObject focus = RowCodec.readJsonl(replayed.resolve(
+                "focused_task.jsonl")).get(0);
+        assertTrue("the session's own skew is not the model's: " + focus,
+                !focus.getAsJsonObject("clockDeltas").has("CLOCK.a"));
+        assertEquals("one outside the composition is kept", "7000",
+                focus.getAsJsonObject("clockDeltas").get("CLOCK.gone")
+                        .getAsString());
+        RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
+                Collections.singletonList(world));
         Path out = folder.newFolder("realized").toPath();
 
         JsonObject summary = ConfirmMain.write(iteration,
@@ -569,8 +598,8 @@ public class ConfirmMainTest {
                 !roots.has("OTHER"));
         assertTrue("a clock is a skew, never a value",
                 !roots.has("CLOCK.a"));
-        assertEquals("the model's 45000 off the composition's reading 1000"
-                + " (the session's world ran 43000)", "44000",
+        assertEquals("the model's 45000 off the composition's reading 1000",
+                "44000",
                 row.getAsJsonObject("clockDeltas").get("CLOCK.a")
                         .getAsString());
         JsonObject mints = row.getAsJsonObject("rootMints");
@@ -631,12 +660,15 @@ public class ConfirmMainTest {
         // the world handed over, as the skew off the reading the composition
         // anchored the cell to -- the model's instants are on that timeline,
         // and the selected replay's host read 1000 later -- whichever
-        // session's symbol names the cell; a cell it anchors nowhere is
-        // refused by name.
+        // session's symbol names the cell; a cell it anchors nowhere, or one
+        // the recording mints nowhere, is refused by name.
         String[][] clocks = {
                 {"M_J_clock.sel", "CLOCK.a", "49000"},
                 {"M_J_clock.b", "CLOCK.b", "49000"},
                 {"M_J_clock.b", "CLOCK.b", null},
+                // A cell only another session read: the recording mints it
+                // nowhere, so no replay can be focused to plant it.
+                {"M_J_clock.elsewhere", "CLOCK.c", null},
         };
         for (int index = 0; index < clocks.length; index++) {
             String[] clock = clocks[index];
