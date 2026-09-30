@@ -1,27 +1,30 @@
 # The one harness every case runs through
 
-A case directory under `experiments/hadoop/` holds DECLARATIONS only:
+A case directory under `experiments/<system>/` holds DECLARATIONS only:
 
 | file | what it declares |
 | --- | --- |
-| `case.sh` | per case id: the Hadoop worktree (`repo`), the workload (`test_class`, `test_method`), the declared target (`target_occurrence`), the analysis `scope`, and optionally `loop_bounds`, `target_spec`, `hadoop_javac` |
+| `case.sh` | per case id: the system's worktree (`repo`), the workload (`test_class`, `test_method`), the declared target (`target_occurrence`), the analysis `scope`, and optionally `loop_bounds`, `target_spec`, `classpath_test`, `workload_properties` (and Hadoop's `hadoop_javac`) |
 | `workflow.properties` | the campaign's budgets and inputs |
 | `target.yaml`, `*.jsonl` | the target (`exception_target: <name> <binary class name> <source line> [<thrown type>]`: no annotation, no tree rebuild), communication mappings, symbolic inputs, root domains, loop bounds |
 
 Everything executable is here, one copy for every case:
 
 ```bash
-lib/run.sh <case dir> <case id> build|config|validate|campaign
+lib/run.sh <case dir> <case id> build|config|validate|slice|campaign
 ```
+
+`slice` runs SEED's static half alone (the case's scope copied in, the seed
+analysis with the scope grown): the static artifacts an ad-hoc selection
+scores (`tools/adhoc/slice.sh`, `score.py`), with no workload run.
 
 | script | role |
 | --- | --- |
-| `case-env.sh` | sourced by every script: reads `case.sh` and derives paths; holds the block-key family's shared scope (`blockkey_scope`) |
+| `case-env.sh` | sourced by every script: reads the system's `system.sh`, then `case.sh`, and derives paths |
 | `run.sh` | the launcher: the case's declarations become the campaign environment, then `run_engine.sh` |
 | `execute.sh` | one workload JVM: the recording, or a concolic replay |
 | `prepare-analysis.sh` | copies the declared scope into the classes directory the weave reads |
-| `classpath.sh`, `classpath.py` | the workload classpath, read off the case's own surefire report |
-| `build.sh` | builds the case's Hadoop tree and runs its workload once natively |
+| `classpath.sh` | the workload classpath, as the system's `system.sh` reads it off a test report (`experiments/<system>/classpath.py`) |
 | `java.sh` | the engine JVM |
 
 The discovery hook is the same for every case: with

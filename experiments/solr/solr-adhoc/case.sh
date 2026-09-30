@@ -1,6 +1,7 @@
 # Ad-hoc coordination checks of Solr: a guarded throw a SolrCloud cluster
 # test's healthy path evaluates and passes (tools/adhoc: sites.py,
-# coverage.sh, reach.py; a sweep's are chosen by select.py).  One case per
+# coverage.sh, reach.py; a sweep's are declared and chosen by their static
+# slice by select.py, slice.sh and score.py).  One case per
 # check and workload, "<check>.<TestClass>-<method>": checks.tsv declares
 # each check, and the workload is any MiniSolrCloudCluster test of solr/core
 # as it is written (CausynthSolrCluster's automatic cluster).  All run one
@@ -32,4 +33,7 @@ test_class=$(cd "${repo}/solr/build/solr-core/classes/test" \
   echo "no single test class ${workload%%-*} in ${repo}" >&2
   return 2
 }
-classpath_test=org.apache.solr.cloud.TestCausynthMigrateRuleTarget
+# Every test of the module runs on one classpath, which any of its junit4
+# reports states.
+classpath_test=$(cd "${repo}/solr/build/solr-core/test" 2>/dev/null \
+  && ls TEST-*.xml 2>/dev/null | sed -n '1{s/^TEST-//; s/\.xml$//; p}')

@@ -12,6 +12,7 @@ usage() {
   cat <<'EOF'
 Usage:
   ./run_engine.sh --config FILE campaign
+  ./run_engine.sh --config FILE slice
   ./run_engine.sh --config FILE config|validate
   ./run_engine.sh --config FILE --run-obligation \
       --graphchecker-jar JAR --graphchecker-jar-sha256 SHA -- \
@@ -23,6 +24,10 @@ Commands:
               then one iteration of plan/instrument/replay/import/explore
               (waves of obligations, growing the woven region set inside
               the wave) and compose/solve/decide/emit
+  slice       Run SEED's static half alone: the setup adapter, then the
+              seed analysis with the scope grown until nothing is added,
+              into causynth_output_dir.  No workload runs and nothing is
+              frozen (tools/adhoc/slice.sh scores what it writes)
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
   help        Print this help message
@@ -692,6 +697,20 @@ campaign_analyze_grown_scope() {
     campaign_log "scope growth: ${summary}"
     [[ "${changes}" != 0 ]] || return 0
   done
+}
+
+# slice: SEED's static half alone -- the case's scope copied in by the setup
+# adapter, then campaign_analyze_grown_scope -- writing what SEED's does into
+# causynth_output_dir: candidate_dataflow_edges.jsonl.gz,
+# static_scope_map.jsonl, region_skeletons.jsonl.gz, scope_frontier.jsonl
+# and scope-classes/.  No workload runs and nothing is frozen: an ad-hoc
+# selection reads it (tools/adhoc/slice.sh, score.py).  The discovery pass's
+# woven classes go: the recording weaves its own (do_workload).
+do_slice() {
+  validate_config >/dev/null
+  [[ -z "${campaign_setup_command}" ]] || campaign_setup
+  campaign_analyze_grown_scope
+  rm -rf -- "${analysis_classes_dir}"
 }
 
 # The occurrence of the declared target site the case declares.  It is a config
@@ -4068,13 +4087,13 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|config|validate|--run-obligation)
+  campaign|slice|config|validate|--run-obligation)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
-      campaign)
-        [[ $# -eq 0 ]] || die "campaign takes no extra arguments"
-        do_campaign
+      campaign|slice)
+        [[ $# -eq 0 ]] || die "${command_name} takes no extra arguments"
+        "do_${command_name}"
         ;;
       config) print_normalized_config ;;
       validate) validate_config ;;

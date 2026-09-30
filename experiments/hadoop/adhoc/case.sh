@@ -1,7 +1,8 @@
 # Ad-hoc coordination checks of HDFS: a throw whose guard compares what one
 # node holds with what another sent, and which a workload's healthy path
 # evaluates and passes (tools/adhoc: sites.py, coverage.sh, reach.py; a
-# sweep's are chosen by select.py, named <Class>-<throw line>).  One case per
+# sweep's are declared, named <Class>-<throw line>, and chosen by their static
+# slice by select.py, slice.sh and score.py).  One case per
 # check and workload, "<check>.<workload>": checks.tsv declares the checks and
 # the workloads each is reached on.  All run one JDK 8 tree,
 # gc/hdfs-17967-pathC, as it is written: tools/adhoc/targets.py writes
@@ -28,6 +29,10 @@ IFS=$'\t' read -r _ _ _ own workloads <<<"${row}"
   return 2
 }
 target_spec=${here}/targets/${check}.yaml
+# Every test of the module runs on one classpath, which any of its surefire
+# reports states.
+classpath_test=$(cd "${repo}/hadoop-hdfs-project/hadoop-hdfs/target/surefire-reports" \
+  2>/dev/null && ls TEST-*.xml 2>/dev/null | sed -n '1{s/^TEST-//; s/\.xml$//; p}')
 target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
   "${here}/occurrences.tsv")
 target_occurrence=${target_occurrence:-first}
@@ -75,7 +80,6 @@ case "${workload}" in
   # Any other cluster test of the module, "<test class>-<method>", run as
   # it is written: the MiniDFSCluster it builds is made reproducible and
   # registered, and opens the window, by itself (CausynthCluster#AUTOMATIC).
-  # Its classpath is the module's, stated by any of its reports.
   Test*-*)
     test_method=${workload#*-}
     test_class=$(cd "${repo}/hadoop-hdfs-project/hadoop-hdfs/target/test-classes" \
@@ -84,7 +88,6 @@ case "${workload}" in
       echo "no single test class ${workload%%-*} in ${repo}" >&2
       return 2
     }
-    classpath_test=org.apache.hadoop.hdfs.TestFileAppend
     workload_properties=(-Dcausynth.cluster.automatic=true)
     scope+=(client:org/apache/hadoop/hdfs/DFSClient)
     ;;

@@ -37,9 +37,6 @@ system_sources=(
   client:hadoop-hdfs-project/hadoop-hdfs-client/src/main/java
   hdfs:hadoop-hdfs-project/hadoop-hdfs/src/main/java
 )
-# Where the nodes coordinate: an ad-hoc sweep ranks these classes' checks
-# first (tools/adhoc/select.py).
-system_focus='\.server\.(blockmanagement|datanode|namenode)\.|\.qjournal\.|\.security\.|DataStreamer|DFS(Striped)?(Output|Input)Stream'
 # A class a workload runs only if it starts a node of the system: a test
 # that starts none (a unit test over a mocked DataNode) opens no recording
 # window, so an ad-hoc sweep does not choose it (tools/adhoc/select.py).

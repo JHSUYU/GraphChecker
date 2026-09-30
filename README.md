@@ -141,16 +141,28 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
    `<w>.lines` and a `.node` marker and exits with the test's own status. You supply the list of
    workload tests (`workloads.tsv`).
 3. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
-4. `select.py <system-dir> <sweep-dir> <experiment> <N> [per-check] [tree]`: rank and choose
-   checks. It appends them to `checks.tsv` and prints the case ids. A workload whose test failed
-   under coverage, or that starts no node, is skipped and named on stderr.
+4. `select.py <sweep-dir> <experiment> declare [tree]`: declare every reached check a sweep can
+   run in `checks.tsv` (a new one as `<Class>-<throw line>`) and print one
+   `<check>.<workload>` per check, its fastest usable workload. A timeout's check, a workload whose
+   test failed under coverage or starts no node, and a line that moved since coverage are left
+   out and named on stderr.
 5. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
    line (`exception_target: adhoc-<check> …`). Nothing in the tree is edited or rebuilt.
-6. `sweep.sh <snapshot> <round> <cases-file> [heads-per-host]`: one campaign per case over all
+6. `slice.sh <experiment> <key> <cases-file>`: the engine's own static slice of each check
+   (`run.sh … slice`: SEED's static half, scope grown, no workload) and its score (`score.py`),
+   in `$GC_OUT/static/<key>/<check>/`, fanned out over the lifts. `score.py` walks the slice back
+   from the throw's guards and counts the roots it reaches: clocks, fault doors (a declared
+   marker, or a door a store's method calls within three calls), `READ` placeholders, fields
+   another region stores, and wire crossings. A check whose slice reaches none is dropped
+   (`keep: false`). `<key>` names the build; a check already scored under it is not sliced again.
+7. `select.py <sweep-dir> <experiment> rank $GC_OUT/static/<key> <cases-file>`: write
+   `selected.jsonl` (kept checks, best score first, at most three per class, plus every
+   twentieth dropped check as a calibration row) and print their case ids.
+8. `sweep.sh <snapshot> <round> <cases-file> [heads-per-host]`: one campaign per case over all
    ten lifts, with `PRUNE=1` and a 5400 s case budget. `fanout.sh` admits each head through the
    host ledger with the case's `engine_memory_mb` (else 8192); started again, it skips every case
    whose job returned (`<log-dir>/<n>.exit`).
-7. `triage.py <round> <gc-out>`: one row per case with its outcome class (CONFIRMED, REFUTED,
+9. `triage.py <round> <gc-out>`: one row per case with its outcome class (CONFIRMED, REFUTED,
    NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING), finding, stage and reason. Pass the sweep's
    `$GC_OUT`: its own default is still `~/gc-out`.
 
