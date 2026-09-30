@@ -4489,8 +4489,10 @@ campaign_batch_target() {
   cp -al -- "${group}/instrumented-classes" "${group}/sessions" \
     "${iteration_dir}/"
   cp -- "${group}/session_census.jsonl" "${group}/import_gate.json" \
-    "${group}/campaign_gaps.jsonl" "${group}/woven_class_verification.log" \
-    "${iteration_dir}/"
+    "${group}/woven_class_verification.log" "${iteration_dir}/"
+  # The gate writes its gap rows only when a row states one.
+  [[ ! -e "${group}/campaign_gaps.jsonl" ]] \
+    || cp -- "${group}/campaign_gaps.jsonl" "${iteration_dir}/"
   campaign_log "target ${name}: campaign root ${campaign_root}, seed of \
 ${group}"
   campaign_iteration_explore "${iteration_dir}" iteration-0000
