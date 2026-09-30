@@ -36,7 +36,7 @@ The last evidence per case:
 
 | case | last run | verdict | mechanism |
 | --- | --- | --- | --- |
-| hdfs-17960 | `~/gc-out/accept-v92-17960` | PASS | MARKER_FLIPPED: `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false`, confirmed. A later build's run (`accept-v103-17960`) ended at REPLAY without a result; the cause is not established. |
+| hdfs-17960 | `~/gc-out/accept-v92-17960` | PASS | MARKER_FLIPPED: `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false`, confirmed. A later build's run (`accept-v103-17960`) was killed at REPLAY: the seed replay's native memory grew to 24 GB on the FSImageSaver scan of a ~1M-bucket array (a READ node and a condition per untouched bucket). Fixed by VM f13 (read-over-write at concrete positions, commit 64897b709): peak 525 MB, and round vm17d reaches EMIT with MARKER_FLIPPED `SNAPSHOT_DELETION_ORDERED=false`, but fails acceptance: the protobuf wire derivation treats the on-disk fsimage as a wire (3 BLOCKING ASSIGNMENT_UNPLANTED gaps; obligation replays die at 5 GB on symbolic INode ids). |
 | hdfs-17897 | `accept-v92-17897` | PASS | MARKER_FLIPPED: the IPC request door (`FAULT:HADOOP_IPC:REQUEST`) is true and no clock moves |
 | hdfs-17899-bug1, bug3 | `accept-v92-17899-bug{1,3}` | PASS | MARKER_FLIPPED: the IPC request door |
 | hdfs-17899-bug2 | `accept-v94-17899-bug2` | PASS | MARKER_FLIPPED: the SPS's IPC response door |
