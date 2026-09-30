@@ -34,8 +34,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * this program: it goes on, and the stall is a {@code CONFIRM_MISMATCH}, so
  * the claim is not confirmed.  Any other difference is one too.</p>
  *
- * <p>WIRE is compared at the attach, where the producer is known; STATE at
- * the close, since a writer's log is read out after the read that saw it.
+ * <p>WIRE is compared at the attach, where the producer is known -- a
+ * codec's hole at its mint, by the store version its message was and the
+ * text it decoded too (WIRE-CODEC §6.5); STATE at the close, since a
+ * writer's log is read out after the read that saw it.
  * An expected consumer or reader that never ran is a mismatch too, and so is
  * a CONFIRM run whose edges could not be read: it compared nothing, and the
  * fatal alone confirms no model.</p>
@@ -49,9 +51,9 @@ public final class Confirmation {
 
     private static final Object LOCK = new Object();
     private static boolean loaded;
-    /** Consumer endpoint id -> the producer endpoint id the model chose. */
-    private static final Map<String, String> WIRE =
-            new LinkedHashMap<String, String>();
+    /** Consumer endpoint id -> the delivery the model chose there. */
+    private static final Map<String, Wire> WIRE =
+            new LinkedHashMap<String, Wire>();
     /**
      * Writer endpoint id -> version for a declared cell's PLACEHOLDER join;
      * keyed by writer because the mint lands on whichever occurrence reads
@@ -92,6 +94,25 @@ public final class Confirmation {
     private Confirmation() {
     }
 
+    /**
+     * One delivery the model chose: its producer endpoint; for a codec's
+     * hole, the store version its message was (null for an exchange, whose
+     * correlation is its run's own) and the text the hole must decode to
+     * (null where the model's value rests on a clock, which a replay reads
+     * afresh).
+     */
+    private static final class Wire {
+        private final String producer;
+        private final String messageKey;
+        private final String value;
+
+        private Wire(String producer, String messageKey, String value) {
+            this.producer = producer;
+            this.messageKey = messageKey;
+            this.value = value;
+        }
+    }
+
     static boolean expected() {
         load();
         synchronized (LOCK) {
@@ -100,17 +121,39 @@ public final class Confirmation {
         }
     }
 
-    /** One delivery this run paired: the mismatch to file, or {@code ""}. */
-    static String attached(Endpoint consumer, Endpoint producer) {
+    /**
+     * One delivery this run paired: the mismatch to file, or {@code ""}.
+     * A codec's hole states the message it was decoded from and the text
+     * it decoded (null for a declared port's attach).
+     */
+    static String attached(Endpoint consumer, Endpoint producer,
+                           String messageKey, String text) {
         if (!expected() || consumer == null) return "";
         String actual = producer == null ? "" : producer.id();
         synchronized (LOCK) {
             ATTACHED.put(consumer.id(), actual);
-            String chosen = WIRE.get(consumer.id());
-            if (chosen == null || chosen.equals(actual)) return "";
-            return "WIRE " + consumer.id() + ": the model chose producer "
-                    + chosen + ", the run paired "
-                    + (actual.isEmpty() ? "no export" : actual);
+            Wire chosen = WIRE.get(consumer.id());
+            if (chosen == null) return "";
+            List<String> differs = new ArrayList<String>();
+            if (!chosen.producer.equals(actual)) {
+                differs.add("the model chose producer " + chosen.producer
+                        + ", the run paired "
+                        + (actual.isEmpty() ? "no export" : actual));
+            }
+            if (chosen.messageKey != null
+                    && !chosen.messageKey.equals(messageKey)) {
+                differs.add("the model's arm came from message "
+                        + chosen.messageKey + ", the run decoded "
+                        + messageKey);
+            }
+            if (chosen.value != null && !chosen.value.equals(text)) {
+                differs.add("the model's value is \"" + chosen.value
+                        + "\", the run decoded "
+                        + (text == null ? "none" : "\"" + text + "\""));
+            }
+            return differs.isEmpty() ? ""
+                    : "WIRE " + consumer.id() + ": " + String.join("; ",
+                    differs);
         }
     }
 
@@ -183,10 +226,10 @@ public final class Confirmation {
             if (!unread.isEmpty()) mismatches.add(unread);
             if (!compared) return mismatches;
             mismatches.addAll(UNREALIZED);
-            for (Map.Entry<String, String> edge : WIRE.entrySet()) {
+            for (Map.Entry<String, Wire> edge : WIRE.entrySet()) {
                 if (ATTACHED.containsKey(edge.getKey())) continue;
                 mismatches.add("WIRE " + edge.getKey() + ": the model chose"
-                        + " producer " + edge.getValue()
+                        + " producer " + edge.getValue().producer
                         + ", the run never attached at this consumer");
             }
             for (Map.Entry<String, String> edge : MINT.entrySet()) {
@@ -230,6 +273,12 @@ public final class Confirmation {
         return mismatches;
     }
 
+    /** A member a row states, or null when it states none. */
+    private static String stated(JsonObject row, String member) {
+        return row.has(member) && !row.get(member).isJsonNull()
+                ? row.get(member).getAsString() : null;
+    }
+
     /** The one spelling a read's observed version and a write share. */
     private static String key(LocationId location, long version) {
         return location.kind() + "/" + location.owner() + "#"
@@ -258,8 +307,10 @@ public final class Confirmation {
                 for (JsonObject row : RowCodec.readJsonl(file)) {
                     String kind = optionalString(row, "kind");
                     if ("WIRE".equals(kind)) {
-                        WIRE.put(optionalString(row, "consumer"),
-                                optionalString(row, "producer"));
+                        WIRE.put(optionalString(row, "consumer"), new Wire(
+                                optionalString(row, "producer"),
+                                stated(row, "messageKey"),
+                                stated(row, "value")));
                     } else if ("STATE".equals(kind)
                             && row.has("mint") && !row.get("mint").isJsonNull()
                             && row.get("mint").getAsBoolean()) {

@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -21,8 +22,10 @@ import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.explore.SlotTable;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -86,13 +89,15 @@ final class ComposedFamilies {
         private final List<String> expressionRefs;
         private final boolean attested;
         private final List<SmtLowering.StateChoice> states;
+        private final Map<String, BoundHole> holes;
 
         private ArmChoice(String family, String groupId,
                           List<String> attachEndpointIds,
                           List<String> sessionIds, String producerPathId,
                           List<String> interactionIds,
                           List<String> expressionRefs, boolean attested,
-                          List<SmtLowering.StateChoice> states) {
+                          List<SmtLowering.StateChoice> states,
+                          Map<String, BoundHole> holes) {
             this.family = family;
             this.groupId = groupId;
             this.attachEndpointIds = Collections.unmodifiableList(
@@ -105,11 +110,12 @@ final class ComposedFamilies {
                     expressionRefs);
             this.attested = attested;
             this.states = Collections.unmodifiableList(states);
+            this.holes = Collections.unmodifiableMap(holes);
         }
 
         static ArmChoice of(String family, String groupId,
                             List<String> attachEndpointIds, String session,
-                            List<Arms.Arm> arms) {
+                            List<Arms.Arm> arms, Map<String, BoundHole> holes) {
             List<String> slots = new ArrayList<String>();
             List<String> refs = new ArrayList<String>();
             String path = "";
@@ -125,7 +131,7 @@ final class ComposedFamilies {
             return new ArmChoice(family, groupId, attachEndpointIds,
                     new ArrayList<String>(Collections.singletonList(
                             session)), path, slots, refs, attested,
-                    Collections.<SmtLowering.StateChoice>emptyList());
+                    Collections.<SmtLowering.StateChoice>emptyList(), holes);
         }
 
         /** The same arm, stated by one more run. */
@@ -134,7 +140,7 @@ final class ComposedFamilies {
             sessions.add(session);
             return new ArmChoice(family, groupId, attachEndpointIds,
                     sessions, producerPathId, interactionIds,
-                    expressionRefs, attested, states);
+                    expressionRefs, attested, states, holes);
         }
 
         /** The same arm, with the states of the objects its stores deliver
@@ -142,7 +148,7 @@ final class ComposedFamilies {
         ArmChoice seeing(List<SmtLowering.StateChoice> seen) {
             return new ArmChoice(family, groupId, attachEndpointIds,
                     sessionIds, producerPathId, interactionIds,
-                    expressionRefs, attested, seen);
+                    expressionRefs, attested, seen, holes);
         }
 
         /** The same arm, with only the states a model's nested selectors
@@ -214,6 +220,97 @@ final class ComposedFamilies {
         public List<SmtLowering.StateChoice> states() {
             return states;
         }
+
+        /**
+         * The codec holes this arm binds, by consumer endpoint id: what a
+         * model's valuation of each is checked against in CONFIRM
+         * ({@link #holeTexts}).
+         */
+        public Map<String, BoundHole> holes() {
+            return holes;
+        }
+    }
+
+    /**
+     * One codec hole an arm binds (WIRE-CODEC §6.5): its symbol and the
+     * decoded leaf's {@code javaType} (a primitive or a String, invariant
+     * 5), and whether the value it was bound to rests on a clock -- directly,
+     * or through the {@code nested} holes its operand names.  A replay
+     * reads its clocks afresh (CONFIRM holds a run to the model's edges
+     * and roots, never to its instants), so only a value resting on no
+     * clock is one a replay reproduces.
+     */
+    public static final class BoundHole {
+        public final String symbol;
+        public final String javaType;
+        public final boolean clocked;
+        public final Set<String> nested;
+
+        BoundHole(String symbol, String javaType, boolean clocked,
+                  Set<String> nested) {
+            this.symbol = symbol;
+            this.javaType = javaType;
+            this.clocked = clocked;
+            this.nested = Collections.unmodifiableSet(nested);
+        }
+    }
+
+    /**
+     * WHAT A REPLAY MUST DECODE AT EACH HOLE of these selected arms
+     * (WIRE-CODEC §6.5): the model's valuation of the hole as the decoded
+     * text -- an integral's decimal, a boolean's {@code true}/{@code
+     * false}, a String's characters -- by consumer endpoint id, for every
+     * hole whose value rests on no clock through the selected arms.  A
+     * hole resting on a nested hole no selected arm binds, or a char or a
+     * floating value (no decimal text the model states), is not stated.
+     */
+    public static Map<String, String> holeTexts(
+            Collection<ArmChoice> selected, Map<String, String> model) {
+        Map<String, BoundHole> bySymbol =
+                new LinkedHashMap<String, BoundHole>();
+        Map<String, String> consumerOf = new LinkedHashMap<String, String>();
+        for (ArmChoice arm : selected) {
+            for (Map.Entry<String, BoundHole> hole : arm.holes().entrySet()) {
+                bySymbol.put(hole.getValue().symbol, hole.getValue());
+                consumerOf.put(hole.getValue().symbol, hole.getKey());
+            }
+        }
+        Map<String, String> texts = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, BoundHole> hole : bySymbol.entrySet()) {
+            if (clocked(hole.getKey(), bySymbol,
+                    new LinkedHashSet<String>())) {
+                continue;
+            }
+            String value = model.get(hole.getKey());
+            String text = value == null ? null
+                    : text(hole.getValue().javaType, value);
+            if (text != null) {
+                texts.put(consumerOf.get(hole.getKey()), text);
+            }
+        }
+        return texts;
+    }
+
+    /** A model's value as the text a hole of this type decodes, or null. */
+    private static String text(String javaType, String value) {
+        VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(javaType);
+        if (sort == VmTermLowering.Sort.STRING) return Z3.javaString(value);
+        return sort == VmTermLowering.Sort.BOOL
+                || sort == VmTermLowering.Sort.INT && !"C".equals(javaType)
+                ? value : null;
+    }
+
+    /** Whether a hole's value rests on a clock, or on what no arm binds. */
+    private static boolean clocked(String symbol,
+                                   Map<String, BoundHole> bySymbol,
+                                   Set<String> seen) {
+        BoundHole hole = bySymbol.get(symbol);
+        if (hole == null || !seen.add(symbol)) return true;
+        if (hole.clocked) return true;
+        for (String nested : hole.nested) {
+            if (clocked(nested, bySymbol, seen)) return true;
+        }
+        return false;
     }
 
     /** Arm selector -> the delivery it stands for. */
@@ -473,8 +570,11 @@ final class ComposedFamilies {
             // undeclared name makes z3 answer with an error.
             lowering.declare(selector, VmTermLowering.Sort.BOOL);
             List<String> nested = new ArrayList<String>();
+            Map<String, BoundHole> holes =
+                    new LinkedHashMap<String, BoundHole>();
             String body = producerBody(ordinal, guard, message, session,
-                    bindings(held), reached, nested, closedGroups, depth);
+                    bindings(held), reached, nested, closedGroups, depth,
+                    holes);
             if (body == null) continue;
             stated.addAll(nested);
             String same = selectorOf.get(body);
@@ -487,7 +587,7 @@ final class ComposedFamilies {
             selectors.add(selector);
             cases.add("(=> " + selector + " " + body + ")");
             choose(selector, ArmChoice.of(name, group,
-                    endpointIds(leaves), session, held));
+                    endpointIds(leaves), session, held, holes));
         }
         if (selectors.isEmpty()) {
             refusals.add(GapRow.of(corpus.seedSessionId(),
@@ -612,6 +712,45 @@ final class ComposedFamilies {
     }
 
     /**
+     * ONE HOLE'S ARM (WIRE-CODEC §6.1, §6.3): the hole's symbol, declared at
+     * the decoded leaf's sort, bound to the operand the producer's export
+     * cut out of its leaf by the one hole-arm rule
+     * ({@link VmTermLowering#holeArm}); a relay's operand is the upstream
+     * hole's symbol, closed below as a nested family.  What the value rests
+     * on is noted for CONFIRM ({@link BoundHole}).
+     *
+     * @return the binding, or null with the refusal in {@code refused}
+     */
+    private String hole(String session, Arms.Arm arm, Term delivered,
+                        Map<String, BoundHole> holes, List<GapRow> refused) {
+        AttachRow consumer = arm.attach();
+        VmTermLowering.HoleArm bound = VmTermLowering.holeArm(arm.symbol(),
+                delivered, arm.export().javaType(), consumer.javaType());
+        if (bound.refusal != null) {
+            refused.add(GapRow.of(session, bound.refusal,
+                    GapClass.DIAGNOSTIC, arm.slotId(), bound.detail));
+            return null;
+        }
+        lowering.declareStated(arm.symbol(),
+                JavaSmtSorts.sortOfJava(consumer.javaType()));
+        boolean clocked = false;
+        Set<String> nested = new LinkedHashSet<String>();
+        for (String name : lowering.reachedSymbols(
+                Collections.singletonList(delivered.text))) {
+            RootMintRow root = corpus.rootBySymbol(session, name);
+            clocked |= root != null && root.kind() == RootKind.CLOCK;
+            if (!name.equals(arm.symbol())
+                    && corpus.attach(session, name) != null) {
+                nested.add(name);
+            }
+        }
+        holes.put(consumer.endpoint().id(),
+                new BoundHole(arm.symbol(), consumer.javaType(), clocked,
+                        nested));
+        return bound.formula;
+    }
+
+    /**
      * AN ARM IS CLOSED LIKE A PATH (PIPELINE §8), under {@code sel_{P,S}}
      * in S's scope: (i) P's decisions before the LAST delivery this path takes;
      * (ii) P's closure at that cutoff plus the versions the delivered
@@ -620,6 +759,8 @@ final class ComposedFamilies {
      * P's own attaches as nested families.  Without (i)-(iii) an arm says
      * WHAT was delivered, not why.
      *
+     * @param holes receives the codec holes the outs bind, by consumer
+     *              endpoint id ({@link ArmChoice#holes})
      * @return the arm-set's conjunction, or null when a value it rests on is
      *         not stated -- refusing this {@code (P, S)}, not the path
      */
@@ -628,7 +769,8 @@ final class ComposedFamilies {
                                 String session,
                                 List<Out> outs, Set<String> reachedSlots,
                                 List<String> nestedStated,
-                                Set<String> closedProducers, int depth) {
+                                Set<String> closedProducers, int depth,
+                                Map<String, BoundHole> holes) {
         List<GapRow> local = new ArrayList<GapRow>();
         SmtLowering.SessionJoin rows = corpus.join(session);
         lowering.begin(session, rows, corpus.expressions(session));
@@ -642,6 +784,17 @@ final class ComposedFamilies {
             if (delivered == null) {
                 stated = false;
                 break;
+            }
+            if (out.arm.hole()) {
+                String bound = hole(session, out.arm, delivered, holes,
+                        local);
+                if (bound == null) {
+                    stated = false;
+                    break;
+                }
+                conjuncts.add(bound);
+                guards.putAll(out.arm.guard());
+                continue;
             }
             for (String symbol : out.symbols) {
                 if (symbol == null || symbol.isEmpty()) continue;
@@ -658,17 +811,19 @@ final class ComposedFamilies {
         }
         // The delivering replay's valuation of every varied root.
         for (Map.Entry<String, String> guard : guards.entrySet()) {
-            String literal = smtLiteral(guard.getValue());
-            if (literal.isEmpty()) continue;
             // The guard's root must be declared: an arm need not mention
             // it, and an undeclared constant makes z3 answer with an error.
-            if (!lowering.declareStated(guard.getKey())) {
+            VmTermLowering.Sort sort = lowering.statedSort(guard.getKey());
+            if (sort == null) {
                 composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                         guard.getKey(), "an arm of " + subject
                                 + " is guarded by a symbol no row of this "
                                 + "corpus declares a sort for");
                 continue;
             }
+            String literal = smtLiteral(guard.getValue(), sort);
+            if (literal.isEmpty()) continue;
+            lowering.declareStated(guard.getKey());
             conjuncts.add("(= " + guard.getKey() + " " + literal + ")");
         }
         List<String> nested = new ArrayList<String>();
@@ -1123,7 +1278,8 @@ final class ComposedFamilies {
             lowering.declare(name, VmTermLowering.Sort.BOOL);
             String body = producerBody(ordinal, selector, writer.getKey(),
                     session, writer.getValue(), reached,
-                    new ArrayList<String>(), new LinkedHashSet<String>(), 0);
+                    new ArrayList<String>(), new LinkedHashSet<String>(), 0,
+                    new LinkedHashMap<String, BoundHole>());
             if (body == null) continue;
             selectorOf.put(writer.getKey(), name);
             String assertion = "writer_family__" + ordinal + "__"
@@ -1146,7 +1302,8 @@ final class ComposedFamilies {
             }
             choose(name, ArmChoice.of(assertion,
                     writer.getKey(), Collections.<String>emptyList(),
-                    session, armsOf(writer.getValue())).seeing(states));
+                    session, armsOf(writer.getValue()),
+                    Collections.<String, BoundHole>emptyMap()).seeing(states));
         }
         // Every nested selector this path minted holds only under an arm
         // of it delivering a store its state was seen through: under none
@@ -1199,7 +1356,8 @@ final class ComposedFamilies {
                 choose(name, ArmChoice.of(assertion,
                         "observed:" + location.getKey(),
                         Collections.<String>emptyList(), session,
-                        Collections.<Arms.Arm>emptyList()));
+                        Collections.<Arms.Arm>emptyList(),
+                        Collections.<String, BoundHole>emptyMap()));
                 selectors.add(name);
                 taken = name;
             }

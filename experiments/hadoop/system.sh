@@ -25,6 +25,19 @@ blockkey_scope=(
   hdfs:org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager
   hdfs:org/apache/hadoop/hdfs/security/token/block/ExportedBlockKeys
 )
+# The scope every ad-hoc check starts from: each class the ad-hoc
+# communication mappings name, which the static pass refuses to find out of
+# scope -- the block keys' wire flows (WIRE_FLOW rows).  The fault doors are
+# the engine's library catalog, whose classes join the scope by themselves.
+system_mapping_scope=(
+  client:org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient
+  client:org/apache/hadoop/hdfs/protocolPB/PBHelperClient
+  hdfs:org/apache/hadoop/hdfs/protocolPB/PBHelper
+  hdfs:org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager
+)
+# The class a cluster test names: tools/adhoc/workloads.py lists the tests
+# of the classes that do.
+system_cluster_class=org/apache/hadoop/hdfs/MiniDFSCluster
 # The launcher supplies the frozen GraphChecker jar ahead of the tree's
 # classpath, whose shim entry it replaces.
 system_jar_first=true
@@ -37,9 +50,6 @@ system_sources=(
   client:hadoop-hdfs-project/hadoop-hdfs-client/src/main/java
   hdfs:hadoop-hdfs-project/hadoop-hdfs/src/main/java
 )
-# Where the nodes coordinate: an ad-hoc sweep ranks these classes' checks
-# first (tools/adhoc/select.py).
-system_focus='\.server\.(blockmanagement|datanode|namenode)\.|\.qjournal\.|\.security\.|DataStreamer|DFS(Striped)?(Output|Input)Stream'
 # A class a workload runs only if it starts a node of the system: a test
 # that starts none (a unit test over a mocked DataNode) opens no recording
 # window, so an ad-hoc sweep does not choose it (tools/adhoc/select.py).

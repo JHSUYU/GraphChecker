@@ -27,7 +27,12 @@
 # they are retained-but-unbounded, so they only raise a DIAGNOSTIC and run at
 # the inherited ceiling, which leaves the marker loosely bound to any one
 # send.  hdfs-17899 bug3, which passes clean, declares exactly these two.
-{"loopSiteId":"<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()>#u7","loopBodyBound":8,"reason":"covers the retained expiry scan"}
+#
+# Every check of the experiment runs on these, so they name only loops of the
+# classes its communication mappings name, which every slice retains (the
+# doors and wire flows are seeded by declaration).  The key managers' expiry
+# scan (BlockTokenSecretManager.removeExpiredKeys) is retained only by a slice
+# that grows into them, and runs there at the inherited 8.
 {"loopSiteId":"<org.apache.hadoop.hdfs.protocolPB.PBHelper: org.apache.hadoop.hdfs.security.token.block.BlockKey[] convertBlockKeys(java.util.List)>#u6","loopBodyBound":8,"reason":"covers the bounded block-key reply conversion"}
 {"loopSiteId":"<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u53","loopBodyBound":8,"reason":"covers the retained bounded RPC request serialization loop the fault marker is minted in"}
 {"loopSiteId":"<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u58","loopBodyBound":8,"reason":"the retained RPC request loop has two control sites and one shared prefix"}

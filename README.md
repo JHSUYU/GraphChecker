@@ -15,8 +15,370 @@ on a concolic OpenJDK 8 (Zero) that keeps a symbolic expression under every valu
 is composed from many focused replays, and the solver picks the nearest world. What the rows do
 not state is refused by name, never defaulted.
 
-What works today and what does not is in [docs/STATUS.md](docs/STATUS.md). The design is in
-[docs/design/](docs/design/README.md).
+**If you are taking over this project, read §0–§3 first, in order.** They say where the work
+stands, which branches are in flight, what to do next, the owner's standing rules, how to run
+agents in parallel, and how the servers and tools work. The capability inventory (done / partial
+/ not done per requirement) is [docs/STATUS.md](docs/STATUS.md); the design of the code on
+`main` is [docs/design/](docs/design/README.md).
+
+---------------------------------------------------------------------------------------------------
+
+## 0. Handover (state at 2026-09-30 ~13:00 EDT, main = `f3b31968a`)
+
+### 0.1 The goal
+
+The owner's active goal, verbatim: «跑通solr这两个case的.smt。完成后。为了找到新bug。在hdfs和solr上都去做大规模的adhoc
+check，并让我们的引擎给这样大规模的check提供更多的支持。worklaod都用已有的cluster based unit test»
+
+1. **Phase 1:** a correct `.smt` for **SOLR-18413** and **SOLR-18406** (both CLOCK_SKEW), while
+   the nine HDFS cases keep passing on the current VM.
+2. **Phase 2:** large-scale ad-hoc checks on HDFS and Solr to find new bugs, with the systems'
+   **existing cluster-based unit tests** as workloads (HDFS `MiniDFSCluster` tests, Solr
+   `MiniSolrCloudCluster` / `SolrCloudTestCase` tests), and engine support for checks at that
+   scale.
+
+The owner's requirements R1–R6 that everything is measured against are in
+`/bigtemp/vnr3ne/analysis/audit/COMMON.md`; `docs/STATUS.md` is organised by them.
+
+### 0.2 Where each case stands
+
+A **PASS** is `experiments/accept/report.py`'s verdict: SAT_CANDIDATE, no BLOCKING gap, the
+case's expected mechanism, `polarityDecides`, a confirmation, and every moved root inside the
+causal cone (`cone.py`). The owner additionally checks the `.smt` causal chain by hand against
+the system's code (§1). All runs are under `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`.
+
+| case | best live run | verdict | mechanism / blocker |
+| --- | --- | --- | --- |
+| hdfs-17897 | `r7`, `rb1` | PASS | MARKER_FLIPPED, IPC request door `REGION.763d087e` |
+| hdfs-17899-bug1 | `r7` | PASS | MARKER_FLIPPED, IPC request door (`in.305c06e3`) |
+| hdfs-17899-bug2 | `r8` | PASS | MARKER_FLIPPED, IPC response door `REGION.9ffdee3d` |
+| hdfs-17899-bug3 | `r7` | PASS | MARKER_FLIPPED, IPC request door (`in.305c06e3`; earlier rounds moved the response door) |
+| hdfs-17960 | `r8`, `rb1` | PASS | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
+| hdfs-17967-pathA/B/C | `r7` | PASS | MARKER_FLIPPED, IPC request door |
+| hdfs-11741 | `r8` | FAIL | CLOCK_SKEW found (NN + DN clocks, polarityDecides) but 22 BLOCKING gaps; all fixed on branch `agent-11741-regress` (§0.3) whose fresh-seed round `rb1` is running. Residual risk: 3 of 4 NN clocks move only through the `clock_order` constraint and may fail `cone.py` (the v93 failure mode). |
+| **solr-18406** | `a37f4` (branch, not main) | **PASS** | CLOCK_SKEW, polarityDecides, one clock root `M_J_field_REGION.57488ec0…Long` moved, CONFIRMED ("every edge the model chose was taken, and the claim's anchor observed the fatal"), 7 declared roots in the cone. Code is on branch `worktree-agent-ae3796f20246f25c6` (§0.3), NOT merged. On main (`r7`, `rb1`) 18406 still fails: its one anchor path is UNSAT with every root free. |
+| **solr-18413** | `r9` (main `a53174bf1`) | FAIL, last step | The `isExpired#u6` flip is SAT (Overseer `MigrateCmd` clock +262 s) and its replay REPRODUCES the bug ("Could not find collection : causynthMigrate-target") and is ADMITTED; the wave-0 IMPORT gate then stops on one BLOCKING row: invariant 9, the target row that observed the fatal states no `phiTerm` because the fatal condition (`targetColl == null`, `DistributedZkUpdateProcessor:932`) is concrete in the replay. A WIP fix is on branch `worktree-agent-a564ae2a2ad314535` (§0.3). |
+
+The 18413 chain in Solr 8.11 (tree `~/lucene-solr-18413`): Overseer task `MigrateCmd.java:196-205`
+`expireAt = RoutingRule.makeExpiryAt(timeout)` (`RoutingRule.java:60-62`, Overseer clock + 1 s) →
+queue item (`ZkDistributedQueue.java:328`, store door `SolrZkClient.java:446`) → Overseer tick
+`SliceMutator.addRoutingRule` (`SliceMutator.java:225`, `:238-257`) → `state.json` write
+(`SolrZkClient.java:392`) → leader StateWatcher `ZkStateReader.java:1345-1385`,
+`ClusterState.load` → `Slice.java:204-212` → `RoutingRule.java:48` `parseLong(expireAt)` → leader
+`/update` `DistributedZkUpdateProcessor.processAdd` (`:233`, `:254-265`) → `getNodesByRoutingRules`
+→ `:925 !rule.isExpired()` (leader clock, `RoutingRule.java:66`) → `:932` target lookup null →
+`:934` throw. In the recording the rule is expired, so `:932-934` never run; the witness moves
+the Overseer clock so the rule is still valid at the leader. The flip obligation's formula
+already states the chain: `vH_overseer = clk_Overseer + 1000`, `vH_leader = vH_overseer` (ZK
+handoff), `vH_leader >= clk_Leader + 60000`.
+
+### 0.3 Branches and worktrees in flight (nothing here is on `main` unless it says so)
+
+All agents were stopped at the handover. Uncommitted work was committed as `WIP (handover,
+untested)` on its own branch. Worktrees under `.claude/worktrees/agent-*` are git worktrees of
+this repo; `git worktree list` shows them all.
+
+| branch (worktree) | head | content | state | next step |
+| --- | --- | --- | --- | --- |
+| `worktree-agent-ae3796f20246f25c6` | `ba1a3de59` | **SOLR-18406 fix**, 5 commits: `fef79768c` a long sum is a Long cell; `9cc025e68` a flip query binds only what its text names; `d573e4e72` a planted clock runs on from its plant; `6daf4e490` a confirmation plants a clock on the recording's timeline; `ba1a3de59` a claim's clock moves are its jumps. Rebased on a recent main. | live run `accept-a37f4-solr-18406` (snapshot `~/gc-run/a37p4` = the pre-rebase `bfb6be211`) **PASSES**; gates on the rebased head were running when stopped | 1) review the 5 commits (clock planting changes CONFIRM for every CLOCK case); 2) offline gate `--round r8 --round r7` on the HDFS cases (COMPOSE+CONFIRM identical) and on 18406; 3) merge; 4) re-run 18406 + 11741 live |
+| `worktree-agent-a564ae2a2ad314535` | `6ba631b27` (WIP) | 18413: a fatal arm observed under a concrete condition states its phi (RowInvariants, JavaPrimitiveSmtSemantics, CONTRACT-SPEC) | **WIP, not built, not gated** | finish: the rule is "a concrete fatal condition publishes phi as the constant of the arm taken; the causal chain rests on the path condition reaching the anchor" — never a silent empty phi, never BLOCKING; re-run IMPORT..COMPOSE offline on `accept-r9-solr-18413` (expect CLOCK_SKEW with both clocks moved), gate HDFS, merge, run 18413 live |
+| `agent-11741-regress` | `ffed14866` | 11741 regression fixes: `2b4bf4391` order by row seq not anchor chain (TOPOLOGY_DIVERGENCE); `62aa5d992` a pool task keeps the frames it was submitted under (OCCURRENCE_ADDRESS_SHARED; changes every pool-task address); `c76077d8b` an export stating no expression; `f0cb0686e` Independence demands only what lowering reads; `ee1b030ac` a valuation undecided whole is asked per path (and fixes a live main bug: `seedDisjunctUnsat` asserted every seed selector at once); `7b0f25f2d` test; `fab3758c8` probe per path. Merged with main `a53174bf1`. | reviewed "merge after fixes"; fixes (b),(c) done; fresh-seed round **`rb1` running** (snapshot `~/gc-run/p183`) | read `rb1`: so far 17897, 17960 PASS; **17967-pathC FAILS** (witness moved `HDFS.BLOCK_KEY.SERIAL_NO` instead of an IPC door fault — a regression vs main's r7); find why before merging |
+| `worktree-agent-ab7747be564843aea` (R1-ROOTS) | `35c5eec90` | R1-ROOTS WP-C (fault doors from the engine library catalog `src/main/resources/.../library-catalog.jsonl`, DOOR rows gone from case mappings, `ScopeGrowth --doors`) + WP-S (exception-aware control dependence `FaultPropagation`, `.throws` guard cells, `LibraryReceivers`), merged with main `8820c3129` | live A/B round **`ra1`** (snapshot `~/gc-run/p182`): pathA/B/C, bug3 PASS; **17897 FAIL** (new BLOCKING PLAN OCCURRENCE_ADDRESS_SHARED on the new SASL door region, `ctx:Lost:UNKNOWN`); **17960 FAIL** (wave-1 planner OOM at 8 GB: the target region grew 12→32 methods into fsimage serialization); others running | fix both (the pool-task identity fix in `agent-11741-regress` may cure the shared address; the 17960 planner OOM needs a general memory or scope fix), re-run `ra1`, merge. W3 depends on it. |
+| `worktree-agent-a2a3969b54657da82` (WIRE-CODEC W3) | `c9776df4b` | W3 static key-jump on top of R1-ROOTS: `242f12133` a read of a codec key demands every write of it; `812c6d339` offline gate reads the side's codec declarations; `c9776df4b` a codec port reads a message's fields only once Soot lists them | stopped mid-work (docs update); not gated | finish per spec §3 (schema 6 bump lands here, CODEC_PORT rows, demanded-port file for W4's `runtime/DemandedPorts`), gate SEED on 11 cases |
+| `worktree-agent-aa7a714834869b4df` (WIRE-CODEC W1+W4) | `638509485` (WIP) | W1 VM natives `exportLeaf`/`mintLeaf` + W4 runtime (CodecWeave, CodecWalker, holes/templates, message binding, CSE6 envelope, HandoffMint), append-range VM fix; live 18413 evidence in `/bigtemp/vnr3ne/gc-out/w4-18413-1` | reviewed "merge after fixes"; the WIP commit holds fixes (a)–(d) half done, **not built** | finish review fixes: (a) template mismatch → named `CODEC_MISMATCH`, no pairing; (b) VM refuses minting on an object that already carries an expression and checks holders for JVM-wide identity, runtime mints on fresh String copies; (c) admission gate opens only for value operands (String/box/StringBuilder) and never while paused; (d) `envelopeBytes` required/default 4 KB for HTTP, bounding the whole header; + minors. Rebuild image to `/bigtemp/vnr3ne/vm-w4b` (a partial one may exist there — rebuild), smoke, merge main, then a live round on vm-w4b (the reviewer's list: 9 HDFS no codec rows 8/9 with matching obligation counts; one codec-declared HDFS run; one Solr run with 0 VALUE_MISMATCH) |
+| `worktree-agent-ac487236f0fb1620e` | `093ae45b3` | time: `2736970e1` `tools/analysis/timeline.py` (where a campaign's wall time went); `a5ae0d849` a focused replay ends at the refusal that decides it and publishes no session; `bb1dd2e1e` a replay's end runs once; `0c7d19b99`, `093ae45b3` | live: `accept-ee-17899-bug1` PASS in 1031 s (r7: 2192 s), `accept-ee-17967-pathA` PASS in 1088 s (r7: 1622 s); verdict comparison with r7 was in progress | compare verdict/moved roots with r7, review (replay exit path is high-risk), merge |
+| `worktree-agent-ab6c654a022ddde8f` | `afe4a2599` | WIRE-CODEC W1 alone | superseded by the W4 branch (which contains it) | delete after W4 merges |
+| `r3-*`, `vm-f14`, `views-test`, `w4-p2`, other `worktree-agent-*` with `ahead=0` | — | already merged into main | — | safe to remove (`git worktree remove`, `git branch -d`) |
+
+Snapshots (`~/gc-run/p<N>`, each a detached worktree with its own built jar): **p182 (ra1) and
+p183 (rb1) are in use by running rounds — do not remove them.** p175–p181, `a37p1-4`, `ee1`,
+`ee2` are free once you no longer need their runs.
+
+### 0.4 Rounds still running on the lifts
+
+`ra1` (R1-ROOTS A/B, all 11 cases, snapshot p182) and `rb1` (11741 branch, fresh seeds, all 11
+cases, snapshot p183), both on VM `/bigtemp/vnr3ne/vm-r3b/j2sdk-image`. Watch and stop:
+
+```bash
+cd ~/GraphChecker
+GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh 'ra1-*' 'rb1-*' | grep --line-buffered 'DONE '
+GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh ra1-11741 ...    # one or more <round>-<case>
+for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f1,4,11,12; done
+```
+
+### 0.5 TODO, in dependency order (run every item with no open dependency IN PARALLEL, §2)
+
+**Phase 1 — the two Solr `.smt` (critical path):**
+
+1. **18406:** review + gate + merge `worktree-agent-ae3796f20246f25c6`; live-run 18406 and all
+   CLOCK cases on main; hand-check its `.smt` chain against Solr (`IndexDeletionPolicyWrapper`
+   `latestCommit`/`reserves`/`knownCommitPoints`, `ReplicationHandler` file list, the reservation
+   expiry clock).
+2. **18413:** finish the phi rule (branch `worktree-agent-a564ae2a2ad314535`), validate offline on
+   `accept-r9-solr-18413`, merge, live-run; hand-check the chain in §0.2. Open defect 28 in
+   STATUS (store-door race: `MessageDoors.stored` files what a write carried only after
+   `outboundExchange` logged the SEND that releases the Overseer's tick) can leave the queue link
+   unpaired in some seeds.
+3. **HDFS 9/9:** decide `agent-11741-regress` from `rb1` (fix the pathC regression first); then
+   check 11741's cone (the 3 NN clocks moved only by `clock_order`: either the claim reports only
+   causally relevant moves or `cone.py` accepts order-forced moves — a design decision to write
+   down, not a per-case patch).
+4. After each merge that touches a case: re-run the round and **check every `.smt` causal chain**
+   against the system code (§1 rule).
+
+**Engine support for scale (Phase 2 prerequisites):**
+
+5. **Time.** Merge the early-exit branch (`worktree-agent-ac487236f0fb1620e`). Then, with
+   `timeline.py` after every round: decide an obligation NOT_ADMITTED before replaying it when its
+   flip needs a value the replay cannot plant; pipeline waves instead of a barrier (a wave waits
+   for all its replays; a Solr replay under Zero takes ~20 min; r5 18413 was 3 h 10 min in 6
+   waves, and all 67 focused replays served obligations that ended NOT_ADMITTED).
+6. **R1-ROOTS:** fix `ra1`'s two failures, merge. Then the rest of the R1-ROOTS spec
+   (`/bigtemp/vnr3ne/specs/R1-ROOTS-proposal.md`): WP-D config roots, WP-E admission by relevance,
+   WP-F1/F2 root demand.
+7. **WIRE-CODEC** (`/bigtemp/vnr3ne/specs/WIRE-CODEC-proposal.md`; W0, W2, W5 are on main): W3
+   (after R1-ROOTS), W4 review fixes, then **W6** (declarations `experiments/{hadoop,solr}/wire.jsonl`,
+   tree adapters pass payloads: `SolrZkClient`, `CausynthHttp.respond`, Hadoop `Client`/`Server`
+   via the shim; views for `ClusterState`, `ShardTerms`, `AutoScalingConfig`; a node alias for the
+   Overseer's pre-tick decodes; delete all `WIRE_FLOW` rows, revert the HDFS `Integer.toString`
+   patches and Solr `fdf91e8` + the per-branch `consumed` commits; §4.9 deletions), then **W7**
+   validation (11 cases live + one sweep each system). Ad-hoc checks need this: no hand rows.
+8. **ADHOC-INFRA** (`/bigtemp/vnr3ne/specs/ADHOC-INFRA-proposal.md`; WP4, WP5.A, WP1, WP5.C, WP2
+   are on main): WP5.B (compute the build key; re-slice every ad-hoc check under the new scope;
+   nightly snapshot; 5 % calibration tail), WP5.D, WP3 (one shared recording and seed replay per
+   test for all its checks).
+9. **R3 leftovers** (`/bigtemp/vnr3ne/specs/R3-REFCONT-proposal.md`): WP3b/c (TreeMap,
+   ConcurrentSkipList*, LinkedList, CopyOnWrite*, queues in the VM), WP7 (`cone.py` follows writer
+   families), D3 (STATE arms from other sessions); the VM does not state a container query's
+   answer (`ContainerSupport::query_state`).
+
+**Phase 2 — the sweeps** (after 1–2): follow "Run an ad-hoc sweep" below on HDFS
+(`~/hadoop-hdfs-17967-c`) and Solr (`~/lucene-solr-8_11-adhoc`), all ten lifts; triage with
+`triage.py`, dedupe with `findings.py`; a finding is new only if CONFIRMED and not a known
+mechanism (the two old token-expiry CLOCK_SKEWs were judged HDFS's clock-sync assumption).
+
+Open defects with numbers are listed at the end of `docs/STATUS.md`.
+
+### 0.6 Designs and analyses (outside the repo, on `/bigtemp/vnr3ne`)
+
+| path | what |
+| --- | --- |
+| `/bigtemp/vnr3ne/specs/WIRE-CODEC-proposal.md` | values cross processes at serialization boundaries as typed holes by key path; W0–W7; **"Designer decisions" blocks at the end are binding** (1–13) |
+| `/bigtemp/vnr3ne/specs/R1-ROOTS-proposal.md` | automatic roots: library door/config catalog, slice rules, config roots, relevance admission, root demand |
+| `/bigtemp/vnr3ne/specs/ADHOC-INFRA-proposal.md` | ad-hoc checks at scale: WP1 selection by slice, WP2 pre-screen, WP3 shared recording, WP4 line targets, WP5 operations |
+| `/bigtemp/vnr3ne/specs/R3-REFCONT-proposal.md`, `R3-shapes.md` | shared state in one JVM: reference cells, containers, owner-indexed answers |
+| `/bigtemp/vnr3ne/specs/C2.md`, `F14.md`, `DOCS.md` | the single binding rule JOIN→MINT→PIN; VM f14; docs policy |
+| `/bigtemp/vnr3ne/analysis/audit/COMMON.md` | the owner's requirements R1–R6 (the yardstick) |
+| `/bigtemp/vnr3ne/analysis/audit/*.md` | code audits per area (vm, slice-scope, wire-identity, explore-compose, adhoc-scale, system-specific); may be older than main — the code wins |
+| `/bigtemp/vnr3ne/analysis/review*/`, `/bigtemp/vnr3ne/ab/` | past review notes; offline A/B gate outputs |
+
+---------------------------------------------------------------------------------------------------
+
+## 1. The owner's standing rules (long-term; they override defaults)
+
+The owner is a PhD student doing academic research on open-source system stability. Reply to the
+owner in **Chinese**. The design decisions are the lead's (the agent coordinating the work), made
+after reading the code; implementers follow a written design.
+
+**Engineering**
+- **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no
+  dead code, no fallback paths, no flags to keep an old path. Per-system code is allowed only as a
+  small adapter or a declaration row, listed in STATUS "Per-system surface". Every stop/skip rule
+  and every performance optimization is general.
+- **Global view:** read all the code a concept touches (every stage) before changing it; fix the
+  class of bug, not the instance. Docs may be stale — the code and the owner's current
+  requirements are the reference.
+- **Refactor bloat along the way** in the same commits as the goal work that touches it.
+- **JVM-level relation preservation:** symbolic propagation is at the JVM level (shadows on slots,
+  fields, objects), not KLEE's byte level. Every value moved outside interpreted bytecode is
+  HOOKED, MODELED, or DETECTED-AND-PINNED by name — never lost silently. Shadows never belong to
+  a JVM-shared identity (cached boxes, interned Strings, `Boolean.TRUE`).
+- **No recorded-order pruning:** never drop candidate writers because they come after the read in
+  the recording.
+- **The question is one declared occurrence** `(r,c,i)` fixed at the seed; a campaign stops at its
+  first witness when the case says so.
+- **Lean tests:** table-driven, one test class per new class, delete tests of removed mechanisms.
+- **Docs track the code:** docs describe HEAD only; update `docs/STATUS.md` and the design docs in
+  the same commit as the change; delete what becomes outdated.
+- **Time optimization never ends:** after every round, measure where each campaign's time went
+  (`timeline.py`) and cut work that produced nothing, with a general rule, gated so verdicts do not
+  move.
+
+**Acceptance**
+- **What a real PASS is:** the claim, polarityDecides, the mechanism's roots in
+  `claim.movedRoots`, confirmed, cone gate — a PASS line or a finding kind alone is not acceptance.
+- **Mechanism mandate:** 17899 bug1/2/3, 17897, 17967 A/B/C are MARKER_FLIPPED by an IPC door
+  fault (either direction); 17960 by its config; 11741 by clocks (or a fault); the Solr cases by
+  clocks (CLOCK_SKEW).
+- **After every engine change, check the `.smt` causal chains** of the cases it can touch against
+  the system code (e.g. 11741: `allKeys` ite/put/remove, keyId across the wire, the solver's
+  choice).
+- **Real false-positive examples only:** never construct false positives; FP-filter examples come
+  from real runs.
+
+**Git and safety**
+- **Never push.** Never `git add -A`. Commit only when the change is built and tested.
+- Before every commit: `mvn -q -o package` and `bash src/test/shell/run_engine_campaign_helpers_test.sh`
+  (both via `onlift.sh`, §3).
+- Commit messages end with `Co-Authored-By: <model> <noreply@anthropic.com>`. Commits in the
+  Solr/HDFS trees use `git -c user.name="Zhenyu Li" -c user.email=zhl136@ucsd.edu`.
+- Never edit the owner's dotfiles. Never rebuild a tree or edit a snapshot a campaign runs on.
+  Never remove a `~/gc-run/p<N>` a running round uses (check `pgrep` on all lifts first).
+- Solr's test SecurityManager may be changed if it interferes (owner's permission); today it is
+  off via `-Dtests.useSecurityManager=false`.
+
+---------------------------------------------------------------------------------------------------
+
+## 2. Working with agents in parallel (the owner's rules, long-term)
+
+The owner wants throughput: "这里明显能并行的你就并行。你自己管理好代码分支，之后的merge什么即可" /
+"这种多个job明显可以并行啊" / "总之，你要积极主动地利用多agent。去审查代码细节。一旦你有不确定就要去找". And
+a budget: "合理分配多agent", "减轻一些fan out的规模".
+
+**When to use an agent**
+- Any job with **no dependency on another job runs NOW, in parallel, whatever phase it belongs
+  to**: independent work packages, offline gates, live rounds, investigations. Serialize only on a
+  real dependency (a package needs another's merged API; a round needs a fix merged).
+- Root-causing a failed campaign, implementing a written work package, a code audit of a stage,
+  and an independent review of a large diff are agent jobs.
+- The moment you are unsure about a code detail (what a function does, whether a capability
+  exists, why a run failed), send an agent to find out instead of assuming.
+- Do small things yourself: a targeted grep/read, a small fix, conflict resolution, merges,
+  reviewing a short diff.
+
+**How many and how**
+- About **6–7 agents at once**; no agent spawns sub-agents; ask for short reports (≤ 15–20 lines);
+  no idle polling loops (use a background command that exits on the condition, or a monitor).
+- Every coding agent gets its **own git worktree** (`isolation: worktree`) and branch, a disjoint
+  file area where possible, and a prompt that states: the goal, the evidence (paths to runs), the
+  spec section, the rules (general code, docs in the same commit, lean tests, never push, never
+  `git add -A`, the pre-commit commands), the validation to run (offline gate cases and rounds),
+  and the report format.
+- Continue an agent with its previous context (send it a message) rather than starting a new one
+  when the next task is in the same area.
+- **The lead owns main:** review every diff before merging; resolve conflicts yourself; keep main
+  green (`mvn package` + shell test after each merge).
+- **Review policy:** small/medium changes — the lead reviews. Large or high-risk batches (VM,
+  replay/schedule, identity, soundness of COMPOSE/CONFIRM) — ONE independent review agent per
+  batch, BEFORE merging, then a live round. Reviewers are read-only and cite file:line.
+- **Merge gate:** the offline regression gate (`tools/regress/offline-ab.sh`, §3) for every change
+  to SEED/PLAN/EXPLORE/COMPOSE/CONFIRM; a live round for VM, runtime, identity or replay changes.
+  Verdicts and moved roots must not change unless the change is meant to change them, and then the
+  `.smt` chains are checked by hand.
+- Campaigns run from **frozen snapshots** (`~/gc-run/p<N>`), never from the working tree. Scripts
+  set their own environment (`tools/lib/gc-env.sh`, `onlift.sh`).
+
+**The mechanics in Claude Code** (what the previous lead actually did)
+- Start a coding agent with the Agent tool: `subagent_type: general-purpose`,
+  `isolation: "worktree"`, `run_in_background: true`. A read-only reviewer or investigator needs no
+  worktree. You are notified when an agent finishes; never predict its result before that.
+- Continue a finished or running agent with `SendMessage` (its id); it keeps its context. Stop one
+  with `TaskStop`.
+- Watch rounds with a `Monitor` on `round-monitor.sh … | grep --line-buffered 'DONE '` (it expires
+  after 30 min; re-arm it; a re-armed monitor re-reports finished cases). For a single wait, run a
+  background Bash command that loops `until <condition>; do sleep 30; done` and exits.
+- A typical cycle: a round finishes → read each failure yourself (summary, log, report, gaps: a few
+  minutes) → one agent per distinct root cause with the evidence paths → review its diff → merge →
+  new snapshot → next round, while other agents keep working on independent packages.
+- Prompt skeleton for a coding agent: *context* (repo, main sha, what is on main that matters) →
+  *problem with evidence* (run paths, error lines, row ids) → *task* (trace the code first; fix
+  generally; what not to touch) → *rules* (worktree only, never push, never `git add -A`, commit
+  trailer, `mvn -q -o package` + shell test via `onlift.sh` before each commit, docs + STATUS in the
+  same commit, lean tests) → *validation* (exact `offline-ab.sh` command and cases; a live run on
+  its own snapshot with its own round name when runtime/VM changes) → *report* (≤ 15 lines: commits,
+  evidence, gate lines, what is left).
+- Keep a short state note current for yourself (the previous lead used
+  `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/acceptance-rounds-2026-09-30.md`), and keep
+  README §0 current when you hand over.
+
+---------------------------------------------------------------------------------------------------
+
+## 3. Servers, storage, environment and tools
+
+### 3.1 Hosts and storage
+
+| what | where / how |
+| --- | --- |
+| hosts | `lift06`…`lift15` (ten), 48 cores and 30 GB each. All ten are used for every fan-out (obligations, rounds, sweeps, builds). `lift11` is the owner's interactive machine: it is a **worker but never a campaign head** (`launch-round.sh` enforces it). Never blow up a host's memory: every start goes through the host ledger (below). |
+| home | `/u/vnr3ne` is NFS-shared by all lifts, **100 GB quota** (it has been full twice). Keep bulk data off it. |
+| bulk storage | `/bigtemp/vnr3ne` (NFS pool, automounted on every lift, owner-approved): round outputs `gc-out/`, VM images `vm-*/`, specs, analyses, gate outputs `ab/`, helper scripts `bin/`, agent worktrees `wt/`. `test -w` does not trigger the automount; `ls` it first. |
+| local scratch | `/localtmp/$USER` on each lift (replay working directories go to `/localtmp/$USER/graphchecker/`). |
+| stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
+| z3 | `~/.local/bin/z3` (4.14.1) |
+| concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-r3b/j2sdk-image`** (f14 + R3 + r3-fix envelope bound). Others: `vm-r3` (before r3-fix), `vm-w1` (W1, parked), `vm-w4` (W4 branch), `vm-w4b` (possibly partial — rebuild), `vm-f14`, `~/gc-out/vm-f*` (old). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME`, never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
+| HDFS trees | `~/hadoop-hdfs-<case>` (worktrees of `~/hadoop`, branch `gc/<case>`); ad-hoc HDFS checks run on `~/hadoop-hdfs-17967-c` only |
+| Solr trees | Solr 8.11 worktrees of `~/lucene-solr-8_11`: `gc/solr` (shared adapter), `~/lucene-solr-18406` (`gc/solr-18406`), `~/lucene-solr-18413` (`gc/solr-18413`), `~/lucene-solr-8_11-adhoc` (`gc/solr-adhoc`). Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
+| owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
+
+### 3.2 Helper commands (outside the repo)
+
+```bash
+/bigtemp/vnr3ne/bin/onlift.sh [-g <min-free-GB>] [-h <host>] <command...>
+    # run a command in the current directory on the least-loaded lift (or <host>) with the Java 8 +
+    # Maven toolchain; use it for mvn, the shell test, VM builds, offline stages, anything heavy.
+    # `onlift.sh -h` with no host hangs; always give a host or omit -h.
+/bigtemp/vnr3ne/bin/pick-lift.sh [min-free-GB]   # prints the best lift
+```
+
+### 3.3 Build, test, commit
+
+```bash
+cd ~/GraphChecker
+/bigtemp/vnr3ne/bin/onlift.sh -g 10 bash -c 'mvn -q -o package && bash src/test/shell/run_engine_campaign_helpers_test.sh'
+```
+
+Keep `-o` (offline): `~/.m2` is shared over NFS. `mvn package` also builds the `hadoop-shim`
+classifier jar from `src/shim/java`, which the HDFS trees call. A snapshot needs all three jars in
+`target/` (`-jar-with-dependencies`, `-hadoop-shim`, plain).
+
+VM: build with `third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_build_in_docker.sh`
+(or the recipe under `/bigtemp/vnr3ne/vm-w1/work/`, see `docs/design/VM.md`), ~1 h for a full JDK,
+via `onlift.sh -g 12`. Smoke tests: `scripts/causynth_smoke_test.sh` with `JDK_HOME` = the image.
+Never overwrite an image a round uses; build a new directory.
+
+### 3.4 Rounds (live campaigns)
+
+```bash
+git worktree add --detach ~/gc-run/p<N> <commit>
+(cd ~/gc-run/p<N> && /bigtemp/vnr3ne/bin/onlift.sh -g 10 mvn -q -o package -DskipTests)
+GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-r3b/j2sdk-image \
+  tools/rounds/launch-round.sh ~/gc-run/p<N> <round>              # all 11 cases, heads placed per host
+CASES="hdfs-17960 solr-18413" ... tools/rounds/launch-round.sh ... # a subset
+GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
+GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
+```
+
+- Always pass `GC_OUT=/bigtemp/vnr3ne/gc-out` (`stop-run.sh` otherwise looks in `~/gc-out` and
+  silently stops nothing).
+- A round name is written once (`accept-<round>-<case>` exists → refused). Names used so far:
+  `v*`, `r1`–`r9`, `ra1`, `rb1`, agents' `a37f*`, `ee*`, `agent-*`, `w4-*`.
+- Typical wall time: HDFS cases 16–50 min (11741 longest), Solr 40 min–3 h.
+
+### 3.5 The offline regression gate (merge gate)
+
+```bash
+AB_ACCEPT_ROOT=/bigtemp/vnr3ne/gc-out AB_OUT=/bigtemp/vnr3ne/ab/<name> [AB_STAGES="IMPORT EXPLORE.N COMPOSE"] \
+  tools/regress/offline-ab.sh --round r8 --round r7 <baseline.jar> <candidate.jar> [case...]
+```
+
+Re-runs every stage that is a pure function of a recorded round (SEED.static, SEED.trace, PLAN,
+EXPLORE.0, SOLVE.0, IMPORT, EXPLORE.N, COMPOSE, CONFIRM planning) with both jars and compares.
+No replay: it cannot see VM, runtime or identity changes — those need a live round. Read the
+header for `AB_HEAP_MB`, `AB_BASELINE_REPO` (when declarations differ between sides), `AB_HOSTS`.
+Keep jars in `/bigtemp/vnr3ne/ab/jars/`.
+
+### 3.6 Reading a campaign
+
+`summary.tsv` (verdict row) → `logs/<case>.log` (`[campaign:error] stage=… reason=…`) →
+`report/<case>/report.md` (blocking gaps, witness findings, causal cone) → `out/<case>/schedule/final/`
+(`claim.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `gaps.json`)
+→ per wave `iteration-0000/obligations-<NNNN>/<id>/` (`obligation_query.smt2`,
+`obligation_result.jsonl`, `replay.log`) → sessions `iteration-0000/sessions/<id>/`
+(`targets.jsonl` has `reachedAnchor` and `observedFatal`). `experiments/accept/cone.py` and
+`probe.sh` re-check a published formula. `tools/analysis/timeline.py` (on the early-exit branch)
+breaks a campaign's time down by stage.
+
+---------------------------------------------------------------------------------------------------
 
 ## The pipeline
 
@@ -41,33 +403,6 @@ EMIT        final/result.json, gaps.json, run-manifest.json
 The stages, their gates and the claim kinds are specified in
 [docs/design/PIPELINE.md](docs/design/PIPELINE.md).
 
-## Hosts and inputs
-
-| what | where |
-| --- | --- |
-| hosts | `lift06`…`lift15`: 48 cores and 30 GB each. The home directory is shared over NFS with a 100 GB quota. Each host has local scratch at `/localtmp/$USER`. Bulky data goes under `/bigtemp/vnr3ne`. |
-| stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. Maven, the engine, the SEED recording and the ad-hoc coverage runs all use it. |
-| concolic VM | Build it with `third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_build_in_docker.sh`; the image lands in `build/linux-x86_64-normal-zero-release/images/j2sdk-image`. Frozen copies live in `~/gc-out/vm-f<N>/j2sdk-image`. Pass the image as `CAUSYNTH_CUSTOM_JDK_HOME`; it is never `JAVA_HOME`. |
-| z3 | `~/.local/bin/z3` (4.14.1) |
-| HDFS trees | `~/hadoop-hdfs-<case>`, each a worktree of `~/hadoop` on branch `gc/<case>`. The ad-hoc HDFS checks run on `~/hadoop-hdfs-17967-c`. |
-| Solr trees | Solr 8.11 worktrees of `~/lucene-solr-8_11`: `gc/solr` (the shared adapter), `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc` |
-
-## Build and test
-
-```bash
-export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 PATH=/usr/lib/jvm/java-8-openjdk-amd64/bin:$PATH
-mvn -q -o package -DskipTests      # target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
-mvn -q -o test
-bash src/test/shell/run_engine_campaign_helpers_test.sh   # the harness test; run it and mvn test before a commit
-```
-
-Keep `-o` (offline): `~/.m2` is shared over NFS. `mvn package` also builds the `hadoop-shim`
-classifier jar from `src/shim/java`, which the HDFS trees call.
-
-The VM's own smoke tests are separate:
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh`, with `JDK_HOME`
-set to the image.
-
 ## Run one case
 
 A case directory holds declarations only. `experiments/<system>/<case>/` contains:
@@ -88,7 +423,7 @@ parts are in `experiments/<system>/{system.sh,build.sh,classpath.py}`.
 
 ```bash
 experiments/lib/run.sh experiments/hadoop/hdfs-17960 "" build      # build the tree, run the workload once
-export CAUSYNTH_CUSTOM_JDK_HOME=$PWD/third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image
+export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-r3b/j2sdk-image
 CASES=hdfs-17960 bash experiments/accept/accept.sh                  # campaign + probe + report
 ```
 
@@ -96,21 +431,9 @@ A case id names its experiment by its longest prefix, for example `hdfs-17899-bu
 `solr-18413`, `adhoc-<check>.<workload>` or `solr-adhoc-<check>.<workload>`.
 
 `accept.sh` runs the campaign, a z3 probe and `report.py`. `experiments/accept/README.md` says
-what PASS means: the claim, no BLOCKING gap, the case's expected mechanism, `polarityDecides`,
-a confirmation, and every moved root inside the causal cone (`cone.py`). `report.py`'s table
-names the nine HDFS cases and the two Solr cases; a case it does not name cannot pass. Before
-each case `accept.sh` waits for `MIN_FREE_GB` free where `OUT` is written (a refused write there,
-such as a full quota, counts as none).
-
-To run from a frozen snapshot (a round) instead of the working tree:
-
-```bash
-git worktree add ~/gc-run/p<N> HEAD && (cd ~/gc-run/p<N> && mvn -q -o package -DskipTests)
-tools/rounds/launch-run.sh ~/gc-run/p<N> hdfs-17960 v<R>-17960
-tools/rounds/launch-round.sh ~/gc-run/p<N> v<R>   # the nine HDFS + two Solr cases
-tools/rounds/round-monitor.sh 'v<R>-*' | grep --line-buffered 'DONE '
-tools/rounds/stop-run.sh v<R>-17960                      # stops a run by its output dir, on every lift
-```
+what PASS means. `report.py`'s table names the nine HDFS cases and the two Solr cases; a case it
+does not name cannot pass. Before each case `accept.sh` waits for `MIN_FREE_GB` free where `OUT`
+is written.
 
 `tools/lib/gc-env.sh` states, once for every tool and for `run_engine.sh`, the output root
 `GC_OUT` (default `/bigtemp/vnr3ne/gc-out`), the host ledger `CAUSYNTH_HOST_LEDGER` (default
@@ -123,37 +446,57 @@ host rotated per wave. Every start on a host is charged to the ledger first: an 
 120 s), its seed and CONFIRM replays (`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
 (its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, a 3072 MB
 reserve and every start still in its ramp there; a head's start is released when it returns.
-Rules:
-
-- Never rebuild a tree, or edit a snapshot, while a campaign runs on it.
-- Never remove a `~/gc-run/p<N>` that a running sweep uses.
+A head's "waiting for memory" line goes to stderr (its stdout is often an artifact).
 
 ## Run an ad-hoc sweep
 
 An ad-hoc check is a guarded `throw` that a system's existing cluster test reaches and passes.
-Each case is one check × one workload (`<check>.<workload>`). The experiments are
+A case is one check on one workload (`<check>.<workload>`), or a batch of checks on one workload
+(`B<n>`, a row of `batches.tsv` with its target spec `targets/B<n>.yaml`). The experiments are
 `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds `checks.tsv`,
-`occurrences.tsv` and `targets/`. Their ad-hoc trees are listed above.
+`batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A check's case
+starts from the classes its experiment's communication mappings name (`system.sh`'s
+`system_mapping_scope`) and its own class; SEED adds the library doors' classes and grows the
+scope from there.
 
 The steps, in order (`tools/adhoc/`; each script's header documents its arguments):
 
-1. `sites.py <system-dir> <repo>`: every guarded `throw new` in the system's sources.
-2. `coverage.sh`, fanned out by `fanout.sh`: one JaCoCo run per workload test, which writes
-   `<w>.lines` and a `.node` marker and exits with the test's own status. You supply the list of
-   workload tests (`workloads.tsv`).
-3. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
-4. `select.py <system-dir> <sweep-dir> <experiment> <N> [per-check] [tree]`: rank and choose
-   checks. It appends them to `checks.tsv` and prints the case ids. A workload whose test failed
-   under coverage, or that starts no node, is skipped and named on stderr.
-5. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
-   line (`exception_target: adhoc-<check> …`). Nothing in the tree is edited or rebuilt.
-6. `sweep.sh <snapshot> <round> <cases-file> [heads-per-host]`: one campaign per case over all
-   ten lifts, with `PRUNE=1` and a 5400 s case budget. `fanout.sh` admits each head through the
-   host ledger with the case's `engine_memory_mb` (else 8192); started again, it skips every case
-   whose job returned (`<log-dir>/<n>.exit`).
-7. `triage.py <round> <gc-out>`: one row per case with its outcome class (CONFIRMED, REFUTED,
-   NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING), finding, stage and reason. Pass the sweep's
-   `$GC_OUT`: its own default is still `~/gc-out`.
+1. `workloads.py <system-dir> <repo>`: the system's cluster tests (`workloads.tsv`): every
+   JUnit 4 or Jupiter `@Test` method, declared or inherited, that the engine's runner can call,
+   of a test class that names the system's cluster class (`system_cluster_class`). HDFS: 4176
+   tests; Solr: 606.
+2. `sites.py <system-dir> <repo>`: every guarded `throw new` in the system's sources.
+3. `coverage.sh`, fanned out by `fanout.sh`: one JaCoCo run per workload test, which writes
+   `<w>.lines` and a `.node` marker and exits with the test's own status.
+4. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
+5. `select.py <sweep-dir> <experiment> declare [tree]`: declare every reached check a sweep can
+   run in `checks.tsv` (a new one as `<Class>-<throw line>`) and print one
+   `<check>.<workload>` per check, its fastest usable workload.
+6. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
+   line. Nothing in the tree is edited or rebuilt.
+7. `slice.sh <experiment> <key> <cases-file>`: the engine's own static slice of each check
+   (`run.sh … slice`, ~70–100 s, 3.2 GB) and its score (`score.py`), in
+   `$GC_OUT/static/<key>/<check>/`, fanned out over the lifts. A check is kept when a root (clock,
+   fault door, READ placeholder, field another region stores, wire crossing) lies within 4 edges
+   of its fatal operands. `<key>` names the build. The ad-hoc starting scope changed with WP2, so
+   re-slice every check under a new key before a sweep.
+8. `select.py <sweep-dir> <experiment> rank $GC_OUT/static/<key> <cases-file>`: `selected.jsonl`
+   (kept checks, best score first, at most three per class, plus every twentieth dropped check as
+   a calibration row).
+9. `cover.py <sweep-dir> <experiment> jobs [16] [2]`: `prescreen-jobs.tsv`, a greedy cover of the
+   selected checks by the tests that reach them, at most 16 checks per recording.
+10. `prescreen.sh <experiment> <key> <sweep-dir>/prescreen-jobs.tsv`: one recording per batch woven
+    for every check of it (`$GC_OUT/prescreen/<key>/B<n>/runtime/record-summary.json`: each
+    check's ACTIVATED or refusal). ~35 % of check/test pairs are not in the recording window and
+    are dropped here instead of dying at SEED.
+11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`.
+12. `sweep.sh <snapshot> <round> <sweep-dir>/cases.txt [heads-per-host]`: one campaign per case
+    over all ten lifts, `PRUNE=1`, 5400 s per case; restartable.
+13. `triage.py <round> <gc-out>`: outcome class per case (CONFIRMED, REFUTED, NO_WITNESS, STOPPED,
+    DEAD, RUNNING, PENDING). Pass the `$GC_OUT` (its default is still `~/gc-out`).
+14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
+    one row per mechanism among the confirmed witnesses (`findings.tsv`); the ledger marks each
+    new, known or dismissed.
 
 ## Outputs
 
@@ -168,18 +511,7 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
 | `…/sessions/<id>/` | one replay's rows: `activations`, `decisions`, `reads`, `writes`, `exports`, `attaches`, `roots`, `targets`, `gaps`, `schedule` (`.jsonl`), `expressions.jsonl`, `manifest.json` |
 | `out/<case>/schedule/final/` | `result.json`, `claim.json`, `gaps.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `run-manifest.json` |
 
-To read a failed run, work down this list:
-
-1. `summary.tsv`, and `[campaign:error] stage=… reason=…` in the log.
-2. `final/gaps.json`: the BLOCKING rows, by stage and code.
-3. The per-wave `obligation_results.jsonl` verdicts: `ADMITTED`, `UNSAT`, `NOT_ADMITTED`.
-4. A session's `targets.jsonl`, which has `reachedAnchor` and `observedFatal`.
-
 A flip query can be re-solved by hand with `z3 -smt2 obligation_query.smt2`.
-
-Replay working directories go under `/localtmp/$USER/graphchecker/` on each host. A sweep can
-fill the home quota. Keep round outputs on `/bigtemp`, and keep at most a couple of snapshots
-built.
 
 ## Repository map
 
@@ -187,7 +519,7 @@ built.
 run_engine.sh                     the campaign driver (every stage)
 src/main/java/edu/uva/liftlab/graphchecker/
   causynth/    Soot pass: fatal slice, root catalog, door weave, weaving and its verification,
-               region finalization, wire-flow catalog
+               region finalization, wire-flow catalog, declared-target line resolver
   plan/        static scope map, scope growth, task plan, declared sites, lineage scan,
                work-start and timed-wait shapes
   runtime/     recording and replay hooks, identity and attribution, schedule (ScheduleLog),
@@ -195,8 +527,10 @@ src/main/java/edu/uva/liftlab/graphchecker/
                VM broker
   explore/     corpus, closure, frontier, flip queries, obligations, wave graph, ExploreMain,
                ConfirmMain
-  compose/     Composer, families, SMT lowering, container codec, ClaimPolicy, ComposeMain
-  contract/    row kinds, identity types, gap registry, session layout, IMPORT gate
+  compose/     Composer, families, SMT lowering, container codec, string identities, ClaimPolicy,
+               ComposeMain
+  contract/    row kinds, holes, wire declarations, identity types, gap registry, session layout,
+               IMPORT gate, row pool
   smt/         expression IR, arms and families, z3 driver
   annotation/  Debug.makeSymbolicBoolean; @CausynthExceptionTarget (the trees' compile ABI only)
 src/shim/java/                    the Hadoop shim (org.apache.hadoop.ipc.*) the HDFS trees call
@@ -207,13 +541,13 @@ experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
 experiments/hadoop/, experiments/solr/   per-system scripts, cases, ad-hoc experiments
 experiments/hbase/                HBase reading notes and sketches (not a runnable case)
+tools/lib/gc-env.sh               GC_OUT, host ledger, LIFTS for every tool
 tools/rounds/                     launch, monitor and stop campaigns on the lifts
-tools/adhoc/                      ad-hoc check discovery, selection, sweeps, triage
-tools/regress/                    offline-ab.sh: a candidate jar against a baseline on a recorded round, no replay (merge gate)
+tools/adhoc/                      ad-hoc check discovery, slicing, selection, pre-screen, sweeps,
+                                  triage, findings
+tools/regress/                    offline-ab.sh: the offline merge gate
 tools/analysis/                   one-off analyses (chain check, graph diff, pairing probe)
 tools/case_onepager.py            one page per case from a campaign's artifacts
-tools/linecount_reconcile.sh      per-package line counts of two checkouts
 docs/STATUS.md                    done / partial / not done, per requirement; open defects
-docs/design/                      the design (index: docs/design/README.md)
-docs/reports/                     dated experiment reports
+docs/design/                      the design of main (index: docs/design/README.md)
 ```

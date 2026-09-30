@@ -252,11 +252,10 @@ ab_stage_seed_trace() {
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
     "${ab_jar}:${ab_project_cp}" \
     edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
-    --trace-dir "${ab_acc}/runtime" \
-    --candidate-graph "${ab_static}/candidate_dataflow_edges.jsonl.gz" \
-    --region-skeletons "${ab_static}/region_skeletons.jsonl.gz" \
-    --static-scope-map "${ab_static}/static_scope_map.jsonl" \
-    --test "$(ab_cfg trace_test)" --output-dir "${dir}"
+    --trace-dir "${ab_acc}/runtime" --test "$(ab_cfg trace_test)" \
+    --target "ab=${ab_static}/candidate_dataflow_edges.jsonl.gz,\
+${ab_static}/static_scope_map.jsonl,${ab_static}/region_skeletons.jsonl.gz,\
+${dir}"
 }
 
 ab_stage_plan() {

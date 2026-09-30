@@ -1,9 +1,9 @@
 # docs/design
 
 The design of GraphChecker as the code on `main` implements it. Each document describes the
-present only; what is done, partial or missing is in [../STATUS.md](../STATUS.md), and dated
-experiment records are in [../reports/](../reports/). Where a document and the code disagree,
-the code is right and the document is fixed.
+present only; what is done, partial or missing is in [../STATUS.md](../STATUS.md), and the
+handover state (branches in flight, rounds, TODO, rules) is in [../../README.md](../../README.md)
+§0. Where a document and the code disagree, the code is right and the document is fixed.
 
 | document | what it covers |
 | --- | --- |
@@ -45,5 +45,3 @@ decodes. The IMPORT invariants checked by `contract/RowInvariants`. The gap regi
 - export and attach of values;
 - the known limits: where a value moves without a hooked bytecode.
 
-**Reports.** `docs/reports/` holds dated experiment reports. They record what a run showed on
-the day it ran. They are not a description of the current code.
