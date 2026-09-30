@@ -37,8 +37,26 @@ public final class JUnitMethodRunner {
      * then the VM session closes.  Non-daemon cluster threads outlive the
      * test, so the exit is explicit.  0 when the method returned, 1 when it,
      * a publication or the close failed.
+     *
+     * <p>ONE END: the first caller ends the run and a later one waits for its
+     * exit.  SOLR-18413 r8: the declared update's throw failed the test, and
+     * its witness stop and the failed test both ended the run; the witness
+     * began the run totals, the test found them begun, closed the session
+     * and exited while the verdict was still being written.</p>
      */
     static void exit(int status) {
+        synchronized (ENDING) {
+            if (ending) {
+                while (true) {
+                    try {
+                        ENDING.wait();
+                    } catch (InterruptedException ignored) {
+                        // The first end exits the JVM; nothing else does.
+                    }
+                }
+            }
+            ending = true;
+        }
         int code = status;
         ConcolicRegionRuntime.endAdmission();
         try {
@@ -58,6 +76,11 @@ public final class JUnitMethodRunner {
         }
         System.exit(code);
     }
+
+    /** Guards {@link #ending}. */
+    private static final Object ENDING = new Object();
+    /** Whether some thread is ending the run ({@link #exit}). */
+    private static boolean ending;
 
     /**
      * Closes the workload session; a refusal is printed, not thrown, so it
