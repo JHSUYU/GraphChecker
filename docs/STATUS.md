@@ -1,0 +1,243 @@
+# Status
+
+This page describes what the code on `main` (HEAD) does, measured against the owner's
+requirements R1–R6. Every commit that completes or changes something listed here updates this
+page in the same commit.
+
+- **Done** means the code does it on HEAD.
+- **Partial** means the code does part of it; the "missing" column says which part.
+- **Not done** means the code does not do it, including work that is in progress.
+
+Pointers are `path` plus class and method. `gc/` stands for
+`src/main/java/edu/uva/liftlab/graphchecker/`, and `VM/` for
+`third_party/OpenJDK-Concolic-Execution-Engine/hotspot/src/share/vm/`.
+
+## Acceptance
+
+**No campaign has run on HEAD.** HEAD also cannot re-read the corpora of the last accepted
+rounds, for two reasons:
+
+- `gc/contract/RootMintRow` now requires `clockNanos` on every CLOCK root ("a CLOCK root states
+  its tick and no other root does"), and the old rows lack it.
+- The old sessions hold `expressions.json`, but HEAD reads `expressions.jsonl`
+  (`gc/contract/SessionDir`). A missing expression file reads as an empty table
+  (`gc/contract/SessionExpressionLog#read`).
+
+When those corpora are composed offline with the HEAD jar, all nine come out
+`NO_SUPPORTED_WITNESS`:
+
+- the eight block-key cases have CLOCK roots, and their sessions are refused as
+  `SESSION_INCOMPLETE` and their paths as `UNSTATED_VALUE`;
+- hdfs-17960 has no clock, and every path is refused as `UNSTATED_VALUE`.
+
+The evidence is in `/bigtemp/vnr3ne/analysis/j2/head/<case>/`.
+
+The last evidence per case:
+
+| case | last run | verdict | mechanism |
+| --- | --- | --- | --- |
+| hdfs-17960 | `~/gc-out/accept-v92-17960` | PASS | MARKER_FLIPPED: `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false`, confirmed. A later build's run (`accept-v103-17960`) ended at REPLAY without a result; the cause is not established. |
+| hdfs-17897 | `accept-v92-17897` | PASS | MARKER_FLIPPED: the IPC request door (`FAULT:HADOOP_IPC:REQUEST`) is true and no clock moves |
+| hdfs-17899-bug1, bug3 | `accept-v92-17899-bug{1,3}` | PASS | MARKER_FLIPPED: the IPC request door |
+| hdfs-17899-bug2 | `accept-v94-17899-bug2` | PASS | MARKER_FLIPPED: the SPS's IPC response door |
+| hdfs-17967-pathA, B, C | `accept-v92-17967-path{A,B,C}` | PASS | MARKER_FLIPPED: the IPC request door |
+| hdfs-11741 | `accept-v93-11741` | **FAIL** (see below) | CLOCK_SKEW, `polarityDecides`, confirmed |
+| solr-18413 | `accept-s45-solr-18413` | FAIL | `NO_SUPPORTED_WITNESS`. `accept-s49` did not finish. |
+| solr-18406 | `accept-s30-solr-18406` | FAIL | `NO_SUPPORTED_WITNESS`. Every later run (`s31`…`s48`) ended before EMIT. |
+
+So HDFS stands at 8 of 9.
+
+hdfs-11741 fails the cone gate (`experiments/accept/cone.py`): the NameNode clock roots it
+moves lie outside the selected path's causal cone. In that formula, the DataNode's expiry
+comparison is against recorded constants. No clock value crosses the process into it as data,
+so R2's 11741 chain (the NameNode clock reaching the DataNode check) is not in the formula.
+
+Neither Solr case has ever produced `SAT_CANDIDATE`. `experiments/accept/report.py` has no
+`EXPECTED_MECHANISM` entry for either, so neither can pass the gate. The same holds for
+hdfs-token-key and every ad-hoc case.
+
+The ad-hoc checks have found no new bug. Every finished sweep verdict on record is
+`NO_SUPPORTED_WITNESS`. The only confirmed ad-hoc witnesses ever were two CLOCK_SKEWs on
+token-expiry checks, which were judged to be HDFS's clock-sync assumption, not bugs.
+
+## R1. Symbols come automatically from the fatal slice
+
+| capability | status | where | missing |
+| --- | --- | --- | --- |
+| Backward data slice from the annotated throw across methods (arguments, returns, callers, CHA dispatch) and field writers | done | `gc/causynth/SeedBackwardStaticAnalyzer` | Application classes only. The field jump is instance-insensitive. |
+| Control dependence inside a method | done | `gc/causynth/SiteControlDependence` | The CFG is a `BriefUnitGraph`, so exception edges are ignored and a catch handler a fault leads to has no guard. The slice uses may-reach; the scope map's guards use post-dominance: two relations. |
+| Control dependence across methods, threads and the wire | partial | `SeedBackwardStaticAnalyzer` (callers of field writers, constant stores up to 3 calls up) | Nothing across a thread start, an executor submit or a message. |
+| Library-typed state (the receiver of a non-application call) | not done | `SeedBackwardStaticAnalyzer#localValueUses`, `#isValueLikeLibraryInvoke` | `x = lib.m(k)` depends on `k` only, except modeled containers, String/StringBuilder, unboxing and structural accessors. State behind a `ConcurrentMap`, `NavigableMap`, `AtomicBoolean` or cache never enters the slice. |
+| CLOCK roots by category | done | `gc/causynth/RootCatalog#clockTicks`, `#wrapsAClock` | Only the JVM clocks and zero-argument int/long wrappers under constant arithmetic, found on `call_return` edges. Not `java.time`, a clock read through a field, or a delegate outside the scope. |
+| FAULT roots at transport doors | done, declared per system | `gc/causynth/DoorWeave#apply` (runs before analysis); `gc/plan/StaticScopeMap#declaredFault` | Doors come from `DOOR` rows. A marker counts as declared only if its transport has a row. Only the first call of the named callee is woven. |
+| READ placeholder roots | partial | `StaticScopeMap#markReads` | Only an accessor with an unwoven (JDK) body, a primitive return, and a location another region stores: in practice `AtomicInteger`/`AtomicLong.get`. |
+| Configuration roots | not done | `gc/causynth/StaticSymbolicSourceDiscovery`; `gc/runtime/RootMint#configuredSource` | Only a hand-written tree hook `CausynthSymbolicSource.symbolize` mints one, and only on a primitive instance field. There are six such hooks in every block-key tree and one in 17960. |
+| Randomness | deterministic, not symbolic | `gc/causynth/CausynthPipeline#replaceRandom`; `gc/runtime/Randoms` | `ThreadLocalRandom` and `SecureRandom` are not replaced. |
+| Method-return symbols | partial | VM `Integer.parseInt`/`Long.parseLong` only; `gc/compose/SmtLowering#symbolTerm` pins an undeclared symbol whose node states its returned value (gap `UndeclaredSymbolPinned:<symbol>`, DIAGNOSTIC) | Other library returns are not symbols. |
+| Scope growth to a fixpoint | partial | `gc/plan/ScopeFrontier`, `gc/plan/ScopeGrowth`; `run_engine.sh` `campaign_analyze_grown_scope` | The default budget is 24 classes, and the audited sweeps hit it. Growth is switched off (`causynth_scope_growth_budget=0`) for every named case. CHA spends the budget on every implementation. Protobuf classes are never grown into. |
+| Root admission | over-admits | `gc/causynth/RuntimeSelectedRegionFinalizer#readsARoot` | Every occurrence that reads any clock or marker is admitted, whether or not the slice needs it. |
+| Loop-body roots (a service-loop iteration is the activation) | done | `gc/causynth/StaticProgram`; `CausynthPipeline#loopBodyEntry` | An unsupported loop shape throws `LOOP_BODY_ROOT_ENTRY_UNAVAILABLE` at INSTRUMENT and ends the campaign. |
+| Demand a root when the anchor's predicate is concrete | not done | `gc/explore/ClosurePlanner` demands only symbolic operands of the target guard and predicate | When the predicate is concrete, the closure is the anchor alone, the wave has zero obligations, and COMPOSE refuses every path as "decided concretely on its healthy arm". This is 195 of 260 finished sweep verdicts. |
+| Restart and delivery-delay roots | not done | — | — |
+
+## R2. Values keep their expression across processes
+
+| capability | status | where | missing |
+| --- | --- | --- | --- |
+| Causal context across Hadoop IPC and SASL | done (tree adapter) | the Hadoop shim `src/shim/java/org/apache/hadoop/ipc/CausynthMessagePropagation`; `gc/runtime/MessageDoors#outbound`, `#inbound` | Carried in new `.proto` header fields and in hand-edited `Client`, `Server` and SASL classes in every tree. |
+| Causal context across HTTP and ZooKeeper (Solr) | done (tree adapter) | `MessageDoors` store doors `#stored`, `#fetched`, `#notified`, `#consumed`; Solr tree `CausynthHttp`, `SolrZkClient` | A read of a stored version outside a watcher callback gets nothing. The Overseer queue and polling reads carry no anchor. |
+| Anchor lookup | same JVM only | `gc/runtime/RuntimeTraceContext`; `gc/runtime/Interactions` | The header carries no producer endpoint. The anchor is looked up by correlation in a JVM-global table capped at 8192 entries, which evicts silently. |
+| Declared ports (`WIRE_FLOW` rows) | done, hand-written | `gc/causynth/WireFlowCatalog` | Written per case: block-key-id, block-key-expiry-date, namenode-data-encryption-key-id, data-encryption-key-id (HDFS); two routing-rule rows (SOLR-18413). |
+| Ports derived by rule | partial (protobuf scalars) | `SeedBackwardStaticAnalyzer#deriveWirePort`, `#protobufMessage` | Only a primitive or String getter of a protobuf message whose `Builder.setF` call is in scope. No repeated, enum, bytes or nested fields. No frame. A declared row wins over the derived port. No run shows a derived port carrying a value end to end. Derivation also treats on-disk protobuf (fsimage) as a wire. |
+| String-carried values (the SASL user name, JSON in ZooKeeper) | not done | — | They need hand rows plus tree rewrites (`Integer.toString` in `SaslDataTransferClient`; SOLR-18413's `SliceMutator`). |
+| Receiver-side symbol `v_H` | primitive leaves only | `gc/runtime/HandoffMint#addPrimitiveLeaves`; `gc/runtime/WireExport` | String and boxed leaves are substituted with the producer's expression, with no family. A VM export or attach refusal and an undeclared export leave no row and no gap. |
+| Outbound staging | per thread | `gc/runtime/SymbolicMessageEnvelope` | Staged values ride the thread's next outbound message, so a message built without passing a door can lend its leaves to the wrong message. Capped at 64 entries. |
+| Composer merges both sides (MESSAGE families) | done | `gc/compose/ComposedFamilies`; `gc/smt/Arms` | Only arms of the same interaction slot, from sessions of compatible worlds. An unpaired attach refuses its path. |
+| DataTransfer ops, HDFS HTTP, `Http2SolrClient` forwarding, javabin/JSON bodies | not done | — | No anchor and no values. DataTransfer ops are daemon-tick roots. |
+
+## R3. Shared state in one JVM is tracked and re-pairable
+
+| family | status | where | missing |
+| --- | --- | --- | --- |
+| Integral instance fields (boolean…long) | done | `gc/causynth/CausynthStaticFacts#versionableField`; `StaticScopeMap#decidingCells`; VM `observeExactPrimitiveField`, `sharedFieldVersions` | Tracked only when the read reaches a branch within 8 flows and the slice stores the field. |
+| Unobserved writes | done | VM `sharedFieldVersions` (a contradicted loaded word publishes an UNOBSERVED version) | See VM defects below. |
+| Wrapper-typed fields (`Long`, `Integer`, `Boolean`) | not done | `CausynthStaticFacts#versionableField` takes primitives only | The VM versions only the box identity. |
+| Reference fields; a container behind a replaced reference | not done | VM `putfield` publishes only a symbolic value or an already-tracked location | State follows the container object, not the field, so swapping the field carries no state. |
+| Containers | partial | VM models `HashMap`, `LinkedHashMap`, `HashSet`, `LinkedHashSet`, `ArrayList`, `ArrayDeque` (`symbolicMap`, `symbolicSet`, `symbolicList`; shape in `ContainerSupport::shape`); `gc/smt/JavaContainerTypes` | Not `ConcurrentHashMap`, `TreeMap`, `CopyOnWrite*`, `PriorityQueue` or blocking queues. `putIfAbsent`, `compute*`, `merge`, `putAll` and `replaceAll` abandon the state. |
+| Atomics | partial | `gc/plan/SharedFieldFlow#atomicArithmetic`; VM `symbolicAtomic` | `AtomicInteger` and `AtomicLong` read-modify-write methods only. Not `set`, `lazySet` or `getAndSet`, and not `AtomicBoolean` or `AtomicReference`. |
+| Arrays | partial | VM array stores | Versioned only from a symbolic store into an already-symbolic array. |
+| Static, float and double fields | not done | `CausynthStaticFacts#versionableField` | — |
+| Guarded concrete stores | containers only | `gc/runtime/GuardedStoreSites#of`; VM `containerSupport` | A guarded concrete store to a scalar field or an array element starts no log. |
+| STATE families at COMPOSE | partial | `gc/compose/Composer`, `ComposedFamilies`, `Arms` | Only for reads at the anchor occurrence, only from writers in the same session, and never for a class-owned location. Location owners are per-run VM ids (`gc/contract/LocationId`), so no state joins across sessions. `cone.py` does not follow writer families. No run has produced a STATE_PAIRING witness. |
+
+## R4. Large-scale ad-hoc checks on HDFS and Solr
+
+| capability | status | where | missing |
+| --- | --- | --- | --- |
+| Find guarded throws; find the checks a test reaches | done | `tools/adhoc/sites.py`, `coverage.sh`, `reach.py` | A text scan; lambda throws lose their annotation. JaCoCo counts the whole JVM, not the recording window. `coverage.sh` exits 0 whatever the test's result, so a failed workload stays selectable. |
+| List a system's cluster tests | not done | — | The workload list is produced outside the repository. |
+| Select and annotate checks | done | `tools/adhoc/select.py`, `annotate.py` | Ranks the guard's text, not what the engine can make symbolic. A check needs a source annotation and a tree rebuild, done by hand. |
+| Fan out over ten lifts under a memory gate | done | `tools/adhoc/sweep.sh`, `fanout.sh`; `run_engine.sh` host ledger `~/gc-out/hosts` | Heads are gated on `MemAvailable` only, outside the ledger. A one-obligation wave always starts on the first listed host (`campaign_worker_slot_hosts`). |
+| Time bounds | partial | case budget 5400 s (`sweep.sh`); obligation replay 2400 s | The seed recording and the seed replay have no wall-clock bound. |
+| Stop at a first fatal | partial | `region_path_stop_at_fatal` (`gc/explore/ExploreMain`) | Only `solr-adhoc` sets it. |
+| One recording per workload for several checks | not done | — | Each check × workload repeats SEED, INSTRUMENT and the seed replay. |
+| Triage | partial | `tools/adhoc/triage.py` | REFUTED can never fire, because EMIT publishes `SAT_UNCONFIRMED`. `UNSAT_CLOSED` is folded into NO_WITNESS. Timeouts and dead cases have no class. |
+| Automatic cluster as a workload | partial (tree patches) | HDFS `CausynthCluster` automatic mode on `hadoop-hdfs-17967-c` only; Solr `CausynthSolrCluster` | Real-time bounds are patched per system; upstream HDFS workloads are limited to one DataNode (`ThreadLocalRandom`). |
+
+## R5. Correct .smt for the Solr cases; the nine HDFS cases keep passing
+
+See Acceptance above. What remains:
+
+- HEAD must read a fresh recording: every case needs a new round.
+- 11741's clock must cross the wire into the DataNode's expiry check.
+- SOLR-18406 needs reference-carried container state and a `ConcurrentHashMap` model (R3).
+- SOLR-18413's clock flip needs a backward skew. A clock's window is
+  `[reading, reading + 30 days]` unless `root-domains.jsonl` bounds it.
+- Both Solr cases need an entry in `report.py`.
+
+## R6. No per-case code, no dead code, no fallbacks
+
+| item | status | where |
+| --- | --- | --- |
+| Engine code naming a system or case | done, with two library rules | Only comments name cases. `gc/runtime/PoolWorkers` names Jetty's `QueuedThreadPool.startThread`. The wire rule and scope growth name `.protobuf.`. |
+| VM code naming a system | done | Only comments. Library lists are hard-coded: logging and crypto are muted, commons-lang 2 and Spring `StringUtils` are modeled, two Jackson classes are muted. |
+| Per-case switches | not done | `causynth_scope_growth_budget=0` in every named case; per-case `WIRE_FLOW` rows; hand roots and target rewrites in the trees; `region_path_max_tasks=128` for 11741. |
+| DOOR rows once per system | not done | The same rows are copied into every case's `communication-mappings.jsonl`. |
+| Dead or fallback code | not done | See "Fallbacks and dead code" below. |
+
+## Per-system surface
+
+What a system costs today, outside the general engine.
+
+| part | HDFS | Solr 8.11 |
+| --- | --- | --- |
+| code in this repository | the Hadoop shim `src/shim/java/org/apache/hadoop/ipc/{CausynthMessagePropagation,CausynthSymbolicSource}` (a `hadoop-shim` jar) | none; the tree calls `gc/runtime/MessageDoors` directly |
+| harness | `experiments/hadoop/{system.sh,build.sh,classpath.py,javac8-filter-crc32c.sh}`; `system.sh` also holds the block-key family scope `blockkey_scope`, which every HDFS ad-hoc check starts from | `experiments/solr/{system.sh,build.sh,classpath.py}`; `system.sh` holds `solr_door_scope`, `solr_state_scope`, a fixed test seed, and `-Dcausynth.cluster.automatic=true` |
+| DOOR rows | `HADOOP_IPC` REQUEST and RESPONSE, `HDFS_SASL` REQUEST; ad-hoc adds `HDFS_DATA_TRANSFER` SEND | `SOLR_HTTP` REQUEST and RESPONSE, `SOLR_ZK` SET_DATA and CREATE, in `solr-adhoc` only; solr-18406 and solr-18413 have no doors |
+| tree: transport | IPC `Client`/`Server` and `RpcHeader.proto` fields; SASL `DataTransferSaslUtil`/`SaslDataTransferClient` and `datatransfer.proto` fields | `CausynthHttp` with calls in `HttpSolrClient`, `Http2SolrClient`, `ConcurrentUpdateHttp2SolrClient`, `SolrDispatchFilter`, `HttpSolrCall`; `SolrZkClient` store and notify hooks |
+| tree: daemon ticks | `beginTick`/`endTick` in `KeyManager`, `HeartbeatManager`, `BPServiceActor`, `DataXceiver` | `Overseer`, `OverseerTaskProcessor`, `ReplicationHandler` (with `vacant`) |
+| tree: roots | `CausynthSymbolicSource.symbolize`: 6 hooks in `BlockTokenSecretManager` of every block-key tree, 1 in 17960's `SnapshotManager` | none |
+| tree: cluster and bounds | `CausynthCluster` (automatic mode on `hadoop-hdfs-17967-c` only), `MiniDFSCluster` hooks, timeouts in `CausynthCluster.configure`, `pinBlockKeys` copies in the workloads | `CausynthSolrCluster`, `MiniSolrCloudCluster`, `SolrCloudTestCase`, `CausynthBounds` and its uses; `ClusterState` keeps live nodes in a `TreeSet`; Overseer batching off in automatic mode |
+| tree: targets | `@CausynthExceptionTarget` on each target `throw` (one per case; one per ad-hoc check on `hadoop-hdfs-17967-c`) | the same. SOLR-18413 also turned a `getCollection` call in `DistributedZkUpdateProcessor` into `getCollectionOrNull` plus an annotated local throw, and turned `SliceMutator`'s `expireAt` into a `Long.parseLong`/`String.valueOf` round trip so that its `WIRE_FLOW` rows have capture sites. |
+| branches | one `gc/<case>` branch per case, each carrying the whole adapter | `gc/solr`, `gc/solr-18406`, `gc/solr-18413`, `gc/solr-adhoc`; the Overseer `consumed` call exists only on the three derived branches |
+
+## Open defects
+
+Correctness:
+
+1. CONFIRM accepts any target row with `reachedAnchor` and `observedFatal`, not only the claim's
+   anchor occurrence (`run_engine.sh` `campaign_confirm_decide`).
+2. `gc/runtime/Confirmation#load` swallows an unreadable `expected_edges.jsonl` and compares
+   nothing, so the confirmation fails open.
+3. Flip queries keep a refused construct in a decision or prefix term as a free
+   `unsupported__*` constant, with no gap (`gc/explore/FlipQuery#statedTerm`; FlipQuery opens
+   no refusal frame). A refused arm is dropped by name. A query can therefore ask for a world no
+   replay can plant.
+4. A flip model that assigns no root is still dispatched (`gc/explore/ObligationFactory`), and
+   its replay is always NOT_ADMITTED.
+5. Valuations are cut at `compose_max_valuations` with no gap. Only single and pair moves are
+   tried, and integral values are enumerated from the domain minimum (`gc/compose/Composer`).
+   No `INCONCLUSIVE_BOUNDED` claim exists.
+6. `gc/explore/FlipQuery`: a CLOCK with no reading gets the window `[0, Long.MAX]`.
+7. `gc/compose/SmtNames#BUILTIN` lacks `str.substr`, `str.indexof`, `str.at`, `str.from_code`
+   and `str.to_code`. `SmtLowering` emits them, so they read as undeclared names.
+8. `==` and `!=` between a boxed container cell and a primitive are not unboxed. They are
+   refused as `BinarySortConflict` (`gc/compose/SmtLowering`).
+9. VM: `Object.clone` copies the identity word, so a clone aliases the original's shadows,
+   container state and version log.
+10. VM: boxing `valueOf` annotates the returned object (`SymPrimitive::set_symbolic_field`),
+    which contaminates JDK-cached boxes and `Boolean.TRUE`/`FALSE` for every thread until the
+    session closes.
+11. VM: these lose the expression with no trace: `System.arraycopy`, every `Unsafe` write or CAS,
+    `String.toCharArray`/`getBytes`/`getChars`, and `StringBuilder` mutators other than `append`.
+12. VM:
+    - a non-null reference stored by a thread outside every region is dropped;
+    - a container attach publishes no container-state version;
+    - the INITIAL snapshot's `stated` is true for a refusal;
+    - `getTrackedLocationVersions` paging can repeat pages.
+13. VM: implicit exceptions (NPE, AIOOBE, division by zero, a failed cast) and `instanceof` are
+    never symbolic branch outcomes.
+
+Scale and robustness:
+
+14. One remote obligation worker that exits nonzero fails the wave and the campaign
+    (`run_engine.sh`).
+15. One BLOCKING row invariant in any focused session fails the campaign at the wave gate. The
+    offending session is not withdrawn.
+16. A truncated closure is BLOCKING (`gc/explore/ExploreMain#plan`). It is DIAGNOSTIC only
+    when `region_path_stop_at_fatal` is set and a replay has already observed the fatal.
+17. Every obligation solver reads the whole corpus (`gc/explore/ObligationSolverMain`).
+18. The seed recording and the seed replay have no wall-clock bound.
+19. VM: every expression is kept until the session closes, under one global mutex.
+
+Fallbacks and dead code:
+
+20. `gc/explore/ClosurePlanner#holds` falls back to region-id equality when the scope map knows
+    no method set.
+21. `gc/plan/SelectorResolution#resolve` returns a degraded `unresolved` address instead of
+    refusing.
+22. `gc/runtime/ScheduleLog#loadOrderLocked`: an unreadable prefix lets the replay run free,
+    reported on stderr only. `#timeoutMillis` silently takes the default for a malformed value.
+23. `gc/runtime/WireExport`: an undeclared export and a VM refusal on export or attach leave no
+    row and no gap.
+24. VM dead code:
+    - the armed replay reads (`armSharedPrimitiveFieldRead`) are still consumed in the
+      `getfield` path with no engine caller;
+    - the guarded-store clause of `SharedFieldVersions::publish_value` starts no log;
+    - six natives serve only the smoke tests: `getPathCondition`, `trackContainerExpression`,
+      `getSharedFieldVersions`, `getSharedElementVersions`, `getSharedMapVersions`,
+      `getConcolicRegionSummary`;
+    - nothing runs `causynth_smoke_test.sh`.
+25. `gc/compose/SmtLowering`: the `PlaceholderExpression` dispatch has no producer.
+26. `gc/contract/SessionExpressionLog#read` answers an empty table for a missing file, instead
+    of the session read naming the file. Downstream this surfaces as `UNSTATED_VALUE` refusals.
+
+Harness and declarations:
+
+27. `experiments/solr/solr-adhoc/case.sh` names `TestCausynthMigrateRuleTarget` as its
+    `classpath_test`, a class the ad-hoc tree no longer has.
+28. `experiments/hbase/token-key-roll-concolic/workflow.properties` uses a key `run_engine.sh`
+    refuses, so that case cannot run.
+29. `src/test/resources/external-callers.txt` lists APIs no tree calls, and omits
+    `MessageDoors`, which the Solr trees call.
+30. `tools/rounds/launch-round.sh` leaves `lift11` out, while the sweep tools use all ten lifts.

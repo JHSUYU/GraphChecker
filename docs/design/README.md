@@ -1,19 +1,49 @@
-# docs/design — the reference designs
+# docs/design
 
-The top-level `README.md` is the design, the status and the handover; these files are the
-reference designs it derives from, kept verbatim because the code cites them by section.
-Where the README and one of them disagree, the rows decide.
+The design of GraphChecker as the code on `main` implements it. Each document describes the
+present only; what is done, partial or missing is in [../STATUS.md](../STATUS.md), and dated
+experiment records are in [../reports/](../reports/). Where a document and the code disagree,
+the code is right and the document is fixed.
 
-| file | what it is | cited by |
-| --- | --- | --- |
-| `DESIGN4-FAULTS-INPUTS-ITERATION.md` | the current design (2026-09-23): fault points at the transport doors, symbolic inputs, the growth loop, CONFIRM, the nearest-world rule (§3.7) | `plan`, `explore`, `compose`, `runtime` |
-| `LEAN-DESIGN.md` | the fixed one-page design frame (declared roots, in-JVM propagation, one flip per replay, edges joined in the SMT, fail closed) | DESIGN4, README §2 |
-| `IDENTITY-V3.md`, `IDENTITY-IMPL.md`, `IDENTITY-V2.md` | the occurrence identity: causal context, hierarchical execution index, endpoints, the scope-base rule | `runtime/Identity`, `Lineage`, `RowPublication` |
-| `INTERACTION-ID.md` | one interaction, two endpoints (the pairing of an attach with its producer) | `runtime`, `smt/Arms` |
-| `CLOSURE-V2.md` | the target slice, the recursive closure, the symbolic frontier | `explore/ClosurePlanner`, `causynth` |
-| `CONTRACT-SPEC.md` | the row and gap contract (its package names predate the current tree; the row semantics stand) | `contract`, `RowInvariants` |
+| document | what it covers |
+| --- | --- |
+| [PIPELINE.md](PIPELINE.md) | The campaign, stage by stage: SEED, PLAN, INSTRUMENT, REPLAY, IMPORT, EXPLORE, COMPOSE, DECIDE, CONFIRM and EMIT, as `run_engine.sh` and the Java stages run them. |
+| [SYMBOL-SCOPE.md](SYMBOL-SCOPE.md) | Which values become symbolic, and why. |
+| [IDENTITY.md](IDENTITY.md) | How an event is named the same way in every run. |
+| [CONTRACT-SPEC.md](CONTRACT-SPEC.md) | The rows a replay publishes and the rules they obey. |
+| [VM.md](VM.md) | The concolic JVM (OpenJDK 8 Zero) under `third_party/OpenJDK-Concolic-Execution-Engine`. |
 
-Paths inside these files may refer to a decommissioned host; read them as descriptions of what
-an artifact was. The schedule/attribution design (deterministic prefix, rest clock, the
-three-rule resolver) and the case-preparation rules are recorded in the README §6 and in
-`experiments/lib/README.md`.
+**PIPELINE.md.** For each stage: its inputs and outputs, its gates, and its refusals. It covers
+the claim kinds `ClaimPolicy` publishes, how `polarityDecides` is decided, what CONFIRM replays
+and holds, and what the acceptance harness (`experiments/accept`) requires on top of the claim.
+
+**SYMBOL-SCOPE.md.** The heuristic fatal slice (`causynth/SeedBackwardStaticAnalyzer`) and the
+static scope map built from it (`plan/StaticScopeMap`). The roots the engine mints: clocks by
+category (`causynth/RootCatalog`), fault markers at woven doors (`causynth/DoorWeave`), and READ
+placeholders. The shared state that is tracked and can be re-paired. Wire ports, both declared
+`WIRE_FLOW` rows and ports derived from protobuf. How scope growth works
+(`plan/ScopeFrontier`, `plan/ScopeGrowth`).
+
+**IDENTITY.md.** The occurrence address `(r, c, i)`: region, causal context (Anchor, Root or
+Lost) and execution index, and the scope-base rule. Endpoints and interaction ids, which pair a
+send with its receipt. Node attribution (`runtime/Attribution`) and the thread and queue
+lineage. The typed fault doors. The schedule: the `ScheduleEvent` kinds, and how
+`runtime/ScheduleLog` records and enforces the order.
+
+**CONTRACT-SPEC.md.** The session directory (`contract/SessionDir`): one file per row kind,
+`expressions.jsonl` and `schedule.jsonl`. The row shapes, which `contract/RowCodec` encodes and
+decodes. The IMPORT invariants checked by `contract/RowInvariants`. The gap registry
+(`contract/GapKind`, `GapClass`).
+
+**VM.md.** Covers:
+
+- what the interpreter propagates: operand, local and heap shadows, calls and reflection;
+- the library models (String, boxing, the modeled `java.util` containers, atomics);
+- per-location version logs for shared state (`sharedFieldVersions`), with INITIAL and UNOBSERVED
+  versions;
+- the natives and shapes the VM publishes to Java (`runtime/ConcolicVmBroker`);
+- export and attach of values;
+- the known limits: where a value moves without a hooked bytecode.
+
+**Reports.** `docs/reports/` holds dated experiment reports. They record what a run showed on
+the day it ran. They are not a description of the current code.
