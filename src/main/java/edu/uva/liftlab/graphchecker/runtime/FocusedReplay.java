@@ -647,6 +647,18 @@ public final class FocusedReplay {
         }
     }
 
+    /** Whether this replay confirms a claim: it was handed an obligation that
+     *  flips nothing ({@link Obligation#confirming}). */
+    static boolean confirming() {
+        load();
+        synchronized (LOCK) {
+            for (Obligation obligation : OBLIGATIONS) {
+                if (!obligation.flips()) return true;
+            }
+            return false;
+        }
+    }
+
     /** The obligations this replay was handed, by id, in the row's order. */
     public static List<String> obligationIds() {
         load();

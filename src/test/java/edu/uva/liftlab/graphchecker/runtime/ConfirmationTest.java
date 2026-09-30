@@ -45,15 +45,18 @@ public class ConfirmationTest {
         RowRuntime.resetForTests();
     }
 
-    /** Hands the replay a worker directory holding these two files. */
+    /** Hands the replay a worker directory holding these two files; null
+     *  edges writes none. */
     private void handed(String focusRow, List<String> edges)
             throws Exception {
-        Path worker = folder.newFolder("worker").toPath();
+        Path worker = folder.newFolder().toPath();
         Files.write(worker.resolve("focused_task.jsonl"),
                 focusRow.getBytes(StandardCharsets.UTF_8));
-        Files.write(worker.resolve(Confirmation.FILE),
-                (String.join("\n", edges) + "\n")
-                        .getBytes(StandardCharsets.UTF_8));
+        if (edges != null) {
+            Files.write(worker.resolve(Confirmation.FILE),
+                    (String.join("\n", edges) + "\n")
+                            .getBytes(StandardCharsets.UTF_8));
+        }
         Path plan = worker.resolve("execution_task_plan.jsonl");
         Files.write(plan, new byte[0]);
         System.setProperty(FocusedReplay.PLAN_PROPERTY, plan.toString());
@@ -163,6 +166,26 @@ public class ConfirmationTest {
                 + other.id()));
         assertTrue(close.get(1), close.get(1).contains(absent.id())
                 && close.get(1).endsWith("the run never read here"));
+    }
+
+    /** A CONFIRM run that cannot read the edges the model chose compared
+     *  none, so its close says so -- a half-written file or a missing one --
+     *  and the fatal alone confirms nothing (it used to, silently). */
+    @Test
+    public void aConfirmationWithoutItsEdgesIsAMismatch() throws Exception {
+        String confirming = "{\"taskId\":\"CONFIRM\",\"obligationId\":"
+                + "\"CONFIRM\",\"pathId\":\"p1\",\"flip\":null}\n";
+        handed(confirming, Arrays.asList("{\"kind\":\"WIRE\",\"consumer\""));
+        List<String> close = Confirmation.close();
+        assertEquals(close.toString(), 1, close.size());
+        assertTrue(close.get(0), close.get(0).startsWith("EDGES: ")
+                && close.get(0).contains("could not be read"));
+        reset();
+        handed(confirming, null);
+        close = Confirmation.close();
+        assertEquals(close.toString(), 1, close.size());
+        assertTrue(close.get(0), close.get(0).startsWith("EDGES: this CONFIRM"
+                + " run found no readable " + Confirmation.FILE));
     }
 
     /** The ORDER a CONFIRM run is held to: the reader's activation enters

@@ -36,7 +36,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  *
  * <p>WIRE is compared at the attach, where the producer is known; STATE at
  * the close, since a writer's log is read out after the read that saw it.
- * An expected consumer or reader that never ran is a mismatch too.</p>
+ * An expected consumer or reader that never ran is a mismatch too, and so is
+ * a CONFIRM run whose edges could not be read: it compared nothing, and the
+ * fatal alone confirms no model.</p>
  */
 public final class Confirmation {
     public static final String FILE = "expected_edges.jsonl";
@@ -82,6 +84,8 @@ public final class Confirmation {
     private static final Set<String> EXITED = new HashSet<String>();
     /** The order stalls: what the model ordered and this run could not. */
     private static final List<String> UNREALIZED = new ArrayList<String>();
+    /** Why this CONFIRM run's edges could not be read, or "". */
+    private static String unread = "";
     /** 0 not read yet, 1 no order, 2 an order is held; read per frame. */
     private static volatile int ordering;
 
@@ -174,8 +178,10 @@ public final class Confirmation {
     /** Every STATE and WIRE edge the run did not take, at the close. */
     static List<String> close() {
         List<String> mismatches = new ArrayList<String>();
-        if (!expected()) return mismatches;
+        boolean compared = expected();
         synchronized (LOCK) {
+            if (!unread.isEmpty()) mismatches.add(unread);
+            if (!compared) return mismatches;
             mismatches.addAll(UNREALIZED);
             for (Map.Entry<String, String> edge : WIRE.entrySet()) {
                 if (ATTACHED.containsKey(edge.getKey())) continue;
@@ -238,7 +244,16 @@ public final class Confirmation {
             // holds nothing.
             ordering = 1;
             Path file = FocusedReplay.workerFile(FILE);
-            if (file == null) return;
+            if (file == null) {
+                // Only a CONFIRM run is handed edges; one that finds none
+                // beside its focus row has nothing to compare.
+                if (FocusedReplay.confirming()) {
+                    unread = "EDGES: this CONFIRM run found no readable "
+                            + FILE + " in its worker directory, so no edge"
+                            + " the model chose was compared";
+                }
+                return;
+            }
             try {
                 for (JsonObject row : RowCodec.readJsonl(file)) {
                     String kind = optionalString(row, "kind");
@@ -263,10 +278,11 @@ public final class Confirmation {
                     // MARKER and ANCHOR are checked elsewhere.
                 }
             } catch (IOException | RuntimeException unreadable) {
-                // Trap: an unreadable file compares nothing and files no
-                // gap; only this log line says so.
-                System.err.println("Causynth could not read " + file + ": "
-                        + unreadable);
+                // Half a file is no model: compare nothing, and say so at
+                // the close, where it confirms nothing.
+                unread = "EDGES: " + file + " could not be read ("
+                        + unreadable + "), so no edge the model chose was"
+                        + " compared";
                 WIRE.clear();
                 STATE.clear();
                 VERSION.clear();
@@ -284,6 +300,7 @@ public final class Confirmation {
             BEFORE.clear();
             EXITED.clear();
             UNREALIZED.clear();
+            unread = "";
             WIRE.clear();
             STATE.clear();
             VERSION.clear();
