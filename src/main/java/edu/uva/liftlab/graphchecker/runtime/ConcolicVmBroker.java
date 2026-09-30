@@ -73,7 +73,7 @@ final class ConcolicVmBroker {
     private Method symbolizeWithPrefix;
     private Method symbolizeField;
     private Method symbolizeExactField;
-    private Method observeExactPrimitiveField;
+    private Method observeField;
     private Method getExpression;
     private Method getFieldExpression;
     private Method finishRegion;
@@ -189,16 +189,14 @@ final class ConcolicVmBroker {
     }
 
     /**
-     * Attaches the current value of one exact integral field as its concrete
-     * expression ({@code ConExpression}, not a symbolic input).  Its point:
-     * the VM versions only tracked locations, so without it a selected write
-     * site would publish nothing.  A REFERENCE cell the scope map tracks
-     * (SYMBOL-SCOPE F2) is refused here by name, and the caller files the
-     * gap: this observer takes an integral value only, and the VM would
-     * answer a reference with a warning no row states.
+     * Starts one tracked cell's version log at its current value, unless it
+     * already stands: an integral or wrapper's word, or a reference's
+     * identity (SYMBOL-SCOPE F2).  Its point: the VM versions only tracked
+     * locations, so without it a selected write site would publish nothing.
+     * A status the VM refuses with (a float or double field is
+     * {@code UNSUPPORTED_TARGET}) is thrown by name, for the caller's gap.
      */
-    void observeExactPrimitiveField(Object owner, String fieldSignature)
-            throws Exception {
+    void observeField(Object owner, String fieldSignature) throws Exception {
         DeclaredField field = FieldPathSpec.declaredField(
                 safe(fieldSignature));
         if (field == null) {
@@ -206,15 +204,14 @@ final class ConcolicVmBroker {
                     "no exact declared field for observed leaf: "
                             + safe(fieldSignature));
         }
-        if (JavaPrimitiveSmtSemantics.domainOfJavaType(field.type())
-                == null) {
-            throw new UnsupportedOperationException(
-                    "REFERENCE_OBSERVATION_UNSUPPORTED: the VM observes an"
-                            + " integral field only, and "
-                            + safe(fieldSignature) + " holds a reference");
-        }
-        observeExactPrimitiveField.invoke(null, owner, field.owner(),
+        Object status = observeField.invoke(null, owner, field.owner(),
                 field.name(), javaTypeDescriptor(field.type()));
+        long answered = status instanceof Number
+                ? ((Number) status).longValue() : MALFORMED_RESULT;
+        if (answered != OK) {
+            throw new IllegalStateException(statusName(answered)
+                    + ": the VM did not observe " + safe(fieldSignature));
+        }
     }
 
     String expression(Object value) throws Exception {
@@ -336,9 +333,8 @@ final class ConcolicVmBroker {
         api.symbolizeExactField = method(system, "symbolizeExactField",
                 Object.class, String.class, String.class, String.class,
                 String.class);
-        api.observeExactPrimitiveField = method(system,
-                "observeExactPrimitiveField", Object.class, String.class,
-                String.class, String.class);
+        api.observeField = method(system, "observeField", Object.class,
+                String.class, String.class, String.class);
         api.getExpression = method(system, "getSymbolicExpression",
                 Object.class);
         api.getFieldExpression = method(system,

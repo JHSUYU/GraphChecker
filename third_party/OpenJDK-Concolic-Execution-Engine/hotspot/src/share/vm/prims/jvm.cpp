@@ -76,6 +76,7 @@
 #include "utilities/top.hpp"
 #include "utilities/utf8.hpp"
 
+#include "concolic/heapCopy.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/expressionBroker.hpp"
 #ifdef TARGET_OS_FAMILY_linux
@@ -473,15 +474,16 @@ JVM_ENTRY(void, JVM_SymbolizeExactField(
 #endif
 JVM_END
 
-JVM_ENTRY(void, JVM_ObserveExactPrimitiveField(
+JVM_ENTRY(jint, JVM_ObserveField(
     JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
     jstring field_name, jstring descriptor))
-  JVMWrapper("JVM_ObserveExactPrimitiveField");
+  JVMWrapper("JVM_ObserveField");
 #ifdef ENABLE_CONCOLIC
+  // A missing argument is a status the caller files, not a VM abort: the
+  // woven site passes what the scope map named.
   if (owner == NULL || declaring_class == NULL || field_name == NULL
       || descriptor == NULL) {
-    guarantee(false,
-        "JVM_ObserveExactPrimitiveField: arguments must be non-null");
+    return ExpressionBroker::HANDOFF_MISSING_METADATA;
   }
   HandleMark hm;
   ResourceMark rm(THREAD);
@@ -492,10 +494,9 @@ JVM_ENTRY(void, JVM_ObserveExactPrimitiveField(
       JNIHandles::resolve_non_null(field_name));
   const char *type = java_lang_String::as_utf8_string(
       JNIHandles::resolve_non_null(descriptor));
-  ConcolicMngr::observeExactPrimitiveField(
-      field_owner, holder, name, type);
+  return ConcolicMngr::observeField(field_owner, holder, name, type);
 #else
-  return;
+  return 0;
 #endif
 JVM_END
 
@@ -510,8 +511,17 @@ JVM_ENTRY(void, JVM_ArrayCopy(JNIEnv *env, jclass ignored, jobject src, jint src
   arrayOop d = arrayOop(JNIHandles::resolve_non_null(dst));
   assert(s->is_oop(), "JVM_ArrayCopy: src not an oop");
   assert(d->is_oop(), "JVM_ArrayCopy: dst not an oop");
+#ifdef ENABLE_CONCOLIC
+  // No bytecode moves these values, so the copy moves their shadows and the
+  // destination's versions (concolic/heapCopy.hpp).
+  HeapCopy::ArrayCopy concolic_copy;
+  HeapCopy::before_array_copy(&concolic_copy, s, src_pos, d, dst_pos, length);
+#endif
   // Do copy
   s->klass()->copy_array(s, src_pos, d, dst_pos, length, thread);
+#ifdef ENABLE_CONCOLIC
+  HeapCopy::after_array_copy(&concolic_copy, thread->has_pending_exception());
+#endif
 JVM_END
 
 JVM_ENTRY(jstring, JVM_GetPcStr(JNIEnv *env, jclass ignored))
@@ -787,34 +797,17 @@ JVM_ENTRY(jlong, JVM_ArmSharedPrimitiveFieldRead(
     JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
     jstring field_name, jstring descriptor, jlong value_bits))
   JVMWrapper("JVM_ArmSharedPrimitiveFieldRead");
-#ifdef ENABLE_CONCOLIC
-  HandleMark hm;
-  ResourceMark rm(THREAD);
-  Handle field_owner(THREAD, JNIHandles::resolve(owner));
-  const char *holder = declaring_class == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(declaring_class));
-  const char *name = field_name == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(field_name));
-  const char *type = descriptor == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(descriptor));
-  return ConcolicMngr::armSharedPrimitiveFieldRead(
-      field_owner, holder, name, type, value_bits);
-#else
-  return -1;
-#endif
+  // The replay read override is gone (its last engine caller was removed by
+  // fb44b17c6); the entry stays only because the JDK library binds it.  -4
+  // is the refusal it always gave an unsupported read.
+  return -4;
 JVM_END
 
 JVM_ENTRY(jlong, JVM_ConfirmSharedPrimitiveFieldRead(
     JNIEnv *env, jclass ignored, jlong token))
   JVMWrapper("JVM_ConfirmSharedPrimitiveFieldRead");
-#ifdef ENABLE_CONCOLIC
-  return ConcolicMngr::confirmSharedPrimitiveFieldRead(token);
-#else
-  return -1;
-#endif
+  // See JVM_ArmSharedPrimitiveFieldRead: -7 names an unknown receipt.
+  return -7;
 JVM_END
 
 JVM_ENTRY(jstring, JVM_GetTrackedLocationVersions(
@@ -1301,6 +1294,11 @@ JVM_ENTRY(jobject, JVM_Clone(JNIEnv* env, jobject handle))
                                (size_t)align_object_size(size) / HeapWordsPerLong);
   // Clear the header
   new_obj_oop->init_mark();
+#ifdef ENABLE_CONCOLIC
+  // The copy took the original's session identity word with its fields: the
+  // clone is another object, and gets one of its own (HeapCopy::cloned).
+  new_obj_oop->set_sym_rid(NULL_SYM_RID);
+#endif
 
   // Store check (mark entire object and let gc sort it out)
   BarrierSet* bs = Universe::heap()->barrier_set();
@@ -1314,6 +1312,9 @@ JVM_ENTRY(jobject, JVM_Clone(JNIEnv* env, jobject handle))
   }
 
   Handle new_obj(THREAD, new_obj_oop);
+#ifdef ENABLE_CONCOLIC
+  HeapCopy::cloned(obj(), new_obj());
+#endif
   // Special handling for MemberNames.  Since they contain Method* metadata, they
   // must be registered so that RedefineClasses can fix metadata contained in them.
   if (java_lang_invoke_MemberName::is_instance(new_obj()) &&

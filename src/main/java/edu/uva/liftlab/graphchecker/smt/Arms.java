@@ -129,12 +129,13 @@ public final class Arms {
         private final Set<String> guardRoots;
         private final boolean attested;
         private final Set<String> nested;
+        private final WriteRow write;
 
         Arm(String slotId, String symbol, String sessionId,
             OccurrenceAddress producer, long deliveredAt,
             String producerPathId, String expressionRef, List<String> pi,
             Map<String, String> guard, Set<String> guardRoots,
-            boolean attested, Set<String> nested) {
+            boolean attested, Set<String> nested, WriteRow write) {
             this.slotId = slotId;
             this.symbol = symbol;
             this.sessionId = sessionId;
@@ -147,6 +148,7 @@ public final class Arms {
             this.guardRoots = Collections.unmodifiableSet(guardRoots);
             this.attested = attested;
             this.nested = Collections.unmodifiableSet(nested);
+            this.write = write;
         }
 
         /** The slot (interaction id) this arm fills. */
@@ -215,6 +217,11 @@ public final class Arms {
             return nested;
         }
 
+        /** The write a STATE arm delivers; null for a wire arm. */
+        public WriteRow write() {
+            return write;
+        }
+
         @Override
         public String toString() {
             return (attested ? "arm " : "unattested arm ") + slotId + " of "
@@ -263,7 +270,7 @@ public final class Arms {
                 if (!export.sessionId().equals(session)) continue;
                 Arm arm = arm(slot.id(), symbol, session,
                         slot.producer().occurrence(), export.expressionRef(),
-                        export.seq());
+                        export.seq(), null);
                 if (arm != null) arms.add(arm);
             }
         }
@@ -345,9 +352,15 @@ public final class Arms {
      * @param session        the reader's own session: eligibility is its
      *                       happens-before and no other run's
      * @param location       the join key of L
+     * @param alternatives   false when a writer the log never named had
+     *                       reached L when it was read
+     *                       ({@code ReadRow#unnamedWriter}): the read keeps
+     *                       the observed writer only, since the writers the
+     *                       log states are not all the writers there were
      */
     public List<Arm> stateArms(Endpoint readerEndpoint, String session,
-                               String location, long observedVersion) {
+                               String location, long observedVersion,
+                               boolean alternatives) {
         OccurrenceAddress reader = readerEndpoint.occurrence();
         // One arm per writer occurrence: the observed write, else the
         // block's last write of L.
@@ -365,11 +378,14 @@ public final class Arms {
         for (WriteRow write : armOf.values()) {
             OccurrenceAddress writer = write.endpoint().occurrence();
             boolean observed = write.version() == observedVersion;
-            if (!observed && !concurrent(reader, writer, session)) continue;
+            if (!observed && (!alternatives
+                    || !concurrent(reader, writer, session))) {
+                continue;
+            }
             Arm arm = arm(Interaction.of(InteractionKind.STATE,
                             write.endpoint(), readerEndpoint).id(),
                     "", session, writer, write.expressionRef(),
-                    write.seq());
+                    write.seq(), write);
             if (arm == null) continue;
             // An alternative must be attested; the observed writer is stated
             // whatever it is, because it is what the run did.
@@ -489,7 +505,7 @@ public final class Arms {
 
     private Arm arm(String slotId, String symbol, String session,
                     OccurrenceAddress producer, String expressionRef,
-                    long deliveredAt) {
+                    long deliveredAt, WriteRow write) {
         JsonObject expression = rows.expression(session, expressionRef);
         if (expression == null) return null;
         List<DecisionRow> decisions = rows.decisionsOf(session, producer);
@@ -538,7 +554,8 @@ public final class Arms {
         }
         return new Arm(slotId, symbol, session, producer, deliveredAt,
                 attested ? rows.pathIdOf(session, producer) : "",
-                expressionRef, pi, guard, guardRoots, attested, nested);
+                expressionRef, pi, guard, guardRoots, attested, nested,
+                write);
     }
 
     /**

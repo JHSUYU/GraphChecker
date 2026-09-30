@@ -22,6 +22,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Constraint independence (KLEE's) over one closure's conditions and reads:
@@ -83,13 +84,17 @@ public final class Independence {
      * What {@code seedTerms}, the roots and the variables a family binds
      * ({@code bound}: symbols, and {@link #location}s) rest on among these
      * conditions and reads of one session.  A family moves what it binds,
-     * so a condition over it is not the recording's to satisfy.
+     * so a condition over it is not the recording's to satisfy.  A read
+     * kept brings the decisions the referent its write stored was built
+     * under ({@code built}, R3-REFCONT §1.6): the value rests on them though
+     * no variable of theirs is in it.
      */
     static Independence of(Corpus corpus, String session,
                            Collection<String> seedTerms,
                            Collection<String> bound,
                            List<DecisionRow> conditions,
-                           List<ReadRow> readRows) {
+                           List<ReadRow> readRows,
+                           Function<ReadRow, List<DecisionRow>> built) {
         Set<String> seeds = new LinkedHashSet<String>(bound);
         for (String term : seedTerms) {
             seeds.addAll(termLeaves(corpus, session, term));
@@ -97,7 +102,7 @@ public final class Independence {
         for (RootMintRow root : corpus.session(session).roots()) {
             seeds.add(root.symbol());
         }
-        return closure(corpus, session, seeds, conditions, readRows);
+        return closure(corpus, session, seeds, conditions, readRows, built);
     }
 
     /**
@@ -111,13 +116,16 @@ public final class Independence {
                                        List<DecisionRow> conditions,
                                        List<ReadRow> readRows) {
         return closure(corpus, session,
-                termLeaves(corpus, session, guard), conditions, readRows);
+                termLeaves(corpus, session, guard), conditions, readRows,
+                read -> Collections.<DecisionRow>emptyList());
     }
 
     private static Independence closure(Corpus corpus, String session,
                                         Set<String> seeds,
                                         List<DecisionRow> conditions,
-                                        List<ReadRow> readRows) {
+                                        List<ReadRow> readRows,
+                                        Function<ReadRow, List<DecisionRow>>
+                                                built) {
         Independence kept = new Independence();
         Set<String> variables = kept.variables;
         variables.addAll(seeds);
@@ -151,6 +159,10 @@ public final class Independence {
                 if (!shares(read.getValue(), variables)) continue;
                 kept.reads.add(read.getKey().seq());
                 variables.addAll(read.getValue());
+                for (DecisionRow decision : built.apply(read.getKey())) {
+                    variables.addAll(termLeaves(corpus, session,
+                            Arms.conjunct(decision)));
+                }
                 byRead.remove(read.getKey());
                 grew = true;
             }

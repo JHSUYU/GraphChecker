@@ -691,7 +691,7 @@ public class RowRuntimeTest {
                 Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
                         "getAndIncrement", "()I", 12, true),
                 location, 125L, rmwExpression(), "",
-                "Caller.body()#u9@1");
+                "Caller.body()#u9@1", null, null);
         // A String method's result states no type of its own, and its
         // operands' are not its own: a concat is a String (f4 visible-gs:
         // java.io.File.path's version published no row, and the path that
@@ -706,7 +706,7 @@ public class RowRuntimeTest {
                 Endpoint.stateSite("java.io.File", "<init>",
                         "(Ljava/lang/String;)V", 4, true),
                 LocationId.of(LocationKind.INSTANCE, "49", "32"), 127L,
-                concat, "", "Caller.body()#u9@1");
+                concat, "", "Caller.body()#u9@1", null, null);
         // A null stored into a tracked reference field states no class, and
         // is a reference write all the same (17960 v64: a diff's cleared
         // posteriorDiff published no row, and the path reading it was
@@ -716,7 +716,7 @@ public class RowRuntimeTest {
                         true),
                 LocationId.of(LocationKind.INSTANCE, "6", "40"), 126L,
                 nullExpression(), "",
-                "Caller.body()#u9@1");
+                "Caller.body()#u9@1", null, null);
         RowRuntime.read(occurrence, 14L,
                 Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
                         "get", "()I", 2, false),
@@ -726,7 +726,7 @@ public class RowRuntimeTest {
                 "(Ljava/lang/Object;Z)Z", 34, true);
         RowRuntime.write(occurrence, 16L, waits,
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6254L,
-                rmwExpression(), "", "Caller.body()#u9@1");
+                rmwExpression(), "", "Caller.body()#u9@1", null, null);
         RowRuntime.read(occurrence, 16L, waits,
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6253L, "w",
                 "I", "1", "", ReadRow.UNKNOWN_VERSION);
@@ -1026,6 +1026,55 @@ public class RowRuntimeTest {
             assertEquals(Arrays.toString(each), each[4],
                     !said.contains("names no writer case"));
         }
+    }
+
+    /**
+     * A reference write's container state, or why none is stated, rides on
+     * a WRITE or RMW of a field or element only: at most one of the two, a
+     * state naming an older MAP_STATE version, a refusal naming its reason.
+     */
+    @Test
+    public void aReferenceWriteStatesAnOlderContainerStateOrWhyNot()
+            throws Exception {
+        java.lang.reflect.Method fault = SharedStateCapture.class
+                .getDeclaredMethod("versionFault", JsonObject.class,
+                        boolean.class, java.util.Set.class);
+        fault.setAccessible(true);
+        JsonObject older = referent(49L);
+        for (Object[] each : new Object[][]{
+                {"WRITE", false, older, null, true},
+                {"RMW", false, null, "RESIZING", true},
+                {"WRITE", false, referent(50L), null, false},
+                {"WRITE", false, older, "RESIZING", false},
+                {"WRITE", false, null, " ", false},
+                {"INITIAL", false, older, null, false},
+                {"STATE_PUT", true, older, null, false}}) {
+            JsonObject version = new JsonObject();
+            version.addProperty("fieldVersionId", 50L);
+            version.addProperty("versionKind", (String) each[0]);
+            version.add("pathGuard", com.google.gson.JsonNull.INSTANCE);
+            version.add("expression", rmwExpression());
+            if (each[2] != null) {
+                version.add("referentState", (JsonObject) each[2]);
+            }
+            if (each[3] != null) {
+                version.addProperty("referentStateRefused", (String) each[3]);
+            }
+            String said = (String) fault.invoke(null, version, each[1],
+                    new java.util.HashSet<Object>());
+            assertEquals(Arrays.toString(each) + ": " + said, each[4],
+                    !said.contains("referent"));
+        }
+    }
+
+    /** A MAP_STATE version as a reference version names it. */
+    private static JsonObject referent(long version) {
+        JsonObject state = new JsonObject();
+        state.addProperty("ownerSymRid", 1234L);
+        state.addProperty("slot", -3);
+        state.addProperty("locationKind", "MAP_STATE");
+        state.addProperty("fieldVersionId", version);
+        return state;
     }
 
     /** One tracked location, as the VM's read-out states it. */
@@ -2135,7 +2184,7 @@ public class RowRuntimeTest {
                             + ".AtomicInteger", "getAndIncrement", "()I", 12,
                             true), LocationId.of(LocationKind.INSTANCE, "22",
                             "24"), version++, chain, "",
-                    "Caller.body()#u9@1");
+                    "Caller.body()#u9@1", null, null);
         }
         RowRuntime.closeSession();
         List<WriteRow> writes = RowCodec.readAll(session().writes(),

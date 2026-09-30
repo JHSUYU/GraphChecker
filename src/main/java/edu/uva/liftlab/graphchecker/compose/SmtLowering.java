@@ -12,10 +12,12 @@ import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
@@ -39,6 +41,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiPredicate;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
@@ -136,6 +139,14 @@ public final class SmtLowering {
          * composition opened.
          */
         boolean repaired(String locationKey);
+
+        /**
+         * Whether a writer occurrence of this session may have run before a
+         * reader in another schedule of it: HB-concurrent
+         * ({@code Arms#concurrent}); never in a join no composition opened.
+         */
+        boolean concurrent(OccurrenceAddress reader,
+                           OccurrenceAddress writer);
     }
 
     /** The join of no session: it states nothing. */
@@ -174,14 +185,23 @@ public final class SmtLowering {
         public boolean repaired(String locationKey) {
             return false;
         }
+
+        @Override
+        public boolean concurrent(OccurrenceAddress reader,
+                                  OccurrenceAddress writer) {
+            return false;
+        }
     };
 
     /**
      * The same join, where a STATE family may re-pair the reads of these
-     * locations (the anchor's, {@code Composer}).
+     * locations (the anchor's, {@code Composer}), and where this session's
+     * occurrences are ordered as {@code concurrent} says.
      */
     public static SessionJoin repairing(final SessionJoin join,
-                                        final Set<String> locations) {
+                                        final Set<String> locations,
+                                        final BiPredicate<OccurrenceAddress,
+                                                OccurrenceAddress> concurrent) {
         return new SessionJoin() {
             @Override
             public JsonElement writeExpression(String locationKey,
@@ -218,6 +238,12 @@ public final class SmtLowering {
             public boolean repaired(String locationKey) {
                 return locations.contains(locationKey)
                         || join.repaired(locationKey);
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return concurrent.test(reader, writer);
             }
         };
     }
@@ -283,6 +309,13 @@ public final class SmtLowering {
     /** {@code session|location|class} -> {@link #candidates}. */
     private final Map<String, Map<Long, Candidate>> candidates =
             new HashMap<String, Map<Long, Candidate>>();
+    /**
+     * {@code session|read symbol|version of the store} -> what the nested
+     * selectors of the object that store delivers may choose
+     * ({@link #storeChoice}).
+     */
+    private final Map<String, Set<String>> storeChoices =
+            new HashMap<String, Set<String>>();
     private final Set<String> integralDomains = new LinkedHashSet<String>();
     private boolean usesJavaIntString;
 
@@ -488,6 +521,12 @@ public final class SmtLowering {
             public boolean repaired(String locationKey) {
                 return false;
             }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return false;
+            }
         };
     }
 
@@ -594,9 +633,21 @@ public final class SmtLowering {
         JsonObject expression = reference == null ? null
                 : expressions.expression(reference);
         if (expression == null) return null;
-        Term value = dispatch(expression, null, origin);
+        Term value = dispatch(expression, whole(expression, null), origin);
         sideCondition(value.precondition);
         return value;
+    }
+
+    /**
+     * The sort a WHOLE value is asked at -- one a write stored, a read
+     * joins or a row publishes: an object the VM named is the reference it
+     * is, whatever its class; any other value the sort its reader expects.
+     * An operator asks for its own operands, and a named container there
+     * is its state, as its class's sort says.
+     */
+    static Sort whole(JsonElement value, Sort expected) {
+        return named(value) && (expected == null
+                || !expected.containerState()) ? Sort.REF : expected;
     }
 
     /**
@@ -1038,7 +1089,11 @@ public final class SmtLowering {
             return Term.of("true", Sort.BOOL);
         }
         String javaType = primitiveString(expression, "_java_type");
-        Sort sort = leafSort(javaType, expected);
+        // An object the VM named, asked as a reference, is its identity
+        // whatever its class ({@link #whole}).
+        Sort sort = expected == Sort.REF
+                && VmRows.referencedObjectRid(raw) > 0L
+                ? Sort.REF : leafSort(javaType, expected);
         if (sort == null) sort = Sort.REF;
         Declared held = declarations.get(raw);
         if (held != null && held.stated) {
@@ -1410,9 +1465,9 @@ public final class SmtLowering {
                 new Binder<Term>() {
             @Override
             public Term join(JsonElement value) {
-                return observing(element(dispatch(value, expected,
-                        origin + ":join"), expression, location, key,
-                        version, expected), key, version);
+                return observing(element(dispatch(value, whole(value,
+                        expected), origin + ":join"), expression, location,
+                        key, version, expected), key, version);
             }
 
             @Override
@@ -1540,7 +1595,7 @@ public final class SmtLowering {
         if (string != null) return Term.nonNullString(quote(string), "true");
         if (VmExpressionIr.SYMBOLIC_NULL.equals(text)
                 || VmRows.referencedObjectRid(text) > 0L) {
-            return symbolTerm(symbolNode(text, javaType), null);
+            return symbolTerm(symbolNode(text, javaType), Sort.REF);
         }
         Sort sort = JavaSmtSorts.sortOfJava(javaType);
         String literal = sort == Sort.BOOL
@@ -1643,19 +1698,10 @@ public final class SmtLowering {
     private ContainerSmtCodec.Term projection(JsonObject access,
                                               ContainerSmtCodec.Term cell,
                                               String origin) {
-        JsonElement found = access.get("owner");
-        while (VmExpressionIr.consumerBoundary(found)) {
-            found = found.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
-        }
-        if (!VmRows.GUARDED_READ_TYPE.equals(VmExpressionIr.typeOf(found))) {
-            return cell;
-        }
-        JsonObject read = found.getAsJsonObject();
-        String key = locationKey(JsonFields.object(read, "location"));
-        Set<String> named = join.readSymbols(key, recordedVersion(read));
-        String owner = named.size() == 1 ? named.iterator().next() : "";
-        if (!movable.contains(scope + SEPARATOR + owner)) return cell;
-        Term asked = symbolTerm(symbolNode(owner, "L"), Sort.REF);
+        ReadRow read = movableOwner(access);
+        if (read == null) return cell;
+        String key = locationKey(read.location());
+        Term asked = symbolTerm(symbolNode(read.symbol(), "L"), Sort.REF);
         String ownerClass = optionalString(access, "ownerClass");
         JsonObject own = asked.sort == Sort.REF
                 ? ownObject(access, ownerClass) : null;
@@ -1685,6 +1731,34 @@ public final class SmtLowering {
         }
         return new ContainerSmtCodec.Term(perCandidate(asked.text, answers),
                 cell.sort, cell.integralWidth);
+    }
+
+    /** The member a node names the reference it was reached through by. */
+    private static final String OWNER = "owner";
+
+    /**
+     * The row of the read a node's {@code owner} is, when a STATE family may
+     * re-point it ({@link #movable}), else null: then what is asked through
+     * it is asked of the run's own object.
+     */
+    private ReadRow movableOwner(JsonObject node) {
+        JsonElement found = node.get(OWNER);
+        while (VmExpressionIr.consumerBoundary(found)) {
+            found = found.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+        }
+        if (!VmRows.GUARDED_READ_TYPE.equals(VmExpressionIr.typeOf(found))) {
+            return null;
+        }
+        JsonObject read = found.getAsJsonObject();
+        String key = locationKey(JsonFields.object(read, "location"));
+        Set<String> named = join.readSymbols(key,
+                VmRows.recordedVersion(read));
+        String symbol = named.size() == 1 ? named.iterator().next() : "";
+        if (!movable.contains(scope + SEPARATOR + symbol)) return null;
+        for (ReadRow row : join.reads(key)) {
+            if (symbol.equals(row.symbol())) return row;
+        }
+        return null;
     }
 
     /**
@@ -1744,51 +1818,67 @@ public final class SmtLowering {
 
     /**
      * One object a re-pointable owner may be: its identity as the VM spells
-     * it, and the seq of the first write of the owner's location that
-     * reaches it ({@link #candidates}).
+     * it, the seq of the first write of the owner's location that reaches
+     * it, and the writes that stored this very object, none when only a
+     * read inside a write reaches it ({@link #candidates}).
      */
     private static final class Candidate {
         private final JsonObject spelling;
         private final long firstStored;
+        private final List<WriteRow> stores;
 
-        private Candidate(JsonObject spelling, long firstStored) {
+        private Candidate(JsonObject spelling, long firstStored,
+                          List<WriteRow> stores) {
             this.spelling = spelling;
             this.firstStored = firstStored;
+            this.stores = stores;
         }
     }
 
     /**
-     * C(r) of a read of one location (R3-REFCONT §1.3): the objects of one
-     * class this session's writes of the location reach, by rid, with the
-     * first write reaching each.  A write reaches what its expression names
-     * and, through each read in it, what the write that read observed
-     * names: a superset of what it stored, so no first store is later than
-     * the true one.  Walked in seq order over one walked set, a node is
-     * credited to the first write reaching it.
+     * C(r) of a read of one location (R3-REFCONT §1.3): the objects this
+     * session's writes of the location reach, of one class or ({@code
+     * null}) any, by rid, with the first write reaching each.  A write
+     * reaches what its expression names and, through each read in it, what
+     * the write that read observed names: a superset of what it stored, so
+     * no first store is later than the true one.  Walked in seq order over
+     * one walked set, a node is credited to the first write reaching it.
      */
     private Map<Long, Candidate> candidates(String key, String ownerClass) {
         return candidates.computeIfAbsent(scope + SEPARATOR + key
                 + SEPARATOR + ownerClass, unused -> {
-            String spelled = "M_L'" + ownerClass + "'_";
-            Map<Long, Candidate> found = new LinkedHashMap<Long, Candidate>();
+            String spelled = ownerClass == null ? "M_L'"
+                    : "M_L'" + ownerClass + "'_";
+            Map<Long, JsonObject> spellings =
+                    new LinkedHashMap<Long, JsonObject>();
+            Map<Long, Long> first = new HashMap<Long, Long>();
+            Map<Long, List<WriteRow>> stored =
+                    new HashMap<Long, List<WriteRow>>();
             Set<JsonElement> walked = ExpressionWalk.identitySet();
             List<WriteRow> stores = new ArrayList<WriteRow>(join.writes(key));
             stores.sort(Comparator.comparingLong(WriteRow::seq));
             for (WriteRow store : stores) {
+                JsonElement value = join.writeExpression(key,
+                        store.version());
+                if (named(value)) {
+                    stored.computeIfAbsent(VmRows.referencedObjectRid(
+                            primitiveString(value.getAsJsonObject(),
+                                    "_exp")), rid -> new ArrayList<WriteRow>())
+                            .add(store);
+                }
                 Deque<JsonElement> roots = new ArrayDeque<JsonElement>();
-                roots.add(join.writeExpression(key, store.version()));
+                roots.add(value);
                 while (!roots.isEmpty()) {
                     for (ExpressionWalk walk = ExpressionWalk.of(roots.pop(),
                             walked); walk.hasNext(); ) {
                         JsonObject node = walk.next();
-                        String type = optionalString(node, "_type");
                         String raw = primitiveString(node, "_exp");
-                        long rid = VmRows.referencedObjectRid(raw);
-                        if (VmExpressionIr.SYMBOL_TYPE.equals(type)
-                                && rid > 0L && raw.startsWith(spelled)) {
-                            found.putIfAbsent(rid,
-                                    new Candidate(node, store.seq()));
-                        } else if (VmRows.GUARDED_READ_TYPE.equals(type)
+                        if (named(node) && raw.startsWith(spelled)) {
+                            long rid = VmRows.referencedObjectRid(raw);
+                            spellings.putIfAbsent(rid, node);
+                            first.putIfAbsent(rid, store.seq());
+                        } else if (VmRows.GUARDED_READ_TYPE.equals(
+                                optionalString(node, "_type"))
                                 && observedVersionExpression(node) == null) {
                             JsonElement written = join.writeExpression(
                                     locationKey(JsonFields.object(node,
@@ -1799,8 +1889,21 @@ public final class SmtLowering {
                     }
                 }
             }
+            Map<Long, Candidate> found = new LinkedHashMap<Long, Candidate>();
+            for (Map.Entry<Long, JsonObject> each : spellings.entrySet()) {
+                found.put(each.getKey(), new Candidate(each.getValue(),
+                        first.get(each.getKey()), stored.getOrDefault(
+                        each.getKey(), Collections.<WriteRow>emptyList())));
+            }
             return found;
         });
+    }
+
+    /** Whether a node is an object the VM named ({@code M_L'<class>'_<rid>}). */
+    static boolean named(JsonElement node) {
+        return VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(node))
+                && VmRows.referencedObjectRid(primitiveString(
+                node.getAsJsonObject(), "_exp")) > 0L;
     }
 
     /**
@@ -1860,9 +1963,255 @@ public final class SmtLowering {
         return versions.size() == 1 ? stated : null;
     }
 
+    /** A candidate whose container state no row states ({@link #answerOf}). */
+    private static final String REFERENT_STATE_UNSTATED =
+            "REFERENT_STATE_UNSTATED";
+    /** The relations that walk their receiver's state without changing it:
+     *  a query through one asks the state beneath. */
+    private static final Set<String> VIEWS = new LinkedHashSet<String>(
+            Arrays.asList("ITERATOR", "KEY_VIEW", "VALUE_VIEW", "ENTRY_VIEW",
+                    "NEXT", "ENTRY"));
+
     /**
-     * Each candidate object with no answer ({@link #fieldOf}), with why:
-     * the pairings delivering it are refused, not composed.
+     * THE MOVE of a container query (R3-REFCONT §1.1), a query's answer as
+     * {@link #projection} is a field's.  The relation answers over the
+     * state of the object its owner read returned.  Through an owner a STATE
+     * family may re-point ({@link #movable}) it is asked of the object the
+     * owner is ({@link #perCandidate}): the run's answer for the run's
+     * object, and for each other object a store of the owner's location
+     * stored, the same relation over that object's state as the reader
+     * could have seen it ({@link #answerOf}).  Through any other owner the
+     * answer is the run's.
+     */
+    private ContainerSmtCodec.Term query(JsonObject relation,
+                                         ContainerSmtCodec.Term own,
+                                         String origin) {
+        ReadRow read = movableOwner(relation);
+        if (read == null) return own;
+        String key = locationKey(read.location());
+        Term asked = symbolTerm(symbolNode(read.symbol(), "L"), Sort.REF);
+        JsonObject self = asked.sort == Sort.REF ? identityRead(key, read)
+                : null;
+        if (self == null) {
+            refuse(UNSTATED + ":OwnerCandidates:" + key, "a STATE family "
+                    + "may re-point this owner, and it is no reference "
+                    + "whose write or row names the object the run's read "
+                    + "returned (a container's own read names none), so "
+                    + "which objects it may be is not stated");
+            return own;
+        }
+        Map<String, Term> answers = new LinkedHashMap<String, Term>();
+        answers.put(symbolTerm(self, Sort.REF).text, Term.vm(own.text,
+                VmTermLowering.sortOfContainer(own.sort),
+                own.integralWidth));
+        long run = VmRows.referencedObjectRid(primitiveString(self, "_exp"));
+        for (Map.Entry<Long, Candidate> each
+                : candidates(key, null).entrySet()) {
+            Candidate candidate = each.getValue();
+            if (each.getKey() == run || candidate.stores.isEmpty()) continue;
+            Term answer = answerOf(relation, candidate, read, key, origin);
+            if (answer != null) {
+                answers.put(symbolTerm(candidate.spelling, Sort.REF).text,
+                        answer);
+            }
+        }
+        return new ContainerSmtCodec.Term(perCandidate(asked.text, answers),
+                own.sort, own.integralWidth);
+    }
+
+    /**
+     * The object a reference read returned: the identity the write it
+     * observed stored, else the one its row states; null when neither
+     * names an object.
+     */
+    private JsonObject identityRead(String key, ReadRow read) {
+        JsonElement written = join.writeExpression(key,
+                read.observedVersion());
+        if (named(written)) return written.getAsJsonObject();
+        return VmRows.referencedObjectRid(read.concreteValue()) > 0L
+                ? symbolNode(read.concreteValue(), read.javaType()) : null;
+    }
+
+    /**
+     * One other object's answer: the relation over each state of it the
+     * reader could have seen through any store of it ({@link #statesOf}),
+     * chosen among them by nested selectors when there are several, and
+     * each store's arm held to the states the reader could have seen
+     * through that store ({@link #storeChoice}).  An answer holds only where
+     * the owner is this object, so what its lowering requires is its own
+     * precondition, never the path's; a state that does not lower is no
+     * option.  A store that states no container state is no case, so the
+     * pairings delivering the object through it are refused, and named.
+     */
+    private Term answerOf(JsonObject relation, Candidate candidate,
+                          ReadRow read, String owner, String origin) {
+        String object = primitiveString(candidate.spelling, "_exp");
+        Map<Long, Term> options = new LinkedHashMap<Long, Term>();
+        Map<WriteRow, List<Long>> seen =
+                new LinkedHashMap<WriteRow, List<Long>>();
+        for (WriteRow store : candidate.stores) {
+            List<Long> versions = new ArrayList<Long>();
+            seen.put(store, versions);
+            String reason = store.referentStateRefused() != null
+                    ? store.referentStateRefused()
+                    : store.referentState() == null ? "NONE" : "";
+            if (reason.isEmpty()) {
+                String state = locationKey(store.referentState().location());
+                for (WriteRow version
+                        : statesOf(store.referentState(), read)) {
+                    if (!options.containsKey(version.version())) {
+                        JsonElement chain = join.writeExpression(state,
+                                version.version());
+                        if (chain == null || !chain.isJsonObject()) continue;
+                        Attempt<ContainerSmtCodec.Term> asked = attempting(
+                                () -> ContainerSmtCodec.term(asOf(relation,
+                                        chain.getAsJsonObject()),
+                                        host(origin)));
+                        if (!asked.lowered() || asked.value() == null) {
+                            continue;
+                        }
+                        options.put(version.version(), conditioned(asked));
+                    }
+                    versions.add(version.version());
+                }
+                if (versions.isEmpty()) reason = "UNLOWERED";
+            }
+            if (!reason.isEmpty()) {
+                top().candidateUnanswered.put(REFERENT_STATE_UNSTATED + ":"
+                        + reason + ":" + object + "@" + scope, "a STATE "
+                        + "family may re-point " + owner + " to this object"
+                        + " through a store at version " + store.version()
+                        + ", and no state of it answers the query ("
+                        + reason + "), so no pairing that delivers it "
+                        + "through that store is composed");
+            }
+        }
+        if (options.isEmpty()) return null;
+        // A nested selector per version, one per (read, object, version) so
+        // every query through this read sees the object at one version.
+        Map<Long, String> selectors = new LinkedHashMap<Long, String>();
+        if (options.size() > 1) {
+            for (Long version : options.keySet()) {
+                String selector = symbols.mint("nest__", scope + SEPARATOR
+                        + read.symbol() + SEPARATOR + object + SEPARATOR
+                        + version, 12);
+                declare(selector, Sort.BOOL);
+                selectors.put(version, selector);
+            }
+        }
+        for (Map.Entry<WriteRow, List<Long>> store : seen.entrySet()) {
+            List<String> allowed = new ArrayList<String>();
+            for (Long version : store.getValue()) {
+                allowed.add(selectors.getOrDefault(version, "true"));
+            }
+            storeChoices.computeIfAbsent(scope + SEPARATOR + read.symbol()
+                    + SEPARATOR + store.getKey().version(),
+                    unused -> new LinkedHashSet<String>())
+                    .add(VmTermLowering.or(allowed));
+        }
+        List<Long> versions = new ArrayList<Long>(options.keySet());
+        Term last = options.get(versions.get(versions.size() - 1));
+        if (selectors.isEmpty()) return last;
+        String value = last.text;
+        List<String> defined = new ArrayList<String>();
+        for (int index = versions.size() - 1; index >= 0; index--) {
+            Term answer = options.get(versions.get(index));
+            String selector = selectors.get(versions.get(index));
+            if (index < versions.size() - 1) {
+                value = "(ite " + selector + " " + answer.text + " " + value
+                        + ")";
+            }
+            defined.add(0, and(Arrays.asList(selector, answer.precondition)));
+        }
+        return Term.vm(value, last.sort, last.integralWidth)
+                .withPrecondition(and(Arrays.asList(Arms.exactlyOne(
+                        new ArrayList<String>(selectors.values())),
+                        VmTermLowering.or(defined))));
+    }
+
+    /**
+     * What a STATE family's arm delivering one store to a read holds the
+     * nested selectors of the stored object to: the states the reader could
+     * have seen through that store, ({@code false}) none, or {@code ""}
+     * when no query through the read asked another object's state.
+     */
+    public String storeChoice(String symbol, WriteRow store) {
+        Set<String> chosen = storeChoices.get(scope + SEPARATOR + symbol
+                + SEPARATOR + store.version());
+        return chosen == null ? ""
+                : and(new ArrayList<String>(chosen));
+    }
+
+    /**
+     * The versions of a stored container a reader could have seen
+     * (R3-REFCONT §1.4): of those from the one the store saw on, the one
+     * live at the read in this session's order (the store's own when every
+     * one came later), and each later one whose writer may have run before
+     * the reader in another schedule; none written after the read on its
+     * own thread or request.
+     */
+    private List<WriteRow> statesOf(WriteRow.Referent state, ReadRow read) {
+        List<WriteRow> versions = new ArrayList<WriteRow>();
+        for (WriteRow version : join.writes(locationKey(state.location()))) {
+            if (version.version() >= state.version()) versions.add(version);
+        }
+        versions.sort(Comparator.comparingLong(WriteRow::seq));
+        if (versions.isEmpty()
+                || versions.get(0).version() != state.version()) {
+            return Collections.<WriteRow>emptyList();
+        }
+        int live = 0;
+        while (live + 1 < versions.size()
+                && versions.get(live + 1).seq() < read.seq()) {
+            live++;
+        }
+        List<WriteRow> seen = new ArrayList<WriteRow>();
+        seen.add(versions.get(live));
+        for (WriteRow later : versions.subList(live + 1, versions.size())) {
+            if (join.concurrent(read.endpoint().occurrence(),
+                    later.endpoint().occurrence())) {
+                seen.add(later);
+            }
+        }
+        return seen;
+    }
+
+    /**
+     * The relation asked of another state: its receiver, beneath the views
+     * and iterators that walk it, is that state's chain, as the run's own
+     * receiver is its object's; no copy names the owner, so none of them is
+     * asked again.
+     */
+    private static JsonObject asOf(JsonObject relation, JsonObject state) {
+        JsonObject asked = JsonFields.shallowCopy(relation);
+        asked.remove(OWNER);
+        JsonElement receiver = relation.get("receiver");
+        asked.add("receiver", ContainerSmtCodec.handles(receiver)
+                && VIEWS.contains(optionalString(receiver.getAsJsonObject(),
+                "operation")) ? asOf(receiver.getAsJsonObject(), state)
+                : state);
+        return asked;
+    }
+
+    /**
+     * An attempt's value, what its lowering required conjoined as its own
+     * precondition instead of the open frame's; its gaps are kept.
+     */
+    private Term conditioned(Attempt<ContainerSmtCodec.Term> asked) {
+        List<String> required = new ArrayList<String>();
+        if (asked.raised != null) {
+            required.addAll(asked.raised.conditions);
+            top().gaps(asked.raised);
+        }
+        ContainerSmtCodec.Term value = asked.value();
+        return Term.vm(value.text, VmTermLowering.sortOfContainer(value.sort),
+                value.integralWidth).withPrecondition(and(required));
+    }
+
+    /**
+     * Each candidate object with no answer ({@link #fieldOf},
+     * {@link #answerOf}), with why: the pairings delivering it are refused,
+     * not composed.
      */
     public Map<String, String> candidateUnanswered() {
         return Collections.unmodifiableMap(root.candidateUnanswered);
@@ -1918,9 +2267,12 @@ public final class SmtLowering {
                     JsonElement identity, ContainerSmtCodec.Sort shape) {
                 Sort stateSort = shape == ContainerSmtCodec.Sort.INDEXED
                         ? Sort.ARRAY_VALUE : Sort.MAP;
-                Term reference = dispatch(identity, Sort.REF,
-                        origin + ":container-state");
-                if (reference.sort != Sort.REF) {
+                // An object the VM named is its own state's root; any other
+                // receiver is the reference it lowers to, whose state
+                // assoc_state_of names.
+                Term reference = named(identity) ? null : dispatch(identity,
+                        Sort.REF, origin + ":container-state");
+                if (reference == null || reference.sort != Sort.REF) {
                     if (identity != null && identity.isJsonObject()) {
                         String raw = primitiveString(
                                 identity.getAsJsonObject(), "_exp");
@@ -2004,6 +2356,28 @@ public final class SmtLowering {
             public ContainerSmtCodec.Term projection(
                     JsonObject access, ContainerSmtCodec.Term cell) {
                 return SmtLowering.this.projection(access, cell, origin);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term query(
+                    JsonObject relation, ContainerSmtCodec.Term answer) {
+                return SmtLowering.this.query(relation, answer, origin);
+            }
+
+            @Override
+            public JsonElement chain(JsonElement state) {
+                JsonElement found = state;
+                while (VmExpressionIr.consumerBoundary(found)) {
+                    found = found.getAsJsonObject().get(
+                            VmExpressionIr.EXPRESSION);
+                }
+                if (!VmRows.GUARDED_READ_TYPE.equals(
+                        VmExpressionIr.typeOf(found))) {
+                    return found;
+                }
+                JsonObject read = found.getAsJsonObject();
+                return join.writeExpression(locationKey(JsonFields.object(
+                        read, "location")), observedVersion(read));
             }
 
             @Override
@@ -2610,23 +2984,7 @@ public final class SmtLowering {
     }
 
     private static long observedVersion(JsonObject node) {
-        return VmRows.joinable(node) ? recordedVersion(node) : -1L;
-    }
-
-    /** The version a read node states it observed, joinable or not. */
-    private static long recordedVersion(JsonObject node) {
-        JsonElement observed = node.get(
-                VmRows.OBSERVED_VERSION);
-        if (observed == null || observed.isJsonNull()) return -1L;
-        if (observed.isJsonObject()) {
-            return optionalLongInteger(observed.getAsJsonObject(),
-                    "fieldVersionId", -1L);
-        }
-        try {
-            return observed.getAsLong();
-        } catch (RuntimeException notANumber) {
-            return -1L;
-        }
+        return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
     }
 
     /** What separates the parts of a minted name's identity. */
@@ -2746,9 +3104,18 @@ public final class SmtLowering {
         if (leftExpression == null || leftExpression.isJsonNull()) {
             return unary(expression, operator, origin);
         }
-        Term left = dispatch(leftExpression, null, origin + ":left");
-        Term right = dispatch(expression.get("_right"), left.sort,
-                origin + ":right");
+        // One operand is asked at the other's sort; a named object is the
+        // one asked, on either side (an identity beside a reference).
+        JsonElement rightExpression = expression.get("_right");
+        Term left;
+        Term right;
+        if (named(leftExpression) && !named(rightExpression)) {
+            right = dispatch(rightExpression, null, origin + ":right");
+            left = dispatch(leftExpression, right.sort, origin + ":left");
+        } else {
+            left = dispatch(leftExpression, null, origin + ":left");
+            right = dispatch(rightExpression, left.sort, origin + ":right");
+        }
         // A JVM reference comparison against the integer 0 is a null test.
         if (left.sort != right.sort && right.isZero()
                 && left.sort == Sort.REF) {

@@ -3,6 +3,7 @@
 
 #ifdef ENABLE_CONCOLIC
 
+#include "concolic/exp/containerExpression.hpp"
 #include "concolic/methodSymbolizer.hpp"
 #include "concolic/pathCondition.hpp"
 #include "concolic/reference/symbolicArray.hpp"
@@ -334,7 +335,8 @@ public:
   SymInstance *find_sym_inst(oop obj) const;
   bool requires_detached_object_shadow(oop obj) const;
 
-  SymArr *get_or_alloc_sym_array(arrayOop array, Expression *length_exp = NULL);
+  SymArr *get_or_alloc_sym_array(arrayOop array, Expression *length_exp = NULL,
+                                 bool named = false);
   SymArr *alloc_sym_array(arrayOop array, Expression *length_exp = NULL);
   SymArr *get_sym_array(sym_rid_t sym_rid);
   inline SymArr *get_sym_array(arrayOop array_obj) {
@@ -355,7 +357,8 @@ public:
   }
 
   void write_array_element(arrayOop array, int index,
-                           Expression *expression);
+                           Expression *expression,
+                           const ElementWord &word = ElementWord());
   Expression *track_container(oop container, const char *shape,
                               const std::string &prefix);
   Expression *container_state(oop container, const char *shape);

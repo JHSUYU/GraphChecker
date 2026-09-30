@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayDeque;
@@ -188,7 +189,10 @@ final class RowPublication {
                             id, true);
                     RowRuntime.write(performer, id, site, location, id,
                             written, "", LoggedEventSites.siteIndex(version,
-                                    locationKey, id, site, true));
+                                    locationKey, id, site, true),
+                            referent(version), optionalString(version,
+                                    SharedStateCapture
+                                            .REFERENT_STATE_REFUSED));
                 }
                 collect(expression, published, seen);
             }
@@ -196,6 +200,16 @@ final class RowPublication {
         for (JsonObject mapping : active.branchMappings) {
             collect(mapping.get("witness"), published, seen);
         }
+    }
+
+    /** The container state a reference version states it stored, or
+     *  null ({@link SharedStateCapture#REFERENT_STATE}). */
+    private static WriteRow.Referent referent(JsonObject version) {
+        JsonObject state = object(version, SharedStateCapture.REFERENT_STATE);
+        LocationId location = locationId(
+                SharedStateCapture.locationKeyOf(state));
+        return location == null ? null : WriteRow.Referent.of(location,
+                optionalLongInteger(state, "fieldVersionId", -1L));
     }
 
     /**
@@ -261,7 +275,7 @@ final class RowPublication {
             return;
         }
         publishRead(node, identity, locationKey, location, observed, event,
-                symbol, value);
+                symbol, value, VmRows.unnamedWriter(node));
     }
 
     /**
@@ -291,7 +305,7 @@ final class RowPublication {
         }
         // The row's location is the nested read's, so its version is too,
         // joinability included: the projection's own observedVersion states
-        // no writerSetComplete, and once VM f11 found a location incomplete
+        // no unnamedWriter, and once VM f11 found a location incomplete
         // the two spelled one read event as two rows (SOLR-18406 s48).
         long observed = versionOf(read);
         long event = eventOf(node);
@@ -314,7 +328,7 @@ final class RowPublication {
                     observed >= 0L ? "v" + observed : "e" + event);
         }
         publishRead(node, identity, locationKey, location, observed, event,
-                projected, stated);
+                projected, stated, VmRows.unnamedWriter(read));
     }
 
     /**
@@ -324,7 +338,7 @@ final class RowPublication {
     private static void publishRead(JsonObject node, String identity,
                                     String locationKey, LocationId location,
                                     long observed, long event, String symbol,
-                                    String value) {
+                                    String value, boolean unnamedWriter) {
         if (!RowRuntime.claimEvent("read", identity)) return;
         OccurrenceAddress performer = LoggedEventSites.performer(
                 node, locationKey, event, false);
@@ -335,7 +349,7 @@ final class RowPublication {
                 optionalString(node, "_java_type"), value,
                 LoggedEventSites.siteIndex(node, locationKey, event, site,
                         false),
-                ReadRow.UNKNOWN_VERSION);
+                ReadRow.UNKNOWN_VERSION, unnamedWriter);
     }
 
     /**
@@ -362,14 +376,7 @@ final class RowPublication {
 
     /** The version a node observed, or {@code -1}. */
     static long versionOf(JsonObject node) {
-        if (!VmRows.joinable(node)) return -1L;
-        JsonElement stated = node == null ? null : node.get("observedVersion");
-        if (stated == null) return -1L;
-        if (stated.isJsonObject()) {
-            return optionalLongInteger(stated.getAsJsonObject(),
-                    "fieldVersionId", -1L);
-        }
-        return stated.isJsonPrimitive() ? stated.getAsLong() : -1L;
+        return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
     }
 
     /** The VM event a node names, or {@code -1}. */

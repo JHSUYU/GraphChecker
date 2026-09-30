@@ -67,10 +67,12 @@ public final class RegionWrittenArrayScanSmoke {
         require(named == null && found == 2 && nonzero == 1,
                 "the scan read the wrong heap: " + found + "/" + nonzero);
         // Two probes and the three written buckets' conditions; the VM this
-        // replaces built a READ and an index constant per bucket.
+        // replaces built a READ and an index constant per bucket.  The two
+        // written buckets are tracked elements, whose reads state the
+        // referent they returned: a bound per written bucket, not per bucket.
         require(last - first < 64, "the scan built " + (last - first)
                 + " expressions over " + BUCKETS + " buckets");
-        require(after.length() - before.length() < 4096, "the scan "
+        require(after.length() - before.length() < 8192, "the scan "
                 + "constrained the path by " + (after.length()
                 - before.length()) + " characters");
         require(written.contains("WRITE_SOURCE")

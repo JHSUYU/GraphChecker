@@ -37,4 +37,17 @@ bool SymObj::has_sym_exp(int field_offset) {
   return _exps.find(field_offset) != _exps.end();
 }
 
+void SymObj::copy_fields_to(SymInstance *clone) const {
+  SymInstance::copy_fields_to(clone);
+  exp_map_t fields;
+  {
+    FieldLock guard(this);
+    fields = _exps;
+  }
+  for (exp_map_t::const_iterator it = fields.begin(); it != fields.end();
+       ++it) {
+    clone->set_sym_exp(it->first, it->second);
+  }
+}
+
 #endif

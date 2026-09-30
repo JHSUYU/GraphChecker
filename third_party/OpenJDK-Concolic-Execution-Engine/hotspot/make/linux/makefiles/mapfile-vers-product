@@ -263,7 +263,7 @@ SUNWprivate_1.1 {
                 JVM_Symbolize_prefix;
                 JVM_SymbolizeField;
                 JVM_SymbolizeExactField;
-                JVM_ObserveExactPrimitiveField;
+                JVM_ObserveField;
                 JVM_CurrentSymbolicEventId;
                 JVM_InstallGuardedStoreSites;
                 JVM_GetPcStr;

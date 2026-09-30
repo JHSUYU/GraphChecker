@@ -23,10 +23,12 @@ public final class ReadRow extends Value {
     private final String javaType;
     private final String concreteValue;
     private final long mintVersion;
+    private final boolean unnamedWriter;
 
     private ReadRow(String sessionId, long seq, Endpoint endpoint,
                     LocationId location, long observedVersion, String symbol,
-                    String javaType, String concreteValue, long mintVersion) {
+                    String javaType, String concreteValue, long mintVersion,
+                    boolean unnamedWriter) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.endpoint = endpoint;
@@ -36,6 +38,7 @@ public final class ReadRow extends Value {
         this.javaType = javaType;
         this.concreteValue = concreteValue;
         this.mintVersion = mintVersion;
+        this.unnamedWriter = unnamedWriter;
     }
 
     public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
@@ -51,13 +54,37 @@ public final class ReadRow extends Value {
                              LocationId location, long observedVersion,
                              String symbol, String javaType,
                              String concreteValue, long mintVersion) {
+        return of(sessionId, seq, endpoint, location, observedVersion, symbol,
+                javaType, concreteValue, mintVersion, false);
+    }
+
+    /** The same row, stating whether a writer the log never named reached
+     *  its location. */
+    public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
+                             LocationId location, long observedVersion,
+                             String symbol, String javaType,
+                             String concreteValue, long mintVersion,
+                             boolean unnamedWriter) {
         return new ReadRow(Fields.text(sessionId, "sessionId"),
                 Fields.nonNegative(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
                 Fields.required(location, "location"), observedVersion,
                 Fields.text(symbol, "symbol"),
                 Fields.text(javaType, "javaType"),
-                Fields.optional(concreteValue), mintVersion);
+                Fields.optional(concreteValue), mintVersion, unnamedWriter);
+    }
+
+    /**
+     * Whether a writer the VM's log never named reached this read's location
+     * when it read (the VM's {@code unnamedWriter}: an unhooked write, an
+     * uncaptured Unsafe write, an unmodeled container mutation).  The writers
+     * the log states are then not all the writers there were, so the read is
+     * paired with the one it observed and no other.  The version bound is not
+     * such a writer: every retained version is still a real, exact writer, so
+     * a hot field past it keeps its alternatives.
+     */
+    public boolean unnamedWriter() {
+        return unnamedWriter;
     }
 
     /**
@@ -110,8 +137,9 @@ public final class ReadRow extends Value {
      * What one read node states it returned, as {@link #concreteValue}
      * spells it: a scalar constant's payload ({@code Y_I_2} is {@code 2}), a
      * String as its JSON string literal -- quoted, so no content reads as a
-     * number or an identity -- and Java null as {@code N}.  Null when the
-     * node states nothing: it returned an identity, which no value pins.
+     * number or an identity -- Java null as {@code N}, and an object as the
+     * name of its identity ({@code M_L'<class>'_<rid>}), which a pin states
+     * the read equal to.  Null when the node states nothing.
      */
     public static String returned(JsonObject node) {
         JsonElement value = node == null ? null : node.get("concreteValue");
@@ -122,8 +150,16 @@ public final class ReadRow extends Value {
                     : null;
         }
         if (!value.isJsonObject()) return null;
+        // A String past the VM's bound states only its length: unstated,
+        // never a prefix to pin to.
+        if (VmExpressionIr.TRUNCATED_VALUE_TYPE.equals(
+                VmExpressionIr.typeOf(value))) {
+            return null;
+        }
         JsonElement constant = value.getAsJsonObject().get("_exp");
-        return constant == null || !constant.isJsonPrimitive() ? null
+        if (constant == null || !constant.isJsonPrimitive()) return null;
+        return VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(value))
+                ? constant.getAsString()
                 : VmExpressionIr.constantPayload(constant.getAsString());
     }
 
@@ -137,7 +173,8 @@ public final class ReadRow extends Value {
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, endpoint, location,
-                observedVersion, symbol, javaType, concreteValue, mintVersion};
+                observedVersion, symbol, javaType, concreteValue, mintVersion,
+                unnamedWriter};
     }
 
     @Override

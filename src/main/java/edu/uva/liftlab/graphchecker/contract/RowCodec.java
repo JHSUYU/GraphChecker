@@ -275,15 +275,35 @@ public final class RowCodec {
         json.addProperty("version", row.version());
         json.addProperty("expressionRef", row.expressionRef());
         json.addProperty(JAVA_TYPE, row.javaType());
+        if (row.referentState() != null) {
+            JsonObject referent = new JsonObject();
+            referent.add(LOCATION, writeLocation(
+                    row.referentState().location()));
+            referent.addProperty("version", row.referentState().version());
+            json.add(REFERENT_STATE, referent);
+        }
+        if (row.referentStateRefused() != null) {
+            json.addProperty(REFERENT_STATE_REFUSED,
+                    row.referentStateRefused());
+        }
         return json;
     }
 
     public static WriteRow readWrite(JsonObject json) {
+        JsonObject referent = optionalObject(json, REFERENT_STATE);
         return WriteRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readEndpoint(object(json, ENDPOINT)),
                 readLocation(object(json, LOCATION)), number(json, "version"),
-                string(json, "expressionRef"), string(json, JAVA_TYPE));
+                string(json, "expressionRef"), string(json, JAVA_TYPE),
+                referent == null ? null : WriteRow.Referent.of(
+                        readLocation(object(referent, LOCATION)),
+                        number(referent, "version")),
+                optionalString(json, REFERENT_STATE_REFUSED));
     }
+
+    private static final String REFERENT_STATE = "referentState";
+    private static final String REFERENT_STATE_REFUSED =
+            "referentStateRefused";
 
     public static JsonObject writeRead(ReadRow row) {
         JsonObject json = row(row.sessionId(), row.seq());
@@ -298,6 +318,10 @@ public final class RowCodec {
         if (row.concreteValue() != null) {
             json.addProperty("concreteValue", row.concreteValue());
         }
+        // Stated only when true, so every other read spells as it did.
+        if (row.unnamedWriter()) {
+            json.addProperty("unnamedWriter", true);
+        }
         return json;
     }
 
@@ -309,7 +333,9 @@ public final class RowCodec {
                 string(json, JAVA_TYPE),
                 optionalString(json, "concreteValue"),
                 json.has("mintVersion") ? number(json, "mintVersion")
-                        : ReadRow.UNKNOWN_VERSION);
+                        : ReadRow.UNKNOWN_VERSION,
+                json.has("unnamedWriter")
+                        && json.get("unnamedWriter").getAsBoolean());
     }
 
     public static JsonObject writeRootMint(RootMintRow row) {

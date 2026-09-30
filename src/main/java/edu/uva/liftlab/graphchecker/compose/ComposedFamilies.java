@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 
 import edu.uva.liftlab.graphchecker.contract.Arm;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -611,6 +612,12 @@ final class ComposedFamilies {
                 if (symbol == null || symbol.isEmpty()) continue;
                 lowering.declareStated(symbol, delivered.sort);
                 conjuncts.add("(= " + symbol + " " + delivered.text + ")");
+                // The states of the stored object the reader could have
+                // seen through this very store.
+                if (out.arm.write() != null) {
+                    conjuncts.add(lowering.storeChoice(symbol,
+                            out.arm.write()));
+                }
             }
             guards.putAll(out.arm.guard());
         }
@@ -654,10 +661,17 @@ final class ComposedFamilies {
                 }
             }
             composer.frameRefusals(session, reached.keySet(), local);
-            // What the delivered values and the handoffs a nested family
-            // binds rest on (Independence).
+            // What the delivered values, the decisions a delivered referent
+            // was built under, and the handoffs a nested family binds rest
+            // on (Independence).
             List<String> delivered = new ArrayList<String>();
-            for (Out out : outs) delivered.add(out.arm.expressionRef());
+            for (Out out : outs) {
+                delivered.add(out.arm.expressionRef());
+                for (DecisionRow built : composer.constructionGuards(session,
+                        out.arm.write())) {
+                    delivered.add(Arms.conjunct(built));
+                }
+            }
             Set<String> bound = new LinkedHashSet<String>();
             for (AttachRow attach : nestedAttaches(session, outs)) {
                 bound.add(attach.symbol());
@@ -931,9 +945,12 @@ final class ComposedFamilies {
             List<String> symbols = new ArrayList<String>();
             for (ReadRow read : reads) symbols.add(read.symbol());
             List<Arms.Arm> found = new ArrayList<Arms.Arm>();
+            // Every writer named: no read met a writer the log never named.
+            boolean named = true;
+            for (ReadRow read : reads) named &= !read.unnamedWriter();
             for (Arms.Arm arm : arms.stateArms(reads.get(0).endpoint(),
                     session, entry.getKey(),
-                    reads.get(0).observedVersion())) {
+                    reads.get(0).observedVersion(), named)) {
                 if (replacing.contains(arm.sessionId())) continue;
                 if (arm.producer() == null) continue;
                 // The OBSERVED writer is stated even if unattested.

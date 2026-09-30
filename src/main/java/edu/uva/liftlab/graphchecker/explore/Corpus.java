@@ -860,6 +860,12 @@ public final class Corpus implements Arms.Rows {
         return writesOn.all(occurrence.id());
     }
 
+    /** Every write ONE session made at this occurrence, in recorded order. */
+    public List<WriteRow> writesOn(String sessionId,
+                                   OccurrenceAddress occurrence) {
+        return writesOn.of(occurrence.id(), sessionId);
+    }
+
     /** Every export any session published at one occurrence. */
     public List<ExportRow> exportsOn(OccurrenceAddress occurrence) {
         return exportsOn.getOrDefault(occurrence.id(),

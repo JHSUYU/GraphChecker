@@ -179,6 +179,11 @@ completes after the witness is not published (`AT_WITNESS`). A stranded or late 
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
 name its symbols (IMPORT invariant 11).
 
+A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
+admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
+only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the
+identity it returned, which a read no write row states is pinned to.
+
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
 the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on the 0/1 a
@@ -193,7 +198,7 @@ test took its fatal arm. A reached target whose decision has no VM event id is a
 `campaign_import_session` requires every session to hold `activations, decisions, exports, attaches,
 writes, reads, roots, targets, gaps, schedule` `.jsonl` and a non-empty `expressions.jsonl`, and writes
 one `SESSION_CENSUS` row per (session, kind) to `session_census.jsonl`. `campaign_import_gate` then runs
-`contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-11,
+`contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-12,
 [CONTRACT-SPEC.md §2.6](CONTRACT-SPEC.md)) to `campaign_gaps.jsonl` and prints a summary; one BLOCKING
 violation fails IMPORT naming the first subject. The same gate runs after every EXPLORE wave (§7.9).
 
@@ -444,7 +449,12 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   of that version (a placeholder), else PIN to the value the row states, else REFUSE
   (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
   can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
-  dropped it raises nothing (no refusal, side condition or gap);
+  dropped it raises nothing (no refusal, side condition or gap); an object the VM named
+  (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a whole value is asked
+  (`SmtLowering#whole`: a join, a published expression, a stated value) or a reference is (a
+  comparison asks a named operand at the other's sort, on either side, `#binary`); an operator
+  asks for its own operands, and a named container there is its state, at its class's sort
+  (`Host#state`: that object's own state root, `container__`);
 - `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the
@@ -492,6 +502,57 @@ states at one version. A candidate with no such cell is no case, so the arms del
 refused, and it is named DIAGNOSTIC `CANDIDATE_UNANSWERED:<cell>@<session>`. EXPLORE lowers through
 the same rule; its owners are never movable (a joined reference read is inlined), so a projection
 there is the run's cell.
+
+**A container queried through a re-pointable owner** (`SmtLowering#query`, reached from the codec's
+`Host.query` for a relation stating `owner` whose answer is no state; a state is never selected,
+since an array-valued choice over lambda terms is outside what z3 decides). Through a movable owner
+(`#movableOwner`, the projection's own test) the query is asked of the object the owner is, by
+`perCandidate`: the run's answer for the object the owner read returned (its joined write's
+identity, else the one its row states), and for each other object a write of the owner's location
+stored (`candidates`, any class), the same relation over that object's state (`#answerOf`), its
+receiver beneath views and iterators replaced by the state's chain (`#asOf`). Through each write
+that stored it, that state is the write's `referentState` and the later versions of it the reader
+could have seen (`#statesOf`, R3-REFCONT §1.4): the version live at the read in session order (the
+store's own when every one came later), and each later one whose writer is HB-concurrent with the
+reader (`SessionJoin#concurrent`, `Arms#concurrent`); several are chosen among by nested selectors
+`nest__<digest>`, one per (read, object, version), exactly one where the owner is that object, and
+a family arm delivering one store holds them to the states seen through that store
+(`#storeChoice`, conjoined by `ComposedFamilies#producerBody`). An answer holds only where the
+owner is its object, so what its lowering requires is its case's precondition, never the path's. A
+store that states no state (`referentStateRefused`, none, or no version lowers) delivers no case,
+named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A movable owner that is no
+reference read (a map's own read, `outer.get(k).get(k2)`) names no candidates and refuses the path
+(`UNSTATED_VALUE:OwnerCandidates:<location>`). `ENTRY` is a view to walk through; as a value no
+`Value` spells it, and it is refused by name.
+
+**New map operations** (`ContainerSmtCodec`). `READ_OR_DEFAULT` (`getOrDefault`) is a read whose
+absent key answers the default. `PUT_ALL` (`putAll(m)`) puts, in the order m's chain put them, each
+key m's chain names above its exact empty base, where m holds it (`assoc_put_if`, the guard inside
+each component as `assoc_remove_if`'s); a source whose chain bounds no keys is refused by name
+(`ContainerRelation:ASSOCIATIVE:PUT_ALL:source-keys-unstated`), and a view over the result counts
+the source's keys. The presence and match conditions of `putIfAbsent`, `replace` and `remove(k, v)`
+are comparisons of a `READ` with null or the argument, lowered as any comparison.
+
+**Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
+container states its `referentState`; its referent rests on every decision its occurrence took
+before it at the guard sites of the mutations its method made on a container it then published
+(`StaticScopeMap#constructionGuards`, the scope map's `publishedFrom` write sites, carriers matched on
+the reference sort alone), those that skipped a mutation included. `Independence` keeps them: a kept
+read brings the guards of the write it observed, and an arm (`ComposedFamilies#producerBody`) seeds
+the guards of the writes it delivers (`Arms.Arm#write`); the closure then conjoins them in the
+polarity they took, and the reads they name are joined in turn. A decision whose condition is a
+REMOVE_IF guard of the referent's chain, or that guard's complement, stays free. `ComposeMain`
+reads the epoch's scope map (`--static-scope-map`, required; `run_engine.sh do_compose` passes it).
+
+**An owner kept to the run's pairing** (`Composer#pinnedOwners`): a location a STATE family may
+re-pair keeps the run's pairing (no family, no movable owner), named DIAGNOSTIC, when a reached
+occurrence's container version is a mutation naming as its `owner` a read of it
+(`OWNER_PINNED_BY_MUTATION:<location>@<session>`, R3-REFCONT C-4: another pairing would mutate an
+object no row records the mutation of), or when a store of it states or refuses a referent while
+the object it stored has no container log of its own in the session, a `Collections` wrapper or a
+view (`OWNER_PINNED_BY_WRAPPER:<location>@<session>`: a query through a wrapper reaches its map
+through a field no row records and names no owner, so it would be the run's map's answer whichever
+object the family delivered).
 
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint

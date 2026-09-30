@@ -348,6 +348,7 @@ ab_stage_compose() {
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" "${ab_jar}" \
     edu.uva.liftlab.graphchecker.compose.ComposeMain \
     --sessions "${dir}/iteration-0000/sessions" \
+    --static-scope-map "${ab_acc}/static_scope_map.jsonl" \
     --output "${dir}/final/candidate.smt2" \
     --manifest "${dir}/final/candidate_composition_manifest.json" \
     --solver-timeout-ms "$(ab_cfg solver_timeout_ms)" \

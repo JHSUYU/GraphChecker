@@ -12,6 +12,7 @@
 #include "concolic/exp/consumerBoundaryExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
 #include "concolic/globalSymbolicSession.hpp"
+#include "concolic/sessionSymbolicHeap.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicInstance.hpp"
@@ -19,8 +20,10 @@
 #include "concolic/utils.hpp"
 #include "memory/resourceArea.hpp"
 #include "oops/arrayKlass.hpp"
+#include "oops/cpCache.hpp"
 #include "oops/instanceKlass.hpp"
 #include "oops/objArrayOop.hpp"
+#include "oops/typeArrayOop.hpp"
 #include "runtime/fieldDescriptor.hpp"
 #include "utilities/ostream.hpp"
 #include "webridge/utils/rapidjson/stringbuffer.h"
@@ -28,112 +31,283 @@
 
 bool SharedFieldVersions::_open = false;
 SharedFieldVersions::SlotStore SharedFieldVersions::_slots;
-SharedFieldVersions::PendingReadStore
-    SharedFieldVersions::_pending_primitive_reads;
-SharedFieldVersions::ArmedTokenIndex SharedFieldVersions::_armed_read_tokens;
-SharedFieldVersions::ConsumedReadStore
-    SharedFieldVersions::_consumed_primitive_reads;
-// What one initial-snapshot offer answered, per canonical container id.
-// Guarded by _mutex and cleared with the session, like every other record
-// here: an offer's answer is a fact about one session's container.
-struct InitialSnapshotNote {
-  int answer;
-  int entries;
-  InitialSnapshotNote() : answer(0), entries(-1) {}
-  InitialSnapshotNote(int offer_answer, int member_count)
-      : answer(offer_answer), entries(member_count) {}
-};
 volatile int SharedFieldVersions::_carrier_count = 0;
+volatile int SharedFieldVersions::_guarded_store_count = 0;
 pthread_mutex_t SharedFieldVersions::_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+#define STRIPE_INIT_8 PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER, \
+  PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,                     \
+  PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,                     \
+  PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER
+pthread_mutex_t SharedFieldVersions::_stripes[SharedFieldVersions::STRIPES] = {
+  STRIPE_INIT_8, STRIPE_INIT_8, STRIPE_INIT_8, STRIPE_INIT_8,
+  STRIPE_INIT_8, STRIPE_INIT_8, STRIPE_INIT_8, STRIPE_INIT_8
+};
+#undef STRIPE_INIT_8
 
 namespace {
 
 // One location can retain many versions, each with a value and a path guard.
-// Expression::serialize bounds each root independently; this envelope bound
-// prevents those individually bounded roots from accumulating into one
-// unbounded native StringBuffer.
+// This envelope bound keeps individually bounded roots from accumulating
+// into one unbounded native StringBuffer.
 static const size_t MAX_VERSION_ENVELOPE_BYTES = 32u * 1024u * 1024u;
 
-/**
- * What this envelope actually costs so far.
- *
- * Inside an artifact scope a serialized root leaves a short reference in the
- * buffer and puts its whole DAG in the expression table, so the buffer size
- * alone is not the envelope size -- it is the small part of it.  Every budget
- * question below asks this instead.
- *
- * The budget is a stopping rule rather than a hard ceiling: a root already
- * serialized keeps its definitions, because dropping them would leave a
- * dangling reference in `versions`.  Overshoot is therefore bounded by the
- * last root admitted, and the envelope says it truncated.
- */
+// What an envelope costs so far: the buffer plus the table its references
+// will pull in.  A stopping rule, not a ceiling (see write_versions_envelope).
 size_t envelope_bytes(const rapidjson::StringBuffer &buffer,
                       VmExpressionArtifactScope &artifact) {
   return buffer.GetSize() + artifact.pending_table_size();
 }
 
-class VersionLock {
+class MapLock {
 public:
-  VersionLock(pthread_mutex_t *mutex) : _mutex(mutex) {
+  MapLock(pthread_mutex_t *mutex) : _mutex(mutex) {
     pthread_mutex_lock(_mutex);
   }
-  ~VersionLock() { pthread_mutex_unlock(_mutex); }
+  ~MapLock() { pthread_mutex_unlock(_mutex); }
 private:
   pthread_mutex_t *_mutex;
 };
 
 } // anonymous namespace
 
-#define VERSION_LOCK VersionLock version_guard(&_mutex)
+#define MAP_LOCK MapLock map_guard(&_mutex)
+
+// ---------------------------------------------------------------------------
+// Sessions, slots and stripes.
+// ---------------------------------------------------------------------------
 
 void SharedFieldVersions::open_session() {
-  VERSION_LOCK;
+  MAP_LOCK;
   guarantee(_slots.empty(), "versions outlived the previous session");
-  guarantee(_pending_primitive_reads.empty(),
-            "pending replay reads outlived the previous session");
-  guarantee(_armed_read_tokens.empty(),
-            "replay read receipts outlived the previous session");
-  guarantee(_consumed_primitive_reads.empty(),
-            "replay read receipts outlived the previous session");
   _carrier_count = 0;
   _open = true;
 }
 
 void SharedFieldVersions::close_session() {
-  VERSION_LOCK;
-  // Every Expression named here belongs to the session arena and is freed with
-  // it.  Dropping the records is exactly a decision to stop naming them.
-  _slots.clear();
-  _pending_primitive_reads.clear();
-  _armed_read_tokens.clear();
-  _consumed_primitive_reads.clear();
-  _carrier_count = 0;
-  _open = false;
+  // Every stripe, then the map: no thread may be inside a slot while the
+  // store is cleared.  Every Expression named here belongs to the session
+  // arena and is freed with it.
+  for (int stripe = 0; stripe < STRIPES; ++stripe) {
+    pthread_mutex_lock(&_stripes[stripe]);
+  }
+  {
+    MAP_LOCK;
+    _slots.clear();
+    _carrier_count = 0;
+    _open = false;
+  }
+  for (int stripe = STRIPES - 1; stripe >= 0; --stripe) {
+    pthread_mutex_unlock(&_stripes[stripe]);
+  }
 }
 
-SharedFieldVersions::Slot *SharedFieldVersions::find_slot_locked(
+int SharedFieldVersions::stripe_of(const Location &location) {
+  julong hash = (julong) location.owner * UCONST64(0x9E3779B97F4A7C15);
+  hash ^= (julong)(juint) location.slot * UCONST64(0xC2B2AE3D27D4EB4F);
+  hash ^= (julong)(juint) location.kind;
+  hash ^= hash >> 29;
+  return (int)(hash % (julong) STRIPES);
+}
+
+void SharedFieldVersions::lock(const Location &location) {
+  pthread_mutex_lock(&_stripes[stripe_of(location)]);
+}
+
+void SharedFieldVersions::unlock(const Location &location) {
+  pthread_mutex_unlock(&_stripes[stripe_of(location)]);
+}
+
+void SharedFieldVersions::lock_stripes(const std::vector<int> &stripes) {
+  for (size_t index = 0; index < stripes.size(); ++index) {
+    pthread_mutex_lock(&_stripes[stripes[index]]);
+  }
+}
+
+void SharedFieldVersions::unlock_stripes(const std::vector<int> &stripes) {
+  for (size_t index = stripes.size(); index > 0; --index) {
+    pthread_mutex_unlock(&_stripes[stripes[index - 1]]);
+  }
+}
+
+SharedFieldVersions::Slot *SharedFieldVersions::find_slot(
     const Location &location) {
+  MAP_LOCK;
+  if (!_open) return NULL;
   SlotStore::iterator found = _slots.find(location);
   return found == _slots.end() ? NULL : &found->second;
 }
 
+SharedFieldVersions::Slot *SharedFieldVersions::find_or_create_slot(
+    const Location &location) {
+  MAP_LOCK;
+  if (!_open) return NULL;
+  // A std::map node never moves, so the pointer stays valid after the map
+  // lock is released; its contents are the stripe's.
+  Slot *slot = &_slots[location];
+  _carrier_count = (int) _slots.size();
+  return slot;
+}
+
 bool SharedFieldVersions::is_tracked(const Location &location) {
   if (!location.is_valid()) return false;
-  VERSION_LOCK;
+  MAP_LOCK;
   return _open && _slots.find(location) != _slots.end();
 }
 
-jlong SharedFieldVersions::publish_initial(const Location &location,
-                                           Expression *base,
-                                           const ConcreteBits &stored,
-                                           const InitialSnapshot &snapshot) {
-  if (!location.is_valid() || base == NULL) return 0;
-  if (is_tracked(location)) return 0;
-  // The base a later mutation extends.  Published as its own version so the
-  // log begins where the container did, which is what a relation chain stands
-  // on: without it the first PUT has no receiver a reader can resolve.
-  return publish(location, base, stored, NULL, VERSION_INITIAL, NULL, true,
-                 &snapshot);
+jlong SharedFieldVersions::append_locked(Slot *slot, Version *version) {
+  // Minted under the stripe: ids of one location ascend in log order, which
+  // is heap order.
+  version->version_id = GlobalSymbolicSession::next_event_id();
+  slot->versions.push_back(*version);
+  if (slot->versions.size() > MAX_VERSIONS_PER_LOCATION) {
+    // A dropped writer is a writer a later read can no longer name.
+    slot->versions.erase(slot->versions.begin());
+    incomplete_locked(slot, "VERSION_BOUND");
+  }
+  return version->version_id;
+}
+
+void SharedFieldVersions::incomplete_locked(Slot *slot, const char *reason) {
+  const std::string named(reason == NULL ? "UNSPECIFIED" : reason);
+  slot->writer_set_complete = false;
+  // Only the bound drops writers the log once named.
+  if (named != "VERSION_BOUND") slot->unnamed_writer = true;
+  if (slot->incomplete_reasons.size() < 8
+      && std::find(slot->incomplete_reasons.begin(),
+                   slot->incomplete_reasons.end(), named)
+         == slot->incomplete_reasons.end()) {
+    slot->incomplete_reasons.push_back(named);
+  }
+}
+
+SharedFieldVersions::Attribution SharedFieldVersions::current_attribution() {
+  Attribution who;
+  if (ConcolicMngr::ctx == NULL) return who;
+  who.context_id = ConcolicMngr::ctx->get_context_id();
+  who.region_id = ConcolicMngr::ctx->get_region_id();
+  who.task_id = ConcolicMngr::ctx->get_task_id();
+  who.region_enter_event_id = ConcolicMngr::ctx->region_enter_event();
+  who.site = current_site();
+  return who;
+}
+
+void SharedFieldVersions::fill_version(Version *version, const Store &store) {
+  version->version_kind = store.version_kind;
+  version->operation = store.operation;
+  version->writer = store.writer;
+  version->path_guard = store.path_guard;
+}
+
+// ---------------------------------------------------------------------------
+// Writes.
+// ---------------------------------------------------------------------------
+
+void SharedFieldVersions::prepare_store(Store *store,
+                                        const Location &location,
+                                        Expression *value,
+                                        Expression *path_guard, bool symbolic,
+                                        bool starts_log, int version_kind) {
+  store->location = location;
+  store->value = value;
+  store->path_guard = path_guard;
+  store->symbolic = symbolic;
+  store->starts_log = symbolic || starts_log;
+  store->version_kind = version_kind;
+}
+
+bool SharedFieldVersions::referent_state(const Location &location,
+                                         bool starts_log, oop referent,
+                                         ReferentState *out) {
+  *out = ReferentState();
+  // Only a store that will be versioned asks: asking starts a container's
+  // log, which a store nobody keeps must not do.
+  if (referent == NULL || !location.is_valid()
+      || (!starts_log && !is_tracked(location))) {
+    return false;
+  }
+  ContainerSupport::referent_state(referent, out);
+  return true;
+}
+
+void SharedFieldVersions::prepare_referent(Store *store, oop referent) {
+  store->referent_prepared = referent_state(
+      store->location, store->starts_log, referent, &store->referent);
+}
+
+bool SharedFieldVersions::begin_store_locked(Store *store, const Cell &cell) {
+  store->versioned = false;
+  store->reference_cell = cell.reference();
+  store->base_value = NULL;
+  store->base = ConcreteBits();
+  if (!store->location.is_valid()) return false;
+  const bool tracked = find_slot(store->location) != NULL;
+  if (!tracked && !store->starts_log) return false;
+  store->versioned = true;
+  store->writer = current_attribution();
+  if (tracked) return true;
+  // The log begins at the value this store replaces, read here, under the
+  // stripe, so no store can fall between it and this one.  Without it a
+  // reader whose writer's guard flipped would have no "the store did not
+  // happen" candidate.  A symbolic store keeps its old start: the value it
+  // stores is the first thing the log knows.
+  if (!store->symbolic && cell.holder != NULL) {
+    store->base = cell_word(store->location, cell);
+    store->base_value = cell_value(store->location, cell, store->base);
+  }
+  return true;
+}
+
+jlong SharedFieldVersions::end_store_locked(Store *store,
+                                            const ConcreteBits &given,
+                                            oop stored_reference) {
+  if (!store->versioned) return 0;
+  // A reference cell's word is its referent's id, whatever word the caller
+  // could state (an Unsafe put knows the oop, not the field's type).
+  const ConcreteBits stored = store->reference_cell
+      ? reference_word(stored_reference) : given;
+  Slot *slot = find_slot(store->location);
+  if (slot == NULL) {
+    slot = find_or_create_slot(store->location);
+    if (slot == NULL) return 0;
+    if (store->base_value != NULL) {
+      Version base;
+      base.version_kind = VERSION_INITIAL;
+      base.value = store->base_value;
+      base.stored = store->base;
+      if (base.stored.stated() && !base.stored.is_reference()) {
+        base.stored_constant = base.value;
+      }
+      append_locked(slot, &base);
+    }
+  }
+  Version version;
+  fill_version(&version, *store);
+  version.stored = stored;
+  if (store->value != NULL) {
+    version.value = store->value;
+  } else {
+    version.value = word_value(stored, stored_reference);
+    if (stored.stated() && !stored.is_reference()) {
+      version.stored_constant = version.value;
+    }
+  }
+  if (version.value == NULL) {
+    // A referent no session names: the write happened and says nothing.
+    incomplete_locked(slot, "UNNAMED_REFERENT");
+    return 0;
+  }
+  if (store->reference_cell && stored_reference != NULL) {
+    if (store->referent_prepared) {
+      version.referent = store->referent;
+    } else if (ContainerSupport::names_container(stored_reference)) {
+      // A container stored by a path that asks nothing before its lock (an
+      // arraycopy), or into a location that became tracked after the store
+      // asked: its state is not stated, and says why.
+      version.referent.refused = "STORE_NOT_PREPARED";
+    }
+  }
+  return append_locked(slot, &version);
 }
 
 jlong SharedFieldVersions::publish_value(const Location &location,
@@ -143,346 +317,324 @@ jlong SharedFieldVersions::publish_value(const Location &location,
                                          bool symbolic, int version_kind,
                                          const char *operation) {
   if (!location.is_valid() || value == NULL) return 0;
-  // A location no symbolic value has ever reached has nothing a reader could
-  // want back, and costs one lock-free counter read to dismiss: the store
-  // leaves it alone and it stays concrete.  Once one symbolic value has
-  // landed, every later store -- concrete ones included -- must be versioned,
-  // or a read would go on resolving to an expression the program has since
-  // overwritten.
-  // A concrete store is symbolic evidence too when it is control-dependent
-  // on a symbolic decision: the store happened BECAUSE a symbolic predicate
-  // came out one way, so what the location holds afterwards is a function of
-  // that predicate and a reader of it is reading a symbolic value.  HDFS-11741
-  // is the case that needs it: removeExpiredKeys() removes concrete, pre-
-  // recording keys from a concrete map under `expiryDate < now` where `now` is
-  // a declared CLOCK root, and the removal of the Balancer's key -- the causal
-  // crux -- left no version at all while only a symbolic *value* could start a
-  // log.  A non-empty path guard is exactly that condition, and the guard the
-  // version carries is the predicate it is a function of.
-  // Control dependence, not "after a branch": the store's own method must be
-  // one the plan says has control-dependent stores, and one of that method's
-  // guard branches must have decided something symbolic on this path.
-  const bool guarded = path_guard != NULL && guarded_store_admitted();
-  if (!symbolic && !guarded
-      && (!has_carriers() || !is_tracked(location))) {
-    return 0;
-  }
-  return publish(location, value, stored, path_guard, version_kind, operation,
-                 symbolic || guarded);
+  // A location no symbolic value has reached costs one counter read.
+  if (!symbolic && path_guard == NULL && !has_carriers()) return 0;
+  // A symbolic value starts the log; a guarded concrete publisher (a
+  // container mutation) decides that itself before calling here.
+  const bool starts_log = symbolic;
+  Store store;
+  prepare_store(&store, location, value, path_guard, symbolic, starts_log,
+                version_kind);
+  if (operation != NULL) store.operation = operation;
+  lock(location);
+  begin_store_locked(&store, Cell());
+  jlong id = end_store_locked(&store, stored, NULL);
+  unlock(location);
+  return id;
 }
 
-jlong SharedFieldVersions::publish(const Location &location, Expression *value,
-                                   const ConcreteBits &stored,
-                                   Expression *path_guard,
-                                   int version_kind,
-                                   const char *operation,
-                                   bool start_tracking,
-                                   const InitialSnapshot *snapshot) {
+jlong SharedFieldVersions::publish_held(const Location &location,
+                                        const Cell &cell, Expression *value,
+                                        Expression *path_guard,
+                                        int version_kind) {
   if (!location.is_valid() || value == NULL) return 0;
-
-  const bool named = operation != NULL && operation[0] != '\0';
-  jlong version_id = GlobalSymbolicSession::next_event_id();
-  Version version;
-  version.version_id = version_id;
-  version.version_kind = version_kind;
-  if (named) version.operation = operation;
-  version.value = value;
-  version.stored = stored;
-  version.path_guard = path_guard;
-  if (snapshot != NULL) {
-    version.initial_snapshot_present = snapshot->present();
-    version.initial_snapshot_entries = snapshot->entries;
-    version.initial_snapshot_truncated = snapshot->truncated;
-    version.initial_snapshot_unsupported_class = snapshot->unsupported_class;
-  }
-  if (ConcolicMngr::ctx != NULL) {
-    version.writer_context_id = ConcolicMngr::ctx->get_context_id();
-    version.region_id = ConcolicMngr::ctx->get_region_id();
-    version.task_id = ConcolicMngr::ctx->get_task_id();
-    version.region_enter_event_id =
-        ConcolicMngr::ctx->region_enter_event();
-    version.site = current_site();
-  }
-
-  VERSION_LOCK;
-  if (!_open) return 0;
-  Slot *slot = find_slot_locked(location);
-  if (slot == NULL) {
-    // The first symbolic value to reach this location starts its log.  A
-    // fresh Slot is complete by construction: nothing was written here before
-    // that a reader could be missing, because nothing symbolic was.
-    if (!start_tracking) return 0;
-    slot = &_slots[location];
-    _carrier_count = (int) _slots.size();
-  }
-  append_locked(slot, version);
-  return version_id;
+  Store store;
+  prepare_store(&store, location, value, path_guard, true, true,
+                version_kind);
+  lock(location);
+  begin_store_locked(&store, Cell());
+  // The word is the one the cell holds now: nothing can store between this
+  // read and the version, because a store takes the same stripe.
+  jlong id = end_store_locked(&store, cell_word(location, cell), NULL);
+  unlock(location);
+  return id;
 }
 
-void SharedFieldVersions::append_locked(Slot *slot, const Version &version) {
-  slot->versions.push_back(version);
-  if (slot->versions.size() > MAX_VERSIONS_PER_LOCATION) {
-    // A dropped writer is a writer a later read can no longer name.  Say so
-    // permanently rather than answering as if the set were still whole.
-    slot->versions.erase(slot->versions.begin());
-    slot->writer_set_complete = false;
+jlong SharedFieldVersions::publish_initial(const Location &location,
+                                           Expression *base,
+                                           const ConcreteBits &stored,
+                                           const InitialSnapshot &snapshot) {
+  if (!location.is_valid() || base == NULL) return 0;
+  Version version;
+  version.version_kind = VERSION_INITIAL;
+  version.value = base;
+  version.stored = stored;
+  version.initial_snapshot_present = snapshot.present();
+  version.initial_snapshot_stated = snapshot.stated;
+  version.initial_snapshot_entries = snapshot.entries;
+  version.initial_snapshot_truncated = snapshot.truncated;
+  version.initial_snapshot_unsupported_class = snapshot.unsupported_class;
+  version.writer = current_attribution();
+  lock(location);
+  jlong id = 0;
+  if (find_slot(location) == NULL) {
+    Slot *slot = find_or_create_slot(location);
+    if (slot != NULL) id = append_locked(slot, &version);
   }
+  unlock(location);
+  return id;
+}
+
+jlong SharedFieldVersions::publish_initial_held(const Location &location,
+                                                const Cell &cell,
+                                                Expression **base_out) {
+  if (base_out != NULL) *base_out = NULL;
+  if (!location.is_valid()) return 0;
+  Attribution writer = current_attribution();
+  lock(location);
+  jlong id = 0;
+  if (find_slot(location) == NULL) {
+    Version version;
+    version.version_kind = VERSION_INITIAL;
+    version.writer = writer;
+    version.stored = cell_word(location, cell);
+    version.value = cell_value(location, cell, version.stored);
+    if (version.stored.stated() && !version.stored.is_reference()) {
+      version.stored_constant = version.value;
+    }
+    Slot *slot = version.value == NULL ? NULL : find_or_create_slot(location);
+    if (slot != NULL) {
+      id = append_locked(slot, &version);
+      if (base_out != NULL) *base_out = version.value;
+    }
+  }
+  unlock(location);
+  return id;
+}
+
+bool SharedFieldVersions::mark_writer_set_incomplete_locked(
+    const Location &location, const char *reason) {
+  Slot *slot = find_slot(location);
+  if (slot == NULL) return false;
+  incomplete_locked(slot, reason);
+  return true;
 }
 
 bool SharedFieldVersions::mark_writer_set_incomplete(
-    const Location &location) {
+    const Location &location, const char *reason) {
   if (!location.is_valid()) return false;
-  VERSION_LOCK;
-  if (!_open) return false;
-  Slot *slot = find_slot_locked(location);
-  if (slot == NULL) return false;
-  slot->writer_set_complete = false;
+  lock(location);
+  bool marked = mark_writer_set_incomplete_locked(location, reason);
+  unlock(location);
+  return marked;
+}
+
+// ---------------------------------------------------------------------------
+// Reads.
+// ---------------------------------------------------------------------------
+
+void SharedFieldVersions::prepare_read(ReadPlan *plan) {
+  *plan = ReadPlan();
+  plan->reader = current_attribution();
+}
+
+bool SharedFieldVersions::plan_read_locked(const Location &location,
+                                           const ConcreteBits &loaded,
+                                           oop loaded_reference,
+                                           ReadPlan *plan) {
+  if (!location.is_valid()) return false;
+  Slot *slot = find_slot(location);
+  if (slot == NULL || slot->versions.empty()) return false;
+
+  // The last version is the newest, and under the stripe it is what the
+  // location held when this load ran -- unless the word says not.
+  size_t observed = slot->versions.size() - 1;
+  bool retained = false;
+  if (slot->versions[observed].stored.contradicts(loaded)) {
+    // A writer no hook saw came between (see the class comment).  A retained
+    // version that stored exactly this word is named, not joined: a newer
+    // hooked version overwrote it, so an unhooked writer put the word back.
+    // Else the loaded constant, published as that write.
+    incomplete_locked(slot, "UNOBSERVED_WRITE");
+    for (size_t index = observed; index > 0; --index) {
+      if (slot->versions[index - 1].stored.equals(loaded)) {
+        observed = index - 1;
+        retained = true;
+        break;
+      }
+    }
+    if (!retained) {
+      Version unobserved;
+      unobserved.version_kind = VERSION_UNOBSERVED;
+      unobserved.value = word_value(loaded, loaded_reference);
+      unobserved.stored = loaded;
+      if (!loaded.is_reference()) {
+        unobserved.stored_constant = unobserved.value;
+      }
+      append_locked(slot, &unobserved);
+      observed = slot->versions.size() - 1;
+    }
+  }
+
+  Version &version = slot->versions[observed];
+  plan->observed_exact = !retained && version.stored.equals(loaded);
+  if (plan->observed_exact && version.stored_constant == NULL) {
+    // Built once per version, for every read that returns its word: a
+    // scalar's constant, a reference's identity.
+    version.stored_constant = version.stored.is_reference()
+        ? identity_expression(loaded_reference)
+        : primitive_expression(version.stored.type, version.stored.bits);
+  }
+  plan->observed = version;
+  plan->writer_set_complete = slot->writer_set_complete;
+  plan->unnamed_writer = slot->unnamed_writer;
+  plan->read_event_id = GlobalSymbolicSession::next_event_id();
+
+  ReadRecord record;
+  record.read_event_id = plan->read_event_id;
+  record.reader = plan->reader;
+  slot->reads.push_back(record);
+  if (slot->reads.size() > MAX_READS_PER_LOCATION) {
+    slot->reads.erase(slot->reads.begin());
+    slot->read_log_complete = false;
+  }
   return true;
 }
 
 bool SharedFieldVersions::plan_read(const Location &location,
                                     const ConcreteBits &loaded,
                                     ReadPlan *plan) {
-  if (plan == NULL) return false;
-  *plan = ReadPlan();
-  if (!location.is_valid() || ConcolicMngr::ctx == NULL) return false;
-
-  // Versions are appended in publish order and their ids come from the one
-  // session counter, so the last one is the newest and is what the location
-  // held when this read ran -- unless the word the read loaded says not.
-  Version newest;
-  bool complete = true;
-  {
-    VERSION_LOCK;
-    Slot *slot = _open ? find_slot_locked(location) : NULL;
-    if (slot == NULL || slot->versions.empty()) return false;
-    newest = slot->versions.back();
-    complete = slot->writer_set_complete;
+  if (plan == NULL || !location.is_valid() || ConcolicMngr::ctx == NULL) {
+    return false;
   }
-
-  // The heap holds a word the newest version did not store, so a write no
-  // hook saw came between them (see the header: Solr's refCount).  It is
-  // stated as what it is -- the loaded constant, written by nobody the log
-  // can name -- rather than resolved to a version the heap no longer held.
-  // Built outside the lock, and minted before the read so that it precedes
-  // the read on the session clock.
-  const bool stale = newest.stored.contradicts(loaded);
-  Version unobserved;
-  if (stale) {
-    unobserved.version_id = GlobalSymbolicSession::next_event_id();
-    unobserved.version_kind = VERSION_UNOBSERVED;
-    unobserved.value = primitive_expression(loaded.type, loaded.bits);
-    unobserved.stored = loaded;
+  prepare_read(plan);
+  lock(location);
+  bool planned = plan_read_locked(location, loaded, NULL, plan);
+  unlock(location);
+  if (planned) {
+    // Reading tracked state is what makes this thread's branches relevant:
+    // by value, the read is the declaration (laneBJ's REGION.f0132fca).
+    ConcolicMngr::ctx->set_pc_admitted(true);
   }
+  return planned;
+}
 
-  // Reading tracked state is what makes this thread's branches relevant, so
-  // it is also what opens its path-condition gate.  The three carrier
-  // selectors used to do this -- on fresh selection and again on
-  // re-selection, which is how a later region declared "I am about to read a
-  // carrier this session retained" -- and they are gone with the carrier
-  // layer.  Without it a region that only reads records no conditions at all:
-  // record_path_condition() returns early on !_path_condition_admitted, so
-  // laneBJ's REGION.f0132fca published 0 symbolized inputs and bare
-  // decisions while bug3's serialNo survived only because its region also
-  // writes.  By value, the read is the declaration.
-  ConcolicMngr::ctx->set_pc_admitted(true);
-
-  plan->read_event_id = GlobalSymbolicSession::next_event_id();
-  plan->observed = stale ? unobserved : newest;
-  plan->writer_set_complete = complete && !stale;
-
-  plan->site = current_site();
-
-  ReadRecord record;
-  record.read_event_id = plan->read_event_id;
-  record.site = plan->site;
-  record.reader_context_id = ConcolicMngr::ctx->get_context_id();
-  record.region_id = ConcolicMngr::ctx->get_region_id();
-  record.task_id = ConcolicMngr::ctx->get_task_id();
-  record.region_enter_event_id = ConcolicMngr::ctx->region_enter_event();
-
-  VERSION_LOCK;
-  Slot *slot = find_slot_locked(location);
-  if (slot != NULL) {
-    if (stale) {
-      // A store's hook publishes after the concrete store, so this read may
-      // have loaded the word of a version that landed since the snapshot
-      // above.  Only a newest version that still disagrees makes the write
-      // unobserved.
-      if (slot->versions.back().stored.contradicts(loaded)) {
-        append_locked(slot, unobserved);
-        slot->writer_set_complete = false;
-      }
-      plan->observed = slot->versions.back();
-    }
-    plan->writer_set_complete = slot->writer_set_complete;
-    slot->reads.push_back(record);
-    if (slot->reads.size() > MAX_READS_PER_LOCATION) {
-      slot->reads.erase(slot->reads.begin());
-      slot->read_log_complete = false;
+Expression *SharedFieldVersions::newest_value_if_held(
+    const Location &location, const Cell &cell, Expression *held) {
+  if (!location.is_valid()) return NULL;
+  const ConcreteBits word = cell_word(location, cell);
+  lock(location);
+  Slot *slot = find_slot(location);
+  Expression *value = NULL;
+  if (slot != NULL && !slot->versions.empty()) {
+    const Version &newest = slot->versions.back();
+    if (word.stated() ? newest.stored.equals(word) : newest.value == held) {
+      value = newest.value;
     }
   }
-  return true;
+  unlock(location);
+  return value;
 }
 
 jlong SharedFieldVersions::live_version(const Location &location,
                                         std::string *version_kind) {
   if (version_kind != NULL) version_kind->clear();
   if (!location.is_valid()) return 0;
-  VERSION_LOCK;
-  if (!_open) return 0;
-  Slot *slot = find_slot_locked(location);
-  if (slot == NULL || slot->versions.empty()) return 0;
-  const Version &version = slot->versions.back();
-  if (version_kind != NULL) *version_kind = version_label(version);
-  return version.version_id;
+  lock(location);
+  Slot *slot = find_slot(location);
+  jlong id = 0;
+  if (slot != NULL && !slot->versions.empty()) {
+    const Version &version = slot->versions.back();
+    if (version_kind != NULL) *version_kind = version_label(version);
+    id = version.version_id;
+  }
+  unlock(location);
+  return id;
+}
+
+void SharedFieldVersions::tracked_elements(sym_rid_t owner, int from, int to,
+                                           std::vector<int> *slots) {
+  slots->clear();
+  if (owner == NULL_SYM_RID || from >= to || !has_carriers()) return;
+  MAP_LOCK;
+  if (!_open) return;
+  SlotStore::const_iterator it =
+      _slots.lower_bound(Location(owner, from, LOC_INSTANCE_FIELD));
+  for (; it != _slots.end() && it->first.owner == owner
+         && it->first.slot < to; ++it) {
+    if (it->first.kind == LOC_ARRAY_ELEMENT) {
+      slots->push_back(it->first.slot);
+    }
+  }
 }
 
 Expression *SharedFieldVersions::build_read_from(
     const ReadPlan &plan, const Location &location,
-    const std::string &type_name, Expression *observed_value) {
+    const std::string &type_name, Expression *observed_value,
+    const ReturnedValue &returned) {
   guarantee(observed_value != NULL,
             "a read-from needs the value of the version it observed");
   Expression *selection = new ReadFromExpression(
       plan.observed.version_id, version_label(plan.observed), observed_value,
       type_name, plan.read_event_id, location.owner, location.slot,
       location_kind_name(location.kind), plan.writer_set_complete,
-      plan.returned, plan.site.class_name, plan.site.method_name,
-      plan.site.method_descriptor, plan.site.bci);
+      plan.unnamed_writer, plan.observed_exact, returned,
+      plan.reader.site.class_name, plan.reader.site.method_name,
+      plan.reader.site.method_descriptor, plan.reader.site.bci);
   return new ConsumerBoundaryExpression(
       selection, type_name, ConsumerBoundaryExpression::FIELD_READ,
       plan.read_event_id);
 }
 
-bool SharedFieldVersions::resolve_read(
-    const Location &location, BasicType type, const ConcreteBits &loaded,
-    const ReturnedValue &returned, ReadResult *result) {
-  if (result == NULL) return false;
-  *result = ReadResult();
-
-  ReadPlan plan;
-  if (!plan_read(location, loaded, &plan)) return false;
-  plan.returned = returned;
-  // For a scalar location the observed value is the observed write's own.
-  result->expression = build_read_from(
-      plan, location, std::string(1, type2char(type)), plan.observed.value);
-  return true;
+Expression *SharedFieldVersions::scalar_read(const ReadPlan &plan,
+                                             const Location &location,
+                                             const std::string &type_name,
+                                             const ConcreteBits &loaded,
+                                             oop reference) {
+  ReturnedValue returned;
+  if (plan.observed_exact && plan.observed.stored_constant != NULL
+      && !plan.observed.stored.is_reference()) {
+    // The word the observed version stored: its constant, shared by every
+    // read that returned it.
+    returned.kind = ReturnedValue::CONSTANT;
+    returned.constant = plan.observed.stored_constant;
+  } else {
+    // A reference an exact read returned is its version's referent, whose
+    // identity node the version keeps.
+    returned = returned_value(loaded, reference,
+        plan.observed_exact ? plan.observed.stored_constant : NULL);
+  }
+  return build_read_from(plan, location, type_name, plan.observed.value,
+                         returned);
 }
 
-jlong SharedFieldVersions::arm_primitive_read(
-    jlong context_id, jlong region_enter_event_id, const Location &location,
-    BasicType type, jlong value_bits) {
-  if (context_id <= 0 || !location.is_valid()) {
-    return REPLAY_READ_NO_CONTEXT;
-  }
-  if (location.kind != LOC_INSTANCE_FIELD
-      || !(type == T_BOOLEAN || type == T_BYTE || type == T_CHAR
-           || type == T_SHORT || type == T_INT || type == T_LONG)) {
-    return REPLAY_READ_UNSUPPORTED;
-  }
-  // Receipt identity comes from the session's stable monotonic namespace.
-  // Allocate it before the versions leaf lock.
-  const jlong token = GlobalSymbolicSession::next_event_id();
-  PendingReadKey key(context_id, location);
-  VERSION_LOCK;
-  if (!_open || _slots.find(location) == _slots.end()) {
-    return REPLAY_READ_NOT_SELECTED;
-  }
-  if (_pending_primitive_reads.find(key)
-      != _pending_primitive_reads.end()) {
-    return REPLAY_READ_ALREADY_PENDING;
-  }
-  PendingPrimitiveRead read;
-  read.token = token;
-  read.region_enter_event_id = region_enter_event_id;
-  read.type = type;
-  read.value_bits = value_bits;
-  _pending_primitive_reads[key] = read;
-  _armed_read_tokens[token] = key;
-  return token;
-}
-
-bool SharedFieldVersions::consume_primitive_read(
-    jlong context_id, const Location &location, BasicType type,
-    jlong *value_bits) {
-  if (value_bits == NULL || context_id <= 0 || !location.is_valid()) {
-    return false;
-  }
-  PendingReadKey key(context_id, location);
-  VERSION_LOCK;
-  PendingReadStore::iterator found = _pending_primitive_reads.find(key);
-  if (!_open || found == _pending_primitive_reads.end()
-      || found->second.type != type) {
-    return false;
-  }
-  *value_bits = found->second.value_bits;
-  _consumed_primitive_reads[found->second.token] = context_id;
-  _armed_read_tokens.erase(found->second.token);
-  _pending_primitive_reads.erase(found);
-  return true;
-}
-
-jlong SharedFieldVersions::confirm_primitive_read(jlong context_id,
-                                                   jlong token) {
-  if (context_id <= 0) return REPLAY_READ_NO_CONTEXT;
-  if (token <= 0) return REPLAY_READ_UNKNOWN_TOKEN;
-  VERSION_LOCK;
-  ConsumedReadStore::iterator consumed =
-      _consumed_primitive_reads.find(token);
-  if (consumed != _consumed_primitive_reads.end()) {
-    if (consumed->second != context_id) return REPLAY_READ_WRONG_CONTEXT;
-    _consumed_primitive_reads.erase(consumed);
-    return 1;
-  }
-  ArmedTokenIndex::iterator armed = _armed_read_tokens.find(token);
-  if (armed == _armed_read_tokens.end()) return REPLAY_READ_UNKNOWN_TOKEN;
-  if (armed->second.context_id != context_id) {
-    return REPLAY_READ_WRONG_CONTEXT;
-  }
-  // Confirmation is the lifetime boundary for this one-shot request.  A
-  // read that never consumed it must not affect a later access.
-  _pending_primitive_reads.erase(armed->second);
-  _armed_read_tokens.erase(armed);
-  return REPLAY_READ_PENDING;
-}
-
-void SharedFieldVersions::discard_armed_reads(jlong context_id,
-                                              jlong region_enter_event_id) {
-  if (context_id <= 0) return;
-  VERSION_LOCK;
-  PendingReadStore::iterator pending = _pending_primitive_reads.begin();
-  while (pending != _pending_primitive_reads.end()) {
-    // Regions nest on one context: an inner region's close abandons what the
-    // inner region armed and leaves the enclosing region's arms pending.
-    // Zero is the context-wide purge that context teardown needs.
-    if (pending->first.context_id != context_id
-        || (region_enter_event_id > 0
-            && pending->second.region_enter_event_id
-               != region_enter_event_id)) {
-      ++pending;
-      continue;
+ReturnedValue SharedFieldVersions::returned_value(const ConcreteBits &word,
+                                                  oop reference,
+                                                  Expression *identity) {
+  ReturnedValue returned;
+  if (word.stated() && !word.is_reference()) {
+    returned.kind = ReturnedValue::CONSTANT;
+    returned.constant = primitive_expression(word.type, word.bits);
+  } else if (reference == NULL) {
+    returned.kind = ReturnedValue::NULL_REFERENCE;
+  } else if (reference->klass() == SystemDictionary::String_klass()) {
+    // Stated up to a bound, past which only its length is: a read of a
+    // configuration blob or a serialized message would otherwise put its
+    // whole content into every node that returned it.
+    const int length = java_lang_String::utf8_length(reference);
+    if (length >= 0 && (size_t) length > MAX_RETURNED_STRING_BYTES) {
+      returned.kind = ReturnedValue::TRUNCATED_STRING;
+      returned.length = length;
+    } else {
+      ResourceMark rm;
+      returned.kind = ReturnedValue::STRING;
+      returned.content = OopUtils::java_string_to_c(reference);
     }
-    _armed_read_tokens.erase(pending->second.token);
-    PendingReadStore::iterator abandoned = pending++;
-    _pending_primitive_reads.erase(abandoned);
+  } else if (word.is_reference()
+             && java_lang_boxing_object::basic_type(reference) == T_ILLEGAL) {
+    // What a reference cell held: its referent, pinned by identity.  A box
+    // in a cell that is not wrapper-typed keeps saying nothing, as before:
+    // its value is the wrapper cell's word, not an identity.
+    returned.kind = ReturnedValue::REFERENCE;
+    returned.constant = identity != NULL
+        ? identity : identity_expression(reference);
   }
+  return returned;
 }
 
-void SharedFieldVersions::forget_context(jlong context_id) {
-  if (context_id <= 0) return;
-  // The context itself is going away, so every region of it is over.
-  discard_armed_reads(context_id, 0);
-  VERSION_LOCK;
-  ConsumedReadStore::iterator consumed = _consumed_primitive_reads.begin();
-  while (consumed != _consumed_primitive_reads.end()) {
-    if (consumed->second != context_id) {
-      ++consumed;
-      continue;
-    }
-    ConsumedReadStore::iterator retired = consumed++;
-    _consumed_primitive_reads.erase(retired);
-  }
-}
+// ---------------------------------------------------------------------------
+// Words and constants.
+// ---------------------------------------------------------------------------
 
 Expression *SharedFieldVersions::primitive_expression(BasicType type,
                                                       jlong bits) {
@@ -503,37 +655,107 @@ Expression *SharedFieldVersions::primitive_expression(BasicType type,
       return new ConExpression(jfloat_cast((jint) bits));
     case T_DOUBLE:
       return new ConExpression(jdouble_cast(bits));
+    case T_OBJECT:
+      // The null word of a wrapper-typed cell.
+      return SymbolExpression::get(Sym_NULL);
     default:
       return NULL;
   }
 }
 
-ReturnedValue SharedFieldVersions::returned_value(const ConcreteBits &word,
-                                                  oop reference) {
-  ReturnedValue returned;
-  if (word.stated()) {
-    returned.kind = ReturnedValue::CONSTANT;
-    returned.constant = primitive_expression(word.type, word.bits);
-  } else if (reference == NULL) {
-    returned.kind = ReturnedValue::NULL_REFERENCE;
-  } else if (reference->klass() == SystemDictionary::String_klass()) {
-    ResourceMark rm;
-    returned.kind = ReturnedValue::STRING;
-    returned.content = OopUtils::java_string_to_c(reference);
+Expression *SharedFieldVersions::identity_expression(oop value) {
+  if (value == NULL) return SymbolExpression::get(Sym_NULL);
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
+  if (heap == NULL) return NULL;
+  // The spelling an owner identity has; named first so it states an id.
+  const sym_rid_t named = heap->name_reference(value);
+  if (named == NULL_SYM_RID) return new PlaceHolderSymbolExp(value);
+  return value->is_array()
+      ? static_cast<Expression *>(new ArraySymbolExp(named, 0, T_OBJECT))
+      : static_cast<Expression *>(new InstanceSymbolExp(value));
+}
+
+Expression *SharedFieldVersions::word_value(const ConcreteBits &word,
+                                            oop reference) {
+  return word.stated() && !word.is_reference()
+      ? primitive_expression(word.type, word.bits)
+      : reference_expression(reference);
+}
+
+SharedFieldVersions::ConcreteBits SharedFieldVersions::reference_word(
+    oop referent, bool boxed) {
+  if (boxed) return boxed_word(referent);
+  if (referent == NULL) return ConcreteBits(T_OBJECT, 0);
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
+  if (heap == NULL) return ConcreteBits();
+  return ConcreteBits(T_OBJECT, (jlong) heap->name_reference(referent));
+}
+
+Expression *SharedFieldVersions::reference_expression(oop value) {
+  if (value == NULL) return SymbolExpression::get(Sym_NULL);
+  // Prefers an existing shadow's identity and otherwise names the referent
+  // concretely; never an unconstrained symbol.  Answered from the session
+  // heap, so a thread outside every region names what it stores too (D4: a
+  // reference such a thread stored used to publish nothing, and readers kept
+  // the referent the heap no longer held).
+  if (GlobalSymbolicSession::heap() == NULL) return NULL;
+  return ContainerSupport::concrete_value(value);
+}
+
+SharedFieldVersions::ConcreteBits SharedFieldVersions::boxed_word(oop box) {
+  if (box == NULL) return ConcreteBits(T_OBJECT, 0);
+  jvalue value;
+  const BasicType type = java_lang_boxing_object::get_value(box, &value);
+  switch (type) {
+    case T_BOOLEAN: return ConcreteBits(type, raw_bits(value.z));
+    case T_BYTE:    return ConcreteBits(type, raw_bits(value.b));
+    case T_CHAR:    return ConcreteBits(type, raw_bits(value.c));
+    case T_SHORT:   return ConcreteBits(type, raw_bits(value.s));
+    case T_INT:     return ConcreteBits(type, raw_bits(value.i));
+    case T_LONG:    return ConcreteBits(type, raw_bits(value.j));
+    default:        return ConcreteBits();
   }
-  return returned;
+}
+
+BasicType SharedFieldVersions::wrapper_value_type(Symbol *signature) {
+  if (signature == NULL || signature->utf8_length() < 16) return T_ILLEGAL;
+  if (signature->equals("Ljava/lang/Long;")) return T_LONG;
+  if (signature->equals("Ljava/lang/Integer;")) return T_INT;
+  if (signature->equals("Ljava/lang/Boolean;")) return T_BOOLEAN;
+  if (signature->equals("Ljava/lang/Short;")) return T_SHORT;
+  if (signature->equals("Ljava/lang/Byte;")) return T_BYTE;
+  if (signature->equals("Ljava/lang/Character;")) return T_CHAR;
+  return T_ILLEGAL;
+}
+
+BasicType SharedFieldVersions::wrapper_value_type(
+    ConstantPoolCacheEntry *entry) {
+  if (entry == NULL || !entry->is_field_entry()) return T_ILLEGAL;
+  Klass *holder = entry->f1_as_klass();
+  if (holder == NULL || !holder->oop_is_instance()) return T_ILLEGAL;
+  return wrapper_value_type(
+      InstanceKlass::cast(holder)->field_signature(entry->field_index()));
+}
+
+bool SharedFieldVersions::wrapper_field_at(oop holder, jlong offset) {
+  if (holder == NULL || holder->is_array()) return false;
+  const bool mirror = holder->klass() == SystemDictionary::Class_klass();
+  Klass *klass = mirror ? java_lang_Class::as_Klass(holder) : holder->klass();
+  if (klass == NULL || !klass->oop_is_instance()) return false;
+  fieldDescriptor field;
+  // A lookup by offset: it walks the field streams and takes no lock.
+  return InstanceKlass::cast(klass)->find_field_from_offset(
+             (int) offset, mirror, &field)
+      && wrapper_value_type(field.signature()) != T_ILLEGAL;
 }
 
 Expression *SharedFieldVersions::field_value(oop owner, int field_offset,
                                              BasicType type) {
   if (owner == NULL) return NULL;
   if (type == T_OBJECT || type == T_ARRAY) {
-    // The identity of the object the field held, in the same spelling an
-    // owner identity has, so the composer can equate this read reference
-    // with the owner of another read; null answers with the null symbol.
-    // An object with no identity yet is given one here exactly as an owner
-    // is given one, which is what makes the answer distinct and stable for
-    // the rest of the session instead of absent.
+    // The referent's identity, in the spelling an owner identity has, so the
+    // composer can equate this read reference with the owner of another
+    // read; null answers with the null symbol.
     return reference_expression(owner->obj_field(field_offset));
   }
   const ConcreteBits held = field_bits(owner, field_offset, type);
@@ -565,13 +787,75 @@ SharedFieldVersions::ConcreteBits SharedFieldVersions::field_bits(
   }
 }
 
-Expression *SharedFieldVersions::reference_expression(oop value) {
-  if (value == NULL) return SymbolExpression::get(Sym_NULL);
-  if (ConcolicMngr::ctx == NULL) return NULL;
-  // Prefers an existing shadow's identity and otherwise names the referent
-  // concretely.  It never mints a fresh unconstrained symbol, which is what
-  // separates "this reference, observed" from "some reference, unknown".
-  return ContainerSupport::concrete_value(value);
+SharedFieldVersions::ConcreteBits SharedFieldVersions::element_bits(
+    arrayOop array, int index) {
+  if (array == NULL || !array->is_typeArray() || index < 0
+      || index >= array->length()) {
+    return ConcreteBits();
+  }
+  typeArrayOop elements = typeArrayOop(array);
+  const BasicType type =
+      TypeArrayKlass::cast(array->klass())->element_type();
+  switch (type) {
+    case T_BOOLEAN:
+      return ConcreteBits(type, raw_bits(elements->bool_at(index)));
+    case T_BYTE:
+      return ConcreteBits(type, raw_bits(elements->byte_at(index)));
+    case T_CHAR:
+      return ConcreteBits(type, raw_bits(elements->char_at(index)));
+    case T_SHORT:
+      return ConcreteBits(type, raw_bits(elements->short_at(index)));
+    case T_INT:
+      return ConcreteBits(type, raw_bits(elements->int_at(index)));
+    case T_LONG:
+      return ConcreteBits(type, raw_bits(elements->long_at(index)));
+    case T_FLOAT:
+      return ConcreteBits(type, raw_bits(elements->float_at(index)));
+    case T_DOUBLE:
+      return ConcreteBits(type, raw_bits(elements->double_at(index)));
+    default:
+      return ConcreteBits();
+  }
+}
+
+namespace {
+
+// The referent one reference cell holds right now.
+oop cell_referent(const SharedFieldVersions::Location &location,
+                  const SharedFieldVersions::Cell &cell) {
+  if (cell.holder == NULL) return NULL;
+  if (location.kind == SharedFieldVersions::LOC_ARRAY_ELEMENT) {
+    if (!cell.holder->is_objArray()) return NULL;
+    objArrayOop elements = objArrayOop(cell.holder);
+    return location.slot >= 0 && location.slot < elements->length()
+        ? elements->obj_at(location.slot) : (oop) NULL;
+  }
+  return cell.holder->obj_field(location.slot);
+}
+
+} // anonymous namespace
+
+SharedFieldVersions::ConcreteBits SharedFieldVersions::cell_word(
+    const Location &location, const Cell &cell) {
+  if (cell.holder == NULL) return ConcreteBits();
+  if (location.kind == LOC_ARRAY_ELEMENT && cell.holder->is_typeArray()) {
+    return element_bits(arrayOop(cell.holder), location.slot);
+  }
+  if (location.kind == LOC_ARRAY_ELEMENT
+      || cell.type == T_OBJECT || cell.type == T_ARRAY) {
+    return reference_word(cell_referent(location, cell), cell.boxed);
+  }
+  return field_bits(cell.holder, location.slot, cell.type);
+}
+
+Expression *SharedFieldVersions::cell_value(const Location &location,
+                                            const Cell &cell,
+                                            const ConcreteBits &word) {
+  if (word.stated() && !word.is_reference()) {
+    return primitive_expression(word.type, word.bits);
+  }
+  if (cell.holder == NULL) return NULL;
+  return reference_expression(cell_referent(location, cell));
 }
 
 const char *SharedFieldVersions::location_kind_name(int kind) {
@@ -595,77 +879,163 @@ const char *SharedFieldVersions::version_kind_name(int kind) {
   }
 }
 
-// Where the calling thread stands, as one logged event states it.  One
-// reader, so a version and a read record cannot drift on what a site is.
-// The guarded-store table: store method -> the branch sites its stores are
-// control-dependent on.  Session state, replaced wholesale by an install and
-// empty until one happens.
-typedef std::map<std::string, std::vector<std::string> > GuardedStoreTable;
+std::string SharedFieldVersions::version_label(const Version &version) {
+  const std::string kind(version_kind_name(version.version_kind));
+  if (version.version_kind != VERSION_STATE || version.operation.empty()) {
+    return kind;
+  }
+  return kind + "_" + version.operation;
+}
+
+// ---------------------------------------------------------------------------
+// Guarded stores.
+// ---------------------------------------------------------------------------
+
+// Store method -> its store sites -> the branch sites each is
+// control-dependent on.  Session state under _mutex, replaced wholesale by an
+// install; a row is never modified after it, so a pointer to one is good
+// until the next install (the epoch).
+typedef std::map<std::string, std::vector<std::string> > GuardedStores;
+typedef std::map<std::string, GuardedStores> GuardedStoreTable;
 static GuardedStoreTable _guarded_store_sites;
 
+namespace {
+
+// A thread's memo of a method's rows, direct-mapped by the Method pointer.
+// Read and written by its own thread only, so no lock: a miss takes the map
+// lock once per method per thread per table.
+struct GuardedMemo {
+  Method *method;
+  int epoch;
+  const GuardedStores *stores;
+};
+const int GUARDED_MEMO_SIZE = 64;
+__thread GuardedMemo _guarded_memo[GUARDED_MEMO_SIZE];
+
+// The store method's key, as the table spells it.
+std::string method_key(Method *method) {
+  ResourceMark rm;
+  return std::string(method->method_holder()->name()->as_C_string()) + "#"
+      + method->name()->as_C_string() + method->signature()->as_C_string();
+}
+
+}  // namespace
+
+volatile int SharedFieldVersions::_guarded_store_epoch = 0;
+
 int SharedFieldVersions::install_guarded_store_sites(const char *table) {
-  VERSION_LOCK;
+  MAP_LOCK;
   _guarded_store_sites.clear();
+  _guarded_store_count = 0;
+  _guarded_store_epoch = _guarded_store_epoch + 1;
   if (table == NULL) return 0;
   std::string text(table);
   size_t at = 0;
+  int sites = 0;
   while (at < text.size()) {
     size_t end = text.find('\n', at);
     if (end == std::string::npos) end = text.size();
     std::string line = text.substr(at, end - at);
     at = end + 1;
-    size_t tab = line.find('\t');
-    if (tab == std::string::npos || tab == 0) continue;
-    std::string method = line.substr(0, tab);
-    // The remaining TAB-separated fields are the guard ids, and nothing is
-    // split on anything else.  A guard id is a woven site id -- a Soot
-    // signature plus its unit index, e.g.
-    // `<org.apache...SnapshotManager: java.lang.String createSnapshot(
-    // org.apache...INodesInPath,java.lang.String,long)>#u11` -- whose
-    // parameter list contains commas, so splitting on them fragmented 15 of
-    // 27 ids and the guards matched nothing.  A tab cannot occur inside an id
-    // because it is the separator, which is why the writer refuses one.
-    std::vector<std::string> guards;
-    size_t from = tab + 1;
+    // TAB-separated, nothing else: a guard id is a Soot signature plus a
+    // unit index, and its parameter list has commas.
+    std::vector<std::string> fields;
+    size_t from = 0;
     while (from <= line.size()) {
       size_t next = line.find('\t', from);
       if (next == std::string::npos) next = line.size();
-      std::string guard = line.substr(from, next - from);
-      if (!guard.empty()) guards.push_back(guard);
+      std::string field = line.substr(from, next - from);
+      if (!field.empty()) fields.push_back(field);
       from = next + 1;
     }
-    // A store method with no guard site is not control-dependent on
-    // anything, so naming it would admit exactly nothing; drop it rather
-    // than keep a row that can never fire.
-    if (!guards.empty()) _guarded_store_sites[method] = guards;
+    // A site with no guard is control-dependent on nothing: no row.
+    if (fields.size() < 3) continue;
+    std::vector<std::string> &guards =
+        _guarded_store_sites[fields[0]][fields[1]];
+    if (guards.empty()) sites++;
+    guards.insert(guards.end(), fields.begin() + 2, fields.end());
   }
-  return (int) _guarded_store_sites.size();
+  _guarded_store_count = sites;
+  return sites;
 }
 
-bool SharedFieldVersions::guarded_store_admitted() {
-  if (ConcolicMngr::ctx == NULL) return false;
-  {
-    VERSION_LOCK;
-    if (_guarded_store_sites.empty()) return false;
+namespace {
+
+// A method's store sites, or NULL: from the thread's memo, else looked up
+// once under the map lock and remembered.
+const GuardedStores *stores_of(Method *method, pthread_mutex_t *map_lock,
+                               int epoch) {
+  GuardedMemo &memo =
+      _guarded_memo[(int)(((uintptr_t) method >> 3) % GUARDED_MEMO_SIZE)];
+  if (memo.method == method && memo.epoch == epoch) return memo.stores;
+  const std::string key = method_key(method);
+  const GuardedStores *stores = NULL;
+  pthread_mutex_lock(map_lock);
+  GuardedStoreTable::const_iterator found = _guarded_store_sites.find(key);
+  if (found != _guarded_store_sites.end()) stores = &found->second;
+  pthread_mutex_unlock(map_lock);
+  memo.method = method;
+  memo.epoch = epoch;
+  memo.stores = stores;
+  return stores;
+}
+
+// Whether one of the site's guards decided on this path.  The row does not
+// change until the next install, so no lock is held while the thread
+// context is asked.
+bool site_decided(const GuardedStores *stores, const std::string &store) {
+  if (stores == NULL) return false;
+  GuardedStores::const_iterator site = stores->find(store);
+  if (site == stores->end()) return false;
+  for (size_t index = 0; index < site->second.size(); ++index) {
+    if (ConcolicMngr::ctx->branch_site_decided(site->second[index])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+bool SharedFieldVersions::guarded_store_admitted(Method *store_method,
+                                                 const std::string &store) {
+  if (ConcolicMngr::ctx == NULL || _guarded_store_count == 0) return false;
+  if (store_method != NULL) {
+    return site_decided(
+        stores_of(store_method, &_mutex, _guarded_store_epoch), store);
   }
   ThreadContext::CodeSite standing;
   if (!ConcolicMngr::ctx->current_code_site(&standing)) return false;
-  std::string method = standing.class_name + "#" + standing.method_name
-      + standing.method_descriptor;
-  std::vector<std::string> guards;
+  const GuardedStores *stores = NULL;
   {
-    VERSION_LOCK;
-    GuardedStoreTable::const_iterator found =
-        _guarded_store_sites.find(method);
-    if (found == _guarded_store_sites.end()) return false;
-    guards = found->second;
+    MAP_LOCK;
+    GuardedStoreTable::const_iterator found = _guarded_store_sites.find(
+        standing.class_name + "#" + standing.method_name
+            + standing.method_descriptor);
+    if (found != _guarded_store_sites.end()) stores = &found->second;
   }
-  // Outside the lock: asking the thread context is not this store's business
-  // to do while holding the version store.
-  for (size_t index = 0; index < guards.size(); ++index) {
-    if (ConcolicMngr::ctx->branch_site_decided(guards[index])) return true;
+  return site_decided(stores, store);
+}
+
+bool SharedFieldVersions::guarded_field_store_admitted(
+    Method *store_method, ConstantPoolCacheEntry *entry) {
+  if (ConcolicMngr::ctx == NULL || _guarded_store_count == 0
+      || store_method == NULL || entry == NULL || !entry->is_field_entry()) {
+    return false;
   }
-  return false;
+  // The method first: almost every store's method has no row, and its
+  // answer is a thread-local lookup.
+  const GuardedStores *stores =
+      stores_of(store_method, &_mutex, _guarded_store_epoch);
+  if (stores == NULL) return false;
+  Klass *holder = entry->f1_as_klass();
+  if (holder == NULL || !holder->oop_is_instance()) return false;
+  ResourceMark rm;
+  const std::string store = std::string("FIELD ")
+      + holder->name()->as_C_string() + "."
+      + InstanceKlass::cast(holder)->field_name(entry->field_index())
+            ->as_C_string();
+  return site_decided(stores, store);
 }
 
 SharedFieldVersions::EventSite SharedFieldVersions::current_site() {
@@ -700,33 +1070,20 @@ void SharedFieldVersions::write_site(
   writer.EndObject();
 }
 
-std::string SharedFieldVersions::version_label(const Version &version) {
-  const std::string kind(version_kind_name(version.version_kind));
-  if (version.version_kind != VERSION_STATE || version.operation.empty()) {
-    return kind;
-  }
-  return kind + "_" + version.operation;
-}
+// ---------------------------------------------------------------------------
+// Read-outs.
+// ---------------------------------------------------------------------------
 
-// One `SHARED_FIELD_VERSIONS` envelope, written into a caller's document.
-//
-// Split out of describe() so the single-location answer and the whole
-// read-out emit byte-identical envelopes: there is one writer, and neither
-// caller can drift from the other.  The caller owns the artifact scope and
-// writes the expression table once for the whole document, so a subgraph two
-// locations share is defined once rather than per location.
-//
-// `budget_bytes` bounds this envelope alone (0 = the default per-envelope
-// bound); `document_bytes` is what the caller has already committed, so the
-// bound is checked against the real document rather than this envelope in
-// isolation.  Returns true when the envelope was cut short.
+// One `SHARED_FIELD_VERSIONS` envelope, written into a caller's document and
+// left open: the single-location answer and the whole read-out both close it
+// their own way, so they emit byte-identical envelopes.  Returns true when
+// the envelope was cut short by `budget_bytes` (0 = the default bound).
 bool SharedFieldVersions::write_versions_envelope(
     rapidjson::Writer<rapidjson::StringBuffer> &writer,
     const rapidjson::StringBuffer &buffer,
     VmExpressionArtifactScope &expression_artifact,
-    const Location &location, const VersionList &versions,
-    const std::vector<ReadRecord> &reads, bool selected, bool complete,
-    bool read_log_complete, size_t budget_bytes) {
+    const Location &location, const Slot &slot, bool selected,
+    size_t budget_bytes) {
   using namespace rapidjson;
   const size_t bound = budget_bytes == 0
       ? MAX_VERSION_ENVELOPE_BYTES : budget_bytes;
@@ -735,9 +1092,6 @@ bool SharedFieldVersions::write_versions_envelope(
   writer.Int(1);
   writer.Key("kind");
   writer.String("SHARED_FIELD_VERSIONS");
-  // The symbolic universe these ids belong to.  An id is only comparable
-  // against another id minted by the same session, so every envelope that
-  // carries ids names the session that minted them.
   writer.Key("sessionId");
   writer.Int64(GlobalSymbolicSession::session_id());
   writer.Key("selected");
@@ -752,10 +1106,23 @@ bool SharedFieldVersions::write_versions_envelope(
   writer.String(location_kind_name(location.kind));
   writer.EndObject();
   writer.Key("writerSetComplete");
-  writer.Bool(complete);
+  writer.Bool(slot.writer_set_complete);
+  if (!slot.writer_set_complete) {
+    // Why: UNOBSERVED_WRITE, a detected unmodeled mutation, the version
+    // bound; and whether any of them is a writer the log never named.
+    writer.Key("incompleteReasons");
+    writer.StartArray();
+    for (size_t index = 0; index < slot.incomplete_reasons.size(); ++index) {
+      writer.String(slot.incomplete_reasons[index].c_str());
+    }
+    writer.EndArray();
+    writer.Key("unnamedWriter");
+    writer.Bool(slot.unnamed_writer);
+  }
   writer.Key("versions");
   writer.StartArray();
   bool serialization_truncated = false;
+  const VersionList &versions = slot.versions;
   for (size_t index = 0; index < versions.size(); ++index) {
     if (envelope_bytes(buffer, expression_artifact) >= bound) {
       serialization_truncated = true;
@@ -768,25 +1135,23 @@ bool SharedFieldVersions::write_versions_envelope(
     writer.Key("versionKind");
     writer.String(version_label(version).c_str());
     writer.Key("writerContextId");
-    writer.Int64(version.writer_context_id);
+    writer.Int64(version.writer.context_id);
     writer.Key("regionId");
-    writer.String(version.region_id.c_str());
+    writer.String(version.writer.region_id.c_str());
     writer.Key("taskId");
-    writer.String(version.task_id.c_str());
+    writer.String(version.writer.task_id.c_str());
     writer.Key("regionEnterEventId");
-    writer.Int64(version.region_enter_event_id);
-    write_site(writer, version.site);
-    // Emitted whenever this engine has something to say about the contents
-    // that predate tracking -- a stated count, a refusal over the bound, or a
-    // class it cannot read.  `stated` is explicit so an absent count is never
-    // mistaken for an empty container.
-    if (version.initial_snapshot_present
-        || !version.initial_snapshot_unsupported_class.empty()) {
+    writer.Int64(version.writer.region_enter_event_id);
+    write_site(writer, version.writer.site);
+    // Whatever this engine has to say about the contents that predate the
+    // log: a stated count, a refusal over the bound, or a class it cannot
+    // read.  `stated` is true only for a stated count (D2: a refusal used to
+    // read as a stated empty base).
+    if (version.initial_snapshot_present) {
       writer.Key("initialSnapshot");
       writer.StartObject();
       writer.Key("stated");
-      writer.Bool(version.initial_snapshot_present
-                  && !version.initial_snapshot_truncated);
+      writer.Bool(version.initial_snapshot_stated);
       writer.Key("entries");
       writer.Int(version.initial_snapshot_entries);
       writer.Key("truncated");
@@ -798,6 +1163,24 @@ bool SharedFieldVersions::write_versions_envelope(
       }
       writer.EndObject();
     }
+    // What a reference store's referent's container state was: its
+    // location and the version live at the store, or why not.
+    if (version.referent.version_id > 0) {
+      writer.Key("referentState");
+      writer.StartObject();
+      writer.Key("ownerSymRid");
+      writer.Int64((jlong) version.referent.owner);
+      writer.Key("slot");
+      writer.Int(SLOT_WHOLE_STATE);
+      writer.Key("locationKind");
+      writer.String(location_kind_name(LOC_MAP_STATE));
+      writer.Key("fieldVersionId");
+      writer.Int64(version.referent.version_id);
+      writer.EndObject();
+    } else if (!version.referent.refused.empty()) {
+      writer.Key("referentStateRefused");
+      writer.String(version.referent.refused.c_str());
+    }
     writer.Key("expression");
     if (version.value == NULL) {
       writer.Null();
@@ -806,13 +1189,12 @@ bool SharedFieldVersions::write_versions_envelope(
     }
     writer.Key("pathGuard");
     if (envelope_bytes(buffer, expression_artifact) >= bound) {
-      // Keep the current version structurally valid.  The explicit envelope
-      // flag below makes this null unusable as an allegedly empty guard.
+      // Keep the version structurally valid; the envelope flag below makes
+      // this null unusable as an allegedly empty guard.
       writer.Null();
       serialization_truncated = true;
     } else if (version.path_guard == NULL) {
-      // The empty conjunction.  Reported explicitly so that "unguarded" is
-      // never confused with "the guard was not recorded".
+      // The empty conjunction, stated so it is never "not recorded".
       writer.Null();
     } else {
       version.path_guard->serialize(writer);
@@ -822,68 +1204,42 @@ bool SharedFieldVersions::write_versions_envelope(
   }
   writer.EndArray();
   writer.Key("readLogTruncated");
-  writer.Bool(!read_log_complete);
+  writer.Bool(!slot.read_log_complete);
   writer.Key("reads");
   writer.StartArray();
-  for (size_t index = 0; index < reads.size(); ++index) {
-    // The read log is bounded by the same budget as the versions.  It used to
-    // be unbounded: a location with a full read log appended its rows after
-    // the versions loop had already decided the envelope was full.
+  for (size_t index = 0; index < slot.reads.size(); ++index) {
     if (envelope_bytes(buffer, expression_artifact) >= bound) {
       serialization_truncated = true;
       break;
     }
-    const ReadRecord &read = reads[index];
+    const ReadRecord &read = slot.reads[index];
     writer.StartObject();
     writer.Key("readEventId");
     writer.Int64(read.read_event_id);
     writer.Key("readerContextId");
-    writer.Int64(read.reader_context_id);
+    writer.Int64(read.reader.context_id);
     writer.Key("regionId");
-    writer.String(read.region_id.c_str());
+    writer.String(read.reader.region_id.c_str());
     writer.Key("taskId");
-    writer.String(read.task_id.c_str());
+    writer.String(read.reader.task_id.c_str());
     writer.Key("regionEnterEventId");
-    writer.Int64(read.region_enter_event_id);
-    write_site(writer, read.site);
+    writer.Int64(read.reader.region_enter_event_id);
+    write_site(writer, read.reader.site);
     writer.EndObject();
   }
   writer.EndArray();
-  // Written after both arrays because it now reports either of them being
-  // cut short, and after the artifact table has been accounted for.  This is
-  // the flag Java triages as EXPRESSION_SERIALIZATION_TRUNCATED; member order
-  // in a JSON object carries no meaning to its reader.
+  // After both arrays: it reports either being cut short.  Triaged by Java
+  // as EXPRESSION_SERIALIZATION_TRUNCATED.
   writer.Key("serializationTruncated");
   writer.Bool(serialization_truncated);
-  // Deliberately NOT closed here.  The caller writes its expression table
-  // into this object (single-location answer) or closes it and writes one
-  // table for the whole document (the read-out), and those are the only two
-  // shapes.  Leaving the brace to the caller is what lets both exist without
-  // the single-location envelope changing by a byte.
   return serialization_truncated;
 }
 
 namespace {
 
-// The clock value a location is ordered and selected by: the lowest event id
-// it carries, over both its versions and its reads.  A location written
-// before an activation and only read during it is selected by its read, which
-// is why reads count here as well as writes.
-jlong location_low_event(const SharedFieldVersions::Slot &slot) {
-  jlong low = 0;
-  for (size_t i = 0; i < slot.versions.size(); ++i) {
-    const jlong id = slot.versions[i].version_id;
-    if (id > 0 && (low == 0 || id < low)) low = id;
-  }
-  for (size_t i = 0; i < slot.reads.size(); ++i) {
-    const jlong id = slot.reads[i].read_event_id;
-    if (id > 0 && (low == 0 || id < low)) low = id;
-  }
-  return low;
-}
-
-// The highest event id a location carries; the resume point when a read-out
-// stops before it.
+// The highest event id a location carries: its order and resume point.
+// Event ids are unique per location -- a version id and a read id are each
+// appended to exactly one slot -- so no two locations share one.
 jlong location_high_event(const SharedFieldVersions::Slot &slot) {
   jlong high = 0;
   for (size_t i = 0; i < slot.versions.size(); ++i) {
@@ -898,21 +1254,12 @@ jlong location_high_event(const SharedFieldVersions::Slot &slot) {
 struct TrackedLocation {
   SharedFieldVersions::Location location;
   SharedFieldVersions::Slot slot;
-  jlong low;
-  TrackedLocation() : low(0) {}
+  jlong high;
+  TrackedLocation() : high(0) {}
 };
 
-bool by_low_event(const TrackedLocation &a, const TrackedLocation &b) {
-  if (a.low != b.low) return a.low < b.low;
-  // A total order even when two locations share a lowest id, so a resume is
-  // well defined rather than dependent on map iteration order.
-  if (a.location.owner != b.location.owner) {
-    return a.location.owner < b.location.owner;
-  }
-  if (a.location.slot != b.location.slot) {
-    return a.location.slot < b.location.slot;
-  }
-  return a.location.kind < b.location.kind;
+bool by_high_event(const TrackedLocation &a, const TrackedLocation &b) {
+  return a.high < b.high;
 }
 
 } // anonymous namespace
@@ -920,29 +1267,39 @@ bool by_low_event(const TrackedLocation &a, const TrackedLocation &b) {
 std::string SharedFieldVersions::tracked_locations(jlong after_event_id,
                                                    jint max_bytes) {
   using namespace rapidjson;
-  // Snapshot under the lock, serialize outside it: an Expression may not be
-  // rendered while the version lock is held, and the engine lock order
-  // (membership -> versions -> arena) forbids taking the arena beneath it.
-  std::vector<TrackedLocation> selected;
-  bool open = false;
+  // The locations, under the map lock; each one's contents under its own
+  // stripe (the map lock is never held around a stripe).  Serialized with
+  // no lock at all: an Expression is not rendered under the version store.
+  std::vector<Location> locations;
   {
-    VERSION_LOCK;
-    open = _open;
-    if (open) {
-      for (SlotStore::const_iterator it = _slots.begin();
-           it != _slots.end(); ++it) {
-        const jlong high = location_high_event(it->second);
-        // Selected when anything it carries is at or after the watermark.
-        if (after_event_id > 0 && high < after_event_id) continue;
-        TrackedLocation entry;
-        entry.location = it->first;
-        entry.slot = it->second;
-        entry.low = location_low_event(it->second);
-        selected.push_back(entry);
+    MAP_LOCK;
+    if (_open) {
+      for (SlotStore::const_iterator it = _slots.begin(); it != _slots.end();
+           ++it) {
+        locations.push_back(it->first);
       }
     }
   }
-  std::sort(selected.begin(), selected.end(), by_low_event);
+  std::vector<TrackedLocation> selected;
+  for (size_t index = 0; index < locations.size(); ++index) {
+    lock(locations[index]);
+    Slot *slot = find_slot(locations[index]);
+    if (slot != NULL) {
+      const jlong high = location_high_event(*slot);
+      // Selected when anything it carries is at or after the watermark.
+      if (after_event_id <= 0 || high >= after_event_id) {
+        TrackedLocation entry;
+        entry.location = locations[index];
+        entry.slot = *slot;
+        entry.high = high;
+        selected.push_back(entry);
+      }
+    }
+    unlock(locations[index]);
+  }
+  // By the highest event, the key the selection is made on (D3: ordering by
+  // the lowest and resuming at it repeated pages and could step back).
+  std::sort(selected.begin(), selected.end(), by_high_event);
 
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
@@ -964,37 +1321,27 @@ std::string SharedFieldVersions::tracked_locations(jlong after_event_id,
   jlong next_after = 0;
   size_t emitted = 0;
   for (size_t index = 0; index < selected.size(); ++index) {
-    // Stop at a location boundary, never inside one: a half-written envelope
-    // would be a cardinality fault downstream, and the resume point would not
-    // be expressible.  The first location is always emitted, so a budget
-    // smaller than one envelope makes progress instead of looping forever.
+    // Stop at a location boundary, never inside one; the first location is
+    // always emitted, so a budget smaller than one envelope still progresses.
     if (budget != 0 && emitted > 0
         && envelope_bytes(buffer, expression_artifact) >= budget) {
       complete = false;
-      next_after = selected[index].low;
+      // One past the last emitted location's highest event: every emitted
+      // location is below it and every unemitted one at or above it.
+      next_after = selected[index - 1].high + 1;
       break;
     }
     const TrackedLocation &entry = selected[index];
-    // Deliberately not `budget`: the document's budget is a boundary between
-    // locations, never a cut inside one.  Passing it down here let an envelope
-    // be truncated mid-location while the document still reported
-    // complete:true -- a silent truncation, which is the one failure mode a
-    // reader cannot see.  Each envelope keeps its own per-envelope bound; one
-    // oversized location may overshoot maxBytes, which is what "the first
-    // location is always emitted" already concedes.
+    // Each envelope keeps its own per-envelope bound: the document budget is
+    // a boundary between locations, never a cut inside one.
     write_versions_envelope(writer, buffer, expression_artifact,
-                            entry.location, entry.slot.versions,
-                            entry.slot.reads, true,
-                            entry.slot.writer_set_complete,
-                            entry.slot.read_log_complete, 0);
+                            entry.location, entry.slot, true, 0);
     writer.EndObject();
     emitted++;
   }
   writer.EndArray();
   writer.Key("locationCount");
   writer.Int64((jlong) emitted);
-  // What this answer holds, and where to resume.  A truncated read-out that
-  // did not say so is the one failure mode invisible downstream.
   writer.Key("complete");
   writer.Bool(complete);
   writer.Key("nextAfterEventId");
@@ -1006,62 +1353,43 @@ std::string SharedFieldVersions::tracked_locations(jlong after_event_id,
 
 std::string SharedFieldVersions::describe(const Location &location) {
   using namespace rapidjson;
-  VersionList versions;
-  std::vector<ReadRecord> reads;
-  bool complete = true;
-  bool read_log_complete = true;
+  Slot copy;
   bool selected = false;
-  {
-    VERSION_LOCK;
-    Slot *slot = location.is_valid() && _open
-        ? find_slot_locked(location) : NULL;
+  if (location.is_valid()) {
+    lock(location);
+    Slot *slot = find_slot(location);
     if (slot != NULL) {
       selected = true;
-      versions = slot->versions;
-      reads = slot->reads;
-      complete = slot->writer_set_complete;
-      read_log_complete = slot->read_log_complete;
+      copy = *slot;
     }
+    unlock(location);
   }
 
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
   VmExpressionArtifactScope expression_artifact;
   write_versions_envelope(writer, buffer, expression_artifact, location,
-                          versions, reads, selected, complete,
-                          read_log_complete, 0);
+                          copy, selected, 0);
   expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
 }
 
 // ---------------------------------------------------------------------------
-// The Java-facing selection and evidence API.
-//
-// It lives here, next to the store, for the same reason the handoff API lives
-// in expressionBroker.cpp: everything it has to reason about -- what a
-// location is, when it is addressable, what its initial value denotes -- is
-// this file's subject, and splitting it across concolicMngr.cpp would leave
-// the two halves free to disagree about it.
+// The Java-facing evidence API.
 // ---------------------------------------------------------------------------
 
-namespace {
-
 /**
- * Resolves the location a Java caller named into an addressable slot.
- *
- * A static field is addressed exactly as `getstatic` addresses it: the owner
- * is the *declaring* class's mirror and the slot is the mirror-relative field
- * offset.  Taking the mirror of the class the caller happened to name would
- * split one static location in two whenever a subclass is used to reach an
- * inherited field, and the two halves would never see each other's writes.
+ * A static field is addressed as `getstatic` addresses it: the declaring
+ * class's mirror and the mirror-relative offset.
  */
-bool resolve_field_location(oop owner_oop, const char *declaring_class,
-                            const char *field_name, const char *descriptor,
-                            SharedFieldVersions::Location *location,
-                            fieldDescriptor *field, oop *carrier_owner,
-                            jlong *status) {
-  *status = SharedFieldVersions::SELECT_FIELD_NOT_FOUND;
+bool SharedFieldVersions::resolve_field(oop owner_oop,
+                                        const char *declaring_class,
+                                        const char *field_name,
+                                        const char *descriptor,
+                                        Location *location,
+                                        fieldDescriptor *field,
+                                        oop *carrier_owner) {
   if (owner_oop == NULL) return false;
 
   const std::string holder_name(declaring_class);
@@ -1105,57 +1433,9 @@ bool resolve_field_location(oop owner_oop, const char *declaring_class,
   return true;
 }
 
-
-
-} // anonymous namespace
-
 std::string ConcolicMngr::getTrackedLocationVersions(jlong after_event_id,
                                                      jint max_bytes) {
   return SharedFieldVersions::tracked_locations(after_event_id, max_bytes);
-}
-
-jlong ConcolicMngr::armSharedPrimitiveFieldRead(
-    Handle owner, const char *declaring_class, const char *field_name,
-    const char *descriptor, jlong value_bits) {
-  if (!can_explicitly_symbolize() || ctx == NULL) {
-    return SharedFieldVersions::REPLAY_READ_NO_CONTEXT;
-  }
-  if (owner.is_null()
-      || declaring_class == NULL || declaring_class[0] == '\0'
-      || field_name == NULL || field_name[0] == '\0'
-      || descriptor == NULL || descriptor[0] == '\0') {
-    return SharedFieldVersions::REPLAY_READ_MISSING_METADATA;
-  }
-
-  ResourceMark rm;
-  fieldDescriptor field;
-  SharedFieldVersions::Location location;
-  oop carrier_owner = NULL;
-  jlong status = 0;
-  if (!resolve_field_location(owner(), declaring_class, field_name, descriptor,
-                              &location, &field, &carrier_owner, &status)) {
-    return SharedFieldVersions::REPLAY_READ_FIELD_NOT_FOUND;
-  }
-  BasicType type = field.field_type();
-  if (location.kind != SharedFieldVersions::LOC_INSTANCE_FIELD
-      || !(type == T_BOOLEAN || type == T_BYTE || type == T_CHAR
-           || type == T_SHORT || type == T_INT || type == T_LONG)) {
-    return SharedFieldVersions::REPLAY_READ_UNSUPPORTED;
-  }
-  SymInstance *shadow = ctx->find_sym_inst(carrier_owner);
-  if (shadow == NULL) {
-    return SharedFieldVersions::REPLAY_READ_NOT_SELECTED;
-  }
-  location.owner = shadow->get_sym_rid();
-  return SharedFieldVersions::arm_primitive_read(
-      ctx->get_context_id(), ctx->region_enter_event(), location, type,
-      value_bits);
-}
-
-jlong ConcolicMngr::confirmSharedPrimitiveFieldRead(jlong token) {
-  if (ctx == NULL) return SharedFieldVersions::REPLAY_READ_NO_CONTEXT;
-  return SharedFieldVersions::confirm_primitive_read(
-      ctx->get_context_id(), token);
 }
 
 std::string ConcolicMngr::getSharedMapVersions(Handle map) {
@@ -1178,12 +1458,10 @@ std::string ConcolicMngr::getSharedFieldVersions(
     ResourceMark rm;
     fieldDescriptor field;
     oop carrier_owner = NULL;
-    jlong status = 0;
-    if (resolve_field_location(owner(), declaring_class, field_name,
-                               descriptor, &location, &field, &carrier_owner,
-                               &status)) {
-      // Look the owner up rather than allocating one: asking what a location
-      // recorded must not be the thing that gives it an identity.
+    if (SharedFieldVersions::resolve_field(owner(), declaring_class,
+                                           field_name, descriptor,
+                                           &location, &field,
+                                           &carrier_owner)) {
       SymInstance *shadow = ctx->find_sym_inst(carrier_owner);
       location.owner = shadow == NULL ? NULL_SYM_RID : shadow->get_sym_rid();
     }

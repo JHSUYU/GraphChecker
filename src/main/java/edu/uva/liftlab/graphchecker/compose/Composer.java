@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.compose;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
@@ -19,6 +20,8 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -28,7 +31,11 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -350,6 +357,9 @@ public final class Composer {
 
     private final Corpus corpus;
     private final OccurrenceAddress anchor;
+    /** The epoch's static facts: where a reference write's construction
+     *  guard is ({@link #constructionGuards}). */
+    private final StaticScopeMap scope;
     private final Map<String, RootDomain> declaredDomains;
     private final int maxValuations;
     private final SmtLowering lowering;
@@ -393,9 +403,10 @@ public final class Composer {
 
     private Composer(Corpus corpus, OccurrenceAddress anchor,
                      Map<String, RootDomain> declaredDomains,
-                     int maxValuations) {
+                     int maxValuations, StaticScopeMap scope) {
         this.corpus = corpus;
         this.anchor = anchor;
+        this.scope = scope;
         this.declaredDomains = declaredDomains == null
                 ? Collections.<String, RootDomain>emptyMap()
                 : declaredDomains;
@@ -416,9 +427,10 @@ public final class Composer {
     public static Composition compose(Corpus corpus,
                                       OccurrenceAddress anchor,
                                       Map<String, RootDomain> declaredDomains,
-                                      int maxValuations) {
-        return new Composer(corpus, anchor, declaredDomains, maxValuations)
-                .run();
+                                      int maxValuations,
+                                      StaticScopeMap scope) {
+        return new Composer(corpus, anchor, declaredDomains, maxValuations,
+                scope).run();
     }
 
     private Composition run() {
@@ -670,12 +682,21 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
+        // (0a) THE CLOSURE (P3): the occurrences of this session the joins
+        //      reach, and the seq each prefix runs to.  Row-level, before
+        //      any lowering.
+        Map<String, Long> reached = closure(session, anchor, target.seq(),
+                null);
         // What a family may move at the anchor is no constant anywhere in
         // this path: not a pin after a refused join, not a variable
-        // independence leaves out.
+        // independence leaves out.  A location a reader mutated a container
+        // through is held to the run's pairing.
         Set<String> repaired = repaired(session);
+        Set<String> pinned = pinnedOwners(session, reached, repaired);
+        repaired.removeAll(pinned);
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
-                corpus.join(session), repaired);
+                corpus.join(session), repaired,
+                (reader, writer) -> arms.concurrent(reader, writer, session));
         lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
@@ -683,13 +704,8 @@ public final class Composer {
         List<ReadRow> joined = new ArrayList<ReadRow>();
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
-
-        // (0a) THE CLOSURE (P3): the occurrences of this session the joins
-        //      reach, and the seq each prefix runs to.  Row-level, before
-        //      any lowering.
-        Map<String, Long> reached = closure(session, anchor, target.seq(),
-                null);
         frameRefusals(session, reached.keySet(), refusals);
+
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
         List<DecisionRow> conditions = before(path.decisions, target.seq());
@@ -727,8 +743,11 @@ public final class Composer {
         //     asserted here.
         stateJoins(session, reached.keySet(), relevant, rows, refusals,
                 joined, joins, answered);
-        //     A field projected through one a STATE family may re-point is
-        //     the field of the object it is ({@link SmtLowering#movable}).
+        joined.removeIf(read -> pinned.contains(
+                SmtLowering.locationKey(read.location())));
+        //     A field projected, or a container queried, through one a STATE
+        //     family may re-point is the object's it is
+        //     ({@link SmtLowering#movable}).
         for (ReadRow read : joined) lowering.movable(read.symbol());
 
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
@@ -1338,13 +1357,222 @@ public final class Composer {
 
     /** What {@code seeds} and the variables a family binds ({@code
      *  bound}) rest on among these conditions and the reads of the reached
-     *  occurrences ({@link Independence}). */
+     *  occurrences ({@link Independence}); a read brings the construction
+     *  guard of the write it observed. */
     Independence independence(String session, List<String> seeds,
                               Collection<String> bound,
                               Map<String, Long> reached,
                               List<DecisionRow> conditions) {
         return Independence.of(corpus, session, seeds, bound, conditions,
-                statedRows(session, reached.keySet()));
+                statedRows(session, reached.keySet()),
+                read -> constructionGuards(session, corpus.writeOf(session,
+                        read.location(), read.observedVersion())));
+    }
+
+    /** The construction guards already found, by session and write. */
+    private final Map<String, List<DecisionRow>> built =
+            new LinkedHashMap<String, List<DecisionRow>>();
+
+    /**
+     * THE CONSTRUCTION GUARD of a reference write (R3-REFCONT §1.6, D5):
+     * the decisions its occurrence took before it at the guard sites of the
+     * mutations its method made on a container it then published
+     * ({@link StaticScopeMap#constructionGuards}).  A referent rests on
+     * every decision that shaped it, the ones that skipped a mutation
+     * included, and those leave no node in its state: an arm delivering the
+     * write, or a read joined to it, conjoins them in the polarity they took
+     * ({@link Independence} keeps them), and the reads they name are joined
+     * in turn.  A decision whose condition is a REMOVE_IF guard of the
+     * referent's chain stays free, as that node states it both ways.  None
+     * for a write that stored no container's state.
+     */
+    List<DecisionRow> constructionGuards(String session, WriteRow write) {
+        if (write == null || write.referentState() == null) {
+            return Collections.<DecisionRow>emptyList();
+        }
+        return built.computeIfAbsent(session + "|" + write.location() + "@"
+                + write.version(), unused -> {
+            String site = write.endpoint().site();
+            Set<String> sites = new LinkedHashSet<String>();
+            // A write states its referent's runtime class and a carrier its
+            // declared type; names do not decide subtyping, so the carriers
+            // are matched on the reference sort alone.
+            for (String carrier : scope.carriersAt(site, "L")) {
+                for (StaticScopeMap.Guard guard
+                        : scope.constructionGuards(site, carrier)) {
+                    sites.add(guard.siteId());
+                }
+            }
+            List<DecisionRow> guards = new ArrayList<DecisionRow>();
+            if (sites.isEmpty()) return guards;
+            Set<JsonElement> free = removalGuards(session,
+                    write.referentState());
+            for (DecisionRow decision : corpus.decisionsOf(session,
+                    write.endpoint().occurrence())) {
+                if (decision.seq() < write.seq()
+                        && sites.contains(decision.siteId())
+                        && !decides(session, decision, free)) {
+                    guards.add(decision);
+                }
+            }
+            return guards;
+        });
+    }
+
+    /**
+     * The guards of the REMOVE_IF nodes of one container's chain, down to
+     * its base: each version's mutation and, through the read it rests on,
+     * the version before.
+     */
+    private Set<JsonElement> removalGuards(String session,
+                                           WriteRow.Referent state) {
+        Set<JsonElement> guards = ExpressionWalk.identitySet();
+        Set<JsonElement> walked = ExpressionWalk.identitySet();
+        List<JsonElement> pending = new ArrayList<JsonElement>();
+        WriteRow first = corpus.writeOf(session, state.location(),
+                state.version());
+        if (first != null) {
+            pending.add(corpus.expression(session, first.expressionRef()));
+        }
+        while (!pending.isEmpty()) {
+            for (ExpressionWalk walk = ExpressionWalk.of(pending.remove(
+                    pending.size() - 1), walked); walk.hasNext(); ) {
+                JsonObject node = walk.next();
+                String type = JsonFields.optionalString(node, "_type");
+                if ("REMOVE_IF".equals(JsonFields.optionalString(node,
+                        "operation"))) {
+                    guards.add(unwrapped(node.get("guard")));
+                } else if (VmRows.GUARDED_READ_TYPE.equals(type)) {
+                    WriteRow below = corpus.writeOf(session,
+                            SmtLowering.locationKey(JsonFields.object(node,
+                                    "location")), VmRows.recordedVersion(
+                                    node));
+                    if (below != null) {
+                        pending.add(corpus.expression(session,
+                                below.expressionRef()));
+                    }
+                }
+            }
+        }
+        return guards;
+    }
+
+    /**
+     * Whether a decision's condition is one of these guards: the node
+     * itself, or its complement over the same operands (the arm a removal
+     * that did not fire states).
+     */
+    private boolean decides(String session, DecisionRow decision,
+                            Set<JsonElement> guards) {
+        if (guards.isEmpty()) return false;
+        for (String reference : SmtNames.symbols(decision.term(),
+                new LinkedHashSet<String>())) {
+            JsonElement condition = unwrapped(corpus.expression(session,
+                    reference));
+            if (guards.contains(condition)) return true;
+            for (JsonElement guard : guards) {
+                if (condition != null && condition.isJsonObject()
+                        && guard != null && guard.isJsonObject()
+                        && condition.getAsJsonObject().get("_left")
+                        == guard.getAsJsonObject().get("_left")
+                        && condition.getAsJsonObject().get("_right")
+                        == guard.getAsJsonObject().get("_right")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** A value beneath the consumer boundaries around it. */
+    private static JsonElement unwrapped(JsonElement value) {
+        JsonElement found = value;
+        while (VmExpressionIr.consumerBoundary(found)) {
+            found = found.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+        }
+        return found;
+    }
+
+    /**
+     * The anchor locations a family may re-pair that keep the run's own
+     * pairing, named.  A reader of this path mutated a container through
+     * one (R3-REFCONT C-4): a reached occurrence's container version whose
+     * mutation names, as its owner, a read of it; another pairing would
+     * mutate an object no row records the mutation of.  Or a store of one
+     * holds a container through an object that is not it (a
+     * {@code Collections} wrapper, a view): a query through that object
+     * names no owner, so it is the run's container's answer whichever
+     * object the family delivers.
+     */
+    private Set<String> pinnedOwners(String session,
+                                     Map<String, Long> reached,
+                                     Set<String> repaired) {
+        Set<String> pinned = new LinkedHashSet<String>();
+        for (Map.Entry<String, Long> at : reached.entrySet()) {
+            OccurrenceAddress occurrence = corpus.occurrence(at.getKey());
+            if (occurrence == null) continue;
+            for (WriteRow write : corpus.writesOn(session, occurrence)) {
+                if (write.seq() > at.getValue()
+                        || write.location().kind() != LocationKind.MAP) {
+                    continue;
+                }
+                JsonObject mutation = corpus.expression(session,
+                        write.expressionRef());
+                JsonElement owner = unwrapped(mutation == null ? null
+                        : mutation.get("owner"));
+                if (!VmRows.GUARDED_READ_TYPE.equals(
+                        VmExpressionIr.typeOf(owner))) {
+                    continue;
+                }
+                String key = SmtLowering.locationKey(JsonFields.object(
+                        owner.getAsJsonObject(), "location"));
+                if (repaired.contains(key) && pinned.add(key)) {
+                    gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                            "OWNER_PINNED_BY_MUTATION:" + key + "@"
+                                    + session, "a reader of this path "
+                                    + "mutated a container through this "
+                                    + "reference, so its family is held to "
+                                    + "the arm the run took: another pairing "
+                                    + "would mutate an object no row "
+                                    + "records the mutation of");
+                }
+            }
+        }
+        for (String key : repaired) {
+            for (WriteRow store : corpus.writesOf(session, key)) {
+                if (store.referentState() == null
+                        && store.referentStateRefused() == null
+                        || storesItsContainer(session, store)) {
+                    continue;
+                }
+                if (pinned.add(key)) {
+                    gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                            "OWNER_PINNED_BY_WRAPPER:" + key + "@" + session,
+                            "the store at version " + store.version()
+                                    + " holds a container through an object"
+                                    + " that is not it, and a query through"
+                                    + " such an object names no owner, so "
+                                    + "this family is held to the arm the "
+                                    + "run took");
+                }
+                break;
+            }
+        }
+        return pinned;
+    }
+
+    /**
+     * Whether a reference store stored a container itself: an object this
+     * session logs the state of, which a wrapper or a view of one is not.
+     */
+    private boolean storesItsContainer(String session, WriteRow store) {
+        JsonElement stored = unwrapped(corpus.expression(session,
+                store.expressionRef()));
+        return SmtLowering.named(stored) && !corpus.writesOf(session,
+                SmtLowering.locationKey(LocationId.of(LocationKind.MAP,
+                        Long.toString(VmRows.referencedObjectRid(
+                                stored.getAsJsonObject().get("_exp")
+                                        .getAsString())), "-3"))).isEmpty();
     }
 
     /**
@@ -1537,8 +1765,8 @@ public final class Composer {
             lowering.bind(key, version, null, new SmtLowering.Binder<Boolean>() {
                 @Override
                 public Term join(JsonElement value) {
-                    return lowering.dispatch(value, null,
-                            "state-join:" + key + "@" + version);
+                    return lowering.dispatch(value, SmtLowering.whole(value,
+                            null), "state-join:" + key + "@" + version);
                 }
 
                 @Override

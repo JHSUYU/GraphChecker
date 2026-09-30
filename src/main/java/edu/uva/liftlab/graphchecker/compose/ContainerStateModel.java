@@ -182,7 +182,21 @@ public final class ContainerStateModel {
                 + " (- (select (assoc_position s) q) 1)"
                 + " (select (assoc_position s) q)))))))",
                 "(define-fun assoc_remove ((s AssocState) (k Value))"
-                + " AssocState (assoc_remove_if s k true))"));
+                + " AssocState (assoc_remove_if s k true))",
+                // A put under a guard, the guard inside each component as
+                // assoc_remove_if's: with g false every component is s's.
+                "(define-fun assoc_put_if ((s AssocState) (k Value)"
+                + " (v Value) (g Bool)) AssocState"
+                + " (let ((h (and g (not (assoc_has s k))))"
+                + " (n (assoc_size s)))"
+                + " (mkAssocState"
+                + " (ite h (+ n 1) n)"
+                + " (store (assoc_present s) k (or g (assoc_has s k)))"
+                + " (store (assoc_values s) k (ite g v (assoc_read s k)))"
+                + " (store (assoc_order s) n"
+                + " (ite h k (select (assoc_order s) n)))"
+                + " (store (assoc_position s) k"
+                + " (ite h n (select (assoc_position s) k))))))"));
     }
 
     public static Term unboxValue(Term value, String javaType, Sort cellSort,

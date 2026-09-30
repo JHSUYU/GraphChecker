@@ -339,8 +339,22 @@ public final class ContainerSmtCodec {
         }
     }
 
-    /** One {@code ContainerRelation} node, or null once refused by name. */
+    /**
+     * One {@code ContainerRelation} node, or null once refused by name.  An
+     * answer asked through a reference ({@code owner}, a read a STATE family
+     * may re-point) is the host's to answer per object
+     * ({@link Host#query}); a state is never selected by one, since an
+     * array-valued choice over lambda terms is outside what z3 decides.
+     */
     public static Term term(JsonObject expression, Host host) {
+        Term answer = relation(expression, host);
+        return answer == null || !expression.has("owner")
+                || answer.sort == Sort.INDEXED
+                || answer.sort == Sort.ASSOCIATIVE
+                ? answer : host.query(expression, answer);
+    }
+
+    private static Term relation(JsonObject expression, Host host) {
         // The view states whose bijection this call already stated.
         Set<JsonElement> views = Collections.newSetFromMap(
                 new IdentityHashMap<JsonElement, Boolean>());
@@ -563,9 +577,11 @@ public final class ContainerSmtCodec {
         JsonElement receiverIr = associativeStateExpression(
                 expression.get("receiver"));
         if (("READ".equals(operation) || "CONTAINS".equals(operation))
-                && arguments.size() == 1) {
-            return associativeLookup(receiverIr, operation,
-                    arguments.get(0), javaType, host);
+                && arguments.size() == 1
+                || "READ_OR_DEFAULT".equals(operation)
+                && arguments.size() == 2) {
+            return associativeLookup(receiverIr, operation, arguments,
+                    javaType, host);
         }
         Term receiver = associativeState(expression.get("receiver"),
                 host);
@@ -610,6 +626,9 @@ public final class ContainerSmtCodec {
                     : new Term("(assoc_remove " + receiver.text + " "
                     + key.text + ")", Sort.ASSOCIATIVE);
         }
+        if ("PUT_ALL".equals(operation) && arguments.size() == 1) {
+            return putAll(receiver, arguments.get(0), host);
+        }
         if ("REMOVE_IF".equals(operation) && arguments.size() == 1) {
             // Drops the key when the guard holds; read/has short-circuit
             // this via the mutation walk, this handles a nested receiver.
@@ -624,7 +643,38 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * A read or membership test at one key.  With a literal key, the chain's
+     * {@code putAll(m)}: each key m's chain names, in the order it put
+     * them, put where m holds it ({@code assoc_put_if}, its guard inside
+     * each component as {@code assoc_remove_if}'s).  The keys are the puts
+     * above m's exact empty base; a source whose chain ends anywhere else,
+     * or runs past {@link #VIEW_CHAIN_LIMIT}, bounds nothing and is refused
+     * by name.
+     */
+    private static Term putAll(Term receiver, JsonElement source, Host host) {
+        List<JsonElement> keys = associativeViewKeys(host.chain(source),
+                host);
+        Term from = associativeState(source, host);
+        if (keys == null || from == null) {
+            host.unsupported("ContainerRelation:ASSOCIATIVE:PUT_ALL:"
+                    + "source-keys-unstated");
+            return null;
+        }
+        Term state = receiver;
+        for (JsonElement each : keys) {
+            Term key = host.box(each);
+            if (key == null) return null;
+            state = shared(new Term("(assoc_put_if " + state.text + " "
+                    + key.text + " (assoc_read " + from.text + " " + key.text
+                    + ") (assoc_has " + from.text + " " + key.text + "))",
+                    Sort.ASSOCIATIVE), host);
+        }
+        return state;
+    }
+
+    /**
+     * A read, a read with a default ({@code getOrDefault}: the default where
+     * the key is absent) or a membership test at one key.  With a literal
+     * key, the chain's
      * mutations at other literal keys cannot touch it and are passed in the
      * IR, never lowered: a map the recording rebuilt from a store's bytes
      * (Solr's cluster state, one per notification) is a put per entry, and
@@ -637,11 +687,16 @@ public final class ContainerSmtCodec {
      * distinct literals are distinct values.
      */
     private static Term associativeLookup(JsonElement receiverIr,
-                                          String operation, JsonElement key,
+                                          String operation,
+                                          JsonArray arguments,
                                           String javaType, Host host) {
+        JsonElement key = arguments.get(0);
         Term wanted = host.box(key);
         if (wanted == null) return null;
-        boolean read = "READ".equals(operation);
+        boolean read = !"CONTAINS".equals(operation);
+        Term absent = arguments.size() == 2 ? host.box(arguments.get(1))
+                : new Term(NULL_CELL, Sort.VALUE);
+        if (absent == null) return null;
         JsonElement state = receiverIr;
         String literal = literalKey(key);
         if (literal != null) {
@@ -659,7 +714,7 @@ public final class ContainerSmtCodec {
                         return new Term(removed ? "false" : "true",
                                 Sort.BOOL);
                     }
-                    Term value = removed ? new Term(NULL_CELL, Sort.VALUE)
+                    Term value = removed ? absent
                             : host.box(mutation.arguments.get(1));
                     return value == null ? null : host.unbox(value, javaType);
                 }
@@ -670,7 +725,8 @@ public final class ContainerSmtCodec {
         if (receiver == null) return null;
         if (!read) return associativeHas(receiver, wanted, host);
         requireStatedContainerBase(state, wanted, host);
-        return host.unbox(associativeRead(receiver, wanted, host), javaType);
+        return host.unbox(associativeRead(receiver, wanted, absent, host),
+                javaType);
     }
 
     /**
@@ -755,11 +811,12 @@ public final class ContainerSmtCodec {
         }
     }
 
-    /** The value at one key, or the null cell where the key is absent. */
-    private static Term associativeRead(Term state, Term key, Host host) {
+    /** The value at one key, or {@code absent} where the key is. */
+    private static Term associativeRead(Term state, Term key, Term absent,
+                                        Host host) {
         return shared(new Term("(let ((s " + state.text + ")) (ite "
                 + "(assoc_has s " + key.text + ") (assoc_read s " + key.text
-                + ") " + NULL_CELL + "))", Sort.VALUE), host);
+                + ") " + absent.text + "))", Sort.VALUE), host);
     }
 
     private static Term associativeHas(Term state, Term key, Host host) {
@@ -830,7 +887,7 @@ public final class ContainerSmtCodec {
             JsonElement stateIr, Term state, Host host,
             Set<JsonElement> views) {
         if (stateIr != null && views.contains(stateIr)) return true;
-        List<JsonElement> put = associativeViewKeys(stateIr);
+        List<JsonElement> put = associativeViewKeys(stateIr, host);
         if (put == null) {
             host.unsupported(ASSOC_VIEW_SIZE_UNSTATED + ":"
                     + associativeStateSubject(stateIr));
@@ -876,12 +933,13 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * The keys a view's state was put with above an exact empty base, or
-     * null when the chain ends anywhere else and so bounds nothing -- or
-     * runs past {@link #VIEW_CHAIN_LIMIT}.
+     * The keys a view's state was put with above an exact empty base, in
+     * the order put ({@code PUT_ALL}: its source's, at its place), or null
+     * when the chain ends anywhere else and so bounds nothing -- or runs
+     * past {@link #VIEW_CHAIN_LIMIT}.
      */
     private static List<JsonElement> associativeViewKeys(
-            JsonElement state) {
+            JsonElement state, Host host) {
         List<JsonElement> keys = new ArrayList<JsonElement>();
         JsonElement chain = state;
         for (int depth = 0; depth < VIEW_CHAIN_LIMIT; depth++) {
@@ -893,6 +951,13 @@ public final class ContainerSmtCodec {
             }
             if ("PUT".equals(mutation.operation)) {
                 keys.add(mutation.arguments.get(0));
+            } else if ("PUT_ALL".equals(mutation.operation)) {
+                List<JsonElement> added = associativeViewKeys(
+                        host.chain(mutation.arguments.get(0)), host);
+                if (added == null) return null;
+                for (int index = added.size() - 1; index >= 0; index--) {
+                    keys.add(added.get(index));
+                }
             }
             chain = mutation.receiver;
         }
@@ -941,6 +1006,7 @@ public final class ContainerSmtCodec {
         int arity = emptiesState(operation) ? 0
                 : "REMOVE".equals(operation) ? 1
                 : "REMOVE_IF".equals(operation) ? 1
+                : "PUT_ALL".equals(operation) ? 1
                 : "PUT".equals(operation) ? 2 : -1;
         if (arity < 0 || arguments.size() != arity) return null;
         // REMOVE_IF without a guard is malformed: refused, never dropped.
@@ -1206,6 +1272,17 @@ public final class ContainerSmtCodec {
          * held there: that cell, unless the owner may be another object.
          */
         Term projection(JsonObject fieldAccess, Term cell);
+
+        /**
+         * One query's answer, given the {@code answer} it has over the run's
+         * own object's state: that answer, unless its owner may be another
+         * object.
+         */
+        Term query(JsonObject relation, Term answer);
+
+        /** The chain of mutations a container state stands for: a read's
+         *  joined version, else the node itself. */
+        JsonElement chain(JsonElement state);
 
         void require(String predicate);
 

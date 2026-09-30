@@ -92,6 +92,7 @@ public final class RowInvariants {
         Map<String, String> executed = executed(session, ask, gaps);
         decisions(session, executed, gaps);
         versions(session, gaps);
+        referents(session, gaps);
         roots(session, gaps);
         targets(session, executed, gaps);
     }
@@ -918,6 +919,38 @@ public final class RowInvariants {
         }
         for (String symbol : symbols) {
             if (!where.containsKey(symbol)) where.put(symbol, place);
+        }
+    }
+
+    // ---- 12. referent states --------------------------------------------
+
+    /**
+     * CONTRACT-SPEC §2.6: a write's {@code referentState} names a write of
+     * its container's {@code MAP} location in the same session, at a
+     * version below the write's own: the state the store saw was published
+     * before it.  Anything else is a state no row stands behind, which a
+     * reader through the reference would be composed over.
+     */
+    private static void referents(SessionReader session, List<GapRow> gaps) {
+        Set<String> stated = new LinkedHashSet<String>();
+        for (WriteRow row : session.writes()) {
+            stated.add(row.location() + "@" + row.version());
+        }
+        for (WriteRow row : session.writes()) {
+            WriteRow.Referent referent = row.referentState();
+            if (referent == null) continue;
+            String state = referent.location() + "@" + referent.version();
+            if (stated.contains(state) && referent.version() < row.version()) {
+                continue;
+            }
+            gaps.add(violation(session, GapKind.UNSTATED_VALUE,
+                    GapClass.BLOCKING, "writes", row.seq(), "referentState",
+                    row.location() + "@" + row.version() + " -> " + state,
+                    "invariant 12 (CONTRACT-SPEC §2.6: a reference write's "
+                            + "referentState names a write of its session "
+                            + "below its own version): " + (stated.contains(
+                            state) ? "the state is not older than the store"
+                            : "no WriteRow of this session states it")));
         }
     }
 

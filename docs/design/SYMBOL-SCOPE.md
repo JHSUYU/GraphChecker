@@ -299,35 +299,32 @@ referent: carrier and cell are the field, `declaredCallee` the mutator, `publish
 sites. The concolic weave puts `ConcolicRegionRuntime.observeTrackedSite(siteId, cell, receiver)`
 before each (`CausynthPipeline#instrumentConcolicObservedSites`): before the `putfield`, before the
 atomic's RMW call, before the `getfield`. Inside an active region it calls the VM's
-`observeExactPrimitiveField`, which starts the location's log with an INITIAL version holding the
-current value unless a log stands (VM.md §5). A concrete store after it is then a version, and a
-read states the version it saw, INITIAL when no store of the window came first. An access before
-its object's constructor call, and a read site that is no `getfield` of its cell, are left
-unobserved; a VM failure is an `UNSTATED_VALUE` DIAGNOSTIC row. The VM observes only primitive
-integral fields: for a wrapper-typed field it prints a warning and starts no log, so such a field
-is versioned only once a symbolic value is stored into it.
+`observeField(owner, declaringClass, name, descriptor)` (`runtime/ConcolicVmBroker#observeField`),
+which starts the location's log with an INITIAL version holding the current value -- an integral's
+or a wrapper's word, a reference's identity -- unless a log stands (VM.md §5). A concrete store
+after it is then a version, and a read states the version it saw, INITIAL when no store of the
+window came first. An access before its object's constructor call, and a read site that is no
+`getfield` of its cell, are left unobserved; a status the VM refuses with (`UNSUPPORTED_TARGET`
+for a `float` or `double` field) is an `UNSTATED_VALUE` DIAGNOSTIC row naming it.
 
-Each observed row states its cell's `trackedKind`. A `REFERENCE` cell's access is observed like a
-value's, and until the VM's observer takes a reference (R3-REFCONT WP2) the observation is refused
-before the VM by name (`runtime/ConcolicVmBroker`, `REFERENCE_OBSERVATION_UNSUPPORTED`): one
-DIAGNOSTIC `UNSTATED_VALUE` gap per site and session, and the field is versioned only once a
-shadowed object is stored into it. Not observed: a `publishedFrom` write site, whose receiver is
-the local's container, not the carrier's holder (its log starts at its first model event); and a
-static cell, whose location is its class's mirror, which no observer takes yet (the map names it,
-`static: true`).
+Each observed row states its cell's `trackedKind`; a `REFERENCE` cell's access is observed like a
+value's. Not observed: a `publishedFrom` write site, whose receiver is the local's container, not
+the carrier's holder (its log starts at its first model event); and a static cell, whose location
+is its class's mirror: the map names it (`static: true`) and the weave passes no class owner yet.
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).
 
 ### 5.3 Guarded stores
 
-`runtime/GuardedStoreSites#install` hands the VM one line per method holding a guarded
-`WRITE_SITE` (`methodKey`, then its guard site ids, tab-separated), from the map named by
+`runtime/GuardedStoreSites#install` hands the VM one line per guarded `WRITE_SITE` store
+(`methodKey`, the store as the VM names it -- `CALL <name>` from `declaredCallee`, else `FIELD
+a/b/C.f` from `cell` -- then its guard site ids, tab-separated), from the map named by
 `CAUSYNTH_STATIC_SCOPE_MAP`; a missing or refused table fails the session by name
-(`GUARDED_STORE_SITES_*`). The VM uses it to version a concrete container mutation made under a
-guard of a listed method that decided symbolically (VM.md §5.3). A `publishedFrom` write site's
-guards join its method's line: SOLR-18406's `updateKnownCommitPoints` lists the `isDeleted()`
-branch its `map.put` runs under.
+(`GUARDED_STORE_SITES_*`). The VM uses it to version a concrete store at a listed site made after
+one of that site's guards decided symbolically (VM.md §5.3). A `publishedFrom` write site's guards
+join its store's line: SOLR-18406's `updateKnownCommitPoints` lists the `isDeleted()` branch its
+`map.put` runs under (`CALL put`).
 
 ### 5.4 READ placeholders
 
@@ -434,14 +431,13 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   read through a field, a parameter, `java.time`, or an interface whose implementation is outside
   the scope is not recognized; configuration values and pre-window state are roots only where a
   tree hook says so.
-- The VM versions integral instance fields and the atomics' integral `value` from an observed
-  access; wrapper fields pass the static rule but the VM starts no log for them. `REFERENCE`
-  cells (reference fields and `AtomicReference.value`) are named by the map and observed at every
-  access, but the observer refuses them (a named gap, §5.2) until R3-REFCONT WP2, and a static one
-  is not observed at all; a container reached through a replaced reference is re-paired only once
-  COMPOSE selects its referent's state (WP5). Not tracked: `float`/`double` fields, static values,
-  `String` fields, array elements, and containers the VM does not model (`ConcurrentHashMap`,
-  `TreeMap` and the queues are classified by interface here, modeled by WP3).
+- The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
+  and `AtomicReference.value`) and the atomics' integral `value` from an observed access (§5.2); a
+  static cell is not observed (the weave passes no class owner). A container reached through a
+  replaced reference is the referent's state its store stated (`referentState`), which COMPOSE
+  asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
+  fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
+  queues are classified by interface here, modeled by R3-REFCONT WP3b/c).
 - A non-application call's receiver is dropped from the slice (§2.2) unless the call is a
   container query or an atomic's accessor, so state behind any other library object never
   enters `S`.

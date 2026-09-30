@@ -56,16 +56,6 @@ oop key_of_map_node(oop node_obj);
 // One int field of an object, by name.
 jint int_field_by_name(oop obj, const std::string &name, bool *found);
 
-// The container a HashMap/LinkedHashMap view or iterator walks.
-//
-// A view -- entrySet/keySet/values and the iterators over them -- is never a
-// location of its own: a mutation performed through one is a mutation of the
-// backing container.  The link is the synthetic outer reference the JDK's
-// inner classes carry, declared as HashMap on HashMap's own views and as
-// LinkedHashMap on LinkedHashMap's, so both spellings are tried.  NULL for
-// anything that is not such a view.
-oop map_of_view(oop view_obj);
-
 // The list an ArrayList/AbstractList iterator walks, and the index it last
 // returned (`lastRet`).  Same rule and same timing caveat as the map's: the
 // iterator clears `lastRet` inside remove(), so it is read at the call
@@ -73,7 +63,8 @@ oop map_of_view(oop view_obj);
 oop list_of_iterator(oop iterator_obj);
 jint last_returned_index(oop iterator_obj, bool *found);
 
-// The entry a HashMap/LinkedHashMap iterator last returned, whose key is the
+// The entry a HashMap/LinkedHashMap iterator (`current`) or a
+// ConcurrentHashMap iterator (`lastReturned`) last returned, whose key is the
 // key an Iterator.remove() removes.  It is a field of the iterator, so it is
 // available even when the walk itself was never modelled -- which is what
 // lets a removal name its key without the reads being admitted.

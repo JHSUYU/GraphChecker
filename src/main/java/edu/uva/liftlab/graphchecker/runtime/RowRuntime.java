@@ -377,7 +377,8 @@ public final class RowRuntime {
     public static void write(OccurrenceAddress occurrence, long seq,
                              String site, LocationId location, long version,
                              JsonObject expression, String javaType,
-                             String siteIndex) {
+                             String siteIndex, WriteRow.Referent referent,
+                             String referentRefused) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null
                 || ownCode(site)) {
@@ -389,7 +390,8 @@ public final class RowRuntime {
         if (type.isEmpty()) return;
         distinct(at, "write#" + location + "#" + version);
         session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
-                version, expressionRef(expression), type));
+                version, expressionRef(expression), type, referent,
+                referentRefused));
         Confirmation.wrote(location, version, at);
     }
 
@@ -403,6 +405,20 @@ public final class RowRuntime {
                             long observedVersion, String symbol,
                             String javaType, String concreteValue,
                             String siteIndex, long mintVersion) {
+        read(occurrence, seq, site, location, observedVersion, symbol,
+                javaType, concreteValue, siteIndex, mintVersion, false);
+    }
+
+    /**
+     * The same, stating whether a writer the log never named had reached
+     * the location when it read ({@link ReadRow#unnamedWriter}).
+     */
+    public static void read(OccurrenceAddress occurrence, long seq,
+                            String site, LocationId location,
+                            long observedVersion, String symbol,
+                            String javaType, String concreteValue,
+                            String siteIndex, long mintVersion,
+                            boolean unnamedWriter) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null
                 || ownCode(site)) {
@@ -416,7 +432,8 @@ public final class RowRuntime {
         session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
                 observedVersion, Text.safe(symbol), type,
                 Text.safe(concreteValue).isEmpty() ? null
-                        : Text.safe(concreteValue), mintVersion));
+                        : Text.safe(concreteValue), mintVersion,
+                unnamedWriter));
         Confirmation.read(at, location, observedVersion, mintVersion);
     }
 

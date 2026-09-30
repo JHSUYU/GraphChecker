@@ -82,6 +82,9 @@ public class ContractTest {
                 {new com.google.gson.JsonPrimitive("Y_I_2 \"q\""),
                         "\"Y_I_2 \\\"q\\\"\"", "Y_I_2 \"q\""},
                 {com.google.gson.JsonNull.INSTANCE, "N", null},
+                {symbol("M_L'java/util/HashMap'_12"),
+                        "M_L'java/util/HashMap'_12", null},
+                {truncated(), null, null},
                 {null, null, null}};
         for (Object[] each : cases) {
             JsonObject node = new JsonObject();
@@ -92,6 +95,14 @@ public class ContractTest {
             assertEquals(String.valueOf(each[0]), each[1], spelled);
             assertEquals(each[2], ReadRow.stringContent(spelled));
         }
+    }
+
+    /** A String the VM cut past its bound: its length, and no content. */
+    private static JsonObject truncated() {
+        JsonObject value = new JsonObject();
+        value.addProperty("_type", "TruncatedValue");
+        value.addProperty("length", 5000);
+        return value;
     }
 
     @Test
@@ -439,6 +450,20 @@ public class ContractTest {
                 reline(RowCodec.writeAttach(attached))));
         assertEquals(written, RowCodec.readWrite(
                 reline(RowCodec.writeWrite(written))));
+        // A reference write states its container's state, or why not.
+        LocationId map = LocationId.of(LocationKind.MAP, "42", "-3");
+        for (WriteRow reference : Arrays.asList(
+                WriteRow.of("s-17897-1", 11L, written.endpoint(),
+                        LocationId.of(LocationKind.INSTANCE, "8", "16"), 9L,
+                        "EXPR.v1.7ab1", "L", WriteRow.Referent.of(map, 7L),
+                        null),
+                WriteRow.of("s-17897-1", 11L, written.endpoint(),
+                        LocationId.of(LocationKind.INSTANCE, "8", "16"), 9L,
+                        "EXPR.v1.7ab1", "L", null, "RESIZING"))) {
+            assertEquals(reference, RowCodec.readWrite(
+                    reline(RowCodec.writeWrite(reference))));
+        }
+        assertFalse(RowCodec.writeWrite(written).has("referentState"));
         assertEquals(read, RowCodec.readRead(
                 reline(RowCodec.writeRead(read))));
         // A placeholder's mint version is part of the row it round-trips as.
@@ -448,6 +473,14 @@ public class ContractTest {
                 reline(RowCodec.writeRead(placeholder))));
         assertFalse("a stated mint version is not the unknown one",
                 placeholder.equals(read));
+        // So is an unnamed writer: the read joins, alternatives not.
+        ReadRow partial = ReadRow.of("s-17897-1", 14L, read.endpoint(),
+                keys, 7L, "state_allKeys_7", BLOCK_KEY, null,
+                ReadRow.UNKNOWN_VERSION, true);
+        assertEquals(partial, RowCodec.readRead(
+                reline(RowCodec.writeRead(partial))));
+        assertFalse(partial.equals(read));
+        assertFalse(RowCodec.writeRead(read).has("unnamedWriter"));
         assertEquals(minted, RowCodec.readRootMint(
                 reline(RowCodec.writeRootMint(minted))));
         assertEquals(target, RowCodec.readTarget(
@@ -686,6 +719,23 @@ public class ContractTest {
                         + names(gate(clean(), attributed)),
                 0, stating(gate(clean(), attributed),
                         GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING));
+        // 12: a reference write's container state is an older write of the
+        // session; the placeholder's minted v8 is none.
+        for (long named : new long[] {7L, 8L}) {
+            Rows referring = clean();
+            referring.writes.add(WriteRow.of("s-gate", 13L,
+                    referring.writeAt, LocationId.of(LocationKind.INSTANCE,
+                            "5", "16"), 9L, "EXPR.0000000000000001", "L",
+                    WriteRow.Referent.of(referring.writes.get(0).location(),
+                            named), null));
+            if (named == 7L) {
+                assertTrue(names(gate(referring)).toString(),
+                        noViolation(gate(referring), 12));
+            } else {
+                assertInvariant(12, GapClass.BLOCKING, "field=referentState",
+                        referring);
+            }
+        }
     }
 
     /** How many rows of one kind and class a gate stated. */

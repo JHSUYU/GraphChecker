@@ -12,13 +12,13 @@ public final class RegionAtomicApiSmoke {
         require(status == 0L, "region start rejected");
 
         AtomicInteger intValue = new AtomicInteger(2);
-        System.observeExactPrimitiveField(
+        System.observeField(
                 intValue, AtomicInteger.class.getName(), "value", "I");
         int oldInt = intValue.getAndDecrement();
         int newInt = intValue.get();
 
         AtomicLong longValue = new AtomicLong(5L);
-        System.observeExactPrimitiveField(
+        System.observeField(
                 longValue, AtomicLong.class.getName(), "value", "J");
         long oldLong = longValue.getAndDecrement();
         long newLong = longValue.get();

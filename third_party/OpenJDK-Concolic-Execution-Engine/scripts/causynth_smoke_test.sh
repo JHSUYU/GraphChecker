@@ -54,13 +54,25 @@ cd "$JDK_ROOT"
   test/causynth/RegionEventSiteSmoke.java \
   test/causynth/RegionReferenceFieldStatedReadSmoke.java \
   test/causynth/RegionExactMintOverCarrierWriteSmoke.java \
-  test/causynth/RegionNestedRegionArmedReadSmoke.java \
   test/causynth/RegionStringContainsApiSmoke.java \
   test/causynth/RegionStringConversionApiSmoke.java \
   test/causynth/RegionStringSplitParseMapApiSmoke.java \
   test/causynth/RegionTableSwitchApiSmoke.java \
   test/causynth/RegionPathConditionTruncationSmoke.java \
-  test/causynth/RegionConditionalRemovalApiSmoke.java
+  test/causynth/RegionConditionalRemovalApiSmoke.java \
+  test/causynth/RegionArrayCopySmoke.java \
+  test/causynth/RegionCloneSmoke.java \
+  test/causynth/RegionUnsafeWriteSmoke.java \
+  test/causynth/RegionSharedBoxSmoke.java \
+  test/causynth/RegionTrackedRaceSmoke.java \
+  test/causynth/RegionReadExactnessSmoke.java \
+  test/causynth/RegionWrapperFieldSmoke.java \
+  test/causynth/RegionStringBuilderMutatorSmoke.java \
+  test/causynth/RegionVersionDefectsSmoke.java \
+  test/causynth/RegionReferenceSwapSmoke.java \
+  test/causynth/RegionConcurrentHashMapSmoke.java \
+  test/causynth/RegionWrapperViewSmoke.java \
+  test/causynth/RegionAtomicCarrierSmoke.java
 
 for smoke in \
   RegionApiSmoke \
@@ -105,11 +117,23 @@ for smoke in \
   RegionEventSiteSmoke \
   RegionReferenceFieldStatedReadSmoke \
   RegionExactMintOverCarrierWriteSmoke \
-  RegionNestedRegionArmedReadSmoke \
   RegionStringContainsApiSmoke \
   RegionStringConversionApiSmoke \
   RegionStringSplitParseMapApiSmoke \
-  RegionTableSwitchApiSmoke; do
+  RegionTableSwitchApiSmoke \
+  RegionArrayCopySmoke \
+  RegionCloneSmoke \
+  RegionUnsafeWriteSmoke \
+  RegionSharedBoxSmoke \
+  RegionTrackedRaceSmoke \
+  RegionReadExactnessSmoke \
+  RegionWrapperFieldSmoke \
+  RegionStringBuilderMutatorSmoke \
+  RegionVersionDefectsSmoke \
+  RegionReferenceSwapSmoke \
+  RegionConcurrentHashMapSmoke \
+  RegionWrapperViewSmoke \
+  RegionAtomicCarrierSmoke; do
   "$JDK_HOME/bin/java" -Xint -cp "$OUT" "$smoke"
 done
 

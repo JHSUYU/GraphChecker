@@ -789,6 +789,7 @@ void ReturnedValue::serialize(
   // Absent, not null, when nothing is stated: null is a value.
   switch (kind) {
     case CONSTANT:
+    case REFERENCE:
       writer.Key("concreteValue");
       constant->serialize(writer);
       break;
@@ -799,6 +800,15 @@ void ReturnedValue::serialize(
     case STRING:
       writer.Key("concreteValue");
       writer.String(content.c_str(), (rapidjson::SizeType) content.size());
+      break;
+    case TRUNCATED_STRING:
+      writer.Key("concreteValue");
+      writer.StartObject();
+      writer.Key("_type");
+      writer.String("TruncatedValue");
+      writer.Key("length");
+      writer.Int(length);
+      writer.EndObject();
       break;
     case UNSTATED:
       break;

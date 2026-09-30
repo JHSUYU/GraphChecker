@@ -88,19 +88,28 @@ public final class RegionGuardedConcreteWriteSmoke {
         // marker's own result would consume the reservation and the branch
         // that followed would contribute no guard.
         // The plan's answer, installed the way the runtime installs it: this
-        // method's stores are control-dependent on GUARD_SITE, and nothing
-        // else in this program is control-dependent on anything.  A store in
-        // a method the table does not name never starts a log, which is what
+        // method's remove is control-dependent on GUARD_SITE, and nothing
+        // else in this program is control-dependent on anything.  A store
+        // site the table does not name never starts a log, which is what
         // keeps a decision from admitting every store that merely follows it.
         require(System.installGuardedStoreSites(STORE_SITES) == 1,
                 "the guarded-store table was not installed");
+        Map<Integer, String> beside = new LinkedHashMap<Integer, String>();
         long marked = System.markConcolicBranch(GUARD_SITE, 1);
         if (clock.now > 50) {
             // Concrete removal of a concrete key from a concrete map, taken
             // because a symbolic predicate came out one way.
             keys.remove(Integer.valueOf(1));
+            // Under the same guard, in the same method, but a store site the
+            // table does not list: the table is per site, not per method.
+            beside.put(Integer.valueOf(3), "beside");
         }
         require(marked > 0L, "branch marker rejected");
+        String unlisted = System.getSharedMapVersions(beside);
+        require(unlisted.contains("\"selected\":false")
+                        && !unlisted.contains("\"fieldVersionId\""),
+                "a store site the table does not list started a log: "
+                        + unlisted);
         // A callee reached from the guarded branch, storing concretely into a
         // container of its own.  Its method is not in the table, so nothing
         // it does starts a log -- which is the whole difference between
@@ -156,14 +165,14 @@ public final class RegionGuardedConcreteWriteSmoke {
                     + "long)>#u11";
 
     /**
-     * This method's stores, and the branches they are control-dependent on:
-     * the method key, then one field per guard site.  Two guards here, so the
-     * second field is not the last -- a parser that stopped at the first tab,
-     * or split a field on its commas, fails this.
+     * This method's remove, and the branches it is control-dependent on: the
+     * method key, the store, then one field per guard site.  Two guards here,
+     * so the second field is not the last -- a parser that stopped at the
+     * first tab, or split a field on its commas, fails this.
      */
     private static final String STORE_SITES =
             "RegionGuardedConcreteWriteSmoke#run(Z)Ljava/lang/String;"
-                    + "\t" + GUARD_SITE
+                    + "\tCALL remove\t" + GUARD_SITE
                     + "\t<some.Other: void m(int,long)>#u3";
 
     private static int count(String value, String needle) {

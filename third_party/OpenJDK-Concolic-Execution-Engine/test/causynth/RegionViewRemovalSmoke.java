@@ -115,7 +115,7 @@ public final class RegionViewRemovalSmoke {
     /** This method's stores, and the branch they are control-dependent on. */
     private static final String STORE_SITES =
             "RegionViewRemovalSmoke#run(J)Ljava/lang/String;"
-                    + "\tGUARD.expiry";
+                    + "\tCALL remove\tGUARD.expiry";
 
     private static int count(String value, String needle) {
         int result = 0;
