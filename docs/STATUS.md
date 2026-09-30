@@ -73,7 +73,10 @@ That claim rested on free constants: the balancer's block-key expiry (`HOFF.9a49
 `HOFF.3220fe99`), joined in a move task's arm closure, was bound by no family. HEAD binds it
 (`ComposedFamilies#handedOn`), and over r8 (`/bigtemp/vnr3ne/ab/r11741-exp-r8r7`) all 17 paths are
 then unsatisfiable with every root free (`PATH_SELF_CONTRADICTORY`, `NO_SUPPORTED_WITNESS`): the
-NameNode arms deliver that expiry as constants.
+NameNode arms deliver that expiry as constants. The workload's `pinBlockKeys` rotated the keys before
+`startRecording`, so the key the Balancer fetched and cached had an expiry no recorded clock wrote, a
+different constant in every replay. The HDFS tree (`gc/hdfs-11741` `5cff0e12b1f`) now rotates once
+inside the window before the Balancer's fetch; no round has run on it yet.
 hdfs-17960, hdfs-17897, hdfs-17899-bug1 and hdfs-17967-pathB keep their claims (r3, r7).
 
 Round `rb1` (this branch before the merge of main `69edf0c06`, fresh seeds) failed hdfs-17967-pathB
