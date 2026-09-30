@@ -171,24 +171,41 @@ is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. T
 code is not the gate (a target that throws exits nonzero by design).
 
 A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
-end and the witness stop alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
+end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
 starts after it), live activations settle, the run totals close the session's rows (a closed
-`SessionPublisher` writes nothing more), and only then the VM session closes. Cluster threads
+`SessionPublisher` writes nothing more), and only then the VM session closes. The settle
+(`ConcolicResultPublisher#awaitSelectedResultPublications`) is bounded by progress: it gives up once
+nothing has moved for 30 s (no loop body charged, no activation settled, no publication finished,
+and the publication thread spent no CPU), so a publication that computes is never cut and one
+blocked is: every activation still live is then stranded, and the publication left running is a
+`TASK_UNANSWERED` `RESULT_PUBLICATION_UNSETTLED` that holds every obligation of the replay
+`NOT_ADMITTED` (`FocusedReplay#noteUnsettledPublication`: its rows may be partial). A stranded
+activation's VM region is its thread's, so the terminal that thread still reaches closes it
+(`ConcolicRegionRuntime#strand`, `#closeStranded`) and publishes nothing. The end runs once: a
+second thread ending the same run (an early end meeting the workload's own) waits for the first's
+`System.exit`, and a caller of the run totals (`ConcolicResultPublisher#publishRunTotals`, also the
+shutdown hook) returns only once they are published, so no exit halts the close half-done. Cluster threads
 outlive the test, and a region started after the close would open a fresh VM session in which
-every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`). The run has one end: the first
-of the two to begin it ends the run, and the other waits for its exit; the run totals are
-published whole before any caller of them returns (SOLR-18413 r8: the declared update's throw
-failed the test while its witness stop ran, and the test closed the session and exited while the
-verdict was still being written).
+every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
 
-A focused replay ends at its witness: when the focus row's declared occurrence publishes a target row
-that observed the fatal (`ConcolicResultPublisher#concludeAtWitness`), admission ends, its schedule
-states the run cut there (`ScheduleLog#witnessed`: a replay held to it holds a `WAKE` it never made
-to the order's end, IDENTITY.md §8), the publications in flight settle, every activation still live is stranded (`TASK_UNANSWERED`
-`AT_WITNESS`; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and one that
-completes after the witness is not published (`AT_WITNESS`). A stranded or late activation's path
+A focused replay ends early, once, for one of two reasons (`ConcolicResultPublisher#conclude`):
+
+- `AT_WITNESS`: the focus row's declared occurrence publishes a target row that observed the fatal
+  (`#concludeAtWitness`); its schedule states the run cut there (`ScheduleLog#witnessed`: a replay
+  held to it holds a `WAKE` it never made to the order's end, IDENTITY.md §8).
+- `AT_REFUSAL`: a refusal decided every obligation the replay carries (`#concludeAtRefusal`,
+  `FocusedReplay#refusedAt`, §7.6).
+
+Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
+publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
+with the reason; after the workload's own end, one live while nothing progressed for the grace is
+`TERMINAL_NEVER_REACHED`), and a publication
+not yet started is withheld (the reason again): at the witness, one submitted after it (the
+session is read whole up to the witness); at a refusal, every one (the session is withdrawn, and
+draining the queue into it cost a Solr replay two to five minutes past the test's end). A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
-name its symbols (IMPORT invariant 11).
+name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
+`System.exit` ends the in-process cluster (its threads and ports) with the JVM.
 
 A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
 admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
@@ -330,8 +347,18 @@ share a variable with the guard (`compose.Independence.ofGuard`), plus the input
 ran, their handoff sites and producers, and those members' write counts at the locations the guard
 reads — never delivered values. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier wave answered it
-`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). The ledger is rebuilt every
-wave from the corpus and `obligation_results.jsonl`.
+`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer), or an earlier wave answered
+its **question** under another id. The question (`ObligationFactory#question`) is
+`<flip>:<content>`: the flip (`#flip`: task, path, site, ordinal, flipped outcome), then a digest of
+the query as its solver is asked it (or the refusal that leaves none) and the world its replay would
+plant (the path's world: roots, clock skews, answers, inherited flips); an id drifts as sessions land (the factor, and so the input
+shape, grows) while the question does not as long as the query reads the same (SOLR-18413 r5:
+185 questions asked 717 times, 118 of the 166 re-asked byte-identical, 162 answered as before).
+The planner and the solver build the query the same way, over fresh session lowerings
+(`Corpus#isolated`: a lowering names refused constructs by a running count and states its facts
+in arrival order), so the planner's question is the one the solver asks; the solver writes the
+question it asked to the worker's `question.txt`. The ledger is rebuilt every wave from the corpus,
+`obligation_results.jsonl` and the workers' questions (`ObligationDir#questions`).
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 
@@ -340,7 +367,14 @@ candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
 `--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32,
 `--max-world-depth` 3 (flips a cut path's world may already hold). Every bound that drops work files
-a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too.
+a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too. A candidate the ledger does not
+settle by id, whose flip an earlier wave answered a question about, is built its question; one an
+earlier wave answered settles it (a DIAGNOSTIC gap naming the obligation that asked it). No other
+query is built by the planner: one costs a solver up to a minute (hdfs-17960: 33 built in the planner
+took 23 min), and no other flip's question can have an answer. The wave writes `questions.tsv`
+(`<obligationId> TAB <question>`, or its flip where none was built, per proposed obligation) and
+states `answeredQuestions` (distinct questions answered so far) in `explore_manifest.json`. A case
+stopped at its witness seeks no flip at all.
 
 ### 7.5 One obligation: `explore.ObligationSolverMain`
 
@@ -389,16 +423,25 @@ each comparison atom over a clock whose polarity `not`/`and`/`or` resolve (`expl
 an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest world:
 `minimize Σ|x − recorded(x)|` over bounded Int roots and clocks (`FlipQueryText`).
 
-z3 runs with `solver_timeout_ms`. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
+z3 runs with `solver_timeout_ms`, which its driver (`smt.Z3`) enforces; a JVM that ends takes its
+running z3 processes with it (a shutdown hook), and each z3 also carries its own hard timeout ten
+seconds past that budget (`-T`, `Z3#hardTimeout`), so one whose JVM was killed outright stops by
+itself. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
 `NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
 read back by root id, the flipped path's clocks as skews (`model − host reading`; one outside a Java
 long refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#answer`: a String
 control -- a codec's STR hole -- as its JSON string literal, which the replay plants verbatim; one
 whose model value is no string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
 (an arrival, a read's `concreteValue`, a root) is a literal of the sort its variable is declared at
-by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A model that assigns roots, all at their
-recorded values, with no answer and no moved clock, is refused (`NOT_ADMITTED`: it asks for the seed
-replay). The parent world is overlaid (model wins) and its flips inherited. Every assigned root must
+by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A model that plants
+nothing its path's session did not run -- no moved clock, no answer, and every assigned root at
+the value that session minted -- is refused before any replay (`ObligationFactory#plantsNothing`,
+`NOT_ADMITTED`, a DIAGNOSTIC `ADMISSION_GAP` under `EXPLORATION`): its replay would run that
+session's world again. Assigning roots, all at their recorded values, it names the polarity or
+binding fault that implies; assigning none (`EMPTY_WORLD`), it names the symbols the model moved
+that no replay plants -- writer choices `wchoice_*`, container states `st__*`, refused terms
+`unsupported__*` (SOLR-18413 r5: 67 such focused replays, r7 14, r9 2, none ever admitted). The
+parent world is overlaid (model wins) and its flips inherited. Every assigned root must
 have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`). The worker writes
 `obligation_result.jsonl` (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`,
 `gaps.jsonl`, `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)) and the
@@ -409,7 +452,8 @@ mark of the flip occurrence, the focused occurrence or a factor member goes to
 ### 7.6 The obligation replay
 
 `campaign_obligation_replay` links the seed plan into the worker directory and runs the adapter under
-`replay_timeout_s`. The replay runs the whole workload; the focused set (focused occurrence, factor,
+`replay_timeout_s`. The replay runs the workload to its end, its witness or its deciding refusal
+(below); the focused set (focused occurrence, factor,
 each assigned root's mint occurrence, inherited flips' occurrences) runs symbolically
 (`runtime.FocusedReplay`). A clock skew is planted at its mint (the host's reading plus the skew)
 and is a jump of that node's clock (`runtime.NodeClocks`): a declared clock reading no skew is asked
@@ -421,16 +465,39 @@ COMPOSE's rule: a node's wall clock and monotonic clock are two). A value carryi
 computed from a reading and is never moved again; an unattributed mint is on no node's clock and
 reads the host (`MINT_UNATTRIBUTED`). A clock's mint row states the instant the run used and, as
 `clockSkew`, how far its clock ran off the host there; skews stay relative to the host's reading. The replay owns the verdict: `RowRuntime.closeSession` writes the session's
-`obligations.jsonl` and rewrites the worker's `obligation_result.jsonl`. `ADMITTED` = the flipped
+`obligations.jsonl` and states the same rows to the worker's `replay_verdict.jsonl`. The worker is
+the one writer of the obligation's answer, `obligation_result.jsonl`, and writes it once the
+replay's process group is gone (`run_under_wall_clock_bound` ends it: whatever of it outlives the
+launcher gets TERM, the kill grace, then KILL), so no replay JVM writes after it (solr-18406 ra1:
+five JVMs past their bound rewrote the answer ADMITTED during their shutdown hooks, naming sessions
+the worker had withdrawn, and the head waited for them until the campaign failed). `ADMITTED` = the flipped
 decision took the other arm, the focused prefix was not abandoned, the session published a mint row
 for every assigned root and clock skew, and every inherited flip held; anything else is
 `NOT_ADMITTED` naming why. A mint that ran without planting its assignment is a BLOCKING
 `ASSIGNMENT_UNPLANTED` gap of the session. A replay ends once the focus row's `declaredTarget`
-publishes a target row that reached the anchor and observed the fatal
-(`ConcolicResultPublisher.concludeAtWitness`).
+publishes a target row that reached the anchor and observed the fatal (`AT_WITNESS`, §5).
+
+**The early end at a refusal** (`FocusedReplay#refusedAt`). A replay is *decided* at the first
+refusal after which every obligation it carries is `NOT_ADMITTED` whatever the run does next: the
+prefix of an obligation's own occurrence is abandoned (`REPLAY_PREFIX_UNMATCHED`: the flip site took
+the recorded arm, or the occurrence closed without reaching it), which holds every flipped
+obligation of the replay `NOT_ADMITTED` too, or a flip the replay inherited took the other arm. It
+ends there (`AT_REFUSAL`, §5). A flipped obligation is never decided before its replay ends: its
+session is a corpus session, cut from by later waves and read whole by the closure and COMPOSE (the
+anchor, the fatal and writers after the anchor among them), so only the witness ends it early. A
+decided replay **publishes no session**: its verdict rows state the refusal and that the replay
+ended there, the worker's row names no session, and the replay withdraws the directory it opened
+to `<worker>/refused-sessions/` at its close, in one rename (`RowRuntime#closeSession`,
+`SessionPublisher#withdrawTo`); `campaign_obligation_replay`, on the host that ran the replay,
+withdraws one a failed move left listed. A `NOT_ADMITTED` replay ran no world (§7.4 cuts no path from one),
+and rows cut at the refusal are a prefix of a run no stage could tell from a whole one. Its gap rows
+stay EMIT's (§11). The head, reading a peer's row that names no session, waits until its own
+listing holds no session naming the obligation (`campaign_await_remote_result`), so neither the
+wave's gate nor the next planner reads one a cached listing kept.
+
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
-verdict is `NOT_ADMITTED`. A solver JVM that exits nonzero records `NOT_ADMITTED` with its last
-stderr line. A result row still saying `SAT_MODEL_READY` after the replay fails EXPLORE.
+answer is `NOT_ADMITTED` naming the bound. A solver JVM that exits nonzero records `NOT_ADMITTED`
+with its last stderr line. A replay that states no verdict fails EXPLORE.
 
 ### 7.7 The work pool
 
@@ -447,9 +514,14 @@ shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER
 `obligation_memory_mb` for 60 s. The head (`do_campaign`, `campaign_head_charged`) charges each of
 its engine JVMs `engine_memory_mb` (else 8192) for 120 s and its seed and CONFIRM replays
 `obligation_memory_mb` for 300 s, and releases the row when the command returns
-(`campaign_host_release`); an obligation's own JVMs are inside its slot's charge. A slot whose obligation does not finish (nonzero worker exit)
-makes the wave fail, and the campaign fails at EXPLORE after reaping remote workers. Verdicts are
-appended to `obligation_results.jsonl` once the wave settled.
+(`campaign_host_release`); an obligation's own JVMs are inside its slot's charge. An obligation
+whose worker does not finish (a nonzero exit, local or remote, or a result the head cannot see) is
+its own answer and the slot goes on (`campaign_obligation_unfinished`): every process on its host
+whose command line names its worker directory is ended (a peer's replay JVM is in a process group
+the remote wrapper's watchdog does not reach), a session naming it moves to
+`<worker>/unfinished-sessions/`, and its row is `NOT_ADMITTED` naming the host and the exit. Only a
+slot whose host's memory cannot be read fails the wave (the campaign fails at EXPLORE after
+reaping remote workers). Verdicts are appended to `obligation_results.jsonl` once the wave settled.
 
 ### 7.8 GROW
 
@@ -467,8 +539,10 @@ exposure) fails EXPLORE.
 `campaign_explore`: plan wave N; if `obligations.jsonl` is empty and no region is exposed, stop (the
 fixed point). Otherwise stop with a DIAGNOSTIC `ADMISSION_GAP` row in `campaign_gaps.jsonl` when
 `N ≥ region_path_max_waves` (`REGION_PATH_WAVE_BUDGET_REACHED`) or when the signature over the
-proposed ids, the verdict histogram and the exposures equals the previous wave's
-(`REGION_PATH_CLOSURE_NO_PROGRESS`). Else dispatch the obligations (if any), GROW (if a region is
+wave's questions (`questions.tsv`), the count of distinct questions answered (`answeredQuestions`)
+and the exposures equals the previous wave's (`REGION_PATH_CLOSURE_NO_PROGRESS`: the wave before
+asked the same and learned no answer it did not have; ids drift and every re-ask adds a verdict
+row, so neither stops a loop). Else dispatch the obligations (if any), GROW (if a region is
 exposed), then gate the wave: the IMPORT
 gate over the whole session roster (linked under `import-gates/obligations-NNNN/`) whenever the wave
 added a session; one BLOCKING violation fails the campaign at IMPORT.
@@ -863,7 +937,7 @@ same shape for a refusal, `realized.json` and the decision.
    runtime plan's `gaps` as PLAN; every `gaps.jsonl` under the iteration directory — a path matching
    `*/sessions/*/gaps.jsonl` as REPLAY (a withdrawn exposing session under `before-*/sessions/`
    included), any other under `obligations-*/` as EXPLORE (a session withdrawn to
-   `timed-out-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
+   `timed-out-sessions/` or `refused-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
    `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `byStage`, `byCode`.
 3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a
@@ -939,6 +1013,13 @@ comparison.
   `gaps.jsonl`. A slot or a head that seems stalled logs `waiting for memory on <host>: …`; the
   host ledger is `$CAUSYNTH_HOST_LEDGER/<host>/{available,starts}`.
 - `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.
+- Where the wall time went: `tools/analysis/timeline.py <accept-dir>...` reads a campaign's own
+  files (stage metrics, file mtimes, the log) and prints each stage (SEED split into static pass,
+  weave, recording and aggregation), each wave (planning, dispatch, import gate; obligations by
+  verdict, solver JVMs that failed; focused replays with min/median/max duration and how many
+  were refused, flipped or ended in error, and how many ended early (§5) with the time from the
+  end's replay-log line to the JVM's last write), the CONFIRM replay and the top time sinks. A gate or
+  stage that started a head JVM includes the head's wait for memory (§7.7), which the log counts.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
   `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it
   re-runs by hand in z3), `focused_task.jsonl` (the world), `replay.log`, `stdout.log`/`stderr.log`.

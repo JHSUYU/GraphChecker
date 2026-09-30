@@ -22,6 +22,7 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -267,6 +268,29 @@ public final class SessionPublisher {
                 }
             }
             writers.clear();
+        }
+    }
+
+    /**
+     * Closes this session and moves its directory out of the corpus, to
+     * {@code <quarantine>/<sessionId>}, in one rename: a replay a refusal
+     * decided publishes no session ({@code FocusedReplay#refusedAt}), and
+     * it knows so before any stage can read one.
+     *
+     * @return {@code ""} once moved, else why it was not
+     */
+    String withdrawTo(Path quarantine) {
+        synchronized (LOCK) {
+            close();
+            try {
+                Files.createDirectories(quarantine);
+                Files.move(layout.dir(),
+                        quarantine.resolve(layout.sessionId()),
+                        StandardCopyOption.ATOMIC_MOVE);
+                return "";
+            } catch (IOException | RuntimeException unmoved) {
+                return unmoved.toString();
+            }
         }
     }
 

@@ -194,8 +194,10 @@ final class ActiveRegion {
     void observeReplayDecision(
             String siteId, int occurrence, BranchDecision decision) {
         if (d3Address == null) return;
-        FocusedReplay.observeDecision(d3Address, siteId, occurrence,
-                decision.outcome);
+        if (FocusedReplay.observeDecision(d3Address, siteId, occurrence,
+                decision.outcome)) {
+            ConcolicResultPublisher.concludeAtRefusal();
+        }
     }
 
     /** Whether this activation has walked a branch its obligation forbids. */

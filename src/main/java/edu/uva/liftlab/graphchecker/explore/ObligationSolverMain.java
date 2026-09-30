@@ -35,7 +35,8 @@ import java.util.List;
  *   --obligation-id &lt;id&gt;      which row of it this worker owns
  *   --sessions &lt;dir&gt;          the corpus every wave so far has written
  *   --output-dir &lt;dir&gt;        obligation_result.jsonl, obligation.jsonl,
- *                             obligation_query.smt2, focused_task.jsonl
+ *                             obligation_query.smt2, question.txt,
+ *                             focused_task.jsonl
  *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
  *                             declaration the wave was planned under
  *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt;
@@ -106,6 +107,10 @@ public final class ObligationSolverMain {
         }
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
                 candidate, z3, timeoutMillis);
+        // The question it asked, by which the ledger answers it once.
+        Files.write(out.resolve(ObligationDir.QUESTION),
+                (outcome.question + System.lineSeparator())
+                        .getBytes(StandardCharsets.UTF_8));
         if (!outcome.issued()) {
             return publish(out, proposal, outcome.result, outcome.smt2,
                     outcome.gaps, null);
