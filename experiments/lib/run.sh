@@ -19,7 +19,11 @@ export CAUSYNTH_CLASSES_DIR=${analysis}
 export CAUSYNTH_LINEAGE_ROOTS=${lineage_roots}
 export CAUSYNTH_TEST_CLASSES_DIR=${test_classes}
 export CAUSYNTH_CLASSPATH
-CAUSYNTH_CLASSPATH=$(bash "${lib}/classpath.sh" "${case_dir}" "${case_id}")
+# A reader of a recorded run (tools/regress/offline-ab.sh `config`) states the
+# classpath that run froze: the tree's surefire report may be gone since.
+# A campaign never sets it -- execute.sh reads the report either way.
+CAUSYNTH_CLASSPATH=${CAUSYNTH_CLASSPATH_OVERRIDE:-$(bash "${lib}/classpath.sh" \
+  "${case_dir}" "${case_id}")}
 export CAUSYNTH_OUTPUT_DIR=${CAUSYNTH_OUTPUT_DIR:-/tmp/graphchecker-${tag}}
 export CAUSYNTH_LOOP_BOUNDS=${loop_bounds}
 export CAUSYNTH_TARGET_SPEC=${target_spec}

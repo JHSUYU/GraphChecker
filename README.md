@@ -194,6 +194,7 @@ experiments/hadoop/, experiments/solr/   per-system scripts, cases, ad-hoc exper
 experiments/hbase/                HBase reading notes and sketches (not a runnable case)
 tools/rounds/                     launch, monitor and stop campaigns on the lifts
 tools/adhoc/                      ad-hoc check discovery, selection, sweeps, triage
+tools/regress/                    offline-ab.sh: a candidate jar against a baseline on a recorded round, no replay (merge gate)
 tools/analysis/                   one-off analyses (chain check, graph diff, pairing probe)
 tools/case_onepager.py            one page per case from a campaign's artifacts
 tools/linecount_reconcile.sh      per-package line counts of two checkouts

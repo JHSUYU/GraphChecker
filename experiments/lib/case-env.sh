@@ -56,5 +56,8 @@ source "${case_dir}/case.sh" "${case_id}"
 target_occurrence=${CAUSYNTH_TARGET_OCCURRENCE_OVERRIDE-${target_occurrence}}
 system_paths
 tag=${case_name}${case_id:+-${case_id}}
-analysis=/tmp/graphchecker-${tag}-classes
+# The one per-host path a case has; a reader beside a running campaign (the
+# offline gate, tools/regress/offline-ab.sh) copies the scope elsewhere,
+# because prepare-analysis.sh empties this directory first.
+analysis=${CAUSYNTH_ANALYSIS_CLASSES_DIR:-/tmp/graphchecker-${tag}-classes}
 test_name=${test_class}#${test_method}
