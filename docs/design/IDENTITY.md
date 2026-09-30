@@ -246,6 +246,15 @@ order:
 - an event takes the earliest open or given-up slot of its key; with none it runs free. A slot
   before the cut, or a `WAKE` slot anywhere, is held until every earlier slot is settled;
   `INTERRUPT` is never held;
+- while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
+  recording never made waits at the cut. One past its recorded count (a loop polling longer than
+  recorded) waits until its context's next slot is due, then polls once per move of the order
+  (a settled slot) since its previous `WAKE`; the slot its last recorded `WAKE` took counts, so
+  the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
+  slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
+  scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
+  wait is missed). The watchdog lets held waits go when the run idles; a released timed wait still
+  waits out its own deadline. Past the cut a `WAKE` with no slot runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
   not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog
   acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled, and none
@@ -253,9 +262,10 @@ order:
   A thread owes a slot when its last event stood in the slot's context, or in work that context
   handed on (`context|…`), and it neither waits nor polls past what the order holds
   (`ScheduleLog#computingLocked`); the result publication, store-notification work and threads
-  no event bound never count. The watchdog first lets the waits held at the cut go; a grace
-  (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter. A let-go
-  does not restart the stall's clock, so an event that never comes costs a timeout and a grace.
+  no event bound never count. The watchdog first lets the waits held without a slot go; a grace
+  (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter, and when
+  that settles nothing it lets the held waits go again, a grace apart. A let-go does not restart
+  the stall's clock, so an event that never comes costs a timeout and a grace.
   After two give-ups past the cut the rest is released. Each let-go and give-up is a
   `SCHEDULE_DIVERGED` DIAGNOSTIC row;
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its

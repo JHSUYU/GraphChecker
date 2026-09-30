@@ -31,7 +31,8 @@ import java.util.Set;
  * ever evidence, so it is refused by name.</p>
  */
 final class GuardedStoreSites {
-    private static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
+    /** Names this epoch's scope map; {@link ClockLoops} reads it too. */
+    static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
     /** VM25: {@code line ::= methodKey ( '\t' guardSite )*}. */
     private static final char LINE = '\n';

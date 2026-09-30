@@ -43,7 +43,10 @@ import java.util.concurrent.TimeUnit;
  * of its key {@code (kind, c, site)}; with none it runs free.  A slot before
  * the cut, or a WAKE slot anywhere, is HELD until every earlier slot is
  * settled; other slots past the cut are taken at once.  INTERRUPT is never
- * held.</p>
+ * held.  While the prefix stands a WAKE with no slot is held too: at the
+ * cut when the recording never made it, and past its recorded count -- a
+ * loop polling longer than recorded -- once per move of the order, unless
+ * its loop reads a CLOCK root ({@link #waitsAtLocked}).</p>
  *
  * <p>SETTLING what did not happen: a CLOSED occurrence's untaken slots are
  * dead; a turn's END gives up what the turn did not do; a WAITER gives up
@@ -130,12 +133,29 @@ public final class ScheduleLog {
     /** The threads waiting for a turn, each with the slot it waits at. */
     private static final Map<Thread, Integer> WAITERS =
             new HashMap<Thread, Integer>();
-    /** What each thread held AT THE CUT last waited to make. */
-    private static final Map<Thread, Pending> HELD_AT_CUT =
+    /**
+     * The waiters the order holds without a slot, each with the WAKE it
+     * waits to make: one the recording never made (AT THE CUT), or a poll
+     * past its recorded count ({@link #waitsAtLocked}).  Only these can be
+     * let go.  A subset of {@link #WAITERS}.
+     */
+    private static final Map<Thread, Pending> HELD =
             new HashMap<Thread, Pending>();
-    /** Threads held at the cut that the watchdog let go, until the wait
-     *  ends. */
+    /** Held threads the watchdog let go, until the wait ends. */
     private static final Set<Thread> LET_GO = new HashSet<Thread>();
+    /** How many times a slot was settled: the order's moves. */
+    private static long moves;
+    /**
+     * Per WAKE key, {@link #moves} before its last WAKE was written: a poll
+     * past its recorded count goes again only once the order moved since.
+     * The slot a loop's last recorded WAKE took is itself a move, so the
+     * first poll past the count goes at once.
+     */
+    private static final Map<String, Long> POLLED =
+            new HashMap<String, Long>();
+    /** Per WAKE key, whether its wait's loop reads a CLOCK root. */
+    private static final Map<String, Boolean> CLOCK_LOOPS =
+            new HashMap<String, Boolean>();
     /**
      * Whether this thread's last observed event was a vacant WAKE: one the
      * recording never made, held at the cut and let go only because the run
@@ -345,6 +365,7 @@ public final class ScheduleLog {
         if (wake == null) return;
         synchronized (LOCK) {
             LET_GO.remove(Thread.currentThread());
+            HELD.remove(Thread.currentThread());
             if (WAITERS.remove(Thread.currentThread()) != null) {
                 LOCK.notifyAll();
             }
@@ -355,9 +376,11 @@ public final class ScheduleLog {
     enum Turn {
         /** Its WAKE slot was due: taken and written. */
         ADMITTED,
-        /** Not due yet (or unrecorded while the prefix stands): ask again. */
+        /** Not due yet, or held with no slot while the prefix stands: ask
+         *  again. */
         NOT_YET,
-        /** No slot holds it and the prefix is settled: wall clock. */
+        /** No slot and nothing holds it: its own deadline, on the wall
+         *  clock. */
         FREE,
         /** The wait has no event to make, so nothing can hold it. */
         NO_EVENT
@@ -577,6 +600,7 @@ public final class ScheduleLog {
             admittedLocked(event, slotOf(event));
         } finally {
             WAITERS.remove(self);
+            HELD.remove(self);
             LET_GO.remove(self);
         }
     }
@@ -586,14 +610,17 @@ public final class ScheduleLog {
      * and binds its thread to its context ({@link #BOUND}).
      */
     private static void admittedLocked(Pending event, int slot) {
+        long before = moves;
         if (slot >= 0) {
             takeLocked(slot);
         } else {
             ranFree++;
         }
         appendLocked(event);
+        boolean wake = event.kind == ScheduleEvent.Kind.WAKE;
+        if (wake) POLLED.put(event.key, before);
         BOUND.put(Thread.currentThread(), new Bound(event.context,
-                slot < 0 && event.kind == ScheduleEvent.Kind.WAKE));
+                wake && slot < 0));
     }
 
     /**
@@ -616,29 +643,62 @@ public final class ScheduleLog {
 
     /**
      * Where {@code event}, whose slot is {@code slot} (-1: none), waits now,
-     * or {@link #GO}.  An unrecorded WAKE is slept through while the prefix
-     * stands: it waits AT THE CUT, counted by the watchdog -- unless the
-     * recording made that wait and its context has a slot left.  Then it is
-     * a loop polling once more than recorded for what a free event brings
-     * (a store's notification), and only its next turn makes that slot's
-     * event: it waits until the slot is due.  INTERRUPT is never held.
+     * or {@link #GO}.  INTERRUPT is never held.  A WAKE no slot holds is
+     * held while the prefix stands, and only then ({@link #HELD}):
+     *
+     * <ul>
+     *   <li>one the recording never made waits AT THE CUT;</li>
+     *   <li>one PAST ITS RECORDED COUNT is a loop polling longer than
+     *       recorded, for what another context brings.  It waits until its
+     *       context's next slot is due -- only its next turn makes that
+     *       slot's event -- and then polls once per move of the order since
+     *       its previous WAKE ({@link #POLLED}): a poll between two moves
+     *       would read what the last one read.  A loop that reads a CLOCK
+     *       root ({@link ClockLoops}) waits for time only the clock brings,
+     *       and goes as soon as its slot is due.  With no slot of its
+     *       context left, it waits at the cut.</li>
+     * </ul>
+     *
+     * The watchdog lets a held wait go when the run idles.  Released, a
+     * timed wait still waits out its own deadline ({@link TimedWaits}).
      */
     private static int waitsAtLocked(Pending event, int slot) {
-        if (slot < 0) {
-            if (event.kind != ScheduleEvent.Kind.WAKE
-                    || !prefixStandsLocked()) {
+        Thread self = Thread.currentThread();
+        HELD.remove(self);
+        if (slot >= 0) {
+            return event.kind == ScheduleEvent.Kind.INTERRUPT
+                    || !heldKind(slot) || dueLocked(slot) ? GO : slot;
+        }
+        if (event.kind != ScheduleEvent.Kind.WAKE || !prefixStandsLocked()) {
+            return GO;
+        }
+        int next = SLOTS.containsKey(event.key)
+                ? nextOpenLocked(BY_CONTEXT.get(event.context)) : -1;
+        if (next >= 0) {
+            if (!dueLocked(next)) return next;
+            if (movedSincePollLocked(event) || clockLoopLocked(event)) {
                 return GO;
             }
-            int next = SLOTS.containsKey(event.key)
-                    ? nextOpenLocked(BY_CONTEXT.get(event.context)) : -1;
-            if (next >= 0) return dueLocked(next) ? GO : next;
-            Thread self = Thread.currentThread();
-            if (LET_GO.contains(self)) return GO;
-            HELD_AT_CUT.put(self, event);
-            return AT_THE_CUT;
         }
-        return event.kind == ScheduleEvent.Kind.INTERRUPT
-                || !heldKind(slot) || dueLocked(slot) ? GO : slot;
+        if (LET_GO.contains(self)) return GO;
+        HELD.put(self, event);
+        return next >= 0 ? next : AT_THE_CUT;
+    }
+
+    /** Whether the order moved since the last WAKE of {@code event}'s key. */
+    private static boolean movedSincePollLocked(Pending event) {
+        Long polled = POLLED.get(event.key);
+        return polled == null || moves > polled;
+    }
+
+    /** Whether {@code event}'s wait -- on this thread -- is a clock's loop. */
+    private static boolean clockLoopLocked(Pending event) {
+        Boolean known = CLOCK_LOOPS.get(event.key);
+        if (known == null) {
+            known = ClockLoops.reads(Thread.currentThread().getStackTrace());
+            CLOCK_LOOPS.put(event.key, known);
+        }
+        return known;
     }
 
     /** The first open slot of {@code slots}, or -1. */
@@ -743,8 +803,12 @@ public final class ScheduleLog {
         return true;
     }
 
-    /** Something was settled: the first open slot, and whether any holds. */
+    /**
+     * Something was settled -- the order moved: the first open slot, and
+     * whether any holds.
+     */
     private static void settleLocked() {
+        moves++;
         lastProgress = System.currentTimeMillis();
         cpuSampledAt = 0L;
         while (firstOpen < state.length && state[firstOpen] != OPEN) {
@@ -829,8 +893,9 @@ public final class ScheduleLog {
      * threads that owe the slots before the earliest waiter computing
      * ({@link #computingLocked}), or {@link #CEILING} timeouts whatever they
      * do; both are measured from the stall's start, which a let-go does not
-     * move.  Its first answer lets the waits held at the cut go; a grace
-     * later, the slots before the earliest waiter are given up.
+     * move.  Its first answer lets the waits held without a slot go; a grace
+     * later, the slots before the earliest waiter are given up; when that
+     * settles nothing, the held waits are let go again, a grace apart.
      */
     private static boolean watchdogLocked() {
         if (WAITERS.isEmpty()) return false;
@@ -846,8 +911,8 @@ public final class ScheduleLog {
         if (idle < CEILING * timeout && computingLocked(now, earliest)) {
             return false;
         }
-        if (!letGoSinceProgress && WAITERS.containsValue(AT_THE_CUT)) {
-            letGoAtTheCutLocked(idle, now);
+        if (!letGoSinceProgress && !HELD.isEmpty()) {
+            letGoHeldLocked(idle, now);
             return true;
         }
         boolean atTheCut = WAITERS.containsValue(AT_THE_CUT)
@@ -877,16 +942,18 @@ public final class ScheduleLog {
             giveUpLocked(index);
             count++;
         }
-        if (count == 0) return false;
+        if (count == 0) {
+            // Nothing before the held polls is open: only they can move.
+            if (HELD.isEmpty()) return false;
+            letGoHeldLocked(idle, now);
+            return true;
+        }
         if (!atTheCut && earliest >= cut) restStalls++;
         stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
                 count + " slot(s) of the order from " + first + " on (the"
                         + " first " + order.get(first).render() + ") did not"
                         + " happen for " + idle + " ms with the run idle,"
-                        + " while " + (atTheCut
-                                ? heldAtTheCutLocked() + " waited at the cut"
-                                : order.get(earliest).render()
-                                + " waited at slot " + earliest)
+                        + " while " + waitingAtLocked(earliest)
                         + ": they are given up, and each still takes its"
                         + " slot if it comes");
         settleLocked();
@@ -894,41 +961,48 @@ public final class ScheduleLog {
     }
 
     /**
-     * Lets every wait held at the cut go, once per slot taken.  With the
-     * run idle, a wait the recording never made -- a pool thread's, a loop
-     * one turn longer than recorded -- may be what the order's next event is
-     * behind, and giving the order up to the cut settles nothing that holds
-     * it.  Its event runs free.  The stall stands: the waits let go have
-     * {@link #LET_GO_GRACE_MS}, not another timeout, to make progress.
+     * Lets every wait held without a slot go.  With the run idle, a wait
+     * the recording never made -- a pool thread's -- or a loop polling past
+     * its recorded count may be what the order's next event is behind, and
+     * giving the order up settles nothing that holds it.  Its event runs
+     * free.  The stall stands: the waits let go have {@link
+     * #LET_GO_GRACE_MS}, not another timeout, to make progress.
      */
-    private static void letGoAtTheCutLocked(long idle, long now) {
-        String held = heldAtTheCutLocked();
-        int count = 0;
-        for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
-            if (waiter.getValue() != AT_THE_CUT) continue;
-            LET_GO.add(waiter.getKey());
-            count++;
-        }
+    private static void letGoHeldLocked(long idle, long now) {
+        String held = heldLocked(HELD.keySet().iterator().next());
+        int count = HELD.size();
+        LET_GO.addAll(HELD.keySet());
         letGo += count;
         letGoSinceProgress = true;
         letGoAt = now;
-        stateLocked("schedule-let-go#" + firstOpen, count + " wait(s) held at"
-                + " the cut (" + held + ") for " + idle + " ms with the run"
-                + " idle, while " + (firstOpen < order.size()
-                        ? order.get(firstOpen).render() : "nothing")
-                + " at slot " + firstOpen + " did not happen: they are let"
-                + " go before any slot is given up");
+        stateLocked("schedule-let-go#" + firstBlocking, count + " wait(s)"
+                + " held without a slot (" + held + ") for " + idle + " ms"
+                + " with the run idle, while " + (firstBlocking < order.size()
+                        ? order.get(firstBlocking).render() : "nothing")
+                + " at slot " + firstBlocking + " did not happen: they are"
+                + " let go before any slot is given up");
         LOCK.notifyAll();
     }
 
-    /** The first wait held at the cut, as it names itself. */
-    private static String heldAtTheCutLocked() {
+    /** What waits at {@code earliest}, as it names itself. */
+    private static String waitingAtLocked(int earliest) {
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
-            Pending held = waiter.getValue() == AT_THE_CUT
-                    ? HELD_AT_CUT.get(waiter.getKey()) : null;
-            if (held != null) return "the unrecorded " + held.render();
+            int at = waiter.getValue() == AT_THE_CUT ? cut : waiter.getValue();
+            if (at == earliest && HELD.containsKey(waiter.getKey())) {
+                return heldLocked(waiter.getKey()) + " waited "
+                        + (waiter.getValue() == AT_THE_CUT ? "at the cut"
+                                : "at slot " + earliest);
+            }
         }
-        return "a wait the order does not name";
+        return order.get(earliest).render() + " waited at slot " + earliest;
+    }
+
+    /** A held wait, as it names itself. */
+    private static String heldLocked(Thread thread) {
+        Pending held = HELD.get(thread);
+        return SLOTS.containsKey(held.key)
+                ? held.render() + " past its recorded count"
+                : "the unrecorded " + held.render();
     }
 
     /**
@@ -1068,8 +1142,11 @@ public final class ScheduleLog {
         BY_CONTEXT.clear();
         TAKEN_WAKES.clear();
         WAITERS.clear();
-        HELD_AT_CUT.clear();
+        HELD.clear();
         LET_GO.clear();
+        POLLED.clear();
+        CLOCK_LOOPS.clear();
+        moves = 0L;
         letGoSinceProgress = false;
         letGoAt = 0L;
         BOUND.clear();
@@ -1169,8 +1246,12 @@ public final class ScheduleLog {
             BY_CONTEXT.clear();
             TAKEN_WAKES.clear();
             WAITERS.clear();
-            HELD_AT_CUT.clear();
+            HELD.clear();
             LET_GO.clear();
+            POLLED.clear();
+            CLOCK_LOOPS.clear();
+            ClockLoops.resetForTests();
+            moves = 0L;
             letGoSinceProgress = false;
             letGoAt = 0L;
             BOUND.clear();
