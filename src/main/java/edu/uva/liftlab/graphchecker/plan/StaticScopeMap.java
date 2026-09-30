@@ -744,7 +744,13 @@ public final class StaticScopeMap {
             cell = firstNonBlank(text(edge.get("declaredFieldSignature")),
                     text(edge.get("fromCell")));
             implementation = text(edge.get("accessorImplementationMethod"));
-            if (implementation.isEmpty()) return;
+            // A mint at the accessor's return stands for its field's value:
+            // an accessor answering another type (AtomicBoolean.get(), its
+            // int value != 0) declares no input.
+            if (implementation.isEmpty() || !declaredType(cell, callee, kind)
+                    .equals(declaredType(callee, callee, "call_return"))) {
+                return;
+            }
         } else if ("call_return".equals(kind)
                 && clockTicks.containsKey(callee)
                 && !regionMethods.contains(callee)) {

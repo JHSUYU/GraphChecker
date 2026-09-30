@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -97,20 +98,13 @@ final class SeedBackwardStaticAnalyzer {
             "descendingKeySet");
     private static final Set<String> BACKED_ITERATORS = names(
             "iterator", "listIterator", "descendingIterator");
-    /** Container calls that write their receiver. */
+    /** Calls, by name, that write their receiver whatever its class: an
+     *  application container's as much as a JDK one's (whose contract,
+     *  JavaContainerTypes, names the rest). */
     private static final Set<String> CONTAINER_MUTATORS = names(
             "put", "putAll", "remove", "clear", "add", "addAll", "set",
             "replace", "compute", "computeIfAbsent", "computeIfPresent",
             "merge", "offer", "poll");
-    /** Atomic read-modify-writes: mutate the receiver, no field store. */
-    private static final Set<String> ATOMIC_NUMERIC_MUTATIONS = names(
-            "getAndIncrement", "getAndDecrement", "getAndAdd",
-            "incrementAndGet", "decrementAndGet", "addAndGet", "getAndSet",
-            "compareAndSet", "weakCompareAndSet", "lazySet");
-    private static final Set<String> MAP_CONTRACT_OWNERS = names(
-            "java.util.Map", "java.util.SortedMap", "java.util.NavigableMap",
-            "java.util.concurrent.ConcurrentMap",
-            "java.util.concurrent.ConcurrentNavigableMap");
     private static final Set<String> COLLECTION_CONTRACT_OWNERS = names(
             "java.util.Collection", "java.util.List", "java.util.Set",
             "java.util.SortedSet", "java.util.NavigableSet",
@@ -1621,16 +1615,27 @@ final class SeedBackwardStaticAnalyzer {
                 : BACKED_ITERATORS.contains(invoked.name);
     }
 
+    /** Whether a call writes its receiver: a container mutation, by name
+     *  or by its JDK contract, or a write of a JDK atomic's value. */
     private boolean isFieldMutator(Fact fact) {
         MethodSig sig = parseMethodSig(fact.invoke);
-        if (sig == null) {
-            return false;
-        }
-        return CONTAINER_MUTATORS.contains(sig.name)
-                || ("java.util.concurrent.atomic.AtomicInteger".equals(
-                        sig.owner)
-                || "java.util.concurrent.atomic.AtomicLong".equals(sig.owner))
-                && ATOMIC_NUMERIC_MUTATIONS.contains(sig.name);
+        return sig != null && (CONTAINER_MUTATORS.contains(sig.name)
+                || JavaContainerTypes.mutation(sig.raw,
+                this::libraryHierarchy)
+                || SharedFieldFlow.atomicWrite(sig.raw));
+    }
+
+    /**
+     * A library class's supertypes, itself included: they decide which
+     * container contract a call on it states (JavaContainerTypes, by
+     * interface).  None for an application class, whose calls run the body
+     * the slice follows.
+     */
+    private Collection<String> libraryHierarchy(String className) {
+        SootClass type = isApplicationClassName(className) ? null
+                : sceneClass(className);
+        return type == null ? Collections.<String>emptySet()
+                : hierarchyNames(type);
     }
 
     private boolean isCanonicalField(String value) {
@@ -1686,8 +1691,8 @@ final class SeedBackwardStaticAnalyzer {
                 actuals, callerRelevant);
         boolean dynamicDispatch = !resolveDispatchTargets(callee)
                 .isEmpty();
-        boolean modeledContainerResult =
-                JavaContainerTypes.symbolicResultOperation(callee.raw);
+        boolean containerQuery = JavaContainerTypes.query(
+                callee.raw, this::libraryHierarchy);
         boolean expandableCallee = isExpandableMethod(callee.raw);
         SootMethod calleeMethod = expandableCallee
                 ? concreteMethod(callee.raw) : null;
@@ -1702,7 +1707,7 @@ final class SeedBackwardStaticAnalyzer {
             propagateCallArguments("call_argument",
                     callerMethod, fact, callee, actuals,
                     callerRelevant, calleeRelevant, expandableCallee);
-            if (!modeledContainerResult) {
+            if (!containerQuery) {
                 propagateCallReturns("call_return",
                         callerMethod, fact, callee.raw, defs,
                         callerRelevant, calleeRelevant,
@@ -1790,16 +1795,17 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * A VM-modeled container result depends on its receiver and arguments
-     * (library receivers are otherwise excluded).  Value semantics belong to
+     * A container query's result depends on its receiver and arguments
+     * (library receivers are otherwise excluded), by the contract of the
+     * receiver's interface (JavaContainerTypes).  Value semantics belong to
      * the VM's {@code ContainerRelation}.
      */
     private void processSemanticContainerOperation(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> defs, Set<String> callerRelevant) {
         if (defs.isEmpty()
-                || !(JavaContainerTypes.symbolicResultOperation(callee.raw)
-                || isSemanticContainerView(callee))) {
+                || !(JavaContainerTypes.query(callee.raw,
+                this::libraryHierarchy) || containerArray(callee))) {
             return;
         }
         List<String> relevantDefs = new ArrayList<>();
@@ -1837,12 +1843,13 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * Mutation counterpart of {@link #processSemanticContainerOperation}: a
-     * relevant modeled receiver demands its mutators' arguments.
+     * relevant container receiver demands its mutators' arguments.
      */
     private void processSemanticContainerMutation(
             String callerMethod, Fact fact, MethodSig callee,
             Set<String> callerRelevant) {
-        if (!JavaContainerTypes.modeledContainerMutator(callee.raw)) {
+        if (!JavaContainerTypes.mutation(callee.raw,
+                this::libraryHierarchy)) {
             return;
         }
         String receiver = invokeBaseLocal(fact.unitText);
@@ -1909,7 +1916,8 @@ final class SeedBackwardStaticAnalyzer {
 
             Map<Integer, String> result = new LinkedHashMap<>();
             for (Fact fact : facts) {
-                if (!JavaContainerTypes.modeledContainerMutator(fact.invoke)) {
+                if (!JavaContainerTypes.mutation(fact.invoke,
+                        this::libraryHierarchy)) {
                     continue;
                 }
                 String receiver = invokeBaseLocal(fact.unitText);
@@ -1925,18 +1933,9 @@ final class SeedBackwardStaticAnalyzer {
         });
     }
 
-    private boolean isSemanticContainerView(MethodSig method) {
-        if (method == null) return false;
-        if (MAP_CONTRACT_OWNERS.contains(method.owner)
-                && method.params.isEmpty()) {
-            if ("values".equals(method.name)
-                    && "java.util.Collection".equals(method.returnType)
-                    || ("keySet".equals(method.name)
-                    || "entrySet".equals(method.name))
-                    && "java.util.Set".equals(method.returnType)) {
-                return true;
-            }
-        }
+    /** A collection's {@code toArray}: an array of its elements, so it
+     *  depends on the collection's state as a query's result does. */
+    private static boolean containerArray(MethodSig method) {
         return COLLECTION_CONTRACT_OWNERS.contains(method.owner)
                 && "toArray".equals(method.name)
                 && method.returnType.endsWith("[]")
@@ -1991,12 +1990,6 @@ final class SeedBackwardStaticAnalyzer {
         if (ignoreNode(receiverNode)) {
             return;
         }
-        String fieldType = declaredField.getType().toString();
-        if (fieldType.isEmpty()
-                || !erasedTypeName(fieldType).equals(
-                erasedTypeName(callee.returnType))) {
-            return;
-        }
         boolean defExactHit = exactIntersects(callerRelevant, defs);
         if (!defExactHit) {
             return;
@@ -2018,12 +2011,12 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void annotateAccessorDeclaredFieldEdge(
-            Map<String, Object> edge, SootField field, SootMethod accessor) {
+            Map<String, Object> edge, SootField field, String accessor) {
         if (edge == null) {
             return;
         }
         edge.put("declaredFieldSignature", field.getSignature());
-        edge.put("accessorImplementationMethod", accessor.getSignature());
+        edge.put("accessorImplementationMethod", accessor);
     }
 
     /** Attaches the resolved declaration to one direct field read. */
@@ -2091,8 +2084,12 @@ final class SeedBackwardStaticAnalyzer {
         if (structuralFieldAccessors.containsKey(callee.raw)) {
             return structuralFieldAccessors.get(callee.raw);
         }
-        StructuralFieldAccessor resolved = inspectStructuralFieldAccessor(
-                callee, uniqueAnalyzableImplementation(callee));
+        SootField atomic = StructuralFieldAccessorProof.atomicField(
+                callee.raw);
+        StructuralFieldAccessor resolved = atomic != null
+                ? new StructuralFieldAccessor(callee.raw, atomic)
+                : inspectStructuralFieldAccessor(callee,
+                        uniqueAnalyzableImplementation(callee));
         structuralFieldAccessors.put(callee.raw, resolved);
         return resolved;
     }
@@ -2111,7 +2108,7 @@ final class SeedBackwardStaticAnalyzer {
                 erasedTypeName(callee.returnType))) {
             return null;
         }
-        return new StructuralFieldAccessor(method, field);
+        return new StructuralFieldAccessor(method.getSignature(), field);
     }
 
     private void processDispatchInvoke(String callerMethod, Fact fact,
@@ -2963,11 +2960,13 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
+    /** A call that is one read of one field: the method that answers it
+     *  (its body's proof, or a JDK atomic's table entry), and the field. */
     private static final class StructuralFieldAccessor {
-        private final SootMethod implementation;
+        private final String implementation;
         private final SootField field;
 
-        private StructuralFieldAccessor(SootMethod implementation,
+        private StructuralFieldAccessor(String implementation,
                                         SootField field) {
             this.implementation = implementation;
             this.field = field;

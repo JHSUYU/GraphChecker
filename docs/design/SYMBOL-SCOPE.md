@@ -64,11 +64,22 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 - **Library calls**: the result of a non-application call depends on its arguments only; its
   receiver is dropped (`localValueUses`). Exceptions: `String`, `StringBuilder`,
   `StringBuffer` and every wrapper's unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`,
-  `Boolean.booleanValue` included) keep the receiver (`isValueLikeLibraryInvoke`), and a
-  VM-modeled container operation depends on receiver and arguments
-  (`processSemanticContainerOperation`, the classes in `smt/JavaContainerTypes`: `List`,
-  `ArrayList`, `AbstractList`, `Queue`, `Deque`, `ArrayDeque`, `Map`, `HashMap`, `LinkedHashMap`,
-  `Set`, `HashSet`, `LinkedHashSet`).
+  `Boolean.booleanValue` included) keep the receiver (`isValueLikeLibraryInvoke`); a JDK
+  atomic's `get()` is an accessor of its `value` (`AtomicBoolean.get()` is `value != 0`), read
+  off a table rather than its body (`plan/SharedFieldFlow#atomicRead`,
+  `StructuralFieldAccessorProof#atomicField`); and a container query depends on receiver and
+  arguments (`processSemanticContainerOperation`, `container_receiver`, `container_argument`).
+- **Containers, by interface** (`smt/JavaContainerTypes`): a call's contract is its receiver
+  type's interface's -- `Map` (`ConcurrentMap`, `SortedMap`, `NavigableMap` alike), `Set`
+  (`NavigableSet`), `List`, `Queue`, `Deque`, `Iterator`, `Map.Entry` -- read off the Soot
+  hierarchy of a library class, else a fixed list of JDK classes (`ConcurrentHashMap`, `TreeMap`,
+  `ConcurrentSkipListMap`, `LinkedList`, the concurrent queues, ...). A call is named by its name
+  and parameters, never its return type, which an implementation narrows. A *query* (`get`,
+  `getOrDefault`, `containsKey`, `computeIfAbsent`, `floorKey`, a view, `poll`, ...) depends on its
+  receiver; a *mutation* (`put`, `merge`, `putIfAbsent`, a view's `removeIf`, `push`, ...)
+  demands its arguments into its receiver (`container_mutation_argument`) and, through a field
+  alias, is a `field_mutation` of that field. An application class's calls run the body the slice
+  follows: it states no contract. Whether the VM models a class is decided at run time, never here.
 - **Arrays**: element cells stay in the slice; an index never turns symbolic
   (`processArrayAccesses`). Literals are ignored.
 
@@ -254,10 +265,11 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
 - is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
 
 `WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,
-`container_call_mutation_effect`, `container_array_store_value`. A numeric read-modify-write on an
-`AtomicInteger` or `AtomicLong` (`getAndIncrement`, `getAndDecrement`, `getAndAdd`,
-`incrementAndGet`, `decrementAndGet`, `addAndGet`) is a write of its `value` field
-(`plan/SharedFieldFlow#atomicValueField`).
+`container_call_mutation_effect`, `container_array_store_value`. A write of a JDK atomic --
+`AtomicInteger`, `AtomicLong`, `AtomicBoolean`, `AtomicReference`: `set`, `lazySet`, `getAndSet`,
+`compareAndSet`, `weakCompareAndSet`, `updateAndGet`, `getAndUpdate`, `accumulateAndGet`,
+`getAndAccumulate` and the numeric read-modify-writes -- is a write of its `value` field
+(`plan/SharedFieldFlow#atomicValueField`), one table with its reads (§2.2).
 
 ### 5.2 Observation
 
@@ -377,15 +389,15 @@ DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTI
   read through a field, a parameter, `java.time`, or an interface whose implementation is outside
   the scope is not recognized; configuration values and pre-window state are roots only where a
   tree hook says so.
-- Tracked state is integral instance fields and the `AtomicInteger`/`AtomicLong` value through
-  numeric RMW; wrapper fields pass the static rule but the VM starts no log for them. Not
-  tracked from a concrete store: static, `float`/`double`, wrapper, `String` and
-  reference fields (and a container reached through a replaced reference), array elements,
-  `AtomicBoolean`, `AtomicReference`, atomic `set`/`lazySet`/`compareAndSet`/`getAndSet`, and
-  containers the VM does not model.
-- A non-application call's receiver is dropped from the slice (§2.2), so state behind an unmodeled
-  library object (a `ConcurrentHashMap`, a `TreeMap`, an `AtomicBoolean`) never enters `S` and gets
-  no write site, tracked read or frontier row that could grow it.
+- Tracked state is integral instance fields and the value of `AtomicInteger`, `AtomicLong` and
+  `AtomicBoolean`; wrapper fields pass the static rule but the VM starts no log for them, and a
+  CAS, `lazySet` or `getAndSet` goes through Unsafe, unhooked. Not tracked from a concrete store:
+  static, `float`/`double`, wrapper, `String` and reference fields (and a container reached
+  through a replaced reference), array elements, `AtomicReference`, and containers the VM does
+  not model (`ConcurrentHashMap`, `TreeMap` and the queues are classified by interface here).
+- A non-application call's receiver is dropped from the slice (§2.2) unless the call is a
+  container query or an atomic's accessor, so state behind any other library object never
+  enters `S`.
 - Control dependence ignores exception edges and follows a call up only for constant stores,
   field-effect calls and write-site guards (three calls up); it never crosses a thread start, an
   executor submission or the wire.
