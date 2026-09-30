@@ -641,7 +641,7 @@ public final class ClosurePlanner {
      * uses, over its text and every join a mint or a pin stood in for
      * ({@link SmtLowering.Lowered#reach}). Trap: {@code SmtLowering.symbols}
      * sees only a {@code container_dag__} name that matches no row. Includes
-     * the state behind a container name (the v_C rule, PIPELINE §7.5).
+     * the state behind a container name (the v_C rule, PIPELINE §7.2).
      *
      * @return whether the set grew
      */

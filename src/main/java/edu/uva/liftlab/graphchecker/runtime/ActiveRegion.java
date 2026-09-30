@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
@@ -193,8 +194,10 @@ final class ActiveRegion {
     void observeReplayDecision(
             String siteId, int occurrence, BranchDecision decision) {
         if (d3Address == null) return;
-        FocusedReplay.observeDecision(d3Address, siteId, occurrence,
-                decision.outcome);
+        if (FocusedReplay.observeDecision(d3Address, siteId, occurrence,
+                decision.outcome)) {
+            ConcolicResultPublisher.concludeAtRefusal();
+        }
     }
 
     /** Whether this activation has walked a branch its obligation forbids. */
@@ -385,16 +388,17 @@ final class ActiveRegion {
      * when none) -- the same shape as a configured-source mint.  The VM
      * label is descriptive only; authority comes from the exact expression.
      *
-     * <p>Stated even when the replay planted here: the value is read before
-     * the plant, so it is the recording's; the plant is the focus row's
-     * statement.  Trap: suppressing it leaves the moved root with no
-     * {@code recordedValue}, which IMPORT refuses (invariant 8).</p>
+     * <p>Stated even when the replay planted here.  Trap: suppressing it
+     * leaves the moved root with no {@code recordedValue}, which IMPORT
+     * refuses (invariant 8).  A declared clock also states {@code
+     * clockSkew}, how far its node's clock ran off the host's reading there
+     * ({@code NodeClocks}; 0 is not written).</p>
      */
     synchronized void recordManualSymbolization(
             SymbolizeAction action, String requestedSymbol,
             List<String> fieldPath, String fieldSignature,
             JsonElement expression, boolean minted, boolean reused,
-            String recordedValue) {
+            String recordedValue, long clockSkew) {
         if (action == null || minted == reused) {
             throw new IllegalArgumentException(
                     "manual symbolization must be exactly minted or reused");
@@ -428,8 +432,8 @@ final class ActiveRegion {
         row.addProperty("minted", minted);
         row.addProperty("reused", reused);
         if (recordedValue != null && !recordedValue.isEmpty()) {
-            // What THIS execution read, clocks included: the seed replay is
-            // the reference the composer's deltas are relative to.
+            // What THIS execution ran the root at, clocks included (the
+            // seed replay's readings are the composer's timeline).
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
         }
@@ -437,8 +441,15 @@ final class ActiveRegion {
         // from a name.  Trap: never publish the PLAN's instant as its value.
         if (action.declaresWallClockRead()) {
             row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK,
-                    action.clockNanos);
+                    action.clock.nanos());
+            if (!action.clock.source().isEmpty()) {
+                row.addProperty(InputActionCatalog.DECLARED_CLOCK_SOURCE,
+                        action.clock.source());
+            }
             row.addProperty("eventSeq", action.eventSeq);
+            if (clockSkew != 0L) {
+                row.addProperty(RootMintRow.CLOCK_SKEW, clockSkew);
+            }
         }
         row.addProperty("mintOccurrence",
                 mintOccurrence(safe(action.symbol)));

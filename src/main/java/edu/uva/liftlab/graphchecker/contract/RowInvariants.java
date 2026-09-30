@@ -494,8 +494,8 @@ public final class RowInvariants {
      * What this session RAN each declared root at, by symbol, or null when
      * unstated.  A FOCUSED replay's mints record the recording's value
      * (RootMint#focusedRootValue), so its valuation is the ask: assignments
-     * are absolute, a CLOCK is reading plus delta, an unassigned root is its
-     * {@code recordedValue}.  A FOCUSED session with no ask is BLOCKING.
+     * are absolute, a CLOCK and any unassigned root its {@code
+     * recordedValue}.  A FOCUSED session with no ask is BLOCKING.
      */
     private static Map<String, String> executed(SessionReader session,
                                                 JsonObject ask,
@@ -516,29 +516,24 @@ public final class RowInvariants {
         }
         Map<String, String> assigned = focused
                 ? strings(ask, "rootAssignments") : null;
-        Map<String, String> skews = focused
-                ? strings(ask, "clockDeltas") : null;
         Map<String, String> bySymbol = new LinkedHashMap<String, String>();
         for (RootMintRow row : session.roots()) {
             if (!row.declared()) continue;
-            bySymbol.put(row.symbol(), ran(row, assigned, skews));
+            bySymbol.put(row.symbol(), ran(row, assigned));
         }
         return bySymbol;
     }
 
-    /** One mint's executed value; {@code ""} (unjudgeable) if unstatable. */
-    private static String ran(RootMintRow row, Map<String, String> assigned,
-                              Map<String, String> skews) {
+    /**
+     * One mint's executed value.  A CLOCK's row states the instant its
+     * node's clock ran it at, planted or run on ({@code
+     * RootMintRow#clockSkew}); any other root ran at the ask's assignment
+     * where the ask planted it, else at its {@code recordedValue}.
+     */
+    private static String ran(RootMintRow row, Map<String, String> assigned) {
         String recorded = row.recordedValue().trim();
-        if (assigned == null) return recorded;
-        if (row.kind() == RootKind.CLOCK) {
-            String delta = skews.get(row.rootId());
-            if (delta == null || delta.trim().isEmpty()) return recorded;
-            Object read = literal(recorded);
-            Object skew = literal(delta.trim());
-            if (!(read instanceof Long) || !(skew instanceof Long)) return "";
-            return Long.toString(((Long) read).longValue()
-                    + ((Long) skew).longValue());
+        if (assigned == null || row.kind() == RootKind.CLOCK) {
+            return recorded;
         }
         String planted = assigned.get(row.rootId());
         if (planted == null || planted.trim().isEmpty()) return recorded;
