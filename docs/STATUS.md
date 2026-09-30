@@ -116,7 +116,10 @@ See Acceptance above. What remains (the branches are in README §0.3):
   reproduces the fatal. Its fatal condition is concrete in that replay: the runtime now states such
   a phi as the constant of its arm (`gc/runtime/RowRuntime#fatalTerm`), IMPORT judges it
   (invariant 9) and COMPOSE rests the fatal on the path condition that reached the anchor; `r9`'s
-  rows predate this and state none. The store door files what a write carried after the schedule's SEND lets the queue's
+  rows predate this and state none. COMPOSE's constraint independence keeps what moves
+  (`gc/compose/Independence#of`); closed over sharing, it kept 3479 conditions and reads of that
+  path, a tlog write among them that did not lower, and refused it. The path now composes and is
+  unsat on its own (open defect 29). The store door files what a write carried after the schedule's SEND lets the queue's
   consumer run (`gc/runtime/MessageDoors#stored`, open defect 28), which can leave the Overseer
   queue's attach unpaired.
 
@@ -179,6 +182,16 @@ Correctness:
     `CausynthTraceRecorder#outboundExchange` observed its SEND, and the schedule may run the
     version's reader from that SEND on: `consumed` or `fetched` can find nothing, and the
     delivery pairs with no export (SOLR-18413 r5's seed, the Overseer's queue item).
+29. A map's position is its chain's order (`gc/compose/ContainerStateModel`: `assoc_put` fixes
+    `assoc_order`), and the chain is not always the order the run iterated in:
+    - VM `concolic/reference/containerSupport.cpp#read_hash_map` snapshots a `LinkedHashMap` by
+      its table's bins, not its insertion links (`head`/`after`). SOLR-18413 r9: MigrateCmd's
+      routing-rule message (`Utils.makeMap`, a `LinkedHashMap`: `operation`, `collection`, ...)
+      was first tracked after two puts, its snapshot lists `collection` before `operation`, and
+      the leader's lookup of the source collection, keyed at the run's position 1 (`collection`),
+      is `operation` in the model, so the one anchor path is unsat on its own
+      (`PATH_SELF_CONTRADICTORY`).
+    - A `HashMap` iterates in bin order, which puts after the snapshot do not follow.
 
 Scale and robustness:
 

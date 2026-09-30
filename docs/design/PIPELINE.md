@@ -494,8 +494,15 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   (`frameRefusals`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
   attach, an attach that minted no `v_H`; `Corpus#refusedIn`) refuses the path, and an arm whose
   closure reaches one is no option;
-- constraint independence (`compose.Independence`): conditions and reads sharing no variable with phi
-  (or a root) stay out;
+- constraint independence (`compose.Independence.of`), by what MOVES: a root of the session, what a
+  family binds (an anchor handoff's symbol, a location a STATE family may re-pair), a read whose value
+  (its observed write's, walked, and the construction guards of its referent) rests on one. A
+  condition stays exactly when one of its variables moves; what phi or a kept condition names is
+  bound (the read stating it stays, and what its value names); a condition that only shares a value
+  that does not move stays out, since it holds at its recorded values in every world (SOLR-18413
+  r9: closed over sharing, the cluster-state map and a serializer's position counter kept 3479
+  conditions and reads of one path, a tlog write among them that did not lower). An obligation's
+  key closes over sharing (`Independence.ofGuard`): a question's identity, not a formula;
 - the valuation this session ran each non-clock root at (`valuationOf`; `Corpus.rootValue`: the
   focus row's assignment where the replay planted it, else the mint's reading): a declared root
   minted with no value, or a mint whose `recordedValue` differs from the assignment ("stated twice

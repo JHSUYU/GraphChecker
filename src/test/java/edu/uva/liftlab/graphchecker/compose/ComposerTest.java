@@ -3120,8 +3120,12 @@ public class ComposerTest {
                                 "org/apache/Store"),
                         vmNull()),
                 symbol("M_L'org/apache/Held'_9", "org/apache/Held")));
-        session.decision(ANCHOR, "anchor#u4", true, "EXPR.00000000000000d1");
-        session.decision(ANCHOR, "anchor#u5", true, "EXPR.00000000000000d2");
+        // Each asked beside the marker, which moves: a condition over
+        // nothing a witness moves is left out (Independence).
+        session.decision(ANCHOR, "anchor#u4", true,
+                "(and EXPR.00000000000000d1 " + MARKER + ")");
+        session.decision(ANCHOR, "anchor#u5", true,
+                "(and EXPR.00000000000000d2 " + MARKER + ")");
         // A declared region input, published as a READ placeholder: no
         // version to join to, the row's own value, and leaves of it in two
         // places.  Its symbol is a declared symbol of this session, so
@@ -3252,10 +3256,10 @@ public class ComposerTest {
         // And one read of it at a literal key.
         session.expression("EXPR.0000000000000e50", relation("ASSOCIATIVE",
                 "READ", "I", held, integer("I", 10L)));
-        // And phi reads the array cell the decision above compares: every
-        // read of one location is one variable, so that decision is what
-        // phi rests on (a decision sharing nothing with phi or a root is
-        // left out, Independence).
+        // And phi reads the array cell the decision above compares.  That
+        // cell holds what the store wrote, which nothing moves, so the
+        // decision over it holds in every world and is left out
+        // (Independence): phi's own read is the element read asked below.
         session.expression("EXPR.00000000000000f5", binary("!=",
                 read("ARRAY_ELEMENT", 7L, 2L, 1L, "I"), integer("I", 6L)));
         // And the reference the two projections above ask about: phi rests
@@ -3309,6 +3313,8 @@ public class ComposerTest {
         assertTrue("an element read is the element, at the element's sort",
                 composition.body().contains("(valueInt (indexed_read "));
         assertTrue("and the cell it read is the slot the location names",
+                composition.body().contains(" 2)) 6)"));
+        assertFalse("a decision over a cell nothing moves is left out",
                 composition.body().contains(" 2)) 5)"));
         // What each root may be, by kind, with no root-domains row for
         // either: two valuations, the recorded one first.
@@ -4438,21 +4444,24 @@ public class ComposerTest {
     // ------------------------------------------------------------------
 
     /**
-     * Constraint independence: a condition sharing no variable with phi or
-     * a root is left out, so one the composer cannot state -- a substring
-     * of a block file's name, read from a tracked location -- does not
-     * refuse the path (f4 visible-gs, sender-gs); the same condition over
-     * the location phi reads still does.  Java null is no variable: every
-     * null check spells it alike, and sharing it kept 80 of the 145
-     * conditions and reads of a SOLR-18406 path.  What a family binds is
-     * kept as phi is: a condition over an anchor handoff phi never names
-     * still refuses (C1 review M2).
+     * Constraint independence keeps what MOVES: a condition over nothing a
+     * witness can move is left out, so one the composer cannot state -- a
+     * substring of a block file's name, read from a tracked location -- does
+     * not refuse the path (f4 visible-gs, sender-gs); the same condition over
+     * the value phi reads, which the root moves, still does.  Java null is
+     * no variable: every null check spells it alike, and sharing it kept 80
+     * of the 145 conditions and reads of a SOLR-18406 path.  What a family
+     * binds moves: a condition over an anchor handoff phi never names still
+     * refuses (C1 review M2).  And sharing is no dependence: a condition
+     * over a value that does not move, read where phi reads it, stays out
+     * (SOLR-18413 r9: a closure over sharing kept 3479 conditions and
+     * reads).
      */
     @Test
     public void aConditionPhiDoesNotRestOnDoesNotRefuseThePath()
             throws Exception {
         for (String shares : new String[]{"nothing", "location", "null",
-                "handoff"}) {
+                "handoff", "fixed"}) {
             boolean shared = "location".equals(shares)
                     || "handoff".equals(shares);
             boolean nulls = "null".equals(shares);
@@ -4460,7 +4469,10 @@ public class ComposerTest {
                     .toPath();
             Session session = new Session(iteration, "s0", false);
             session.serial("3", "0", "8");
-            session.expression("EXPR.00000000000000a3", integer("I", 1001L));
+            // What phi reads: a value the root moves, or one it does not.
+            session.expression("EXPR.00000000000000a3", "fixed".equals(shares)
+                    ? integer("I", 1001L)
+                    : binary("-", symbol(SERIAL, "I"), integer("I", 1L)));
             session.write(Endpoint.of(ANCHOR, "Replica#set#1:WRITE",
                             at("stamp#1", 0), 0),
                     LocationId.of(LocationKind.INSTANCE, "58", "40"), 158L,
@@ -4474,6 +4486,7 @@ public class ComposerTest {
             name.addProperty("_is_not", false);
             JsonArray parameters = new JsonArray();
             parameters.add("location".equals(shares)
+                    || "fixed".equals(shares)
                     ? read("INSTANCE_FIELD", 58L, 40L, 158L, "I")
                     : read("INSTANCE_FIELD", 59L, 32L, 157L,
                     "Ljava/lang/String;"));
