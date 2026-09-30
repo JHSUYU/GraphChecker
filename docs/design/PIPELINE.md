@@ -493,7 +493,8 @@ subshell, or remotely through `ssh` running `run_engine.sh --run-obligation` wit
 its sha256), and loops. The memory gate (`campaign_host_try_start <host> [need] [ramp]`) is a ledger
 shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/`
 (`tools/lib/gc-env.sh`): each row is `<epoch> <mb> <ramp_s> <id>`, and a start is allowed when
-`MemAvailable − (rows still inside their own ramp) ≥ need + 3072`. An obligation needs
+`MemAvailable − (rows still inside their own ramp) ≥ need + MemTotal × (100 − p) / 100`, where
+`p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no start leaves a host more than 70 % full. An obligation needs
 `obligation_memory_mb` for 60 s. The head (`do_campaign`, `campaign_head_charged`) charges each of
 its engine JVMs `engine_memory_mb` (else 8192) for 120 s and its seed and CONFIRM replays
 `obligation_memory_mb` for 300 s, and releases the row when the command returns
@@ -511,8 +512,9 @@ reaping remote workers). Verdicts are appended to `obligation_results.jsonl` onc
 When `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session and its
 obligation), `campaign_grow` runs after the wave's replays: `plan.ExposedRegionPlanMain` synthesizes
 one task row per exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's
-`replayGroupId`), appends them to the task plan, re-runs INSTRUMENT, and re-runs each exposing
-obligation's replay in its own worker directory on the head (under the memory gate). The exposing
+`replayGroupId`), appends them to the task plan, re-runs INSTRUMENT, and re-runs the exposing
+obligations' replays side by side on the head, each in its own worker directory, their starts
+spaced by the head's memory gate; the wave waits for all of them. The exposing
 session and the worker's previous files move to `<worker>/before-<wave>/`, and the re-run's verdict
 replaces the obligation's row in `obligation_results.jsonl`. An exposure no obligation names (seed
 exposure) fails EXPLORE.
@@ -939,8 +941,8 @@ aggregation, a stage's Java main, the engine's `die`, a full disk or quota), `PE
 started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still runs a process naming
 its directory, `DEAD` when none does.
 
-`tools/regress/offline-ab.sh <baseline-jar> <candidate-jar> [case...]` is the offline regression
-gate: per case of a recorded round (`--round`, default `v94 v93 v92`), it runs every stage that is
+`tools/regress/offline-ab.sh --round <round>... <baseline-jar> <candidate-jar> [case...]` is the
+offline regression gate: per case of the first `--round` holding it, it runs every stage that is
 a pure function of the recording once per jar — the static pass, the trace aggregation, PLAN,
 EXPLORE wave 0 and its solves, IMPORT, the closing EXPLORE wave, COMPOSE with SOLVE and DECIDE,
 and CONFIRM's planning — over private iterations that link the recorded sessions, with no

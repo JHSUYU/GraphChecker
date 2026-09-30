@@ -199,7 +199,7 @@ public class ScheduleLogTest {
         });
         plain.start();
         plain.join();
-        String scope = ScheduleLog.contextHere();
+        String scope = ScheduleLog.contextOf(Identity.contextHere());
         List<String> sends = new ArrayList<String>();
         for (ScheduleEvent event : events()) {
             if (event.kind() == ScheduleEvent.Kind.SEND) {
@@ -1735,7 +1735,8 @@ public class ScheduleLogTest {
     /** One event of this thread's context inside a recorded occurrence. */
     private static ScheduleEvent inOccurrence(ScheduleEvent.Kind kind,
                                               String site, String occurrence) {
-        return ScheduleEvent.of(0L, kind, ScheduleLog.contextHere(), site, 0,
+        return ScheduleEvent.of(0L, kind,
+                ScheduleLog.contextOf(Identity.contextHere()), site, 0,
                 occurrence);
     }
 
@@ -1766,8 +1767,7 @@ public class ScheduleLogTest {
      * the test's one request, so every one states the same context.
      */
     private static ScheduleEvent event(ScheduleEvent.Kind kind, String site) {
-        return ScheduleEvent.of(0L, kind, ScheduleLog.contextHere(), site, 0,
-                "");
+        return inOccurrence(kind, site, "");
     }
 
     private List<ScheduleEvent> events() {

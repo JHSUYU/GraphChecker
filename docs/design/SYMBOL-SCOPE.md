@@ -250,7 +250,8 @@ row it is pinned.
 | a declared communication port (`COMMUNICATION_SITE_PORT`) | tracked, never minted (the attach installs the producer's value) |
 | anything else | `CONCRETE`, `UNDECLARED_SYMBOLIC_INPUT` |
 
-At PLAN, `causynth/RuntimeSelectedRegionFinalizer` admits every recorded occurrence that reads a
+At the end of SEED (the recording's aggregation, `runtime/CausynthTraceRecorder`),
+`causynth/RuntimeSelectedRegionFinalizer` admits every recorded occurrence that reads a
 clock or a fault marker, whether or not the target demands its outputs, and seeds the demand walk
 with its declared-site captures.
 

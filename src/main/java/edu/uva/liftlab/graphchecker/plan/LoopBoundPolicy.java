@@ -81,9 +81,6 @@ public final class LoopBoundPolicy {
      *  path space. */
     public static final int MAX_REPLAY_PATH_LOOP_BODIES = 32;
     private static final int SCHEMA_VERSION = 1;
-    /** Vocabulary of {@link #identity()} only, never a wire member. */
-    private static final String KIND = "CFG_BACKEDGE";
-    private static final String ON_LIMIT = "CUT_PATH";
     private static final String DECLARED_FIELD = "loopBodyBounds";
 
     private final int defaultBackedgeTraversals;
@@ -97,7 +94,7 @@ public final class LoopBoundPolicy {
                     "the inherited loop body bound must be at least one body "
                             + "execution, not " + defaultBackedgeTraversals);
         }
-        // Sorted: one declaration set, one identity.
+        // Sorted: one declaration set, one encoding.
         SortedMap<String, Integer> bounds = new TreeMap<String, Integer>();
         int limit = defaultBackedgeTraversals;
         if (declared != null) {
@@ -218,17 +215,6 @@ public final class LoopBoundPolicy {
 
     public Map<String, Integer> declaredBounds() {
         return declared;
-    }
-
-    public String identity() {
-        StringBuilder identity = new StringBuilder(KIND)
-                .append(':').append(maxBackedgeTraversals)
-                .append(':').append(ON_LIMIT);
-        for (Map.Entry<String, Integer> entry : declared.entrySet()) {
-            identity.append(':').append(entry.getKey())
-                    .append('=').append(entry.getValue());
-        }
-        return identity.toString();
     }
 
     public JsonObject toJson() {

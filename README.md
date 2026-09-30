@@ -348,8 +348,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh '<round>-*' | grep -
 GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 ```
 
-- Always pass `GC_OUT=/bigtemp/vnr3ne/gc-out` (`stop-run.sh` otherwise looks in `~/gc-out` and
-  silently stops nothing).
+- Every tool takes `GC_OUT` from `tools/lib/gc-env.sh` (default `/bigtemp/vnr3ne/gc-out`).
 - A round name is written once (`accept-<round>-<case>` exists → refused). Names used so far:
   `v*`, `r1`–`r9`, `ra1`, `rb1`, agents' `a37f*`, `ee*`, `agent-*`, `w4-*`.
 - Typical wall time: HDFS cases 16–50 min (11741 longest), Solr 40 min–3 h.
@@ -444,8 +443,9 @@ Obligations of a campaign fan out over the hosts in `CAUSYNTH_CAMPAIGN_WORKER_HO
 host rotated per wave. Every start on a host is charged to the ledger first: an obligation
 (`obligation_memory_mb`, for 60 s), a campaign head's engine JVM (`engine_memory_mb`, else 8192, for
 120 s), its seed and CONFIRM replays (`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
-(its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, a 3072 MB
-reserve and every start still in its ramp there; a head's start is released when it returns.
+(its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, every start
+still in its ramp there and a reserve that keeps the host at most `CAUSYNTH_HOST_MAX_USED_PCT`
+(70) percent full; a head's start is released when it returns.
 A head's "waiting for memory" line goes to stderr (its stdout is often an artifact).
 
 ## Run an ad-hoc sweep
@@ -491,8 +491,8 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
 11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`.
 12. `sweep.sh <snapshot> <round> <sweep-dir>/cases.txt [heads-per-host]`: one campaign per case
     over all ten lifts, `PRUNE=1`, 5400 s per case; restartable.
-13. `triage.py <round> <gc-out>`: outcome class per case (CONFIRMED, REFUTED, NO_WITNESS, STOPPED,
-    DEAD, RUNNING, PENDING). Pass the `$GC_OUT` (its default is still `~/gc-out`).
+13. `triage.py <round> [gc-out]`: outcome class per case (CONFIRMED, REFUTED, NO_WITNESS, STOPPED,
+    DEAD, RUNNING, PENDING); `gc-out` defaults to `$GC_OUT`.
 14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
     one row per mechanism among the confirmed witnesses (`findings.tsv`); the ledger marks each
     new, known or dismissed.
@@ -539,14 +539,12 @@ third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/sh
 experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
 experiments/hadoop/, experiments/solr/   per-system scripts, cases, ad-hoc experiments
-experiments/hbase/                HBase reading notes and sketches (not a runnable case)
 tools/lib/gc-env.sh               GC_OUT, host ledger, LIFTS for every tool
 tools/rounds/                     launch, monitor and stop campaigns on the lifts
 tools/adhoc/                      ad-hoc check discovery, slicing, selection, pre-screen, sweeps,
                                   triage, findings
 tools/regress/                    offline-ab.sh: the offline merge gate
-tools/analysis/                   one-off analyses (chain check, graph diff, pairing probe)
-tools/case_onepager.py            one page per case from a campaign's artifacts
+tools/analysis/                   occurrences.py (a selector from a discovery log), the pairing probe
 docs/STATUS.md                    done / partial / not done, per requirement; open defects
 docs/design/                      the design of main (index: docs/design/README.md)
 ```
