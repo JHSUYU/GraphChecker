@@ -43,7 +43,10 @@
 #
 # Each case is one task, both sides inside it, placed by
 # /bigtemp/vnr3ne/bin/onlift.sh on the lift with the most free memory for
-# its load (a case peaks at four JVMs, under 3.2 GB each); the cases start
+# its load, never one that taking AB_CASE_GB would leave more than
+# CAUSYNTH_HOST_MAX_USED_PCT (70) percent full (pick-lift.sh).  A case peaks
+# at both sides' SOLVE.0 solvers at once, each loading the whole corpus
+# (5-7 GB RSS on the HDFS rounds of 2026-09-30); the cases start
 # AB_STAGGER_S apart so each placement sees the last one.
 #
 # Prints one table (case | stage | identical/DIFFERS/ERROR | baseline vs the
@@ -57,11 +60,12 @@
 #   AB_OUT        output root (default /bigtemp/vnr3ne/ab/<timestamp>), on a
 #                 filesystem every lift shares
 #   AB_HOSTS      "local": every case here, no onlift.sh (default: onlift.sh)
-#   AB_CASE_GB    free memory a lift needs to take a case (default 14)
+#   AB_CASE_GB    free memory a lift needs to take a case (default 16:
+#                 two solvers of up to 8 GB)
 #   AB_STAGGER_S  seconds between two cases' placements (default 8)
 #   AB_HEAP_MB    engine JVM heap cap (default 8192; a case's engine_memory_mb
 #                 above it is lowered to it)
-#   AB_SOLVE_JOBS concurrent SOLVE.0 solvers of one side (default 2)
+#   AB_SOLVE_JOBS concurrent SOLVE.0 solvers of one side (default 1)
 #   AB_STAGE_TIMEOUT_S  wall bound of one JVM (default 1800)
 #   AB_STAGES     the chains to run (default "SEED IMPORT EXPLORE.N COMPOSE")
 #   AB_ACCEPT_ROOT  where round TAGs live (default $GC_OUT, tools/lib/gc-env.sh)
@@ -548,7 +552,7 @@ ab_main() {
   cp "${baseline}" "${AB_OUT}/jars/baseline.jar"
   cp "${candidate}" "${AB_OUT}/jars/candidate.jar"
   printf 'AB_HEAP_MB=%q\nAB_SOLVE_JOBS=%q\nAB_STAGE_TIMEOUT_S=%q\nAB_STAGES=%q\n' \
-    "${AB_HEAP_MB:-8192}" "${AB_SOLVE_JOBS:-2}" "${AB_STAGE_TIMEOUT_S:-1800}" \
+    "${AB_HEAP_MB:-8192}" "${AB_SOLVE_JOBS:-1}" "${AB_STAGE_TIMEOUT_S:-1800}" \
     "${AB_STAGES}" >"${AB_OUT}/env.sh"
   [[ -z "${AB_Z3:-}" ]] || printf 'AB_Z3=%q\n' "${AB_Z3}" >>"${AB_OUT}/env.sh"
   printf '%s\n' ${AB_STAGES} >"${AB_OUT}/chains.txt"
@@ -600,7 +604,7 @@ ${ab_rounds[*]} -> ${AB_OUT}"
       bash "${ab_self}" --task "${AB_OUT}" "${case_id}" \
         >"${AB_OUT}/logs/${case_id}.log" 2>&1 &
     else
-      ( until "${onlift}" -g "${AB_CASE_GB:-14}" bash "${ab_self}" --task \
+      ( until "${onlift}" -g "${AB_CASE_GB:-16}" bash "${ab_self}" --task \
             "${AB_OUT}" "${case_id}"; do
           (( $? == 75 )) || exit 1
           sleep 30
