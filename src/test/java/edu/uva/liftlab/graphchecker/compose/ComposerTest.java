@@ -5078,26 +5078,27 @@ public class ComposerTest {
         Map<String, ComposedFamilies.BoundHole> own = new LinkedHashMap<
                 String, ComposedFamilies.BoundHole>();
         own.put("c.num", new ComposedFamilies.BoundHole("h_num",
-                VmTermLowering.Sort.INT, false,
+                "J", false,
                 Collections.<String>emptySet()));
         own.put("c.str", new ComposedFamilies.BoundHole("h_str",
-                VmTermLowering.Sort.STRING, false,
+                "Ljava/lang/String;", false,
                 Collections.<String>emptySet()));
         own.put("c.relay", new ComposedFamilies.BoundHole("h_relay",
-                VmTermLowering.Sort.INT, false,
+                "J", false,
                 Collections.singleton("h_num")));
         own.put("c.clock", new ComposedFamilies.BoundHole("h_clock",
-                VmTermLowering.Sort.INT, true,
+                "J", true,
                 Collections.<String>emptySet()));
         own.put("c.late", new ComposedFamilies.BoundHole("h_late",
-                VmTermLowering.Sort.INT, false,
+                "J", false,
                 Collections.singleton("h_clock")));
         own.put("c.free", new ComposedFamilies.BoundHole("h_free",
-                VmTermLowering.Sort.INT, false,
+                "J", false,
                 Collections.singleton("h_unbound")));
         own.put("c.float", new ComposedFamilies.BoundHole("h_float",
-                VmTermLowering.Sort.FLOAT64, false,
-                Collections.<String>emptySet()));
+                "D", false, Collections.<String>emptySet()));
+        own.put("c.char", new ComposedFamilies.BoundHole("h_char", "C",
+                false, Collections.<String>emptySet()));
         Map<String, String> model = new LinkedHashMap<String, String>();
         model.put("h_num", "-5");
         model.put("h_str", "\"a\"\"b\\u{e9}\"");
@@ -5106,6 +5107,7 @@ public class ComposerTest {
         model.put("h_late", "9");
         model.put("h_free", "3");
         model.put("h_float", "(fp #b0 #b01111111111 #x0000000000000)");
+        model.put("h_char", "65");
         Map<String, String> texts = ComposedFamilies.holeTexts(
                 Collections.singletonList(ComposedFamilies.ArmChoice.of(
                         "f", "g", new ArrayList<String>(own.keySet()), "s0",
@@ -5116,7 +5118,8 @@ public class ComposerTest {
         expected.put("c.str", "a\"bé");
         expected.put("c.relay", "-5");
         assertEquals("held: the holes resting on no clock, and on no hole "
-                + "no arm binds; a floating one is not rendered", expected,
+                + "no arm binds; a floating or char one is not rendered",
+                expected,
                 texts);
     }
 

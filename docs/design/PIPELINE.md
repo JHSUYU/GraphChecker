@@ -684,7 +684,7 @@ with the blocker named when the claim is blocked or there is no path, and `(chec
 `{kind CLAIM, anchor, claim, solverRuns, seedSessionId, valuations, gaps}`, what CONFIRM reads; a
 selected arm binding codec holes states `holeTexts`, consumer endpoint id -> the model's value of
 the hole as the text it decodes to (an integral's decimal, a boolean's `true`/`false`, a String's
-characters), for every hole whose value rests on no clock through the valuation's selected arms
+characters; none for a char or a floating value), for every hole whose value rests on no clock through the valuation's selected arms
 (`ComposedFamilies#holeTexts`; a replay reads its clocks afresh).
 
 ## 9. SOLVE and DECIDE: `compose.ClaimPolicy.decide`

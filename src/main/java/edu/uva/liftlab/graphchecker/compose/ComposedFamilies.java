@@ -232,8 +232,9 @@ final class ComposedFamilies {
     }
 
     /**
-     * One codec hole an arm binds (WIRE-CODEC §6.5): its symbol and sort,
-     * and whether the value it was bound to rests on a clock -- directly,
+     * One codec hole an arm binds (WIRE-CODEC §6.5): its symbol and the
+     * decoded leaf's {@code javaType} (a primitive or a String, invariant
+     * 5), and whether the value it was bound to rests on a clock -- directly,
      * or through the {@code nested} holes its operand names.  A replay
      * reads its clocks afresh (CONFIRM holds a run to the model's edges
      * and roots, never to its instants), so only a value resting on no
@@ -241,14 +242,14 @@ final class ComposedFamilies {
      */
     public static final class BoundHole {
         public final String symbol;
-        public final VmTermLowering.Sort sort;
+        public final String javaType;
         public final boolean clocked;
         public final Set<String> nested;
 
-        BoundHole(String symbol, VmTermLowering.Sort sort, boolean clocked,
+        BoundHole(String symbol, String javaType, boolean clocked,
                   Set<String> nested) {
             this.symbol = symbol;
-            this.sort = sort;
+            this.javaType = javaType;
             this.clocked = clocked;
             this.nested = Collections.unmodifiableSet(nested);
         }
@@ -260,8 +261,8 @@ final class ComposedFamilies {
      * text -- an integral's decimal, a boolean's {@code true}/{@code
      * false}, a String's characters -- by consumer endpoint id, for every
      * hole whose value rests on no clock through the selected arms.  A
-     * hole resting on a nested hole no selected arm binds, or of a
-     * floating sort, is not stated.
+     * hole resting on a nested hole no selected arm binds, or a char or a
+     * floating value (no decimal text the model states), is not stated.
      */
     public static Map<String, String> holeTexts(
             Collection<ArmChoice> selected, Map<String, String> model) {
@@ -282,16 +283,21 @@ final class ComposedFamilies {
             }
             String value = model.get(hole.getKey());
             String text = value == null ? null
-                    : hole.getValue().sort == VmTermLowering.Sort.STRING
-                    ? Z3.javaString(value)
-                    : hole.getValue().sort == VmTermLowering.Sort.INT
-                    || hole.getValue().sort == VmTermLowering.Sort.BOOL
-                    ? value : null;
+                    : text(hole.getValue().javaType, value);
             if (text != null) {
                 texts.put(consumerOf.get(hole.getKey()), text);
             }
         }
         return texts;
+    }
+
+    /** A model's value as the text a hole of this type decodes, or null. */
+    private static String text(String javaType, String value) {
+        VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(javaType);
+        if (sort == VmTermLowering.Sort.STRING) return Z3.javaString(value);
+        return sort == VmTermLowering.Sort.BOOL
+                || sort == VmTermLowering.Sort.INT && !"C".equals(javaType)
+                ? value : null;
     }
 
     /** Whether a hole's value rests on a clock, or on what no arm binds. */
@@ -725,9 +731,8 @@ final class ComposedFamilies {
                     GapClass.DIAGNOSTIC, arm.slotId(), bound.detail));
             return null;
         }
-        VmTermLowering.Sort sort =
-                JavaSmtSorts.sortOfJava(consumer.javaType());
-        lowering.declareStated(arm.symbol(), sort);
+        lowering.declareStated(arm.symbol(),
+                JavaSmtSorts.sortOfJava(consumer.javaType()));
         boolean clocked = false;
         Set<String> nested = new LinkedHashSet<String>();
         for (String name : lowering.reachedSymbols(
@@ -740,7 +745,8 @@ final class ComposedFamilies {
             }
         }
         holes.put(consumer.endpoint().id(),
-                new BoundHole(arm.symbol(), sort, clocked, nested));
+                new BoundHole(arm.symbol(), consumer.javaType(), clocked,
+                        nested));
         return bound.formula;
     }
 
