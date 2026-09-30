@@ -45,6 +45,19 @@ public final class JavaPrimitiveBoxing {
     }
 
     /**
+     * The descriptor of the value a location of this descriptor holds: a
+     * wrapper's is its primitive's ({@code Ljava/lang/Long;} -> {@code J}),
+     * any other stays as stated.  A box is immutable and a store puts a new
+     * one, so its value (or null) is all a reader observes (SYMBOL-SCOPE F2).
+     */
+    public static String valueDescriptor(String descriptor) {
+        String stated = descriptor == null ? "" : descriptor.trim();
+        String primitive = stated.startsWith("L") && stated.endsWith(";")
+                ? primitiveDescriptor(stated) : "";
+        return primitive.isEmpty() ? stated : primitive;
+    }
+
+    /**
      * The descriptor of the primitive this WRAPPER boxes ({@code Integer} ->
      * {@code I}), or "".  The wrapper's own descriptor is
      * {@link JavaPrimitiveSmtSemantics#javaTypeDescriptor}.

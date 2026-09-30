@@ -1,10 +1,12 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -21,12 +23,16 @@ import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import soot.DoubleType;
 import soot.G;
 import soot.IntType;
 import soot.Local;
+import soot.LongType;
 import soot.Modifier;
+import soot.RefType;
 import soot.Scene;
 import soot.SootClass;
+import soot.SootField;
 import soot.SootMethod;
 import soot.Unit;
 import soot.VoidType;
@@ -411,6 +417,105 @@ public class RegionGraphOccurrenceKeyTest {
                 new ArrayList<Unit>(body.getUnits()).indexOf(write));
         assertEquals(expected, guardSites(SiteControlDependence.over(
                 Collections.singletonList(decrement)).of(decrement)));
+    }
+
+    /**
+     * SYMBOL-SCOPE F2: a wrapper-typed field is a value cell as its
+     * primitive is (solr-18413's {@code RoutingRule.expireAt}, a Long): it
+     * is versionable; its {@code getfield} is the READ_SITE a branch decides
+     * on through the unboxing, observed like its {@code putfield}; the box's
+     * own {@code value} is no tracked cell; and a write row stating the
+     * value's type ({@code J}), or a null ({@code L}), names the field as
+     * its carrier.
+     */
+    @Test
+    public void aWrapperFieldIsAValueCell() throws IOException {
+        G.reset();
+        SootClass rule = new SootClass("example.Rule");
+        rule.setApplicationClass();
+        Scene.v().addClass(rule);
+        SootClass box = new SootClass("java.lang.Long");
+        box.addField(new SootField("value", LongType.v(), Modifier.FINAL));
+        Scene.v().addClass(box);
+        Object[][] fields = {
+                {LongType.v(), 0, true},
+                {RefType.v("java.lang.Long"), 0, true},
+                {RefType.v("java.lang.Boolean"), 0, true},
+                {RefType.v("java.lang.Long"), Modifier.STATIC, false},
+                {RefType.v("java.lang.Double"), 0, false},
+                {DoubleType.v(), 0, false},
+                {RefType.v("java.lang.String"), 0, false}};
+        for (int index = 0; index < fields.length; index++) {
+            SootField field = new SootField("f" + index,
+                    (soot.Type) fields[index][0], (Integer) fields[index][1]);
+            rule.addField(field);
+            assertEquals(field.getSignature(), fields[index][2],
+                    CausynthStaticFacts.versionableField(
+                            field.getSignature()));
+        }
+        assertTrue("Boolean's unboxing passes its receiver's value on",
+                JavaPrimitiveBoxing.unboxing(
+                        "<java.lang.Boolean: boolean booleanValue()>"));
+
+        String init = "<example.Rule: void <init>(java.util.Map)>";
+        String expired = "<example.Rule: boolean isExpired()>";
+        String expireAt = "<example.Rule: java.lang.Long f1>";
+        String value = "<java.lang.Long: long value>";
+        String unbox = "<java.lang.Long: long longValue()>";
+        List<Map<String, Object>> edges = Arrays.asList(
+                row("kind", "field_write", "method", init, "unitIndex", 34,
+                        "fromCell", init + "::$r16", "toCell", expireAt),
+                row("kind", "field_read", "method", expired, "unitIndex", 1,
+                        "fromCell", expireAt, "toCell", expired + "::$r1",
+                        "declaredFieldSignature", expireAt),
+                row("kind", "local_def_use", "method", expired,
+                        "unitIndex", 2, "fromCell", expired + "::$r1",
+                        "toCell", expired + "::$l0", "invoke", unbox),
+                row("kind", "accessor_field_return", "method", expired,
+                        "unitIndex", 2, "fromCell", value,
+                        "toCell", expired + "::$l0", "invoke", unbox,
+                        "declaredFieldSignature", value,
+                        "accessorImplementationMethod", unbox),
+                row("kind", "guard_dependency", "method", expired,
+                        "unitIndex", 6, "fromCell", expired + "::$l0",
+                        "toCell", expired + "#u6"));
+        List<Map<String, Object>> regions = Arrays.asList(
+                row("regionId", "REGION.update", "methods",
+                        Collections.singletonList(expired)),
+                row("regionId", "REGION.overseer", "methods",
+                        Collections.singletonList(init)));
+        StringBuilder text = new StringBuilder();
+        for (JsonObject written : StaticScopeMap.rows(StaticScopeMap.sites(
+                edges, regions, Collections.<String, Long>emptyMap(),
+                method -> !method.startsWith("<example."),
+                CausynthStaticFacts::versionableField), null)) {
+            text.append(written.toString()).append('\n');
+        }
+        Path file = tree.newFolder("wrapper").toPath()
+                .resolve(StaticScopeMap.FILE);
+        Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
+        StaticScopeMap map = StaticScopeMap.read(file);
+
+        JsonArray observed = map.observedSites();
+        assertEquals("the putfield and the getfield, not the box's value",
+                2, observed.size());
+        assertEquals(init + "#u34", observed.get(0).getAsJsonObject()
+                .get("siteId").getAsString());
+        assertEquals(expired + "#u1", observed.get(1).getAsJsonObject()
+                .get("siteId").getAsString());
+        assertEquals(expireAt, observed.get(1).getAsJsonObject()
+                .get("cell").getAsString());
+        assertEquals(Collections.singleton("REGION.update"),
+                map.trackedRegions());
+        String store = "example.Rule#<init>(Ljava/util/Map;)V#376:WRITE";
+        for (String javaType : new String[]{"J", "L"}) {
+            assertEquals(javaType, Collections.singleton(expireAt),
+                    map.carriersAt(store, javaType));
+        }
+        assertTrue(map.carriersAt(store, "I").isEmpty());
+        assertEquals("a read's INITIAL names it too",
+                Collections.singleton(expireAt),
+                map.carriersAt("example.Rule#isExpired()Z#30:READ", "J"));
     }
 
     private static List<String> scoped(List<StaticScopeMap.Site> sites) {

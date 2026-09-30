@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -37,15 +38,19 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *       with its {@code carrier} field, versioned leaf {@code cell} and region
  *       (generalises REPORT-P2N's {@code observedWriteSites} to every cell of
  *       the slice).</li>
- *   <li>{@code READ_SITE}: a read of a TRACKED cell -- an integral instance
- *       field (an atomic's value included) the slice both reads and stores
- *       (SYMBOL-SCOPE F2) -- whose value a branch decides on, a few flows on
- *       and before any store.  Its stores are versioned from the first
- *       ({@link #observedSites}), and an occurrence of a region reading
- *       it observes its branches from entry, so what it decides on shared
- *       state joins the writers of that state.  A read nothing decides on
- *       only feeds data -- a token's bytes, a digest -- where a symbol costs
- *       every expression it flows through and binds nothing.</li>
+ *   <li>{@code READ_SITE}: a read of a TRACKED cell -- an instance field
+ *       holding an integral value, boxed or not (an atomic's value included),
+ *       the slice both reads and stores (SYMBOL-SCOPE F2) -- whose value a
+ *       branch decides on, a few flows on and before any store.  A boxed
+ *       one is read at the {@code getfield} of its field: the box's own
+ *       {@code value}, read through its unboxing accessor, is a projection
+ *       of that read, and nothing in the slice stores it.  Its stores are
+ *       versioned from the first ({@link #observedSites}), and an
+ *       occurrence of a region reading it observes its branches from entry,
+ *       so what it decides on shared state joins the writers of that
+ *       state.  A read nothing decides on only feeds data -- a token's
+ *       bytes, a digest -- where a symbol costs every expression it flows
+ *       through and binds nothing.</li>
  *   <li>{@code EXPORT_SITE}: defines the value of a declared wire port
  *       ({@code portId}), the producer half of an interaction.</li>
  *   <li>{@code DECLARED_SITE}: a value entering from outside the slice's
@@ -1242,12 +1247,25 @@ public final class StaticScopeMap {
                 .toString();
     }
 
-    /** Whether a row's type and this map's type can be the same. Disagreement,
-     *  not equality: a row may state only the sort ({@code L} = "a reference"),
-     *  e.g. every container store; equality would drop those writers. Compare
-     *  the sort, and the class only where both name one. */
+    /** Whether a row's type and this map's type can be the same, as stated or
+     *  as the values they hold: a wrapper location holds its primitive's
+     *  value ({@link JavaPrimitiveBoxing#valueDescriptor}) or null, so it
+     *  agrees with a row of that primitive (a stored box states its value,
+     *  {@code J} for a {@code Long}) and with a reference row (a stored null
+     *  states {@code L}).  solr-18413: {@code RoutingRule.expireAt}'s writes
+     *  said {@code J} and joined no carrier. */
     private static boolean sameType(String stated, String javaType) {
         String row = rowDescriptor(javaType);
+        return agree(stated, row)
+                || agree(JavaPrimitiveBoxing.valueDescriptor(stated),
+                        JavaPrimitiveBoxing.valueDescriptor(row));
+    }
+
+    /** Disagreement, not equality: a row may state only the sort ({@code L}
+     *  = "a reference"), e.g. every container store; equality would drop
+     *  those writers. Compare the sort, and the class only where both name
+     *  one. */
+    private static boolean agree(String stated, String row) {
         if (stated.isEmpty() || row.isEmpty()) return true;
         if (stated.charAt(0) != row.charAt(0)) return false;
         // Bare "L": the row named no class.

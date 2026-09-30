@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import soot.Body;
 import soot.Scene;
 import soot.SootClass;
@@ -286,16 +287,18 @@ public final class CausynthStaticFacts {
     }
 
     /** Whether the VM can version a field from any store into it: an
-     *  integral field of an instance -- boolean, byte, char, short, int or
-     *  long ({@code observeExactPrimitiveField} refuses every other type with
-     *  a warning and versions nothing). */
+     *  instance field holding an integral value -- boolean, byte, char,
+     *  short, int or long, or its wrapper, whose value (or null) is all a
+     *  reader observes: a box is immutable and a store puts a new one
+     *  (SYMBOL-SCOPE F2; solr-18413's {@code RoutingRule.expireAt} is a
+     *  {@code Long}).  Float and double stay out, boxed or not: {@code
+     *  observeExactPrimitiveField} versions neither. */
     static boolean versionableField(String signature) {
         SootField field = signature == null || signature.isEmpty() ? null
                 : Scene.v().grabField(signature);
         return field != null && !field.isStatic()
-                && field.getType() instanceof soot.PrimType
-                && !(field.getType() instanceof soot.FloatType)
-                && !(field.getType() instanceof soot.DoubleType);
+                && JavaPrimitiveSmtSemantics.domainOfJavaType(
+                        field.getType().toString()) != null;
     }
 
     /** A retrievable active body, or null: an unloadable body is not a fact. */
