@@ -1924,15 +1924,15 @@ public class ExploreTest {
         spread.flush();
         StaticScopeMap spreadMap = StaticScopeMap.read(scopeMap(perNode,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
                         "BlockTokenSecretManager#u12",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
                         "KeyManager#u4", "KeyManager#refresh",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
+                        "<example.Manager: example.Keys allKeys>", "")),
                 scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
                         "PBHelper#convert#9", "PBHelper#convert", "", "",
                         "XCH.resp.block-key-id")));
@@ -2633,18 +2633,18 @@ public class ExploreTest {
         StaticScopeMap ofAllKeys = StaticScopeMap.read(scopeMap(inlined,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120",
                         "BlockTokenSecretManager#u8"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
                         "BlockTokenSecretManager#u27",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Manager: java.util.Map allKeys>",
                         "<example.Manager: java.util.Map allKeys>", "",
-                        "BlockTokenSecretManager#u21"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
+                        "BlockTokenSecretManager#u21")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
                         "BlockTokenSecretManager#u16",
                         "BlockTokenSecretManager#removeExpiredKeys",
                         "<example.Manager: java.util.Map allKeys>",
                         "<example.Manager: java.util.Map allKeys>", "",
-                        "BlockTokenSecretManager#u15")));
+                        "BlockTokenSecretManager#u15"))));
         Corpus vC = Corpus.read(inlined, null);
         SmtLowering lowering = vC.lowering("s-seed");
         String mapGuard = lowering.statedTerm("EXPR.0000000000000005",
@@ -3503,15 +3503,15 @@ public class ExploreTest {
         // addressed as REGION.holder.
         String[] rows = {
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.outer",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.outer",
                         "BlockTokenSecretManager#u12",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.inner",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.inner",
                         "KeyManager#u4", "KeyManager#refresh",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", "")};
+                        "<example.Manager: example.Keys allKeys>", ""))};
         Path mapFile = scopeMap(iteration, rows);
 
         // Without the skeletons beside it the map can say nothing about
@@ -3610,6 +3610,17 @@ public class ExploreTest {
         for (String guard : guards) stated.add(guard);
         row.add("guards", stated);
         return row.toString();
+    }
+
+    /** The same WRITE_SITE row, stated as a mutator call on the container
+     *  its carrier holds: a store of that container's state, the MAP
+     *  location the fixture's key map is ({@code StaticScopeMap#stores}). */
+    private static String put(String row) {
+        JsonObject site = com.google.gson.JsonParser.parseString(row)
+                .getAsJsonObject();
+        site.addProperty("declaredCallee", "<java.util.Map: java.lang.Object"
+                + " put(java.lang.Object,java.lang.Object)>");
+        return site.toString();
     }
 
     /** The annotated target and the branches it is control-dependent on. */

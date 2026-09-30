@@ -293,8 +293,9 @@ public class ConfirmMainTest {
      * read to the store, the query's read to the write of that state, each
      * with every other writer of its location outside the two -- and the
      * session, which read neither, is no realization of it; the observed
-     * store with nothing else is the session itself; a state asked outside
-     * every read, or one no write states, is refused by name.
+     * store with nothing else is the session itself, its arm being the write
+     * the read observed though its endpoint stored again later; a state
+     * asked outside every read, or one no write states, is refused by name.
      */
     @Test
     public void aQueryThroughAReplacedReferenceIsHeldToTheStateTheModelChose()
@@ -333,7 +334,12 @@ public class ConfirmMainTest {
                         "EXPR.o", "L", WriteRow.Referent.of(ran, 4L),
                         null),
                 WriteRow.of("sel", 35L, later, other, 2L, "EXPR.l",
-                        "L")), RowCodec::writeWrite);
+                        "L"),
+                // The observed store's endpoint stores again after the
+                // read: its arm is still the write the read observed.
+                WriteRow.of("sel", 36L, observed, reference, 8L, "EXPR.o",
+                        "L", WriteRow.Referent.of(ran, 4L), null)),
+                RowCodec::writeWrite);
         RowCodec.writeAll(sel.reads(), Arrays.asList(
                 ReadRow.of("sel", 30L, cell, reference, 6L, "kc", "L",
                         null),

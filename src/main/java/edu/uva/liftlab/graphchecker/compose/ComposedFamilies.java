@@ -721,6 +721,18 @@ final class ComposedFamilies {
                     local, new ArrayList<ReadRow>(), joins, answered);
             conjuncts.addAll(composer.closureConditions(session, reached,
                     relevant, local));
+            Set<String> held = new LinkedHashSet<String>();
+            for (Out out : outs) {
+                if (out.arm.write() == null) continue;
+                for (String symbol : out.symbols) {
+                    for (SmtLowering.StateChoice state : lowering
+                            .stateChoices(session, symbol, out.arm.write())) {
+                        if (!held.add(state.selector)) continue;
+                        conjuncts.add(stateClosure(session, out, state,
+                                reached, bound, rows, joins, answered));
+                    }
+                }
+            }
             // Nested families go under this FAMILY's guard, not this
             // session's selector: sessions share the leaf's handoff symbol,
             // so a nested family under one selector leaves it unbound for
@@ -750,6 +762,63 @@ final class ComposedFamilies {
         }
         nestedStated.addAll(nested);
         return VmTermLowering.and(conjuncts);
+    }
+
+    /**
+     * A STATE OF A DELIVERED OBJECT RESTS ON WHAT MADE IT, as the store
+     * rests on its own prefix: a later version a query through the read may
+     * see ({@link SmtLowering#stateChoices}) was written by an occurrence the
+     * arm's closure need not reach, under decisions of its own.  Under that
+     * state's selector, the closure its write adds to the store producer's
+     * ({@link Composer#closure} seeded with it; EXPLORE demands the same
+     * writers, {@code Corpus#referentStates}): each added occurrence's
+     * decisions before its cutoff, and the reads they rest on joined.  A
+     * state whose added closure the recording does not state is no option
+     * of the arm, refused by name.
+     *
+     * @return the state's conjunct, or "" when its write adds no decision
+     */
+    private String stateClosure(String session, Out out,
+                                SmtLowering.StateChoice state,
+                                Map<String, Long> reached, Set<String> bound,
+                                SmtLowering.SessionJoin rows,
+                                Map<String, String> joins,
+                                Set<String> answered) {
+        Map<String, Long> added = new LinkedHashMap<String, Long>();
+        for (Map.Entry<String, Long> at : composer.closure(session,
+                out.arm.producer(), out.arm.deliveredAt(),
+                Collections.singletonList(state.state)).entrySet()) {
+            Long was = reached.get(at.getKey());
+            if (was == null || was.longValue() < at.getValue().longValue()) {
+                added.put(at.getKey(), at.getValue());
+            }
+        }
+        if (added.isEmpty()) return "";
+        List<GapRow> refused = new ArrayList<GapRow>();
+        composer.frameRefusals(session, added.keySet(), refused);
+        Independence relevant = composer.independence(session,
+                Collections.singletonList(state.state.expressionRef()), bound,
+                added, composer.reachedConditions(session, added));
+        composer.statedReads(session, added.keySet(), relevant, rows,
+                refused, joins, answered);
+        composer.stateJoins(session, added.keySet(), relevant, rows, refused,
+                new ArrayList<ReadRow>(), joins, answered);
+        List<String> conditions = composer.closureConditions(session, added,
+                relevant, refused);
+        if (refused.isEmpty()) {
+            String held = VmTermLowering.and(conditions);
+            return "true".equals(held) ? ""
+                    : "(=> " + state.selector + " " + held + ")";
+        }
+        for (GapRow gap : refused) {
+            gaps.add(GapRow.of(gap.sessionId(), gap.kind(), GapClass.DIAGNOSTIC,
+                    gap.subject(), "state " + SmtLowering.locationKey(
+                            state.state.location()) + "@"
+                            + state.state.version() + " (" + state.selector
+                            + ") is no option: its writer's closure "
+                            + gap.detail()));
+        }
+        return "(not " + state.selector + ")";
     }
 
     /** One group's outs, by the occurrence each came out of. */
@@ -1079,11 +1148,12 @@ final class ComposedFamilies {
                     writer.getKey(), Collections.<String>emptyList(),
                     session, armsOf(writer.getValue())).seeing(states));
         }
-        // A nested selector holds only under an arm delivering a store its
-        // state was seen through: under none -- the arm of the store the
-        // read observed, the pins', no family -- the run's own object
+        // Every nested selector this path minted holds only under an arm
+        // of it delivering a store its state was seen through: under none
+        // -- the arm of the store the read observed, the pins', no family,
+        // a selector of another session's scope -- the run's own object
         // answers as the run saw it ({@code SmtLowering#answerOf}).
-        for (String nested : lowering.nestedSelectors(session)) {
+        for (String nested : lowering.nestedSelectors()) {
             List<String> by = delivering.get(nested);
             String formula = "(=> " + nested + " " + VmTermLowering.or(
                     by == null ? Collections.<String>emptyList() : by) + ")";

@@ -301,9 +301,10 @@ public final class SmtLowering {
      */
     private final Set<String> pins = new LinkedHashSet<String>();
     /**
-     * The reads a STATE family may bind to another writer's value, as
-     * {@code session|symbol} ({@link #movable}): what is asked through one
-     * is asked of the object it is ({@link #perCandidate}).
+     * The reads a STATE family of the path being composed may bind to
+     * another writer's value, as {@code session|symbol} ({@link #movable},
+     * {@link #path}): what is asked through one is asked of the object it
+     * is ({@link #perCandidate}).
      */
     private final Set<String> movable = new LinkedHashSet<String>();
     /** {@code session|location|class} -> {@link #candidates}. */
@@ -320,9 +321,9 @@ public final class SmtLowering {
      *  ({@link #askedThrough}). */
     private final Map<String, Set<ReadRow>> askedThrough =
             new HashMap<String, Set<ReadRow>>();
-    /** Session -> the nested selectors its queries minted. */
-    private final Map<String, Set<String>> nestedSelectors =
-            new HashMap<String, Set<String>>();
+    /** The nested selectors the path being composed minted, in any scope
+     *  ({@link #nestedSelectors}). */
+    private final Set<String> nestedSelectors = new LinkedHashSet<String>();
     /** The reads whose joined value is being lowered, innermost first: the
      *  read a container query answers ({@link #query}). */
     private final Deque<ReadAt> answering = new ArrayDeque<ReadAt>();
@@ -1560,9 +1561,23 @@ public final class SmtLowering {
     }
 
     /**
-     * Declares one read a STATE family may bind to another writer's value
-     * ({@code ComposedFamilies#stateFamilies}): a field projected through
-     * it is then the field of the object it is ({@link #projection}).
+     * A path is composed from here on: no read is movable until it says so,
+     * and no nested selector is minted yet.  A read another path made
+     * movable is its own session's; lowered in this path (a message arm in
+     * the sender's session) it is the run's pairing, since a query through
+     * it would mint selectors no arm of this path binds.
+     */
+    public void path() {
+        movable.clear();
+        nestedSelectors.clear();
+        memo = new HashMap<MemoKey, Attempt<?>>();
+    }
+
+    /**
+     * Declares one read of the path being composed a STATE family may bind
+     * to another writer's value ({@code ComposedFamilies#stateFamilies}): a
+     * field projected through it is then the field of the object it is
+     * ({@link #projection}).
      */
     public void movable(String symbol) {
         if (movable.add(scope + SEPARATOR + symbol)) {
@@ -2178,8 +2193,7 @@ public final class SmtLowering {
                 + read.symbol() + SEPARATOR + object + SEPARATOR + version,
                 12);
         declare(selector, Sort.BOOL);
-        nestedSelectors.computeIfAbsent(scope,
-                unused -> new LinkedHashSet<String>()).add(selector);
+        nestedSelectors.add(selector);
         return selector;
     }
 
@@ -2243,10 +2257,10 @@ public final class SmtLowering {
         return choices;
     }
 
-    /** Every nested selector one session's queries minted. */
-    public Set<String> nestedSelectors(String session) {
-        return Collections.unmodifiableSet(nestedSelectors.getOrDefault(
-                session, Collections.<String>emptySet()));
+    /** Every nested selector the path being composed minted, in any scope
+     *  ({@link #path}): each one its families must bind. */
+    public Set<String> nestedSelectors() {
+        return Collections.unmodifiableSet(nestedSelectors);
     }
 
     /**

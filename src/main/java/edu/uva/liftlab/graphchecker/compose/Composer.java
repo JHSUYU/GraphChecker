@@ -697,6 +697,7 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
+        lowering.path();
         // (0a) THE CLOSURE (P3): the occurrences of this session the joins
         //      reach, and the seq each prefix runs to.  Row-level, before
         //      any lowering.
@@ -1410,7 +1411,7 @@ public final class Composer {
             String site = write.endpoint().site();
             Set<String> sites = new LinkedHashSet<String>();
             for (String carrier : scope.carriersAt(site,
-                    write.javaType())) {
+                    write.javaType(), write.location().kind())) {
                 for (StaticScopeMap.Guard guard
                         : scope.constructionGuards(site, carrier)) {
                     sites.add(guard.siteId());

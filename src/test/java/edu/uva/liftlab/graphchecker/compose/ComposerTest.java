@@ -2220,6 +2220,44 @@ public class ComposerTest {
     }
 
     /**
+     * A read is movable only in the path that made it so: lowered again in a
+     * later path (a message arm in its session), a query through it is the
+     * run's own answer, and it mints no nested selector no arm of that path
+     * could bind.
+     */
+    @Test
+    public void aReadIsMovableOnlyInThePathThatMovedIt() throws Exception {
+        Path iteration = folder.newFolder("movable-per-path").toPath();
+        OccurrenceAddress reader = occurrence("solr/leader", "REGION.fetch",
+                CausalContext.of(Role.of("REPLICATION"), "", 1),
+                frame("ReplicationHandler#fetch#3", 0));
+        replacedMap(iteration, "s0", false, reader, occurrence("solr/leader",
+                "REGION.commit", CausalContext.of(Role.of("COMMIT"), "", 1),
+                frame("Policy#onCommit#2", 0)), occurrence("solr/leader",
+                "REGION.commit", CausalContext.of(Role.of("COMMIT"), "", 2),
+                frame("Policy#onCommit#2", 0)), occurrence("solr/leader",
+                "REGION.reserve", CausalContext.of(Role.of("RESERVE"), "", 1),
+                frame("Wrapper#setReserveDuration#4", 0)));
+        Corpus corpus = Corpus.read(iteration, null);
+        SmtLowering lowering = new SmtLowering(corpus.declaredSymbols());
+        // path, whether this path moved the read
+        Object[][] paths = {{"the path that joined it", true},
+                {"a later path", false}};
+        for (Object[] path : paths) {
+            lowering.path();
+            lowering.begin("s0", corpus.join("s0"),
+                    corpus.expressions("s0"));
+            if ((Boolean) path[1]) lowering.movable("kc@s0");
+            String asked = lowering.term("EXPR.00000000000000d1", "test")
+                    .text + " " + lowering.end();
+            assertEquals((String) path[0] + ": " + asked, path[1],
+                    asked.contains("nest__"));
+            assertEquals((String) path[0], path[1],
+                    !lowering.nestedSelectors().isEmpty());
+        }
+    }
+
+    /**
      * A reference compared with an object the VM named is an identity
      * test whichever side the object is on.
      */
@@ -2258,7 +2296,8 @@ public class ComposerTest {
      * the run's own pairing, named.  Each writer's arm states the states it
      * may deliver and the read the query answered, which CONFIRM holds;
      * where only the other map's later state reaches the fatal, the claim's
-     * witness takes that store and names that state.
+     * witness takes that store and names that state, and that state rests
+     * on the decision its writer mutated the map under.
      */
     @Test
     public void aReplacedReferencesOtherMapIsEachStateTheReaderCouldSee()
@@ -2270,13 +2309,15 @@ public class ComposerTest {
         Object[][] variants = {
                 // variant, states on the first writer's arm, on the third's
                 {"mutated", 2, 0}, {"restored", 2, 1}, {"own-restored", 1, 1},
-                {"claimed", 2, 0}, {"refused", 0, 0}, {"put", 0, 0},
-                {"wrapper", 0, 0}};
+                {"claimed", 2, 0}, {"guarded", 2, 0}, {"refused", 0, 0},
+                {"put", 0, 0}, {"wrapper", 0, 0}};
         for (Object[] row : variants) {
             String variant = (String) row[0];
             // The run's own map holds 5 too: only the other map's later
-            // state reaches the fatal.
-            boolean claimed = "claimed".equals(variant);
+            // state reaches the fatal; guarded, its writer removed 5 under
+            // a clock comparison.
+            boolean guarded = "guarded".equals(variant);
+            boolean claimed = "claimed".equals(variant) || guarded;
             boolean mutated = "mutated".equals(variant)
                     || "restored".equals(variant) || claimed;
             boolean asked = mutated || "own-restored".equals(variant);
@@ -2356,6 +2397,15 @@ public class ComposerTest {
             // After the read, on a thread of its own: 5 leaves the other
             // map, or joins the run's own.
             boolean ownMoved = "own-restored".equals(variant);
+            if (guarded) {
+                session.roots.add(RootMintRow.of("s0", ++session.seq,
+                        writers[2], "ROOT.CLEAN", "M_J_clean",
+                        RootKind.CLOCK, "1000", null, null, true, 1L));
+                session.expression("EXPR.0000000000000090", binary("<",
+                        symbol("M_J_clean", "J"), integer("J", 2_000L)));
+                session.decision(writers[2], "Cleaner#clean#u3", true,
+                        "EXPR.0000000000000090");
+            }
             if (mutated || ownMoved) {
                 session.expression("EXPR.0000000000000050", ownMoved
                         ? putCommit(six, 5L) : relation("ASSOCIATIVE",
@@ -2433,8 +2483,11 @@ public class ComposerTest {
                     }
                 }
                 int expected = (Integer) row[index == 0 ? 1 : 2];
-                assertEquals(variant + ": " + arm, expected,
-                        arm.split("nest__", -1).length - 1);
+                Set<String> nested = new LinkedHashSet<String>();
+                java.util.regex.Matcher named = java.util.regex.Pattern
+                        .compile("nest__[0-9a-f]+").matcher(arm);
+                while (named.find()) nested.add(named.group());
+                assertEquals(variant + ": " + arm, expected, nested.size());
                 ComposedFamilies.ArmChoice choice =
                         composition.arm("writer_arm__0__" + digest);
                 List<String> chosen = new ArrayList<String>();
@@ -2447,10 +2500,24 @@ public class ComposerTest {
                 }
                 assertEquals(variant, expected, chosen.size());
             }
+            String selector = composition.disjuncts().get(0).selector();
+            if (guarded) {
+                // The later state holds only where its writer's comparison
+                // does: with the clock past it, no arm reaches the fatal.
+                for (String clock : new String[]{"1500", "2500"}) {
+                    assertEquals(variant + " at " + clock,
+                            "1500".equals(clock), solver().ask(
+                                    composition.query(Arrays.asList(
+                                            "(assert " + selector + ")",
+                                            "(assert (= M_J_clean " + clock
+                                                    + "))")),
+                                    Collections.<String>emptyList(), false)
+                                    .sat());
+                }
+            }
             if (!ownMoved) continue;
             // Through the re-store the run's own map holds 5: no fatal
             // there; through the store the read saw, it is the run's.
-            String selector = composition.disjuncts().get(0).selector();
             for (int index : new int[]{1, 2}) {
                 String arm = "writer_arm__0__" + ArtifactIO.digest(
                         writers[index].id() + "|s0", 12);

@@ -629,15 +629,27 @@ public final class ConfirmMain {
                 Set<String> fills = new LinkedHashSet<String>(
                         strings(arm, "interactionIds"));
                 for (ReadRow read : readers.values()) {
+                    // The arm's write, as smt.Arms#stateArms chose it among
+                    // one endpoint's writes of the location: the one the
+                    // read observed, else the last.
+                    WriteRow held = null;
                     for (WriteRow write : byLocation.getOrDefault(
                             SmtLowering.locationKey(read.location()),
                             Collections.<WriteRow>emptyList())) {
-                        if (fills.contains(Interaction.of(
+                        if (!fills.contains(Interaction.of(
                                 InteractionKind.STATE, write.endpoint(),
-                                read.endpoint()).id())) {
-                            chosen.put(read.endpoint().id(), write);
+                                read.endpoint()).id())
+                                || held != null && held.version()
+                                == read.observedVersion()) {
+                            continue;
+                        }
+                        if (held == null || write.version()
+                                == read.observedVersion()
+                                || write.seq() > held.seq()) {
+                            held = write;
                         }
                     }
+                    if (held != null) chosen.put(read.endpoint().id(), held);
                 }
                 for (JsonElement element : array(arm, "referentStates")) {
                     JsonObject state = element.getAsJsonObject();

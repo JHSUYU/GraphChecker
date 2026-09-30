@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
@@ -1098,35 +1099,60 @@ public final class StaticScopeMap {
         return !sites.isEmpty();
     }
 
-    /** The carriers the slice says one RECORDED write site stores into, joined
-     *  on the shared method (VM vs Soot spellings) plus whether the carrier's
-     *  cell may hold the row's type ({@link #sameType}): the one rule EXPLORE
-     *  and COMPOSE join a recorded write to its carrier by.
+    /** The carriers the slice says one RECORDED write of one location kind
+     *  stores into, joined on the shared method (VM vs Soot spellings), on
+     *  the kind of location the site stores ({@link #stores}), and on
+     *  whether the carrier's cell may hold the row's type
+     *  ({@link #sameType}): the one rule EXPLORE and COMPOSE join a recorded
+     *  write to its carrier by.
      */
-    public Set<String> carriersAt(String recordedSite, String javaType) {
+    public Set<String> carriersAt(String recordedSite, String javaType,
+                                  LocationKind kind) {
         Set<String> carriers = new LinkedHashSet<String>();
         String site = recordedSite == null ? "" : recordedSite;
         // A version recorded at a read site is the INITIAL a read's
         // observation started the location's log with: its carrier is the
         // field read.
         for (Site named : ofRole(WRITE_SITE, row -> true)) {
-            carriersInMethod(named, site, javaType, carriers);
+            carriersInMethod(named, site, javaType, kind, carriers);
         }
         for (Site named : ofRole(READ_SITE, row -> true)) {
-            carriersInMethod(named, site, javaType, carriers);
+            carriersInMethod(named, site, javaType, kind, carriers);
         }
         return carriers;
     }
 
     private static void carriersInMethod(Site named, String recordedSite,
-                                         String javaType,
+                                         String javaType, LocationKind kind,
                                          Set<String> carriers) {
         if (!named.vmSite.isEmpty()
                 && recordedSite.startsWith(named.vmSite + "#")
-                && !named.carrier.isEmpty()
+                && !named.carrier.isEmpty() && stores(named, kind)
                 && sameType(descriptorOfCellType(named.cell), javaType)) {
             carriers.add(named.carrier);
         }
+    }
+
+    /**
+     * Whether a site stores (or, read, starts the log of) a location of this
+     * kind: a field store, or an atomic's write of its value leaf, a field;
+     * any other mutator call the state of the container its carrier holds;
+     * a read the field it reads and, of a container field, that
+     * container's state.  No site of the map names an array element, so an
+     * element's write joins no carrier (hdfs-17899-bug1 r4: an element
+     * stored in {@code PBHelper.convert} took a reference field's).
+     */
+    private static boolean stores(Site site, LocationKind kind) {
+        boolean field = kind == LocationKind.INSTANCE
+                || kind == LocationKind.STATIC;
+        if (READ_SITE.equals(site.role)) {
+            return field || kind == LocationKind.MAP
+                    && JavaContainerTypes.shape(descriptorOfCellType(
+                    site.cell)) != JavaContainerTypes.Shape.NONE;
+        }
+        return site.declaredCallee.isEmpty()
+                || SharedFieldFlow.atomicWrite(site.declaredCallee)
+                ? field : kind == LocationKind.MAP;
     }
 
     /** Every write site in the METHOD of one recorded site (not the bci). */
@@ -1395,15 +1421,19 @@ public final class StaticScopeMap {
      * declared type, and no class hierarchy is at hand here.  So by the value
      * sorts COMPOSE types either by ({@code compose.JavaSmtSorts}): a
      * container's shape ({@link JavaContainerTypes#shape}, by interface), a
-     * String, a box's value.  A class none of them names (an application
-     * class, an interface, {@code Object}) may be a supertype of the other,
-     * and agrees with any reference.  SOLR-18406: the {@code Map} field
-     * {@code knownCommits} holding a {@code ConcurrentHashMap}.
+     * String, a box's value.  A declared class none of them names (an
+     * application class, an interface, {@code Object}) may be a supertype
+     * of any; a runtime class none names may implement a container's
+     * interface, but is no String and no box, which are final.  SOLR-18406:
+     * the {@code Map} field {@code knownCommits} holding a
+     * {@code ConcurrentHashMap}.
      */
     private static boolean mayHold(String declared, String runtime) {
         String cell = valueSort(declared);
         String held = valueSort(runtime);
-        return cell.isEmpty() || held.isEmpty() || cell.equals(held);
+        if (cell.isEmpty() || cell.equals(held)) return true;
+        return held.isEmpty() && JavaContainerTypes.shape(declared)
+                != JavaContainerTypes.Shape.NONE;
     }
 
     /** A reference descriptor's value sort, or "" when it names none. */

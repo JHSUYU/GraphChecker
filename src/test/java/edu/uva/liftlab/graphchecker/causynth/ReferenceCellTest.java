@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
@@ -234,19 +235,13 @@ public class ReferenceCellTest {
                 {"the put builds no other carrier",
                         Collections.<String>emptyList(),
                         guards(map.constructionGuards(store, LATEST))},
-                {"a store joins the carrier that may hold its object's"
-                        + " class: any map, the sort alone, a class no sort"
-                        + " names; a String or a list is no map",
-                        Arrays.asList(
-                                "java/util/concurrent/ConcurrentHashMap ["
-                                        + KNOWN + "]", "L [" + KNOWN + "]",
-                                "s/Other [" + KNOWN + "]",
-                                "java/lang/String []",
-                                "java/util/ArrayList []"),
-                        carriers(map, store,
-                                "java/util/concurrent/ConcurrentHashMap",
-                                "L", "s/Other", "java/lang/String",
-                                "java/util/ArrayList")},
+                {"known's store joins known holding a CHM, the put joins"
+                        + " it as the map's state, and no element joins it",
+                        Arrays.asList("INSTANCE java/util/concurrent/"
+                                        + "ConcurrentHashMap [" + KNOWN + "]",
+                                "MAP L [" + KNOWN + "]", "ARRAY L []"),
+                        carriers(map, store, "INSTANCE java/util/concurrent/"
+                                + "ConcurrentHashMap", "MAP L", "ARRAY L")},
                 {"every access is observed with its kind, the put before"
                         + " its publication is not",
                         new LinkedHashSet<>(Arrays.asList(
@@ -280,14 +275,76 @@ public class ReferenceCellTest {
         return "";
     }
 
-    /** Each type, and the carriers one recorded site joins at it. */
+    /** Each "location kind, type" a write states, and the carriers one
+     *  recorded site joins it to. */
     private static List<String> carriers(StaticScopeMap map, String site,
-                                         String... types) {
+                                         String... written) {
         List<String> found = new ArrayList<>();
-        for (String type : types) {
-            found.add(type + " " + map.carriersAt(site, type));
+        for (String write : written) {
+            String[] kindAndType = write.split(" ", 2);
+            found.add(write + " " + map.carriersAt(site, kindAndType[1],
+                    LocationKind.valueOf(kindAndType[0])));
         }
         return found;
+    }
+
+    /**
+     * A recorded write joins a carrier of its method by the kind of location
+     * the site stores -- a field store a field, a mutator call the
+     * container's state, nothing an array element -- and by what the cell's
+     * declared class may hold: a map field any map or a class no sort names;
+     * a String or box field only its own class, both being final; a field of
+     * a class no sort names anything.
+     */
+    @Test
+    public void aWriteJoinsTheCarrierItsLocationAndClassMayBe()
+            throws Exception {
+        String method = "<s.Holder: void set()>";
+        String[][] sites = {
+                // cell, the mutator it calls
+                {"<s.Holder: java.util.Map map>", ""},
+                {"<s.Holder: java.util.Map map>", PUT},
+                {"<s.Holder: java.lang.String name>", ""},
+                {"<s.Holder: java.lang.Long stamp>", ""},
+                {"<s.Holder: s.Commit latest>", ""}};
+        StringBuilder text = new StringBuilder();
+        for (int index = 0; index < sites.length; index++) {
+            JsonObject row = new JsonObject();
+            row.addProperty("kind", StaticScopeMap.SITE_KIND);
+            row.addProperty("role", StaticScopeMap.WRITE_SITE);
+            row.addProperty("regionId", "REGION.holder");
+            row.addProperty("siteId", method + "#u" + index);
+            row.addProperty("vmSite", "s.Holder#set()V");
+            row.addProperty("cell", sites[index][0]);
+            row.addProperty("carrier", sites[index][0]);
+            row.addProperty("declaredCallee", sites[index][1]);
+            row.add("guards", new JsonArray());
+            text.append(row).append('\n');
+        }
+        Path file = tree.newFolder("holder").toPath()
+                .resolve(StaticScopeMap.FILE);
+        Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
+        StaticScopeMap map = StaticScopeMap.read(file);
+        String mapField = sites[0][0];
+        String name = sites[2][0];
+        String stamp = sites[3][0];
+        String latest = sites[4][0];
+        Object[][] rows = {
+                {"INSTANCE java/util/concurrent/ConcurrentHashMap",
+                        Arrays.asList(mapField, latest)},
+                {"INSTANCE s/Other", Arrays.asList(mapField, latest)},
+                {"INSTANCE java/lang/String", Arrays.asList(name, latest)},
+                {"INSTANCE J", Collections.singletonList(stamp)},
+                {"INSTANCE L", Arrays.asList(mapField, name, stamp, latest)},
+                {"MAP L", Collections.singletonList(mapField)},
+                {"ARRAY s/Other", Collections.<String>emptyList()}};
+        for (Object[] row : rows) {
+            String[] kindAndType = ((String) row[0]).split(" ", 2);
+            assertEquals((String) row[0], row[1],
+                    new ArrayList<>(map.carriersAt("s.Holder#set()V#9:WRITE",
+                            kindAndType[1],
+                            LocationKind.valueOf(kindAndType[0]))));
+        }
     }
 
     private static List<String> guards(List<StaticScopeMap.Guard> guards) {

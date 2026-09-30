@@ -258,8 +258,12 @@ could observe. Each demanded boundary input grows the closure:
   same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root, neither
   Lost), and every activated occurrence on the reader's node holding a static write site of the
   location's carrier (`STATIC_CANDIDATE_WRITER`; `StaticScopeMap#carriersAt`: a recorded write joins
-  a carrier in its method whose declared type may hold the row's: the same class, the bare sort, or,
-  with no hierarchy at hand, value sorts that agree, a class none names agreeing with any reference);
+  a carrier in its method whose site stores its location's kind, `#stores` — a field store or an
+  atomic's value a field, another mutator call a container's state, a read its field or a container
+  field's state, no site an array element — and whose declared type may hold the row's: the same
+  class, the bare sort, or, with no hierarchy at hand, value sorts that agree; a declared class no
+  sort names holds any reference, and a runtime class no sort names may be a container, never a
+  String or a box);
   a store of a reference among those writes that states a `referentState` adds the writers of each
   state of that container the read could have seen through it (`Corpus#referentStates`, COMPOSE's
   `SmtLowering#statesOf`);
@@ -526,10 +530,17 @@ to the states seen through that store (`#storeChoice`, conjoined by `ComposedFam
 Another object's answer holds exactly one of its selectors (a state a query has no answer at is none
 of its options). The run's own object answers as the run saw it through the store the read observed,
 and through any other store of it (a re-store publishes a later state) the states seen from that
-store's referent on: at most one of those selectors holds, none being the run's answer. A selector
-holds only under an arm that delivers a store its state was seen through (`nest_family__<N>__<digest>`
-per selector of the path's session, `ComposedFamilies#stateFamilies`), so with the observed store's
-arm, the pins' or no family, the run's object is the run's answer. An answer holds only where the
+store's referent on: at most one of those selectors holds, none being the run's answer. A read is
+movable only in the path whose anchor joined it (`SmtLowering#path` clears the set when a path
+begins), so a message arm lowered in another session's scope asks the run's answer there. Every
+selector the path minted holds only under an arm of it that delivers a store its state was seen
+through (`nest_family__<N>__<digest>`, `ComposedFamilies#stateFamilies`), so with the observed
+store's arm, the pins' or no family, the run's object is the run's answer. A state rests on what
+made it: under its selector, the arm conjoins the decisions of the closure its write adds to the
+store producer's (`ComposedFamilies#stateClosure`, `Composer#closure` seeded with that write, the
+writers EXPLORE demands), each before its cutoff, and joins the reads they name; a state whose added
+closure the recording does not state is no option (`(not nest__…)`, its refusals named
+DIAGNOSTIC). An answer holds only where the
 owner is its object, so what its lowering requires is its case's precondition, never the path's. A
 store that states no state (`referentStateRefused`, none, or no version lowers) delivers no case,
 named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A movable owner that is no
@@ -672,7 +683,8 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
   as that arm's session paired it), `STATE` per read of the anchor's join closure (each reached
   occurrence's reads before its cutoff, the anchor's before its target seq; the write the model
-  chose, else the observed one: a `writer_arm__`'s write for a read of its location, and for a
+  chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
+  endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a
   query through a re-pointable reference the write of the state its arm's `referentStates` name,
   §8), `ORDER` rows (the writer's activation exits before the reader's enters; every other writer of
   the location the held write is of before the writer or after the reader), `MARKER` per planted
