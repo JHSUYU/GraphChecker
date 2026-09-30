@@ -4049,10 +4049,25 @@ public class ComposerTest {
                 JavaPrimitiveSmtSemantics.primitiveCast("x", "I", "F"),
                 JavaPrimitiveSmtSemantics.bitwise("&", "x", "y",
                         JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT),
+                JavaPrimitiveSmtSemantics.bitwise("^",
+                        JavaPrimitiveSmtSemantics.bitwise("&", "x", "255",
+                                JavaPrimitiveSmtSemantics.IntegralWidth
+                                        .JAVA_INT), "-1",
+                        JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT),
                 JavaPrimitiveSmtSemantics.shift(">>>", "x", "y",
                         JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_LONG),
                 JavaPrimitiveSmtSemantics.complement("x",
                         JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT)));
+        // A chain of constant masks spells each operand once: per selected
+        // bit, six rounds of a hash were 33^6 copies of x.
+        String hashed = "x";
+        for (int round = 0; round < 6; round++) {
+            hashed = JavaPrimitiveSmtSemantics.bitwise("^", hashed, "-1",
+                    JavaPrimitiveSmtSemantics.IntegralWidth.JAVA_INT);
+        }
+        assertTrue("a chain of masks grows with its length: "
+                + hashed.length(), hashed.length() < 100_000);
+        texts.add(hashed);
         for (String text : texts) {
             Set<String> free = SmtNames.symbols(text,
                     new LinkedHashSet<String>());

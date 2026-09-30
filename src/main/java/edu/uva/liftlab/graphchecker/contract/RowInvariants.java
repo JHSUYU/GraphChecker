@@ -803,9 +803,12 @@ public final class RowInvariants {
 
     /**
      * CONTRACT-SPEC §2.6: {@code phiTerm} is in the FATAL polarity.  A reached
-     * anchor with no predicate is a concrete branch (DIAGNOSTIC) unless the
-     * fatal arm was observed (BLOCKING).  An observed fatal's phi must HOLD
-     * at the session's valuation where the roots decide it.
+     * anchor with no predicate decided concretely (the runtime states none
+     * exactly then, {@code RowPublication#target}): named, DIAGNOSTIC, on
+     * either arm.  COMPOSE reads the arm it took: a fatal one is {@code
+     * true}, the fatal resting on the path that reached it; a healthy one is
+     * no path.  An observed fatal's phi must HOLD at the session's valuation
+     * where the roots decide it.
      */
     private static void targets(SessionReader session,
                                 Map<String, String> executed,
@@ -816,17 +819,17 @@ public final class RowInvariants {
             boolean empty = row.phiTerm().trim().isEmpty();
             if (empty && row.reachedAnchor()) {
                 gaps.add(violation(session, GapKind.UNSTATED_VALUE,
-                        row.observedFatal() ? GapClass.BLOCKING
-                                : GapClass.DIAGNOSTIC, "targets", row.seq(),
+                        GapClass.DIAGNOSTIC, "targets", row.seq(),
                         "phiTerm", row.anchorSiteId(),
                         "invariant 9 (CONTRACT-SPEC §2.6: phiTerm is published "
-                                + "in the FATAL polarity): the anchor was "
-                                + "reached and states no predicate"
+                                + "in the FATAL polarity): the anchor decided "
+                                + "concretely, on its "
                                 + (row.observedFatal()
-                                        ? ", and the run OBSERVED the fatal "
-                                        + "arm, so there was one"
-                                        : "; a concrete branch is "
-                                        + "legitimate")));
+                                        ? "fatal arm: phi is true, and the "
+                                        + "fatal rests on the path that "
+                                        + "reached it"
+                                        : "healthy arm: no path to the fatal "
+                                        + "one")));
                 continue;
             }
             if (empty || !row.observedFatal() || declared.isEmpty()) continue;

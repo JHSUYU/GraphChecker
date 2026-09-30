@@ -767,16 +767,23 @@ public class ContractTest {
                 null, true, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=recordedValue",
                 unspelled);
-        // 9: phi is published in the FATAL polarity, so an observed fatal
-        // states one and it holds at the recording's own root values.
-        Rows silent = clean();
-        silent.targets.set(0, TargetRow.of("s-gate", 15L, silent.anchor,
-                "Guard#u8", "", true, true));
-        assertInvariant(9, GapClass.BLOCKING, "field=phiTerm", silent);
-        Rows concrete = clean();
-        concrete.targets.set(0, TargetRow.of("s-gate", 15L, concrete.anchor,
-                "Guard#u8", "", false, true));
-        assertInvariant(9, GapClass.DIAGNOSTIC, "field=phiTerm", concrete);
+        // 9: phi is published in the FATAL polarity and holds at the
+        // recording's own root values; none is a concrete decision, named on
+        // either arm and never a stop (SOLR-18413 r9: the deleted target's
+        // lookup took the fatal arm concretely, the witness resting on the
+        // expiry check before it).
+        for (boolean fatal : new boolean[] {true, false}) {
+            Rows concrete = clean();
+            concrete.targets.set(0, TargetRow.of("s-gate", 15L,
+                    concrete.anchor, "Guard#u8", "", fatal, true));
+            assertInvariant(9, GapClass.DIAGNOSTIC, "field=phiTerm",
+                    concrete);
+            for (GapRow stated : gate(concrete)) {
+                assertFalse("a concrete decision is no stop: " + stated,
+                        stated.cls() == GapClass.BLOCKING
+                                && stated.detail().contains("invariant 9"));
+            }
+        }
         // 11 (R4): a root symbol without its RootMintRow.  WHICH quantities
         // are roots is a fact about the SET -- CASE.MARKER is a root because
         // some session of the epoch minted a row naming it -- and a session

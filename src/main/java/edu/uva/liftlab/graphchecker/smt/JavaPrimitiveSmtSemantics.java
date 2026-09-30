@@ -572,7 +572,10 @@ public final class JavaPrimitiveSmtSemantics {
         int bits = bits(width);
         BigInteger modulus = BigInteger.ONE.shiftLeft(bits);
         BigInteger mask = rawMask.mod(modulus);
-        String unsigned = "(mod " + variable + " " + modulus + ")";
+        // The operand once, by a let: spelled per selected bit, a chain of
+        // masks (a hash: SOLR-18413 r9's CompositeIdRouter.sliceHash) grows
+        // as the power of the bit count, and COMPOSE ran out of 12 GB.
+        String unsigned = "java_bits_u";
         List<String> selectedBits = new ArrayList<>();
         for (int bit = 0; bit < bits; bit++) {
             if (!mask.testBit(bit)) continue;
@@ -596,7 +599,8 @@ public final class JavaPrimitiveSmtSemantics {
             throw new IllegalArgumentException(
                     "not a Java integral bitwise operator: " + operator);
         }
-        return wrap(expression, width);
+        return wrap("(let ((" + unsigned + " (mod " + variable + " "
+                + modulus + "))) " + expression + ")", width);
     }
 
     private static BigInteger integerLiteral(String expression) {
