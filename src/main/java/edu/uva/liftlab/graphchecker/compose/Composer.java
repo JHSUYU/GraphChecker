@@ -1366,7 +1366,7 @@ public final class Composer {
                             + "places nowhere"));
             return true;
         }
-        lowering.declareStated(read.symbol(), value.sort);
+        lowering.pin(read.symbol(), value.sort);
         joins.put(read.symbol(), "(= " + read.symbol() + " " + value.text
                 + ")");
         return true;
@@ -1381,9 +1381,12 @@ public final class Composer {
     }
 
     /**
-     * Read := the expression of the write version it observed; then its
-     * MINT; then PIN; then REFUSE.  No "latest write", no choice between
-     * writers.
+     * Read := THE ONE BINDING RULE ({@link SmtLowering}'s guarded read too):
+     * JOIN, the expression of the write version it observed, if it lowers
+     * with no refusal; else its MINT; else PIN; else REFUSE.  No "latest
+     * write", no choice between writers.  A join that refused is an attempt:
+     * dropped when the mint or the pin binds the read, stated beside the
+     * read's own refusal when nothing does.
      */
     void stateJoins(String session, Set<String> occurrences,
                     Independence relevant, SmtLowering.SessionJoin join,
@@ -1399,6 +1402,7 @@ public final class Composer {
             WriteRow write = read.observedVersion() < 0L ? null
                     : corpus.writeOf(session, key,
                             read.observedVersion());
+            SmtLowering.Attempt<Term> attempt = null;
             if (write != null) {
                 JsonObject expression = corpus.session(session).expressions()
                         .expression(write.expressionRef());
@@ -1413,12 +1417,10 @@ public final class Composer {
                                     + "joins to is not in this corpus"));
                     continue;
                 }
-                // A refused lowering is no join (its term is a free
-                // constant at the refusal's sort).
-                int refusedBefore = lowering.openRefusals().size();
-                Term value = lowering.dispatch(expression, null,
+                attempt = lowering.attempt(expression, null,
                         "state-join:" + key + "@" + read.observedVersion());
-                if (lowering.openRefusals().size() == refusedBefore) {
+                if (attempt.lowered()) {
+                    Term value = attempt.value();
                     lowering.declareStated(read.symbol(), value.sort);
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");
@@ -1426,81 +1428,95 @@ public final class Composer {
                     continue;
                 }
             }
-            if (joins.containsKey(read.symbol())) {
-                // Pinned at step 0 to what its row states: a version no row
-                // wrote, its writer outside every region.  At the anchor a
-                // STATE family may still offer the concurrent writers
-                // beside what it returned; a mint's version is a root's.
-                if (atAnchor && write == null && read.observedVersion() >= 0L
-                        && "".equals(SmtLowering.mintedReadSymbol(join,
-                        read.observedVersion()))) {
-                    joined.add(read);
-                }
-                continue;
+            if (!mintOrPin(session, read, key, write, atAnchor, join,
+                    refusals, joined, joins, answered) && attempt != null) {
+                lowering.commit(attempt);
             }
-            // What the MINT that created this version gave it, keyed by
-            // `mintVersion` alone (CONTRACT v2.4), before the value the read
-            // returned: a root's version moves with the root.
-            String minted = SmtLowering.mintedReadSymbol(join,
-                    read.observedVersion());
-            if (minted == null) {
-                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, key + "@"
-                                + read.observedVersion(),
-                        "two placeholder rows of this session state mint "
-                                + "version " + read.observedVersion()
-                                + " under different symbols: "
-                                + join.mintedReadSymbols(
-                                read.observedVersion())));
-                continue;
+        }
+    }
+
+    /**
+     * The rest of the rule for a read no write joins: its MINT, else PIN,
+     * else REFUSE by name.  Answers whether the read is bound.
+     */
+    private boolean mintOrPin(String session, ReadRow read, String key,
+                              WriteRow write, boolean atAnchor,
+                              SmtLowering.SessionJoin join,
+                              List<GapRow> refusals, List<ReadRow> joined,
+                              Map<String, String> joins,
+                              Set<String> answered) {
+        if (joins.containsKey(read.symbol())) {
+            // Pinned at step 0 to what its row states: a version no row
+            // wrote, its writer outside every region.  At the anchor a
+            // STATE family may still offer the concurrent writers beside
+            // what it returned; a mint's version is a root's.
+            if (atAnchor && write == null && read.observedVersion() >= 0L
+                    && "".equals(SmtLowering.mintedReadSymbol(join,
+                    read.observedVersion()))) {
+                joined.add(read);
             }
-            if (minted.equals(read.symbol())) {
-                // This row states the version; bound at step 0.
-                continue;
-            }
-            if (!minted.isEmpty()) {
-                Sort sort = lowering.declarations().get(minted);
-                // A DECLARED ROOT IS BOUND BY ITS DOMAIN, NOT BY A VALUE.
-                // An ordinary read needs a stated value; a clock mint
-                // deliberately states none (pinning it could never show a
-                // skew), and {@link #clocks} states its domain.
-                RootMintRow root = corpus.rootBySymbol(session, minted);
-                if (sort == null && root != null) {
-                    sort = corpus.declaredSymbols().get(minted);
-                }
-                if (sort == null || (!lowering.stated(minted)
-                        && root == null)) {
-                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                            GapClass.DIAGNOSTIC, minted,
-                            "the read row that states this version's "
-                                    + "symbol states no value for it, and "
-                                    + "no root of this session mints it, so "
-                                    + "nothing binds it"));
-                    continue;
-                }
-                if (root != null && !lowering.stated(minted)) {
-                    // So the root's domain lands on the joined symbol.
-                    lowering.declareStated(minted, sort);
-                }
-                lowering.declareStated(read.symbol(), sort);
-                joins.put(read.symbol(), "(= " + read.symbol() + " "
-                        + minted + ")");
-                continue;
-            }
-            // The row's own value (non-joinable rows were asked at step 0).
-            if (answered.contains(read.symbol())
-                    || pin(session, read, refusals, joins, answered)) {
-                continue;
-            }
+            return true;
+        }
+        // What the MINT that created this version gave it, keyed by
+        // `mintVersion` alone (CONTRACT v2.4), before the value the read
+        // returned: a root's version moves with the root.
+        String minted = SmtLowering.mintedReadSymbol(join,
+                read.observedVersion());
+        if (minted == null) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, key + "@" + read.observedVersion(),
-                    (write == null ? "no write of this location at this "
-                            + "version in this session"
-                            : "the write of this version did not lower (its "
-                            + "refusal is stated beside this)")
-                            + ", and the recording states no value the read "
-                            + "returned"));
+                    "two placeholder rows of this session state mint "
+                            + "version " + read.observedVersion()
+                            + " under different symbols: "
+                            + join.mintedReadSymbols(
+                            read.observedVersion())));
+            return false;
         }
+        // This row states the version; bound at step 0.
+        if (minted.equals(read.symbol())) return true;
+        if (!minted.isEmpty()) {
+            Sort sort = lowering.declarations().get(minted);
+            // A DECLARED ROOT IS BOUND BY ITS DOMAIN, NOT BY A VALUE.  An
+            // ordinary read needs a stated value; a clock mint deliberately
+            // states none (pinning it could never show a skew), and
+            // {@link #clocks} states its domain.
+            RootMintRow root = corpus.rootBySymbol(session, minted);
+            if (sort == null && root != null) {
+                sort = corpus.declaredSymbols().get(minted);
+            }
+            if (sort == null || (!lowering.stated(minted) && root == null)) {
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, minted,
+                        "the read row that states this version's symbol "
+                                + "states no value for it, and no root of "
+                                + "this session mints it, so nothing binds "
+                                + "it"));
+                return false;
+            }
+            if (root != null && !lowering.stated(minted)) {
+                // So the root's domain lands on the joined symbol.
+                lowering.declareStated(minted, sort);
+            }
+            lowering.declareStated(read.symbol(), sort);
+            joins.put(read.symbol(), "(= " + read.symbol() + " " + minted
+                    + ")");
+            return true;
+        }
+        // The row's own value (non-joinable rows were asked at step 0, and
+        // one it could not place is refused there).
+        if (answered.contains(read.symbol())
+                || pin(session, read, refusals, joins, answered)) {
+            return joins.containsKey(read.symbol());
+        }
+        refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                GapClass.DIAGNOSTIC, key + "@" + read.observedVersion(),
+                (write == null ? "no write of this location at this "
+                        + "version in this session"
+                        : "the write of this version did not lower (its "
+                        + "refusal is stated beside this)")
+                        + ", and the recording states no value the read "
+                        + "returned"));
+        return false;
     }
 
     /**

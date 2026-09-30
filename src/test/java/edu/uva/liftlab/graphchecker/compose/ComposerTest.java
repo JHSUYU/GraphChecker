@@ -3422,6 +3422,61 @@ public class ComposerTest {
     }
 
     /**
+     * THE ONE BINDING RULE: JOIN, MINT, PIN, REFUSE.  A read whose write
+     * does not lower is bound by the value its row states, and the join that
+     * refused is then no refusal of the path -- neither in the state joins
+     * nor where phi reads the same version and meets the refused write
+     * again.  Kept at once, it dropped every SOLR-18406 anchor path (s46).
+     * With nothing to bind the read, it is the path's, beside the read's.
+     */
+    @Test
+    public void aJoinThatRefusedIsDroppedWhenThePinBindsTheRead()
+            throws Exception {
+        for (boolean stated : new boolean[]{true, false}) {
+            Path iteration = folder.newFolder("attempt-" + stated).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.serial("3", "0", "8");
+            session.expression("EXPR.00000000000000a3", binary("+",
+                    symbol(NO_ROW, "I"), integer("I", 1L)));
+            LocationId stamp = LocationId.of(LocationKind.INSTANCE, "58",
+                    "40");
+            session.write(Endpoint.of(ANCHOR, "Replica#set#1:WRITE",
+                    at("stamp#1", 0), 0), stamp, 158L,
+                    "EXPR.00000000000000a3");
+            session.read(Endpoint.of(ANCHOR, "Replica#get#1:READ",
+                    at("stamp#2", 0), 0), stamp, 158L, "INSTANCE/58#40@v158",
+                    "I", stated ? "1001" : null);
+            session.expression("EXPR.00000000000000a1", binary("<",
+                    read("INSTANCE_FIELD", 58L, 40L, 158L, "I"),
+                    symbol(SERIAL, "I")));
+            session.target("EXPR.00000000000000a1", false, true);
+            session.write();
+
+            Composer.Composition composition = compose(iteration, 4);
+            if (stated) {
+                assertEquals("the pin binds the read and the path stands",
+                        1, composition.disjuncts().size());
+                assertTrue("phi reads the pinned symbol: "
+                                + fatalArm(composition),
+                        fatalArm(composition).contains(SmtNames.legalSymbols(
+                                "(< INSTANCE/58#40@v158 " + SERIAL + ")"))
+                                && fatalArm(composition).contains(
+                                SmtNames.legalSymbols(
+                                        "(= INSTANCE/58#40@v158 1001)")));
+                continue;
+            }
+            assertEquals("with no pin nothing binds it", 0,
+                    composition.disjuncts().size());
+            assertTrue("and the write's refusal is the path's, beside the "
+                            + "read's own",
+                    says(composition.gaps(), GapKind.UNSTATED_VALUE,
+                            "did not lower")
+                            && named(composition.gaps(),
+                            "PROPAGATION_CUT:UndeclaredFreeSymbol:" + NO_ROW));
+        }
+    }
+
+    /**
      * A map removal under a SYMBOLIC guard is decided, and renumbers the
      * view only when it fires.  An array-valued ite over a lambda branch is
      * "incomplete (theory array)" for z3 4.14: hdfs-11741 v79's witness

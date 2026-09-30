@@ -47,8 +47,9 @@ unless stated. Every row carries `sessionId` (the replay session that produced i
 - `ReadRow(sessionId, Endpoint endpoint, LocationId location, long observedVersion
   /*-1 unknown*/, String symbol, String concreteValue /*nullable*/)` — `concreteValue`
   is what the read returned (`ReadRow.returned`): a scalar's literal, a String as its
-  JSON string literal, null as `N`; absent for an identity.  A read joins its write,
-  else its version's mint, and only then pins to it.
+  JSON string literal, null as `N`; absent for an identity.  A read joins its write
+  if that lowers with no refusal, else its version's mint, and only then pins to it;
+  a join that refused is the path's refusal only when nothing binds the read.
 - `RootMintRow(sessionId, occurrence, String rootId, String symbol, RootKind kind,
   String recordedValue, String domainMin /*resolved absolute, nullable*/, String
   domainMax, boolean declared)` — `enum RootKind { MARKER, INTEGRAL, CLOCK }`.

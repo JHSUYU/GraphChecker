@@ -176,10 +176,15 @@ public final class SmtLowering {
      */
     private final Map<String, SharedTerm> sharedByName =
             new LinkedHashMap<String, SharedTerm>();
-    private final Set<String> unsupported = new LinkedHashSet<String>();
     private final Map<String, String> unsupportedDetail =
             new LinkedHashMap<String, String>();
     private final Set<String> cuts = new LinkedHashSet<String>();
+    /**
+     * The reads {@code Composer#pin} bound to what their row states, as
+     * {@code session|symbol}: a guarded read of their version that does not
+     * join lowers to its symbol (PIN, {@link #guardedReadTerm}).
+     */
+    private final Set<String> pins = new LinkedHashSet<String>();
     private final Set<String> integralDomains = new LinkedHashSet<String>();
     private boolean usesJavaIntString;
 
@@ -195,7 +200,8 @@ public final class SmtLowering {
 
     /** Side conditions the conjunction now open raised, or null. */
     private Set<String> openSideConditions;
-    private List<String> openRefusals;
+    /** What the conjunction now open refused: its frame of {@link #raising}. */
+    private Set<String> openRefusals;
     private String scope = "";
     private SessionJoin join = NO_JOIN;
     /** The expression table of the session whose conjunction is open. */
@@ -213,11 +219,16 @@ public final class SmtLowering {
      * entry holds while the declarations it read stand; a name newly stated
      * clears the memo ({@link #put}).
      */
-    private Map<Memoized.Key, Memoized> memo =
-            new HashMap<Memoized.Key, Memoized>();
+    private Map<MemoKey, Attempt<?>> memo = new HashMap<MemoKey, Attempt<?>>();
     /**
-     * The refusals each memoized lowering in progress raised, innermost
-     * last; null while it raised none.
+     * THE REFUSAL FRAMES, innermost last (null while one raised nothing).  A
+     * refusal is raised into the innermost only; what a frame collected
+     * reaches the one enclosing it only when {@link #commit}ted.  The open
+     * conjunction is the outermost ({@link #begin}); a memoized lowering is
+     * committed on every hit; an {@link #attempt} is committed or dropped by
+     * its caller.  No other route puts a refusal on a path: a path-level list
+     * filled at once kept a join's refusals after its pin bound the read, and
+     * missed a memo hit's (SOLR-18406 s46).
      */
     private final List<Set<String>> raising = new ArrayList<Set<String>>();
 
@@ -338,22 +349,14 @@ public final class SmtLowering {
      * {@link #declarations()} for the names it reaches.
      */
     public Lowered lower(String expressionRef) {
-        raising.add(null);
-        Term value;
-        Set<String> refused;
-        try {
-            value = reference(expressionRef, "lower:" + expressionRef);
-        } finally {
-            refused = raising.remove(raising.size() - 1);
-        }
-        if (refused != null) {
-            for (String subject : refused) raised(subject);
-        }
+        Attempt<Term> lowered = attempting(
+                () -> reference(expressionRef, "lower:" + expressionRef));
+        Term value = commit(lowered);
         if (value == null) {
             return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
         }
-        return new Lowered(value.text, value.sort.smt, refused == null
-                ? "" : refused.iterator().next());
+        return new Lowered(value.text, value.sort.smt, lowered.lowered()
+                ? "" : lowered.refusals.iterator().next());
     }
 
     /**
@@ -489,16 +492,18 @@ public final class SmtLowering {
         frames.push(new Frame(openSideConditions, openRefusals, scope, join,
                 openTable, memo));
         this.openSideConditions = new LinkedHashSet<String>();
-        this.openRefusals = new ArrayList<String>();
+        this.openRefusals = new LinkedHashSet<String>();
+        raising.add(openRefusals);
         this.scope = sessionId;
         this.join = sessionJoin;
         this.openTable = expressions;
-        this.memo = new HashMap<Memoized.Key, Memoized>();
+        this.memo = new HashMap<MemoKey, Attempt<?>>();
     }
 
     /** Closes it, answering the side conditions its lowering raised. */
     public List<String> end() {
         List<String> conditions = new ArrayList<String>(openSideConditions);
+        raising.remove(raising.size() - 1);
         Frame previous = frames.pop();
         openSideConditions = previous.conditions;
         openRefusals = previous.refusals;
@@ -512,15 +517,15 @@ public final class SmtLowering {
     /** One enclosing conjunction, kept while a nested one is open. */
     private static final class Frame {
         private final Set<String> conditions;
-        private final List<String> refusals;
+        private final Set<String> refusals;
         private final String scope;
         private final SessionJoin join;
         private final ExpressionTable table;
-        private final Map<Memoized.Key, Memoized> memo;
+        private final Map<MemoKey, Attempt<?>> memo;
 
-        private Frame(Set<String> conditions, List<String> refusals,
+        private Frame(Set<String> conditions, Set<String> refusals,
                       String scope, SessionJoin join, ExpressionTable table,
-                      Map<Memoized.Key, Memoized> memo) {
+                      Map<MemoKey, Attempt<?>> memo) {
             this.conditions = conditions;
             this.refusals = refusals;
             this.scope = scope;
@@ -530,70 +535,104 @@ public final class SmtLowering {
         }
     }
 
-    /** One node's lowering at one expected sort, and what it refused. */
-    private static final class Memoized {
-        private final Object value;
-        private final Set<String> refusals;
+    /** A node by identity (the decoder shares it), and the sort asked. */
+    private static final class MemoKey {
+        private final JsonElement node;
+        private final Object expected;
 
-        private Memoized(Object value, Set<String> refusals) {
-            this.value = value;
-            this.refusals = refusals;
+        private MemoKey(JsonElement node, Object expected) {
+            this.node = node;
+            this.expected = expected;
         }
 
-        /** A node by identity (the decoder shares it), and the sort asked. */
-        private static final class Key {
-            private final JsonElement node;
-            private final Object expected;
+        @Override
+        public boolean equals(Object other) {
+            if (!(other instanceof MemoKey)) return false;
+            MemoKey key = (MemoKey) other;
+            return node == key.node && expected == key.expected;
+        }
 
-            private Key(JsonElement node, Object expected) {
-                this.node = node;
-                this.expected = expected;
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                if (!(other instanceof Key)) return false;
-                Key key = (Key) other;
-                return node == key.node && expected == key.expected;
-            }
-
-            @Override
-            public int hashCode() {
-                return 31 * System.identityHashCode(node)
-                        + System.identityHashCode(expected);
-            }
+        @Override
+        public int hashCode() {
+            return 31 * System.identityHashCode(node)
+                    + System.identityHashCode(expected);
         }
     }
 
     /**
-     * One node lowered once per conjunction ({@link #memo}); a hit raises
-     * again, to the lowerings enclosing it, the refusals it raised.
+     * One lowering and what it refused, held in a frame of its own until
+     * {@link #commit}ted to the frame enclosing it; dropped, it refuses
+     * nothing.
+     */
+    public static final class Attempt<T> {
+        private final T value;
+        private final Set<String> refusals;
+
+        private Attempt(T value, Set<String> refusals) {
+            this.value = value;
+            this.refusals = refusals;
+        }
+
+        /** What it lowered to: a refused construct as its fresh name. */
+        public T value() {
+            return value;
+        }
+
+        /** Whether it lowered with no refusal. */
+        public boolean lowered() {
+            return refusals.isEmpty();
+        }
+    }
+
+    /** One lowering run in a refusal frame of its own ({@link #raising}). */
+    private <T> Attempt<T> attempting(Supplier<T> lowering) {
+        raising.add(null);
+        T value;
+        Set<String> refused;
+        try {
+            value = lowering.get();
+        } finally {
+            refused = raising.remove(raising.size() - 1);
+        }
+        return new Attempt<T>(value, refused == null
+                ? Collections.<String>emptySet() : refused);
+    }
+
+    /**
+     * One expression lowered as an attempt: a read's JOIN, whose refusals
+     * are the path's only if neither its mint nor its pin binds the read
+     * ({@code Composer#stateJoins}).
+     */
+    public Attempt<Term> attempt(JsonElement expression, Sort expected,
+                                 String origin) {
+        return attempting(() -> dispatch(expression, expected, origin));
+    }
+
+    /** Keeps what an attempt refused, raised where it is committed. */
+    public <T> T commit(Attempt<T> attempt) {
+        for (String subject : attempt.refusals) raise(subject);
+        return attempt.value;
+    }
+
+    /**
+     * One node lowered once per conjunction ({@link #memo}), committed on
+     * every hit: each lowering reaching it rests on what it refused.
      */
     @SuppressWarnings("unchecked")
     private <T> T memoized(JsonElement node, Object expected,
                            Supplier<T> lowering) {
         if (node == null || !node.isJsonObject()) return lowering.get();
-        Memoized.Key key = new Memoized.Key(node, expected);
-        Memoized held = memo.get(key);
+        MemoKey key = new MemoKey(node, expected);
+        Attempt<?> held = memo.get(key);
         if (held == null) {
-            raising.add(null);
-            T value;
-            Set<String> raised;
-            try {
-                value = lowering.get();
-            } finally {
-                raised = raising.remove(raising.size() - 1);
-            }
-            held = new Memoized(value, raised == null
-                    ? Collections.<String>emptySet() : raised);
+            held = attempting(lowering);
             memo.put(key, held);
         }
-        for (String subject : held.refusals) raised(subject);
-        return (T) held.value;
+        return (T) commit(held);
     }
 
-    /** Hands one refusal to the innermost memoized lowering in progress. */
-    private void raised(String subject) {
+    /** Raises one refusal into the innermost frame. */
+    private void raise(String subject) {
         int top = raising.size() - 1;
         if (top < 0) return;
         Set<String> held = raising.get(top);
@@ -604,10 +643,10 @@ public final class SmtLowering {
         held.add(subject);
     }
 
-    /** What the conjunction now open refused. */
+    /** What the conjunction now open refused, each cause once. */
     public List<String> openRefusals() {
-        return openRefusals == null
-                ? Collections.<String>emptyList() : openRefusals;
+        return openRefusals == null ? Collections.<String>emptyList()
+                : new ArrayList<String>(openRefusals);
     }
 
     // ------------------------------------------------------------------
@@ -799,14 +838,13 @@ public final class SmtLowering {
     }
 
     /**
-     * A read, joined to the write version it observed: JOIN, then PIN, then
-     * REFUSE (the same rule as {@code ContainerSmtCodec.field}).  Never
-     * enumerate retained versions for the solver to pick from.
-     *
-     * <p>JOIN asks the rows, in this session: the {@code WriteRow} of this
-     * location and version (the writer's propagation); otherwise the
-     * placeholder row whose {@code mintVersion} is this version (a mint is
-     * not a write).</p>
+     * A read, by THE ONE BINDING RULE ({@code Composer#stateJoins} too):
+     * JOIN, if the write it observed lowers with no refusal; else MINT, the
+     * placeholder of its version (a mint is not a write); else PIN, the
+     * symbol {@code Composer#pin} bound to what its row states, or the value
+     * this node states it returned; else REFUSE.  Never enumerate retained
+     * versions for the solver to pick from.  A join that refused is dropped
+     * when a later rule binds the read, and kept when none does.
      *
      * <p>The node's own {@code observedVersion} expression is the projection
      * this read performed (e.g. {@code SIZE(state)}); it is used only once a
@@ -818,68 +856,86 @@ public final class SmtLowering {
         JsonObject location = JsonFields.object(expression, "location");
         String key = locationKey(location);
         long version = observedVersion(expression);
+        String javaType = primitiveString(expression, "_java_type");
+        Attempt<Term> joined = null;
         if (!key.isEmpty() && version >= 0L) {
             JsonElement written = join.writeExpression(key, version);
             if (written != null && !written.isJsonNull()) {
                 JsonElement projected = observedVersionExpression(expression);
-                Term value = observing(element(dispatch(projected != null
-                                        && !projected.isJsonNull()
-                                        ? projected : written, expected,
-                                origin + ":join"), expression, location,
-                        key, version, expected), key, version);
-                String read = rowSymbol(key, version, value.sort);
-                return read == null ? value : symbolTerm(symbolNode(read,
-                        primitiveString(expression, "_java_type")), expected);
+                JsonElement value = projected != null
+                        && !projected.isJsonNull() ? projected : written;
+                joined = attempting(() -> observing(element(dispatch(value,
+                        expected, origin + ":join"), expression, location,
+                        key, version, expected), key, version));
+                if (joined.lowered()) {
+                    String read = rowSymbol(key, version,
+                            joined.value().sort);
+                    return read == null ? joined.value()
+                            : symbolTerm(symbolNode(read, javaType), expected);
+                }
             }
             String minted = mintedReadSymbol(join, version);
             if (minted == null) {
+                if (joined != null) commit(joined);
                 return unstated("MintVersion:" + key + "@" + version + ":"
                                 + join.mintedReadSymbols(version),
                         "two placeholder rows of this session state this "
                                 + "mint version under different symbols, so "
                                 + "what the read it made returned has no "
-                                + "answer", expected,
-                        primitiveString(expression, "_java_type"));
+                                + "answer", expected, javaType);
             }
             if (!minted.isEmpty()) {
-                return symbolTerm(symbolNode(minted,
-                        primitiveString(expression, "_java_type")), expected);
+                return symbolTerm(symbolNode(minted, javaType), expected);
             }
-            // No write row: its writer ran outside every region.  The read's
-            // own row states what it returned (Composer#pin).
-            String pinned = rowSymbol(key, version, null);
+            String pinned = pinnedSymbol(key, version);
             if (pinned != null) {
-                return symbolTerm(symbolNode(pinned,
-                        primitiveString(expression, "_java_type")), expected);
+                return symbolTerm(symbolNode(pinned, javaType), expected);
             }
         }
-        Term pinned = statedValue(ReadRow.returned(expression),
-                primitiveString(expression, "_java_type"));
+        Term pinned = statedValue(ReadRow.returned(expression), javaType);
         if (pinned != null) return pinned;
+        if (joined != null) return commit(joined);
         return unstated("Read:" + key + "@" + version,
                 "no write of this location at this version in this session, "
                         + "and the recording states no value it returned",
-                expected, primitiveString(expression, "_java_type"));
+                expected, javaType);
     }
 
     /**
      * The one symbol this session's rows give a scalar read of this version,
-     * once its state join (or its pin, for a version no row wrote) declared
-     * it.  The read is that symbol, not the
-     * written value inlined: the join the conjunction then asks about binds
-     * it to the same value, and at the anchor a STATE family binds it to the
-     * writer it chooses instead -- inlined, no family could move it
-     * (commit-gs.TestFileAppend2-testSimpleAppend v71: two families, phi on
-     * constants).  A container read keeps its projection.
+     * once its state join declared it at the joined value's sort.  The read
+     * is that symbol, not the written value inlined: the join the
+     * conjunction then asks about binds it to the same value, and at the
+     * anchor a STATE family binds it to the writer it chooses instead --
+     * inlined, no family could move it (commit-gs.TestFileAppend2-
+     * testSimpleAppend v71: two families, phi on constants).  A container
+     * read keeps its projection.
      */
     private String rowSymbol(String key, long version, Sort sort) {
-        if (sort != null && sort.containerState()) return null;
+        if (sort.containerState()) return null;
         Set<String> named = join.readSymbols(key, version);
         if (named.size() != 1) return null;
         String read = named.iterator().next();
         Declared held = declarations.get(read);
-        return held != null && held.stated && !held.sort.containerState()
-                && (sort == null || held.sort == sort) ? read : null;
+        return held != null && held.stated && held.sort == sort ? read : null;
+    }
+
+    /** The one symbol of a read of this version {@link #pin}ned here. */
+    private String pinnedSymbol(String key, long version) {
+        Set<String> named = join.readSymbols(key, version);
+        if (named.size() != 1) return null;
+        String read = named.iterator().next();
+        return pins.contains(scope + SEPARATOR + read) ? read : null;
+    }
+
+    /**
+     * Declares one read's symbol, bound by {@code Composer#pin} to what its
+     * row states it returned: a read of its version in this session that
+     * does not join lowers to it ({@link #guardedReadTerm}).
+     */
+    public void pin(String symbol, Sort sort) {
+        declareStated(symbol, sort);
+        pins.add(scope + SEPARATOR + symbol);
     }
 
     /**
@@ -1258,7 +1314,7 @@ public final class SmtLowering {
         Declared held = declarations.get(name);
         if (stated && (held == null || !held.stated)) {
             // A read of this name lowers to it from now on, not inlined.
-            memo = new HashMap<Memoized.Key, Memoized>();
+            memo = new HashMap<MemoKey, Attempt<?>>();
         }
         if (held != null && held.sort != sort) {
             String detail = held.sort + " and " + sort;
@@ -1339,9 +1395,7 @@ public final class SmtLowering {
     }
 
     private void refuse(String subject, String detail) {
-        unsupported.add(subject);
-        raised(subject);
-        if (openRefusals != null) openRefusals.add(subject);
+        raise(subject);
         if (detail != null && !detail.isEmpty()) {
             unsupportedDetail.put(subject, detail);
         }
