@@ -11,20 +11,23 @@ the workload with the most selected checks that still have fewer than
 <per-check> (2) pre-screening workloads, per second of its coverage run,
 taking at most <per-recording> (16) of them, until every check has its
 workloads or no workload is left.  Writes <sweep-dir>/prescreen-jobs.tsv,
-one recording per row, "<workload><TAB><bound-seconds><TAB><check> ...":
-the workload as a case id names it, the recording's wall-clock bound (five
-times the coverage run, at least 300 s).  prescreen.sh records them.
+one recording per row, "<batch><TAB><workload><TAB><bound-seconds><TAB>
+<check> ...": the directory the recording is kept in under the build's
+pre-screen root, named by the workload and a digest of its checks (so one
+build records one batch once, whichever run asked), the workload as a case
+id names it, the recording's wall-clock bound (five times the coverage run,
+at least 300 s).  prescreen.sh records them.
 
-cases: reads each batch's runtime/record-summary.json under <prescreen-dir>
-(prescreen.sh's) and the experiment's batches.tsv, and writes
-<sweep-dir>/cases.txt, sweep.sh's cases: the case ids
+cases: reads the runtime/record-summary.json of each row of
+<sweep-dir>/prescreen-jobs.tsv under <prescreen-dir> (prescreen.sh's), and
+writes <sweep-dir>/cases.txt, sweep.sh's cases: the case ids
 "<experiment>-<check>.<workload>" of the pairs whose workload passed and
 whose recording ACTIVATED the check: every such check on its fastest
 recording, preferring a workload not yet on four checks, then a second one
 where a workload under four is left.  Every pair it leaves out is counted by
 why on stderr."""
 import collections
-import glob
+import hashlib
 import json
 import os
 import sys
@@ -57,9 +60,9 @@ def jobs(sweep, per_recording, per_check):
         checks = sorted((c for c in reaches.pop(workload)
                          if covered[c] < per_check))[:per_recording]
         covered.update(checks)
-        rows.append("%s\t%d\t%s" % (case_workload(workload),
-                                    max(BOUND_FLOOR, BOUND_FACTOR * usable[workload]),
-                                    " ".join(checks)))
+        rows.append("\t".join([batch_dir(workload, checks), case_workload(workload),
+                                str(max(BOUND_FLOOR, BOUND_FACTOR * usable[workload])),
+                                " ".join(checks)]))
     with open(os.path.join(sweep, "prescreen-jobs.tsv"), "w") as out:
         for row in rows:
             out.write(row + "\n")
@@ -69,19 +72,22 @@ def jobs(sweep, per_recording, per_check):
              " ".join(unreached)), file=sys.stderr)
 
 
+def batch_dir(workload, checks):
+    """A recording's directory: its workload and a digest of its checks."""
+    return "%s.%s" % (case_workload(workload), hashlib.sha256(
+        " ".join(sorted(checks)).encode()).hexdigest()[:12])
+
+
 def cases(sweep, experiment, prescreen):
-    batches = {}
-    for line in open(os.path.join(experiment, "batches.tsv")):
-        if line.strip() and not line.startswith("#"):
-            batch, workload, checks = line.rstrip("\n").split("\t")
-            batches[batch] = (workload, checks.split())
     pairs = collections.defaultdict(list)  # check -> [(seconds, workload)]
     why = collections.Counter()
-    for path in sorted(glob.glob(os.path.join(prescreen, "B*", "runtime",
-                                              "record-summary.json"))):
-        batch = path.split(os.sep)[-3]
+    for line in open(os.path.join(sweep, "prescreen-jobs.tsv")):
+        batch, workload, _, checks = line.rstrip("\n").split("\t")
+        path = os.path.join(prescreen, batch, "runtime", "record-summary.json")
+        if not os.path.exists(path):
+            why["its recording did not finish"] += len(checks.split())
+            continue
         summary = json.load(open(path))
-        workload, _ = batches[batch]
         for check, outcome in summary["targets"].items():
             if summary["exit"] != 0:
                 why["the workload exited %d%s" % (

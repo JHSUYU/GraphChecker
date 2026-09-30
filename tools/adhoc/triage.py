@@ -20,9 +20,9 @@ Classes:
 
 A STOPPED or DEAD case's reason is what its logs state: the campaign's own
 failure, the case timeout, a stage's Java main or trace aggregation that
-failed, a full disk or quota.  LIFTS (default lift06-15) are the hosts
-asked whether a run is still alive."""
-import concurrent.futures
+failed, a full disk or quota.  <gc-out> defaults to tools/lib/gc-env.sh's
+GC_OUT; whether a run is still alive is asked of every lift there
+(tools/lib/alive.sh)."""
 import csv
 import glob
 import json
@@ -31,50 +31,26 @@ import re
 import subprocess
 import sys
 
+LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
 round_name = sys.argv[1]
-out = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser("~/gc-out")
-lifts = os.environ.get("LIFTS", " ".join(
-    "lift%02d" % n for n in range(6, 16))).split()
+out = sys.argv[2] if len(sys.argv) > 2 else subprocess.run(
+    ["bash", "-c", 'source "$1/gc-env.sh" && printf %s "${GC_OUT}"', "_", LIB],
+    check=True, capture_output=True, text=True).stdout
 cases = dict(line.rstrip("\n").split("\t", 1)
              for line in open(os.path.join(out, "sweep-%s-cases.tsv" % round_name)))
 
-# A run is named by its output directory, the rule tools/rounds/stop-run.sh
-# stops it by: in the command line of everything below the harness, and as
-# OUT in the harness's own environment.  Printed per directory some process
-# of this user still names (never the scan's own shell, which names them all).
-SCAN = r'''
-for pid in $(pgrep -u "$(id -un)"); do
-  [[ ${pid} == $$ ]] && continue
-  args=$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null)
-  env=$(tr '\0' '\n' <"/proc/${pid}/environ" 2>/dev/null | grep -m 1 '^OUT=')
-  for dir in "$@"; do
-    [[ ${args} == *"${dir}/"* || ${env} == "OUT=${dir}" ]] && echo "${dir}"
-  done
-done | sort -u
-'''
-
 
 def alive(dirs):
-    """The directories some lift still runs, and the lifts that did not say."""
-    def ask(host):
-        try:
-            done = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host,
-                 "bash", "-s", "--"] + dirs, input=SCAN, capture_output=True,
-                text=True, timeout=120)
-        except subprocess.TimeoutExpired:
-            return host, None
-        return host, done.stdout.split() if done.returncode == 0 else None
-    running, silent = set(), []
+    """The directories some lift still runs (a run is named by its output
+    directory, the rule tools/rounds/stop-run.sh stops it by), and the lifts
+    that did not say."""
     if not dirs:
-        return running, silent
-    with concurrent.futures.ThreadPoolExecutor(len(lifts) or 1) as pool:
-        for host, named in pool.map(ask, lifts):
-            if named is None:
-                silent.append(host)
-            else:
-                running.update(named)
-    return running, silent
+        return set(), []
+    said = subprocess.run(["bash", os.path.join(LIB, "alive.sh")] + dirs,
+                          check=True, capture_output=True, text=True).stdout
+    rows = [line.split(" ", 1) for line in said.splitlines()]
+    return ({what for word, what in rows if word == "alive"},
+            [what for word, what in rows if word == "silent"])
 
 
 # What a log states about why a run ended, most specific first: the trace
