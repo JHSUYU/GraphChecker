@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
+import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -66,7 +67,7 @@ final class ConcolicResultPublisher {
     /** Live selected activations not yet publishing. */
     private static int liveSelectedRegions;
 
-    /** Barrier wait for a live activation making no progress. */
+    /** How long the end of a run waits on what makes no progress. */
     private static final long TERMINAL_GRACE_MILLIS = 30_000L;
 
     /** The row naming a task nothing answered; {@code detail} says why. */
@@ -83,26 +84,41 @@ final class ConcolicResultPublisher {
         if (decided) concludeAtRefusal();
     }
 
-    /** Waits until every live or publishing selected activation settles. */
+    /**
+     * THE SETTLE, the one wait of every end of a run (the workload's, its
+     * witness's, a deciding refusal's; {@code JUnitMethodRunner#exit}).
+     *
+     * <p>After the workload's own end it waits until no selected activation
+     * is live and no publication runs; after an early end only for the
+     * publications, and every activation still live is stranded at once
+     * (retrying its work, it would keep resetting any grace).  Either way
+     * the wait is bounded by progress: it gives up once nothing has moved
+     * for {@link #TERMINAL_GRACE_MILLIS} -- no loop body charged, no
+     * activation settled, no publication finished, and the publication
+     * thread spent no CPU, so a publication that computes is never cut and
+     * one blocked is (unbounded, a stuck publication kept a decided replay
+     * running to its {@code replay_timeout_s}).  Then every activation
+     * still live is stranded, and the publication still running is named
+     * ({@code RESULT_PUBLICATION_UNSETTLED}); the run ends without it, and
+     * a later settle of the same run waits for nothing.</p>
+     */
     public static void awaitSelectedResultPublications() {
         boolean interrupted = false;
         List<ActiveRegion> stranded = new ArrayList<>();
+        ActiveRegion unsettled = null;
+        final Conclusion end;
         synchronized (PUBLICATION_LOCK) {
-            long progress = liveRegionProgress();
+            long progress = progressLocked();
             long deadline = System.nanoTime()
                     + TERMINAL_GRACE_MILLIS * 1_000_000L;
-            while (liveSelectedRegions > 0
-                    || resultPublicationsInFlight > 0) {
+            boolean spent = gaveUp;
+            // An early end met while waiting stops the wait for the live.
+            while (!spent && ((concluded == null && liveSelectedRegions > 0)
+                    || resultPublicationsInFlight > 0)) {
                 long remaining = deadline - System.nanoTime();
                 if (remaining <= 0L) {
-                    // Nothing published and no body ran for the whole grace.
-                    if (resultPublicationsInFlight == 0) {
-                        stranded.addAll(ACTIVE.values());
-                    }
-                    // Live but not yet ACTIVE: keep waiting.
-                    if (!stranded.isEmpty()) break;
-                    remaining = TERMINAL_GRACE_MILLIS * 1_000_000L;
-                    deadline = System.nanoTime() + remaining;
+                    spent = true;
+                    break;
                 }
                 int live = liveSelectedRegions;
                 int publishing = resultPublicationsInFlight;
@@ -112,7 +128,7 @@ final class ConcolicResultPublisher {
                 } catch (InterruptedException ignored) {
                     interrupted = true;
                 }
-                long observed = liveRegionProgress();
+                long observed = progressLocked();
                 if (observed != progress || live != liveSelectedRegions
                         || publishing != resultPublicationsInFlight) {
                     progress = observed;
@@ -120,21 +136,58 @@ final class ConcolicResultPublisher {
                             + TERMINAL_GRACE_MILLIS * 1_000_000L;
                 }
             }
+            end = concluded;
+            if (end != null || spent) stranded.addAll(ACTIVE.values());
+            if (spent && !gaveUp) unsettled = publishingNow;
+            gaveUp = spent;
         }
         // Outside the barrier lock: each of these files a durable row.
         for (ActiveRegion active : stranded) {
-            strandWithoutTerminal(active);
+            strandWithoutTerminal(active, end == null
+                    ? "TERMINAL_NEVER_REACHED: the region root was still"
+                    + " running " + TERMINAL_GRACE_MILLIS + "ms after the"
+                    + " workload ended while nothing progressed, so this"
+                    + " occurrence reached no NORMAL, THROW or bounded CUT"
+                    + " terminal"
+                    : end + ": the region root was still running when "
+                    + end.when + ", and the replay ended there");
+        }
+        if (unsettled != null) {
+            String detail = "RESULT_PUBLICATION_UNSETTLED: the row"
+                    + " publication of this completed occurrence made no"
+                    + " progress for " + TERMINAL_GRACE_MILLIS + "ms (its"
+                    + " thread spent no CPU) when the run ended, which ended"
+                    + " without it: its rows may be partial";
+            FocusedReplay.noteUnsettledPublication(detail);
+            taskUnanswered(unsettled.activation, detail);
         }
         if (interrupted) Thread.currentThread().interrupt();
     }
 
-    private static long liveRegionProgress() {
-        long charged = 0L;
+    /**
+     * What moves while a run settles, as one monotone count: loop bodies
+     * the live activations charged, publications finished, and the CPU
+     * the publication thread spent.  Called under {@link #PUBLICATION_LOCK}.
+     */
+    private static long progressLocked() {
+        long moved = publicationsFinished;
         for (ActiveRegion active : ACTIVE.values()) {
-            charged += active.chargedLoopBodies;
+            moved += active.chargedLoopBodies;
         }
-        return charged;
+        if (publishingThread != null) {
+            long cpu = ManagementFactory.getThreadMXBean()
+                    .getThreadCpuTime(publishingThread.getId());
+            if (cpu > 0L) moved += cpu;
+        }
+        return moved;
     }
+
+    /** Guarded by {@link #PUBLICATION_LOCK}: the publication running, its
+     *  thread, how many have finished, and whether a settle gave up. */
+    private static ActiveRegion publishingNow;
+    private static Thread publishingThread;
+    private static long publicationsFinished;
+    private static boolean gaveUp;
 
     /** Why a focused replay ends before its workload does. */
     private enum Conclusion {
@@ -176,10 +229,10 @@ final class ConcolicResultPublisher {
     }
 
     /**
-     * The one early end, once, on a thread of its own: admission ends, every
-     * publication in flight settles, every activation still live is stranded
-     * now rather than after a grace its retries keep resetting, and the
-     * replay ends as every replay does ({@link JUnitMethodRunner}).
+     * The one early end, once, on a thread of its own: admission ends, and
+     * the replay ends as every replay does ({@link JUnitMethodRunner#exit}),
+     * whose settle, the end standing, waits only for the publications and
+     * strands every activation still live.
      *
      * <p>What still publishes differs.  At the witness, every occurrence
      * completed before it (the witness's own among them): its session is a
@@ -193,6 +246,8 @@ final class ConcolicResultPublisher {
             if (concluded != null) return;
             concluded = end;
             submittedAtEnd = end == Conclusion.AT_WITNESS ? submitted : 0L;
+            // A settle already waiting for the live stops waiting for them.
+            PUBLICATION_LOCK.notifyAll();
         }
         ConcolicRegionRuntime.endAdmission();
         if (end == Conclusion.AT_WITNESS) ScheduleLog.witnessed();
@@ -206,22 +261,6 @@ final class ConcolicResultPublisher {
                 // (Solr's test framework does).
                 System.err.println("Causynth " + java.time.Instant.now()
                         + ": the replay ends " + end + ": " + end.when);
-                List<ActiveRegion> stranded = new ArrayList<>();
-                synchronized (PUBLICATION_LOCK) {
-                    while (resultPublicationsInFlight > 0) {
-                        try {
-                            PUBLICATION_LOCK.wait();
-                        } catch (InterruptedException ignored) {
-                            // The end stands; settle and end regardless.
-                        }
-                    }
-                    stranded.addAll(ACTIVE.values());
-                }
-                for (ActiveRegion active : stranded) {
-                    strandWithoutTerminal(active, end + ": the region root"
-                            + " was still running when " + end.when
-                            + ", and the replay ended there");
-                }
                 JUnitMethodRunner.exit(0);
             }
         }, "causynth-early-end").start();
@@ -239,26 +278,22 @@ final class ConcolicResultPublisher {
     private static long submitted;
     private static long submittedAtEnd = Long.MAX_VALUE;
 
-    /** Names one activation whose root never reached a terminal. */
-    private static void strandWithoutTerminal(ActiveRegion active) {
-        strandWithoutTerminal(active, "TERMINAL_NEVER_REACHED: the"
-                + " region root was still running " + TERMINAL_GRACE_MILLIS
-                + "ms after the workload ended and charged no loop body in"
-                + " that time, so this occurrence reached no NORMAL, THROW"
-                + " or bounded CUT terminal");
-    }
-
+    /**
+     * Settles one activation whose root reached no terminal before the run
+     * ended.  Its path is withheld and its mints published, as an abandoned
+     * occurrence's are: other activations' rows already name those symbols
+     * (hdfs-11741 r1: IMPORT invariant 11, a root symbol with no
+     * RootMintRow).  Its thread still runs and may mint meanwhile; its own
+     * terminal, if it comes, closes its VM region
+     * ({@code ConcolicRegionRuntime#strand}).
+     */
     private static void strandWithoutTerminal(ActiveRegion active,
                                               String detail) {
         if (!active.finished.compareAndSet(false, true)) return;
         active.releaseActivation();
         active.abandoned = true;
-        ACTIVE.remove(active.token, active);
+        ConcolicRegionRuntime.strand(active);
         endLiveSelectedRegion();
-        // Its path is withheld and its mints published, as an abandoned
-        // occurrence's are: other activations' rows already name those
-        // symbols (hdfs-11741 r1: IMPORT invariant 11, a root symbol with
-        // no RootMintRow).  Its thread still runs and may mint meanwhile.
         synchronized (active) {
             RowPublication.publishMints(active);
         }
@@ -403,6 +438,8 @@ final class ConcolicResultPublisher {
             Conclusion late;
             synchronized (PUBLICATION_LOCK) {
                 late = ordinal > submittedAtEnd ? concluded : null;
+                publishingNow = active;
+                publishingThread = Thread.currentThread();
             }
             if (late != null) {
                 // Withheld as a stranded one is: its mints still published.
@@ -434,6 +471,10 @@ final class ConcolicResultPublisher {
                         + rootCause(reportingFailure));
             }
         } finally {
+            synchronized (PUBLICATION_LOCK) {
+                publishingNow = null;
+                publicationsFinished++;
+            }
             endSelectedResultPublication();
         }
     }

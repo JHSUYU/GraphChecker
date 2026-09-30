@@ -419,6 +419,23 @@ public final class FocusedReplay {
         }
     }
 
+    /**
+     * The publication the end of the run left running, if any
+     * ({@code ConcolicResultPublisher#awaitSelectedResultPublications}): its
+     * occurrence's rows may be partial, so the session carries no admission.
+     */
+    private static String unsettledPublication = "";
+
+    /** Notes the publication the run ended without; the first one stands. */
+    static void noteUnsettledPublication(String detail) {
+        load();
+        synchronized (LOCK) {
+            if (unsettledPublication.isEmpty()) {
+                unsettledPublication = Text.safe(detail);
+            }
+        }
+    }
+
     /** The roots this session PUBLISHED a mint row for. */
     private static final Set<String> MINTED = new LinkedHashSet<String>();
 
@@ -535,11 +552,12 @@ public final class FocusedReplay {
 
     /**
      * Why the session cannot carry an admission, or {@code ""}: an abandoned
-     * prefix, or no mint row for an assigned root or clock skew.  Called
-     * under {@link #LOCK}.
+     * prefix, a publication the run ended without, or no mint row for an
+     * assigned root or clock skew.  Called under {@link #LOCK}.
      */
     private static String unstated(Obligation obligation) {
         if (!unmatchedPrefix.isEmpty()) return unmatchedPrefix;
+        if (!unsettledPublication.isEmpty()) return unsettledPublication;
         List<String> missing = new ArrayList<String>();
         if (obligation.rootAssignments() != null) {
             for (String rootId : obligation.rootAssignments().keySet()) {
@@ -894,6 +912,7 @@ public final class FocusedReplay {
             MINTED.clear();
             REACHED.clear();
             unmatchedPrefix = "";
+            unsettledPublication = "";
             refusedAt = "";
             ROOT_MINTS.clear();
             task = null;

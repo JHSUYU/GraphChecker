@@ -886,7 +886,9 @@ public final class RowRuntime {
      *
      * <p>The replay owns the verdict and writes it twice: into the session
      * (evidence) and the worker's {@code obligation_result.jsonl} (what the
-     * wave reads).</p>
+     * wave reads).  A replay a refusal decided withdraws its own session
+     * first, to {@code <worker>/refused-sessions/}, so no stage can read the
+     * prefix of a run it wrote.</p>
      */
     public static void closeSession() {
         SessionPublisher session = publisher;
@@ -917,19 +919,33 @@ public final class RowRuntime {
         for (ObligationResult result : results) {
             session.obligationResult(result);
         }
+        String worker = FocusedReplay.workerDir();
+        if (FocusedReplay.refusedAt().isEmpty() || worker.isEmpty()) {
+            session.close();
+            writeWorkerVerdicts(worker, results);
+            return;
+        }
         // A replay a refusal decided publishes no session
-        // (FocusedReplay#refusedAt): the wave's row names none, and the
-        // campaign withdraws the directory it opened.
-        writeWorkerVerdicts(FocusedReplay.refusedAt().isEmpty() ? results
-                : FocusedReplay.results(""));
-        session.close();
+        // (FocusedReplay#refusedAt): it withdraws the directory it opened,
+        // and its verdict rows name none.
+        String unmoved = session.withdrawTo(
+                Paths.get(worker, REFUSED_SESSIONS));
+        if (!unmoved.isEmpty()) {
+            System.err.println("Causynth could not withdraw the session of"
+                    + " this decided replay to " + worker + "/"
+                    + REFUSED_SESSIONS + " (" + unmoved + "); its worker"
+                    + " withdraws what is still listed");
+        }
+        writeWorkerVerdicts(worker, FocusedReplay.results(""));
     }
 
+    /** Where a decided replay's session goes, under its worker. */
+    static final String REFUSED_SESSIONS = "refused-sessions";
+
     /** The wave's own file: one row per obligation this replay ran. */
-    private static void writeWorkerVerdicts(List<ObligationResult> results) {
-        if (results.isEmpty()) return;
-        String worker = FocusedReplay.workerDir();
-        if (worker.isEmpty()) return;
+    private static void writeWorkerVerdicts(String worker,
+                                            List<ObligationResult> results) {
+        if (results.isEmpty() || worker.isEmpty()) return;
         StringBuilder rows = new StringBuilder();
         for (ObligationResult result : results) {
             rows.append(RowCodec.toLine(

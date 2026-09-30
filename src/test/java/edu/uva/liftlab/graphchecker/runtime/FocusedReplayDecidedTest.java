@@ -97,6 +97,42 @@ public class FocusedReplayDecidedTest {
     }
 
     @Test
+    public void aPublicationTheRunEndedWithoutAdmitsNothing() throws Exception {
+        handed();
+        FocusedReplay.observeDecision(OccurrenceAddress.parse(FOCUS), SITE,
+                1, true);
+        FocusedReplay.observeDecision(OccurrenceAddress.parse(PARENT),
+                PARENT_SITE, 1, true);
+        assertEquals(Verdict.ADMITTED, only("s").verdict());
+        FocusedReplay.noteUnsettledPublication(
+                "RESULT_PUBLICATION_UNSETTLED: stuck");
+        FocusedReplay.noteUnsettledPublication("a second one");
+        ObligationResult result = only("s");
+        assertEquals(Verdict.NOT_ADMITTED, result.verdict());
+        assertEquals("RESULT_PUBLICATION_UNSETTLED: stuck", result.detail());
+        assertEquals("never decided: the replay ran to its end", "",
+                FocusedReplay.refusedAt());
+    }
+
+    @Test
+    public void aDecidedSessionWithdrawsItselfAndIsNeverRecreated()
+            throws Exception {
+        Path iteration = folder.newFolder().toPath();
+        Path worker = folder.newFolder().toPath();
+        SessionPublisher session = SessionPublisher.of(iteration, "S.cut");
+        Path dir = iteration.resolve("sessions").resolve("S.cut");
+        assertTrue(Files.isRegularFile(dir.resolve("manifest.json")));
+        assertEquals("", session.withdrawTo(worker.resolve("refused")));
+        assertFalse("out of the corpus", Files.exists(dir));
+        assertTrue(Files.isRegularFile(
+                worker.resolve("refused/S.cut/manifest.json")));
+        session.obligationResult(ObligationResult.of("OB",
+                Verdict.NOT_ADMITTED, "S.cut", "late"));
+        assertFalse("a row after the close recreates nothing",
+                Files.exists(dir));
+    }
+
+    @Test
     public void aFlipDecidesNothingAndAContradictedInheritedFlipDecidesAll()
             throws Exception {
         handed();

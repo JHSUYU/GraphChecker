@@ -171,9 +171,17 @@ is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. T
 code is not the gate (a target that throws exits nonzero by design).
 
 A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
-end and the witness stop alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
+end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
 starts after it), live activations settle, the run totals close the session's rows (a closed
-`SessionPublisher` writes nothing more), and only then the VM session closes. The end runs once: a
+`SessionPublisher` writes nothing more), and only then the VM session closes. The settle
+(`ConcolicResultPublisher#awaitSelectedResultPublications`) is bounded by progress: it gives up once
+nothing has moved for 30 s (no loop body charged, no activation settled, no publication finished,
+and the publication thread spent no CPU), so a publication that computes is never cut and one
+blocked is: every activation still live is then stranded, and the publication left running is a
+`TASK_UNANSWERED` `RESULT_PUBLICATION_UNSETTLED` that holds every obligation of the replay
+`NOT_ADMITTED` (`FocusedReplay#noteUnsettledPublication`: its rows may be partial). A stranded
+activation's VM region is its thread's, so the terminal that thread still reaches closes it
+(`ConcolicRegionRuntime#strand`, `#closeStranded`) and publishes nothing. The end runs once: a
 second thread ending the same run (an early end meeting the workload's own) waits for the first's
 `System.exit`, and a caller of the run totals (`ConcolicResultPublisher#publishRunTotals`, also the
 shutdown hook) returns only once they are published, so no exit halts the close half-done. Cluster threads
@@ -189,8 +197,9 @@ A focused replay ends early, once, for one of two reasons (`ConcolicResultPublis
   `FocusedReplay#refusedAt`, §7.6).
 
 Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
-publications running settle, every activation still live is stranded (`TASK_UNANSWERED` with the
-reason; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and a publication
+publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
+with the reason; after the workload's own end, one live while nothing progressed for the grace is
+`TERMINAL_NEVER_REACHED`), and a publication
 not yet started is withheld (the reason again): at the witness, one submitted after it (the
 session is read whole up to the witness); at a refusal, every one (the session is withdrawn, and
 draining the queue into it cost a Solr replay two to five minutes past the test's end). A stranded or late activation's path
@@ -430,9 +439,10 @@ ends there (`AT_REFUSAL`, §5). A flipped obligation is never decided before its
 session is a corpus session, cut from by later waves and read whole by the closure and COMPOSE (the
 anchor, the fatal and writers after the anchor among them), so only the witness ends it early. A
 decided replay **publishes no session**: its verdict rows state the refusal and that the replay
-ended there, the worker's row names no session (`RowRuntime#closeSession`), and
-`campaign_obligation_replay`, on the host that ran the replay, withdraws the directory it opened to
-`<worker>/refused-sessions/`. A `NOT_ADMITTED` replay ran no world (§7.4 cuts no path from one),
+ended there, the worker's row names no session, and the replay withdraws the directory it opened
+to `<worker>/refused-sessions/` at its close, in one rename (`RowRuntime#closeSession`,
+`SessionPublisher#withdrawTo`); `campaign_obligation_replay`, on the host that ran the replay,
+withdraws one a failed move left listed. A `NOT_ADMITTED` replay ran no world (§7.4 cuts no path from one),
 and rows cut at the refusal are a prefix of a run no stage could tell from a whole one. Its gap rows
 stay EMIT's (§11). The head, reading a peer's row that names no session, waits until its own
 listing holds no session naming the obligation (`campaign_await_remote_result`), so neither the

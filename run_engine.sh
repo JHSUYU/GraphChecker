@@ -2656,8 +2656,9 @@ session"
   esac
   # A verdict that names no session published none: a refusal decided every
   # obligation the replay carried, and it ended there (FocusedReplay
-  # #refusedAt).  What it wrote before is a prefix of a run, so it leaves the
-  # corpus here, on the host that ran the replay and sees its directory.
+  # #refusedAt).  What it wrote before is a prefix of a run, which the replay
+  # withdrew itself at its close (RowRuntime#closeSession); one its move left
+  # listed leaves the corpus here, on the host that ran the replay.
   [[ -n "$(jq -r '.sessionId // ""' "${result_row}")" ]] \
     || campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
       "${worker}/refused-sessions" "a refusal decided every obligation its \
