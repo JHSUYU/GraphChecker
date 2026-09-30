@@ -1394,6 +1394,29 @@ public final class SmtLowering {
     }
 
     /**
+     * One read row's binding ({@link #bind}), whose side conditions are the
+     * binding's own: when {@code binding} answers that it bound the read,
+     * what its lowering required (container membership, cell tags, recorded
+     * readings) is answered here, to be stated WITH the binding and raised
+     * nowhere else; otherwise it is raised as any lowering's.  Everything
+     * else it raised is raised as usual.  A state join the conjunction never
+     * asks about ({@code Composer#statedJoins}) then takes its requires with
+     * it, instead of leaving them on symbols nothing else names
+     * (hdfs-17899-bug3 r4: a byte array's membership and cell tag at a free
+     * index, per unasked join of a decoded length).
+     */
+    public List<String> ownConditions(Supplier<Boolean> binding) {
+        Attempt<Boolean> held = attempting(binding);
+        List<String> own = new ArrayList<String>();
+        if (held.raised != null && Boolean.TRUE.equals(held.value)) {
+            own.addAll(held.raised.conditions);
+            held.raised.conditions.clear();
+        }
+        commit(held);
+        return own;
+    }
+
+    /**
      * Whether anything this expression rests on can move in a witness
      * (criterion 1 of {@link #bind}): a leaf naming a symbol the open join
      * says {@link SessionJoin#moves}, or a read of a location a family
@@ -2890,9 +2913,9 @@ public final class SmtLowering {
     private void appendPreamble(StringBuilder query,
                                 Iterable<String> texts) {
         query.append("; GraphChecker composed query").append('\n');
-        // Must precede the logic: without it (get-unsat-core) errors.
-        query.append("(set-option :produce-unsat-cores true)").append('\n');
-        // Only the part of the one preamble the query reaches.
+        // No core tracking: the one run asking for a core sets it
+        // (Z3#CORE_TRACKING).  Only the part of the one preamble the query
+        // reaches.
         for (String line : SmtNames.reachedPreamble(preambleLines(), texts)) {
             query.append(line).append('\n');
         }

@@ -453,8 +453,11 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   of that version (a placeholder), else PIN to the value the row states, else REFUSE
   (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
   can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
-  dropped it raises nothing (no refusal, side condition or gap); an object the VM named
-  (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a whole value is asked
+  dropped it raises nothing (no refusal, side condition or gap); what a read row's binding required
+  (container membership and cell tags, recorded readings) is stated with its join, so only where
+  the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
+  object the VM named (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a
+  whole value is asked
   (`SmtLowering#whole`: a join, a published expression, a stated value) or a reference is (a
   comparison asks a named operand at the other's sort, on either side, `#binary`); an operator
   asks for its own operands, and a named container there is its state, at its class's sort
@@ -588,6 +591,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors and
    clock cells. Each path is also asked alone with every root free (60 s): unsat →
    `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
+   An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
+   each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
+   since tracked z3 simplifies nothing across them and still searches a disjunct whose selector the
+   rest forces false.
 3. *As it happened* = every clock cell pinned to its reading plus `recordedPairings` (each path held to
    its own observed reads and received arrivals). `recordingDecides`: ordinal 0 is sat free and unsat
    as it happened. `clockDriven`: it is also unsat with the clocks alone pinned; then the witness keeps
