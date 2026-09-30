@@ -850,11 +850,10 @@ bool carries_expression(const Leaf &leaf) {
     return answer == ContainerSupport::MEMBER_RECORDED
         || answer == ContainerSupport::MEMBER_UNDECIDED;
   }
+  // An object's own expression is a semantic one: a String's shadow starts
+  // with an identity symbol, which states no value.
   SymInstance *instance = heap->find_sym_inst(leaf.object());
-  if (instance == NULL) return false;
-  if (leaf.string()) return instance->get_ref_exp() != NULL;
-  return instance->get(java_lang_boxing_object::value_offset_in_bytes(
-      leaf.sort)) != NULL;
+  return instance != NULL && instance->has_semantic_expression();
 }
 
 // Refuses a mint that would put an expression where it does not belong to
@@ -908,21 +907,24 @@ Status fresh(const Leaf &leaf, std::string *reason) {
 
 // Installs the expression where the leaf's reader will find it: the slot
 // for a field or an element, the object for a value, an entry or a
-// position.  A field mint is a write of it, versioned like a putfield.
-bool land(const Leaf &leaf, Expression *expression, std::string *reason) {
+// position.  A field mint is a write of it, versioned like a putfield.  An
+// object's expression is claimed in one step with fresh()'s last check, so a
+// mint that loses a race to another mint of the same object (a String two
+// decodes share) is SHADOWED, never landed over it.
+Status land(const Leaf &leaf, Expression *expression, std::string *reason) {
   SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
   if (leaf.kind == LeafBroker::SLOT_FIELD) {
     SymInstance *owner = heap->get_or_alloc_sym_inst(leaf.holder());
     if (owner == NULL) {
       *reason = "NO_OWNER_SHADOW";
-      return false;
+      return STATUS_UNSUPPORTED;
     }
     owner->mark_field_written(leaf.offset);
     owner->set_sym_exp(leaf.offset, expression);
     if (owner->get(leaf.offset) != expression) {
       // A String or builder owner keeps no field shadows.
       *reason = "OWNER_KEEPS_NO_FIELD:" + class_of(leaf.holder());
-      return false;
+      return STATUS_UNSUPPORTED;
     }
     owner->mark_semantic_expression();
     Expression *guard = ConcolicMngr::has_active_context()
@@ -932,7 +934,7 @@ bool land(const Leaf &leaf, Expression *expression, std::string *reason) {
                       SFV::LOC_INSTANCE_FIELD),
         SFV::Cell(leaf.holder(), leaf.cell, leaf.boxed_field), expression,
         guard, SFV::VERSION_WRITE);
-    return true;
+    return STATUS_OK;
   }
   if (leaf.kind == LeafBroker::SLOT_ELEMENT) {
     arrayOop array = arrayOop(leaf.holder());
@@ -940,28 +942,27 @@ bool land(const Leaf &leaf, Expression *expression, std::string *reason) {
     // state records (ContainerSupport::element_answer).
     if (heap->get_or_alloc_sym_array(array, NULL, true) == NULL) {
       *reason = "NO_ARRAY_SHADOW";
-      return false;
+      return STATUS_UNSUPPORTED;
     }
     const jlong word = leaf.cell == T_OBJECT
         ? (jlong) heap->name_reference(leaf.object()) : leaf.bits;
     heap->write_array_element(array, leaf.index, expression,
                               ElementWord(true, word));
-    return true;
+    return STATUS_OK;
   }
   SymInstance *instance = heap->get_or_alloc_sym_inst(leaf.object());
   if (instance == NULL) {
     *reason = "NO_LEAF_SHADOW";
-    return false;
+    return STATUS_UNSUPPORTED;
   }
-  if (leaf.string()) {
-    instance->set_ref_exp(expression);
-  } else {
-    instance->set_sym_exp(
-        java_lang_boxing_object::value_offset_in_bytes(leaf.sort),
-        expression);
-    instance->mark_semantic_expression();
+  if (!heap->claim_object_expression(
+          instance, leaf.string() ? -1
+              : java_lang_boxing_object::value_offset_in_bytes(leaf.sort),
+          expression)) {
+    *reason = "OBJECT_CARRIES_EXPRESSION:" + class_of(leaf.object());
+    return STATUS_SHADOWED;
   }
-  return true;
+  return STATUS_OK;
 }
 
 }  // namespace
@@ -1033,6 +1034,7 @@ std::string LeafBroker::mint_leaf(Handle parent, jint slot_kind, Handle slot,
   }
   Leaf leaf;
   Status status = locate(parent, slot_kind, slot, &leaf, &reason);
+  const bool located = status == STATUS_OK;
   if (status == STATUS_OK) status = statable(leaf, &reason);
   if (status == STATUS_OK) status = fresh(leaf, &reason);
   std::vector<Hole> holes;
@@ -1040,10 +1042,18 @@ std::string LeafBroker::mint_leaf(Handle parent, jint slot_kind, Handle slot,
   if (status == STATUS_OK) {
     status = build(leaf, parts, &holes, &expression, &reason);
   }
-  if (status == STATUS_OK && !land(leaf, expression, &reason)) {
-    status = STATUS_UNSUPPORTED;
+  if (status == STATUS_OK) status = land(leaf, expression, &reason);
+  if (status != STATUS_OK) {
+    JsonWriter &writer = answer.status(status, reason).writer();
+    if (located) {
+      // Where the mint would land: a refusal of the object (SHARED,
+      // SHADOWED) is one a fresh equal object stored through the holder
+      // answers; a slot's is not.
+      writer.Key("landsOn");
+      writer.String(leaf.lands_on_object() ? "OBJECT" : "SLOT");
+    }
+    return answer.finish();
   }
-  if (status != STATUS_OK) return answer.status(status, reason).finish();
 
   // A mint is an input: it opens this thread's path-condition gate, as
   // every mint does.  It records no condition.

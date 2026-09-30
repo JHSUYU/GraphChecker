@@ -472,6 +472,10 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   }
 
   oop obj = handle();
+  // A JVM-wide object never carries an expression and every mint refuses
+  // it: said here, so a caller names that refusal by what it is.
+  writer.Key("jvmShared");
+  writer.Bool(jvm_shared_object(obj));
   BasicType primitive_type = boxed_primitive_type(obj);
   SymInstance *object_instance = obj->is_array()
       ? NULL : ctx->find_sym_inst(obj);
@@ -827,7 +831,8 @@ jlong ConcolicMngr::endConcolic() {
 
 void ConcolicMngr::symbolize(Handle handle, const char* prefix) {
   if (can_explicitly_symbolize()) {
-    ctx->set_pc_admitted(true);
+    // The symbolizer opens the path-condition gate once it mints: a refused
+    // mint (a JVM-wide object) opens nothing.
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
       ctx->resume_path_condition_recording();
@@ -845,7 +850,8 @@ void ConcolicMngr::symbolize(Handle handle, const char* prefix) {
 void ConcolicMngr::symbolizeField(Handle handle, const char* field_name,
                                   const char* prefix) {
   if (can_explicitly_symbolize()) {
-    ctx->set_pc_admitted(true);
+    // The symbolizer opens the path-condition gate once it mints: a refused
+    // mint (a JVM-wide object) opens nothing.
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
       ctx->resume_path_condition_recording();
@@ -870,7 +876,8 @@ void ConcolicMngr::symbolizeExactField(
       && field_name != NULL && field_name[0] != '\0'
       && descriptor != NULL && descriptor[0] != '\0'
       && prefix != NULL && prefix[0] != '\0') {
-    ctx->set_pc_admitted(true);
+    // The symbolizer opens the path-condition gate once it mints: a refused
+    // mint (a JVM-wide object) opens nothing.
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
       ctx->resume_path_condition_recording();

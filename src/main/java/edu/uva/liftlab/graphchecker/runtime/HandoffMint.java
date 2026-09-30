@@ -26,13 +26,10 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -563,10 +560,6 @@ final class HandoffMint {
         return leaf.store(fresh) ? new Placed(moved, root) : null;
     }
 
-    /** The VM's slot kinds whose mint lands on the leaf object. */
-    private static final Set<String> LANDS_ON_OBJECT = new HashSet<>(
-            Arrays.asList("VALUE", "ENTRY", "POSITION"));
-
     /** One leaf's mint: its holes, and the root after a re-home. */
     private static final class Minted {
         final JsonArray holes;
@@ -579,49 +572,64 @@ final class HandoffMint {
     }
 
     /**
-     * Mints a template on one leaf.  A leaf whose mint lands on its object (a
-     * String, or a box held by an entry, a position or no modeled slot) that
-     * is JVM-wide ({@code SHARED}) or already carries an expression
-     * ({@code SHADOWED}) is re-homed: a fresh equal object is stored through
-     * its holder's API and minted instead; one that cannot be
-     * ({@code LEAF_SHARED}: a view's rendering, an immutable holder) stays
-     * concrete, named.  A field or element slot's refusal (a JVM-wide
-     * holder, a slot that carries an expression) stands: nothing is written
-     * into a shared holder, and a fresh object would not clear the slot.
+     * Mints a template on one leaf.  A refusal of the leaf object -- the VM
+     * answers {@code landsOn: OBJECT} -- as JVM-wide ({@code SHARED}) or as
+     * already carrying an expression ({@code SHADOWED}) is re-homed: a fresh
+     * equal object is stored through its holder's API and minted instead;
+     * one that cannot be (a view's rendering, an immutable holder) stays as
+     * it is, named {@code LEAF_SHARED} or {@code LEAF_SHADOWED}.  A slot's
+     * refusal (a JVM-wide holder, a slot that carries an expression) stands:
+     * nothing is written into a shared holder, and a fresh object would not
+     * clear the slot.  Every refusal is named by its status.
      */
     private static Minted mintTemplate(CodecWalker.Leaf leaf, Object root,
                                        String template,
                                        CodecMessages.Message message,
                                        String at) {
         JsonObject answer = mintAt(leaf, template);
-        String status = answer == null ? "UNANSWERED"
-                : optionalString(answer, "status");
-        if (("SHARED".equals(status) || "SHADOWED".equals(status))
-                && LANDS_ON_OBJECT.contains(optionalString(answer,
-                "slotKind"))) {
+        String status = status(answer);
+        boolean shared = "SHARED".equals(status);
+        if ((shared || "SHADOWED".equals(status))
+                && "OBJECT".equals(optionalString(answer, "landsOn"))) {
             Object fresh = freshCopy(leaf.value);
             Placed placed = fresh == null ? null : place(leaf, root, fresh);
             if (placed == null) {
-                codecMismatch(message, "LEAF_SHARED", at + " decoded a"
-                        + " JVM-wide " + leaf.value.getClass().getName()
-                        + " its holder cannot replace");
+                codecMismatch(message, shared ? "LEAF_SHARED"
+                        : "LEAF_SHADOWED", at + " decoded a "
+                        + (shared ? "JVM-wide " : "") + leaf.value.getClass()
+                        .getName() + (shared ? "" : " that already carries"
+                        + " an expression of its own") + ", which its"
+                        + " holder cannot replace with a fresh one, so no"
+                        + " hole is minted on it");
                 return null;
             }
             leaf = placed.leaf;
             root = placed.root;
             answer = mintAt(leaf, template);
-            status = answer == null ? "UNANSWERED"
-                    : optionalString(answer, "status");
+            status = status(answer);
         }
         if (!"OK".equals(status)) {
+            String reason = answer == null ? ""
+                    : optionalString(answer, "reason");
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     message.key, "the VM minted no hole on " + at + " ("
-                            + status + " " + (answer == null ? ""
-                            : optionalString(answer, "reason"))
-                            + "), so the value crossed concrete");
+                            + status + (reason.isEmpty() ? "" : " " + reason)
+                            + "): " + ("SHADOWED".equals(status)
+                            ? "the slot keeps the expression it already"
+                            + " carried, which no hole replaces"
+                            : "SHARED".equals(status)
+                            ? "its holder is JVM-wide, so nothing is minted"
+                            + " in it and the value crossed concrete"
+                            : "the value crossed concrete"));
             return null;
         }
         return new Minted(answer.getAsJsonArray("holes"), root);
+    }
+
+    /** A mint answer's status; {@code UNANSWERED} when the VM gave none. */
+    private static String status(JsonObject answer) {
+        return answer == null ? "UNANSWERED"
+                : optionalString(answer, "status");
     }
 
     /**

@@ -25,14 +25,20 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 - **Object identity.** Every object carries an extra header word `_sym_rid` (`VM/oops/oop.hpp`);
   it survives GC and is reset at every allocation path and on an `Object.clone` copy. Heap shadows
   (`SymInstance`, `SymArr`, container states) live in the session heap keyed by it
-  (`VM/concolic/sessionSymbolicHeap.cpp`). Interned strings get a detached shadow, never the shared
-  object's. One rule: a JVM-wide identity (an interned String, a JDK box-cache entry or a cache's
-  own array, `Boolean.TRUE/FALSE`; `symbolicPrimitive.cpp#jvm_shared_object`) never carries an
-  expression. A value it stands for rides the slot that holds it. Every mint asks first: the
+  (`VM/concolic/sessionSymbolicHeap.cpp`). An interned String's header is never written: an
+  identity the session gives it lives beside it (a detached entry), and it carries no expression.
+  One rule: a JVM-wide identity (an interned String, a JDK box-cache entry or a cache's own array,
+  `Boolean.TRUE/FALSE`, an enum constant; `symbolicPrimitive.cpp#jvm_shared_object`) never carries
+  an expression. A value it stands for rides the slot that holds it. Every mint asks first: the
   boxing and container models, `mintLeaf` (§7), and the symbolizers (`VM/concolic/fieldTraverser.cpp`,
-  `threadContext.cpp#symbolize_*`): a JVM-wide root or owner is not minted, a walk does not enter
-  one, and a field holding a shared box is minted on the field as a value of the box's sort (what
-  an unboxing of it reads), a String field on the field as always.
+  `threadContext.cpp#symbolize_*`). A JVM-wide root or owner is not minted and the region's gate
+  stays as it was (a symbolizer opens it only once it mints); a walk does not enter a JVM-wide
+  object; a field holding a box, shared or fresh, is minted on the field as a value of the box's
+  sort (what an unboxing of it reads, under the primitive fields' replace rule) and the box stays
+  clean; a String field is minted on the field; any other JVM-wide referent (an enum constant) of
+  a selected field binds the field to a reference symbol, as a null one does.
+  `getSymbolicExpression` states `jvmShared` for an object, so a caller names a refused mint by
+  what it is.
 - **Stack shadows.** One `ThreadContext` per thread (`__thread`, `VM/concolic/concolicMngr.cpp`)
   shadows operand slots and locals; arguments and returns move through `ShadowStack` at every Zero
   frame push and pop (`VM/concolic/shadow/shadowStack.cpp`).
@@ -318,17 +324,22 @@ with a `reason`.
   compared in UTF-16. The expression lands on the slot for a field (a `WRITE` version, as a
   putfield publishes) or an element (an INDEXED `WRITE`, the array named), and on the leaf object for
   a value, an entry or a position. A mint never puts an expression on a JVM-wide object and never
-  replaces one. Refusals: `SHARED` (the landing object or the holder of the slot is JVM-wide),
-  `SHADOWED` (what the mint lands on already carries an expression: the leaf object, e.g. a String a
-  codec's cache shares, or a field slot with a shadow or an input owner's projection, or an element
-  its array's recorded state names or an input array holds) -- for a leaf landing on its object the
-  caller stores a fresh equal object and mints again, a slot's refusal stands --, `TRACKED_CONTAINER`
+  replaces one; an object's expression is claimed in one step under the heap lock
+  (`SessionSymbolicHeap::claim_object_expression`), so of two mints of one object (a String two
+  decodes share) one lands and the other is `SHADOWED`. Refusals: `SHARED` (the landing object or
+  the holder of the slot is JVM-wide), `SHADOWED` (what the mint lands on already carries an
+  expression: the leaf object's semantic one -- a String's identity symbol is none -- e.g. a String
+  a codec's cache shares, or a field slot with a shadow
+  or an input owner's projection, or an element its array's recorded state names or an input array
+  holds). A refusal of a located leaf states `landsOn` (`OBJECT` or `SLOT`): for `OBJECT` the
+  caller stores a fresh equal object and mints again, a `SLOT` refusal stands. `TRACKED_CONTAINER`
   (an entry's or position's container has a state, an element is versioned, or a field is a tracked
   location), `TEMPLATE_MISMATCH`,
   `MALFORMED_TEMPLATE`, `NO_SESSION`, `SLOT_MISSING`, `NULL_LEAF`, `UNSUPPORTED`. A mint records no
   condition; on a thread inside a region it opens the admission gate. This JDK's
   `Integer/Long/Short/Byte.valueOf` box afresh, so a JVM-wide box is only a `Character` cache entry
-  or `Boolean.TRUE/FALSE`.
+  or `Boolean.TRUE/FALSE`; an enum constant is never a leaf (`UNSUPPORTED`) and, as a holder,
+  `SHARED`.
 - The codec runtime calls them (`runtime/CodecExport`, `HandoffMint#mintHoles`; IDENTITY.md §7.5);
   a `WIRE_FLOW` row still crosses through the expression broker.
 
@@ -405,7 +416,7 @@ that does not hold.
 | list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
 | stream `write(byte[])`/`readFully`, `ByteArrayOutputStream` | through arraycopy: hooked |
 | a cached box, `Boolean.TRUE/FALSE`, an interned String returned by `valueOf` or a container | hooked: the value rides the result slot; the shared object stays clean |
-| a mint (`symbolize*`, `mintLeaf`) on a JVM-wide object | refused: a shared box a field holds is minted on the field; a shared root, owner or holder is not minted, and the runtime names it (`RootMint#symbolize`, `HandoffMint#mintTemplate`) |
+| a mint (`symbolize*`, `mintLeaf`) on a JVM-wide object | refused: a box a field holds is minted on the field; a shared root, owner or holder is not minted, and the runtime names it by its cause (`RootMint#mintRefused`, `HandoffMint#mintTemplate`) |
 | `Unsafe` volatile or object gets | the field shadow or nothing; a tracked location's get is not a versioned read |
 | a native method with a symbolic argument (JNI, most JDK natives) | silently lost |
 | `String.toCharArray`/`getBytes`/`getChars`, `new String(bytes)` | silently lost |

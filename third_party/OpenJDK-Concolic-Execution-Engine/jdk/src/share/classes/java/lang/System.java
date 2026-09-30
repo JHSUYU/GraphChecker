@@ -546,7 +546,9 @@ public final class System {
 
     /**
      * Serializes the current symbolic expression associated with {@code obj}.
-     * The returned value is a JSON envelope and never exposes VM pointers.
+     * The returned value is a JSON envelope and never exposes VM pointers;
+     * for a live region and a non-null object it states {@code jvmShared}:
+     * whether the object is JVM-wide, which no mint touches.
      */
     public static native String getSymbolicExpression(Object obj);
 
@@ -681,17 +683,25 @@ public final class System {
      * path-condition gate opened.
      *
      * @return one JSON document {@code {schemaVersion, kind:"VM_LEAF_MINT",
-     *         slotKind, status, reason?, javaType, holes:[{label, kind, exp,
-     *         javaType, concreteValue}], expression, vmExpressionTable}};
-     *         {@code status} is {@code OK} or a refusal: {@code SHARED} (the
-     *         leaf object or the slot's holder is JVM-wide), {@code SHADOWED}
-     *         (what the mint lands on -- the leaf object, or the field or
-     *         element slot -- already carries an expression: a mint never
-     *         replaces one); a leaf landing on its object is minted again on
-     *         a fresh equal object its holder stores, {@code
-     *         TRACKED_CONTAINER}, {@code TEMPLATE_MISMATCH},
+     *         slotKind, status, reason?, landsOn?, javaType, holes:[{label,
+     *         kind, exp, javaType, concreteValue}], expression,
+     *         vmExpressionTable}}; {@code status} is {@code OK} or one of
+     *         these refusals:
+     *         <ul>
+     *         <li>{@code SHARED}: the leaf object or the slot's holder is
+     *         JVM-wide;</li>
+     *         <li>{@code SHADOWED}: what the mint lands on (the leaf object,
+     *         or the field or element slot) already carries an expression,
+     *         and a mint never replaces one;</li>
+     *         <li>{@code TRACKED_CONTAINER}, {@code TEMPLATE_MISMATCH},
      *         {@code MALFORMED_TEMPLATE}, {@code NO_SESSION},
-     *         {@code SLOT_MISSING}, {@code NULL_LEAF}, {@code UNSUPPORTED}
+     *         {@code SLOT_MISSING}, {@code NULL_LEAF},
+     *         {@code UNSUPPORTED}.</li>
+     *         </ul>
+     *         A refusal of a located leaf states {@code landsOn}
+     *         ({@code OBJECT} or {@code SLOT}): an {@code OBJECT} refusal
+     *         (SHARED, SHADOWED) is answered by storing a fresh equal object
+     *         through the holder and minting again; a {@code SLOT} one stands
      */
     public static native String mintLeaf(Object parent, int slotKind,
                                          Object slot, String templateJson);
@@ -793,7 +803,12 @@ public final class System {
     public static native String finishConcolicRegion();
 
     /**
-     * make an Object symbolic with prefix for symbolic variable name
+     * Makes an object symbolic, its symbols named after {@code prefix}.  A
+     * JVM-wide object (an interned String, a cached box, Boolean.TRUE, an
+     * enum constant) is refused, as it is by {@link #symbolizeField} and
+     * {@link #symbolizeExactField} as the owner: nothing is minted and the
+     * region's path-condition gate stays as it was.  A field holding a box
+     * is minted on the field, as a value of the box's sort.
      */
     public static native void symbolize(Object obj, String prefix);
 

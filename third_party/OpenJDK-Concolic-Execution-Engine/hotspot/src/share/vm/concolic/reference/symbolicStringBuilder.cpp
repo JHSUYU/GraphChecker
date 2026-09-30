@@ -250,6 +250,43 @@ void __attribute__((optimize("O0"))) SymStrBuilder::add_to_string_for_param_list
   }
 }
 
+namespace {
+
+Expression *substring(Expression *content, Expression *begin,
+                      Expression *end) {
+  exp_list_t arguments;
+  arguments.push_back(content);
+  arguments.push_back(begin);
+  if (end != NULL) arguments.push_back(end);
+  return new OpStrExpression("substring", arguments);
+}
+
+Expression *concat(Expression *first, Expression *second,
+                   Expression *third = NULL) {
+  exp_list_t arguments;
+  arguments.push_back(first);
+  arguments.push_back(second);
+  if (third != NULL) arguments.push_back(third);
+  return new OpStrExpression("concat", arguments);
+}
+
+Expression *plus_one(Expression *index) {
+  return new OpSymExpression(index, new ConExpression((jint) 1), op_add);
+}
+
+// `end` clamped to the length as Java clamps it, when both are concrete.
+Expression *clamped(Expression *end, Expression *length) {
+  jint at = 0;
+  jint bound = 0;
+  if (end->concrete_int_value(&at) && length->concrete_int_value(&bound)
+      && at > bound) {
+    return length;
+  }
+  return end;
+}
+
+}  // namespace
+
 Expression *
 SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
   BasicType type = handle.get_result_type();
@@ -271,8 +308,8 @@ SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
   if (callee_name == "append") {
     if (is_ranged_append(handle)) {
       const exp_list_t &params = handle.get_param_list();
-      exp = appended(params[0], params[1] != NULL ? params[1]
-                     : appended_text(handle.get_param<oop>(0), params[2]));
+      exp = concat(params[0], params[1] != NULL ? params[1]
+                   : appended_text(handle.get_param<oop>(0), params[2]));
     } else {
       exp_list_t string_exp_list;
       add_to_string_for_param_list(handle, string_exp_list);
@@ -342,42 +379,6 @@ void SymStrBuilder::prepare_mutation(MethodSymbolizerHandle &handle) {
                        ? new ConExpression(length) : (Expression *) NULL);
 }
 
-namespace {
-
-Expression *substring(Expression *content, Expression *begin,
-                      Expression *end) {
-  exp_list_t arguments;
-  arguments.push_back(content);
-  arguments.push_back(begin);
-  if (end != NULL) arguments.push_back(end);
-  return new OpStrExpression("substring", arguments);
-}
-
-Expression *concat(Expression *first, Expression *second,
-                   Expression *third = NULL) {
-  exp_list_t arguments;
-  arguments.push_back(first);
-  arguments.push_back(second);
-  if (third != NULL) arguments.push_back(third);
-  return new OpStrExpression("concat", arguments);
-}
-
-Expression *plus_one(Expression *index) {
-  return new OpSymExpression(index, new ConExpression((jint) 1), op_add);
-}
-
-// `end` clamped to the length as Java clamps it, when both are concrete.
-Expression *clamped(Expression *end, Expression *length) {
-  jint at = 0;
-  jint bound = 0;
-  if (end->concrete_int_value(&at) && length->concrete_int_value(&bound)
-      && at > bound) {
-    return length;
-  }
-  return end;
-}
-
-}  // namespace
 
 Expression *SymStrBuilder::range_of(MethodSymbolizerHandle &handle,
                                     int offset, Expression *start,
@@ -438,10 +439,6 @@ Expression *SymStrBuilder::appended_text(oop builder, Expression *before) {
                                (Expression *) new ConExpression(to - from));
   }
   return new ConStringSymbolExp(text);
-}
-
-Expression *SymStrBuilder::appended(Expression *content, Expression *range) {
-  return concat(content, range);
 }
 
 Expression *SymStrBuilder::mutated(MethodSymbolizerHandle &handle) {

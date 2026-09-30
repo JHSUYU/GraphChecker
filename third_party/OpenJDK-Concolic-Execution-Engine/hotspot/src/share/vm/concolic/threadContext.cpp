@@ -565,8 +565,10 @@ void ThreadContext::symbolize_recursive(oop obj) {
 
 void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
   // A JVM-shared identity never carries a shadow (jvm_shared_object): no
-  // mint, and no mark on one another use made.
+  // mint, no mark on one another use made, and the region's gate stays as
+  // it was.  A mint is an input: only then does the gate open.
   if (jvm_shared_object(obj)) return;
+  set_pc_admitted(true);
   FieldSymbolizer field_symbolzier(obj, *this, prefix);
   field_symbolzier.do_recursive();
   if (obj != NULL && obj->is_array()) {
@@ -599,6 +601,7 @@ void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
 void ThreadContext::symbolize_field(Handle handle, std::string field_name,
                                     std::string prefix) {
   if (jvm_shared_object(handle())) return;
+  set_pc_admitted(true);
   FieldSymbolizer field_symbolizer(handle(), *this, prefix, field_name);
   field_symbolizer.do_once();
   SymInstance *owner = find_sym_inst(handle());
@@ -609,6 +612,7 @@ void ThreadContext::symbolize_exact_field(
     Handle owner, std::string declaring_class, std::string field_name,
     std::string descriptor, std::string prefix) {
   if (jvm_shared_object(owner())) return;
+  set_pc_admitted(true);
   FieldSymbolizer field_symbolizer(
       owner(), *this, prefix, declaring_class, field_name, descriptor);
   field_symbolizer.do_once();

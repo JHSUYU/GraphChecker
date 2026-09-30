@@ -171,23 +171,7 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
       // Recursive whole-object symbolization remains unchanged: it cannot
       // traverse a missing child and does not invent one.
       if (!_selected_field.empty()) {
-        sym_inst = this->_ctx.find_sym_inst(obj);
-        if (sym_inst != NULL) {
-          assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
-                 "should be equal");
-          // Invariant: a field that already carries a symbolic expression is
-          // never overwritten by a fresh symbol, and no equation is recorded.
-          if (sym_inst->has_sym_exp(fd->offset())) return false;
-          Expression *symbol = new FieldSymbolExp(
-              sym_inst->get_sym_rid(), symbolic_name, T_OBJECT);
-          sym_inst->set_sym_exp(fd->offset(), symbol);
-          _ctx.record_path_condition(new OpSymExpression(
-              new FieldAccessExpression(
-                  sym_inst->get_or_create_ref_exp(obj),
-                  obj->klass()->name()->as_C_string(), fd->offset(),
-                  T_OBJECT),
-              symbol, op_eq, true));
-        }
+        mint_reference(obj, fd, symbolic_name);
       }
       return false;
     }
@@ -218,16 +202,19 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
           symbol, op_eq, true));
       return false;
     }
-    if (jvm_shared_object(fld_oop)) {
-      // A JVM-wide referent never carries a shadow: every holder in the JVM
-      // would read it.  A box's value rides this field instead, as the value
-      // a shared box holds always does -- minted like a primitive field of
-      // the box's sort, which is what an unboxing of the field reads.  A box
-      // cache's array stays as it is.
-      const BasicType boxed = java_lang_boxing_object::basic_type(fld_oop);
+    const BasicType boxed = java_lang_boxing_object::basic_type(fld_oop);
+    if (boxed != T_ILLEGAL) {
+      // A box's value rides the field that holds it, whatever the box's
+      // identity: minted on the field like a primitive of the box's sort,
+      // which is what an unboxing of the field reads, and under the same
+      // replace rule.  The box stays clean -- a JVM-wide one must, and a
+      // fresh one then states its value the one way a shared one does.
       sym_inst = this->_ctx.find_sym_inst(obj);
-      if (boxed == T_ILLEGAL || sym_inst == NULL
-          || sym_inst->has_sym_exp(fd->offset())) {
+      if (sym_inst == NULL) {
+        tty->print_cr("Warning: boxed field owner has no symbolic shadow");
+        return false;
+      }
+      if (_selected_holder.empty() && sym_inst->has_sym_exp(fd->offset())) {
         return false;
       }
       mint_slot(sym_inst, obj, fd, symbolic_name, boxed,
@@ -235,6 +222,16 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
                     obj, T_OBJECT,
                     SharedFieldVersions::wrapper_value_type(fd->signature())
                         != T_ILLEGAL));
+      return false;
+    }
+    if (jvm_shared_object(fld_oop)) {
+      // Any other JVM-wide referent (an enum constant, a box cache's array)
+      // never carries a shadow: every holder in the JVM would read it.  A
+      // selected field keeps its reference symbol on the field, as a null
+      // one does; a walk does not enter it.
+      if (!_selected_field.empty()) {
+        mint_reference(obj, fd, symbolic_name);
+      }
       return false;
     }
     if (!_selected_field.empty()) {
@@ -351,6 +348,23 @@ void FieldSymbolizer::mint_slot(SymInstance *sym_inst, oop obj,
           sym_inst->get_or_create_ref_exp(obj),
           obj->klass()->name()->as_C_string(), fd->offset(), type,
           std::string(), NULL, NULL, minted_version, minted_version_kind),
+      symbol, op_eq, true));
+}
+
+void FieldSymbolizer::mint_reference(oop obj, fieldDescriptor *fd,
+                                     const std::string &name) {
+  SymInstance *sym_inst = this->_ctx.find_sym_inst(obj);
+  // Invariant: a field that already carries a symbolic expression is never
+  // overwritten by a fresh symbol, and no equation is recorded.
+  if (sym_inst == NULL || sym_inst->has_sym_exp(fd->offset())) return;
+  Expression *symbol = new FieldSymbolExp(sym_inst->get_sym_rid(), name,
+                                          T_OBJECT);
+  sym_inst->set_sym_exp(fd->offset(), symbol);
+  ResourceMark rm;
+  _ctx.record_path_condition(new OpSymExpression(
+      new FieldAccessExpression(
+          sym_inst->get_or_create_ref_exp(obj),
+          obj->klass()->name()->as_C_string(), fd->offset(), T_OBJECT),
       symbol, op_eq, true));
 }
 

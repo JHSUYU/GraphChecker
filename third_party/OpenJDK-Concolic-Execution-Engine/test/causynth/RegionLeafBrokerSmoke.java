@@ -33,6 +33,8 @@ public final class RegionLeafBrokerSmoke {
 
     private static final class Flags {
         Boolean on = Boolean.TRUE;
+        Boolean fresh = new Boolean(true);
+        Thread.State state = Thread.State.NEW;
     }
 
     public static void main(String[] args) throws Exception {
@@ -354,10 +356,13 @@ public final class RegionLeafBrokerSmoke {
         // array) is SHARED.
         mint(minted.pair, VALUE, null, parts(dec("DEC_INT", "HOFF.again",
                 "42"), literal(":"), dec("STR", "HOFF.again2", "abc")),
-                "SHADOWED", "OBJECT_CARRIES_EXPRESSION");
+                "SHADOWED", "OBJECT_CARRIES_EXPRESSION",
+                "\"landsOn\":\"OBJECT\"");
         mint(minted.elements, ELEMENT, Integer.valueOf(0),
                 parts(dec("DEC_INT", "HOFF.again", "7")), "SHADOWED",
-                "SLOT_CARRIES_EXPRESSION");
+                "SLOT_CARRIES_EXPRESSION", "\"landsOn\":\"SLOT\"");
+        mint(Thread.State.NEW, FIELD, field(Enum.class, "ordinal"),
+                num("HOFF.enum"), "SHARED", "HOLDER_JVM_SHARED");
         mint(minted.message, FIELD, field(Message.class, "id"),
                 num("HOFF.again"), "TRACKED_CONTAINER", "FIELD_TRACKED");
         mint(Boolean.TRUE, FIELD, field(Boolean.class, "value"),
@@ -404,38 +409,56 @@ public final class RegionLeafBrokerSmoke {
     }
 
     /**
-     * The symbolizers never put an expression on a JVM-wide object: a shared
-     * box a field holds carries its value on the field, which is what the
-     * unboxing reads, and a shared root is refused.
+     * The symbolizers never put an expression on a JVM-wide object: a box a
+     * field holds, shared or fresh, carries its value on the field as a value
+     * of its sort (what the unboxing reads) and stays clean; an enum constant
+     * is neither entered nor shadowed; a shared root is refused.
      */
     private static void theSymbolizersLeaveJvmWideObjectsClean() {
         require(System.startConcolicRegion("REGION.leaf-shared",
                 "TASK.leaf-shared") == 0L, "region start rejected");
         Flags selected = new Flags();
         Flags walked = new Flags();
+        // The boxes as they were: a later read of the minted field carries
+        // the field's value onto what it loads, which is no mint.
+        Boolean selectedBox = selected.fresh;
+        Boolean walkedBox = walked.fresh;
         System.symbolizeField(selected, "on", "FLAG.on");
+        System.symbolizeField(selected, "fresh", "FLAG.fresh");
+        System.symbolizeField(selected, "state", "FLAG.state");
         System.symbolize(walked, "FLAG.walk");
         System.symbolize(Boolean.TRUE, "FLAG.root");
         System.symbolize("leaf-shared-literal", "FLAG.literal");
-        for (Object shared : new Object[]{Boolean.TRUE,
-                "leaf-shared-literal"}) {
-            String expression = System.getSymbolicExpression(shared);
+        for (Object clean : new Object[]{Boolean.TRUE, "leaf-shared-literal",
+                Thread.State.NEW, selectedBox, walkedBox}) {
+            String expression = System.getSymbolicExpression(clean);
             require(!expression.contains("FLAG."),
-                    "a JVM-wide object carries a mint: " + expression);
+                    "a mint landed on the object itself: " + expression);
         }
         boolean on = selected.on;
         System.markConcolicBranch("LEAF.SHARED.SELECTED", 1);
         if (!on) throw new AssertionError("selected");
+        boolean fresh = selected.fresh;
+        System.markConcolicBranch("LEAF.FRESH.SELECTED", 1);
+        if (!fresh) throw new AssertionError("selected fresh");
         boolean walkedOn = walked.on;
         System.markConcolicBranch("LEAF.SHARED.WALKED", 1);
         if (!walkedOn) throw new AssertionError("walked");
+        boolean walkedFresh = walked.fresh;
+        System.markConcolicBranch("LEAF.FRESH.WALKED", 1);
+        if (!walkedFresh) throw new AssertionError("walked fresh");
         String path = System.getConcolicPathConditionRange(0,
                 Integer.MAX_VALUE);
-        require(path.contains("M_Z_field_FLAG.on"), path);
-        require(path.contains("M_Z_field_FLAG.walk")
-                && path.contains("Flags_on"), path);
+        for (String symbol : new String[]{"M_Z_field_FLAG.on",
+                "M_Z_field_FLAG.fresh", "Flags_on", "Flags_fresh"}) {
+            require(path.contains(symbol), symbol + " not in " + path);
+        }
         require(System.getSymbolicExpression(Boolean.TRUE)
                 .contains("\"symbolic\":false"), "Boolean.TRUE has a shadow");
+        require(System.getSymbolicExpression(Thread.State.NEW)
+                .contains("\"jvmShared\":true"), "an enum is JVM-wide");
+        require(System.getSymbolicExpression(selected)
+                .contains("\"jvmShared\":false"), "an owner is not");
         require(System.finishConcolicRegion().contains("\"complete\":true"),
                 "region finish failed");
     }

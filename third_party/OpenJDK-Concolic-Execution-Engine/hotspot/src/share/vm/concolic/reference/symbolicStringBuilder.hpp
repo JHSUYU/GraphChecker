@@ -53,7 +53,6 @@ public:
   // The text an append left past `before` (the builder's length before it),
   // as a constant.
   static Expression *appended_text(oop builder, Expression *before);
-  static Expression *appended(Expression *content, Expression *range);
 
   static void init_register_class(MethodSymbolizer* m_symbolizer);
 

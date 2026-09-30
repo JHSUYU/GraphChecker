@@ -194,8 +194,8 @@ public final class RegionStringContainsApiSmoke {
 
     /**
      * An interned literal is JVM-wide: symbolize refuses it, since every
-     * alias in the JVM would read the symbol, so neither the local nor its
-     * peer records a condition and the identity is untouched.
+     * alias in the JVM would read the symbol.  A refused mint opens no gate,
+     * so the region records nothing, and the identity is untouched.
      */
     private static void runInternedLocalSmoke() {
         String local = "interned-local-ready";
@@ -218,7 +218,7 @@ public final class RegionStringContainsApiSmoke {
         }
         require(event > 0L, "interned local marker was rejected");
         String events = System.getConcolicBranchEvents();
-        require(noCondition(events, "STRING.INTERNED.LOCAL", 1), events);
+        require(!events.contains("STRING.INTERNED.LOCAL"), events);
 
         String path = System.getConcolicPathConditionRange(
                 0, Integer.MAX_VALUE);

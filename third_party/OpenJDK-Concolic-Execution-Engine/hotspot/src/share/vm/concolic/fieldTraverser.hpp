@@ -98,6 +98,10 @@ protected:
   void mint_slot(SymInstance *sym_inst, oop obj, fieldDescriptor *fd,
                  const std::string &name, BasicType type,
                  const SharedFieldVersions::Cell &cell);
+  // Binds a reference field whose referent cannot carry the symbol (null,
+  // or JVM-wide) to a reference symbol of its own, stated equal to the
+  // field; a field that already carries an expression keeps it.
+  void mint_reference(oop obj, fieldDescriptor *fd, const std::string &name);
 };
 
 #endif // ENABLE_CONCOLIC

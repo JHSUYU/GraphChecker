@@ -7,6 +7,7 @@
 #include "classfile/javaClasses.hpp"
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
+#include "prims/jvm.h"
 #include "runtime/fieldDescriptor.hpp"
 #include "runtime/orderAccess.inline.hpp"
 #include "concolic/globalSymbolicSession.hpp"
@@ -401,6 +402,15 @@ bool shared_boolean(oop box) {
       || mirror->obj_field(false_offset) == box;
 }
 
+// An enum constant: its class is ACC_ENUM, or (a constant with a body) a
+// subclass of one.  Every `switch` and `==` in the JVM reads the constant.
+bool enum_constant(oop obj) {
+  for (Klass *klass = obj->klass(); klass != NULL; klass = klass->super()) {
+    if ((klass->access_flags().get_flags() & JVM_ACC_ENUM) != 0) return true;
+  }
+  return false;
+}
+
 } // anonymous namespace
 
 bool jvm_shared_object(oop obj) {
@@ -418,6 +428,7 @@ bool jvm_shared_object(oop obj) {
     case T_SHORT:   return cached_box(obj, type, value.s);
     case T_INT:     return cached_box(obj, type, value.i);
     case T_LONG:    return cached_box(obj, type, value.j);
+    case T_ILLEGAL: return enum_constant(obj);
     default:        return false;
   }
 }

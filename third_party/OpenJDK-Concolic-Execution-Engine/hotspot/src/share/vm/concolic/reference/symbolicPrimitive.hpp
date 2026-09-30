@@ -44,7 +44,7 @@ public:
 /**
  * Whether `obj` is one JVM-wide object: an entry of a JDK box cache
  * (Byte/Short/Integer/Long/Character.valueOf) or such a cache's own array,
- * Boolean.TRUE/FALSE, or an interned String.  Every later
+ * Boolean.TRUE/FALSE, an interned String, or an enum constant.  Every later
  * `Integer.valueOf(5)` in the JVM is that same object, so an expression
  * attached to it would be read back by code that never saw the value.  The
  * one rule: a JVM-shared identity never carries a shadow.  A value such an
