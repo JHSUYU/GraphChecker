@@ -4,8 +4,11 @@
 # One workload test method, run as the engine runs it (JUnitMethodRunner, the
 # system's JVM properties, an automatic cluster) under the JaCoCo agent on
 # plain JDK 8.  Writes <out-prefix>.lines ("class<TAB>line" of every line the
-# run executed in the system's own classes) and <out-prefix>.log, and prints
-# one summary line.  <classpath-test> names a test whose report states the
+# run executed in the system's own classes) and <out-prefix>.log, prints one
+# summary line, and exits with the test's own status: a workload that fails
+# here fails its seed too, and fanout.sh's exit=<status> is what select.py
+# reads (375 of HDFS's 2818 workloads failed here and stayed selectable while
+# this script always exited 0).  <classpath-test> names a test whose report states the
 # module's classpath: every test of the module runs on it.  WORKLOAD_JAVA_OPTS
 # adds the case's own workload properties (an HDFS upstream test's automatic
 # cluster).
@@ -59,3 +62,4 @@ rm -f -- "${out}.exec"
 rm -f -- "${out}.node"
 if grep -q "^${system_node_class}"$'\t' "${out}.lines"; then : > "${out}.node"; fi
 echo "$(basename "${out}") exit=${status} lines=$(wc -l < "${out}.lines")"
+exit "${status}"

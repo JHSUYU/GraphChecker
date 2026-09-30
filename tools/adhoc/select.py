@@ -18,8 +18,11 @@ coordinate; their checks rank first.
 
 A timeout's check is never chosen: an automatic cluster lifts every bound
 sized for a native run, so no replay reaches it.  Nor is a workload whose
-coverage never ran the system's node class (system.sh's system_node_class):
-a test that starts no node opens no recording window, so its seed fails.  Given the <tree> the sweep
+test failed under coverage (coverage.sh exits with the test's status, and
+the fanout log states it): its recording fails the same way.  Nor is a
+workload whose coverage never ran the system's node class (system.sh's
+system_node_class): a test that starts no node opens no recording window, so
+its seed fails.  Both are named on stderr.  Given the <tree> the sweep
 annotates, a check whose line no longer holds its `throw new` (the tree moved
 since coverage) is skipped and named on stderr."""
 import collections
@@ -105,16 +108,20 @@ def score(check):
     return value
 
 
-# How long each workload ran under coverage: fanout.sh logs "<job> <host>
-# exit=<status> <seconds>s", job n being line n of the jobs file, whose last
-# word is the workload's output prefix.
+# How long each workload ran under coverage, and which failed: fanout.sh logs
+# "<job> <host> exit=<status> <seconds>s", job n being line n of the jobs
+# file, whose last word is the workload's output prefix.
 jobs = [line.split()[-1] for line in open(os.path.join(sweep, "cov-jobs.txt"))
         if line.strip()]
-seconds = {}
+seconds, failed = {}, {}
 for line in open(os.path.join(sweep, "cov-fanout.log")):
-    match = re.match(r"(\d+) \S+ exit=0 (\d+)s$", line.strip())
+    match = re.match(r"(\d+) \S+ exit=(\d+) (\d+)s$", line.strip())
     if match:
-        seconds[os.path.basename(jobs[int(match.group(1))])] = int(match.group(2))
+        workload = os.path.basename(jobs[int(match.group(1))])
+        if match.group(2) == "0":
+            seconds[workload] = int(match.group(3))
+        else:
+            failed[workload] = match.group(2)
 # A workload is named by its test class's simple name: one two packages share
 # names none.
 classes = collections.defaultdict(set)
@@ -134,6 +141,10 @@ nodeless = sorted({w for check in reached for w in check["workloads"]
                    if not starts_a_node(w)})
 for workload in nodeless:
     print("skipped, starts no node: %s" % workload, file=sys.stderr)
+for workload in sorted({w for check in reached for w in check["workloads"]
+                        if w in failed}):
+    print("skipped, its test failed under coverage (exit=%s): %s"
+          % (failed[workload], workload), file=sys.stderr)
 reached.sort(key=lambda check: (-score(check), len(check["workloads"])))
 per_class = collections.Counter()
 per_workload = collections.Counter()
