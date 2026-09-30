@@ -182,7 +182,9 @@ name its symbols (IMPORT invariant 11).
 A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
 admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
 only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the
-identity it returned, which a read no write row states is pinned to. A referent's version is a
+identity it returned, which a read no write row states is pinned to; an exact read
+(`observedExact`) the VM left unstated returned its version's leaf -- null, a constant or a named
+object, a reference cell's INITIAL null among them (`ReadRow#returned`). A referent's version is a
 write row or the write refuses it by name (`RowPublication#unrowedReferent`): the read-out refused
 the container's log (its fault, e.g. `CONTAINER_BASE_UNSTATED` for a class the VM walks no base of,
 a truncated envelope), or holds the version as no row (`VERSION_NOT_ROWED`) or no longer

@@ -96,6 +96,25 @@ public class ContractTest {
             assertEquals(String.valueOf(each[0]), each[1], spelled);
             assertEquals(each[2], ReadRow.stringContent(spelled));
         }
+        // A node that states nothing: an exact read returned its version's
+        // leaf (a reference cell's INITIAL null), an inexact one or a
+        // symbolic version nothing.
+        Object[][] observed = {
+                {symbol("N"), true, "N"},
+                {symbol("M_L'java/util/HashMap'_12"), true,
+                        "M_L'java/util/HashMap'_12"},
+                {constant, true, "1003"},
+                {symbol("N"), false, null},
+                {symbol("S_J_clock"), true, null}};
+        for (Object[] each : observed) {
+            JsonObject version = new JsonObject();
+            version.add("expression", (JsonObject) each[0]);
+            JsonObject node = new JsonObject();
+            node.addProperty("observedExact", (Boolean) each[1]);
+            node.add("observedVersion", version);
+            assertEquals(java.util.Arrays.toString(each), each[2],
+                    ReadRow.returned(node));
+        }
     }
 
     /** A String the VM cut past its bound: its length, and no content. */
