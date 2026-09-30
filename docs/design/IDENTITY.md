@@ -273,9 +273,10 @@ of the same codec is transparent; and brackets each declared `EXCHANGE` method.
   type meets an exchange's entries this way). It plants a wave's answer, stores a fresh copy of a
   String leaf wherever its holder can hold one, and mints the holes (`mintLeaf`: a String's template
   on its own object, so any read that returns it hands a parse or split the template itself; a
-  primitive or a box at its slot; the VM never replaces an expression: a JVM-wide or already
-  expressed leaf is re-homed by a fresh equal object stored through its holder, else named) and publishes one `AttachRow` per hole, paired by
-  `ENVELOPE`. Entries are never consumed: N readers of one version, and one decode twice, each mint
+  primitive or a box at its slot; the VM never puts an expression on a JVM-wide object and never
+  replaces one: a leaf landing on its object that is JVM-wide or already expressed is re-homed by a
+  fresh equal object stored through its holder, anything else refused stays concrete, named) and
+  publishes one `AttachRow` per hole, paired by `ENVELOPE`. Entries are never consumed: N readers of one version, and one decode twice, each mint
   their own.
 - **Endpoints**: a hole's endpoint site is the port; its event frame is
   `port@<storeKey><keyPath>#<hole>` (`Identity#endpointAt` with a frame site; the store key is

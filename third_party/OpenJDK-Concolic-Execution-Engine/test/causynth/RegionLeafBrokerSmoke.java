@@ -31,6 +31,10 @@ public final class RegionLeafBrokerSmoke {
         String absent;
     }
 
+    private static final class Flags {
+        Boolean on = Boolean.TRUE;
+    }
+
     public static void main(String[] args) throws Exception {
         refusedWithoutASession();
         require(System.openWorkloadSession() > 0L,
@@ -42,6 +46,7 @@ public final class RegionLeafBrokerSmoke {
         aRegionReadsAnEntryMintThroughParseLong(minted);
         aRegionReadsTheOtherMints(minted);
         onlyAValueOperandOpensTheGate(minted);
+        theSymbolizersLeaveJvmWideObjectsClean();
         require(System.closeWorkloadSession() == 0L,
                 "workload session not closed");
         System.out.println("RegionLeafBrokerSmoke OK");
@@ -342,16 +347,26 @@ public final class RegionLeafBrokerSmoke {
         mint(minted.message, FIELD, field(Message.class, "absent"),
                 parts(dec("STR", "HOFF.null", "")), "NULL_LEAF");
 
-        // A mint never replaces an expression: an object that already
-        // carries one (a String a cache shares) is SHADOWED, a field whose
-        // location is versioned is TRACKED; a JVM-wide holder is SHARED.
+        // A mint never replaces an expression: an object or an element slot
+        // that already carries one (a String a cache shares, an element a
+        // mint wrote) is SHADOWED, a field whose location is versioned is
+        // TRACKED; a JVM-wide holder (a box's own field, a box cache's
+        // array) is SHARED.
         mint(minted.pair, VALUE, null, parts(dec("DEC_INT", "HOFF.again",
                 "42"), literal(":"), dec("STR", "HOFF.again2", "abc")),
                 "SHADOWED", "OBJECT_CARRIES_EXPRESSION");
+        mint(minted.elements, ELEMENT, Integer.valueOf(0),
+                parts(dec("DEC_INT", "HOFF.again", "7")), "SHADOWED",
+                "SLOT_CARRIES_EXPRESSION");
         mint(minted.message, FIELD, field(Message.class, "id"),
                 num("HOFF.again"), "TRACKED_CONTAINER", "FIELD_TRACKED");
         mint(Boolean.TRUE, FIELD, field(Boolean.class, "value"),
                 num("HOFF.shared"), "SHARED", "HOLDER_JVM_SHARED");
+        Field cache = Class.forName("java.lang.Integer$IntegerCache")
+                .getDeclaredField("cache");
+        cache.setAccessible(true);
+        mint(cache.get(null), ELEMENT, Integer.valueOf(200),
+                num("HOFF.cache"), "SHARED", "HOLDER_JVM_SHARED");
         return minted;
     }
 
@@ -384,6 +399,43 @@ public final class RegionLeafBrokerSmoke {
         String opened = System.getConcolicBranchEvents();
         require(opened.contains("LEAF.GATE.VALUE"),
                 "a value operand did not open the gate: " + opened);
+        require(System.finishConcolicRegion().contains("\"complete\":true"),
+                "region finish failed");
+    }
+
+    /**
+     * The symbolizers never put an expression on a JVM-wide object: a shared
+     * box a field holds carries its value on the field, which is what the
+     * unboxing reads, and a shared root is refused.
+     */
+    private static void theSymbolizersLeaveJvmWideObjectsClean() {
+        require(System.startConcolicRegion("REGION.leaf-shared",
+                "TASK.leaf-shared") == 0L, "region start rejected");
+        Flags selected = new Flags();
+        Flags walked = new Flags();
+        System.symbolizeField(selected, "on", "FLAG.on");
+        System.symbolize(walked, "FLAG.walk");
+        System.symbolize(Boolean.TRUE, "FLAG.root");
+        System.symbolize("leaf-shared-literal", "FLAG.literal");
+        for (Object shared : new Object[]{Boolean.TRUE,
+                "leaf-shared-literal"}) {
+            String expression = System.getSymbolicExpression(shared);
+            require(!expression.contains("FLAG."),
+                    "a JVM-wide object carries a mint: " + expression);
+        }
+        boolean on = selected.on;
+        System.markConcolicBranch("LEAF.SHARED.SELECTED", 1);
+        if (!on) throw new AssertionError("selected");
+        boolean walkedOn = walked.on;
+        System.markConcolicBranch("LEAF.SHARED.WALKED", 1);
+        if (!walkedOn) throw new AssertionError("walked");
+        String path = System.getConcolicPathConditionRange(0,
+                Integer.MAX_VALUE);
+        require(path.contains("M_Z_field_FLAG.on"), path);
+        require(path.contains("M_Z_field_FLAG.walk")
+                && path.contains("Flags_on"), path);
+        require(System.getSymbolicExpression(Boolean.TRUE)
+                .contains("\"symbolic\":false"), "Boolean.TRUE has a shadow");
         require(System.finishConcolicRegion().contains("\"complete\":true"),
                 "region finish failed");
     }

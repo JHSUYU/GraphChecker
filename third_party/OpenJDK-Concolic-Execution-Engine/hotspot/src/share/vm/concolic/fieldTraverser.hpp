@@ -4,6 +4,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/defs.hpp"
+#include "concolic/sharedFieldVersions.hpp"
 #include "concolic/threadContext.hpp"
 #include "memory/resourceArea.hpp"
 #include "oops/instanceKlass.hpp"
@@ -91,6 +92,12 @@ protected:
   virtual void after_array_helper();
 
   std::string concatCurrentSymbolicName(fieldDescriptor* fd);
+  // Mints `name` on the owner's field as a value of `type` (a primitive's,
+  // or the box's a JVM-wide referent holds): published as the write a later
+  // read of the field observes, and stated equal to the field.
+  void mint_slot(SymInstance *sym_inst, oop obj, fieldDescriptor *fd,
+                 const std::string &name, BasicType type,
+                 const SharedFieldVersions::Cell &cell);
 };
 
 #endif // ENABLE_CONCOLIC

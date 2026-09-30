@@ -192,6 +192,11 @@ public final class RegionStringContainsApiSmoke {
                 "symbolizeField changed interned String identity");
     }
 
+    /**
+     * An interned literal is JVM-wide: symbolize refuses it, since every
+     * alias in the JVM would read the symbol, so neither the local nor its
+     * peer records a condition and the identity is untouched.
+     */
     private static void runInternedLocalSmoke() {
         String local = "interned-local-ready";
         String peerAlias = "interned-local-ready";
@@ -203,10 +208,9 @@ public final class RegionStringContainsApiSmoke {
         System.symbolize(local, "interned_local_text");
 
         String expression = System.getSymbolicExpression(local);
-        require(expression.contains("\"symbolic\":true"), expression);
-        require(expression.contains("interned_local_text"), expression);
+        require(!expression.contains("interned_local_text"), expression);
 
-        boolean contains = local.contains("ready");
+        boolean contains = peerAlias.contains("ready");
         long event = System.markConcolicBranch(
                 "STRING.INTERNED.LOCAL", 1);
         if (!contains) {
@@ -214,16 +218,12 @@ public final class RegionStringContainsApiSmoke {
         }
         require(event > 0L, "interned local marker was rejected");
         String events = System.getConcolicBranchEvents();
-        require(exactCondition(events, "STRING.INTERNED.LOCAL", 1),
-                events);
+        require(noCondition(events, "STRING.INTERNED.LOCAL", 1), events);
 
         String path = System.getConcolicPathConditionRange(
                 0, Integer.MAX_VALUE);
-        String summary = System.finishConcolicRegion();
-        require(path.contains("interned_local_text"), path);
-        require(count(path, "\"_name\":\"contains\"") == 1, path);
-        require(path.contains("Y_L'String'_ready"), path);
-        require(!path.contains("\"_is_not\":true"), path);
+        System.finishConcolicRegion();
+        require(!path.contains("interned_local_text"), path);
         require(local == peerAlias,
                 "symbolize changed interned String identity");
     }

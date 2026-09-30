@@ -684,9 +684,11 @@ public final class System {
      *         slotKind, status, reason?, javaType, holes:[{label, kind, exp,
      *         javaType, concreteValue}], expression, vmExpressionTable}};
      *         {@code status} is {@code OK} or a refusal: {@code SHARED} (the
-     *         leaf object or the slot's holder is JVM-wide: store a fresh
-     *         equal object and mint again), {@code SHADOWED} (the leaf object
-     *         already carries an expression: the same), {@code
+     *         leaf object or the slot's holder is JVM-wide), {@code SHADOWED}
+     *         (what the mint lands on -- the leaf object, or the field or
+     *         element slot -- already carries an expression: a mint never
+     *         replaces one); a leaf landing on its object is minted again on
+     *         a fresh equal object its holder stores, {@code
      *         TRACKED_CONTAINER}, {@code TEMPLATE_MISMATCH},
      *         {@code MALFORMED_TEMPLATE}, {@code NO_SESSION},
      *         {@code SLOT_MISSING}, {@code NULL_LEAF}, {@code UNSUPPORTED}

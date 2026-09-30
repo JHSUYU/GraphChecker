@@ -56,9 +56,10 @@ enum Status {
   // mintLeaf: the object the expression would land on, or the object that
   // holds the leaf's slot, is JVM-wide.
   STATUS_SHARED,
-  // mintLeaf: the object the expression would land on already carries an
-  // expression (a cached String another decode minted): the caller stores a
-  // fresh equal object and mints that.
+  // mintLeaf: what the expression would land on already carries one -- the
+  // leaf object (a cached String another decode minted: the caller stores a
+  // fresh equal object and mints that) or the field or element slot.  A mint
+  // never replaces an expression.
   STATUS_SHADOWED,
   // mintLeaf: the container holding the leaf already has a recorded state
   // (an entry or position), or the element is a versioned location.
@@ -819,24 +820,49 @@ Status build(const Leaf &leaf, const std::vector<Part> &parts,
   return STATUS_OK;
 }
 
-// Whether the object a mint would land on already states an expression of
-// its own: a String another decode (or the program) gave one, a box whose
-// value has one.  A mint never replaces it: an object a cache shares would
-// carry one message's holes for every holder.
+// Whether what a mint would land on already states an expression: for a
+// value, an entry or a position the leaf object (a String another decode or
+// the program gave one, a box whose value has one); for a field or an
+// element the slot (the owner's field shadow or the projection an input
+// owner's unwritten field reads; an element a recorded state names, or any
+// element of an array that is itself an input).
 bool carries_expression(const Leaf &leaf) {
-  SymInstance *instance =
-      GlobalSymbolicSession::heap()->find_sym_inst(leaf.object());
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
+  if (leaf.kind == LeafBroker::SLOT_FIELD) {
+    SymInstance *owner = heap->find_sym_inst(leaf.holder());
+    return owner != NULL
+        && (owner->get(leaf.offset) != NULL
+            || (owner->demand_symbolic_fields_enabled()
+                && !owner->field_written(leaf.offset)));
+  }
+  if (leaf.kind == LeafBroker::SLOT_ELEMENT) {
+    arrayOop array = arrayOop(leaf.holder());
+    SymArr *shadow = heap->find_sym_array(array);
+    if (shadow != NULL && shadow->has_semantic_expression()) return true;
+    Expression *state = heap->find_container_state(array);
+    if (state == NULL) return false;
+    // What slot_shadow would build (the recorded write, or a READ of the
+    // state), decided without building it.
+    Expression *stored = NULL;
+    const ContainerSupport::MemberAnswer answer =
+        ContainerSupport::element_answer(array, shadow, state, leaf.index,
+                                         &stored);
+    return answer == ContainerSupport::MEMBER_RECORDED
+        || answer == ContainerSupport::MEMBER_UNDECIDED;
+  }
+  SymInstance *instance = heap->find_sym_inst(leaf.object());
   if (instance == NULL) return false;
   if (leaf.string()) return instance->get_ref_exp() != NULL;
   return instance->get(java_lang_boxing_object::value_offset_in_bytes(
       leaf.sort)) != NULL;
 }
 
-// Refuses a mint whose container already records the leaf's member, whose
-// element or field is a versioned location, whose holder or landing object
-// is JVM-wide, or whose landing object already carries an expression: a
-// decoded graph is fresh, and anything else would bypass the leaf's own
-// expression or put it where every holder of a shared object reads it.
+// Refuses a mint that would put an expression where it does not belong to
+// this leaf alone, or would replace one: a JVM-wide holder or landing object
+// (SHARED: every holder in the JVM would read it), a versioned location or a
+// container with a recorded state (TRACKED_CONTAINER: the recording, not the
+// leaf, states it), a slot or object that already carries an expression
+// (SHADOWED).  A decoded graph is fresh, so none of these is its own.
 Status fresh(const Leaf &leaf, std::string *reason) {
   SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
   if (leaf.kind != LeafBroker::SLOT_VALUE && jvm_shared_object(leaf.holder())) {
@@ -871,8 +897,10 @@ Status fresh(const Leaf &leaf, std::string *reason) {
     *reason = "JVM_SHARED:" + class_of(leaf.object());
     return STATUS_SHARED;
   }
-  if (leaf.lands_on_object() && carries_expression(leaf)) {
-    *reason = "OBJECT_CARRIES_EXPRESSION:" + class_of(leaf.object());
+  if (carries_expression(leaf)) {
+    *reason = leaf.lands_on_object()
+        ? "OBJECT_CARRIES_EXPRESSION:" + class_of(leaf.object())
+        : std::string("SLOT_CARRIES_EXPRESSION");
     return STATUS_SHADOWED;
   }
   return STATUS_OK;

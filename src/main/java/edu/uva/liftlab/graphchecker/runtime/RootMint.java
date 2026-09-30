@@ -810,9 +810,23 @@ final class RootMint {
             api.symbolize(value, declaring(manualMintLabel(action.symbol,
                     active.activation.occurrenceId,
                     isPrimitiveBox(value))));
-            active.pathRecordingStarted = true;
             JsonElement expression = value == null ? null
                     : ConcolicRegionRuntime.engineExpression(api.expression(value));
+            if (value != null
+                    && !VmExpressionIr.carriesSymbolicValue(expression)) {
+                // The VM mints nothing on a JVM-wide object (an interned
+                // String, Boolean.TRUE, a cached box): every holder in the
+                // JVM would read it.
+                RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        firstNonBlank(action.symbol, action.actionDigest),
+                        "the VM minted no symbol on this declared input (a"
+                                + " JVM-wide " + value.getClass().getName()
+                                + " carries none), so the region reads it"
+                                + " concretely and no row states a value"
+                                + " for it");
+                return;
+            }
+            active.pathRecordingStarted = true;
             active.recordManualSymbolization(action, action.symbol,
                     Collections.<String>emptyList(), "", expression,
                     true, false, "");

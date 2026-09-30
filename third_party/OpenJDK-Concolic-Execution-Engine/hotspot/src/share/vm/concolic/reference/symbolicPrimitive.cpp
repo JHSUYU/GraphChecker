@@ -348,28 +348,43 @@ int static_offset(Klass *klass, const char *name, const char *signature) {
   return fd.offset();
 }
 
-bool cached_box(oop box, BasicType type, jlong value) {
-  BoxCache *cache = cache_of(type);
-  if (cache == NULL) return false;
+// A cache's array of entries, or NULL while its holder class is not loaded
+// (then no entry of it exists yet either).
+objArrayOop cache_entries(BoxCache *cache) {
   if (cache->klass == NULL) {
-    // Not loaded yet means no entry of it exists yet either.
     Symbol *name = SymbolTable::probe(cache->holder,
                                       (int) strlen(cache->holder));
-    if (name == NULL) return false;
+    if (name == NULL) return NULL;
     Thread *thread = Thread::current();
     Klass *klass = SystemDictionary::find(name, Handle(), Handle(), thread);
-    if (klass == NULL || thread->has_pending_exception()) return false;
+    if (klass == NULL || thread->has_pending_exception()) return NULL;
     const int offset = static_offset(klass, "cache", cache->signature);
-    if (offset < 0) return false;
+    if (offset < 0) return NULL;
     cache->offset = offset;
     OrderAccess::release_store_ptr(&cache->klass, klass);
   }
   oop entries = cache->klass->java_mirror()->obj_field(cache->offset);
-  if (entries == NULL || !entries->is_objArray()) return false;
+  return entries == NULL || !entries->is_objArray() ? (objArrayOop) NULL
+                                                    : objArrayOop(entries);
+}
+
+bool cached_box(oop box, BasicType type, jlong value) {
+  BoxCache *cache = cache_of(type);
+  objArrayOop array = cache == NULL ? (objArrayOop) NULL
+                                    : cache_entries(cache);
+  if (array == NULL) return false;
   const jlong index = value - cache->low;
-  objArrayOop array = objArrayOop(entries);
   return index >= 0 && index < array->length()
       && array->obj_at((int) index) == box;
+}
+
+// One of the caches' own arrays: an element minted there is every valueOf's.
+bool cache_array(oop array) {
+  for (size_t index = 0; index < sizeof(BOX_CACHES) / sizeof(BOX_CACHES[0]);
+       ++index) {
+    if (cache_entries(&BOX_CACHES[index]) == array) return true;
+  }
+  return false;
 }
 
 bool shared_boolean(oop box) {
@@ -389,7 +404,8 @@ bool shared_boolean(oop box) {
 } // anonymous namespace
 
 bool jvm_shared_object(oop obj) {
-  if (obj == NULL || obj->is_array()) return false;
+  if (obj == NULL) return false;
+  if (obj->is_array()) return cache_array(obj);
   if (obj->klass() == SystemDictionary::String_klass()) {
     return OopUtils::is_java_string_interned(obj);
   }

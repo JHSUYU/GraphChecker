@@ -26,9 +26,13 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   it survives GC and is reset at every allocation path and on an `Object.clone` copy. Heap shadows
   (`SymInstance`, `SymArr`, container states) live in the session heap keyed by it
   (`VM/concolic/sessionSymbolicHeap.cpp`). Interned strings get a detached shadow, never the shared
-  object's. A JVM-wide object (an interned String, a JDK box-cache entry, `Boolean.TRUE/FALSE`;
-  `symbolicPrimitive.cpp#jvm_shared_object`) never carries an expression: a value it stands for
-  rides the slot that holds it.
+  object's. One rule: a JVM-wide identity (an interned String, a JDK box-cache entry or a cache's
+  own array, `Boolean.TRUE/FALSE`; `symbolicPrimitive.cpp#jvm_shared_object`) never carries an
+  expression. A value it stands for rides the slot that holds it. Every mint asks first: the
+  boxing and container models, `mintLeaf` (§7), and the symbolizers (`VM/concolic/fieldTraverser.cpp`,
+  `threadContext.cpp#symbolize_*`): a JVM-wide root or owner is not minted, a walk does not enter
+  one, and a field holding a shared box is minted on the field as a value of the box's sort (what
+  an unboxing of it reads), a String field on the field as always.
 - **Stack shadows.** One `ThreadContext` per thread (`__thread`, `VM/concolic/concolicMngr.cpp`)
   shadows operand slots and locals; arguments and returns move through `ShadowStack` at every Zero
   frame push and pop (`VM/concolic/shadow/shadowStack.cpp`).
@@ -313,11 +317,14 @@ with a `reason`.
   `concreteValue`. A String leaf becomes `concat(parts)`, whose texts must be its content exactly,
   compared in UTF-16. The expression lands on the slot for a field (a `WRITE` version, as a
   putfield publishes) or an element (an INDEXED `WRITE`, the array named), and on the leaf object for
-  a value, an entry or a position. A mint never replaces an expression. Refusals: `SHARED` (the
-  landing object or the holder of the slot is JVM-wide, so the caller stores a fresh equal object and
-  mints again), `SHADOWED` (the landing object already carries an expression, e.g. a String a codec's
-  cache shares: the same), `TRACKED_CONTAINER` (an entry's or position's container has a state, an
-  element is versioned, or a field is a tracked location), `TEMPLATE_MISMATCH`,
+  a value, an entry or a position. A mint never puts an expression on a JVM-wide object and never
+  replaces one. Refusals: `SHARED` (the landing object or the holder of the slot is JVM-wide),
+  `SHADOWED` (what the mint lands on already carries an expression: the leaf object, e.g. a String a
+  codec's cache shares, or a field slot with a shadow or an input owner's projection, or an element
+  its array's recorded state names or an input array holds) -- for a leaf landing on its object the
+  caller stores a fresh equal object and mints again, a slot's refusal stands --, `TRACKED_CONTAINER`
+  (an entry's or position's container has a state, an element is versioned, or a field is a tracked
+  location), `TEMPLATE_MISMATCH`,
   `MALFORMED_TEMPLATE`, `NO_SESSION`, `SLOT_MISSING`, `NULL_LEAF`, `UNSUPPORTED`. A mint records no
   condition; on a thread inside a region it opens the admission gate. This JDK's
   `Integer/Long/Short/Byte.valueOf` box afresh, so a JVM-wide box is only a `Character` cache entry
@@ -398,6 +405,7 @@ that does not hold.
 | list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
 | stream `write(byte[])`/`readFully`, `ByteArrayOutputStream` | through arraycopy: hooked |
 | a cached box, `Boolean.TRUE/FALSE`, an interned String returned by `valueOf` or a container | hooked: the value rides the result slot; the shared object stays clean |
+| a mint (`symbolize*`, `mintLeaf`) on a JVM-wide object | refused: a shared box a field holds is minted on the field; a shared root, owner or holder is not minted, and the runtime names it (`RootMint#symbolize`, `HandoffMint#mintTemplate`) |
 | `Unsafe` volatile or object gets | the field shadow or nothing; a tracked location's get is not a versioned read |
 | a native method with a symbolic argument (JNI, most JDK natives) | silently lost |
 | `String.toCharArray`/`getBytes`/`getChars`, `new String(bytes)` | silently lost |

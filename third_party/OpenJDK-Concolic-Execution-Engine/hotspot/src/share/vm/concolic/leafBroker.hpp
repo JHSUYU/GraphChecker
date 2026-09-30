@@ -23,11 +23,13 @@
  *     `concat` of literals, `toString` of a decimal or boolean hole symbol,
  *     and String hole symbols.  The expression lands on the slot for a field
  *     or an array element, and on the leaf object for a value, a map entry or
- *     a list position; a JVM-shared object (JVM-wide: an interned String, a
- *     JDK box-cache entry, Boolean.TRUE/FALSE), as the landing object or the
- *     slot's holder, is refused as SHARED, and a landing object that already
- *     carries an expression as SHADOWED, so the caller can store a fresh
- *     equal object and mint again.  A mint never replaces an expression.
+ *     a list position.  A mint never puts an expression on a JVM-shared
+ *     object (jvm_shared_object: an interned String, a JDK box-cache entry or
+ *     cache array, Boolean.TRUE/FALSE), as the landing object or the slot's
+ *     holder (SHARED), and never replaces one: a landing object or a field or
+ *     element slot that already carries an expression is SHADOWED.  For a
+ *     leaf landing on its object the caller can store a fresh equal object
+ *     through the holder and mint again; a slot's refusal stands.
  *
  * Both run on any thread of the open session: one inside a region, or one
  * outside every region while a workload session holds the session

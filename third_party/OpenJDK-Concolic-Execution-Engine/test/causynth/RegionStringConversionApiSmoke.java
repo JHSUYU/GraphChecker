@@ -6,7 +6,8 @@ public final class RegionStringConversionApiSmoke {
     public static void main(String[] args) {
         Integer integer = Integer.valueOf(42);
         Long longValue = Long.valueOf(42L);
-        Boolean booleanValue = Boolean.TRUE;
+        // A fresh box: Boolean.TRUE is JVM-wide, and symbolize refuses it.
+        Boolean booleanValue = new Boolean(true);
 
         System.startConcolicRegion("REGION.string-conversion",
                 "ACT.string-conversion");

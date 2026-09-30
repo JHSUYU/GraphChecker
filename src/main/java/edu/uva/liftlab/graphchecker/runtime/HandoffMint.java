@@ -26,10 +26,13 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -560,6 +563,10 @@ final class HandoffMint {
         return leaf.store(fresh) ? new Placed(moved, root) : null;
     }
 
+    /** The VM's slot kinds whose mint lands on the leaf object. */
+    private static final Set<String> LANDS_ON_OBJECT = new HashSet<>(
+            Arrays.asList("VALUE", "ENTRY", "POSITION"));
+
     /** One leaf's mint: its holes, and the root after a re-home. */
     private static final class Minted {
         final JsonArray holes;
@@ -572,12 +579,15 @@ final class HandoffMint {
     }
 
     /**
-     * Mints a template on one leaf.  A JVM-wide leaf object ({@code SHARED})
-     * or one that already carries an expression ({@code SHADOWED}) is
-     * re-homed: a fresh equal object is stored through its holder's API and
-     * minted instead; one that cannot be ({@code LEAF_SHARED}: an enum
-     * constant, a view's rendering, an immutable holder) stays concrete,
-     * named.
+     * Mints a template on one leaf.  A leaf whose mint lands on its object (a
+     * String, or a box held by an entry, a position or no modeled slot) that
+     * is JVM-wide ({@code SHARED}) or already carries an expression
+     * ({@code SHADOWED}) is re-homed: a fresh equal object is stored through
+     * its holder's API and minted instead; one that cannot be
+     * ({@code LEAF_SHARED}: a view's rendering, an immutable holder) stays
+     * concrete, named.  A field or element slot's refusal (a JVM-wide
+     * holder, a slot that carries an expression) stands: nothing is written
+     * into a shared holder, and a fresh object would not clear the slot.
      */
     private static Minted mintTemplate(CodecWalker.Leaf leaf, Object root,
                                        String template,
@@ -586,7 +596,9 @@ final class HandoffMint {
         JsonObject answer = mintAt(leaf, template);
         String status = answer == null ? "UNANSWERED"
                 : optionalString(answer, "status");
-        if ("SHARED".equals(status) || "SHADOWED".equals(status)) {
+        if (("SHARED".equals(status) || "SHADOWED".equals(status))
+                && LANDS_ON_OBJECT.contains(optionalString(answer,
+                "slotKind"))) {
             Object fresh = freshCopy(leaf.value);
             Placed placed = fresh == null ? null : place(leaf, root, fresh);
             if (placed == null) {
