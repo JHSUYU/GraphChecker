@@ -504,8 +504,19 @@ public final class SmtLowering {
         if (value == null) {
             return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
         }
-        return new Lowered(value.text, value.sort.smt, lowered.lowered()
-                ? "" : lowered.refusals().iterator().next());
+        return new Lowered(value.text, value.sort.smt, lowered);
+    }
+
+    /**
+     * One published term (a decision's or phi) as {@link #statedTerm}
+     * lowers it, with what it reaches ({@link Lowered#reach}): the
+     * closure's question about a term.
+     */
+    public Lowered lowerTerm(String term, String origin) {
+        Attempt<String> lowered = attempting(() -> statedTerm(term, origin));
+        String text = commit(lowered);
+        return text.isEmpty() ? Lowered.refused("UNSTATED_TERM:" + origin)
+                : new Lowered(text, "", lowered);
     }
 
     /**
@@ -589,33 +600,68 @@ public final class SmtLowering {
     }
 
     /**
-     * One lowered expression: its text, its sort, its symbols, and why it
-     * is refused.  A refused construct inside it is a fresh name, so the
+     * One lowered expression: its text, its sort, what it reaches, and why
+     * it is refused.  A refused construct inside it is a fresh name, so the
      * text still names what the rest reaches (the closure's question); only
-     * an unrefused one may stand in a query ({@link #ok}).
+     * an unrefused one may stand in a query ({@link #ok}).  A read bound by
+     * its mint or its pin after its join refused is a constant in the text;
+     * what that join did lower is still what the rest reaches
+     * ({@link #reach}), and a query standing on that constant is refused as
+     * the join would have refused it.
      */
     public static final class Lowered {
         private final String text;
         private final String sort;
         private final String refusal;
+        /** The texts of the joins a mint or a pin stood in for. */
+        private final List<String> dropped;
 
-        private Lowered(String text, String sort, String refusal) {
+        private Lowered(String text, String sort, Attempt<?> lowered) {
             this.text = text;
             this.sort = sort;
-            this.refusal = refusal;
+            this.refusal = lowered.lowered() ? ""
+                    : lowered.refusals().iterator().next();
+            this.dropped = lowered.raised == null
+                    ? Collections.<String>emptyList()
+                    : new ArrayList<String>(lowered.raised.dropped);
+        }
+
+        private Lowered(String reason) {
+            this.text = "";
+            this.sort = "";
+            this.refusal = reason;
+            this.dropped = Collections.<String>emptyList();
         }
 
         private static Lowered refused(String reason) {
-            return new Lowered("", "", reason);
+            return new Lowered(reason);
         }
 
+        /**
+         * Whether it may stand in a query: nothing refused, and no mint or
+         * pin standing in for a join that refused (a flip over that
+         * constant is one its join would have dropped).
+         */
         public boolean ok() {
-            return refusal.isEmpty() && !text.isEmpty();
+            return refusal.isEmpty() && !text.isEmpty() && dropped.isEmpty();
         }
 
         /** The lowered text, a refused construct as its fresh name. */
         public String text() {
             return text;
+        }
+
+        /**
+         * What the rest reaches through it: its text, and the text of each
+         * join a mint or a pin stood in for, whose parts that lowered (the
+         * writer's reads, the container states they observed) are still
+         * what the value rests on ({@code ClosurePlanner}).
+         */
+        public List<String> reach() {
+            List<String> reach = new ArrayList<String>();
+            reach.add(text);
+            reach.addAll(dropped);
+            return reach;
         }
 
         /**
@@ -628,7 +674,9 @@ public final class SmtLowering {
 
         @Override
         public String toString() {
-            return ok() ? text : "refused:" + refusal;
+            return ok() ? text : "refused:" + (refusal.isEmpty()
+                    ? "joins dropped for a mint or a pin: " + dropped
+                    : refusal);
         }
     }
 
@@ -712,6 +760,9 @@ public final class SmtLowering {
     private final class Raised {
         private final Set<String> refusals = new LinkedHashSet<String>();
         private final Set<String> conditions = new LinkedHashSet<String>();
+        /** The texts of joins a mint or a pin stood in for ({@link
+         *  Lowered#reach}). */
+        private final Set<String> dropped = new LinkedHashSet<String>();
         private final Set<String> cuts = new LinkedHashSet<String>();
         /** name -> "<held> and <new>". */
         private final Map<String, String> sortConflicts =
@@ -738,6 +789,7 @@ public final class SmtLowering {
         /** Everything another frame raised, as this frame's own. */
         private void all(Raised other) {
             for (String subject : other.refusals) refusal(subject);
+            if (this != root) dropped.addAll(other.dropped);
             for (String predicate : other.conditions) condition(predicate);
             gaps(other);
         }
@@ -1276,10 +1328,16 @@ public final class SmtLowering {
                                 version) + ", so what the read it made "
                                 + "returned has no answer");
             }
-            if (!minted.isEmpty()) return binder.minted(minted);
+            if (!minted.isEmpty()) {
+                if (joined != null) top().dropped.add(joined.value().text);
+                return binder.minted(minted);
+            }
         }
         T pinned = binder.pinned();
-        if (pinned != null) return pinned;
+        if (pinned != null) {
+            if (joined != null) top().dropped.add(joined.value().text);
+            return pinned;
+        }
         return binder.refused(joined == null ? null : commit(joined),
                 "Read:" + key + "@" + version, (joined == null
                         ? "no write of this location at this version in "

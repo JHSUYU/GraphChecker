@@ -3798,10 +3798,15 @@ public class ComposerTest {
             session.activation(reader);
             session.activation(first);
             session.serial("3", "0", "8");
-            // Refused over nothing that moves (an undeclared leaf), with
-            // what the run read of it: a side condition of the join.
-            JsonObject refused = binary("+", symbol(NO_ROW, "I"),
-                    integer("I", 1L));
+            // Refused over nothing that moves (an undeclared leaf here, a
+            // call no lowering models in EXPLORE's too), with what the run
+            // read of it: a side condition of the join.
+            JsonObject unmodeled = new JsonObject();
+            unmodeled.addProperty("_type", "MethodExpression");
+            unmodeled.addProperty("_name", "org/apache/Foo bar");
+            unmodeled.add("_param_list", new JsonArray());
+            unmodeled.add("_res_exp", integer("I", 7L));
+            JsonObject refused = binary("+", symbol(NO_ROW, "I"), unmodeled);
             refused.add(VmRows.RECORDED_READING, integer("I", 4242L));
             JsonObject parsed = new JsonObject();
             parsed.addProperty("_type", "MethodExpression");
@@ -3838,9 +3843,11 @@ public class ComposerTest {
                         "H2a".equals(name) ? integer("I", 1001L)
                                 : binary("-", symbol(NO_ROW, "I"),
                                 integer("I", 1L)));
-                // And what it returned, a literal the family cannot move.
+            }
+            if (!"unstated".equals(name) && !"H1".equals(name)) {
+                // What it returned: a literal no family moves.
                 node.add("concreteValue", integer("I",
-                        "H2a".equals(name) ? 1001L : 2L));
+                        "H2b".equals(name) ? 2L : 1001L));
             }
             session.expression("EXPR.00000000000000b3", binary(
                     "H1".equals(name) ? "!=" : "<", node,
@@ -3869,6 +3876,20 @@ public class ComposerTest {
                             composition.body().contains("4242"));
                     assertFalse(name + ": and its cut is no gap (L3)",
                             named(gaps, "UndeclaredFreeSymbol:" + NO_ROW));
+                    // EXPLORE: the node's value stands in for the join, no
+                    // flip is built over it, and the closure still reaches
+                    // what the join lowered (M1).
+                    SmtLowering.Lowered explored = Corpus.read(iteration,
+                            null).lowering("s0").lower(
+                            "EXPR.00000000000000b3");
+                    assertFalse(name + ": no flip over the pin: " + explored,
+                            explored.ok());
+                    assertTrue(name + ": the join is still reached: "
+                                    + explored.reach(),
+                            explored.reach().size() == 2
+                                    && explored.reach().get(0).contains(
+                                    "1001") && explored.reach().get(1)
+                                    .contains(NO_ROW));
                     break;
                 case "unstated":
                     assertEquals(name + ": nothing binds the read", 0,

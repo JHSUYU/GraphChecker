@@ -141,6 +141,23 @@ final class FlipQuery {
         return lowered.isEmpty() ? term : lowered;
     }
 
+    /** What one published term reaches, lowered by the ONE lowering: its
+     *  text, and every join a mint or a pin stood in for
+     *  ({@link SmtLowering.Lowered#reach}), so the closure keeps the writers
+     *  behind a read whose join refused. */
+    static List<String> reach(Corpus corpus, String sessionId, String term) {
+        if (term == null || term.isEmpty()) {
+            return Collections.<String>emptyList();
+        }
+        SmtLowering lowering = corpus.lowering(sessionId);
+        if (lowering == null) return Collections.singletonList(term);
+        List<String> reach = lowering.lowerTerm(term, "flip:" + sessionId)
+                .reach();
+        // A refusal ("") keeps the raw term, as statedTerm does.
+        if (reach.get(0).isEmpty()) reach.set(0, term);
+        return reach;
+    }
+
     static Built build(Corpus corpus, Task task, Corpus.RecordedPath path,
                        int flipIndex) {
         return new Builder(corpus, task, path).build(flipIndex);

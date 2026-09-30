@@ -220,7 +220,9 @@ worker's focus row as that session's world, the wave verdicts, the recorded sche
 Demand starts at the anchor: its flip sites are the target sites' guards
 (`StaticScopeMap.Site.guards`) when some run reached the anchor, else the sites of the target's path
 chain (`pathSites`). The demanded symbols of an occurrence (with its state-connected factor) are those
-its demanded values reach (`SmtLowering.reachedSymbols` over the lowered terms): the anchor's `phiTerm`,
+its demanded values reach (`SmtLowering.reachedSymbols` over the lowered terms and, where a read's
+refused join gave way to its mint or its value, over what that join lowered: `Lowered.reach`; such a
+lowering is no `Lowered.ok` value a flip query stands on): the anchor's `phiTerm`,
 its decisions at its flip sites, and the values it contributed (the exports a demanded attach paired
 with, the write a demanded read could observe), closed over the reads those name and the writes they
 could observe. Each demanded boundary input grows the closure:

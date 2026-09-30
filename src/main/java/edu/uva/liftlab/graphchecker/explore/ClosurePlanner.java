@@ -426,8 +426,8 @@ public final class ClosurePlanner {
                     if (!demand.flipSites.contains(decision.siteId())) {
                         continue;
                     }
-                    reaches(corpus, path.sessionId, FlipQuery.statedTerm(
-                            corpus, path.sessionId, decision.term()), named);
+                    reaches(corpus, path.sessionId, FlipQuery.reach(corpus,
+                            path.sessionId, decision.term()), named);
                     readsUnder(corpus, path.sessionId, decision.term(),
                             reads, named);
                 }
@@ -435,7 +435,7 @@ public final class ClosurePlanner {
             if (demand.anchor) {
                 for (TargetRow target : corpus.targetsOn(member)) {
                     reaches(corpus, target.sessionId(),
-                            FlipQuery.statedTerm(corpus, target.sessionId(),
+                            FlipQuery.reach(corpus, target.sessionId(),
                                     target.phiTerm()), named);
                     readsUnder(corpus, target.sessionId(), target.phiTerm(),
                             reads, named);
@@ -449,7 +449,7 @@ public final class ClosurePlanner {
             SmtLowering lowering = corpus.lowering(sessionId);
             if (lowering == null) continue;
             reaches(corpus, sessionId, lowering.lower(
-                    contributed.substring(split + 1)).text(), named);
+                    contributed.substring(split + 1)).reach(), named);
         }
         Set<String> settled = new LinkedHashSet<String>();
         boolean grew = true;
@@ -466,7 +466,7 @@ public final class ClosurePlanner {
                             row.endpoint().occurrence())) {
                         grew |= reaches(corpus, write.sessionId(),
                                 corpus.lowering(write.sessionId())
-                                        .lower(write.expressionRef()).text(),
+                                        .lower(write.expressionRef()).reach(),
                                 named);
                     }
                 }
@@ -499,18 +499,21 @@ public final class ClosurePlanner {
     /**
      * The recorded symbols one lowered term REACHES (not merely spells), into
      * {@code named}: {@link SmtLowering#reachedSymbols}, as the flip query
-     * uses. Trap: {@code SmtLowering.symbols} sees only a {@code
-     * container_dag__} name that matches no row. Includes the state behind a
-     * container name (the v_C rule, PIPELINE §7.5).
+     * uses, over its text and every join a mint or a pin stood in for
+     * ({@link SmtLowering.Lowered#reach}). Trap: {@code SmtLowering.symbols}
+     * sees only a {@code container_dag__} name that matches no row. Includes
+     * the state behind a container name (the v_C rule, PIPELINE §7.5).
      *
      * @return whether the set grew
      */
     private static boolean reaches(Corpus corpus, String sessionId,
-                                   String text, Set<String> named) {
+                                   List<String> texts, Set<String> named) {
         SmtLowering lowering = corpus.lowering(sessionId);
         if (lowering == null) return false;
         Set<String> reached = new LinkedHashSet<String>();
-        lowering.reachedSymbols(text, reached, reached);
+        for (String text : texts) {
+            lowering.reachedSymbols(text, reached, reached);
+        }
         return named.addAll(reached);
     }
 
