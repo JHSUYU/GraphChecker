@@ -160,10 +160,17 @@ public final class SessionExpressionLog {
         return found;
     }
 
-    /** The table one log states; a missing file is the empty table. */
+    /**
+     * The table one log states.  A session opens its log with the header
+     * ({@code SessionPublisher}), so a missing or headless file was never
+     * published, and is refused: read as the empty table, every row's ref
+     * came out UNSTATED_VALUE and hid the missing file (hdfs-17960's
+     * offline compose).
+     */
     public static ExpressionTable read(Path file) throws IOException {
         if (file == null || !Files.isRegularFile(file)) {
-            return ExpressionTable.empty();
+            throw new IllegalArgumentException(
+                    "the session published no expression log: no " + file);
         }
         Map<Long, JsonObject> nodes = new LinkedHashMap<Long, JsonObject>();
         Map<String, JsonObject> refs = new LinkedHashMap<String, JsonObject>();
@@ -195,6 +202,11 @@ public final class SessionExpressionLog {
                     nodes.put(number, resolved(nodes,
                             expression.getAsJsonObject()));
                 }
+            }
+            if (!headed) {
+                throw new IllegalArgumentException(
+                        "the session expression log " + file
+                                + " states no header");
             }
         }
         return ExpressionTable.of(refs);

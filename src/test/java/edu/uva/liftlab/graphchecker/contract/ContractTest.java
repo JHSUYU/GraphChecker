@@ -24,6 +24,7 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * The contract, checked where two modules would otherwise disagree:
@@ -134,6 +135,25 @@ public class ContractTest {
         constant.addProperty("_exp", "C_I_2");
         assertNotEquals(new ExpressionRefs().ref(constant),
                 new ExpressionRefs().ref(reordered));
+
+        // A log the session never published is refused, never the empty
+        // table every ref then misses (hdfs-17960's offline compose read
+        // UNSTATED_VALUE and hid the missing file): IMPORT and COMPOSE
+        // refuse the session SESSION_INCOMPLETE.
+        Files.write(file, new byte[0]);
+        SessionDir bare = SessionDir.of(iteration.getRoot().toPath(),
+                "s-no-log").create();
+        for (Path unpublished : new Path[] {file, bare.expressions()}) {
+            try {
+                RowCodec.readExpressions(unpublished);
+                fail("read " + unpublished + " as a table");
+            } catch (IllegalArgumentException refused) {
+                assertTrue(refused.getMessage(), refused.getMessage()
+                        .contains(unpublished.toString()));
+            }
+        }
+        assertTrue(SessionReader.read(bare).incomplete()
+                .startsWith(SessionDir.EXPRESSIONS + " could not be read"));
     }
 
     /**

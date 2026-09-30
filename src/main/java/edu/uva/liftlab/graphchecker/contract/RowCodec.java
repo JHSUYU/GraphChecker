@@ -492,7 +492,7 @@ public final class RowCodec {
         writeJsonl(file, lines);
     }
 
-    /** The session's expressions; a missing file is the empty table. */
+    /** The session's expressions; a missing file is refused, never empty. */
     public static ExpressionTable readExpressions(Path file)
             throws IOException {
         return SessionExpressionLog.read(file);
