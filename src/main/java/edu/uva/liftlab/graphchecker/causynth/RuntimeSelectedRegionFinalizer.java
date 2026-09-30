@@ -106,8 +106,8 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String FOLDED_ENTRY_CALLERS = "foldedEntryCallers";
     /**
-     * Activation member: this occurrence is the failure the case is about
-     * (README TARGET-1).  Stated on the row because under the fold rule the
+     * Activation member: this occurrence is the failure the case is about.
+     * Stated on the row because under the fold rule the
      * static {@code selection} names the region the failure is in, not the
      * occurrence that ran it.
      */
@@ -405,9 +405,9 @@ public final class RuntimeSelectedRegionFinalizer {
      *
      * <p>READS, never re-derives: the address is {@code Identity.occurrence}'s,
      * computed once at the recording and identically at replay; an offline
-     * derivation would be a second identity (REPORT-M2 §5).  Activations
-     * IDENTITY-V3 cannot separate may share one address; one occurrence is
-     * one plan row (README REGION-1), so only the first is published, and
+     * derivation would be a second identity (IDENTITY §1).  Activations
+     * IDENTITY §1 cannot separate may share one address; one occurrence is
+     * one plan row (IDENTITY §5), so only the first is published, and
      * renumbering would reintroduce an ordinal.  The collision is classed
      * after the closure walk ({@link #stateSharedAddressClasses}).</p>
      *
@@ -450,7 +450,8 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * States the class of every shared occurrence address (CONTRACT-SPEC SS2).
+     * States the class of every shared occurrence address (IDENTITY §5,
+     * CONTRACT-SPEC §2.5).
      * BLOCKING when the region is in the closure this plan publishes ({@code
      * program.regions} after {@link #applyClosure}): a task addresses the
      * occurrence.  DIAGNOSTIC otherwise: no plan row, task or session row
@@ -473,7 +474,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     member ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
                     text(shared.get("occurrenceId")),
                     count + " activations of this region share one address: "
-                            + "nothing IDENTITY-V3 names distinguishes them "
+                            + "nothing the address names distinguishes them "
                             + "(same node, causal context and execution "
                             + "index); recorded root calls " + rootCalls
                             + "; one occurrence is one plan row, so only the "
@@ -656,7 +657,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * only: the DECLARATIONS (symbolic inputs, communication mappings, the
      * annotated target) and the static scope map, which names the regions
      * storing a location, never the writer ({@link
-     * StaticScopeMap#writerRegionsByCell}, CLOSURE-V2 SS4).  Nothing is
+     * StaticScopeMap#writerRegionsByCell}, SYMBOL-SCOPE §3).  Nothing is
      * discovered from recorded field accesses: an undeclared read mints no
      * symbol ({@code ConcolicScheduler.SymbolicInputSelection}).
      *
@@ -697,8 +698,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     + "exception-context activation: " + source);
         }
         if (targets.isEmpty() && !policylessRegions.isEmpty()) {
-            // README TARGET-1: target existence binds to a selected concrete
-            // branch event.
+            // Target existence binds to a selected concrete branch event.
             throw new IOException("FATAL_TARGET_POLICY_ABSENT: "
                     + "exception-context region declares no failure target "
                     + "site to bind the target to: " + policylessRegions
@@ -1100,7 +1100,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * and which cells decide them, over its own text and that of every region
      * folded into its occurrences (a folded region has no row of its own).
      * No policy and no guard set: every decision with a symbolic operand is
-     * recorded (LEAN section 1), and guard sets are {@code
+     * recorded, and guard sets are {@code
      * static_scope_map}'s ({@link SiteControlDependence}).
      */
     private static List<Map<String, Object>> branches(
@@ -1309,8 +1309,8 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         /**
-         * Whether this activation observed an explicit failure-target branch
-         * (README TARGET-1): a region with no {@code failureTarget} site has
+         * Whether this activation observed an explicit failure-target branch:
+         * a region with no {@code failureTarget} site has
          * nothing to attest, so it never yields a freely-true target.
          */
         private boolean observedExplicitFatalTarget(

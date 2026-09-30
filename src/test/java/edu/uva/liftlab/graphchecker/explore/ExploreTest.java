@@ -199,7 +199,7 @@ public class ExploreTest {
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         seed.flush();
         // What the wave may flip in the anchor is the guard set of the
-        // annotated target, and nothing else (CLOSURE-V2 SS1/SS3).
+        // annotated target, and nothing else (PIPELINE §7.2).
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8", "Guard#u19"));
 
@@ -1120,7 +1120,7 @@ public class ExploreTest {
     }
 
     /**
-     * GROWTH IS THE CLOSURE'S (DESIGN4 SS3.3b, INTERACTION-ID SS8 case 2). A
+     * GROWTH IS THE CLOSURE'S (PIPELINE §7.2, §7.8). A
      * demanded occurrence no session CAPTURED -- the hooks ran it and its
      * runtime identity is in a session's rows, but no planned task admitted
      * it -- is grown from the admitted focused session that names it; named
@@ -1379,9 +1379,9 @@ public class ExploreTest {
         rotated.answered(ObligationResult.of("OBL.s-rot", Verdict.ADMITTED,
                 "s-rot", "the focused prefix reproduced"));
         // The consumer received it in that replay too, running concretely:
-        // R-I2 admits an arm only from a run whose OWN pairing named this
-        // consumer, which is what makes a family the deliveries of one
-        // interaction rather than of one port.
+        // an arm comes only from a run whose OWN pairing named this
+        // consumer (IDENTITY §4), which is what makes a family the
+        // deliveries of one interaction rather than of one port.
         rotated.activation(target, false);
         rotated.root(producer, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
                 "119995", null, null, false);
@@ -1416,7 +1416,7 @@ public class ExploreTest {
         // the consumer's companion.  What it may flip is the guard set of the
         // EXPORT it is in the closure for: the rotation decision that decides
         // the delivery, and not the decision it took AFTER putting the value
-        // on the wire, which no delivery can depend on (CLOSURE-V2 SS3).
+        // on the wire, which no delivery can depend on (PIPELINE §7.2).
         List<String> sites = new ArrayList<String>();
         for (Obligation obligation : proposed) sites.add(obligation.siteId());
         assertTrue("the export's own guard is an obligation: " + sites,
@@ -1737,6 +1737,61 @@ public class ExploreTest {
 
     // ---- (5) the closure holds the writer of every version read -------
 
+    /**
+     * A read of a reference rests on the container its store delivered: the
+     * closure demands the writer of each state of it the read could have
+     * seen through that store ({@code Corpus#referentStates}, the rule
+     * COMPOSE answers a query by) -- here a mutation after the store, live
+     * at the read, by an occurrence no row of the anchor joins -- and a
+     * store that states no container demands none.
+     */
+    @Test
+    public void aReferenceReadDemandsTheStateItsStoreDelivered()
+            throws Exception {
+        OccurrenceAddress builder = occurrence("hdfs-case/dn0",
+                "REGION.build", CausalContext.of(Role.of("BUILDER"), "", 1),
+                "o.a.h.Builder#run#2");
+        OccurrenceAddress cleaner = occurrence("hdfs-case/dn0",
+                "REGION.clean", CausalContext.of(Role.of("CLEANER"), "", 1),
+                "o.a.h.Cleaner#run#2");
+        LocationId reference = LocationId.of(LocationKind.INSTANCE, "8",
+                "16");
+        LocationId map = LocationId.of(LocationKind.MAP, "20", "-3");
+        for (boolean referent : new boolean[]{true, false}) {
+            Path iteration = tree.newFolder("referent-" + referent).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            for (OccurrenceAddress at : Arrays.asList(TARGET, WRITER,
+                    builder, cleaner)) {
+                seed.activation(at, false);
+            }
+            seed.symbolic("e.put", "M_PUT");
+            seed.symbolic("e.map", "M_MAP");
+            seed.symbolic("e.removed", "M_REMOVED");
+            seed.write(at(builder, "Map#put#1:WRITE", "Builder#build#1"),
+                    map, 1L, "e.put");
+            seed.writes.add(WriteRow.of("s-seed", ++seed.seq, at(WRITER,
+                    "Policy#update#2:WRITE", "Policy#update#2"), reference,
+                    2L, "e.map", "L", referent ? WriteRow.Referent.of(map,
+                            1L) : null, null));
+            seed.write(at(cleaner, "Map#remove#3:WRITE", "Cleaner#clean#3"),
+                    map, 3L, "e.removed");
+            seed.read(at(TARGET, "Handler#get#4:READ", "Handler#get#4"),
+                    reference, 2L, "M_KC", "0");
+            seed.target(TARGET, "Handler#get#5", "(= M_KC 0)");
+            seed.flush();
+
+            ClosurePlanner.Plan plan = ClosurePlanner.plan(
+                    Corpus.read(iteration, null), TARGET,
+                    ClosurePlanner.DEFAULT_MAX_TASKS, StaticScopeMap.empty());
+            List<String> focused = new ArrayList<String>();
+            for (Task task : plan.tasks) focused.add(task.focused().render());
+            assertTrue("the store's writer: " + focused,
+                    focused.contains(WRITER.render()));
+            assertEquals("the state the read saw through the store: "
+                    + focused, referent, focused.contains(cleaner.render()));
+        }
+    }
+
     @Test
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {
@@ -1813,8 +1868,8 @@ public class ExploreTest {
         // N1/N2: A STATIC CANDIDATE LIVES IN ONE PROCESS.  A carrier is a
         // CLASS field -- BlockTokenSecretManager.allKeys -- so its write
         // sites exist in every JVM that loaded the class; the location the
-        // anchor read is a CONCRETE object in the reader's own heap (SS4),
-        // and no occurrence in another JVM can have written it.  The same
+        // anchor read is a CONCRETE object in the reader's own heap
+        // (IDENTITY §4), and no other JVM can have written it.  The same
         // for a port: the message this attach records was put on the wire by
         // the PAIRED producer's process.  Admitting the rest gave hdfs-11741
         // campaign #4 (2026-09-20) a wave 1 of 246 obligations, 124 of them
@@ -1869,15 +1924,15 @@ public class ExploreTest {
         spread.flush();
         StaticScopeMap spreadMap = StaticScopeMap.read(scopeMap(perNode,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
                         "BlockTokenSecretManager#u12",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
                         "KeyManager#u4", "KeyManager#refresh",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
+                        "<example.Manager: example.Keys allKeys>", "")),
                 scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
                         "PBHelper#convert#9", "PBHelper#convert", "", "",
                         "XCH.resp.block-key-id")));
@@ -2160,7 +2215,7 @@ public class ExploreTest {
         assertTrue("the pairing is still REPORTED, naming why nothing was "
                 + "done about it", reported);
 
-        // R-I7 against R-I6: a STATE reader that joined ANOTHER writer in
+        // PIPELINE §7.1 step 4: a STATE reader that joined ANOTHER writer in
         // another session is not a replacement, it is that family's second
         // arm.  A flip is expected to change which writer delivers -- that
         // is what the flip is for -- so reading it as a contradiction forked
@@ -2213,7 +2268,7 @@ public class ExploreTest {
                             && gap.cls() == GapClass.BLOCKING);
         }
 
-        // R-I6: two occurrences of ONE code point that a replay ran BOTH are
+        // Two occurrences of ONE code point that a replay ran BOTH are
         // two requests -- growth.  A REPLACEMENT is the closure's member
         // ABSENT from a replay that ran the same code point under another
         // context.
@@ -2385,7 +2440,7 @@ public class ExploreTest {
 
         theClosureHasOneRoot(iteration, writer);
 
-        // CLOSURE-V2 SS2: the closure grows by the STATIC write sites of the
+        // PIPELINE §7.2: the closure grows by the STATIC write sites of the
         // locations it demands, and not only by the writers some row paired.
         // On 17960 the seed runs the marker's true arm, where deleteSnapshot
         // defers and the counter decrement never executes, so NO row of any
@@ -2483,7 +2538,7 @@ public class ExploreTest {
         assertFalse("an occurrence no demanded value reaches is not a task: "
                 + whyTask, whyTask.containsKey(undeclared.render()));
         // A candidate region no session ran is NAMED and is not a task:
-        // there is no run to focus (INTERACTION-ID SS8 case 2).
+        // there is no run to focus (PIPELINE §7.2).
         boolean grow = false;
         for (GapRow gap : RowCodec.readAll(asideWave.resolve("gaps.jsonl"),
                 RowCodec::readGap)) {
@@ -2518,7 +2573,7 @@ public class ExploreTest {
                     ClosurePlanner.taskId(undeclared).equals(flip.taskId()));
         }
 
-        // CLOSURE-V2, the v_C rule: the same growth where the demanded read
+        // PIPELINE §7.2: the same growth where the demanded read
         // is a CONTAINER.  The join INLINES the version a read observed, and
         // a container version is lowered once and NAMED, so an anchor guard
         // `allKeys.get(id) == null` stands in the text as one
@@ -2578,18 +2633,18 @@ public class ExploreTest {
         StaticScopeMap ofAllKeys = StaticScopeMap.read(scopeMap(inlined,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120",
                         "BlockTokenSecretManager#u8"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
                         "BlockTokenSecretManager#u27",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Manager: java.util.Map allKeys>",
                         "<example.Manager: java.util.Map allKeys>", "",
-                        "BlockTokenSecretManager#u21"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
+                        "BlockTokenSecretManager#u21")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
                         "BlockTokenSecretManager#u16",
                         "BlockTokenSecretManager#removeExpiredKeys",
                         "<example.Manager: java.util.Map allKeys>",
                         "<example.Manager: java.util.Map allKeys>", "",
-                        "BlockTokenSecretManager#u15")));
+                        "BlockTokenSecretManager#u15"))));
         Corpus vC = Corpus.read(inlined, null);
         SmtLowering lowering = vC.lowering("s-seed");
         String mapGuard = lowering.statedTerm("EXPR.0000000000000005",
@@ -2618,8 +2673,8 @@ public class ExploreTest {
         // rests on travels with them.  The map read lowered to an opaque
         // identity, and the recording states that identity was not null --
         // the execution read fields off the object.  Unstated, a flip of
-        // `x == null` is satisfied by freeing that boundary (CLOSURE-V2
-        // SS3), which is how 18 of hdfs-11741's 36 wave-0 obligations came
+        // `x == null` is satisfied by freeing that boundary (PIPELINE §7.5),
+        // which is how 18 of hdfs-11741's 36 wave-0 obligations came
         // back SAT with no variable declared at all.
         String nullTest = lowering.statedTerm("EXPR.0000000000000006",
                 "test");
@@ -2814,7 +2869,7 @@ public class ExploreTest {
 
     /**
      * Folded into the closure case: a wave's roots are the anchor and nothing
-     * else (HANDOVER SS1.5).  The seed replay's task plan was a second source
+     * else (PIPELINE §7.1).  The seed replay's task plan was a second source
      * of them, and a plan row is the PLAN side's own address for a region: in
      * the first real 17960 wave 43 of its 45 rows named an address no row of
      * the recording published, each became a closure root, and the wave died
@@ -3384,7 +3439,7 @@ public class ExploreTest {
     }
 
     /**
-     * The epoch's static scope map, as PLAN publishes it (CLOSURE-V2 SS4).
+     * The epoch's static scope map, as PLAN publishes it (SYMBOL-SCOPE §3).
      *
      * <p>Written as the artifact's own text, so what these cases exercise is
      * the published shape and not a builder's idea of it.</p>
@@ -3418,6 +3473,12 @@ public class ExploreTest {
         OccurrenceAddress unrelated = occurrence("hdfs-case/dn0",
                 "REGION.elsewhere", CausalContext.of(Role.of("DATA_XCEIVER"),
                         "", 3), "o.a.h.h.s.d.DataXceiver#run#77");
+        // Where a port event ran outside every admitted activation: its
+        // ambient row names the place, and no activation of its region ran
+        // there, so it is no candidate however its region holds the site.
+        OccurrenceAddress ambient = occurrence("hdfs-case/dn0",
+                "REGION.handler", CausalContext.of(Role.of("IPC_HANDLER"),
+                        "", 1), "o.a.h.h.s.b.KeyManager#run#9");
         Endpoint stored = at(enclosing, Endpoint.stateSite(
                         "BlockTokenSecretManager", "addKeys", 12, true),
                 "BlockTokenSecretManager#addKeys#12");
@@ -3427,6 +3488,7 @@ public class ExploreTest {
         seed.activation(enclosing, false);
         seed.activation(holder, false);
         seed.activation(unrelated, false);
+        seed.activation(ambient, false, false);
         seed.symbolic("e.stored", "M_HOFF_KEY");
         seed.write(stored, ALL_KEYS, 5L, "e.stored");
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
@@ -3441,15 +3503,15 @@ public class ExploreTest {
         // addressed as REGION.holder.
         String[] rows = {
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.outer",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.outer",
                         "BlockTokenSecretManager#u12",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.inner",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.inner",
                         "KeyManager#u4", "KeyManager#refresh",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", "")};
+                        "<example.Manager: example.Keys allKeys>", ""))};
         Path mapFile = scopeMap(iteration, rows);
 
         // Without the skeletons beside it the map can say nothing about
@@ -3467,12 +3529,15 @@ public class ExploreTest {
         skeletons(iteration,
                 skeleton("REGION.inner", "KeyManager"),
                 skeleton("REGION.holder", "KeyManager", "BPServiceActor"),
+                skeleton("REGION.handler", "KeyManager"),
                 skeleton("REGION.outer", "BlockTokenSecretManager"),
                 skeleton("REGION.elsewhere", "DataXceiver"),
                 skeleton("REGION.target", "BlockTokenSecretManager"));
-        Map<String, String> held = why(ClosurePlanner.plan(
-                Corpus.read(iteration, null), TARGET, ClosurePlanner.DEFAULT_MAX_TASKS,
-                StaticScopeMap.read(mapFile)));
+        ClosurePlanner.Plan plan = ClosurePlanner.plan(
+                Corpus.read(iteration, null), TARGET,
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                StaticScopeMap.read(mapFile));
+        Map<String, String> held = why(plan);
         assertEquals("the occurrence whose region holds the site's method is"
                         + " the static candidate writer: " + held,
                 ClosurePlanner.STATIC_CANDIDATE_WRITER,
@@ -3480,6 +3545,9 @@ public class ExploreTest {
         assertFalse("and an occurrence of a region that does not hold it is"
                         + " not, though it ran on the same node: " + held,
                 held.containsKey(unrelated.render()));
+        assertFalse("nor is an ambient one, which nothing waits on either: "
+                        + plan.waiting, plan.waiting.contains(ambient)
+                || plan.exposed.containsKey(ambient));
     }
 
     /** Which rule proposed each task of one plan, by focused occurrence. */
@@ -3544,6 +3612,17 @@ public class ExploreTest {
         return row.toString();
     }
 
+    /** The same WRITE_SITE row, stated as a mutator call on the container
+     *  its carrier holds: a store of that container's state, the MAP
+     *  location the fixture's key map is ({@code StaticScopeMap#stores}). */
+    private static String put(String row) {
+        JsonObject site = com.google.gson.JsonParser.parseString(row)
+                .getAsJsonObject();
+        site.addProperty("declaredCallee", "<java.util.Map: java.lang.Object"
+                + " put(java.lang.Object,java.lang.Object)>");
+        return site.toString();
+    }
+
     /** The annotated target and the branches it is control-dependent on. */
     private static String targetSite(String regionId, String siteId,
                                      String... guards) {
@@ -3556,7 +3635,7 @@ public class ExploreTest {
      *
      * @param term     the predicate as the runtime publishes it, polarity-free
      * @param outcome  whether that term HELD in the recording (CONTRACT-SPEC
-     *                 SS2), which is what makes the conjunct
+     *                 §2.2), which is what makes the conjunct
      * @param recorded what the session minted for the marker
      * @param expected the value the model must assign, or null when the wave
      *                 must refuse because the model would BE the recording
@@ -3797,14 +3876,6 @@ public class ExploreTest {
         private void activation(OccurrenceAddress occurrence,
                                 boolean focused) {
             activation(occurrence, focused, true);
-        }
-
-        /**
-         * The lightweight entry hook's row: this region RAN, and nothing
-         * else about it can exist because it was never retained.
-         */
-        private void lightweight(OccurrenceAddress occurrence) {
-            activation(occurrence, false, false);
         }
 
         private void activation(OccurrenceAddress occurrence, boolean focused,

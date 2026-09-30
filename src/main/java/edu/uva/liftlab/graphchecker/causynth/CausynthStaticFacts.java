@@ -1,10 +1,13 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import soot.Body;
+import soot.RefLikeType;
 import soot.Scene;
 import soot.SootClass;
 import soot.SootMethod;
+import soot.Type;
 import soot.Unit;
 import soot.Value;
 import soot.ValueBox;
@@ -22,6 +25,7 @@ import soot.jimple.Stmt;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.UUID;
 import java.util.LinkedHashSet;
@@ -286,19 +290,85 @@ public final class CausynthStaticFacts {
         return field != null && field.isStatic() && field.isFinal();
     }
 
-    /** Whether the VM can version a field from any store into it: an
-     *  instance field holding an integral value -- boolean, byte, char,
-     *  short, int or long, or its wrapper, whose value (or null) is all a
-     *  reader observes: a box is immutable and a store puts a new one
-     *  (SYMBOL-SCOPE F2; solr-18413's {@code RoutingRule.expireAt} is a
-     *  {@code Long}).  Float and double stay out, boxed or not: {@code
-     *  observeExactPrimitiveField} versions neither. */
-    static boolean versionableField(String signature) {
+    /**
+     * How the replay versions a field from any store into it (SYMBOL-SCOPE
+     * F2):
+     * <ul>
+     *   <li>{@code VALUE}: an instance field holding an integral value --
+     *       boolean, byte, char, short, int or long, or its wrapper, whose
+     *       value (or null) is all a reader observes: a box is immutable and
+     *       a store puts a new one (solr-18413's {@code
+     *       RoutingRule.expireAt} is a {@code Long}).  Float and double stay
+     *       out, boxed or not.</li>
+     *   <li>{@code REFERENCE}: a field a store re-points holding an
+     *       object, an array included, other than a String or a wrapper: a
+     *       reader queries or projects the referent the field held when it
+     *       read (solr-18406's {@code knownCommits}, a map each commit
+     *       replaces).  A static field too: its location is its class's.  A
+     *       final field is none, nor one final in effect ({@link
+     *       #storedOnlyAtConstruction}): its only writer is its
+     *       constructor, so there is nothing to re-pair.</li>
+     * </ul>
+     */
+    static SharedFieldFlow.TrackedKind trackedKind(String signature) {
         SootField field = signature == null || signature.isEmpty() ? null
                 : Scene.v().grabField(signature);
-        return field != null && !field.isStatic()
-                && JavaPrimitiveSmtSemantics.domainOfJavaType(
-                        field.getType().toString()) != null;
+        if (field == null) return SharedFieldFlow.TrackedKind.NONE;
+        Type type = field.getType();
+        if (JavaPrimitiveSmtSemantics.domainOfJavaType(type.toString())
+                != null) {
+            return field.isStatic() ? SharedFieldFlow.TrackedKind.NONE
+                    : SharedFieldFlow.TrackedKind.VALUE;
+        }
+        return !field.isFinal() && type instanceof RefLikeType
+                && !UNVERSIONED_REFERENCES.contains(type.toString())
+                && !storedOnlyAtConstruction(field)
+                ? SharedFieldFlow.TrackedKind.REFERENCE
+                : SharedFieldFlow.TrackedKind.NONE;
+    }
+
+    /**
+     * Whether a private field is stored only by its own class's
+     * constructors -- its initializer included -- so final in effect:
+     * Lucene's {@code IndexFileDeleter.refCounts}, a lambda's captured
+     * value.  A private field's every store is in its own class (a nested
+     * class stores it through that class's accessor), so reading its
+     * class's bodies proves it; a class whose bodies are not loaded proves
+     * nothing.
+     */
+    private static boolean storedOnlyAtConstruction(SootField field) {
+        if (!field.isPrivate()) return false;
+        String constructor = field.isStatic() ? "<clinit>" : "<init>";
+        for (SootMethod method : field.getDeclaringClass().getMethods()) {
+            if (!method.isConcrete()) continue;
+            Body body = activeBody(method);
+            if (body == null) return false;
+            if (constructor.equals(method.getName())) continue;
+            for (Unit unit : body.getUnits()) {
+                for (ValueBox box : unit.getDefBoxes()) {
+                    if (box.getValue() instanceof FieldRef && field.equals(
+                            declaredField(((FieldRef) box.getValue())
+                                    .getFieldRef()))) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /** A String or a wrapper is a value, never a referent a reader
+     *  queries; float and double are no tracked value. */
+    private static final Set<String> UNVERSIONED_REFERENCES =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "java.lang.String", "java.lang.Float",
+                    "java.lang.Double")));
+
+    /** Whether a field is static: its location is its class's. */
+    static boolean staticField(String signature) {
+        SootField field = signature == null || signature.isEmpty() ? null
+                : Scene.v().grabField(signature);
+        return field != null && field.isStatic();
     }
 
     /** A retrievable active body, or null: an unloadable body is not a fact. */

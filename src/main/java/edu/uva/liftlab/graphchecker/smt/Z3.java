@@ -28,12 +28,26 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Model, core and reason are each asked in their OWN run after the
  * verdict: {@code (get-value ...)} on an unsat query makes z3 print a
- * routine error that would hide real ones.</p>
+ * routine error that would hide real ones.  Only the core run tracks the
+ * named assertions ({@link #CORE_TRACKING}).</p>
  */
 public final class Z3 {
 
     /** The budget one question gets when the campaign names none. */
     public static final long DEFAULT_TIMEOUT_MILLIS = 20_000L;
+
+    /**
+     * What makes z3 track named assertions for an unsat core, set by the
+     * run that asks for the core and by no other.  Tracked, every named
+     * assertion stays behind a literal of its own and z3 simplifies nothing
+     * across them: a disjunct whose selector the rest forces false is still
+     * searched.  The verdict is the same either way; the time is not
+     * (hdfs-17967-pathA r4: 40 s a sat valuation tracked, 1 s untracked;
+     * hdfs-17899-bug3 r4: over 20 minutes against 0.1 s).  A query states
+     * no such option itself.
+     */
+    static final String CORE_TRACKING =
+            "(set-option :produce-unsat-cores true)\n";
 
     /** How z3 says it could not read the query. */
     private static final String ERROR = "(error ";
@@ -161,8 +175,8 @@ public final class Z3 {
         }
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
-            core = parseCore(run(text + "(check-sat)\n(get-unsat-core)\n",
-                    budget));
+            core = parseCore(run(CORE_TRACKING + text
+                    + "(check-sat)\n(get-unsat-core)\n", budget));
         }
         // Not after a timeout: it would spend the budget again for "".
         String reason = "";

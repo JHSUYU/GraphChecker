@@ -728,7 +728,7 @@ def main():
 
 
 def write_growth():
-    """growth.csv: every occurrence the closure GREW (EXPOSED_REGION, DESIGN4 SS3.3b), the world of
+    """growth.csv: every occurrence the closure GREW (EXPOSED_REGION, PIPELINE §7.8), the world of
     the replay that exposed it (which door's fault, or a control world), and whether a later replay
     captured it (a planned address no replay ran again is a DIAGNOSTIC 'planned at this address')."""
     out = []

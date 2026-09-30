@@ -11,7 +11,7 @@
 # cardinality.  This paragraph used to promise that BoundedLoopComposition
 # raised a blocking PATH_LOCAL_ARRAY_CARDINALITY_MISSING against any case
 # publishing no dense exact cardinality vector.  That class was deleted whole
-# as unreachable (c0e8aab6e, docs/design/REPORT-CLEANUP.md) and the gap kind
+# as unreachable (c0e8aab6e) and the gap kind
 # it named exists nowhere in src/, so the sentence described a guard that had
 # stopped existing.  What the run actually does with these three loops is
 # take each trip count from the array it indexes.

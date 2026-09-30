@@ -18,7 +18,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Where the fatal slice stops at the analysis scope (SYMBOL-SCOPE §2), the
+ * Where the fatal slice stops at the analysis scope (SYMBOL-SCOPE §2.4), the
  * input of {@link ScopeGrowth}:
  * <ul>
  *   <li>{@code CALLEE}: a callee whose return the slice demands but whose body

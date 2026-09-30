@@ -9,7 +9,7 @@ import java.util.Map;
 
 /**
  * Within-run pairing evidence of a WIRE interaction: which export an attach
- * took its value from.  Pairing is a recorded fact (INTERACTION-ID §1); a
+ * took its value from.  Pairing is a recorded fact (IDENTITY §4); a
  * consumer that finds nothing publishes an unpaired row, never a guess.
  *
  * <p>LOCK ORDER: {@code Interactions} then {@link InteractionRefusals},
@@ -104,7 +104,7 @@ public final class Interactions {
 
     /**
      * The pairing keys: the VM handle and the correlation with the port, both
-     * recorded facts (INTERACTION-ID §1).  Never "the port's last producer",
+     * recorded facts (IDENTITY §4).  Never "the port's last producer",
      * which is a guess; unpaired deliveries go to {@link RowRuntime#attachedAt}.
      */
     private static List<String> keys(String portId, long handle,

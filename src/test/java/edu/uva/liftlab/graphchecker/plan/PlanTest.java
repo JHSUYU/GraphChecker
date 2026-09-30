@@ -17,7 +17,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/** IDENTITY-IMPL D: a case declaration is resolved against the seed session. */
+/** IDENTITY §9: a case declaration is resolved against the seed session. */
 public class PlanTest {
     private static final String REGION = "REGION.53092d3e";
     private static final NodeId DN0 = NodeId.parse("hdfs-17897/dn0#epoch0");

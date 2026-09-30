@@ -26,7 +26,7 @@ import java.util.UUID;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** Execution-task rows for occurrences a replay EXPOSED in a region the
- *  recording never planned (DESIGN4 section 3.3b): {@code --iteration <dir>
+ *  recording never planned (PIPELINE §7.8): {@code --iteration <dir>
  *  --growth <growth.jsonl> --output <jsonl>}. Each growth row becomes one
  *  region-path task on that exact address, with static inputs only (cut ports,
  *  declared CALL_RETURN sites), sharing the iteration plan's {@code

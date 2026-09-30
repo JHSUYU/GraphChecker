@@ -19,6 +19,7 @@ import soot.jimple.ReturnStmt;
 
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -27,7 +28,7 @@ import java.util.TreeSet;
 
 /**
  * The roots of the world a program reads, recognized by category from the
- * program text rather than listed per case (GreyGraph SS3.1: the analysis
+ * program text rather than listed per case (GreyGraph §3.1: the analysis
  * derives its inputs).  A CLOCK is one of the JVM's clocks, or a method with
  * no parameter whose every returned value is a clock under constant
  * arithmetic -- {@code Time.now()}, {@code Time.monotonicNow()} ({@code
@@ -44,6 +45,11 @@ final class RootCatalog {
     private static final int MAX_DEPTH = 4;
 
     private final Map<String, Boolean> clocks = new HashMap<String, Boolean>();
+    /** The methods whose answer is being computed (a cycle reads them). */
+    private final Set<String> open = new HashSet<String>();
+    /** Whether the answer being computed read a cut: the depth bound or an
+     *  open method's placeholder. */
+    private boolean cut;
     /** Nanoseconds per tick of each clock found ({@link #tick}). */
     private final Map<String, Long> ticks = new HashMap<String, Long>();
 
@@ -88,13 +94,21 @@ final class RootCatalog {
 
     private boolean clock(String signature, int depth) {
         if (JVM_CLOCKS.contains(signature)) return true;
+        // Cycles and depth answer no, and a no that read one is not
+        // remembered: asked from elsewhere, the method may be a clock.
+        if (open.contains(signature) || depth >= MAX_DEPTH) {
+            cut = true;
+            return false;
+        }
         Boolean known = clocks.get(signature);
         if (known != null) return known;
-        // Cycles and depth answer no, and are not remembered as an answer.
-        if (depth >= MAX_DEPTH) return false;
-        clocks.put(signature, Boolean.FALSE);
+        boolean outer = cut;
+        cut = false;
+        open.add(signature);
         boolean answer = wrapsAClock(signature, depth);
-        clocks.put(signature, answer);
+        open.remove(signature);
+        if (answer || !cut) clocks.put(signature, answer);
+        cut |= outer;
         return answer;
     }
 

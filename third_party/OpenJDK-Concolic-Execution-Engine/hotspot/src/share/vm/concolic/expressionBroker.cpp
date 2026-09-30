@@ -185,7 +185,7 @@ ExpressionBroker::HandoffStatus ExpressionBroker::resolve(jlong handle,
 jlong ConcolicMngr::exportExpression(
     Handle owner, const char *declaring_class, const char *field_name,
     const char *descriptor, jlong *export_event_out) {
-  // README RPC-1: the exporter is an endpoint of the VALUE_HANDOFF edge and
+  // CONTRACT-SPEC §1: the exporter is an endpoint of the VALUE_HANDOFF edge and
   // has to be able to name its own event, or its interaction row cannot say
   // which export it published and the Composer is left counting ports.
   if (export_event_out != NULL) *export_event_out = 0;
@@ -278,7 +278,7 @@ jlong ConcolicMngr::exportExpression(
 jlong ConcolicMngr::attachExpression(
     Handle owner, const char *declaring_class, const char *field_name,
     const char *descriptor, jlong handle, jlong *attach_event_out) {
-  // README RPC-1: one export may be attached at several explicit receivers,
+  // VM §7: one export may be attached at several explicit receivers,
   // so the export id alone does not name *this* receive.  Both endpoints of
   // the handoff leave the VM together; nothing downstream may guess the
   // attach from the export id alone.
@@ -369,6 +369,10 @@ jlong ConcolicMngr::attachExpression(
     // its payload.  Later operations still use `attached` as their receiver,
     // so the provenance marker remains in the container expression chain.
     ctx->set_container_state(destination, attached);
+    // And it is a write of the container's whole state, published as one
+    // (D7): a reader of a container whose log had already begun resolved to
+    // the state before the attach.
+    ContainerSupport::publish_attached_state(destination, attached);
   } else {
     instance->set_sym_exp(field.offset(), attached);
     instance->mark_semantic_expression();
@@ -395,13 +399,15 @@ jlong ConcolicMngr::attachExpression(
     // Folded outside every engine lock, as the store's concurrency contract
     // requires; the same guard a putfield of this value would publish.
     Expression *guard = ctx->path_guard();
-    // The attach names the value the field holds, so that word is the one
-    // this version stored.
-    SharedFieldVersions::publish_value(
-        location, attached,
-        SharedFieldVersions::field_bits(owner(), field.offset(),
-                                        field.field_type()),
-        guard, true, SharedFieldVersions::VERSION_WRITE);
+    // The attach names the value the field holds, so that word, read under
+    // the location's stripe, is the one this version stored.
+    SharedFieldVersions::publish_held(
+        location,
+        SharedFieldVersions::Cell(
+            owner(), field.field_type(),
+            SharedFieldVersions::wrapper_value_type(field.signature())
+                != T_ILLEGAL),
+        attached, guard, SharedFieldVersions::VERSION_WRITE);
   }
   ctx->set_pc_admitted(true);
   for (int index = 0; index < pause_depth; ++index) {

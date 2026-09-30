@@ -8,9 +8,9 @@ own output root replaced by one token, so a path is never a difference.  A
 stage's `status` counts only by its exit.  A differing file is summarised as
 rows added/removed (jsonl), the top-level keys that differ (json), or its
 size; the rows of both sides are the same with only their order changed is
-said as such, since that is how hash-order nondeterminism shows.  Only
-SEED.static is canonicalized (NOT_GATING); every other stage has been
-byte-identical across two runs of one jar, so it needs no normalizing.
+said as such, since that is how hash-order nondeterminism shows.  Every
+stage is byte-identical across two runs of one jar, on any host, so none is
+normalized and every one gates.
 
 The base~acc column compares the BASELINE with the accepted run's own
 artifact of the stage ("same" / "drift:n/m" / "tree-moved" / "-"), for
@@ -29,7 +29,6 @@ import gzip
 import hashlib
 import json
 import os
-import re
 import sys
 
 CHAINS = {"SEED": ["SEED.static", "SEED.trace", "PLAN", "EXPLORE.0",
@@ -39,40 +38,9 @@ CHAINS = {"SEED": ["SEED.static", "SEED.trace", "PLAN", "EXPLORE.0",
 STAGES = [stage for chain in CHAINS.values() for stage in chain]
 SIDES = ("baseline", "candidate")
 NOT_OUTPUT = {"stdout.log", "stderr.log", "time.txt", "prepare.log"}
-# The static pass is not deterministic even on one Soot thread (two runs of
-# one jar differ in DF edge ids, the order of a row's lists and, for some
-# cases, a few rows), so its rows are compared canonically and a difference
-# is shown ("differs*") but never gates.  Its class output is the input
-# scope copied in (classes/) and Soot's rewrite of it, not an artifact.
-NOT_GATING = {"SEED.static"}
+# SEED.static's class output is the input scope copied in (classes/) and
+# Soot's rewrite of it, not an artifact.
 NOT_COMPARED_DIRS = {"SEED.static": {"classes", "instrumented-classes"}}
-LAMBDA = re.compile(r"(\$lambda_[A-Za-z0-9_$]*?_\d+)__\d+")
-EDGE_ID = re.compile(r"DF\.\d+")
-
-
-def canonical(value):
-    """A static row with what varies run to run taken out: DF edge ids, the
-    order of every list, Soot's lambda counters."""
-    if isinstance(value, dict):
-        return {k: canonical(v) for k, v in value.items()
-                if not (k == "id" and EDGE_ID.fullmatch(str(v)))}
-    if isinstance(value, list):
-        return sorted((canonical(v) for v in value),
-                      key=lambda v: json.dumps(v, sort_keys=True))
-    if isinstance(value, str):
-        return EDGE_ID.sub("DF.#", LAMBDA.sub(r"\1__N", value))
-    return value
-
-
-def canonical_rows(data):
-    rows = []
-    for line in data.splitlines():
-        try:
-            rows.append(json.dumps(canonical(json.loads(line)),
-                                   sort_keys=True).encode())
-        except ValueError:
-            rows.append(line)
-    return b"\n".join(sorted(rows))
 
 
 def read(path):
@@ -117,8 +85,6 @@ def outputs(stage_dir, tokens, stage=""):
             data = read(path)
             for raw, token in tokens:
                 data = data.replace(raw, token)
-            if stage in NOT_GATING and name.endswith((".jsonl", ".jsonl.gz")):
-                data = canonical_rows(data)
             found[rel] = data
     return found
 
@@ -457,7 +423,7 @@ def main(argv):
                     notes.insert(0, "%s -> %s" % (heads["baseline"],
                                                   heads["candidate"]))
                 if notes:
-                    result = "differs*" if stage in NOT_GATING else "DIFFERS"
+                    result = "DIFFERS"
                 elif base.get("exit") != "0" and not outcome_exit(
                         stage, dirs["baseline"], base):
                     result = "ERROR"
@@ -470,7 +436,7 @@ def main(argv):
                                           accepted[case], base,
                                           roots["baseline"])
             os.makedirs(os.path.join(out, "diffs"), exist_ok=True)
-            if result in ("DIFFERS", "differs*"):
+            if result == "DIFFERS":
                 with open(os.path.join(out, "diffs", "%s.%s.txt" % (
                         case, stage)), "w") as handle:
                     handle.write("\n".join(notes + [""] + diff) + "\n")
@@ -481,7 +447,7 @@ def main(argv):
                                  + "\n".join(drift) + "\n")
             # A gating stage skipped on both sides was not checked either.
             worst = max(worst, {"DIFFERS": 2, "ERROR": 1}.get(result, 0),
-                        int(result == "skipped" and stage not in NOT_GATING))
+                        int(result == "skipped"))
             report.append((case, stage, result, acc, times, summary))
     with open(os.path.join(out, "report.tsv"), "w") as handle:
         handle.write("case\tstage\tresult\tbaseline~accepted\twall_s(b/c)"
@@ -508,9 +474,6 @@ def main(argv):
     counts = collections.Counter(row[2] for row in report)
     print("%d stage(s): %s" % (len(report), " ".join(
         "%s=%d" % kv for kv in sorted(counts.items()))))
-    if counts.get("differs*"):
-        print("* not gating: the static pass is not deterministic (two runs "
-              "of one jar can differ); its rows are compared canonically")
     return {2: 1, 1: 2}.get(worst, 0)
 
 

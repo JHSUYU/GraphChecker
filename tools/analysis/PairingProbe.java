@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.Z3;
@@ -16,7 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * PairingProbe ITERATION SELECTOR ROOT_DOMAINS [Z3]: why a sat composition names
+ * PairingProbe ITERATION SELECTOR ROOT_DOMAINS SCOPE_MAP [Z3]: why a sat composition names
  * no mechanism.  The recorded valuation is asked four ways -- nothing held, the
  * clocks held, every path's own pairing held, both -- with ClaimPolicy's own ask;
  * for each sat model, the selected path's family arms whose producer ran in
@@ -24,7 +25,8 @@ import java.util.Map;
  *
  *   javac -cp $JAR -d out tools/analysis/PairingProbe.java
  *   java -cp out:$JAR edu.uva.liftlab.graphchecker.compose.PairingProbe \
- *       <iteration-0000> <node/region/REGION.x#k> <root-domains.jsonl>
+ *       <iteration-0000> <node/region/REGION.x#k> <root-domains.jsonl> \
+ *       <static_scope_map.jsonl>
  */
 public class PairingProbe {
     public static void main(String[] a) throws Exception {
@@ -32,8 +34,9 @@ public class PairingProbe {
         Corpus corpus = Corpus.read(iteration, null);
         OccurrenceAddress anchor = ComposeMain.anchorOf(a[1], corpus);
         Composer.Composition c = Composer.compose(corpus, anchor,
-                RootDomain.declared(Paths.get(a[2])), 128);
-        Z3 z3 = new Z3(Paths.get(a.length > 3 ? a[3] : "z3"), 600000L);
+                RootDomain.declared(Paths.get(a[2])), 128,
+                StaticScopeMap.read(Paths.get(a[3])));
+        Z3 z3 = new Z3(Paths.get(a.length > 4 ? a[4] : "z3"), 600000L);
         Method ask = ClaimPolicy.class.getDeclaredMethod("outcome",
                 Composer.Composition.class, Z3.class,
                 Composer.Valuation.class, List.class, boolean.class);

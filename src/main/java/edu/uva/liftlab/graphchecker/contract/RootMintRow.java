@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 2: a root the session minted, with its domain already
+ * CONTRACT-SPEC §2.2: a root the session minted, with its domain already
  * resolved to absolute bounds (both null: pinned).  An undeclared root is
  * evidence, not a degree of freedom.  {@code seq} keeps a root minted after an
  * export from being read as carried by it.

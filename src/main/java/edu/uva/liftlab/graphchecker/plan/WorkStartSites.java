@@ -10,7 +10,7 @@ import java.util.Set;
 /**
  * THE list of call shapes that start work, hand it off, or wait.
  *
- * <p>Read by the INSTRUMENT weave (IDENTITY-V3 SS1, {@code
+ * <p>Read by the INSTRUMENT weave (IDENTITY §6, {@code
  * CausynthPipeline.instrumentWorkStarts}) over the Soot hierarchy, and by
  * {@link LineageScan} off bytecode alone, deliberately wider: a shape the scan
  * misses is a lineage hole, so neither adds one of its own.</p>

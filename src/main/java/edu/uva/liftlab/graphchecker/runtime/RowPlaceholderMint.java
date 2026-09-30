@@ -315,7 +315,7 @@ final class RowPlaceholderMint {
             return;
         }
         // The row's seq is the mint's version: versions and read events
-        // share one monotone session counter (REPORT-P2EF), while the
+        // share one monotone session counter (VM §2), while the
         // per-activation eventSeq collides for field inputs.
         RowRuntime.read(occurrence,
                 mintVersion < 0L ? event : mintVersion,

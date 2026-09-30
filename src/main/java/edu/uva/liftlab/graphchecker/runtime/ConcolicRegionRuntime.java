@@ -320,6 +320,20 @@ public final class ConcolicRegionRuntime {
         return "UNNAMED_STATUS(" + status + ")";
     }
 
+    /** Set once the run has ended ({@link #endAdmission}). */
+    private static volatile boolean admissionEnded;
+
+    /**
+     * Ends the run's admission: no region starts after it.  The run ends
+     * before its VM session does ({@code JUnitMethodRunner#exit}): cluster
+     * threads outlive the test, and a region they start once the session is
+     * closed opens a fresh one, where every handle the old one made is
+     * foreign.
+     */
+    static void endAdmission() {
+        admissionEnded = true;
+    }
+
     /**
      * Admits the one planned occurrence this root invocation will execute.
      *
@@ -329,7 +343,7 @@ public final class ConcolicRegionRuntime {
     private static ActiveRegion admitRegion(
             ConcolicTaskPlan config, String rootHookGroupKey,
             String rootMethod, Object receiver, Object[] rootArguments) {
-        if (config.tasks.isEmpty() || rootMethod == null) {
+        if (admissionEnded || config.tasks.isEmpty() || rootMethod == null) {
             return null;
         }
         RuntimeTask admitted = selectTask(config, rootHookGroupKey,
@@ -654,7 +668,7 @@ public final class ConcolicRegionRuntime {
         frames.push(frame);
         // No index frame here: the entry hook owns it (#enterRegionEntry).
         //
-        // F1 -- a folded entry (I1) starts no activation: it is a call
+        // IDENTITY §1 -- a folded entry (I1) starts no activation: it is a call
         // inside the running occurrence, and a second activation would give
         // one address two rows.  The tokenless frame still pairs the exit.
         // Exception: a LOOP_BODY_ROOT body is an iteration of the loop-root
@@ -741,7 +755,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         try {
-            engine().observeExactPrimitiveField(receiver, fieldSignature);
+            engine().observeField(receiver, fieldSignature);
             active.pathRecordingStarted = true;
         } catch (Throwable failure) {
             // Not one lost row: every later read of the cell joins nothing.
@@ -962,7 +976,7 @@ public final class ConcolicRegionRuntime {
      * consumers, handoff rows and root mints alike.
      *
      * <p>If none declares it, the innermost live region carries the row and
-     * R5 reports the unplanned execution.</p>
+     * the unplanned execution is reported.</p>
      */
     static ActiveRegion declaringRegion(Declares what) {
         ActiveRegion innermost = activeRegion();

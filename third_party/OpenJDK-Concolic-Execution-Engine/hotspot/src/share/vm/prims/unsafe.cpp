@@ -41,6 +41,9 @@
 #include "services/threadService.hpp"
 #include "utilities/copy.hpp"
 #include "utilities/dtrace.hpp"
+#ifdef ENABLE_CONCOLIC
+#include "concolic/unsafeAccess.hpp"
+#endif
 
 PRAGMA_FORMAT_MUTE_WARNINGS_FOR_GCC
 
@@ -184,6 +187,31 @@ jint Unsafe_invocation_key_to_method_slot(jint key) {
   oop p = JNIHandles::resolve(obj); \
   OrderAccess::release_store_fence((volatile type_name*)index_oop_from_field_offset_long(p, offset), truncate_##type_name(x));
 
+// A write of the Java heap by Unsafe is versioned where it happens, in one
+// critical section with the concrete operation (concolic/unsafeAccess.hpp).
+#ifdef ENABLE_CONCOLIC
+#define CONCOLIC_UNSAFE_BEGIN(obj, offset, type)                               \
+  UnsafeAccess::Access concolic_access;                                        \
+  UnsafeAccess::begin(&concolic_access, JNIHandles::resolve(obj), (offset),    \
+                      (type));
+// A reference write names the referent it stores before the stripe is taken:
+// its container state is asked there (UnsafeAccess::begin).
+#define CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)                              \
+  UnsafeAccess::Access concolic_access;                                        \
+  UnsafeAccess::begin(&concolic_access, JNIHandles::resolve(obj), (offset),    \
+                      T_OBJECT, (x));
+#define CONCOLIC_UNSAFE_PUT(x)                                                 \
+  UnsafeAccess::end_put(&concolic_access, UnsafeAccess::word(x), (oop) NULL);
+#define CONCOLIC_UNSAFE_PUT_OOP(x)                                             \
+  UnsafeAccess::end_put(&concolic_access,                                      \
+                        SharedFieldVersions::boxed_word(x), (x));
+#else
+#define CONCOLIC_UNSAFE_BEGIN(obj, offset, type)
+#define CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
+#define CONCOLIC_UNSAFE_PUT(x)
+#define CONCOLIC_UNSAFE_PUT_OOP(x)
+#endif
+
 // Macros for oops that check UseCompressedOops
 
 #define GET_OOP_FIELD(obj, offset, v) \
@@ -275,11 +303,13 @@ UNSAFE_ENTRY(void, Unsafe_SetObject(JNIEnv *env, jobject unsafe, jobject obj, jl
   UnsafeWrapper("Unsafe_SetObject");
   oop x = JNIHandles::resolve(x_h);
   oop p = JNIHandles::resolve(obj);
+  CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
   if (UseCompressedOops) {
     oop_store((narrowOop*)index_oop_from_field_offset_long(p, offset), x);
   } else {
     oop_store((oop*)index_oop_from_field_offset_long(p, offset), x);
   }
+  CONCOLIC_UNSAFE_PUT_OOP(x)
 UNSAFE_END
 
 UNSAFE_ENTRY(jobject, Unsafe_GetObjectVolatile(JNIEnv *env, jobject unsafe, jobject obj, jlong offset))
@@ -305,6 +335,7 @@ UNSAFE_ENTRY(void, Unsafe_SetObjectVolatile(JNIEnv *env, jobject unsafe, jobject
   oop x = JNIHandles::resolve(x_h);
   oop p = JNIHandles::resolve(obj);
   void* addr = index_oop_from_field_offset_long(p, offset);
+  CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
   OrderAccess::release();
   if (UseCompressedOops) {
     oop_store((narrowOop*)addr, x);
@@ -312,6 +343,7 @@ UNSAFE_ENTRY(void, Unsafe_SetObjectVolatile(JNIEnv *env, jobject unsafe, jobject
     oop_store((oop*)addr, x);
   }
   OrderAccess::fence();
+  CONCOLIC_UNSAFE_PUT_OOP(x)
 UNSAFE_END
 
 #ifndef SUPPORTS_NATIVE_CX8
@@ -364,13 +396,17 @@ UNSAFE_ENTRY(void, Unsafe_SetLongVolatile(JNIEnv *env, jobject unsafe, jobject o
   UnsafeWrapper("Unsafe_SetLongVolatile");
   {
     if (VM_Version::supports_cx8()) {
+      CONCOLIC_UNSAFE_BEGIN(obj, offset, T_LONG)
       SET_FIELD_VOLATILE(obj, offset, jlong, x);
+      CONCOLIC_UNSAFE_PUT(x)
     }
     else {
       Handle p (THREAD, JNIHandles::resolve(obj));
       jlong* addr = (jlong*)(index_oop_from_field_offset_long(p(), offset));
       MutexLockerEx mu(UnsafeJlong_lock, Mutex::_no_safepoint_check_flag);
+      CONCOLIC_UNSAFE_BEGIN(obj, offset, T_LONG)
       Atomic::store(x, addr);
+      CONCOLIC_UNSAFE_PUT(x)
     }
   }
 UNSAFE_END
@@ -400,7 +436,9 @@ UNSAFE_END \
  \
 UNSAFE_ENTRY(void, Unsafe_Set##Boolean(JNIEnv *env, jobject unsafe, jobject obj, jlong offset, jboolean x)) \
   UnsafeWrapper("Unsafe_Set"#Boolean); \
+  CONCOLIC_UNSAFE_BEGIN(obj, offset, UnsafeAccess::word((jboolean) 0).type) \
   SET_FIELD(obj, offset, jboolean, x); \
+  CONCOLIC_UNSAFE_PUT((jboolean) truncate_##jboolean(x)) \
 UNSAFE_END \
  \
 // END DEFINE_GETSETOOP.
@@ -426,7 +464,9 @@ UNSAFE_END \
  \
 UNSAFE_ENTRY(void, Unsafe_Set##Boolean##Volatile(JNIEnv *env, jobject unsafe, jobject obj, jlong offset, jboolean x)) \
   UnsafeWrapper("Unsafe_Set"#Boolean); \
+  CONCOLIC_UNSAFE_BEGIN(obj, offset, UnsafeAccess::word((jboolean) 0).type) \
   SET_FIELD_VOLATILE(obj, offset, jboolean, x); \
+  CONCOLIC_UNSAFE_PUT((jboolean) truncate_##jboolean(x)) \
 UNSAFE_END \
  \
 // END DEFINE_GETSETOOP_VOLATILE.
@@ -449,7 +489,9 @@ DEFINE_GETSETOOP_VOLATILE(jlong, Long);
 
 UNSAFE_ENTRY(void, Unsafe_SetOrderedInt(JNIEnv *env, jobject unsafe, jobject obj, jlong offset, jint x))
   UnsafeWrapper("Unsafe_SetOrderedInt");
+  CONCOLIC_UNSAFE_BEGIN(obj, offset, T_INT)
   SET_FIELD_VOLATILE(obj, offset, jint, x);
+  CONCOLIC_UNSAFE_PUT(x)
 UNSAFE_END
 
 UNSAFE_ENTRY(void, Unsafe_SetOrderedObject(JNIEnv *env, jobject unsafe, jobject obj, jlong offset, jobject x_h))
@@ -457,6 +499,7 @@ UNSAFE_ENTRY(void, Unsafe_SetOrderedObject(JNIEnv *env, jobject unsafe, jobject 
   oop x = JNIHandles::resolve(x_h);
   oop p = JNIHandles::resolve(obj);
   void* addr = index_oop_from_field_offset_long(p, offset);
+  CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
   OrderAccess::release();
   if (UseCompressedOops) {
     oop_store((narrowOop*)addr, x);
@@ -464,23 +507,30 @@ UNSAFE_ENTRY(void, Unsafe_SetOrderedObject(JNIEnv *env, jobject unsafe, jobject 
     oop_store((oop*)addr, x);
   }
   OrderAccess::fence();
+  CONCOLIC_UNSAFE_PUT_OOP(x)
 UNSAFE_END
 
 UNSAFE_ENTRY(void, Unsafe_SetOrderedLong(JNIEnv *env, jobject unsafe, jobject obj, jlong offset, jlong x))
   UnsafeWrapper("Unsafe_SetOrderedLong");
 #ifdef SUPPORTS_NATIVE_CX8
+  CONCOLIC_UNSAFE_BEGIN(obj, offset, T_LONG)
   SET_FIELD_VOLATILE(obj, offset, jlong, x);
+  CONCOLIC_UNSAFE_PUT(x)
 #else
   // Keep old code for platforms which may not have atomic long (8 bytes) instructions
   {
     if (VM_Version::supports_cx8()) {
+      CONCOLIC_UNSAFE_BEGIN(obj, offset, T_LONG)
       SET_FIELD_VOLATILE(obj, offset, jlong, x);
+      CONCOLIC_UNSAFE_PUT(x)
     }
     else {
       Handle p (THREAD, JNIHandles::resolve(obj));
       jlong* addr = (jlong*)(index_oop_from_field_offset_long(p(), offset));
       MutexLockerEx mu(UnsafeJlong_lock, Mutex::_no_safepoint_check_flag);
+      CONCOLIC_UNSAFE_BEGIN(obj, offset, T_LONG)
       Atomic::store(x, addr);
+      CONCOLIC_UNSAFE_PUT(x)
     }
   }
 #endif
@@ -1203,10 +1253,16 @@ UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapObject(JNIEnv *env, jobject unsafe, 
   oop e = JNIHandles::resolve(e_h);
   oop p = JNIHandles::resolve(obj);
   HeapWord* addr = (HeapWord *)index_oop_from_field_offset_long(p, offset);
+  CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
   oop res = oopDesc::atomic_compare_exchange_oop(x, addr, e, true);
   jboolean success  = (res == e);
   if (success)
     update_barrier_set((void*)addr, x);
+#ifdef ENABLE_CONCOLIC
+  UnsafeAccess::end_cas(&concolic_access, success,
+                        SharedFieldVersions::boxed_word(res), res,
+                        SharedFieldVersions::boxed_word(x), x);
+#endif
   return success;
 UNSAFE_END
 
@@ -1214,7 +1270,17 @@ UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapInt(JNIEnv *env, jobject unsafe, job
   UnsafeWrapper("Unsafe_CompareAndSwapInt");
   oop p = JNIHandles::resolve(obj);
   jint* addr = (jint *) index_oop_from_field_offset_long(p, offset);
+#ifdef ENABLE_CONCOLIC
+  CONCOLIC_UNSAFE_BEGIN(obj, offset, T_INT)
+  const jint witnessed = (jint) Atomic::cmpxchg(x, addr, e);
+  // The word the compare read decides it, success or not: never a re-read.
+  UnsafeAccess::end_cas(&concolic_access, witnessed == e,
+                        UnsafeAccess::word(witnessed), NULL,
+                        UnsafeAccess::word(x), NULL);
+  return witnessed == e;
+#else
   return (jint)(Atomic::cmpxchg(x, addr, e)) == e;
+#endif
 UNSAFE_END
 
 UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapLong(JNIEnv *env, jobject unsafe, jobject obj, jlong offset, jlong e, jlong x))
@@ -1222,15 +1288,38 @@ UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapLong(JNIEnv *env, jobject unsafe, jo
   Handle p (THREAD, JNIHandles::resolve(obj));
   jlong* addr = (jlong*)(index_oop_from_field_offset_long(p(), offset));
 #ifdef SUPPORTS_NATIVE_CX8
-  return (jlong)(Atomic::cmpxchg(x, addr, e)) == e;
+#ifdef ENABLE_CONCOLIC
+  CONCOLIC_UNSAFE_BEGIN(obj, offset, T_LONG)
+  const jlong witnessed = (jlong) Atomic::cmpxchg(x, addr, e);
+  UnsafeAccess::end_cas(&concolic_access, witnessed == e,
+                        UnsafeAccess::word(witnessed), NULL,
+                        UnsafeAccess::word(x), NULL);
+  return witnessed == e;
 #else
-  if (VM_Version::supports_cx8())
+  return (jlong)(Atomic::cmpxchg(x, addr, e)) == e;
+#endif
+#else
+  if (VM_Version::supports_cx8()) {
+#ifdef ENABLE_CONCOLIC
+    CONCOLIC_UNSAFE_BEGIN(obj, offset, T_LONG)
+    const jlong witnessed = (jlong) Atomic::cmpxchg(x, addr, e);
+    UnsafeAccess::end_cas(&concolic_access, witnessed == e,
+                          UnsafeAccess::word(witnessed), NULL,
+                          UnsafeAccess::word(x), NULL);
+    return witnessed == e;
+#else
     return (jlong)(Atomic::cmpxchg(x, addr, e)) == e;
-  else {
+#endif
+  } else {
     jboolean success = false;
     MutexLockerEx mu(UnsafeJlong_lock, Mutex::_no_safepoint_check_flag);
+    CONCOLIC_UNSAFE_BEGIN(obj, offset, T_LONG)
     jlong val = Atomic::load(addr);
     if (val == e) { Atomic::store(x, addr); success = true; }
+#ifdef ENABLE_CONCOLIC
+    UnsafeAccess::end_cas(&concolic_access, success, UnsafeAccess::word(val),
+                          NULL, UnsafeAccess::word(x), NULL);
+#endif
     return success;
   }
 #endif

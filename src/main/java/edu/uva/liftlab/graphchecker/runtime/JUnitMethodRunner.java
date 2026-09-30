@@ -25,27 +25,30 @@ public final class JUnitMethodRunner {
             failure.printStackTrace(System.err);
             status = 1;
         }
-        try {
-            // Publications first: closing under a pending one is refused.
-            ConcolicResultPublisher.awaitSelectedResultPublications();
-        } catch (Throwable publicationFailure) {
-            publicationFailure.printStackTrace(System.err);
-            status = 1;
-        }
         exit(status);
     }
 
     /**
      * The one end of a replay, the workload's or its witness's
-     * ({@code ConcolicResultPublisher#concludeAtWitness}): the run totals
-     * (here, not in a conditional shutdown hook: once per JVM), the session's
-     * close, and an explicit exit, since non-daemon cluster threads may
-     * outlive the test.  0 when the method returned, 1 when it, a
-     * publication or the close failed.
+     * ({@code ConcolicResultPublisher#concludeAtWitness}).  THE RUN ENDS
+     * BEFORE ITS SESSION DOES: admission ends, what is live settles (the
+     * publications first: closing under a pending one is refused), the run
+     * totals close the rows -- nothing is published after them -- and only
+     * then the VM session closes.  Non-daemon cluster threads outlive the
+     * test, so the exit is explicit.  0 when the method returned, 1 when it,
+     * a publication or the close failed.
      */
     static void exit(int status) {
         int code = status;
+        ConcolicRegionRuntime.endAdmission();
         try {
+            ConcolicResultPublisher.awaitSelectedResultPublications();
+        } catch (Throwable publicationFailure) {
+            publicationFailure.printStackTrace(System.err);
+            code = 1;
+        }
+        try {
+            // Here, not in a conditional shutdown hook: once per JVM.
             ConcolicResultPublisher.publishRunTotals();
             reportWorkloadSessionClose();
         } catch (Throwable closeFailure) {

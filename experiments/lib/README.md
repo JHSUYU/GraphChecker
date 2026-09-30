@@ -78,7 +78,7 @@ the window itself:
 
 Every tree of the block-key family (hdfs-17899 bug1/2/3, hdfs-17897, hdfs-17967
 A/B/C) carries 11741's expiry check, so a key goes stale there only through a
-failed RPC (README §12, the owner's ruling). A workload of the family is
+failed RPC (PIPELINE §12, the owner's ruling). A workload of the family is
 therefore written so that the verifying node's key arrives over an RPC INSIDE
 the window, and the consumer presents that key:
 

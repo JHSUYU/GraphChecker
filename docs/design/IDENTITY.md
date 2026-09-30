@@ -129,7 +129,8 @@ the flip solver:
 - a STATE read's arms are its observed writer plus every attested writer occurrence of the same
   session that is HB-concurrent with the reader (not the same thread, not an anchor-chain
   ancestor either way, both chains reaching a `Root`; a `Lost` context is never concurrent), one
-  arm per writer occurrence at its last write. Locks are not constraints.
+  arm per writer occurrence: the observed writer's at the write the read observed, any other at
+  its last write of the location. Locks are not constraints.
 - an occurrence is attested in a session that has an instrumented activation row for it
   (`Arms#attested`); no witness may move a root inside an unattested arm.
 
@@ -236,7 +237,8 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 begin), `END` (a tick's end), `INTERRUPT`. `context` = `<node>|<ctx render>[|<start frames>]`
 (`ScheduleLog#contextOf`, `Identity#handoffs`); `k` counts events per (kind, context, site). A
 `Lost` context, and a context anchored by an unawaited receipt, make no event. `mark` rows state
-where each occurrence opened (the cut of a prefix focusing it).
+where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS, at}` states the run
+was cut at its witness.
 
 `runtime/ScheduleLog` records in both passes into `schedule.jsonl`. In a replay it also holds the
 order:
@@ -246,17 +248,42 @@ order:
 - an event takes the earliest open or given-up slot of its key; with none it runs free. A slot
   before the cut, or a `WAKE` slot anywhere, is held until every earlier slot is settled;
   `INTERRUPT` is never held;
+- while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
+  recording never made waits at the cut. One past its recorded count (a loop polling longer than
+  recorded) waits until its context's next slot is due, then polls once per move of the order
+  (a settled slot) since its previous `WAKE`; the slot its last recorded `WAKE` took counts, so
+  the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
+  slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
+  scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
+  wait is missed). The watchdog lets held waits go when the run idles; a released timed wait still
+  waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an order whose
+  run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
+  `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
+  not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
+  order's end, not its cut, until every non-`WAKE` slot is settled (`ScheduleLog#line`; CONFIRM's
+  unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
+  follows a cause the order holds, and runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
-  not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog,
-  after `causynth.schedule.timeout.ms` (default 15 s) with waiters and no computing thread, gives
-  up every open slot before the earliest waiter; a stall of eight timeouts is given up whatever the
-  CPU does; after two give-ups past the cut the rest is released. Each give-up is a
-  `SCHEDULE_DIVERGED` DIAGNOSTIC row;
+  not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog
+  acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled and no
+  workload thread computing, or after eight timeouts (`CEILING`) whatever they do. Every
+  non-waiting thread counts except the engine's own (`causynth-*`: the result publication, the
+  trace parse), since which thread owes a slot cannot be seen between two of its events
+  (`ScheduleLog#computingLocked`). The watchdog first lets the waits held without a slot go; a
+  grace (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter
+  that waits for a slot. A poll held past its count stands at a due slot and waits for no slot's
+  event, so it bounds no give-up; when only such polls wait, they are let go again, a grace
+  apart. A let-go does not restart the stall's clock: a wait for a slot is held at most
+  `CEILING` timeouts and a grace, and an event that never comes, with nothing computing, costs a
+  timeout and a grace. After two give-ups past the cut the rest is released. Each let-go and
+  give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row;
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that
   session's world (its flips and planted values); flips are cut only from ADMITTED sessions
-  (`explore/ObligationFactory`). CONFIRM cuts the selected session's schedule the same way
-  (`explore/ConfirmMain`);
+  (`explore/ObligationFactory`). CONFIRM writes the selected session's schedule unheld
+  (`explore/ConfirmMain`, `SchedulePrefix#write` with `held` false): every event is rest, so only
+  a `WAKE` still waits for what it followed, and the model's order is held by the `ORDER` rows of
+  its expected edges (`runtime/Confirmation`, PIPELINE.md §10);
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
   runs on virtual time (it ends at a real signal or when its slot is due), and a woven notify marks
   the longest-standing wait.
@@ -276,8 +303,9 @@ address passes through. No match yields a degraded address, reported downstream 
 The address is one function of one input set in both passes. The hooks that push a frame or count
 an event (`startWork`, `claimStart`, `enterMethodFrame`, `exitMethodFrame`, `throwMethodFrame`) are
 in both hook catalogs (`CausynthPipeline.HookCatalog#shared`); every site string is stabilized once
-by `contract/JvmNames#stable` (reflection accessors, lambda proxies and desugared lambda classes lose
-their run-minted counters); randomness is seeded by endpoint (SYMBOL-SCOPE.md §4.5).
+by `contract/JvmNames#stable` (reflection accessors and lambda proxies lose their JVM-minted
+counters; a desugared lambda class is named by content in every weave, `LambdaClassNames`);
+randomness is seeded by endpoint (SYMBOL-SCOPE.md §4.5).
 
 ## 11. Current limits
 

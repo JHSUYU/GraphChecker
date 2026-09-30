@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.List;
 
 /**
- * CONTRACT-SPEC 4: everything one anchor's composition stands on, including
+ * CONTRACT-SPEC §4: everything one anchor's composition stands on, including
  * the {@code .smt2} that with z3's verdict is the deliverable; without it the
  * claim cannot be re-checked.  Written by Gson (ComposeMain), field by
  * field: the fields are the manifest's shape.

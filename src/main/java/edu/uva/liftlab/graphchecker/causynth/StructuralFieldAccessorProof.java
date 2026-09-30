@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import soot.Body;
 import soot.Local;
+import soot.Scene;
 import soot.SootField;
 import soot.SootMethod;
 import soot.Unit;
@@ -19,6 +21,18 @@ import java.util.Set;
 /** Static proof that a no-argument getter is one exact field read. */
 final class StructuralFieldAccessorProof {
     private StructuralFieldAccessorProof() {
+    }
+
+    /**
+     * A JDK atomic's {@code get()}: the value field it reads, off {@link
+     * SharedFieldFlow#atomicRead}'s table rather than a body, which a JDK
+     * class need not have loaded -- {@code AtomicReference.get()} is its
+     * {@code value}, {@code AtomicBoolean.get()} its {@code value != 0}.
+     * Null for any other call, or when the field does not resolve.
+     */
+    static SootField atomicField(String accessor) {
+        String field = SharedFieldFlow.atomicRead(accessor);
+        return field.isEmpty() ? null : Scene.v().grabField(field);
     }
 
     static SootField exactField(SootMethod method) {

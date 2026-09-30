@@ -24,7 +24,9 @@ import java.util.concurrent.locks.LockSupport;
  *   <li>HELD (a WAKE slot holds its timeout): VIRTUAL TIME stands in for
  *       the CLOCK, never for the NOTIFIER.  It ends at a real signal or when
  *       its slot is due; between asks it waits on its own primitive, so what
- *       it holds is released.</li>
+ *       it holds is released.  A wait with no slot the prefix still holds
+ *       (unrecorded, or past its recorded count) ends at a real signal or
+ *       when the order lets it go, then on its own deadline.</li>
  *   <li>NO WAIT (a timeout that is not positive): the JDK's call, and
  *       nothing else.  It returns at once and its loop spins, so an event
  *       per call would differ run to run; held, a {@code poll(0)} would miss
@@ -801,9 +803,11 @@ public final class TimedWaits {
      * for one that may never come.</p>
      *
      * <p>Held, the wait asks every quantum (which also drives the watchdog) and
-     * ends at a signal or when its WAKE slot is due.  With no slot left it
-     * waits to its own deadline on the wall clock ({@code ScheduleLog.turn},
-     * {@code timedOut}).</p>
+     * ends at a signal or when its WAKE slot is due.  With no slot left it is
+     * held for as long as the order holds it (a poll past its recorded count
+     * waits for the order to move, {@code ScheduleLog#waitsAtLocked}), then
+     * waits out its own deadline on the wall clock ({@code ScheduleLog.turn},
+     * {@code timedOut}): a poll never comes sooner than its timeout.</p>
      */
     private static boolean takeTurn(String site, boolean signalled,
                                     Quantum quantum, long deadline)

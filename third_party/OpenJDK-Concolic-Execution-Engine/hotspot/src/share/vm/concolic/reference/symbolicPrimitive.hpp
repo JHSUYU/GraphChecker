@@ -41,6 +41,16 @@ public:
   static Expression *finish_method_helper(MethodSymbolizerHandle &handle);
 };
 
+/**
+ * Whether `obj` is one JVM-wide object: an entry of a JDK box cache
+ * (Byte/Short/Integer/Long/Character.valueOf), Boolean.TRUE/FALSE, or an
+ * interned String.  Every later `Integer.valueOf(5)` in the JVM is that same
+ * object, so an expression attached to it would be read back by code that
+ * never saw the value; a value such an object carries rides the slot that
+ * holds it, and the object stays clean (item 5).
+ */
+bool jvm_shared_object(oop obj);
+
 bool primitive_invoke_method_helper(MethodSymbolizerHandle &handle,BasicType type);
 Expression *primitive_finish_method_helper(MethodSymbolizerHandle &handle,BasicType type);
 BasicType primitive_target(const std::string &class_name);

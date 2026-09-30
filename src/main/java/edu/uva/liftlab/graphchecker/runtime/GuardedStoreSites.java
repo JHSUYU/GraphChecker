@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -18,29 +19,36 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * PLAN's control-dependence answer ({@code static_scope_map.jsonl},
- * REPORT-CLOSURE-V2 SS1) installed as the VM's session table: the VM logs a
- * concrete store only inside a method named here, once one of its guard
- * branches decided symbolically (REPORT-VM22 VM24).  Decides nothing itself.
+ * SEED's control-dependence answer ({@code static_scope_map.jsonl},
+ * SYMBOL-SCOPE §3) installed as the VM's session table: a concrete store
+ * starts a location's log only at a store site named here, once one of that
+ * site's guard branches decided symbolically (VM §5.3); a store into an
+ * already-tracked location is versioned anywhere.  Decides nothing itself.
  *
- * <p>Store methods go to the VM with the owner's dots made slashes; guard
- * site ids ({@link edu.uva.liftlab.graphchecker.plan.SiteId#of}) go
- * verbatim, and contain commas, hence tab-separated fields (VM25).</p>
+ * <p>A store site is what the VM can tell apart at the store: its method,
+ * with the owner's dots made slashes, and what it stores -- {@code FIELD
+ * a/b/C.f} for a field store, {@code CALL put} for a container mutation's
+ * call.  Guard site ids ({@link edu.uva.liftlab.graphchecker.plan.SiteId#of})
+ * go verbatim, and contain commas, hence tab-separated fields.</p>
  *
- * <p>Required: a missing table would silently mean no concrete store is
- * ever evidence, so it is refused by name.</p>
+ * <p>Required: a missing table would silently mean no guarded concrete
+ * mutation ever starts a log, so it is refused by name.</p>
  */
 final class GuardedStoreSites {
-    private static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
+    /** Names this epoch's scope map; {@link ClockLoops} reads it too. */
+    static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
-    /** VM25: {@code line ::= methodKey ( '\t' guardSite )*}. */
+    /** SYMBOL-SCOPE §5.3:
+     *  {@code line ::= methodKey '\t' store ( '\t' guardSite )+}. */
     private static final char LINE = '\n';
     private static final char FIELD = '\t';
 
-    private final Map<String, Set<String>> guardsByMethod;
+    /** Store method, then its store site, then the site's guards. */
+    private final Map<String, Map<String, Set<String>>> guardsBySite;
 
-    private GuardedStoreSites(Map<String, Set<String>> guardsByMethod) {
-        this.guardsByMethod = guardsByMethod;
+    private GuardedStoreSites(
+            Map<String, Map<String, Set<String>>> guardsBySite) {
+        this.guardsBySite = guardsBySite;
     }
 
     /**
@@ -73,11 +81,11 @@ final class GuardedStoreSites {
                     + failure.getClass().getName() + ": "
                     + failure.getMessage();
         }
-        // Every method here has a guard, so the VM must keep them all.
-        if (installed != table.methods()) {
+        // Every site here has a guard, so the VM must keep them all.
+        if (installed != table.sites()) {
             return "GUARDED_STORE_SITES_INSTALL_REFUSED: the VM kept "
-                    + installed + " of the " + table.methods()
-                    + " guarded store methods the table names";
+                    + installed + " of the " + table.sites()
+                    + " guarded store sites the table names";
         }
         log("GUARDED_STORE_SITES|installed=" + installed + "|guardSites="
                 + table.guardSites() + "|map=" + artifact);
@@ -85,8 +93,8 @@ final class GuardedStoreSites {
     }
 
     static GuardedStoreSites of(List<JsonObject> rows) {
-        Map<String, Set<String>> guardsByMethod =
-                new LinkedHashMap<String, Set<String>>();
+        Map<String, Map<String, Set<String>>> guardsBySite =
+                new LinkedHashMap<String, Map<String, Set<String>>>();
         for (JsonObject row : rows) {
             if (!StaticScopeMap.SITE_KIND.equals(member(row, "kind"))
                     || !StaticScopeMap.WRITE_SITE.equals(
@@ -95,13 +103,14 @@ final class GuardedStoreSites {
             }
             List<String> guards = guards(row);
             if (guards.isEmpty()) continue;
-            String method = internalMethod(member(row, "vmSite"),
-                    member(row, SiteId.MEMBER));
-            Set<String> stated = guardsByMethod.get(method);
-            if (stated == null) {
-                stated = new LinkedHashSet<String>();
-                guardsByMethod.put(method, stated);
-            }
+            String siteId = member(row, SiteId.MEMBER);
+            String method = internalMethod(member(row, "vmSite"), siteId);
+            String store = store(row, siteId);
+            Set<String> stated = guardsBySite
+                    .computeIfAbsent(method,
+                            key -> new LinkedHashMap<String, Set<String>>())
+                    .computeIfAbsent(store,
+                            key -> new LinkedHashSet<String>());
             for (String guard : guards) {
                 if (guard.indexOf(LINE) >= 0 || guard.indexOf(FIELD) >= 0) {
                     // Would make the VM read another string as a method.
@@ -111,32 +120,68 @@ final class GuardedStoreSites {
                 stated.add(guard);
             }
         }
-        return new GuardedStoreSites(guardsByMethod);
+        return new GuardedStoreSites(guardsBySite);
     }
 
     String text() {
         StringBuilder table = new StringBuilder();
-        for (Map.Entry<String, Set<String>> entry
-                : guardsByMethod.entrySet()) {
-            table.append(entry.getKey());
-            for (String guard : entry.getValue()) {
-                table.append(FIELD).append(guard);
+        for (Map.Entry<String, Map<String, Set<String>>> method
+                : guardsBySite.entrySet()) {
+            for (Map.Entry<String, Set<String>> site
+                    : method.getValue().entrySet()) {
+                table.append(method.getKey()).append(FIELD)
+                        .append(site.getKey());
+                for (String guard : site.getValue()) {
+                    table.append(FIELD).append(guard);
+                }
+                table.append(LINE);
             }
-            table.append(LINE);
         }
         return table.toString();
     }
 
-    int methods() {
-        return guardsByMethod.size();
+    int sites() {
+        int sites = 0;
+        for (Map<String, Set<String>> stores : guardsBySite.values()) {
+            sites += stores.size();
+        }
+        return sites;
     }
 
     int guardSites() {
         Set<String> guards = new LinkedHashSet<String>();
-        for (Set<String> stated : guardsByMethod.values()) {
-            guards.addAll(stated);
+        for (Map<String, Set<String>> stores : guardsBySite.values()) {
+            for (Set<String> stated : stores.values()) guards.addAll(stated);
         }
         return guards.size();
+    }
+
+    /**
+     * What one store site stores, as the VM names it at the store: the call
+     * a container mutation makes ({@code CALL put}), else the field a
+     * putfield/putstatic writes ({@code FIELD a/b/C.f}, its declaring class
+     * internal).
+     */
+    private static String store(JsonObject row, String siteId) {
+        String callee = member(row, "declaredCallee");
+        if (!callee.isEmpty()) {
+            int open = callee.indexOf('(');
+            int space = open < 0 ? -1 : callee.lastIndexOf(' ', open);
+            if (space < 0) {
+                throw new IllegalStateException("static scope map states a "
+                        + "guarded write site whose callee is no method: "
+                        + siteId + " " + callee);
+            }
+            return "CALL " + callee.substring(space + 1, open);
+        }
+        FieldPathSpec.DeclaredField field =
+                FieldPathSpec.declaredField(member(row, "cell"));
+        if (field == null) {
+            throw new IllegalStateException("static scope map states a "
+                    + "guarded write site with no field: " + siteId);
+        }
+        return "FIELD " + field.owner().replace('.', '/') + "."
+                + field.name();
     }
 
     /** One store method as the VM asks for it: owner in internal form. */

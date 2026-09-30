@@ -15,13 +15,13 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
 | PLAN | `campaign_plan`; `plan.ConcolicScheduler` | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
-| REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on a bound; no activation; no target row of the target method |
+| REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
 | EXPLORE | `campaign_explore`, `campaign_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions | the planner fails; an obligation does not finish; a replay states no verdict; a wave's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
-| CONFIRM | `campaign_confirm`; `explore.ConfirmMain` + one replay | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
+| CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed; exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
 
 There is one iteration (`iteration-0000`); what a replay learns past the recording is taken up by GROW
@@ -76,6 +76,7 @@ marked * below.
 | `schedule_max_jobs`* | the most tasks PLAN may schedule |
 | `solver_timeout_ms`* | one z3 run, in a flip query and in COMPOSE |
 | `replay_timeout_s`* (2400) | the wall clock of one obligation replay |
+| `seed_replay_time_factor`* (40) | the seed replay's wall clock, as a multiple of the recorded workload's (§5) |
 | `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth`, `region_path_stop_at_fatal` | EXPLORE's bounds (§7.4, §7.9) and the witness stop (§7.1) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `concolic_worker_count`* (8), `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | slots per host, the hosts, one obligation's memory at the host gate, the head JVMs' heap |
@@ -125,7 +126,9 @@ none.
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
 2. `do_workload`: one weave in trace mode `region-state` (lineage classes from `plan.LineageScan`
-   included), then the workload itself (`workload_command`; a nonzero exit fails SEED), then
+   included), then the workload itself (`workload_command`; a nonzero exit fails SEED; its wall
+   time in seconds is kept as `campaign_recorded_workload_s`, the base of the seed replay's
+   bound, §5; the recording itself runs under no bound), then
    `runtime.CausynthTraceRecorder` aggregates the trace into `runtime/concolic_region_plan.jsonl`
    (the runtime region plan) and `runtime/region_skeletons.jsonl`; the recording's
    `runtime/schedule.jsonl` sits beside them.
@@ -159,10 +162,38 @@ the replay's class path, or the stage fails naming the class. GROW re-runs this 
 sessions directory, worker directory and `CAUSYNTH_SCHEDULE_PREFIX`; the seed replay is held to the
 recording's schedule (`recorded_schedule.jsonl`). A replay publishes one session under
 `iteration-0000/sessions/<sessionId>/` (layout in [CONTRACT-SPEC.md §2](CONTRACT-SPEC.md)); with no
-focus row its `manifest.json` states role `SEED`. The seed replay is `required`: a replay killed on a
-bound, a session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row whose
-`anchorSiteId` is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. The
-workload's exit code is not the gate (a target that throws exits nonzero by design).
+focus row its `manifest.json` states role `SEED`. The seed replay runs under a wall clock of
+`seed_replay_time_factor` × `campaign_recorded_workload_s` seconds (§2), never less than
+`replay_timeout_s`. It is `required`: a replay killed on that bound or otherwise (the failure
+names what killed it; for the bound, the rule and its numbers, `campaign_adapter_timeout_rule`), a
+session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row whose `anchorSiteId`
+is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. The workload's exit
+code is not the gate (a target that throws exits nonzero by design).
+
+A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
+end and the witness stop alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
+starts after it), live activations settle, the run totals close the session's rows (a closed
+`SessionPublisher` writes nothing more), and only then the VM session closes. Cluster threads
+outlive the test, and a region started after the close would open a fresh VM session in which
+every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
+
+A focused replay ends at its witness: when the focus row's declared occurrence publishes a target row
+that observed the fatal (`ConcolicResultPublisher#concludeAtWitness`), admission ends, its schedule
+states the run cut there (`ScheduleLog#witnessed`: a replay held to it holds a `WAKE` it never made
+to the order's end, IDENTITY.md §8), the publications in flight settle, every activation still live is stranded (`TASK_UNANSWERED`
+`AT_WITNESS`; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and one that
+completes after the witness is not published (`AT_WITNESS`). A stranded or late activation's path
+is withheld and its mints are published, as an abandoned one's are: other activations' rows already
+name its symbols (IMPORT invariant 11).
+
+A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
+admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
+only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the
+identity it returned, which a read no write row states is pinned to. A referent's version is a
+write row or the write refuses it by name (`RowPublication#unrowedReferent`): the read-out refused
+the container's log (its fault, e.g. `CONTAINER_BASE_UNSTATED` for a class the VM walks no base of,
+a truncated envelope), or holds the version as no row (`VERSION_NOT_ROWED`) or no longer
+(`VERSION_NOT_RETAINED`).
 
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
@@ -178,7 +209,7 @@ test took its fatal arm. A reached target whose decision has no VM event id is a
 `campaign_import_session` requires every session to hold `activations, decisions, exports, attaches,
 writes, reads, roots, targets, gaps, schedule` `.jsonl` and a non-empty `expressions.jsonl`, and writes
 one `SESSION_CENSUS` row per (session, kind) to `session_census.jsonl`. `campaign_import_gate` then runs
-`contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-11,
+`contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-12,
 [CONTRACT-SPEC.md §2.6](CONTRACT-SPEC.md)) to `campaign_gaps.jsonl` and prints a summary; one BLOCKING
 violation fails IMPORT naming the first subject. The same gate runs after every EXPLORE wave (§7.9).
 
@@ -221,7 +252,9 @@ worker's focus row as that session's world, the wave verdicts, the recorded sche
 Demand starts at the anchor: its flip sites are the target sites' guards
 (`StaticScopeMap.Site.guards`) when some run reached the anchor, else the sites of the target's path
 chain (`pathSites`). The demanded symbols of an occurrence (with its state-connected factor) are those
-its demanded values reach (`SmtLowering.reachedSymbols` over the lowered terms): the anchor's `phiTerm`,
+its demanded values reach (`SmtLowering.reachedSymbols` over the lowered terms and, where a read's
+refused join gave way to its mint or its value, over what that join lowered: `Lowered.reach`; such a
+lowering is no `Lowered.ok` value a flip query stands on): the anchor's `phiTerm`,
 its decisions at its flip sites, and the values it contributed (the exports a demanded attach paired
 with, the write a demanded read could observe), closed over the reads those name and the writes they
 could observe. Each demanded boundary input grows the closure:
@@ -235,7 +268,16 @@ could observe. Each demanded boundary input grows the closure:
   version, and writes of the same session by HB-concurrent occurrences — `Arms.concurrent`: not the
   same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root, neither
   Lost), and every activated occurrence on the reader's node holding a static write site of the
-  location's carrier (`STATIC_CANDIDATE_WRITER`);
+  location's carrier (`STATIC_CANDIDATE_WRITER`; `StaticScopeMap#carriersAt`: a recorded write joins
+  a carrier in its method whose site stores its location's kind, `#stores` — a field store or an
+  atomic's value a field, another mutator call a container's state, a read its field or a container
+  field's state, no site an array element — and whose declared type may hold the row's: the same
+  class, the bare sort, or, with no hierarchy at hand, value sorts that agree; a declared class no
+  sort names holds any reference, and a runtime class no sort names may be a container, never a
+  String or a box);
+  a store of a reference among those writes that states a `referentState` adds the writers of each
+  state of that container the read could have seen through it (`Corpus#referentStates`, COMPOSE's
+  `SmtLowering#statesOf`);
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
 - the two doors of the message a demanded occurrence served (sender and receiver of its causal
@@ -243,8 +285,14 @@ could observe. Each demanded boundary input grows the closure:
 
 An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint. A region holds a
 static site when the map's method set of the region contains the site's method or one of its callers;
-with no method set, region-id equality. A static site no session activated is a DIAGNOSTIC gap ("the
-retained set would have to grow"), not a task. Each demanded occurrence becomes a `Task` (id =
+with no method set, region-id equality. "Activated" means an instrumented activation row: an ambient
+row (a port event outside every admitted activation, `RowRuntime#ambientActivation`) names where the
+event ran, not a region that ran the site, so it makes no static candidate
+(`ClosurePlanner#activated`); an ambient occurrence joins the closure only through the rows that name
+it. A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
+not a task. One anchor's walk offers the static candidates of one (reason, site, guard set, node)
+once, whichever read or attach asks for them: asked again they are the same demands, and folding
+them changes nothing (`ClosurePlanner#candidates`); the walk says each gap once. Each demanded occurrence becomes a `Task` (id =
 `digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
 the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
 plus every fault site (`Corpus.faultSites`: a decision whose lowered term reaches a MARKER root). A
@@ -297,7 +345,12 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   container state behind a guard is one variable at the sort its writers deliver.
 
 An undeclared name in the flipped conjunct refuses the query (`DECLARATION_MISSING`); in a prefix
-conjunct it drops the conjunct (DIAGNOSTIC); a malformed lowered term likewise. A symbol no rule binds
+conjunct it drops the conjunct (DIAGNOSTIC); a malformed lowered term likewise. A name is declared
+when the query declares it, a `let` binds it, the fixed preamble states it, or it is a theory
+operator of `compose.SmtNames.BUILTIN`, the one vocabulary every stage reads with, which lists every
+operator the lowering writes (the string operators `str.substr`, `str.indexof`, `str.at`,
+`str.from_code`, `str.to_code` among them, the floating-point operators, `to_fp`, `int2bv`, `bv2int`
+and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query with no variable of its own is not asked. A construct the
 lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays
 in the query. Demanded conjuncts (the flip and the inherited flips) get a one-minute clock margin on
@@ -398,7 +451,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
 **One path** (`compose(path, ordinal)`), in its own session's scope:
 
 - P3 closure (`closure`): the occurrences the path's joins reach, each with the seq its prefix runs to,
-  including earlier versions of every reached write's location;
+  including earlier versions of every reached write's location; a refusal is its frame's
+  (`frameRefusals`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
+  attach, an attach that minted no `v_H`; `Corpus#refusedIn`) refuses the path, and an arm whose
+  closure reaches one is no option;
 - constraint independence (`compose.Independence`): conditions and reads sharing no variable with phi
   (or a root) stay out;
 - the valuation this session ran each non-clock root at (`valuationOf`; `Corpus.rootValue`: the
@@ -408,9 +464,20 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   this session's value, or bounded by its declared window around it; a declared root this session
   never minted refuses the path only when the path's terms name it;
 - anchor handoffs: an obligation's answer if any, else bound only by the message family;
-- the read rule (`statedReads`, `stateJoins`): JOIN to the observed version's write expression if it
-  lowers with no refusal, else the MINT of that version (a placeholder), else PIN to the value the row
-  states, else REFUSE (`UNSTATED_VALUE`); a refused join is dropped when the mint or the pin binds;
+- the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
+  too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
+  of that version (a placeholder), else PIN to the value the row states, else REFUSE
+  (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
+  can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
+  dropped it raises nothing (no refusal, side condition or gap); what a read row's binding required
+  (container membership and cell tags, recorded readings) is stated with its join, so only where
+  the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
+  object the VM named (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a
+  whole value is asked
+  (`SmtLowering#whole`: a join, a published expression, a stated value) or a reference is (a
+  comparison asks a named operand at the other's sort, on either side, `#binary`); an operator
+  asks for its own operands, and a named container there is its state, at its class's sort
+  (`Host#state`: that object's own state root, `container__`);
 - `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the
@@ -424,7 +491,11 @@ Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped b
 sessions with an attested arm at every leaf of the message, whose world's flip set contains or is
 contained in the path's; one `message_arm__` selector per sender (identical arm bodies share one),
 exactly one, each arm closed like a path in its own session (producer prefix before the delivery, its
-P3 closure, nested families to depth 16). A message no session can send drops the path.
+P3 closure, nested families to depth 16). A message no session can send drops the path. A path's
+families (message and state) are all or nothing: their named assertions, arm choices and families
+are stated as they are made and taken back with a refused path (`ComposedFamilies#discard`,
+`SmtLowering#retract`), so the next path, composed at the ordinal a refused one left free, names
+nothing twice.
 
 **State families** (`stateFamilies`), for joined reads at the anchor only, of a static field or of a heap
 location whose owner is an object rid (`Arms.namedOwner`; a class-name owner gets no alternatives):
@@ -436,6 +507,99 @@ location that has two arms or more, else the reads keep their own joins. The arm
 observed arm, else the one writer every read observed) is part of the path's recorded pairing; a
 location where no arm is that pairing (the reads saw two writes, or the write they saw has no arm)
 is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formula.
+
+**A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
+`Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
+lowers to the run's cell, except through an owner that is a read `stateJoins` joined at the anchor
+(`SmtLowering#movable`: a state family may bind it to another writer's object). There it is the
+field of the object the owner is, by the one rule for what is asked through such an owner
+(`perCandidate`, R3-REFCONT's "answer per candidate identity"):
+`(ite (= owner id_run) cell_run (ite (= owner id_k) cell_k ...))`, conjoined with "the owner is one
+of these, and that case is defined". The run's object is the owner of the cell `concreteValue`
+read, else `concreteOwner` when it spells an object; a pair naming neither refuses the path
+(`UNSTATED_VALUE:OwnerCandidates:<location>`). The other candidates (`candidates`, C(r)) are the
+objects of the projection's class that this session's writes of the owner's location reach, through
+the reads in them. A candidate's cell (`fieldOf`) is the one write of it in the session, made
+before the location first stored the object, or, never written, the one value every read of it
+states at one version. A candidate with no such cell is no case, so the arms delivering it are
+refused, and it is named DIAGNOSTIC `CANDIDATE_UNANSWERED:<cell>@<session>`. EXPLORE lowers through
+the same rule; its owners are never movable (a joined reference read is inlined), so a projection
+there is the run's cell.
+
+**A container queried through a re-pointable owner** (`SmtLowering#query`, reached from the codec's
+`Host.query` for a relation stating `owner` whose answer is no state; a state is never selected,
+since an array-valued choice over lambda terms is outside what z3 decides). Through a movable owner
+(`#movableOwner`, the projection's own test) the query is asked of the object the owner is, by
+`perCandidate`, for the object the owner read returned (its joined write's identity, else the one
+its row states) and each other object a write of the owner's location stored (`candidates`, any
+class): the same relation over each state of that object the reader could have seen through a store
+of it (`#answerOf`), its receiver beneath views and iterators replaced by the state's chain
+(`#asOf`). Through one store, those states are its `referentState` and the later versions the reader
+could have seen (`#statesOf`, R3-REFCONT §1.4, the one rule EXPLORE also demands by): the version
+live at the read in session order (the store's own when every one came later), and each later one
+whose writer is HB-concurrent with the reader (`SessionJoin#concurrent`, `Arms#concurrent`). Each
+state is chosen by a nested selector `nest__<digest>`, one per (read, object, version), so every
+query through the read sees the object at one version; a family arm delivering one store holds them
+to the states seen through that store (`#storeChoice`, conjoined by `ComposedFamilies#producerBody`).
+Another object's answer holds exactly one of its selectors (a state a query has no answer at is none
+of its options). The run's own object answers as the run saw it through the store the read observed,
+and through any other store of it (a re-store publishes a later state) the states seen from that
+store's referent on: at most one of those selectors holds, none being the run's answer. A read is
+movable only in the path whose anchor joined it (`SmtLowering#path` clears the set when a path
+begins), so a message arm lowered in another session's scope asks the run's answer there. Every
+selector the path minted holds only under an arm of it that delivers a store its state was seen
+through (`nest_family__<N>__<digest>`, `ComposedFamilies#stateFamilies`), so with the observed
+store's arm, the pins' or no family, the run's object is the run's answer. A state rests on what
+made it: under its selector, the arm conjoins the decisions of the closure its write adds to the
+store producer's (`ComposedFamilies#stateClosure`, `Composer#closure` seeded with that write, the
+writers EXPLORE demands), each before its cutoff, and joins the reads they name; a state whose added
+closure the recording does not state is no option (`(not nest__…)`, its refusals named
+DIAGNOSTIC). An answer holds only where the
+owner is its object, so what its lowering requires is its case's precondition, never the path's. A
+store that states no state (`referentStateRefused`, none, a version no write row states
+(`UNPUBLISHED`), or no version lowers) delivers no case,
+named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A movable owner that is no
+reference read (a map's own read, `outer.get(k).get(k2)`) names no candidates and refuses the path
+(`UNSTATED_VALUE:OwnerCandidates:<location>`). `ENTRY` is a view to walk through; as a value no
+`Value` spells it, and it is refused by name.
+
+**What a state arm states for CONFIRM** (`SmtLowering#stateChoices`, `ComposedFamilies.ArmChoice#states`).
+A query's reads are the container reads (MAP location) of the owner's reader whose joined value was
+being lowered when it was asked (`#askedThrough`, the reads `#answering` holds). A writer arm carries,
+for each store it delivers, each state a query through the read may have seen with its selector, the
+write of that version and those reads; the claim keeps the ones the model chose (`ArmChoice#taking`,
+the nested selectors asked beside the arm selectors, `Composition#stateSelectors`) and publishes them
+per read as the selected arm's `referentStates` (`{selector, reader, writer, location, version}`,
+`ComposeMain#referentStates`; a query no read answered is one row with an empty `reader`).
+
+**New map operations** (`ContainerSmtCodec`). `READ_OR_DEFAULT` (`getOrDefault`) is a read whose
+absent key answers the default. `PUT_ALL` (`putAll(m)`) puts, in the order m's chain put them, each
+key m's chain names above its exact empty base, where m holds it (`assoc_put_if`, the guard inside
+each component as `assoc_remove_if`'s); a source whose chain bounds no keys is refused by name
+(`ContainerRelation:ASSOCIATIVE:PUT_ALL:source-keys-unstated`), and a view over the result counts
+the source's keys. The presence and match conditions of `putIfAbsent`, `replace` and `remove(k, v)`
+are comparisons of a `READ` with null or the argument, lowered as any comparison.
+
+**Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
+container states its `referentState`; its referent rests on every decision its occurrence took
+before it at the guard sites of the mutations its method made on a container it then published
+(`StaticScopeMap#constructionGuards`, the scope map's `publishedFrom` write sites, the carriers the
+store's recorded type may be held by, `StaticScopeMap#carriersAt`), those that skipped a mutation included. `Independence` keeps them: a kept
+read brings the guards of the write it observed, and an arm (`ComposedFamilies#producerBody`) seeds
+the guards of the writes it delivers (`Arms.Arm#write`); the closure then conjoins them in the
+polarity they took, and the reads they name are joined in turn. A decision whose condition is a
+REMOVE_IF guard of the referent's chain, or that guard's complement, stays free. `ComposeMain`
+reads the epoch's scope map (`--static-scope-map`, required; `run_engine.sh do_compose` passes it).
+
+**An owner kept to the run's pairing** (`Composer#pinnedOwners`): a location a STATE family may
+re-pair keeps the run's pairing (no family, no movable owner), named DIAGNOSTIC, when a reached
+occurrence's container version is a mutation naming as its `owner` a read of it
+(`OWNER_PINNED_BY_MUTATION:<location>@<session>`, R3-REFCONT C-4: another pairing would mutate an
+object no row records the mutation of), or when a store of it states or refuses a referent while
+the object it stored has no container log of its own in the session, a `Collections` wrapper or a
+view (`OWNER_PINNED_BY_WRAPPER:<location>@<session>`: a query through a wrapper reaches its map
+through a field no row records and names no owner, so it would be the run's map's answer whichever
+object the family delivered).
 
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint
@@ -464,9 +628,14 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ClaimPolicy`:
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
-2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors and
-   clock cells. Each path is also asked alone with every root free (60 s): unsat →
+2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors,
+   the nested state selectors a state arm's stores are chosen among (§8) and clock cells; a selected
+   state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →
    `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
+   An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
+   each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
+   since tracked z3 simplifies nothing across them and still searches a disjunct whose selector the
+   rest forces false.
 3. *As it happened* = every clock cell pinned to its reading plus `recordedPairings` (each path held to
    its own observed reads and received arrivals). `recordingDecides`: ordinal 0 is sat free and unsat
    as it happened. `clockDriven`: it is also unsat with the clocks alone pinned; then the witness keeps
@@ -521,28 +690,44 @@ valuation, its selected path and session, and the selected arms of that path; th
 must have a target row at the anchor that reached it (else refused, exit 1 → unconfirmed).
 
 - **Realized**: when that target row observed the fatal, every selected arm is the session's own
-  delivery, and the session minted every moved root at the model's value, the session is the
-  confirmation (`realized.json`, no replay).
+  delivery, every write the model chose for a read of the join closure is the one that read saw
+  (`StateClosure#ran`), and the session minted every moved root at the model's value, the session
+  is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
   overlaid with the model's moved roots (`plantModel`: a clock as a skew off this session's reading,
   any other root as its value, at the recording's mint occurrence). The focus row focuses the anchor
   with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
-  they followed). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
+  they followed, and when the selected session was cut at its witness, a WAKE it never made waits
+  for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
   as that arm's session paired it), `STATE` per read of the anchor's join closure (each reached
-  occurrence's reads before its cutoff, the anchor's before its target seq; the writer the model
-  chose through a `writer_arm__`, else the observed one), `ORDER`
-  rows (the writer's activation exits before the reader's enters; every other writer of the location
-  before the writer or after the reader), `MARKER` per planted marker, `ANCHOR`.
+  occurrence's reads before its cutoff, the anchor's before its target seq; the write the model
+  chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
+  endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a
+  query through a re-pointable reference the write of the state its arm's `referentStates` name,
+  §8), `ORDER` rows (the writer's activation exits before the reader's enters; every other writer of
+  the location the held write is of before the writer or after the reader), `MARKER` per planted
+  marker, `ANCHOR`. A `referentStates` row with no reader (a query asked outside every container
+  read), at a read that is no read of the closure, or naming a write the session does not state
+  refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
   `Confirmation` compares WIRE at the attach and STATE at close, and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
   mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
-  are not read by the runtime. An unreadable `expected_edges.jsonl` compares nothing (logged only).
-- Decision (`campaign_confirm_decide`): the replay's verdict is `ADMITTED`, its session has no
-  `CONFIRM_MISMATCH` gap, and some target row of the session has `reachedAnchor` and `observedFatal`.
+  are not read by the runtime. A CONFIRM run (`FocusedReplay.confirming`: its obligation flips
+  nothing) whose `expected_edges.jsonl` is missing or unreadable compares nothing and files one
+  `EDGES:` mismatch at the close, so it confirms nothing.
+- Decision (`ConfirmMain --claim --output <worker> --sessions <dir>`, `ConfirmMain#decide`, which
+  prints `final/confirm.json`), conditions in order, the first that fails named as the reason: the
+  replay's verdict is `ADMITTED`; its session directory exists and its `gaps.jsonl` and
+  `targets.jsonl` are readable (a session that did not publish them answers nothing); no gap is a
+  `CONFIRM_MISMATCH`; and a target row whose occurrence id is the claim's anchor's (the id only
+  the Java address computes) has `reachedAnchor` and `observedFatal` — a fatal at another
+  occurrence of the target site does not confirm. A ConfirmMain that exits nonzero is
+  "unconfirmed" with its log named.
 
-`final/confirm.json`: `{kind: CONFIRMATION, confirmed, reason, sessionId}`.
+`final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, reason, sessionId}`, the
+same shape for a refusal, `realized.json` and the decision.
 
 ## 11. EMIT
 
@@ -569,7 +754,8 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
 ## 12. Acceptance: `experiments/accept/`
 
 `accept.sh` builds the jar, then per case (one at a time; `CASES`, default the nine HDFS cases of
-`ACCEPT_ALL_CASES`) runs `lib/run.sh <case> validate` and `campaign` under `CASE_TIMEOUT_SECONDS`, then
+`ACCEPT_ALL_CASES`; `EXPECTED_MECHANISM` also names solr-18413 and solr-18406, both `CLOCK_SKEW`)
+runs `lib/run.sh <case> validate` and `campaign` under `CASE_TIMEOUT_SECONDS`, then
 `probe.sh`, `cone.py` and `report.py`, and writes `summary.tsv`. `report.py` passes a case when all
 hold, read off `final/result.json`, `gaps.json` and `cone.json`:
 
@@ -590,10 +776,32 @@ hold, read off `final/result.json`, `gaps.json` and `cone.json`:
 
 `probe.sh` strips the `valuation__` pins from `candidate.smt2` and asks z3 about the formula
 unpinned, with the accepted assignment and with the other polarity; it is reported, never gated on.
+
+Before the cases and before each case, `accept.sh` requires `MIN_FREE_GB` (6) free on the
+filesystem `OUT` is written to (its nearest existing parent before `OUT` exists), `acc_free_gb`;
+a 1 MB probe write there that is refused reads as 0 G (a full disk or a per-user quota `df` does
+not show). The preflight fails by name; a case waits up to `DISK_WAIT_SECONDS` (1800) for room and
+is then skipped as `no disk`.
+
 Ad-hoc sweeps do not use `report.py`: `tools/adhoc/triage.py` classes a case with a `result.json`
 `CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true, `REFUTED` when
-`claim` is `SAT_CANDIDATE` without it (which EMIT's downgrade to `SAT_UNCONFIRMED` makes
-unreachable), else `NO_WITNESS`; a case without one is `STOPPED`, `RUNNING` or `PENDING`.
+`claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), else `NO_WITNESS`
+(`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row exists (the stage
+and reason its logs state: the campaign's own failure, the case timeout, a failed trace
+aggregation, a stage's Java main, the engine's `die`, a full disk or quota), `PENDING` when never
+started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still runs a process naming
+its directory, `DEAD` when none does.
+
+`tools/regress/offline-ab.sh <baseline-jar> <candidate-jar> [case...]` is the offline regression
+gate: per case of a recorded round (`--round`, default `v94 v93 v92`), it runs every stage that is
+a pure function of the recording once per jar — the static pass, the trace aggregation, PLAN,
+EXPLORE wave 0 and its solves, IMPORT, the closing EXPLORE wave, COMPOSE with SOLVE and DECIDE,
+and CONFIRM's planning — over private iterations that link the recorded sessions, with no
+workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
+2 when one could not be checked. Every stage gates on bytes, the static pass included: it is the
+same on every host and run ([SYMBOL-SCOPE.md §2.3](SYMBOL-SCOPE.md)). A round is read as the
+current engine reads it, so the gate needs a round recorded by a build whose row contract HEAD
+still reads.
 
 ## 13. Reading a run
 

@@ -198,7 +198,7 @@ gaps = len(blocking) if gaps_doc else result.get("gapCount", "?")
 # ...and the campaign's own acceptance: a candidate the campaign withheld is
 # not a pass whatever else the result says.
 withheld = result.get("accepted") is not True
-# CONFIRM (DESIGN4 §5): SAT says the model satisfies the formula, the
+# CONFIRM (PIPELINE §10): SAT says the model satisfies the formula, the
 # confirmation replay says whether the program agrees.  EMIT copies
 # confirm.json into result.json and downgrades an unconfirmed claim to
 # SAT_UNCONFIRMED; a result with no confirmation at all is not confirmed.

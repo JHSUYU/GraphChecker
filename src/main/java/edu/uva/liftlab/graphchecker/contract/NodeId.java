@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 1: a component instance and its declared topology epoch,
+ * CONTRACT-SPEC §1: a component instance and its declared topology epoch,
  * rendered {@code <node>#epoch<N>} (the node name may carry slashes).
  */
 public final class NodeId extends Value {

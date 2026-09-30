@@ -30,8 +30,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * R4's far half: v_H, the consumer's boundary variable, minted on the value
- * that arrived.
+ * The wire's far half (SYMBOL-SCOPE §6.3): v_H, the consumer's boundary
+ * variable, minted on the value that arrived.
  *
  * <p>After {@link WireExport} attaches the producer's e_p, the element's
  * shadow becomes a FRESH variable, so the two sides are explored
@@ -110,7 +110,7 @@ final class HandoffMint {
      * plan declares this port IN (stable across replays).  Trap: the
      * innermost live region may not own the site, and filing there reports
      * one attach twice.  When none declares it the innermost live one
-     * carries the row, and R5 reports it unplanned (UNPLANNED_HANDOFF); null
+     * carries the row, reported unplanned (UNPLANNED_HANDOFF); null
      * only when no region is live.
      */
     private static ActiveRegion attachConsumerRegion(
@@ -137,7 +137,7 @@ final class HandoffMint {
     /**
      * Mints v_H at one primitive leaf of one attach.  A reference or array
      * port is one attach and several variables (e.g. {@code [i].keyId}), each
-     * its own handoff occurrence for R3.
+     * its own handoff occurrence.
      */
     private static void mintHandoffLeaf(ActiveRegion active, String portId,
                                         HandoffLeaf leaf) {
@@ -159,7 +159,7 @@ final class HandoffMint {
             String recordedValue = ConcolicRegionRuntime.recordedScalar(
                     leaf.field.get(leaf.owner));
             // Name the endpoint first: an obligation answers an attach by
-            // its endpoint id (INTERACTION-ID).
+            // its endpoint id (CONTRACT-SPEC §3).
             Endpoint consumer = RowRuntime.nextEndpoint(active.d3Address,
                     portId, WireExport.attemptOf(
                             RuntimeTraceContext.current()));

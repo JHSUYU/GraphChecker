@@ -22,6 +22,11 @@ public final class VmExpressionIr {
     public static final String SYMBOLIC_NULL = "N";
     /** The VM's spelling of void, its other built-in symbol. */
     public static final String SYMBOLIC_VOID = "V";
+    /**
+     * A value the VM declined to state in full (a String past its bound):
+     * {@code {"_type":"TruncatedValue","length":n}}, read as unstated.
+     */
+    public static final String TRUNCATED_VALUE_TYPE = "TruncatedValue";
     /** Transparent VM marker installed at a consumer-side value boundary. */
     private static final String CONSUMER_BOUNDARY_TYPE =
             "ConsumerBoundaryExpression";

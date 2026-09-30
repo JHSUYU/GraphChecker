@@ -124,13 +124,13 @@ workflow_config_keys=(
   "causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS krp -"
   "causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS krp -"
   # The backedge ceiling a retained loop the case did not narrow runs under.
-  # The case states it (README LOOP-1); every inherited application is
+  # The case states it (PIPELINE §0); every inherited application is
   # published as the catalog's DIAGNOSTIC gap row (INHERITED_K_L_<n>).
   # No default here: a campaign that states none is refused by name.
   "causynth_loop_default_bound CAUSYNTH_LOOP_DEFAULT_BOUND krp -"
   "causynth_lineage_roots CAUSYNTH_LINEAGE_ROOTS krp -"
   # How many classes of the lineage roots SEED may add to the case's scope
-  # where the slice stops at it (plan.ScopeGrowth, SYMBOL-SCOPE section 2),
+  # where the slice stops at it (plan.ScopeGrowth, SYMBOL-SCOPE §2.4),
   # nearest the throw first; 0 keeps the declared scope as it is.
   "causynth_scope_growth_budget CAUSYNTH_SCOPE_GROWTH_BUDGET krp 24"
   # What the case says its declared roots may be, beside what the recording
@@ -469,7 +469,7 @@ validate_config() {
     fi
   done
   [[ ${missing} -eq 0 ]] || return 1
-  # README section "Loops": no retained condition-controlled loop may inherit
+  # PIPELINE §0: no retained condition-controlled loop may inherit
   # the core default, so the per-loop K_L declarations belong to the workload's
   # frozen configuration. The key is required rather than optional because an
   # absent key and a campaign whose declarations never arrived are the same
@@ -586,7 +586,7 @@ do_analyze() {
       "-Dcausynth.communication.mappings=${causynth_communication_mappings}"
     )
   fi
-  # README section 5's per-loop K_L, declared by the campaign that owns the
+  # The per-loop K_L (PIPELINE §2), declared by the campaign that owns the
   # workload. The declarations are read by the static pass that retains the
   # loops, so they are named here rather than inherited from whatever
   # environment happened to reach the JVM: a campaign whose declarations
@@ -668,7 +668,7 @@ campaign_grown_scope() {
 }
 
 # The static pass, with the scope grown where the slice stops at it until
-# nothing is added or the budget is spent (SYMBOL-SCOPE section 2).
+# nothing is added or the budget is spent (SYMBOL-SCOPE §2.4).
 campaign_analyze_grown_scope() {
   local grown changes summary
   grown=$(campaign_grown_scope)
@@ -740,6 +740,7 @@ do_compose() {
     || selection+=(--root-domains "${causynth_root_domains}")
   run_java_main edu.uva.liftlab.graphchecker.compose.ComposeMain \
     --sessions "${compose_sessions_dir}" \
+    --static-scope-map "${causynth_static_scope_map}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
     --solver-timeout-ms "${solver_timeout_ms}" \
@@ -823,7 +824,7 @@ campaign_provenance=""
 # replay's bound is seed_replay_time_factor times it.
 campaign_recorded_workload_s=""
 # This iteration's task-set membership, decoded once by PLAN from the frozen
-# schedule index (README "Minimal cross-stage contract": one owner per check).
+# schedule index (PIPELINE §3), one owner per check.
 # IMPORT, EXPLORE, the iteration manifest and COMPOSE read these rows; they do
 # not re-decode the index, because re-deriving the same membership at five
 # stages is five chances to disagree about one frozen file that is written
@@ -2080,7 +2081,7 @@ a truncated run and its log is in ${worker}/replay.log"
   fi
   # A workload whose target branch throws exits nonzero by design, so the gate
   # is the evidence it published and not its exit code.  That evidence is the
-  # session: one JSONL file per row kind (CONTRACT-SPEC SS2), and a session
+  # session: one JSONL file per row kind (CONTRACT-SPEC §2.1), and a session
   # with no activation row replayed nothing whatever the exit code said.
   if [[ "${region_results}" == required ]]; then
     local live
@@ -2139,7 +2140,7 @@ campaign_session_replay() {
   # The seed replay is a focused replay like any other: one occurrence is
   # symbolic, everything else runs concretely, recording its exports and
   # minting v_H at every declared port.  It writes its rows per kind into its
-  # own session directory (CONTRACT-SPEC SS2), which is what IMPORT reads.
+  # own session directory (CONTRACT-SPEC §2.1), which is what IMPORT reads.
   campaign_sessions_dir="${iteration_dir}/sessions"
   mkdir -p "${campaign_sessions_dir}"
   # The seed replay is held to the RECORDING's schedule: the plan it runs
@@ -2166,7 +2167,7 @@ workload and at least replay_timeout_s=${replay_timeout_s}" \
 # IMPORT: the replay's per-kind session files, checked and counted.
 #
 # A replay session writes one JSONL file per row kind under
-# <iteration>/sessions/<sessionId>/ (CONTRACT-SPEC SS2).  There is nothing to
+# <iteration>/sessions/<sessionId>/ (CONTRACT-SPEC §2.1).  There is nothing to
 # fold here: a reader of exports never parses attaches, the kinds are joined
 # by Endpoint and Interaction id, and no stage has to re-parse a whole result
 # to read one of them.  This stage checks that each session published every
@@ -2378,7 +2379,7 @@ names it; nothing withdrawn"
 #
 # The obligation names ONE focused occurrence, the decision it flips, the root
 # assignments to apply at the mints and the answers to apply at the attaches
-# (CONTRACT-SPEC SS3).  The replay writes its rows into its own session
+# (CONTRACT-SPEC §3).  The replay writes its rows into its own session
 # directory, which is the only thing COMPOSE reads; this function's output is
 # the one ObligationResult row that says which verdict it reached.
 #
@@ -2861,7 +2862,7 @@ campaign_log_wave_hosts() {
 # in that replay runs concretely, so there is no member roster to plan
 # against: the sessions are the shared state, and a wave reads every session
 # the waves before it wrote.  Once a wave's replays have settled, GROW takes
-# up what they exposed (DESIGN4 SS3.3b) before the next planner runs.
+# up what they exposed (PIPELINE §7.8) before the next planner runs.
 #
 # The fixed point is both files empty: nothing left to ask for and nothing
 # left to weave.  Both forced stops are coverage telemetry, never a campaign
@@ -3030,7 +3031,7 @@ campaign_exposures() {
     | LC_ALL=C sort -u
 }
 
-# GROW (DESIGN4 SS3.3b): a region a replay reached without its hooks is
+# GROW (PIPELINE §7.8): a region a replay reached without its hooks is
 # planned, woven in, and the replay that exposed it is run again under the
 # same world, so the next wave's closure sees the region's decisions and
 # exports.
@@ -3330,7 +3331,7 @@ campaign_decide() {
     "${composition_manifest}"
 }
 
-# CONFIRM: a SAT claim, checked by one replay (DESIGN4 §5).
+# CONFIRM: a SAT claim, checked by one replay (PIPELINE §10).
 #
 # SAT says the model satisfies the formula; CONFIRM says the program agrees:
 # one run takes every edge the model chose, with the moved roots at the
@@ -3339,16 +3340,19 @@ campaign_decide() {
 # says so (realized.json) and nothing is replayed.  Otherwise
 # ConfirmMain writes what an obligation replay is handed -- a focus row that
 # plants the model's roots and flips nothing, the selected session's
-# schedule cut at the anchor, and the edges the model chose -- and the
+# schedule UNHELD (every event is the rest; only a WAKE still waits for
+# what it followed), and the edges the model chose -- and the
 # replay runs through campaign_obligation_replay exactly as an obligation
 # does, into its own sessions directory under final/confirm.  The verdict is
 # read off the session it published (ConfirmMain --sessions): ADMITTED (the
 # roots were planted and the anchor was reached), a published gap file with
 # no CONFIRM_MISMATCH, and a target row AT THE CLAIM'S ANCHOR occurrence that
 # reached it and observed the fatal -- an occurrence id only the Java address
-# computes, so the decision is Java's.  The schedule is how the replay
-# reproduces the selected session, not what the claim says: a divergence of
-# the order stays a diagnostic gap of the session (DESIGN4 SS5).  Every other
+# computes, so the decision is Java's.  The recorded order is not what the
+# claim says, so it is not held (a divergence stays a diagnostic gap of the
+# session); the model's order is, by the ORDER rows of
+# expected_edges.jsonl (runtime.Confirmation), and an ORDER the run cannot
+# hold is a CONFIRM_MISMATCH (PIPELINE §10).  Every other
 # outcome -- a refused task, a replay that published no verdict -- is
 # "unconfirmed, because ...": EMIT downgrades the claim,
 # the campaign does not fail.  Only a SAT_CANDIDATE is confirmed; any other
@@ -3480,7 +3484,7 @@ campaign_json_file() {
 # Every gap this campaign raised, in one document, each row classed by the row
 # itself.
 #
-# A GapRow states its own kind and class (CONTRACT-SPEC SS2): the stage that
+# A GapRow states its own kind and class (CONTRACT-SPEC §2.5): the stage that
 # raised it knows what it could not do, and no later stage is in a position to
 # overrule that.  So this is a partition, not a classification.  A row that
 # states no class is BLOCKING.
@@ -3634,7 +3638,7 @@ campaign_emit() {
   # reason, and every named blocker, so one Java policy decides acceptance and
   # the shell only publishes what it decided.
   campaign_require_claim "${composition_manifest}"
-  # CONFIRM's answer (DESIGN4 §5).  A SAT claim is a claim about the model;
+  # CONFIRM's answer (PIPELINE §10).  A SAT claim is a claim about the model;
   # whether the program agreed is final/confirm.json, required for every
   # SAT_CANDIDATE, and an unconfirmed one is published as SAT_UNCONFIRMED
   # with the first mismatch named.  Any other claim was never confirmed

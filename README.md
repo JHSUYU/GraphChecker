@@ -4,10 +4,10 @@ GraphChecker is an academic research tool in software engineering. It studies ho
 distributed Java systems (HDFS, Solr) fail under fault, clock and ordering counterfactuals.
 
 It starts from one recorded run of a system's own cluster test that does **not** fail, plus one
-declared failure site (a `throw`, named by class and source line). It then asks whether a small change could have made that
-run fail at that site, and it answers with a witness. The changes it considers are a transport
-fault, a skewed clock, a flipped configuration value, or a different pairing of a message or of
-shared state.
+declared failure site (a `throw`, named by its class and source line). It then asks whether a
+small change could have made that run fail at that site, and it answers with a witness. The
+changes it considers are a transport fault, a skewed clock, a flipped configuration value, or a
+different pairing of a message or of shared state.
 
 A witness is a quantifier-free SMT formula (`candidate.smt2`), a claim naming what moved
 (`claim.json`), and one replay confirming that the program agrees (`confirm.json`). Replays run
@@ -96,15 +96,17 @@ A case id names its experiment by its longest prefix, for example `hdfs-17899-bu
 
 `accept.sh` runs the campaign, a z3 probe and `report.py`. `experiments/accept/README.md` says
 what PASS means: the claim, no BLOCKING gap, the case's expected mechanism, `polarityDecides`,
-a confirmation, and every moved root inside the causal cone (`cone.py`). Only the nine HDFS
-cases are in `report.py`'s table.
+a confirmation, and every moved root inside the causal cone (`cone.py`). `report.py`'s table
+names the nine HDFS cases and the two Solr cases; a case it does not name cannot pass. Before
+each case `accept.sh` waits for `MIN_FREE_GB` free where `OUT` is written (a refused write there,
+such as a full quota, counts as none).
 
 To run from a frozen snapshot (a round) instead of the working tree:
 
 ```bash
 git worktree add ~/gc-run/p<N> HEAD && (cd ~/gc-run/p<N> && mvn -q -o package -DskipTests)
 GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/launch-run.sh ~/gc-run/p<N> hdfs-17960 v<R>-17960
-tools/rounds/launch-round.sh ~/gc-run/p<N> v<R>          # the nine HDFS cases, heads placed per host
+GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/launch-round.sh ~/gc-run/p<N> v<R>   # the nine HDFS + two Solr cases
 tools/rounds/round-monitor.sh 'v<R>-*' | grep --line-buffered 'DONE '
 tools/rounds/stop-run.sh v<R>-17960                      # stops a run by its output dir, on every lift
 ```
@@ -128,17 +130,19 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
 
 1. `sites.py <system-dir> <repo>`: every guarded `throw new` in the system's sources.
 2. `coverage.sh`, fanned out by `fanout.sh`: one JaCoCo run per workload test, which writes
-   `<w>.lines` and a `.node` marker. You supply the list of workload tests (`workloads.tsv`).
+   `<w>.lines` and a `.node` marker and exits with the test's own status. You supply the list of
+   workload tests (`workloads.tsv`).
 3. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
 4. `select.py <system-dir> <sweep-dir> <experiment> <N> [per-check] [tree]`: rank and choose
-   checks. It appends them to `checks.tsv` and prints the case ids.
+   checks. It appends them to `checks.tsv` and prints the case ids. A workload whose test failed
+   under coverage, or that starts no node, is skipped and named on stderr.
 5. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
    line (`exception_target: adhoc-<check> …`). Nothing in the tree is edited or rebuilt.
 6. `sweep.sh <snapshot> <round> <cases-file> [heads-per-host]`: one campaign per case over all
    ten lifts, with `PRUNE=1` and a 5400 s case budget. Head starts are gated on memory by
    `fanout.sh`.
-7. `triage.py <round> [gc-out]`: one row per case with its outcome class, finding, stage and
-   reason.
+7. `triage.py <round> [gc-out]`: one row per case with its outcome class (CONFIRMED, REFUTED,
+   NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING), finding, stage and reason.
 
 Set `GC_OUT=/bigtemp/vnr3ne/gc-out` for sweeps. The scripts default to `/u/vnr3ne/gc-out`,
 which is on the quota-limited home.

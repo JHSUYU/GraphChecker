@@ -209,6 +209,9 @@ final class SharedStateCapture {
         String fault = versionsFault(envelope, clean);
         String locationKey = locationKey(envelope);
         if (!fault.isEmpty()) {
+            if (active != null && !locationKey.isEmpty()) {
+                active.sharedStateRefusals.put(locationKey, fault);
+            }
             refuse(expressionSerializationTruncationFault(fault)
                             ? EXPRESSION_SERIALIZATION_TRUNCATED
                             : containerBaseUnstatedFault(fault)
@@ -243,11 +246,14 @@ final class SharedStateCapture {
             // Its kind: a scalar's INITIAL is no write (scalarInitial).
             copyIfPresent(version, entry, "versionKind");
             // Site and activation: the two halves of the WriteRow's
-            // endpoint identity (IDENTITY-V3 sec 1); dropping them merges
+            // endpoint identity (IDENTITY §4); dropping them merges
             // distinct writes into one endpoint.
             copyIfPresent(version, entry, "site");
             copyIfPresent(version, entry, "regionEnterEventId");
             copyIfPresent(version, entry, "expression");
+            // A reference write's container state, or why none is stated.
+            copyIfPresent(version, entry, REFERENT_STATE);
+            copyIfPresent(version, entry, REFERENT_STATE_REFUSED);
             versions.add(entry);
         }
         // The read log, by event id: it supplies the activation a
@@ -361,9 +367,19 @@ final class SharedStateCapture {
      * envelope, so the location loses every version.
      */
     private static final Set<String> VERSION_KINDS = names("INITIAL", "WRITE",
-            "RMW", "UNOBSERVED", "STATE", "STATE_PUT", "STATE_REMOVE", "STATE_REMOVE_IF",
-            "STATE_CLEAR", "STATE_REMOVE_AT", "STATE_CLEAR_VIEW",
-            "STATE_ADD", "STATE_APPEND", "STATE_INSERT", "STATE_WRITE");
+            "RMW", "UNOBSERVED", "STATE", "STATE_PUT", "STATE_PUT_ALL",
+            "STATE_REMOVE", "STATE_REMOVE_IF", "STATE_CLEAR",
+            "STATE_REMOVE_AT", "STATE_CLEAR_VIEW", "STATE_ADD",
+            "STATE_APPEND", "STATE_INSERT", "STATE_WRITE");
+    /**
+     * A reference write's container state (R3-REFCONT §1.1): {@code
+     * {ownerSymRid, slot, locationKind: MAP_STATE, fieldVersionId}}, the
+     * canonical container's location and its version live at the store;
+     * or {@link #REFERENT_STATE_REFUSED}, why none is stated.  Only on a
+     * WRITE or RMW of a field or an array element.
+     */
+    static final String REFERENT_STATE = "referentState";
+    static final String REFERENT_STATE_REFUSED = "referentStateRefused";
     /** The version kind every location may publish, whatever its shape. */
     private static final String INITIAL_VERSION_KIND = "INITIAL";
 
@@ -510,17 +526,19 @@ final class SharedStateCapture {
         if (versionsMember == null || !versionsMember.isJsonArray()) {
             return "envelope carries no version array";
         }
+        if (!booleanMember(envelope, "serializationTruncated")) {
+            return "envelope omits version serialization completeness";
+        }
+        // Before the count: an envelope cut before its first version is
+        // truncated, not empty.
+        if (optionalBool(envelope, "serializationTruncated", false)) {
+            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
+                    + ": version envelope";
+        }
         JsonArray versions = array(envelope, "versions");
         if (versions.size() == 0) {
             // Selection publishes an INITIAL, so empty means no selection.
             return "selected location published no version";
-        }
-        if (!booleanMember(envelope, "serializationTruncated")) {
-            return "envelope omits version serialization completeness";
-        }
-        if (optionalBool(envelope, "serializationTruncated", false)) {
-            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
-                    + ": version envelope";
         }
         // A selected map's whole state (#locationKeyOf's spelling).
         boolean mapState = locationKey(envelope).startsWith(
@@ -638,6 +656,8 @@ final class SharedStateCapture {
         }
         String base = containerBaseFault(version, versionKind, mapState);
         if (!base.isEmpty()) return base;
+        String referent = referentFault(version, id, versionKind, mapState);
+        if (!referent.isEmpty()) return referent;
         JsonElement expression = version.get("expression");
         if (expression == null || expression.isJsonNull()) {
             return "version " + id + " carries no value expression";
@@ -650,6 +670,42 @@ final class SharedStateCapture {
                 clean)) {
             return VM_EXPRESSION_SERIALIZATION_TRUNCATED
                     + ": version " + id + " path guard";
+        }
+        return "";
+    }
+
+    /**
+     * Why a version's referent members are malformed, or {@code ""}: they
+     * belong to a WRITE or RMW of a field or an element, at most one of
+     * them, and a state names a MAP_STATE location's version older than
+     * this one.
+     */
+    private static String referentFault(JsonObject version, long id,
+                                        String versionKind,
+                                        boolean mapState) {
+        JsonElement state = version.get(REFERENT_STATE);
+        JsonElement refused = version.get(REFERENT_STATE_REFUSED);
+        if (state == null && refused == null) return "";
+        if (mapState || !("WRITE".equals(versionKind)
+                || "RMW".equals(versionKind))) {
+            return "version " + id + " of kind " + versionKind
+                    + " states a referent";
+        }
+        if (state != null && refused != null) {
+            return "version " + id + " states a referent and refuses it";
+        }
+        if (refused != null) {
+            return refused.isJsonPrimitive()
+                    && !refused.getAsString().trim().isEmpty() ? ""
+                    : "version " + id + " refuses its referent by no name";
+        }
+        JsonObject named = state.isJsonObject() ? state.getAsJsonObject()
+                : new JsonObject();
+        long at = optionalLongInteger(named, "fieldVersionId", 0L);
+        if (!locationKeyOf(named).startsWith(LOCATION_KIND_MAP_STATE + "/")
+                || at <= 0L || at >= id) {
+            return "version " + id + " states a referent that is no older "
+                    + "MAP_STATE version";
         }
         return "";
     }

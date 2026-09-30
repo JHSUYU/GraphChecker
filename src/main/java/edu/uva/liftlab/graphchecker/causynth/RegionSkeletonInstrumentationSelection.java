@@ -21,7 +21,7 @@ final class RegionSkeletonInstrumentationSelection {
 
     /**
      * The region each ROOT method opens: the recording pushes an index frame
-     * where the replay does (IDENTITY-IMPL B), from the same file.
+     * where the replay does (IDENTITY §10), from the same file.
      */
     static Map<String, String> regionRootsFromEnvironment() {
         Map<String, String> roots = new LinkedHashMap<>();

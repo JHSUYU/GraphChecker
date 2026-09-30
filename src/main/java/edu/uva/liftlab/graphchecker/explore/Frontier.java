@@ -100,7 +100,7 @@ public final class Frontier {
                                     + "that site under what its guard "
                                     + "depends on, so a focused replay of it "
                                     + "would collect nothing the corpus "
-                                    + "lacks (HANDOVER SS1.5: exploration "
+                                    + "lacks (PIPELINE §7: exploration "
                                     + "collects the arms the seed LACKS)");
                 }
             }

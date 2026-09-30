@@ -42,6 +42,8 @@ public class SchedulePrefixTest {
         rows.add(mark);
         rows.add(row(2, ScheduleEvent.Kind.RECV, "b", "OCC.focus"));
         rows.add(row(3, ScheduleEvent.Kind.WAKE, "tick.dn", ""));
+        // The source run was cut at its witness.
+        rows.add(RowCodec.writeScheduleMark(ScheduleEvent.WITNESS, 4L));
         RowCodec.writeJsonl(session.schedule(), rows);
         Path out = folder.newFolder("worker").toPath();
 
@@ -58,6 +60,10 @@ public class SchedulePrefixTest {
         assertEquals(2, stated.get("rest").getAsInt());
         assertEquals(4, stated.get("of").getAsInt());
         assertTrue(stated.get("cutAtFocus").getAsBoolean());
+        assertTrue("the order ends at the source's witness, and the replay "
+                + "reads that off its rest", stated.get("endsAtWitness")
+                .getAsBoolean() && SessionReader.readScheduleMarks(out.resolve(
+                SchedulePrefix.REST_FILE)).containsKey(ScheduleEvent.WITNESS));
         assertEquals("the replay reads the rest under the name it looks for",
                 edu.uva.liftlab.graphchecker.runtime.ScheduleLog.SUFFIX_FILE,
                 SchedulePrefix.REST_FILE);

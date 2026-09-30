@@ -483,8 +483,9 @@ void ThreadContext::forget_container_state(oop container) {
 }
 
 void ThreadContext::write_array_element(arrayOop array, int index,
-                                        Expression *expression) {
-  heap().write_array_element(array, index, expression);
+                                        Expression *expression,
+                                        const ElementWord &word) {
+  heap().write_array_element(array, index, expression, word);
 }
 
 void ThreadContext::alias_container(oop derived, oop owner) {
@@ -532,8 +533,9 @@ bool ThreadContext::requires_detached_object_shadow(oop obj) const {
 }
 
 SymArr *ThreadContext::get_or_alloc_sym_array(arrayOop array,
-                                              Expression *length_exp) {
-  return heap().get_or_alloc_sym_array(array, length_exp);
+                                              Expression *length_exp,
+                                              bool named) {
+  return heap().get_or_alloc_sym_array(array, length_exp, named);
 }
 
 SymArr *ThreadContext::alloc_sym_array(arrayOop array, Expression *length_exp) {

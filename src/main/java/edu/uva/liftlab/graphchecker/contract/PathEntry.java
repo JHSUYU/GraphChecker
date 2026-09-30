@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 4: one composed consumer path and its selector,
+ * CONTRACT-SPEC §4: one composed consumer path and its selector,
  * {@code selector_p => pi_p and phi_fatal and reads_p}; per-session facts go
  * inside the implication, never global.  Written by Gson as part of
  * {@link CompositionManifest}.

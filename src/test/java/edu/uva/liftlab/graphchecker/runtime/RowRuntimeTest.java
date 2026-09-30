@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -82,7 +83,7 @@ public class RowRuntimeTest {
      *
      * <p>Asserted on the ADDRESS the scope produces rather than on a
      * rendered chain: what an occurrence is addressed by is its causal
-     * context (IDENTITY-V3 SS4), so the root role and the window index the
+     * context (IDENTITY §2), so the root role and the window index the
      * carried scope hands the worker are what "the scope reached the work"
      * means -- the innermost role beside them says which hop is running.</p>
      */
@@ -93,7 +94,7 @@ public class RowRuntimeTest {
         RuntimeTraceContext.registerSource(anchor, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "balance-block");
         // The api the k was counted under is part of the context: two
-        // declared apis of one node are not one root (G11).
+        // declared apis of one node are not one root (IDENTITY §2).
         assertEquals("Root:CLIENT/balance-block#1", rootContext());
         assertEquals(Role.CLIENT, Lineage.role());
 
@@ -171,21 +172,30 @@ public class RowRuntimeTest {
     }
 
     /**
-     * A session the campaign withdrew stays withdrawn: a replay killed at its
-     * bound still shuts down, and its last table rewrite brought back a
-     * directory holding only its expression table (hdfs-11741 v85, IMPORT).
+     * A closed session is written no more.  The run ended before its close
+     * (JUnitMethodRunner#exit), and a cluster thread outliving the test
+     * filed rows about no run (hdfs-17899-bug1 r1: attaches refused in a VM
+     * session opened after the close).  And a session the campaign withdrew
+     * stays withdrawn: a replay killed at its bound still shuts down, and its
+     * last table rewrite brought back a directory holding only its
+     * expression table (hdfs-11741 v85, IMPORT).
      */
     @Test
-    public void aWithdrawnSessionIsNotWrittenBack() throws Exception {
+    public void aClosedSessionIsNotWrittenAgain() throws Exception {
+        GapRow late = GapRow.of("s", GapKind.UNSTATED_VALUE,
+                GapClass.BLOCKING, "late", "filed after the run ended");
+        SessionDir ended = SessionDir.of(iteration.getRoot().toPath(),
+                "ended");
+        SessionPublisher closed = SessionPublisher.at(ended);
+        closed.close();
+        closed.gap(late);
+        assertEquals(0L, Files.size(ended.gaps()));
+
         SessionDir layout = SessionDir.of(iteration.getRoot().toPath(),
                 "withdrawn");
         SessionPublisher session = SessionPublisher.at(layout);
         Files.move(layout.dir(), iteration.getRoot().toPath().resolve("aside"));
-        session.close();
-        JsonObject constant = new JsonObject();
-        constant.addProperty("_type", "ConstExpr");
-        constant.addProperty("_exp", "C_I_1");
-        session.expression("EXPR.0000000000000001", constant);
+        session.gap(late);
         assertFalse(Files.exists(layout.dir()));
     }
 
@@ -682,7 +692,7 @@ public class RowRuntimeTest {
                 Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
                         "getAndIncrement", "()I", 12, true),
                 location, 125L, rmwExpression(), "",
-                "Caller.body()#u9@1");
+                "Caller.body()#u9@1", null, null);
         // A String method's result states no type of its own, and its
         // operands' are not its own: a concat is a String (f4 visible-gs:
         // java.io.File.path's version published no row, and the path that
@@ -697,7 +707,7 @@ public class RowRuntimeTest {
                 Endpoint.stateSite("java.io.File", "<init>",
                         "(Ljava/lang/String;)V", 4, true),
                 LocationId.of(LocationKind.INSTANCE, "49", "32"), 127L,
-                concat, "", "Caller.body()#u9@1");
+                concat, "", "Caller.body()#u9@1", null, null);
         // A null stored into a tracked reference field states no class, and
         // is a reference write all the same (17960 v64: a diff's cleared
         // posteriorDiff published no row, and the path reading it was
@@ -707,7 +717,7 @@ public class RowRuntimeTest {
                         true),
                 LocationId.of(LocationKind.INSTANCE, "6", "40"), 126L,
                 nullExpression(), "",
-                "Caller.body()#u9@1");
+                "Caller.body()#u9@1", null, null);
         RowRuntime.read(occurrence, 14L,
                 Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
                         "get", "()I", 2, false),
@@ -717,7 +727,7 @@ public class RowRuntimeTest {
                 "(Ljava/lang/Object;Z)Z", 34, true);
         RowRuntime.write(occurrence, 16L, waits,
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6254L,
-                rmwExpression(), "", "Caller.body()#u9@1");
+                rmwExpression(), "", "Caller.body()#u9@1", null, null);
         RowRuntime.read(occurrence, 16L, waits,
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6253L, "w",
                 "I", "1", "", ReadRow.UNKNOWN_VERSION);
@@ -1017,6 +1027,96 @@ public class RowRuntimeTest {
             assertEquals(Arrays.toString(each), each[4],
                     !said.contains("names no writer case"));
         }
+    }
+
+    /**
+     * A reference write's container state, or why none is stated, rides on
+     * a WRITE or RMW of a field or element only: at most one of the two, a
+     * state naming an older MAP_STATE version, a refusal naming its reason.
+     */
+    @Test
+    public void aReferenceWriteStatesAnOlderContainerStateOrWhyNot()
+            throws Exception {
+        java.lang.reflect.Method fault = SharedStateCapture.class
+                .getDeclaredMethod("versionFault", JsonObject.class,
+                        boolean.class, java.util.Set.class);
+        fault.setAccessible(true);
+        JsonObject older = referent(49L);
+        for (Object[] each : new Object[][]{
+                {"WRITE", false, older, null, true},
+                {"RMW", false, null, "RESIZING", true},
+                {"WRITE", false, referent(50L), null, false},
+                {"WRITE", false, older, "RESIZING", false},
+                {"WRITE", false, null, " ", false},
+                {"INITIAL", false, older, null, false},
+                {"STATE_PUT", true, older, null, false}}) {
+            JsonObject version = new JsonObject();
+            version.addProperty("fieldVersionId", 50L);
+            version.addProperty("versionKind", (String) each[0]);
+            version.add("pathGuard", com.google.gson.JsonNull.INSTANCE);
+            version.add("expression", rmwExpression());
+            if (each[2] != null) {
+                version.add("referentState", (JsonObject) each[2]);
+            }
+            if (each[3] != null) {
+                version.addProperty("referentStateRefused", (String) each[3]);
+            }
+            String said = (String) fault.invoke(null, version, each[1],
+                    new java.util.HashSet<Object>());
+            assertEquals(Arrays.toString(each) + ": " + said, each[4],
+                    !said.contains("referent"));
+        }
+    }
+
+    /**
+     * A referent's version is a write row, or the write says why not: the
+     * read-out refused its log, or the log holds it as no row (stored
+     * outside every region) or no longer; a log the read-out did not select
+     * is an earlier activation's to publish.
+     */
+    @Test
+    public void aReferentWhoseStateIsNoRowIsRefusedByName() {
+        String key = "MAP_STATE/1234#-3";
+        JsonObject version = new JsonObject();
+        version.add("referentState", referent(49L));
+        for (Object[] each : new Object[][]{
+                {"refused", "CONTAINER_BASE_UNSTATED: no walker"},
+                {"rowed", ""}, {"outside", "VERSION_NOT_ROWED"},
+                {"evicted", "VERSION_NOT_RETAINED"}, {"unselected", ""}}) {
+            Map<String, String> refusals = new HashMap<String, String>();
+            Map<String, JsonObject> records =
+                    new HashMap<String, JsonObject>();
+            if ("refused".equals(each[0])) {
+                refusals.put(key, (String) each[1]);
+            } else if (!"unselected".equals(each[0])) {
+                JsonObject logged = new JsonObject();
+                logged.addProperty("fieldVersionId",
+                        "evicted".equals(each[0]) ? 51L : 49L);
+                logged.addProperty("versionKind", "INITIAL");
+                logged.addProperty("regionEnterEventId",
+                        "outside".equals(each[0]) ? 0L : 40L);
+                JsonArray versions = new JsonArray();
+                versions.add(logged);
+                JsonObject envelope = new JsonObject();
+                envelope.add("versions", versions);
+                JsonObject record = new JsonObject();
+                record.add("envelope", envelope);
+                records.put(key, record);
+            }
+            assertEquals(Arrays.toString(each), each[1],
+                    RowPublication.unrowedReferent(refusals, records, version,
+                            Collections.<String, String>emptyMap()));
+        }
+    }
+
+    /** A MAP_STATE version as a reference version names it. */
+    private static JsonObject referent(long version) {
+        JsonObject state = new JsonObject();
+        state.addProperty("ownerSymRid", 1234L);
+        state.addProperty("slot", -3);
+        state.addProperty("locationKind", "MAP_STATE");
+        state.addProperty("fieldVersionId", version);
+        return state;
     }
 
     /** One tracked location, as the VM's read-out states it. */
@@ -1472,8 +1572,8 @@ public class RowRuntimeTest {
         assertEquals("and it is still the occurrence this thread runs",
                 addKeys, Identity.currentOccurrence(NN.key()));
 
-        // F1: A FOLDED ENTRY IS NOT AN ENTRY OF AN OCCURRENCE.  Neither pass
-        // records an activation for it -- the recording states no occurrence
+        // IDENTITY §1: A FOLDED ENTRY IS NOT AN ENTRY OF AN OCCURRENCE.  Neither
+        // pass records an activation for it -- the recording states no occurrence
         // address on its trace row, so PLAN builds one activation per
         // occurrence and a SHARED_ADDRESS_ROOT_CALLS row keeps meaning a
         // real identity failure.
@@ -1527,7 +1627,7 @@ public class RowRuntimeTest {
         // the handler, so an index measured from the level that opened it
         // is empty once that level is gone -- and the four
         // PBHelper.convert activations of one refresh then answered one
-        // address (G11).
+        // address (IDENTITY §3).
         Identity.resetForTests();
         Identity.enterFrame("Server.processRpcRequest()#u3", null);
         long inbound = Identity.enterFrame("Propagation.inbound()#u7", null);
@@ -1564,7 +1664,7 @@ public class RowRuntimeTest {
         // A tick is the other arm of the one rule: it IS the started work,
         // so its index begins at the start frame it claimed rather than at
         // the point the tick was opened -- the start site and its iteration
-        // are what tell two started siblings apart (G10/G11).
+        // are what tell two started siblings apart (IDENTITY §3).
         Identity.resetForTests();
         Lineage.resetForTests();
         Object updating = new Object();
@@ -1868,8 +1968,8 @@ public class RowRuntimeTest {
 
         // The three causal contexts, and the one that is not an ordinal.
         // A ROOT names the api its k was counted under, because that is
-        // what the k counts (G11): two declared apis of one node are two
-        // roots, and a tick declares none.
+        // what the k counts (IDENTITY §2): two declared apis of one node are
+        // two roots, and a tick declares none.
         assertEquals("Root:HEARTBEAT_TICK#4", Identity.context("", "",
                 Role.of("HEARTBEAT_TICK"), "", 4).render());
         assertEquals("Root:CLIENT/balance-block#1", Identity.context("", "",
@@ -2126,7 +2226,7 @@ public class RowRuntimeTest {
                             + ".AtomicInteger", "getAndIncrement", "()I", 12,
                             true), LocationId.of(LocationKind.INSTANCE, "22",
                             "24"), version++, chain, "",
-                    "Caller.body()#u9@1");
+                    "Caller.body()#u9@1", null, null);
         }
         RowRuntime.closeSession();
         List<WriteRow> writes = RowCodec.readAll(session().writes(),

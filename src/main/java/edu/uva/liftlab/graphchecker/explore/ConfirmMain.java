@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
@@ -47,23 +48,39 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *   --claim &lt;file&gt;      final/claim.json
  *   --manifest &lt;file&gt;   final/candidate_composition_manifest.json
  *   --output &lt;dir&gt;      the worker directory the replay is run from
+ *
+ *   once the replay has published, the decision ({@link #decide}), printed
+ *   as final/confirm.json:
+ *   --claim &lt;file&gt; --output &lt;dir&gt; --sessions &lt;dir&gt;
  * </pre>
  *
- * <p>THE RULE (DESIGN4 §5). SAT says the model satisfies our formula; CONFIRM
- * says the program agrees: re-run the world the selected path's own session ran
- * (its planted roots, clock skews, answers) with no flip forced, hold that
- * session's schedule (prefix to the anchor, timeouts after), and require (a)
- * every edge the model chose is taken and (b) the fatal at the anchor. The
- * model's instants are the published witness, not what the run is held to
- * (solvers sit on boundaries). Written, in shapes the replay already reads:</p>
+ * <p>THE RULE (PIPELINE §10). SAT says the model satisfies our formula;
+ * CONFIRM says the program agrees: re-run the world the selected path's own
+ * session ran (its planted roots, clock skews, answers) overlaid with the
+ * model's moved roots ({@link #plantModel}), with no flip forced, and require
+ * (a) every edge the model chose is taken and (b) the fatal at the anchor.
+ * The schedule is written UNHELD ({@link SchedulePrefix#write} with {@code
+ * held} false): every event is the rest, only a WAKE still waits for what it
+ * followed; the model's order is held by the {@code ORDER} rows of
+ * {@code expected_edges.jsonl} ({@code runtime.Confirmation}). The model's
+ * instants are the published witness, not what the run is held to (solvers
+ * sit on boundaries). Written, in shapes the replay already reads:</p>
  * <ul>
  *   <li>{@code focused_task.jsonl}: a focus row with {@code flip: null} on
  *       the anchor, the selected session's obligation world, no inherited
  *       flips;</li>
- *   <li>{@code schedule_prefix.jsonl} / {@code schedule_suffix.jsonl};</li>
- *   <li>{@code expected_edges.jsonl}: {@code WIRE} per selected message
- *       arm, {@code STATE} per model-chosen writer, {@code MARKER} per planted
- *       marker, {@code ANCHOR}.</li>
+ *   <li>{@code schedule_prefix.jsonl} (empty) / {@code
+ *       schedule_suffix.jsonl} (the whole schedule);</li>
+ *   <li>{@code expected_edges.jsonl}: {@code WIRE} per consumer of each
+ *       selected message arm, {@code STATE} per read of the anchor's join
+ *       closure (the write the model chose, else the observed one: a
+ *       {@code writer_arm__}'s write for a read of its location, and for a
+ *       query through a re-pointable reference the state of the delivered
+ *       object its nested selector chose, the arm's {@code
+ *       referentStates}), {@code ORDER} per held join (the writer's
+ *       activation before the reader's; every other writer of the location
+ *       the held write is of before the writer or after the reader), {@code
+ *       MARKER} per planted marker, {@code ANCHOR}.</li>
  * </ul>
  *
  * <p>The path and arms come from the claim's valuation ({@code selectedPathId},
@@ -71,8 +88,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  * unrunnable confirmation is refused by name (exit 1), which the driver reads
  * as "unconfirmed, because ...".</p>
  *
- * <p>Once the replay has published, {@code --claim --output --sessions
- * <dir>} prints the decision ({@link #decide}): final/confirm.json.</p>
+ * <p>The decision ({@code --sessions}): confirmed iff the replay was ADMITTED,
+ * its session published a readable gaps file with no {@code
+ * CONFIRM_MISMATCH}, and a target row at the claim's own anchor occurrence id
+ * reached it and observed the fatal.</p>
  */
 public final class ConfirmMain {
     /** The one obligation id a confirmation carries. */
@@ -177,12 +196,15 @@ public final class ConfirmMain {
             throw new Refused("the selected session " + sessionId
                     + " states no target row at the anchor " + anchor.id());
         }
+        // The writes the model chose for the anchor's join closure.
+        StateClosure closure = new StateClosure(session, anchor, target.seq());
+        Map<String, WriteRow> chosen = closure.chosen(arms);
         // A session that already took every chosen edge at the model's root
         // values and observed the fatal IS the confirmation; re-running it only
-        // tests a race twice. A model mixing sessions' deliveries needs the
-        // replay below.
+        // tests a race twice. A model mixing sessions' deliveries, or choosing
+        // a write its reads did not see, needs the replay below.
         String realized = realizedBy(decided, sessionId, arms, session,
-                target);
+                target, closure.ran(chosen));
         if (!realized.isEmpty()) {
             RowCodec.writeJsonl(out.resolve(REALIZED),
                     Collections.singletonList(
@@ -231,7 +253,7 @@ public final class ConfirmMain {
         // The edges the model chose.
         List<JsonObject> edges = new ArrayList<JsonObject>();
         edges.addAll(wireEdges(arms, armSessions));
-        edges.addAll(stateEdges(session, anchor, target.seq(), arms));
+        edges.addAll(stateEdges(closure, chosen));
         edges.addAll(markers);
         JsonObject anchorRow = new JsonObject();
         anchorRow.addProperty("kind", "ANCHOR");
@@ -406,12 +428,15 @@ public final class ConfirmMain {
     }
 
     /** Why the selected session is itself the confirming run, or "": all chosen
-     *  arms are its own deliveries, it observed the fatal, and it minted every
-     *  moved root (by root id or symbol) at the model's value. */
+     *  arms are its own deliveries and its reads saw every write the model
+     *  chose ({@code sawChosen}, {@link StateClosure#ran}: another writer, or
+     *  another state of a delivered object, is a run a replay has to make),
+     *  it observed the fatal, and it minted every moved root (by root id or
+     *  symbol) at the model's value. */
     static String realizedBy(JsonObject decided, String sessionId,
                              List<JsonObject> arms, SessionReader session,
-                             TargetRow target) {
-        if (!target.observedFatal()) return "";
+                             TargetRow target, boolean sawChosen) {
+        if (!target.observedFatal() || !sawChosen) return "";
         for (JsonObject arm : arms) {
             if (!sessionId.equals(optionalString(arm, "sessionId"))) return "";
         }
@@ -504,107 +529,192 @@ public final class ConfirmMain {
         return edges;
     }
 
-    /** STATE edges where the MODEL CHOSE the writer: reads in the anchor's join
-     *  closure (the Composer's P3 rule) whose selected {@code writer_arm__}
-     *  names their writer. */
-    private static List<JsonObject> stateEdges(SessionReader session,
-                                               OccurrenceAddress anchor,
-                                               long cutoff,
-                                               List<JsonObject> arms) {
-        Map<String, WriteRow> writes = new LinkedHashMap<String, WriteRow>();
-        Map<String, List<WriteRow>> byLocation =
+    /**
+     * The anchor's join closure in the selected session (the Composer's P3
+     * rule): every read of each reached occurrence before its cutoff, the
+     * anchor's before its target, with the write it joined; every write of
+     * the session, by location and by version.
+     */
+    private static final class StateClosure {
+        private final Map<String, WriteRow> writes =
+                new LinkedHashMap<String, WriteRow>();
+        private final Map<String, List<WriteRow>> byLocation =
                 new LinkedHashMap<String, List<WriteRow>>();
-        Map<String, Endpoint> writers = new LinkedHashMap<String, Endpoint>();
-        for (WriteRow write : session.writes()) {
-            writes.put(version(write.location(), write.version()), write);
-            writers.put(write.endpoint().id(), write.endpoint());
-            byLocation.computeIfAbsent(location(write.location()),
-                    key -> new ArrayList<WriteRow>()).add(write);
-        }
-        Map<String, List<ReadRow>> readsOn =
-                new LinkedHashMap<String, List<ReadRow>>();
-        for (ReadRow read : session.reads()) {
-            readsOn.computeIfAbsent(read.endpoint().occurrence().id(),
-                    key -> new ArrayList<ReadRow>()).add(read);
-        }
-        // Closure: occurrence id -> the seq its prefix reaches.
-        Map<String, Long> reached = new LinkedHashMap<String, Long>();
-        reached.put(anchor.id(), cutoff);
-        List<String> pending = new ArrayList<String>();
-        pending.add(anchor.id());
-        List<WriteRow> versions = new ArrayList<WriteRow>();
-        Set<String> handled = new LinkedHashSet<String>();
-        Map<String, WriteRow> joined = new LinkedHashMap<String, WriteRow>();
-        Map<String, ReadRow> readers = new LinkedHashMap<String, ReadRow>();
-        while (!pending.isEmpty() || !versions.isEmpty()) {
-            while (!pending.isEmpty()) {
-                String at = pending.remove(0);
-                long cut = reached.get(at);
-                List<ReadRow> on = readsOn.get(at);
-                if (on == null) continue;
-                for (ReadRow read : on) {
-                    // The anchor's too, unlike Composer#closure, which joins
-                    // all its reads as its inputs: a run that takes the fatal
-                    // arm throws there, and no edge after it can be taken
-                    // (adhoc token-pw-expired: the key map is read after the
-                    // expiry check).
-                    if (read.seq() >= cut) continue;
-                    if (read.observedVersion() < 0L) continue;
-                    WriteRow write = writes.get(version(read.location(),
-                            read.observedVersion()));
-                    // A version no row wrote (a store outside every region)
-                    // joins nothing; the model may still choose its writer.
-                    readers.put(read.endpoint().id(), read);
-                    if (write == null) continue;
-                    joined.put(read.endpoint().id(), write);
-                    reach(write, anchor, reached, pending, versions, handled);
-                }
+        /** Reader endpoint id -> its read, in closure order. */
+        private final Map<String, ReadRow> readers =
+                new LinkedHashMap<String, ReadRow>();
+        /** Reader endpoint id -> the write its version was, when one. */
+        private final Map<String, WriteRow> joined =
+                new LinkedHashMap<String, WriteRow>();
+        /** The reads of a reached occurrence at or past its cutoff. */
+        private final Set<String> past = new LinkedHashSet<String>();
+
+        private StateClosure(SessionReader session, OccurrenceAddress anchor,
+                             long cutoff) {
+            for (WriteRow write : session.writes()) {
+                writes.put(version(write.location(), write.version()), write);
+                byLocation.computeIfAbsent(SmtLowering.locationKey(
+                        write.location()),
+                        key -> new ArrayList<WriteRow>()).add(write);
             }
-            if (versions.isEmpty()) continue;
-            WriteRow write = versions.remove(0);
-            for (WriteRow under : byLocation.get(location(write.location()))) {
-                if (under.version() >= write.version()) continue;
-                reach(under, anchor, reached, pending, versions, handled);
+            Map<String, List<ReadRow>> readsOn =
+                    new LinkedHashMap<String, List<ReadRow>>();
+            for (ReadRow read : session.reads()) {
+                readsOn.computeIfAbsent(read.endpoint().occurrence().id(),
+                        key -> new ArrayList<ReadRow>()).add(read);
             }
-        }
-        // The model's writer choices: a writer_arm__ fills STATE interactions
-        // ({@code smt.Arms#stateArms}), each one writer endpoint to one read.
-        // Not its groupId: that names the writer OCCURRENCE, which is no
-        // endpoint this map is keyed by (no real choice was ever held).
-        Map<String, String> chosen = new LinkedHashMap<String, String>();
-        for (JsonObject arm : arms) {
-            if (!optionalString(arm, "selector").startsWith("writer_arm__")) {
-                continue;
-            }
-            Set<String> fills = new LinkedHashSet<String>(
-                    strings(arm, "interactionIds"));
-            for (ReadRow read : readers.values()) {
-                for (WriteRow write : byLocation.getOrDefault(location(
-                        read.location()), Collections.<WriteRow>emptyList())) {
-                    if (fills.contains(Interaction.of(InteractionKind.STATE,
-                            write.endpoint(), read.endpoint()).id())) {
-                        chosen.put(read.endpoint().id(),
-                                write.endpoint().id());
+            // Occurrence id -> the seq its prefix reaches.
+            Map<String, Long> reached = new LinkedHashMap<String, Long>();
+            reached.put(anchor.id(), cutoff);
+            List<String> pending = new ArrayList<String>();
+            pending.add(anchor.id());
+            List<WriteRow> versions = new ArrayList<WriteRow>();
+            Set<String> handled = new LinkedHashSet<String>();
+            while (!pending.isEmpty() || !versions.isEmpty()) {
+                while (!pending.isEmpty()) {
+                    String at = pending.remove(0);
+                    long cut = reached.get(at);
+                    List<ReadRow> on = readsOn.get(at);
+                    if (on == null) continue;
+                    for (ReadRow read : on) {
+                        // The anchor's too, unlike Composer#closure, which
+                        // joins all its reads as its inputs: a run that takes
+                        // the fatal arm throws there, and no edge after it
+                        // can be taken (adhoc token-pw-expired: the key map
+                        // is read after the expiry check).
+                        if (read.seq() >= cut) {
+                            past.add(read.endpoint().id());
+                            continue;
+                        }
+                        if (read.observedVersion() < 0L) continue;
+                        WriteRow write = writes.get(version(read.location(),
+                                read.observedVersion()));
+                        // A version no row wrote (a store outside every
+                        // region) joins nothing; the model may still choose
+                        // its writer.
+                        readers.put(read.endpoint().id(), read);
+                        if (write == null) continue;
+                        joined.put(read.endpoint().id(), write);
+                        reach(write, anchor, reached, pending, versions,
+                                handled);
                     }
                 }
+                if (versions.isEmpty()) continue;
+                WriteRow write = versions.remove(0);
+                for (WriteRow under : byLocation.get(SmtLowering.locationKey(
+                        write.location()))) {
+                    if (under.version() >= write.version()) continue;
+                    reach(under, anchor, reached, pending, versions,
+                            handled);
+                }
             }
         }
-        // Every join of the closure, pinned or chosen: the run is held to no
-        // recorded order, so a pinned join is the model's as much as a choice.
-        // A read no row answers is held only where the model chose a writer
-        // for it; otherwise its outside store is the run's own.
+
+        /**
+         * The write the MODEL chose for each read it chose one for, by the
+         * selected state arms: a {@code writer_arm__} fills STATE
+         * interactions ({@code smt.Arms#stateArms}), each one write to one
+         * read -- not its groupId, which names the writer OCCURRENCE -- and
+         * its {@code referentStates} hold each read a query through a
+         * re-pointable reference answered to the write of the state of the
+         * delivered object the model's nested selector chose
+         * ({@code compose.SmtLowering#stateChoices}).  A state no read of
+         * this closure can be held to is refused by name.
+         */
+        private Map<String, WriteRow> chosen(List<JsonObject> arms) {
+            Map<String, WriteRow> chosen = new LinkedHashMap<String, WriteRow>();
+            for (JsonObject arm : arms) {
+                String selector = optionalString(arm, "selector");
+                if (!selector.startsWith("writer_arm__")) continue;
+                Set<String> fills = new LinkedHashSet<String>(
+                        strings(arm, "interactionIds"));
+                for (ReadRow read : readers.values()) {
+                    // The arm's write, as smt.Arms#stateArms chose it among
+                    // one endpoint's writes of the location: the one the
+                    // read observed, else the last.
+                    WriteRow held = null;
+                    for (WriteRow write : byLocation.getOrDefault(
+                            SmtLowering.locationKey(read.location()),
+                            Collections.<WriteRow>emptyList())) {
+                        if (!fills.contains(Interaction.of(
+                                InteractionKind.STATE, write.endpoint(),
+                                read.endpoint()).id())
+                                || held != null && held.version()
+                                == read.observedVersion()) {
+                            continue;
+                        }
+                        if (held == null || write.version()
+                                == read.observedVersion()
+                                || write.seq() > held.seq()) {
+                            held = write;
+                        }
+                    }
+                    if (held != null) chosen.put(read.endpoint().id(), held);
+                }
+                for (JsonElement element : array(arm, "referentStates")) {
+                    JsonObject state = element.getAsJsonObject();
+                    String reader = optionalString(state, "reader");
+                    String seen = optionalString(state, "location") + "@"
+                            + optionalString(state, "version");
+                    WriteRow write = writes.get(seen);
+                    String subject = "selected arm " + selector
+                            + " answers a query through a re-pointable "
+                            + "reference from state " + seen + " ("
+                            + optionalString(state, "selector") + ")";
+                    if (reader.isEmpty()) {
+                        throw new Refused(subject + ", asked outside every "
+                                + "read of a container, so no read of the "
+                                + "run can be held to it");
+                    }
+                    if (!readers.containsKey(reader)) {
+                        // Past its cutoff, no edge the fatal rests on.
+                        if (past.contains(reader)) continue;
+                        throw new Refused(subject + " at read " + reader
+                                + ", which is no read of the anchor's join "
+                                + "closure");
+                    }
+                    if (write == null || !write.endpoint().id().equals(
+                            optionalString(state, "writer"))) {
+                        throw new Refused(subject + ", which the selected "
+                                + "session states no write of by "
+                                + optionalString(state, "writer"));
+                    }
+                    chosen.put(reader, write);
+                }
+            }
+            return chosen;
+        }
+
+        /** Whether the run's own reads saw every write the model chose. */
+        private boolean ran(Map<String, WriteRow> chosen) {
+            for (Map.Entry<String, WriteRow> each : chosen.entrySet()) {
+                if (!each.getValue().equals(joined.get(each.getKey()))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /**
+     * STATE and ORDER edges over the join closure: every join of it, the
+     * write the model chose or else the one the run read -- the run is held
+     * to no recorded order, so a pinned join is the model's as much as a
+     * choice.  A read no row answers is held only where the model chose a
+     * writer for it; otherwise its outside store is the run's own.
+     */
+    private static List<JsonObject> stateEdges(StateClosure closure,
+                                               Map<String, WriteRow> chosen) {
         List<JsonObject> edges = new ArrayList<JsonObject>();
         Set<String> orders = new LinkedHashSet<String>();
-        for (Map.Entry<String, ReadRow> reader : readers.entrySet()) {
+        for (Map.Entry<String, ReadRow> reader : closure.readers.entrySet()) {
             ReadRow read = reader.getValue();
-            WriteRow recorded = joined.get(reader.getKey());
-            Endpoint writer = chosen.containsKey(reader.getKey())
-                    ? writers.get(chosen.get(reader.getKey()))
-                    : recorded == null ? null : recorded.endpoint();
-            WriteRow held = writer == null ? null : recorded != null
-                    ? recorded : lastBy(byLocation.get(location(
-                    read.location())), writer);
+            WriteRow held = chosen.containsKey(reader.getKey())
+                    ? chosen.get(reader.getKey())
+                    : closure.joined.get(reader.getKey());
             if (held == null) continue;
+            Endpoint writer = held.endpoint();
+            String location = SmtLowering.locationKey(held.location());
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", reader.getKey());
@@ -615,13 +725,14 @@ public final class ConfirmMain {
             edge.addProperty("mint", mint);
             edge.addProperty("writer", writer.id());
             edge.addProperty("version", held.version());
-            edge.addProperty("location", location(held.location()));
+            edge.addProperty("location", location);
             edges.add(edge);
             if (mint) continue;
             order(orders, writer, read.endpoint());
-            // No other writer of the location between the two: one recorded
-            // before the write goes before it, any other after the read.
-            for (WriteRow other : byLocation.get(location(held.location()))) {
+            // No other writer of the location it reads between the two: one
+            // recorded before the write goes before it, any other after the
+            // read.
+            for (WriteRow other : closure.byLocation.get(location)) {
                 if (other.endpoint().equals(writer)) continue;
                 if (other.seq() < held.seq()) {
                     order(orders, other.endpoint(), writer);
@@ -639,18 +750,6 @@ public final class ConfirmMain {
             edges.add(row);
         }
         return edges;
-    }
-
-    /** The last write {@code writer} made of a location, of its writes. */
-    private static WriteRow lastBy(List<WriteRow> writes, Endpoint writer) {
-        WriteRow last = null;
-        for (WriteRow write : writes) {
-            if (write.endpoint().equals(writer)
-                    && (last == null || write.seq() > last.seq())) {
-                last = write;
-            }
-        }
-        return last;
     }
 
     /** {@code first}'s activation exits before {@code then}'s enters, unless
@@ -679,14 +778,9 @@ public final class ConfirmMain {
         pending.add(writer);
     }
 
-    private static String location(LocationId location) {
-        return location.kind().name() + "/" + location.owner() + "#"
-                + location.slot();
-    }
-
     /** One version of one location. */
     private static String version(LocationId location, long version) {
-        return location(location) + "@" + version;
+        return SmtLowering.locationKey(location) + "@" + version;
     }
 
     /** The path ordinal a composer selector carries: {@code kind__N__hash}. */

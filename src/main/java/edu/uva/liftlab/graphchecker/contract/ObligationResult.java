@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 3: what one obligation produced, and from which session.
+ * CONTRACT-SPEC §3: what one obligation produced, and from which session.
  */
 public final class ObligationResult extends Value {
     private final String obligationId;

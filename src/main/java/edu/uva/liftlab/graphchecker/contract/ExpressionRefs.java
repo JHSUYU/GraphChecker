@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * CONTRACT-SPEC 2: the ref a session's rows name an expression by, {@code
+ * CONTRACT-SPEC §2.3: the ref a session's rows name an expression by, {@code
  * EXPR.} and the 16 hex of a 64-bit Merkle hash over the expression DAG.  A
  * node's hash folds its member names in sorted order, each scalar's text and
  * each child's hash, so equal expressions have equal refs in every session;

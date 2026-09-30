@@ -1,6 +1,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/methodSymbolizer.hpp"
+#include "concolic/unsafeAccess.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "runtime/atomic.inline.hpp"
 #include "concolic/exp/methodExpression.hpp"
@@ -17,6 +18,7 @@
 #include "concolic/reference/symbolicAtomic.hpp"
 #include "concolic/reference/internal/symbolicUnsafe.hpp"
 #include "concolic/sharedFieldVersions.hpp"
+#include "concolic/reference/containerSupport.hpp"
 #include "memory/resourceArea.hpp"
 #include "runtime/thread.hpp"
 #include "runtime/signature.hpp"
@@ -189,6 +191,7 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
   }
 
   if (need_symbolize) {
+    if (!disabled) register_functional_arguments();
     // MethodSymbolizer captures arguments directly at the call boundary and
     // then pauses ordinary bytecode propagation for the callee.  Its
     // structural shadow frame cannot perform normal caller cleanup, so
@@ -202,11 +205,168 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
   }
 }
 
+void MethodSymbolizer::register_functional_arguments() {
+  Method *callee = _handle.get_callee_method();
+  ResourceMark rm;
+  int offset = callee->is_static() ? 0 : 1;
+  for (SignatureStream stream(callee->signature()); !stream.at_return_type();
+       stream.next()) {
+    const BasicType type = stream.type();
+    if (type == T_OBJECT) {
+      // A probe: a parameter's class is loaded, and nothing is interned.
+      Symbol *name = stream.as_symbol_or_null();
+      const bool functional = name != NULL
+          && (name->starts_with("java/util/function/")
+              || name->equals("java/util/Comparator"));
+      oop argument = functional ? _handle.get_param<oop>(offset) : (oop) NULL;
+      if (argument != NULL) {
+        _handle.add_functional(
+            ConcolicMngr::ctx->name_reference(argument));
+      }
+    }
+    offset += type2size[type];
+  }
+}
+
+bool MethodSymbolizer::enter_callback(ZeroFrame *caller_frame,
+                                      ZeroFrame *callee_frame) {
+  if (!_symbolizing_method || !_handle.has_functional()
+      || !callee_frame->is_interpreter_frame()) {
+    return false;
+  }
+  interpreterState istate =
+      callee_frame->as_interpreter_frame()->interpreter_state();
+  Method *method = istate->method();
+  if (method->is_static() || method->is_native()) return false;
+  oop receiver = *(oop *) istate->locals();
+  if (receiver == NULL || !_handle.is_functional(receiver->get_sym_rid())) {
+    return false;
+  }
+  if (_windows.size() >= MAX_CALLBACK_DEPTH) {
+    // Declined: the callback runs muted and unlogged, so its call cannot say
+    // whether it ran, nor what it answered.
+    _handle.refuse_callbacks("CALLBACK_DEPTH_EXCEEDED");
+    return false;
+  }
+  // The callback's arguments, as its locals hold them, and the local each
+  // one's shadow anchors at (a two-word value at its second word).
+  std::vector<oop> arguments;
+  std::vector<int> anchors;
+  {
+    ResourceMark rm;
+    int local = 1;
+    for (SignatureStream stream(method->signature());
+         !stream.at_return_type(); stream.next()) {
+      const BasicType type = stream.type();
+      arguments.push_back(type == T_OBJECT || type == T_ARRAY
+          ? *(oop *)(istate->locals() - local) : (oop) NULL);
+      anchors.push_back(local + type2size[type] - 1);
+      local += type2size[type];
+    }
+  }
+  exp_list_t seeds;
+  CallbackWindow window;
+  window.frame = callee_frame;
+  window.key = NULL;
+  window.path_start = ConcolicMngr::ctx->get_path_condition().size();
+  if (_handle.seeder() != NULL) {
+    _handle.seeder()(_handle, arguments, &seeds, &window.key);
+  }
+  _windows.push_back(window);
+  _suspended.push_back(_handle);
+  _handle.reset();
+  _symbolizing_method = false;
+  ConcolicMngr::ctx->get_shadow_stack().push_callback(callee_frame, anchors,
+                                                      seeds);
+  return true;
+}
+
+bool MethodSymbolizer::exit_callback(ZeroFrame *callee_frame) {
+  if (_windows.empty() || _windows.back().frame != callee_frame) return false;
+  CallbackResult result;
+  result.key = _windows.back().key;
+  const int path_start = _windows.back().path_start;
+  _windows.pop_back();
+  // The conditions the callback's path recorded, and their complement.
+  PathCondition &path = ConcolicMngr::ctx->get_path_condition();
+  bool negatable = true;
+  for (int index = path_start; index < path.size(); ++index) {
+    Expression *condition = path.getConds()[index]->getExp();
+    if (condition == NULL) continue;
+    Expression *negation = condition->logical_negation();
+    negatable = negatable && negation != NULL;
+    result.path = result.path == NULL ? condition
+        : new OpSymExpression(result.path, condition, op_land);
+    if (negatable) {
+      result.path_negation = result.path_negation == NULL ? negation
+          : new OpSymExpression(result.path_negation, negation, op_lor);
+    }
+  }
+  if (!negatable) result.path_negation = NULL;
+  interpreterState istate =
+      callee_frame->as_interpreter_frame()->interpreter_state();
+  const BasicType type = istate->method()->result_type();
+  result.threw = ConcolicMngr::ctx->get_thread()->has_pending_exception();
+  Expression *returned = ConcolicMngr::ctx->get_shadow_stack().pop_callback(
+      callee_frame, result.threw ? T_VOID : type);
+  _handle = _suspended.back();
+  _suspended.pop_back();
+  if (!result.threw && type != T_VOID) {
+    // Where a returning frame leaves its result, as get_result reads it.
+    intptr_t *slot = istate->stack() + 1;
+    result.symbolic = returned != NULL;
+    if (type == T_OBJECT || type == T_ARRAY) {
+      oop value = *(oop *) slot;
+      result.returned_null = value == NULL;
+      result.result = returned != NULL
+          ? returned : ContainerSupport::concrete_value(value);
+    } else if (type == T_BOOLEAN || type == T_BYTE || type == T_CHAR
+               || type == T_SHORT || type == T_INT) {
+      result.returned_int = *(jint *) slot;
+      result.result = returned != NULL ? returned
+          : type == T_BOOLEAN
+              ? static_cast<Expression *>(
+                    new ConExpression((jboolean)(result.returned_int & 1)))
+              : static_cast<Expression *>(
+                    new ConExpression(result.returned_int));
+    } else {
+      result.result = returned;
+    }
+  }
+  _symbolizing_method = true;
+  _handle.callbacks().push_back(result);
+  return true;
+}
+
+bool MethodSymbolizer::reenters(oop container) {
+  if (container == NULL) return false;
+  // A suspended call's frame is still on the stack, under its callback.
+  for (size_t index = 0; index < _suspended.size(); ++index) {
+    if (ContainerSupport::backing_container(
+            _suspended[index].get_param<oop>(0)) == container) {
+      _suspended[index].mark_reentered();
+      return true;
+    }
+  }
+  return false;
+}
+
 void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *caller_frame) {
   if (caller_frame == _handle.get_caller_frame()) {
     if (ConcolicMngr::ctx->get_thread()->has_pending_exception()) {
       // Exceptional unwind has no Java result.  Reset symbolizer state only;
-      // the real handler will establish the new operand-stack contents.
+      // the real handler will establish the new operand-stack contents.  An
+      // Unsafe write the call stated it would make (UnsafeAccess::Intent)
+      // did not complete; a later write must not take it for its own.
+      UnsafeAccess::clear_intent();
+      // A call that mutates as its callbacks answer (removeIf, replaceAll)
+      // and unwound once one had run changed its container part way: named,
+      // not stated.
+      if (_handle.mutates_per_callback() && !_handle.callbacks().empty()) {
+        ContainerSupport::abandon_state(
+            ContainerSupport::backing_container(_handle.get_param<oop>(0)),
+            "CALLBACK_THREW_AFTER_MUTATION");
+      }
       this->_handle.reset();
       this->set_symbolizing_method(false);
       return;
@@ -215,10 +375,13 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
     BasicType basicType = primitive_target(_handle.get_callee_holder_name());
     const std::string& callee_holder_name = _handle.get_callee_holder_name();
 
-    if (disabled_class(callee_holder_name)) {
+    if (disabled_class(callee_holder_name) || !_handle.result_readable()) {
       // An observation sink returns a concrete value.  In particular, never
       // manufacture a MethodExpression that would reconnect a formatted log
-      // string to its symbolic application argument.
+      // string to its symbolic application argument.  A native's primitive
+      // result cannot be read here (MethodSymbolizerHandle::result_readable),
+      // so it is concrete too: no model mints a symbol for a word it did not
+      // see.
       exp = NULL;
     } else if (basicType != T_ILLEGAL) {
       exp = primitive_finish_method_helper(_handle, basicType);
@@ -405,12 +568,41 @@ MethodReturnSymbolExp::MethodReturnSymbolExp(MethodSymbolizerHandle &handle) {
   this->finalize(buf, ss.size());
   _returned = SharedFieldVersions::returned_value(result_word(handle, type),
                                                   NULL);
+  // Taken before the MethodExpression beside it consumes the list.
+  ResourceMark rm;
+  Method *callee = handle.get_callee_method();
+  _holder = handle.get_callee_holder_name();
+  _name = handle.get_callee_name();
+  _descriptor = callee == NULL ? std::string()
+      : std::string(callee->signature()->as_C_string());
+  _arguments = handle.get_param_list();
 }
 
 void MethodReturnSymbolExp::serialize_internal(
     rapidjson::Writer<rapidjson::StringBuffer> &writer) {
   SymbolExpression::serialize_internal(writer);
   _returned.serialize(writer);
+  writer.Key("call");
+  writer.StartObject();
+  writer.Key("holder");
+  writer.String(_holder.c_str());
+  writer.Key("name");
+  writer.String(_name.c_str());
+  writer.Key("descriptor");
+  writer.String(_descriptor.c_str());
+  writer.Key("arguments");
+  writer.StartArray();
+  for (size_t index = 0; index < _arguments.size(); ++index) {
+    if (_arguments[index] == NULL) {
+      writer.Null();
+    } else {
+      // A child like any other node's: a reference into the expression
+      // table under an artifact scope, the node itself otherwise.
+      _arguments[index]->serialize(writer);
+    }
+  }
+  writer.EndArray();
+  writer.EndObject();
 }
 
 #endif

@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.compose;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
@@ -19,6 +20,8 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -28,13 +31,18 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -63,10 +71,11 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  * </pre>
  *
  * <p>Deliberately NOT global: a path's arrivals, clock readings and
- * valuation are per session (R-PIN); a family sits under its session's
+ * valuation are per session (CONTRACT-SPEC §5); a family sits under its
+ * session's
  * selector, so an arm-less family kills only its disjunct; an arm is
  * guarded by its replay's valuation of only the roots its expression
- * depends on (R-GUARD).</p>
+ * depends on (CONTRACT-SPEC §4).</p>
  */
 public final class Composer {
 
@@ -332,6 +341,21 @@ public final class Composer {
             return armChoices.get(selector);
         }
 
+        /**
+         * Every nested selector a state arm's stores are chosen among
+         * ({@link ComposedFamilies.ArmChoice#states}), so a claim can say
+         * which state of the delivered object the witness's queries saw.
+         */
+        public List<String> stateSelectors() {
+            Set<String> selectors = new LinkedHashSet<String>();
+            for (ComposedFamilies.ArmChoice arm : armChoices.values()) {
+                for (SmtLowering.StateChoice state : arm.states()) {
+                    selectors.add(state.selector);
+                }
+            }
+            return new ArrayList<String>(selectors);
+        }
+
         /** Every selector, for reading which disjunct a model selected. */
         public List<String> selectors() {
             return Composer.selectors(disjuncts);
@@ -348,6 +372,9 @@ public final class Composer {
 
     private final Corpus corpus;
     private final OccurrenceAddress anchor;
+    /** The epoch's static facts: where a reference write's construction
+     *  guard is ({@link #constructionGuards}). */
+    private final StaticScopeMap scope;
     private final Map<String, RootDomain> declaredDomains;
     private final int maxValuations;
     private final SmtLowering lowering;
@@ -362,7 +389,7 @@ public final class Composer {
     /**
      * Interaction -> the declared roots an UNATTESTED arm of it mentions.
      * Such an arm has no producer path condition, so a witness may not move
-     * a root inside it (R-I5).
+     * a root inside it (IDENTITY §4).
      */
     private final Map<String, Set<String>> unattestedRoots =
             new LinkedHashMap<String, Set<String>>();
@@ -379,7 +406,8 @@ public final class Composer {
     /** Path id -> what the anchor's attaches received. */
     private final Map<String, List<String>> observedArrivals =
             new LinkedHashMap<String, List<String>>();
-    /** This epoch's skeleton: which interactions have a slot (R-I6). */
+    /** This epoch's skeleton: which interactions have a slot (PIPELINE
+     *  §7.1). */
     private SlotTable slots;
     /** Sessions whose pairing replaces a slot's: their arms are not ours. */
     private final Set<String> replacing = new LinkedHashSet<String>();
@@ -390,9 +418,10 @@ public final class Composer {
 
     private Composer(Corpus corpus, OccurrenceAddress anchor,
                      Map<String, RootDomain> declaredDomains,
-                     int maxValuations) {
+                     int maxValuations, StaticScopeMap scope) {
         this.corpus = corpus;
         this.anchor = anchor;
+        this.scope = scope;
         this.declaredDomains = declaredDomains == null
                 ? Collections.<String, RootDomain>emptyMap()
                 : declaredDomains;
@@ -413,9 +442,10 @@ public final class Composer {
     public static Composition compose(Corpus corpus,
                                       OccurrenceAddress anchor,
                                       Map<String, RootDomain> declaredDomains,
-                                      int maxValuations) {
-        return new Composer(corpus, anchor, declaredDomains, maxValuations)
-                .run();
+                                      int maxValuations,
+                                      StaticScopeMap scope) {
+        return new Composer(corpus, anchor, declaredDomains, maxValuations,
+                scope).run();
     }
 
     private Composition run() {
@@ -556,13 +586,19 @@ public final class Composer {
                             : cut.getValue());
         }
         for (Map.Entry<String, String> pinned
-                : lowering.pinnedLeaves().entrySet()) {
+                : lowering.pinnedReturns().entrySet()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    "UndeclaredSymbolPinned:" + pinned.getKey(), "no row of "
-                            + "this corpus declares this symbol and its node "
-                            + "states it returned " + pinned.getValue()
-                            + ": it is that value, and what it was computed "
-                            + "from is not in the formula");
+                    "MethodReturnPinned:" + pinned.getKey(), "the call that "
+                            + "returned this symbol is no relation the "
+                            + "lowering knows and nothing its arguments rest "
+                            + "on moves: it is pinned to " + pinned.getValue()
+                            + " by a named assertion, and what it was "
+                            + "computed from is not in the formula");
+        }
+        for (Map.Entry<String, String> unanswered
+                : lowering.candidateUnanswered().entrySet()) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    unanswered.getKey(), unanswered.getValue());
         }
 
         // Valuations before the body: the body declares what pins reach.
@@ -661,7 +697,22 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
-        SmtLowering.SessionJoin rows = corpus.join(session);
+        lowering.path();
+        // (0a) THE CLOSURE (P3): the occurrences of this session the joins
+        //      reach, and the seq each prefix runs to.  Row-level, before
+        //      any lowering.
+        Map<String, Long> reached = closure(session, anchor, target.seq(),
+                null);
+        // What a family may move at the anchor is no constant anywhere in
+        // this path: not a pin after a refused join, not a variable
+        // independence leaves out.  A location a reader mutated a container
+        // through is held to the run's pairing.
+        Set<String> repaired = repaired(session);
+        Set<String> pinned = pinnedOwners(session, reached, repaired);
+        repaired.removeAll(pinned);
+        SmtLowering.SessionJoin rows = SmtLowering.repairing(
+                corpus.join(session), repaired,
+                (reader, writer) -> arms.concurrent(reader, writer, session));
         lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
@@ -669,19 +720,15 @@ public final class Composer {
         List<ReadRow> joined = new ArrayList<ReadRow>();
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
+        frameRefusals(session, reached.keySet(), refusals);
 
-        // (0a) THE CLOSURE (P3): the occurrences of this session the joins
-        //      reach, and the seq each prefix runs to.  Row-level, before
-        //      any lowering.
-        Map<String, Long> reached = closure(session, anchor, target.seq(),
-                null);
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
         List<DecisionRow> conditions = before(path.decisions, target.seq());
         conditions.addAll(reachedConditions(session, reached));
         Independence relevant = independence(session,
-                Collections.singletonList(target.phiTerm()), reached,
-                conditions);
+                Collections.singletonList(target.phiTerm()),
+                familyBound(session, repaired), reached, conditions);
 
         // (0b) Reads whose value the row states outright, bound BEFORE any
         //      lowering so every leaf naming them resolves, not just later
@@ -712,6 +759,12 @@ public final class Composer {
         //     asserted here.
         stateJoins(session, reached.keySet(), relevant, rows, refusals,
                 joined, joins, answered);
+        joined.removeIf(read -> pinned.contains(
+                SmtLowering.locationKey(read.location())));
+        //     A field projected, or a container queried, through one a STATE
+        //     family may re-point is the object's it is
+        //     ({@link SmtLowering#movable}).
+        for (ReadRow read : joined) lowering.movable(read.symbol());
 
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
         //     decision shares the target's seq; including it would
@@ -779,12 +832,14 @@ public final class Composer {
 
         // (6) Families: one selector per (producer occurrence, session) for
         //     every interaction reached, under this path's selector.  If no
-        //     single session could make all deliveries the path took (R3c),
-        //     the path is dropped.
+        //     single session could make all deliveries the path took (PIPELINE
+        //     §8), the path is dropped, and what its families stated is taken
+        //     back with it.
         List<String> familyTerms = new ArrayList<String>();
         List<GapRow> unproducible = new ArrayList<GapRow>();
         if (!composedFamilies.closeFamilies(ordinal, selector, session,
                 interactionIds, bound, familyTerms, unproducible)) {
+            composedFamilies.discard();
             refused(unproducible);
             return null;
         }
@@ -796,6 +851,8 @@ public final class Composer {
         // (8) And the state joins this conjunction ASKS ABOUT.
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
+        // Nothing refuses the path from here: it is a disjunct.
+        composedFamilies.commit();
         lowering.assertNamed("path_fatal__" + ordinal,
                 "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
         observedReads.put(path.pathId, observed);
@@ -826,7 +883,8 @@ public final class Composer {
      * The state joins THIS CONJUNCTION ASKS ABOUT, to a fixed point seeded
      * by the path's terms and its family terms.  An unreached join
      * constrains nothing but drags its theory (e.g. {@code assoc_put}) into
-     * the query, which can cost z3 its whole budget.  Same rule as
+     * the query, which can cost z3 its whole budget; it goes with what its
+     * lowering required ({@link SmtLowering#ownConditions}).  Same rule as
      * {@link SmtLowering#body}, applied to assertions.
      */
     List<String> statedJoins(Map<String, String> joins,
@@ -990,7 +1048,7 @@ public final class Composer {
      * <ol>
      *   <li>an obligation answered the mint: that value;</li>
      *   <li>an ATTESTED producer delivered it: nothing is conjoined; the
-     *       attach joins its FAMILY only (CLOSURE-V2) and takes just its
+     *       attach joins its FAMILY only (PIPELINE §8) and takes just its
      *       sort from the delivery ({@link #attestedArrival});</li>
      *   <li>otherwise refused by name.</li>
      * </ol>
@@ -1129,7 +1187,7 @@ public final class Composer {
         if (producer == null) return false;
         for (ExportRow export : arms.attestedExports(producer)) {
             Term delivered = composedFamilies.lower(export.sessionId(),
-                    export.expressionRef(), "paired-arm");
+                    export.expressionRef(), "paired-arm", null);
             if (delivered == null) continue;
             lowering.declareStated(attach.symbol(), delivered.sort);
             return true;
@@ -1182,8 +1240,8 @@ public final class Composer {
      * is reached at the seq of the write a read joined to, widened by later
      * writes; its reads before the cutoff are joined in turn.</p>
      *
-     * <p>P3c: EARLIER VERSIONS of a reached write's location are reached
-     * too, since a state is the result of every earlier mutation (e.g. what
+     * <p>P3 (PIPELINE §8): EARLIER VERSIONS of a reached write's location
+     * are reached too, since a state is the result of every earlier mutation (e.g. what
      * a map lacks was removed earlier under a clock comparison).  Each
      * (location, version) is handled once.</p>
      */
@@ -1227,6 +1285,25 @@ public final class Composer {
             }
         }
         return reached;
+    }
+
+    /**
+     * A REFUSAL IS ITS FRAME'S: a value the run refused inside an occurrence
+     * ({@link Corpus#refusedIn}) refuses a path or an arm whose closure
+     * reaches that occurrence, and nothing else.  A refused attach used to
+     * be BLOCKING for the whole campaign, wherever it ran (hdfs-17899-bug1
+     * r1: 55 of them, all in NameNode registration handlers).
+     */
+    void frameRefusals(String session, Set<String> reached,
+                       List<GapRow> refusals) {
+        for (String occurrenceId : reached) {
+            GapRow refused = corpus.refusedIn(session, occurrenceId);
+            if (refused == null) continue;
+            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, refused.subject(), "this closure "
+                            + "reaches an occurrence whose own run refused a "
+                            + "value it computes on: " + refused.detail()));
+        }
     }
 
     /**
@@ -1295,13 +1372,283 @@ public final class Composer {
         return earlier;
     }
 
-    /** What {@code seeds} rest on among these conditions and the reads of
-     *  the reached occurrences ({@link Independence}). */
+    /** What {@code seeds} and the variables a family binds ({@code
+     *  bound}) rest on among these conditions and the reads of the reached
+     *  occurrences ({@link Independence}); a read brings the construction
+     *  guard of the write it observed. */
     Independence independence(String session, List<String> seeds,
+                              Collection<String> bound,
                               Map<String, Long> reached,
                               List<DecisionRow> conditions) {
-        return Independence.of(corpus, session, seeds, conditions,
-                statedRows(session, reached.keySet()));
+        return Independence.of(corpus, session, seeds, bound, conditions,
+                statedRows(session, reached.keySet()),
+                read -> constructionGuards(session, corpus.writeOf(session,
+                        read.location(), read.observedVersion())));
+    }
+
+    /** The construction guards already found, by session and write. */
+    private final Map<String, List<DecisionRow>> built =
+            new LinkedHashMap<String, List<DecisionRow>>();
+
+    /**
+     * THE CONSTRUCTION GUARD of a reference write (R3-REFCONT §1.6, D5):
+     * the decisions its occurrence took before it at the guard sites of the
+     * mutations its method made on a container it then published
+     * ({@link StaticScopeMap#constructionGuards}).  A referent rests on
+     * every decision that shaped it, the ones that skipped a mutation
+     * included, and those leave no node in its state: an arm delivering the
+     * write, or a read joined to it, conjoins them in the polarity they took
+     * ({@link Independence} keeps them), and the reads they name are joined
+     * in turn.  A decision whose condition is a REMOVE_IF guard of the
+     * referent's chain stays free, as that node states it both ways.  None
+     * for a write that stored no container's state.
+     */
+    List<DecisionRow> constructionGuards(String session, WriteRow write) {
+        if (write == null || write.referentState() == null) {
+            return Collections.<DecisionRow>emptyList();
+        }
+        return built.computeIfAbsent(session + "|" + write.location() + "@"
+                + write.version(), unused -> {
+            String site = write.endpoint().site();
+            Set<String> sites = new LinkedHashSet<String>();
+            for (String carrier : scope.carriersAt(site,
+                    write.javaType(), write.location().kind())) {
+                for (StaticScopeMap.Guard guard
+                        : scope.constructionGuards(site, carrier)) {
+                    sites.add(guard.siteId());
+                }
+            }
+            List<DecisionRow> guards = new ArrayList<DecisionRow>();
+            if (sites.isEmpty()) return guards;
+            Set<JsonElement> free = removalGuards(session,
+                    write.referentState());
+            for (DecisionRow decision : corpus.decisionsOf(session,
+                    write.endpoint().occurrence())) {
+                if (decision.seq() < write.seq()
+                        && sites.contains(decision.siteId())
+                        && !decides(session, decision, free)) {
+                    guards.add(decision);
+                }
+            }
+            return guards;
+        });
+    }
+
+    /**
+     * The guards of the REMOVE_IF nodes of one container's chain, down to
+     * its base: each version's mutation and, through the read it rests on,
+     * the version before.
+     */
+    private Set<JsonElement> removalGuards(String session,
+                                           WriteRow.Referent state) {
+        Set<JsonElement> guards = ExpressionWalk.identitySet();
+        Set<JsonElement> walked = ExpressionWalk.identitySet();
+        List<JsonElement> pending = new ArrayList<JsonElement>();
+        WriteRow first = corpus.writeOf(session, state.location(),
+                state.version());
+        if (first != null) {
+            pending.add(corpus.expression(session, first.expressionRef()));
+        }
+        while (!pending.isEmpty()) {
+            for (ExpressionWalk walk = ExpressionWalk.of(pending.remove(
+                    pending.size() - 1), walked); walk.hasNext(); ) {
+                JsonObject node = walk.next();
+                String type = JsonFields.optionalString(node, "_type");
+                if ("REMOVE_IF".equals(JsonFields.optionalString(node,
+                        "operation"))) {
+                    guards.add(unwrapped(node.get("guard")));
+                } else if (VmRows.GUARDED_READ_TYPE.equals(type)) {
+                    WriteRow below = corpus.writeOf(session,
+                            SmtLowering.locationKey(JsonFields.object(node,
+                                    "location")), VmRows.recordedVersion(
+                                    node));
+                    if (below != null) {
+                        pending.add(corpus.expression(session,
+                                below.expressionRef()));
+                    }
+                }
+            }
+        }
+        return guards;
+    }
+
+    /**
+     * Whether a decision's condition is one of these guards: the node
+     * itself, or its complement over the same operands (the arm a removal
+     * that did not fire states).
+     */
+    private boolean decides(String session, DecisionRow decision,
+                            Set<JsonElement> guards) {
+        if (guards.isEmpty()) return false;
+        for (String reference : SmtNames.symbols(decision.term(),
+                new LinkedHashSet<String>())) {
+            JsonElement condition = unwrapped(corpus.expression(session,
+                    reference));
+            if (guards.contains(condition)) return true;
+            for (JsonElement guard : guards) {
+                if (condition != null && condition.isJsonObject()
+                        && guard != null && guard.isJsonObject()
+                        && condition.getAsJsonObject().get("_left")
+                        == guard.getAsJsonObject().get("_left")
+                        && condition.getAsJsonObject().get("_right")
+                        == guard.getAsJsonObject().get("_right")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** A value beneath the consumer boundaries around it. */
+    private static JsonElement unwrapped(JsonElement value) {
+        JsonElement found = value;
+        while (VmExpressionIr.consumerBoundary(found)) {
+            found = found.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+        }
+        return found;
+    }
+
+    /**
+     * The anchor locations a family may re-pair that keep the run's own
+     * pairing, named.  A reader of this path mutated a container through
+     * one (R3-REFCONT C-4): a reached occurrence's container version whose
+     * mutation names, as its owner, a read of it; another pairing would
+     * mutate an object no row records the mutation of.  Or a store of one
+     * holds a container through an object that is not it (a
+     * {@code Collections} wrapper, a view): a query through that object
+     * names no owner, so it is the run's container's answer whichever
+     * object the family delivers.
+     */
+    private Set<String> pinnedOwners(String session,
+                                     Map<String, Long> reached,
+                                     Set<String> repaired) {
+        Set<String> pinned = new LinkedHashSet<String>();
+        for (Map.Entry<String, Long> at : reached.entrySet()) {
+            OccurrenceAddress occurrence = corpus.occurrence(at.getKey());
+            if (occurrence == null) continue;
+            for (WriteRow write : corpus.writesOn(session, occurrence)) {
+                if (write.seq() > at.getValue()
+                        || write.location().kind() != LocationKind.MAP) {
+                    continue;
+                }
+                JsonObject mutation = corpus.expression(session,
+                        write.expressionRef());
+                JsonElement owner = unwrapped(mutation == null ? null
+                        : mutation.get("owner"));
+                if (!VmRows.GUARDED_READ_TYPE.equals(
+                        VmExpressionIr.typeOf(owner))) {
+                    continue;
+                }
+                String key = SmtLowering.locationKey(JsonFields.object(
+                        owner.getAsJsonObject(), "location"));
+                if (repaired.contains(key) && pinned.add(key)) {
+                    gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                            "OWNER_PINNED_BY_MUTATION:" + key + "@"
+                                    + session, "a reader of this path "
+                                    + "mutated a container through this "
+                                    + "reference, so its family is held to "
+                                    + "the arm the run took: another pairing "
+                                    + "would mutate an object no row "
+                                    + "records the mutation of");
+                }
+            }
+        }
+        for (String key : repaired) {
+            for (WriteRow store : corpus.writesOf(session, key)) {
+                if (store.referentState() == null
+                        && store.referentStateRefused() == null
+                        || storesItsContainer(session, store)) {
+                    continue;
+                }
+                if (pinned.add(key)) {
+                    gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                            "OWNER_PINNED_BY_WRAPPER:" + key + "@" + session,
+                            "the store at version " + store.version()
+                                    + " holds a container through an object"
+                                    + " that is not it, and a query through"
+                                    + " such an object names no owner, so "
+                                    + "this family is held to the arm the "
+                                    + "run took");
+                }
+                break;
+            }
+        }
+        return pinned;
+    }
+
+    /**
+     * Whether a reference store stored a container itself, which a wrapper
+     * or a view of one is not: the container its referent names, or,
+     * refused, an object this session logs the state of.
+     */
+    private boolean storesItsContainer(String session, WriteRow store) {
+        JsonElement stored = unwrapped(corpus.expression(session,
+                store.expressionRef()));
+        if (!SmtLowering.named(stored)) return false;
+        String rid = Long.toString(VmRows.referencedObjectRid(
+                stored.getAsJsonObject().get("_exp").getAsString()));
+        return store.referentState() != null
+                ? rid.equals(store.referentState().location().owner())
+                : !corpus.writesOf(session, SmtLowering.locationKey(
+                LocationId.of(LocationKind.MAP, rid, "-3"))).isEmpty();
+    }
+
+    /**
+     * The variables a family of this path may bind: every attach of the
+     * anchor (its MESSAGE family, {@link #handoffReads}), and the reads of
+     * the locations a STATE family may re-pair.  Independence seeded with
+     * phi and the roots alone left out a condition over them, and the
+     * family set them free of it (C1 review M2).
+     */
+    private Set<String> familyBound(String session, Set<String> repaired) {
+        Set<String> bound = new LinkedHashSet<String>();
+        for (AttachRow attach : corpus.attachesOn(session, anchor)) {
+            bound.add(attach.symbol());
+        }
+        for (ReadRow read : corpus.readsOn(session, anchor)) {
+            String key = SmtLowering.locationKey(read.location());
+            if (!repaired.contains(key)) continue;
+            bound.add(Independence.location(key));
+            if (!read.symbol().isEmpty()) bound.add(read.symbol());
+        }
+        return bound;
+    }
+
+    /**
+     * The locations a STATE family may re-pair at the anchor ({@link
+     * ComposedFamilies#stateFamilies}): read there by this session, owned
+     * by a named object, with a writer the read could have seen besides the
+     * one it did ({@link Corpus#eligibleWrites}, the writers the family's
+     * arms are drawn from) or a version no row wrote.
+     */
+    private Set<String> repaired(String session) {
+        Map<String, Set<String>> writers =
+                new LinkedHashMap<String, Set<String>>();
+        Set<String> unwritten = new LinkedHashSet<String>();
+        Set<String> asked = new LinkedHashSet<String>();
+        for (ReadRow read : corpus.readsOn(session, anchor)) {
+            long version = read.observedVersion();
+            if (version < 0L || !Arms.namedOwner(read.location())) continue;
+            String key = SmtLowering.locationKey(read.location());
+            Set<String> by = writers.computeIfAbsent(key,
+                    ignored -> new LinkedHashSet<String>());
+            if (!asked.add(key + "#" + version)) continue;
+            if (corpus.writeOf(session, key, version) == null) {
+                unwritten.add(key);
+            }
+            for (WriteRow write : corpus.eligibleWrites(session, key,
+                    version, anchor)) {
+                by.add(write.endpoint().occurrence().id());
+            }
+        }
+        Set<String> repaired = new LinkedHashSet<String>();
+        for (Map.Entry<String, Set<String>> location : writers.entrySet()) {
+            if (location.getValue().size()
+                    + (unwritten.contains(location.getKey()) ? 1 : 0) >= 2) {
+                repaired.add(location.getKey());
+            }
+        }
+        return repaired;
     }
 
     /**
@@ -1390,12 +1737,12 @@ public final class Composer {
     }
 
     /**
-     * Read := THE ONE BINDING RULE ({@link SmtLowering}'s guarded read too):
-     * JOIN, the expression of the write version it observed, if it lowers
-     * with no refusal; else its MINT; else PIN; else REFUSE.  No "latest
-     * write", no choice between writers.  A join that refused is an attempt:
-     * dropped when the mint or the pin binds the read, stated beside the
-     * read's own refusal when nothing does.
+     * Read := THE ONE BINDING RULE ({@link SmtLowering#bind}, the guarded
+     * read's too, so the two cannot disagree): JOIN, the expression of the
+     * write version it observed, if it lowers with no refusal; else its
+     * MINT; else PIN; else REFUSE.  A join that refused gives way to the
+     * mint or the pin only where nothing it rests on can move.  No "latest
+     * write", no choice between writers.
      */
     void stateJoins(String session, Set<String> occurrences,
                     Independence relevant, SmtLowering.SessionJoin join,
@@ -1408,130 +1755,128 @@ public final class Composer {
             boolean atAnchor = anchor.id().equals(
                     read.endpoint().occurrence().id());
             String key = SmtLowering.locationKey(read.location());
-            WriteRow write = read.observedVersion() < 0L ? null
-                    : corpus.writeOf(session, key,
-                            read.observedVersion());
-            SmtLowering.Attempt<Term> attempt = null;
-            if (write != null) {
-                JsonObject expression = corpus.session(session).expressions()
-                        .expression(write.expressionRef());
-                // A cited ref missing from its own table: BLOCKING.
-                if (expression == null) {
-                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                            GapClass.BLOCKING, write.expressionRef(),
-                            "a write row of " + key + "@"
-                                    + read.observedVersion() + " cites an "
-                                    + "expression its session's table does "
-                                    + "not hold, so the chain this read "
-                                    + "joins to is not in this corpus"));
-                    continue;
+            long version = read.observedVersion();
+            WriteRow write = corpus.writeOf(session, key, version);
+            if (joins.containsKey(read.symbol())) {
+                // Pinned at step 0 to what its row states: a version no row
+                // wrote, its writer outside every region.  At the anchor a
+                // STATE family may still offer the concurrent writers beside
+                // what it returned; a mint's version is a root's.
+                if (atAnchor && write == null && version >= 0L
+                        && "".equals(SmtLowering.mintedReadSymbol(join,
+                        version))) {
+                    joined.add(read);
                 }
-                attempt = lowering.attempt(expression, null,
-                        "state-join:" + key + "@" + read.observedVersion());
-                if (attempt.lowered()) {
-                    Term value = attempt.value();
-                    lowering.declareStated(read.symbol(), value.sort);
-                    joins.put(read.symbol(), "(= " + read.symbol() + " "
-                            + value.text + ")");
-                    if (atAnchor) joined.add(read);
-                    continue;
-                }
+                continue;
             }
-            if (!mintOrPin(session, read, key, write, atAnchor, join,
-                    refusals, joined, joins, answered) && attempt != null) {
-                lowering.commit(attempt);
+            // A cited ref missing from its own table: BLOCKING.
+            if (write != null && corpus.expression(session,
+                    write.expressionRef()) == null) {
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, write.expressionRef(),
+                        "a write row of " + key + "@" + version + " cites an "
+                                + "expression its session's table does not "
+                                + "hold, so the chain this read joins to is "
+                                + "not in this corpus"));
+                continue;
+            }
+            SmtLowering.Binder<Boolean> binder = new SmtLowering.Binder<Boolean>() {
+                @Override
+                public Term join(JsonElement value) {
+                    return lowering.dispatch(value, SmtLowering.whole(value,
+                            null), "state-join:" + key + "@" + version);
+                }
+
+                @Override
+                public Boolean joined(Term value) {
+                    lowering.declareStated(read.symbol(), value.sort);
+                    // What the JVM evaluated it under holds where it does.
+                    String equals = "(= " + read.symbol() + " " + value.text
+                            + ")";
+                    joins.put(read.symbol(), "true".equals(value.precondition)
+                            ? equals : "(and " + equals + " "
+                            + value.precondition + ")");
+                    if (atAnchor) joined.add(read);
+                    return true;
+                }
+
+                @Override
+                public Boolean minted(String symbol) {
+                    return mint(session, read, symbol, refusals, joins);
+                }
+
+                @Override
+                public Boolean pinned() {
+                    // The row's own value (non-joinable rows were asked at
+                    // step 0, and one it could not place is refused there).
+                    if (!answered.contains(read.symbol())
+                            && !pin(session, read, refusals, joins,
+                            answered)) {
+                        return null;
+                    }
+                    return joins.containsKey(read.symbol());
+                }
+
+                @Override
+                public Boolean refused(Term value, String subject,
+                                       String detail) {
+                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                            GapClass.DIAGNOSTIC, key + "@" + version,
+                            detail));
+                    return false;
+                }
+            };
+            // What binding the read required rides with the join that binds
+            // it: stated where the conjunction asks about it (#statedJoins).
+            List<String> own = lowering.ownConditions(
+                    () -> lowering.bind(key, version, null, binder)
+                            && joins.containsKey(read.symbol()));
+            if (!own.isEmpty()) {
+                own.add(0, joins.get(read.symbol()));
+                joins.put(read.symbol(), VmTermLowering.and(own));
             }
         }
     }
 
     /**
-     * The rest of the rule for a read no write joins: its MINT, else PIN,
-     * else REFUSE by name.  Answers whether the read is bound.
+     * MINT: the read is the symbol the placeholder of its version stated,
+     * keyed by {@code mintVersion} alone (CONTRACT v2.4); a root's version
+     * moves with the root.  Answers whether it binds the read.
      */
-    private boolean mintOrPin(String session, ReadRow read, String key,
-                              WriteRow write, boolean atAnchor,
-                              SmtLowering.SessionJoin join,
-                              List<GapRow> refusals, List<ReadRow> joined,
-                              Map<String, String> joins,
-                              Set<String> answered) {
-        if (joins.containsKey(read.symbol())) {
-            // Pinned at step 0 to what its row states: a version no row
-            // wrote, its writer outside every region.  At the anchor a
-            // STATE family may still offer the concurrent writers beside
-            // what it returned; a mint's version is a root's.
-            if (atAnchor && write == null && read.observedVersion() >= 0L
-                    && "".equals(SmtLowering.mintedReadSymbol(join,
-                    read.observedVersion()))) {
-                joined.add(read);
-            }
-            return true;
-        }
-        // What the MINT that created this version gave it, keyed by
-        // `mintVersion` alone (CONTRACT v2.4), before the value the read
-        // returned: a root's version moves with the root.
-        String minted = SmtLowering.mintedReadSymbol(join,
-                read.observedVersion());
-        if (minted == null) {
-            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                    GapClass.DIAGNOSTIC, key + "@" + read.observedVersion(),
-                    "two placeholder rows of this session state mint "
-                            + "version " + read.observedVersion()
-                            + " under different symbols: "
-                            + join.mintedReadSymbols(
-                            read.observedVersion())));
-            return false;
-        }
+    private boolean mint(String session, ReadRow read, String minted,
+                         List<GapRow> refusals, Map<String, String> joins) {
         // This row states the version; bound at step 0.
         if (minted.equals(read.symbol())) return true;
-        if (!minted.isEmpty()) {
-            Sort sort = lowering.declarations().get(minted);
-            // A DECLARED ROOT IS BOUND BY ITS DOMAIN, NOT BY A VALUE.  An
-            // ordinary read needs a stated value; a clock mint deliberately
-            // states none (pinning it could never show a skew), and
-            // {@link #clocks} states its domain.
-            RootMintRow root = corpus.rootBySymbol(session, minted);
-            if (sort == null && root != null) {
-                sort = corpus.declaredSymbols().get(minted);
-            }
-            if (sort == null || (!lowering.stated(minted) && root == null)) {
-                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, minted,
-                        "the read row that states this version's symbol "
-                                + "states no value for it, and no root of "
-                                + "this session mints it, so nothing binds "
-                                + "it"));
-                return false;
-            }
-            if (root != null && !lowering.stated(minted)) {
-                // So the root's domain lands on the joined symbol.
-                lowering.declareStated(minted, sort);
-            }
-            lowering.declareStated(read.symbol(), sort);
-            joins.put(read.symbol(), "(= " + read.symbol() + " " + minted
-                    + ")");
-            return true;
+        Sort sort = lowering.declarations().get(minted);
+        // A DECLARED ROOT IS BOUND BY ITS DOMAIN, NOT BY A VALUE.  An
+        // ordinary read needs a stated value; a clock mint deliberately
+        // states none (pinning it could never show a skew), and
+        // {@link #clocks} states its domain.
+        RootMintRow root = corpus.rootBySymbol(session, minted);
+        if (sort == null && root != null) {
+            sort = corpus.declaredSymbols().get(minted);
         }
-        // The row's own value (non-joinable rows were asked at step 0, and
-        // one it could not place is refused there).
-        if (answered.contains(read.symbol())
-                || pin(session, read, refusals, joins, answered)) {
-            return joins.containsKey(read.symbol());
+        if (sort == null || (!lowering.stated(minted) && root == null)) {
+            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, minted,
+                    "the read row that states this version's symbol states "
+                            + "no value for it, and no root of this session "
+                            + "mints it, so nothing binds it"));
+            return false;
         }
-        refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                GapClass.DIAGNOSTIC, key + "@" + read.observedVersion(),
-                (write == null ? "no write of this location at this "
-                        + "version in this session"
-                        : "the write of this version did not lower (its "
-                        + "refusal is stated beside this)")
-                        + ", and the recording states no value the read "
-                        + "returned"));
-        return false;
+        if (root != null && !lowering.stated(minted)) {
+            // So the root's domain lands on the joined symbol.
+            lowering.declareStated(minted, sort);
+        }
+        lowering.declareStated(read.symbol(), sort);
+        joins.put(read.symbol(), "(= " + read.symbol() + " " + minted + ")");
+        return true;
     }
 
     /**
      * What this session received at these attaches, one term per symbol.
      * Kept beside the path, not in it: an arrival is a consequence of its
-     * producer's roots (R-READ), so pinning it would pin them.
+     * producer's roots, so pinning it would pin them.
      */
     private List<String> arrivals(List<AttachRow> attaches) {
         List<String> stated = new ArrayList<String>();

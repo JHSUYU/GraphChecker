@@ -4,7 +4,7 @@
 # src/ returns empty for every one.  The checkouts compile against an older
 # jar in ~/.m2, so a rename or a deletion here surfaces only when a campaign
 # loads the new jar -- at SEED, as NoSuchMethodError, after the build is
-# already green.  MECHANISMS §9/§10: deleting line 1 killed every campaign.
+# already green.  Deleting line 1 once killed every campaign.
 #
 # Format: <class under edu.uva.liftlab.graphchecker.> <method> <return> <parameters...>
 # Also external, and checked by the compiler rather than here:
@@ -42,7 +42,7 @@ runtime.CausynthTraceRecorder startRecording void
 runtime.CausynthTraceRecorder enterCarriedScope long object string string
 runtime.CausynthTraceRecorder exitCarriedScope void long
 # ipc.CausynthMessagePropagation.{beginTick,endTick} -- one daemon tick as a
-# lineage root of its own, which is what makes ticks roots (IDENTITY-V3).
+# lineage root of its own, which is what makes ticks roots (IDENTITY §2).
 # Called from HeartbeatManager, BPServiceActor, DataXceiver and balancer
 # KeyManager in 11741 and 17960-jdk8, and from the workloads themselves
 # (TestCausynthExpiredBalancerKey in 11741, TestCausynthStripedChecksum in

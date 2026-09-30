@@ -177,7 +177,7 @@ public final class DeclaredSiteCapture {
     }
 
     /** A CALL_RETURN port for a site no recording captured (exposed occurrence,
-     *  DESIGN4 section 3.3b): no ordinal, so it answers every firing ({@code
+     *  PIPELINE §7.8): no ordinal, so it answers every firing ({@code
      *  SymbolizeAction#acceptsOccurrence}); accessor returns are refused. */
     public static JsonObject declaredPort(RegionInstancePlan plan,
                                           StaticScopeMap.Site site) {

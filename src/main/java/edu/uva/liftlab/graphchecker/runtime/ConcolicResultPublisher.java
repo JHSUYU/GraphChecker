@@ -141,10 +141,12 @@ final class ConcolicResultPublisher {
      * workload does after it no stage reads (SOLR-18406: a follower retried
      * the download it could no longer get, every bound lifted, until the
      * worker's clock killed the JVM and the witness session was withdrawn).
-     * Once, on a thread of its own: every publication in flight settles
-     * (the witness's own among them), every activation still live is
-     * stranded now rather than after a grace its retries keep resetting,
-     * and the replay ends as every replay does ({@link JUnitMethodRunner}).
+     * Once, on a thread of its own: admission ends, the schedule states the
+     * run cut at its witness ({@link ScheduleLog#witnessed}), every
+     * publication in flight settles (the witness's own among them), every
+     * activation still live is stranded now rather than after a grace its
+     * retries keep resetting, and the replay ends as every replay does
+     * ({@link JUnitMethodRunner}).
      */
     static void concludeAtWitness() {
         synchronized (PUBLICATION_LOCK) {
@@ -152,6 +154,8 @@ final class ConcolicResultPublisher {
             concludingAtWitness = true;
             submittedAtWitness = submitted;
         }
+        ConcolicRegionRuntime.endAdmission();
+        ScheduleLog.witnessed();
         ThreadGroup root = Thread.currentThread().getThreadGroup();
         while (root.getParent() != null) root = root.getParent();
         new Thread(root, new Runnable() {
@@ -207,6 +211,13 @@ final class ConcolicResultPublisher {
         active.abandoned = true;
         ACTIVE.remove(active.token, active);
         endLiveSelectedRegion();
+        // Its path is withheld and its mints published, as an abandoned
+        // occurrence's are: other activations' rows already name those
+        // symbols (hdfs-11741 r1: IMPORT invariant 11, a root symbol with
+        // no RootMintRow).  Its thread still runs and may mint meanwhile.
+        synchronized (active) {
+            RowPublication.publishMints(active);
+        }
         taskUnanswered(active.activation, detail);
     }
 
@@ -318,7 +329,9 @@ final class ConcolicResultPublisher {
                 afterWitness = ordinal > submittedAtWitness;
             }
             if (afterWitness) {
+                // Withheld as a stranded one is: its mints still published.
                 configuration().markOccurrenceClaimed(active.activation);
+                RowPublication.publishMints(active);
                 taskUnanswered(active.activation, "AT_WITNESS: this"
                         + " occurrence completed after the declared"
                         + " occurrence observed the fatal, and the replay"

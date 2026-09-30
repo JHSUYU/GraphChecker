@@ -2,8 +2,10 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
@@ -23,6 +25,7 @@ import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import soot.ArrayType;
 import soot.DoubleType;
 import soot.G;
 import soot.IntType;
@@ -191,7 +194,7 @@ public class RegionGraphOccurrenceKeyTest {
     }
 
     /**
-     * What the slice PUBLISHES about the cells it names (CLOSURE-V2 SS4):
+     * What the slice PUBLISHES about the cells it names (SYMBOL-SCOPE §3):
      * every write site of such a cell, under the innermost region that would
      * run it, with the guard set post-dominance gives that site -- and the
      * guard set is where a may-reach guard and a control-dependence guard
@@ -271,7 +274,7 @@ public class RegionGraphOccurrenceKeyTest {
 
         List<StaticScopeMap.Site> sites = StaticScopeMap.sites(edges, regions,
                 Collections.<String, Long>emptyMap(), method -> false,
-                cell -> true);
+                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false);
         Path file = tree.newFolder("scope-map").toPath()
                 .resolve(StaticScopeMap.FILE);
         StringBuilder text = new StringBuilder();
@@ -289,11 +292,13 @@ public class RegionGraphOccurrenceKeyTest {
         // The counter's carrier is found from the site the recording DID
         // write at, spelled the way the VM spells an endpoint site.
         Set<String> carriers = map.carriersAt(
-                "example.Manager#create()Ljava/lang/String;#621:WRITE", "I");
+                "example.Manager#create()Ljava/lang/String;#621:WRITE", "I",
+                LocationKind.INSTANCE);
         assertEquals(Collections.singleton(carrier), carriers);
         // A write row of another type at that method is not that cell.
         assertTrue(map.carriersAt(
-                "example.Manager#create()Ljava/lang/String;#621:WRITE", "Z")
+                "example.Manager#create()Ljava/lang/String;#621:WRITE", "Z",
+                LocationKind.INSTANCE)
                 .isEmpty());
         List<String> writers = new ArrayList<>();
         for (StaticScopeMap.Site site : map.writersOf(carrier)) {
@@ -407,8 +412,8 @@ public class RegionGraphOccurrenceKeyTest {
         // ids are STILL the ids the branches were planned and woven under: a
         // published site id is in the ORIGINAL numbering, and reading the
         // guards off positions in a woven body shifted every one of them past
-        // the first hook (the whole of G1's "0 of the 27 installed guard ids
-        // is decided anywhere in the session").
+        // the first hook ("0 of the 27 installed guard ids is decided
+        // anywhere in the session").
         CausynthPipeline.tagOriginalUnits(new ArrayList<Unit>(
                 body.getUnits()));
         Unit hook = Jimple.v().newAssignStmt(count, IntConstant.v(7));
@@ -420,13 +425,16 @@ public class RegionGraphOccurrenceKeyTest {
     }
 
     /**
-     * SYMBOL-SCOPE F2: a wrapper-typed field is a value cell as its
-     * primitive is (solr-18413's {@code RoutingRule.expireAt}, a Long): it
-     * is versionable; its {@code getfield} is the READ_SITE a branch decides
-     * on through the unboxing, observed like its {@code putfield}; the box's
-     * own {@code value} is no tracked cell; and a write row stating the
-     * value's type ({@code J}), or a null ({@code L}), names the field as
-     * its carrier.
+     * SYMBOL-SCOPE F2: a field is tracked by what it holds.  An integral
+     * instance field, boxed or not, is a VALUE; a field a store re-points
+     * holding any other object, an array or a static one included, is a
+     * REFERENCE; a final one, a String, a float and a static value are
+     * none.  A wrapper-typed field is a value cell as its primitive is
+     * (solr-18413's {@code RoutingRule.expireAt}, a Long): its {@code
+     * getfield} is the READ_SITE a branch decides on through the unboxing,
+     * observed like its {@code putfield}; the box's own {@code value} is no
+     * tracked cell; and a write row stating the value's type ({@code J}),
+     * or a null ({@code L}), names the field as its carrier.
      */
     @Test
     public void aWrapperFieldIsAValueCell() throws IOException {
@@ -437,21 +445,31 @@ public class RegionGraphOccurrenceKeyTest {
         SootClass box = new SootClass("java.lang.Long");
         box.addField(new SootField("value", LongType.v(), Modifier.FINAL));
         Scene.v().addClass(box);
+        SharedFieldFlow.TrackedKind held = SharedFieldFlow.TrackedKind.VALUE;
+        SharedFieldFlow.TrackedKind reference =
+                SharedFieldFlow.TrackedKind.REFERENCE;
+        SharedFieldFlow.TrackedKind none = SharedFieldFlow.TrackedKind.NONE;
         Object[][] fields = {
-                {LongType.v(), 0, true},
-                {RefType.v("java.lang.Long"), 0, true},
-                {RefType.v("java.lang.Boolean"), 0, true},
-                {RefType.v("java.lang.Long"), Modifier.STATIC, false},
-                {RefType.v("java.lang.Double"), 0, false},
-                {DoubleType.v(), 0, false},
-                {RefType.v("java.lang.String"), 0, false}};
+                {LongType.v(), 0, held},
+                {RefType.v("java.lang.Long"), 0, held},
+                {RefType.v("java.lang.Boolean"), 0, held},
+                {RefType.v("java.lang.Long"), Modifier.STATIC, none},
+                {RefType.v("java.lang.Double"), 0, none},
+                {DoubleType.v(), 0, none},
+                {RefType.v("java.lang.String"), 0, none},
+                {RefType.v("java.util.Map"), Modifier.VOLATILE, reference},
+                {RefType.v("java.util.Map"), Modifier.FINAL, none},
+                {RefType.v("java.util.Map"), Modifier.STATIC, reference},
+                {ArrayType.v(LongType.v(), 1), 0, reference}};
         for (int index = 0; index < fields.length; index++) {
             SootField field = new SootField("f" + index,
                     (soot.Type) fields[index][0], (Integer) fields[index][1]);
             rule.addField(field);
             assertEquals(field.getSignature(), fields[index][2],
-                    CausynthStaticFacts.versionableField(
-                            field.getSignature()));
+                    CausynthStaticFacts.trackedKind(field.getSignature()));
+            assertEquals(field.getSignature(),
+                    ((Integer) fields[index][1] & Modifier.STATIC) != 0,
+                    CausynthStaticFacts.staticField(field.getSignature()));
         }
         assertTrue("Boolean's unboxing passes its receiver's value on",
                 JavaPrimitiveBoxing.unboxing(
@@ -488,7 +506,8 @@ public class RegionGraphOccurrenceKeyTest {
         for (JsonObject written : StaticScopeMap.rows(StaticScopeMap.sites(
                 edges, regions, Collections.<String, Long>emptyMap(),
                 method -> !method.startsWith("<example."),
-                CausynthStaticFacts::versionableField), null)) {
+                CausynthStaticFacts::trackedKind,
+                CausynthStaticFacts::staticField), null)) {
             text.append(written.toString()).append('\n');
         }
         Path file = tree.newFolder("wrapper").toPath()
@@ -510,12 +529,14 @@ public class RegionGraphOccurrenceKeyTest {
         String store = "example.Rule#<init>(Ljava/util/Map;)V#376:WRITE";
         for (String javaType : new String[]{"J", "L"}) {
             assertEquals(javaType, Collections.singleton(expireAt),
-                    map.carriersAt(store, javaType));
+                    map.carriersAt(store, javaType, LocationKind.INSTANCE));
         }
-        assertTrue(map.carriersAt(store, "I").isEmpty());
+        assertTrue(map.carriersAt(store, "I", LocationKind.INSTANCE)
+                .isEmpty());
         assertEquals("a read's INITIAL names it too",
                 Collections.singleton(expireAt),
-                map.carriersAt("example.Rule#isExpired()Z#30:READ", "J"));
+                map.carriersAt("example.Rule#isExpired()Z#30:READ", "J",
+                        LocationKind.INSTANCE));
     }
 
     private static List<String> scoped(List<StaticScopeMap.Site> sites) {

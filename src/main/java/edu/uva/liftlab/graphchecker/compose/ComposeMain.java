@@ -6,11 +6,13 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.Claim;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.CompositionManifest;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -24,6 +26,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -37,6 +41,8 @@ import java.util.Map;
  *   --output &lt;file&gt;       the composed query
  *   --manifest &lt;file&gt;     the composition manifest
  *   --root-domains &lt;file&gt; what the CASE says each root may be
+ *   --static-scope-map &lt;file&gt; the epoch's static facts: where a
+ *                          reference write's construction guard is
  *   --z3 &lt;path&gt;           default "z3"
  *   --max-valuations &lt;n&gt;  how many questions to ask, default 64
  *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
@@ -62,7 +68,8 @@ public final class ComposeMain {
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         Composer.Composition composition = Composer.compose(corpus, anchor,
                 RootDomain.declared(arguments.rootDomains),
-                arguments.maxValuations);
+                arguments.maxValuations,
+                StaticScopeMap.read(arguments.scopeMap));
         Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
@@ -269,6 +276,37 @@ public final class ComposeMain {
     }
 
 
+    /**
+     * The states a model's queries through a re-pointable read saw of the
+     * object a chosen state arm delivered: one row per read a query
+     * answered, what CONFIRM holds that read to (the write of that version,
+     * {@code explore.ConfirmMain}); a query no read row answered is one row
+     * with no reader, which CONFIRM refuses by name.  An arm that chose none
+     * states no {@code referentStates}.
+     */
+    private static JsonArray referentStates(
+            ComposedFamilies.ArmChoice arm) {
+        JsonArray states = new JsonArray();
+        for (SmtLowering.StateChoice state : arm.states()) {
+            List<String> readers = new ArrayList<String>();
+            for (ReadRow read : state.readers) {
+                readers.add(read.endpoint().id());
+            }
+            if (readers.isEmpty()) readers.add("");
+            for (String reader : readers) {
+                JsonObject row = new JsonObject();
+                row.addProperty("selector", state.selector);
+                row.addProperty("reader", reader);
+                row.addProperty("writer", state.state.endpoint().id());
+                row.addProperty("location",
+                        SmtLowering.locationKey(state.state.location()));
+                row.addProperty("version", state.state.version());
+                states.add(row);
+            }
+        }
+        return states;
+    }
+
     private static JsonArray valuations(ClaimPolicy.Decision decision) {
         JsonArray valuations = new JsonArray();
         for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
@@ -305,6 +343,8 @@ public final class ComposeMain {
                 row.add("expressionRefs",
                         GSON.toJsonTree(arm.expressionRefs()));
                 row.addProperty("attested", arm.attested());
+                JsonArray states = referentStates(arm);
+                if (states.size() > 0) row.add("referentStates", states);
                 arms.add(row);
             }
             answer.add("selectedArms", arms);
@@ -379,6 +419,7 @@ public final class ComposeMain {
         final Path iteration;
         final String anchor;
         final Path rootDomains;
+        final Path scopeMap;
         final int maxValuations;
         final Path output;
         final Path manifest;
@@ -392,6 +433,7 @@ public final class ComposeMain {
                     ? sessions : sessions.getParent();
             anchor = options.value("anchor", "");
             rootDomains = options.path("root-domains");
+            scopeMap = options.path("static-scope-map");
             maxValuations = integer(options.value("max-valuations", null),
                     64);
             output = options.path("output");
@@ -414,6 +456,15 @@ public final class ComposeMain {
             if (arguments.output == null || arguments.manifest == null) {
                 throw new IllegalArgumentException(
                         "--output and --manifest are required");
+            }
+            // Fail closed: without the map no reference write is known to
+            // rest on the decisions that built its referent.
+            if (arguments.scopeMap == null
+                    || !Files.isRegularFile(arguments.scopeMap)) {
+                throw new IllegalArgumentException("--static-scope-map "
+                        + "names no file: PLAN publishes "
+                        + StaticScopeMap.FILE + " per epoch, and a reference "
+                        + "write's construction guard is read from it");
             }
             return arguments;
         }
