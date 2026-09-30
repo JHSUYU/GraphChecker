@@ -67,7 +67,7 @@ public class BranchDecisionRecordingTest {
      * with the internal owner the VM asks with and carries each guard branch
      * site verbatim as its own tab-separated field, exactly as this row
      * spells it -- commas and all, since a site id's parameter list has
-     * them (VM25).</p>
+     * them.</p>
      */
     @Test
     public void aBinaryDecisionPublishesOneRowAndTheReach() throws Exception {
@@ -192,7 +192,7 @@ public class BranchDecisionRecordingTest {
     }
 
     /**
-     * F1: a folded entry starts no activation.
+     * IDENTITY §1: a folded entry starts no activation.
      *
      * <p>The entry hook at one Java entry runs before the plan row's hook,
      * so by the time admission is asked the fold is already standing: this

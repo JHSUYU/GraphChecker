@@ -191,7 +191,7 @@ public class RegionGraphOccurrenceKeyTest {
     }
 
     /**
-     * What the slice PUBLISHES about the cells it names (CLOSURE-V2 SS4):
+     * What the slice PUBLISHES about the cells it names (SYMBOL-SCOPE §3):
      * every write site of such a cell, under the innermost region that would
      * run it, with the guard set post-dominance gives that site -- and the
      * guard set is where a may-reach guard and a control-dependence guard
@@ -407,8 +407,8 @@ public class RegionGraphOccurrenceKeyTest {
         // ids are STILL the ids the branches were planned and woven under: a
         // published site id is in the ORIGINAL numbering, and reading the
         // guards off positions in a woven body shifted every one of them past
-        // the first hook (the whole of G1's "0 of the 27 installed guard ids
-        // is decided anywhere in the session").
+        // the first hook ("0 of the 27 installed guard ids is decided
+        // anywhere in the session").
         CausynthPipeline.tagOriginalUnits(new ArrayList<Unit>(
                 body.getUnits()));
         Unit hook = Jimple.v().newAssignStmt(count, IntConstant.v(7));

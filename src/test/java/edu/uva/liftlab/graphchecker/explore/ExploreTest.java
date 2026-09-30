@@ -199,7 +199,7 @@ public class ExploreTest {
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         seed.flush();
         // What the wave may flip in the anchor is the guard set of the
-        // annotated target, and nothing else (CLOSURE-V2 SS1/SS3).
+        // annotated target, and nothing else (PIPELINE §7.2).
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8", "Guard#u19"));
 
@@ -1120,7 +1120,7 @@ public class ExploreTest {
     }
 
     /**
-     * GROWTH IS THE CLOSURE'S (DESIGN4 SS3.3b, INTERACTION-ID SS8 case 2). A
+     * GROWTH IS THE CLOSURE'S (PIPELINE §7.2, §7.8). A
      * demanded occurrence no session CAPTURED -- the hooks ran it and its
      * runtime identity is in a session's rows, but no planned task admitted
      * it -- is grown from the admitted focused session that names it; named
@@ -1379,9 +1379,9 @@ public class ExploreTest {
         rotated.answered(ObligationResult.of("OBL.s-rot", Verdict.ADMITTED,
                 "s-rot", "the focused prefix reproduced"));
         // The consumer received it in that replay too, running concretely:
-        // R-I2 admits an arm only from a run whose OWN pairing named this
-        // consumer, which is what makes a family the deliveries of one
-        // interaction rather than of one port.
+        // an arm comes only from a run whose OWN pairing named this
+        // consumer (IDENTITY §4), which is what makes a family the
+        // deliveries of one interaction rather than of one port.
         rotated.activation(target, false);
         rotated.root(producer, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
                 "119995", null, null, false);
@@ -1416,7 +1416,7 @@ public class ExploreTest {
         // the consumer's companion.  What it may flip is the guard set of the
         // EXPORT it is in the closure for: the rotation decision that decides
         // the delivery, and not the decision it took AFTER putting the value
-        // on the wire, which no delivery can depend on (CLOSURE-V2 SS3).
+        // on the wire, which no delivery can depend on (PIPELINE §7.2).
         List<String> sites = new ArrayList<String>();
         for (Obligation obligation : proposed) sites.add(obligation.siteId());
         assertTrue("the export's own guard is an obligation: " + sites,
@@ -1813,8 +1813,8 @@ public class ExploreTest {
         // N1/N2: A STATIC CANDIDATE LIVES IN ONE PROCESS.  A carrier is a
         // CLASS field -- BlockTokenSecretManager.allKeys -- so its write
         // sites exist in every JVM that loaded the class; the location the
-        // anchor read is a CONCRETE object in the reader's own heap (SS4),
-        // and no occurrence in another JVM can have written it.  The same
+        // anchor read is a CONCRETE object in the reader's own heap
+        // (IDENTITY §4), and no other JVM can have written it.  The same
         // for a port: the message this attach records was put on the wire by
         // the PAIRED producer's process.  Admitting the rest gave hdfs-11741
         // campaign #4 (2026-09-20) a wave 1 of 246 obligations, 124 of them
@@ -2160,7 +2160,7 @@ public class ExploreTest {
         assertTrue("the pairing is still REPORTED, naming why nothing was "
                 + "done about it", reported);
 
-        // R-I7 against R-I6: a STATE reader that joined ANOTHER writer in
+        // PIPELINE §7.1 step 4: a STATE reader that joined ANOTHER writer in
         // another session is not a replacement, it is that family's second
         // arm.  A flip is expected to change which writer delivers -- that
         // is what the flip is for -- so reading it as a contradiction forked
@@ -2213,7 +2213,7 @@ public class ExploreTest {
                             && gap.cls() == GapClass.BLOCKING);
         }
 
-        // R-I6: two occurrences of ONE code point that a replay ran BOTH are
+        // Two occurrences of ONE code point that a replay ran BOTH are
         // two requests -- growth.  A REPLACEMENT is the closure's member
         // ABSENT from a replay that ran the same code point under another
         // context.
@@ -2385,7 +2385,7 @@ public class ExploreTest {
 
         theClosureHasOneRoot(iteration, writer);
 
-        // CLOSURE-V2 SS2: the closure grows by the STATIC write sites of the
+        // PIPELINE §7.2: the closure grows by the STATIC write sites of the
         // locations it demands, and not only by the writers some row paired.
         // On 17960 the seed runs the marker's true arm, where deleteSnapshot
         // defers and the counter decrement never executes, so NO row of any
@@ -2483,7 +2483,7 @@ public class ExploreTest {
         assertFalse("an occurrence no demanded value reaches is not a task: "
                 + whyTask, whyTask.containsKey(undeclared.render()));
         // A candidate region no session ran is NAMED and is not a task:
-        // there is no run to focus (INTERACTION-ID SS8 case 2).
+        // there is no run to focus (PIPELINE §7.2).
         boolean grow = false;
         for (GapRow gap : RowCodec.readAll(asideWave.resolve("gaps.jsonl"),
                 RowCodec::readGap)) {
@@ -2518,7 +2518,7 @@ public class ExploreTest {
                     ClosurePlanner.taskId(undeclared).equals(flip.taskId()));
         }
 
-        // CLOSURE-V2, the v_C rule: the same growth where the demanded read
+        // PIPELINE §7.2: the same growth where the demanded read
         // is a CONTAINER.  The join INLINES the version a read observed, and
         // a container version is lowered once and NAMED, so an anchor guard
         // `allKeys.get(id) == null` stands in the text as one
@@ -2618,8 +2618,8 @@ public class ExploreTest {
         // rests on travels with them.  The map read lowered to an opaque
         // identity, and the recording states that identity was not null --
         // the execution read fields off the object.  Unstated, a flip of
-        // `x == null` is satisfied by freeing that boundary (CLOSURE-V2
-        // SS3), which is how 18 of hdfs-11741's 36 wave-0 obligations came
+        // `x == null` is satisfied by freeing that boundary (PIPELINE §7.5),
+        // which is how 18 of hdfs-11741's 36 wave-0 obligations came
         // back SAT with no variable declared at all.
         String nullTest = lowering.statedTerm("EXPR.0000000000000006",
                 "test");
@@ -2814,7 +2814,7 @@ public class ExploreTest {
 
     /**
      * Folded into the closure case: a wave's roots are the anchor and nothing
-     * else (HANDOVER SS1.5).  The seed replay's task plan was a second source
+     * else (PIPELINE §7.1).  The seed replay's task plan was a second source
      * of them, and a plan row is the PLAN side's own address for a region: in
      * the first real 17960 wave 43 of its 45 rows named an address no row of
      * the recording published, each became a closure root, and the wave died
@@ -3384,7 +3384,7 @@ public class ExploreTest {
     }
 
     /**
-     * The epoch's static scope map, as PLAN publishes it (CLOSURE-V2 SS4).
+     * The epoch's static scope map, as PLAN publishes it (SYMBOL-SCOPE §3).
      *
      * <p>Written as the artifact's own text, so what these cases exercise is
      * the published shape and not a builder's idea of it.</p>
@@ -3556,7 +3556,7 @@ public class ExploreTest {
      *
      * @param term     the predicate as the runtime publishes it, polarity-free
      * @param outcome  whether that term HELD in the recording (CONTRACT-SPEC
-     *                 SS2), which is what makes the conjunct
+     *                 §2.2), which is what makes the conjunct
      * @param recorded what the session minted for the marker
      * @param expected the value the model must assign, or null when the wave
      *                 must refuse because the model would BE the recording

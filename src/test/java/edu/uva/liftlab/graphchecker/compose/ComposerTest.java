@@ -495,7 +495,7 @@ public class ComposerTest {
         Composer.Composition armed = compose(guarded, 8);
         assertEquals(1, armed.families().size());
         // TWO arms: neither run was held to a flip, so each is a
-        // delivery the other's path could have received (DESIGN4 3.4),
+        // delivery the other's path could have received (PIPELINE §8),
         // and each arm carries its own replay's valuation.
         assertEquals(2, armed.families().get(0).arms().size());
         for (Arm arm : armed.families().get(0).arms()) {
@@ -977,7 +977,7 @@ public class ComposerTest {
         assertTrue("the upstream delivery carries the root",
                 composition.body().contains(MARKER));
 
-        // ONE RUN BEHIND EVERY OUT OF ONE OCCURRENCE (rule 3).  The
+        // ONE RUN BEHIND EVERY OUT OF ONE OCCURRENCE (PIPELINE §8).  The
         // producer exports at TWO ports and the anchor attaches both; one
         // run delivered (true, false) there and the other (false, true).
         // With a selector per family a witness takes the first port from
@@ -1807,7 +1807,7 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
-    // 11. Which writer the read could have seen (R-I7.1).
+    // 11. Which writer the read could have seen (IDENTITY §4).
     // ------------------------------------------------------------------
 
     @Test
@@ -1910,7 +1910,7 @@ public class ComposerTest {
                 new edu.uva.liftlab.graphchecker.smt.Arms(
                         Corpus.read(iteration, null))
                         .concurrent(reader, concurrent, "s0"));
-        // IDENTITY-V3 sec 5: alternatives need an owner that names the
+        // PIPELINE §8: alternatives need an owner that names the
         // storage.  The class-owned copy of the same state gets the
         // delivery its own run gave it, and says so.
         assertTrue("the rid the runtime writes names the storage",
@@ -3328,7 +3328,7 @@ public class ComposerTest {
 
     // ------------------------------------------------------------------
     // 16. A message's arms are the runs whose world is compatible with
-    //     the path's (DESIGN4 3.4).
+    //     the path's (PIPELINE §8).
     // ------------------------------------------------------------------
 
     @Test
@@ -3977,7 +3977,7 @@ public class ComposerTest {
      *
      * <p>An allocation endpoint id, not a session rid: the spelling a
      * location needs before alternatives may be asked for it
-     * (IDENTITY-V3 sec 5, {@code Arms.namedOwner}).</p>
+     * (PIPELINE §8, {@code Arms.namedOwner}).</p>
      */
     private static JsonObject read(String kind, String owner, String slot,
                                    long version, String javaType) {

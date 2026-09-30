@@ -33,7 +33,7 @@ import static org.junit.Assert.assertTrue;
 /**
  * What the plan says about a region entry the run FOLDED.
  *
- * <p>F1 (paper SS3.1.2, {@code Identity#fold}): a region entered
+ * <p>The fold rule (IDENTITY §1, {@code Identity#fold}): a region entered
  * synchronously inside an occurrence already running opens NONE of its own.
  * The recording states that on the entry ({@code regionFolded}, no occurrence
  * address) and this plan states its consequence: no activation for the folded

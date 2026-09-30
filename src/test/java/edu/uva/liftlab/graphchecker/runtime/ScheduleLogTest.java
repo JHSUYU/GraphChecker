@@ -164,8 +164,8 @@ public class ScheduleLogTest {
     /**
      * Threads started inside one scope count their events apart: the start
      * frame is part of an event's context, so the k-th send of each thread
-     * is its own whatever the other one did in between (G8).  A thread no
-     * woven start handed work to keeps the scope's context unchanged.
+     * is its own whatever the other one did in between (IDENTITY §8).  A
+     * thread no woven start handed work to keeps the scope's context unchanged.
      */
     @Test
     public void threadsStartedInOneScopeCountTheirOwnEvents() throws Exception {
