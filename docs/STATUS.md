@@ -14,51 +14,25 @@ Pointers are `path` plus class and method. `gc/` stands for
 
 ## Acceptance
 
-**No campaign has run on HEAD.** HEAD also cannot re-read the corpora of the last accepted
-rounds, for two reasons:
+Live runs on the concolic VM `/bigtemp/vnr3ne/vm-r3b/j2sdk-image`, outputs under
+`/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`. Rounds `r7` (main `d0acb339a`), `r8` (main
+`8820c3129`), `r9` (main `a53174bf1`). HEAD (`f3b31968a`) adds W5, the ad-hoc WP1/WP5.C/WP2
+tools and later fixes on top; no full round has run on HEAD itself.
 
-- `gc/contract/RootMintRow` now requires `clockNanos` on every CLOCK root ("a CLOCK root states
-  its tick and no other root does"), and the old rows lack it.
-- The old sessions hold `expressions.json`, but HEAD reads `expressions.jsonl`
-  (`gc/contract/SessionDir`), and a session without it is refused `SESSION_INCOMPLETE`
-  (`gc/contract/SessionExpressionLog#read`).
-
-When those corpora are composed offline with the HEAD jar, all nine come out
-`NO_SUPPORTED_WITNESS`:
-
-- the eight block-key cases have CLOCK roots, and their sessions are refused as
-  `SESSION_INCOMPLETE` and their paths as `UNSTATED_VALUE`;
-- hdfs-17960 has no clock, and every path is refused as `UNSTATED_VALUE`.
-
-The evidence is in `/bigtemp/vnr3ne/analysis/j2/head/<case>/`.
-
-The last evidence per case:
-
-| case | last run | verdict | mechanism |
+| case | run | verdict | mechanism / blocker |
 | --- | --- | --- | --- |
-| hdfs-17960 | `~/gc-out/accept-v92-17960` | PASS | MARKER_FLIPPED: `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false`, confirmed. A later build's run (`accept-v103-17960`) was killed at REPLAY: the seed replay's native memory grew to 24 GB on the FSImageSaver scan of a ~1M-bucket array (a READ node and a condition per untouched bucket). Fixed by VM f13 (read-over-write at concrete positions, commit 64897b709): peak 525 MB, and round vm17d reaches EMIT with MARKER_FLIPPED `SNAPSHOT_DELETION_ORDERED=false`, but fails acceptance: the protobuf wire derivation then treated the on-disk fsimage as a wire (3 BLOCKING ASSIGNMENT_UNPLANTED gaps; obligation replays die at 5 GB on symbolic INode ids). HEAD derives ports for RPC messages only: SEED on 17960 derives none, keeps every v92 region, and PLAN over v92's recording plans the declared checkpoint region with no derived-port input (`/bigtemp/vnr3ne/analysis/wport/`). No round has run since. |
-| hdfs-17897 | `accept-v92-17897` | PASS | MARKER_FLIPPED: the IPC request door (`FAULT:HADOOP_IPC:REQUEST`) is true and no clock moves |
-| hdfs-17899-bug1, bug3 | `accept-v92-17899-bug{1,3}` | PASS | MARKER_FLIPPED: the IPC request door |
-| hdfs-17899-bug2 | `accept-v94-17899-bug2` | PASS | MARKER_FLIPPED: the SPS's IPC response door |
-| hdfs-17967-pathA, B, C | `accept-v92-17967-path{A,B,C}` | PASS | MARKER_FLIPPED: the IPC request door |
-| hdfs-11741 | `accept-v93-11741` | **FAIL** (see below) | CLOCK_SKEW, `polarityDecides`, confirmed |
-| solr-18413 | `accept-r5-solr-18413` | FAIL | `NO_SUPPORTED_WITNESS`, INCONCLUSIVE_PARTIAL: no replay reached the declared update's throw, since every `isExpired` flip was UNSAT (the expiry the leader's state watcher attached was pinned to its arrival), and the closure was truncated at 64 tasks with 42 more demanded (every parse and Overseer mutation on the node as a static candidate writer of the leader's `Slice`/`RoutingRule` fields, and as a factor member). Both are fixed on HEAD (R5 below); no round since. |
-| solr-18406 | `accept-s30-solr-18406` | FAIL | `NO_SUPPORTED_WITNESS`. Every later run (`s31`…`s48`) ended before EMIT. |
+| hdfs-17897 | `r7` | PASS | MARKER_FLIPPED, IPC request door (`REGION.763d087e`) |
+| hdfs-17899-bug1, bug3 | `r7` | PASS | MARKER_FLIPPED, IPC request door |
+| hdfs-17899-bug2 | `r8` | PASS | MARKER_FLIPPED, IPC response door (`REGION.9ffdee3d`) |
+| hdfs-17960 | `r8` | PASS | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false`, confirmed |
+| hdfs-17967-pathA, B, C | `r7` | PASS | MARKER_FLIPPED, IPC request door |
+| hdfs-11741 | `r8` | FAIL | CLOCK_SKEW (NameNode and DataNode clocks, `polarityDecides`) but 22 BLOCKING gaps: 18 EXPLORE `TOPOLOGY_DIVERGENCE` (`SlotTable#contradictsOrder` orders by the anchor chain), 3 PLAN `OCCURRENCE_ADDRESS_SHARED` (a pool task inherits no frames), 1 COMPOSE `UNSTATED_VALUE` (an export stating no expression). Fixed off main (README §0.3). |
+| solr-18406 | `r7` | FAIL | its one anchor path is UNSAT with every root free. Fixed off main: a run of that branch (`accept-a37f4-solr-18406`) PASSES with CLOCK_SKEW, confirmed. |
+| solr-18413 | `r9` | FAIL | the `isExpired#u6` flip is SAT and its replay observes the fatal ("Could not find collection") and is ADMITTED, but IMPORT invariant 9 stops the campaign: that replay's target row states no `phiTerm`, since the fatal condition is concrete there. |
 
-So HDFS stands at 8 of 9.
-
-hdfs-11741 fails the cone gate (`experiments/accept/cone.py`): the NameNode clock roots it
-moves lie outside the selected path's causal cone. In that formula, the DataNode's expiry
-comparison is against recorded constants. No clock value crosses the process into it as data,
-so R2's 11741 chain (the NameNode clock reaching the DataNode check) is not in the formula.
-
-Neither Solr case has ever produced `SAT_CANDIDATE`. `experiments/accept/report.py` expects
-`CLOCK_SKEW` of both (`EXPECTED_MECHANISM`). It has no entry for hdfs-token-key or any ad-hoc
-case, so those cannot pass the gate.
-
-The ad-hoc checks have found no new bug. Every finished sweep verdict on record is
-`NO_SUPPORTED_WITNESS`. The only confirmed ad-hoc witnesses ever were two CLOCK_SKEWs on
-token-expiry checks, which were judged to be HDFS's clock-sync assumption, not bugs.
+So HDFS stands at 8 of 9 on main. The ad-hoc checks have found no new bug; the only confirmed
+ad-hoc witnesses ever were two CLOCK_SKEWs on token-expiry checks, judged to be HDFS's clock-sync
+assumption.
 
 ## R1. Symbols come automatically from the fatal slice
 
@@ -132,26 +106,21 @@ token-expiry checks, which were judged to be HDFS's clock-sync assumption, not b
 
 ## R5. Correct .smt for the Solr cases; the nine HDFS cases keep passing
 
-See Acceptance above. What remains:
+See Acceptance above. What remains (the branches are in README §0.3):
 
-- HEAD must read a fresh recording: every case needs a new round.
-- 11741's clock must cross the wire into the DataNode's expiry check.
-- SOLR-18406 needs reference-carried container state and a `ConcurrentHashMap` model (R3).
-- SOLR-18413 needs a round on HEAD. Its expiry check flips by the Overseer's clock moving forward:
-  the leader's state watcher parses the rule's expiry, so the update that checks it is not where the
-  handoff attaches, and a flip query now binds such a handoff by its own run's arms
-  (`gc/explore/FlipQuery`). Over `accept-r7-solr-18413`'s seed the `isExpired` flip is SAT with
-  MigrateCmd's clock skewed by +262,666 ms and nothing answered. Its closure is 6 tasks, not 64
-  truncated (`gc/explore/ClosurePlanner`: a static candidate writer must be able to hold the read's
-  object; a factor member joins only as a writer or producer; a demand's own decisions only). The
-  seed of `accept-r5` left the Overseer queue's attach unpaired (2 of its 68 sessions): the store
-  door files what a write carried after the schedule's SEND lets the queue's consumer run
-  (`gc/runtime/MessageDoors#stored`).
+- hdfs-11741: the 22 blockers are fixed off main; its three NameNode clocks that move only through
+  the `clock_order` constraint may still fail the cone gate.
+- SOLR-18406: reference-carried container state and the `ConcurrentHashMap` model are on main
+  (R3); the clock planting fixes that make it pass are off main.
+- SOLR-18413: the `isExpired` flip is SAT with MigrateCmd's clock skewed forward, and its replay
+  reproduces the fatal; a fatal condition that is concrete in a replay must state its phi (IMPORT
+  invariant 9). The store door files what a write carried after the schedule's SEND lets the queue's
+  consumer run (`gc/runtime/MessageDoors#stored`, open defect 28), which can leave the Overseer
+  queue's attach unpaired.
 
 The offline regression gate `tools/regress/offline-ab.sh` (with `ab_compare.py`) compares a
 candidate jar against a baseline on a recorded round, stage by stage, with no replay. It reads a
-round as HEAD reads it, so it needs a round recorded by a build whose rows HEAD still reads (not
-v92–v94, see Acceptance). `AB_BASELINE_REPO` runs the baseline under its own checkout's case
+round as HEAD reads it, so it needs a round recorded by a build whose rows HEAD still reads (r7 and later). `AB_BASELINE_REPO` runs the baseline under its own checkout's case
 declarations, for a change whose declarations move with the jar. Every stage gates on bytes: SEED (with its woven classes) and PLAN
 are byte-identical across lifts and runs (`/bigtemp/vnr3ne/analysis/det2/s6/`: hdfs-17897,
 11741, 17899-bug1, 17960 and solr-18413 on five lifts, two with the scope copied in opposite
