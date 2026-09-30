@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -225,6 +226,10 @@ public final class RowCodec {
         json.addProperty(JAVA_TYPE, row.javaType());
         json.addProperty("handle", row.handle());
         json.addProperty("recordedValue", row.recordedValue());
+        if (row.hole() != null) {
+            writeHole(json, row.hole());
+            json.addProperty(MESSAGE_KEY, row.messageKey());
+        }
         return json;
     }
 
@@ -232,7 +237,53 @@ public final class RowCodec {
         return ExportRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readEndpoint(object(json, ENDPOINT)),
                 string(json, "expressionRef"), string(json, JAVA_TYPE),
-                number(json, "handle"), string(json, "recordedValue"));
+                number(json, "handle"), string(json, "recordedValue"),
+                readHole(json), optionalString(json, MESSAGE_KEY));
+    }
+
+    private static final String MESSAGE_KEY = "messageKey";
+    private static final String CODEC = "codec";
+    private static final String KEY_PATH = "keyPath";
+    private static final String HOLE = "hole";
+
+    /** A hole as three flat fields: {@code codec, keyPath: [...], hole}. */
+    private static void writeHole(JsonObject json, Hole hole) {
+        json.addProperty(CODEC, hole.codec());
+        JsonArray path = new JsonArray();
+        for (Object component : hole.keyPath()) {
+            if (component instanceof Integer) {
+                path.add((Integer) component);
+            } else {
+                path.add((String) component);
+            }
+        }
+        json.add(KEY_PATH, path);
+        json.addProperty(HOLE, hole.index());
+    }
+
+    /**
+     * The row's hole, or null when it states none of the three fields; one
+     * or two of them is refused (a component is a string or a number).
+     */
+    private static Hole readHole(JsonObject json) {
+        if (optional(json, CODEC) == null && optional(json, KEY_PATH) == null
+                && optional(json, HOLE) == null) {
+            return null;
+        }
+        List<Object> path = new ArrayList<>();
+        for (JsonElement component : array(json, KEY_PATH)) {
+            JsonPrimitive stated = component.isJsonPrimitive()
+                    ? component.getAsJsonPrimitive() : null;
+            if (stated != null && stated.isNumber()) {
+                path.add(Integer.valueOf(stated.getAsString()));
+            } else if (stated != null && stated.isString()) {
+                path.add(stated.getAsString());
+            } else {
+                throw new IllegalArgumentException("a keyPath component is "
+                        + "a string or a number; got " + component);
+            }
+        }
+        return Hole.of(string(json, CODEC), path, integer(json, HOLE));
     }
 
     public static JsonObject writeAttach(AttachRow row) {
@@ -253,6 +304,7 @@ public final class RowCodec {
         if (row.pairedBy() != null) {
             json.addProperty("pairedBy", row.pairedBy());
         }
+        if (row.hole() != null) writeHole(json, row.hole());
         return json;
     }
 
@@ -265,7 +317,7 @@ public final class RowCodec {
                 optionalString(json, "answeredValue"),
                 producer == null ? null : readEndpoint(producer),
                 string(json, "correlationId"),
-                optionalString(json, "pairedBy"));
+                optionalString(json, "pairedBy"), readHole(json));
     }
 
     public static JsonObject writeWrite(WriteRow row) {

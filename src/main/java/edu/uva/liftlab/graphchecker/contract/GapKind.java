@@ -117,5 +117,18 @@ public enum GapKind {
      * DIAGNOSTIC, read by CONFIRM: any one downgrades the claim to
      * SAT_UNCONFIRMED.  The expectation never steers the run.
      */
-    CONFIRM_MISMATCH
+    CONFIRM_MISMATCH,
+    /**
+     * A value a codec carried that crossed with less than its template: an
+     * encode no message carried, or a decoded leaf that does not match its
+     * entry or cannot be minted.  DIAGNOSTIC: the leaf stays concrete or
+     * becomes one whole-string hole.  The detail starts with its reason:
+     * {@code PATH_UNMATCHED} (the entry's key path is absent from the
+     * decoded graph), {@code VALUE_MISMATCH}, {@code TEMPLATE_MISMATCH},
+     * {@code LEAF_SHARED}, {@code LEAF_UNSUPPORTED}, {@code
+     * LEAF_UNADDRESSABLE}, {@code VIEW_MISSING}, {@code NULL_LEAF}, or
+     * {@code UNSENT} (encodes no message carried, one row per codec and
+     * session with their count).
+     */
+    CODEC_MISMATCH
 }
