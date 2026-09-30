@@ -42,7 +42,7 @@ The last evidence per case:
 | hdfs-17899-bug2 | `accept-v94-17899-bug2` | PASS | MARKER_FLIPPED: the SPS's IPC response door |
 | hdfs-17967-pathA, B, C | `accept-v92-17967-path{A,B,C}` | PASS | MARKER_FLIPPED: the IPC request door |
 | hdfs-11741 | `accept-v93-11741` | **FAIL** (see below) | CLOCK_SKEW, `polarityDecides`, confirmed |
-| solr-18413 | `accept-s45-solr-18413` | FAIL | `NO_SUPPORTED_WITNESS`. `accept-s49` did not finish. |
+| solr-18413 | `accept-s45-solr-18413` | FAIL | `NO_SUPPORTED_WITNESS`. `accept-s49` did not finish: its seed replay's MIGRATE took over an hour, mostly rendering switch selectors whole (a shared expression DAG of 1,060 nodes is 7.4e10 as a tree) and parsing 64 MB read-out pages on the workload's threads. Both are fixed; no run since. |
 | solr-18406 | `accept-s30-solr-18406` | FAIL | `NO_SUPPORTED_WITNESS`. Every later run (`s31`…`s48`) ended before EMIT. |
 
 So HDFS stands at 8 of 9.
