@@ -850,6 +850,12 @@ comparison.
   `gaps.jsonl`. A slot or a head that seems stalled logs `waiting for memory on <host>: …`; the
   host ledger is `$CAUSYNTH_HOST_LEDGER/<host>/{available,starts}`.
 - `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.
+- Where the wall time went: `tools/analysis/timeline.py <accept-dir>...` reads a campaign's own
+  files (stage metrics, file mtimes, the log) and prints each stage (SEED split into static pass,
+  weave, recording and aggregation), each wave (planning, dispatch, import gate; obligations by
+  verdict, solver JVMs that failed; focused replays with min/median/max duration and how many
+  were refused, flipped or ended in error), the CONFIRM replay and the top time sinks. A gate or
+  stage that started a head JVM includes the head's wait for memory (§7.7), which the log counts.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
   `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it
   re-runs by hand in z3), `focused_task.jsonl` (the world), `replay.log`, `stdout.log`/`stderr.log`.
