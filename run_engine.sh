@@ -24,15 +24,20 @@ Commands:
   campaign    Run the complete campaign for one configuration: validate, seed,
               then one iteration of plan/instrument/replay/import/explore
               (waves of obligations, growing the woven region set inside
-              the wave) and compose/solve/decide/emit
+              the wave) and compose/solve/decide/confirm/reproduce/emit.
+              With causynth_static_root (an ad-hoc batch): one recording
+              for every target of the spec, each target's slice as the
+              build made it, then one such iteration per target
+              (targets/<name>/)
   slice       Run SEED's static half alone: the setup adapter, then the
               seed analysis with the scope grown until nothing is added,
               into causynth_output_dir.  No workload runs and nothing is
               frozen (tools/adhoc/slice.sh scores what it writes)
   record      Pre-screen one workload for every target of the spec: one
               recording woven for all of them, each aggregated on its own
-              static slice (causynth_static_root/<name>), and
-              runtime/record-summary.json (tools/adhoc/prescreen.sh)
+              static slice (causynth_static_root/<name>, frozen into
+              targets/<name>/), and runtime/record-summary.json
+              (tools/adhoc/prescreen.sh)
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
   help        Print this help message
@@ -143,11 +148,16 @@ workflow_config_keys=(
   # where the slice stops at it (plan.ScopeGrowth, SYMBOL-SCOPE §2.4),
   # nearest the throw first; 0 keeps the declared scope as it is.
   "causynth_scope_growth_budget CAUSYNTH_SCOPE_GROWTH_BUDGET krp 24"
-  # `record` (a pre-screen): the directory holding each target's static
-  # slice, <root>/<target name>/, as `slice` wrote it (tools/adhoc/slice.sh),
-  # and the wall clock the recording's workload may take.
+  # The directory holding each target's static slice, <root>/<target
+  # name>/, as `slice` wrote it (tools/adhoc/slice.sh): what `record` (a
+  # pre-screen) and a batch campaign (an ad-hoc sweep's case) weave and
+  # aggregate each target on, instead of a static pass of their own.
   "causynth_static_root CAUSYNTH_STATIC_ROOT krp -"
+  # The wall clock a recording's workload may take after SEED's own: the
+  # pre-screen's, and each native reproduction run's (REPRODUCE).
   "record_timeout_s CAUSYNTH_RECORD_TIMEOUT_S krp 300"
+  # How many times REPRODUCE runs a confirmed witness natively.
+  "reproduce_runs CAUSYNTH_REPRODUCE_RUNS krp 10"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -408,7 +418,12 @@ initialize_config() {
   if [[ -n "${causynth_static_root}" ]]; then
     causynth_static_root=$(resolve_path "${causynth_static_root}")
   fi
-  # The discovery artifacts, one layout under the resolved output directory.
+  derive_output_paths
+}
+
+# The discovery artifacts, one layout under causynth_output_dir: the
+# configured one, or a batch target's own (campaign_batch_target).
+derive_output_paths() {
   candidate_graph="${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz"
   causynth_static_scope_map="${causynth_output_dir}/static_scope_map.jsonl"
   runtime_region_plan="${causynth_output_dir}/runtime/concolic_region_plan.jsonl"
@@ -513,7 +528,7 @@ validate_config() {
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
       schedule_max_jobs concolic_worker_count region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound \
-      obligation_memory_mb record_timeout_s; do
+      obligation_memory_mb record_timeout_s reproduce_runs; do
     require_positive_integer "${key}"
   done
   # The one stage a campaign may be asked to stop after.  Refused here rather
@@ -784,19 +799,22 @@ do_compose() {
     "${selection[@]}"
 }
 
-# The recording's workload, under a wall-clock bound of <seconds> when one is
-# given (run_under_wall_clock_bound).
+# run_configured_workload <trace-dir> [seconds] [plant]: the workload in the
+# recording weave (analysis_classes_dir, as SEED's static pass wove it), its
+# trace into <trace-dir>, under a wall-clock bound of <seconds> when one is
+# given (run_under_wall_clock_bound), with a native reproduction's plant
+# (runtime.RecordingPlant) when one is named.
 run_configured_workload() {
+  local trace_dir=$1
   local -a workload_env bound=()
-  local trace_dir
-  trace_dir=$(dirname "${runtime_region_plan}")
   workload_env=(
     "GRAPHCHECKER_JAR=${graphchecker_jar}"
     "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}"
     "CAUSYNTH_INSTRUMENTED_CLASSES_DIR=${analysis_classes_dir}"
     "CAUSYNTH_TRACE_OUTPUT_DIR=${trace_dir}"
+    "CAUSYNTH_PLANT=${3:-}"
   )
-  [[ -z "${1:-}" ]] || bound=(run_under_wall_clock_bound "$1")
+  [[ -z "${2:-}" ]] || bound=(run_under_wall_clock_bound "$2")
   (cd "${workload_work_dir}" && "${bound[@]+"${bound[@]}"}" \
     env "${workload_env[@]}" bash -lc "${workload_command}")
 }
@@ -815,16 +833,18 @@ do_workload() {
   # aggregation below, which writes them to ${trace_dir}/region_skeletons.jsonl.
   CAUSYNTH_TRACE_MODE=region-state do_analyze
   local status=0 started=${SECONDS}
-  run_configured_workload || status=$?
+  run_configured_workload "${trace_dir}" || status=$?
   campaign_recorded_workload_s=$(( SECONDS - started ))
   (( status == 0 )) || campaign_fail SEED WORKLOAD "${trace_dir}" \
     "the recorded workload exited ${status}: the test failed, or its run" \
     "never opened a recording window (its output is above)"
   require_file "static scope map" "${causynth_static_scope_map}"
+  campaign_target_slice="${candidate_graph},${causynth_static_scope_map},\
+${causynth_region_skeletons}"
   run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
     --trace-dir "${trace_dir}" --test "${trace_test}" \
-    --target "$(campaign_target_names | head -n 1)=${candidate_graph},\
-${causynth_static_scope_map},${causynth_region_skeletons},${trace_dir}"
+    --target "$(campaign_target_names | head -n 1)=${campaign_target_slice},\
+${trace_dir}"
 }
 
 # The names of the targets the case's target spec declares, one per line.
@@ -833,42 +853,69 @@ campaign_target_names() {
 }
 
 # record: the pre-screen of one workload for every target of the case's
-# spec (tools/adhoc/prescreen.sh).  Each target's static slice is
-# ${causynth_static_root}/<name>/, as `slice` wrote it (tools/adhoc/slice.sh);
-# a target without one is refused before any work.  ONE recording is woven
-# for all of them (campaign_union_static) and its workload bounded by
-# record_timeout_s; then each target is aggregated on its own slice into
-# runtime/<name>/.  runtime/record-summary.json states the workload's exit,
-# its seconds, whether the bound ended it, and each target's outcome
-# (runtime.CausynthTraceRecorder: ACTIVATED, or the refusal).
+# spec (tools/adhoc/prescreen.sh), its workload bounded by record_timeout_s
+# (campaign_record_batch).
 do_record() {
   validate_config >/dev/null
   [[ -n "${causynth_static_root}" ]] \
     || die "record requires causynth_static_root"
-  local trace_dir name static exit_status wall timed_out=false
+  [[ -z "${campaign_setup_command}" ]] || campaign_setup
+  campaign_record_batch "${record_timeout_s}"
+}
+
+# campaign_record_batch [seconds]: one recording for every target of the
+# spec, each on its own static slice -- a pre-screen's `record`, a batch
+# campaign's SEED.  Each target's slice (${causynth_static_root}/<name>/, as
+# `slice` wrote it, tools/adhoc/slice.sh) is frozen into targets/<name>/:
+# its candidate graph, scope map, frontier and communication gaps, and its
+# line of the spec as target.yaml; a target without one is refused before
+# any work.  ONE recording is woven for all of them (campaign_union_static)
+# and its workload runs under <seconds> when given; then each target is
+# aggregated on its own slice and on its view of the merged skeletons
+# (campaign_region_view) into targets/<name>/runtime/.
+# runtime/record-summary.json states the workload's exit, its seconds,
+# whether the bound ended it, and each target's outcome
+# (runtime.CausynthTraceRecorder: ACTIVATED, or the refusal).
+campaign_record_batch() {
+  local bound=${1:-}
+  local trace_dir="${causynth_output_dir}/runtime" name static target
+  local exit_status wall timed_out=false status started
   local -a names targets=()
-  trace_dir=$(dirname "${runtime_region_plan}")
   mapfile -t names < <(campaign_target_names)
   (( ${#names[@]} > 0 )) \
     || die "the target spec names no target: ${causynth_target_spec}"
   for name in "${names[@]}"; do
-    static="${causynth_static_root}/${name}"
-    require_file "static slice of ${name}" "${static}/static_scope_map.jsonl"
-    targets+=(--target "${name}=${static}/candidate_dataflow_edges.jsonl.gz,\
-${static}/static_scope_map.jsonl,${static}/region_skeletons.jsonl.gz,\
-${trace_dir}/${name}")
+    require_file "static slice of ${name}" \
+      "${causynth_static_root}/${name}/static_scope_map.jsonl"
   done
-  [[ -z "${campaign_setup_command}" ]] || campaign_setup
+  for name in "${names[@]}"; do
+    static="${causynth_static_root}/${name}"
+    target="${causynth_output_dir}/targets/${name}"
+    mkdir -p "${target}/runtime"
+    cp -- "${static}/candidate_dataflow_edges.jsonl.gz" \
+      "${static}/static_scope_map.jsonl" "${static}/scope_frontier.jsonl" \
+      "${static}/communication_gaps.jsonl.gz" "${target}/"
+    awk -v name="${name}" '$1 == "exception_target:" && $2 == name' \
+      "${causynth_target_spec}" >"${target}/target.yaml"
+    targets+=(--target "${name}=${target}/candidate_dataflow_edges.jsonl.gz,\
+${target}/static_scope_map.jsonl,${target}/view_region_skeletons.jsonl.gz,\
+${target}/runtime")
+  done
   campaign_union_static "${names[@]}"
+  for name in "${names[@]}"; do
+    campaign_region_view "${causynth_static_root}/${name}" \
+      >"${causynth_output_dir}/targets/${name}/view_region_skeletons.jsonl.gz"
+  done
   CAUSYNTH_TRACE_MODE=region-state do_analyze
   ensure_output_directory "${trace_dir}"
-  local started=${SECONDS} status
-  run_capturing_status run_configured_workload "${record_timeout_s}"
+  started=${SECONDS}
+  run_capturing_status run_configured_workload "${trace_dir}" "${bound}"
   exit_status=${status}
   wall=$(( SECONDS - started ))
+  campaign_recorded_workload_s=${wall}
   case "${exit_status}" in
     "${campaign_adapter_timeout_status}"|"${campaign_adapter_killed_status}")
-      timed_out=true ;;
+      [[ -z "${bound}" ]] || timed_out=true ;;
   esac
   # A target the recording does not serve is its own outcome: the
   # aggregation's status says only whether any was served.
@@ -884,11 +931,39 @@ ${trace_dir}/${name}")
   rm -f -- "${trace_dir}/targets.json"
 }
 
+# campaign_region_view <static-slice>: the batch's merged skeletons as that
+# slice's target labels them, gzipped on stdout -- what it is aggregated on.
+# Its regions are every target's: the recording opened all of them, and a
+# region of this target entered inside another target's is folded into that
+# occurrence, where the aggregation finds it only if it knows the enclosing
+# region (a check whose exception context BlockSender.<init> folds into
+# another check's DataXceiver.readBlock was lost as NOT_IN_WINDOW).  Its
+# labels are this target's: a region at a root this target plans keeps its
+# own selection, and another's exception context is state to this target,
+# so that no other target's failure context is taken for its own.
+campaign_region_view() {
+  zcat -- "${causynth_region_skeletons}" | jq -c --slurpfile own \
+    <(zcat -- "$1/region_skeletons.jsonl.gz" | jq -s \
+      "${campaign_region_key} map({(region_key): .selection}) | add // {}") \
+    "${campaign_region_key}"'
+    .selection = ($own[0][region_key]
+      // (if .selection | startswith("EXCEPTION") then "STATE_CONTEXT"
+          else .selection end))' | gzip -c
+}
+
+# What one region of a batch is: its root, the one region a weave opens
+# there (a skeleton row naming no root is its id), as a jq function.
+campaign_region_key='def region_key:
+  if (.rootMethod // "") == "" then .regionId else .rootMethod end;'
+
+
 # A batch's one recording weave (do_record): the case's skeleton file is
-# every target's region skeletons merged by region -- a region's id is its
-# authority and root, whatever the target, so one root is one region -- with
-# their lists united; its grown scope is every target's grown classes, the
-# GROWN manifest one row per class.
+# every target's region skeletons merged by root -- the weave opens ONE
+# region at a root, the first the file names there (a region's id is its
+# authority and root, and two targets may root one method under two
+# authorities) -- the first row's words kept and their lists united; its
+# grown scope is every target's grown classes, the GROWN manifest one row
+# per class.
 campaign_union_static() {
   local name static grown
   grown=$(campaign_grown_scope)
@@ -910,10 +985,10 @@ campaign_union_static() {
       >"${grown}/${scope_growth_manifest}"
   fi
   rm -f -- "${grown}/${scope_growth_manifest}.all"
-  zcat -- "${skeletons[@]}" | jq -c -s '
+  zcat -- "${skeletons[@]}" | jq -c -s "${campaign_region_key}"'
     def unite($a; $b): reduce $b[] as $x ($a;
       if any(.[]; . == $x) then . else . + [$x] end);
-    reduce .[] as $row ({}; .[$row.regionId] |=
+    reduce .[] as $row ({}; .[$row | region_key] |=
       (if . == null then $row else
         reduce ($row | to_entries[] | select(.value | type == "array")) as $e
           (.; .[$e.key] = unite(.[$e.key] // []; $e.value)) end))
@@ -952,6 +1027,10 @@ campaign_provenance=""
 # How long the recording's workload ran, in seconds (do_workload): the seed
 # replay's bound is seed_replay_time_factor times it.
 campaign_recorded_workload_s=""
+# The campaign's target's static slice as the recording was aggregated on
+# it, "<candidate-graph>,<scope-map>,<region-skeletons>" (SEED): REPRODUCE
+# aggregates its runs on the same.
+campaign_target_slice=""
 # This iteration's task-set membership, decoded once by PLAN from the frozen
 # schedule index (PIPELINE §3), one owner per check.
 # IMPORT, EXPLORE, the iteration manifest and COMPOSE read these rows; they do
@@ -1995,20 +2074,26 @@ campaign_verify_frozen_inputs() {
       "the workload classpath changed after it was frozen"
 }
 
-# The stock-JVM seed: the static pass, then the two traced passes the workload
-# stage owns. Its outputs are the campaign's static catalog and target closure.
+# The stock-JVM seed: the static pass, then the one recording the workload
+# stage owns. Its outputs are the campaign's static catalog and region plan.
 campaign_seed() {
   local marker="${campaign_root}/.seed-started"
-  local catalog_sha plan_sha
   : >"${marker}"
   campaign_analyze_grown_scope
   do_workload
   require_fresh "static candidate data-flow graph" "${candidate_graph}" \
     "${marker}"
   require_fresh "runtime region plan" "${runtime_region_plan}" "${marker}"
-  # Snapshot both seed skeleton views inside this immutable campaign.  The
-  # configured analysis and runtime roots are already generation-local; the
-  # snapshot keeps the exact static/runtime pair beside the final provenance.
+  campaign_seed_provenance
+}
+
+# The seed's static catalog and runtime region plan, digested into the
+# campaign's provenance, and both seed skeleton views snapshot inside the
+# campaign.  The configured analysis and runtime roots are already
+# generation-local; the snapshot keeps the exact static/runtime pair beside
+# the final provenance.
+campaign_seed_provenance() {
+  local catalog_sha plan_sha
   local skeleton_snapshot="${campaign_root}/seed-skeletons"
   mkdir -p "${skeleton_snapshot}"
   local skeleton
@@ -2061,18 +2146,7 @@ campaign_plan() {
   fi
   schedule_output_dir="${iteration_dir}"
   do_schedule
-  # A sweep declares "first" (RuntimeWorkflowDiscovery.FIRST): PLAN resolved
-  # it against this recording, and every later stage takes that address.
-  if [[ "${declared_target_occurrence}" == first ]]; then
-    declared_target_occurrence=$(jq -r '.target.occurrenceId // ""' "${index}")
-    [[ -n "${declared_target_occurrence}" ]] \
-      || campaign_fail PLAN ConcolicScheduler "${index}" \
-        "the schedule index names no target for the declared first occurrence"
-    campaign_log "declared target first = ${declared_target_occurrence}"
-  fi
-  # Every later consumer reads this iteration's frozen copy, never the mutable
-  # discovery output.
-  runtime_region_plan="${frozen}"
+  campaign_plan_read "${iteration_dir}"
   require_nonempty "campaign task plan" "${plan}"
   require_nonempty "runtime workflow schedule index" "${index}"
 
@@ -2097,14 +2171,6 @@ campaign_plan() {
   mkdir -p "${seed_dir}"
   ln -f "${plan}" "${seed_plan}"
 
-  # The one task-set membership decode of this iteration. Every later stage
-  # reads these rows; the index is frozen beside them and is never re-decoded.
-  if ! campaign_member_rows=$(campaign_decode_index_members "${index}"); then
-    campaign_fail PLAN ConcolicScheduler "${index}" \
-      "the region-path schedule index has an invalid membership schema"
-  fi
-  [[ -n "${campaign_member_rows}" ]] || campaign_fail PLAN ConcolicScheduler \
-    "${index}" "the region-path schedule index names no target member"
   # Member directories own path-closure artifacts, while every member points
   # at the same immutable linked replay plan.  Link it rather than copy it:
   # a copy per member would restate one plan once per member, most of what
@@ -2120,6 +2186,33 @@ campaign_plan() {
   campaign_log "planned tasks: $(jq -s 'length' "${plan}") by goal $(jq -r -s '
     group_by(.goalKind) | map("\(.[0].goalKind)=\(length)") | join(" ")' \
     "${plan}")"
+}
+
+# What an iteration's PLAN states that its later stages read, taken into the
+# campaign's globals once per process that runs them (a batch target's
+# campaign reads its PLAN again): the declared "first" occurrence resolved
+# against the recording (RuntimeWorkflowDiscovery.FIRST), the frozen region
+# plan, and the one task-set membership decode -- the index is frozen beside
+# its rows and every later stage reads the rows.
+campaign_plan_read() {
+  local iteration_dir=$1
+  local index="${iteration_dir}/runtime_workflow_schedule_index.json"
+  if [[ "${declared_target_occurrence}" == first ]]; then
+    declared_target_occurrence=$(jq -r '.target.occurrenceId // ""' "${index}")
+    [[ -n "${declared_target_occurrence}" ]] \
+      || campaign_fail PLAN ConcolicScheduler "${index}" \
+        "the schedule index names no target for the declared first occurrence"
+    campaign_log "declared target first = ${declared_target_occurrence}"
+  fi
+  # Every later consumer reads this iteration's frozen copy, never the mutable
+  # discovery output.
+  runtime_region_plan="${iteration_dir}/concolic_region_plan.jsonl"
+  if ! campaign_member_rows=$(campaign_decode_index_members "${index}"); then
+    campaign_fail PLAN ConcolicScheduler "${index}" \
+      "the region-path schedule index has an invalid membership schema"
+  fi
+  [[ -n "${campaign_member_rows}" ]] || campaign_fail PLAN ConcolicScheduler \
+    "${index}" "the region-path schedule index names no target member"
 }
 
 campaign_task_ids() {
@@ -2140,7 +2233,9 @@ campaign_instrument() {
   [[ -n "${ids}" ]] || campaign_fail INSTRUMENT CAMPAIGN "${plan}" \
     "the campaign plan published no task id"
   rm -rf -- "${classes}"
-  analysis_classes_dir="${classes}"
+  # This weave's output; the recording weave stays analysis_classes_dir
+  # (REPRODUCE runs it again).
+  local analysis_classes_dir="${classes}"
   export CAUSYNTH_CONCOLIC_TASK_PLAN="${plan}"
   export CAUSYNTH_CONCOLIC_TASK_ID="${ids}"
   do_analyze
@@ -2280,35 +2375,35 @@ a truncated run and its log is in ${worker}/replay.log"
     # target row whether its path reached the throw or left before it (the
     # scope map's chain); reachedAnchor says which, and exploration flips the
     # decision it left by.
-    local declared_target reached=""
-    local -a target_rows=()
-    # The declared target's method, off the TARGET_SITE row of the static
-    # scope map, which already states that site.
-    declared_target=$(jq -r -s '
-      [.[] | select(.role == "TARGET_SITE") | .siteId
-             | sub("#u[0-9]+$"; "")] | first // ""' \
+    local reached
+    reached=$(campaign_target_reached "${sessions}" \
       "${causynth_static_scope_map}") \
       || campaign_fail REPLAY WORKLOAD "${sessions}" \
-        "the declared target could not be read for target coverage"
-    while IFS= read -r -d '' target_file; do
-      target_rows+=("${target_file}")
-    done < <(find "${sessions}" -mindepth 2 -maxdepth 2 -name targets.jsonl \
-      -print0)
-    if [[ -n "${declared_target}" && ${#target_rows[@]} -gt 0 ]]; then
-      reached=$(jq -r -n --arg target "${declared_target}" '
-        [inputs
-          | select(.anchorSiteId | startswith($target + "#"))
-          | .anchorSiteId] | first // ""' "${target_rows[@]}") \
-        || campaign_fail REPLAY WORKLOAD "${sessions}" \
-          "the target rows could not be read for target coverage"
-    fi
-    [[ -n "${declared_target}" && -n "${reached}" ]] || campaign_fail REPLAY \
-      WORKLOAD "${sessions}" \
-      "the concolic replay ran no TARGET_REACH occurrence (exit ${status}); no session published a target row of ${declared_target:-the declared target}; the workload's terminating exception is in ${worker}/replay.log"
+        "the target rows could not be read for target coverage"
+    [[ -n "${reached}" ]] || campaign_fail REPLAY WORKLOAD "${sessions}" \
+      "the concolic replay ran no TARGET_REACH occurrence (exit ${status}); no session published a target row of a TARGET_SITE of ${causynth_static_scope_map}; the workload's terminating exception is in ${worker}/replay.log"
   fi
   campaign_log "replay role=${role} exit=${status} sessions=${sessions}"
 }
 
+
+# The first target row a replay's sessions published at a TARGET_SITE of
+# <scope-map> (its method's; a batch group's map names every target's), or
+# "" when none did.
+campaign_target_reached() {
+  local sessions=$1 map=$2
+  local -a rows=()
+  mapfile -d '' rows < <(find "${sessions}" -mindepth 2 -maxdepth 2 \
+    -name targets.jsonl -print0)
+  (( ${#rows[@]} > 0 )) || return 0
+  jq -r -n --slurpfile map "${map}" '
+    [$map[] | select(.role == "TARGET_SITE") | .siteId
+     | sub("#u[0-9]+$"; "")] as $methods
+    | [inputs | .anchorSiteId
+       | select(. as $site | any($methods[] + "#"; . as $method
+           | $site | startswith($method)))]
+    | first // ""' "${rows[@]}"
+}
 
 campaign_session_replay() {
   local iteration_dir=$1
@@ -3767,6 +3862,74 @@ ${confirm_dir}/confirm.log" "" >"${campaign_final}/confirm.json"
     "${campaign_final}/confirm.json"
 }
 
+# REPRODUCE (ADHOC-INFRA WP5.D): a confirmed witness run again natively --
+# the recording weave on the stock JDK, planting only the fault markers the
+# confirmation's world plants (explore.ConfirmMain --plant, the code that
+# wrote CONFIRM's world; runtime.RecordingPlant) -- reproduce_runs times,
+# each under record_timeout_s and charged as a replay, and each aggregated
+# for the target as the pre-screen aggregates.  final/reproduce.json states
+# how many runs there were, how many planted a marker, how many took the
+# target's fatal arm and how many at the claim's own anchor occurrence.  A
+# native run holds no schedule, so the planted occurrence may not recur: the
+# rate ranks a finding (tools/adhoc/findings.py) and never refutes it, and
+# nothing here moves the claim or CONFIRM's decision.  A world a native run
+# cannot plant (a clock, an attach's answer, any root but a marker) is a
+# reproduce.json with no run and the reason.  Only a confirmed SAT_CANDIDATE
+# is reproduced.
+campaign_reproduce() {
+  local iteration_dir=$1
+  local dir="${campaign_final}/reproduce" run trace name status=0
+  if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
+      != SAT_CANDIDATE || "$(jq -r '.confirmed' \
+      "${campaign_final}/confirm.json")" != true ]]; then
+    campaign_log "nothing confirmed to reproduce"
+    return 0
+  fi
+  [[ ! -e "${dir}" ]] \
+    || die "the reproduction directory already exists: ${dir}"
+  mkdir -p "${dir}"
+  run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.explore.ConfirmMain \
+    --iteration "${iteration_dir}" --claim "${campaign_final}/claim.json" \
+    --plant "${dir}/plant.jsonl" >"${dir}/plant.log" 2>&1
+  if [[ "${status}" -ne 0 ]]; then
+    jq -n --arg reason "$(sed -n 's/^CONFIRM refused: //p' \
+        "${dir}/plant.log" | head -n 1)" \
+      '{schemaVersion: 1, kind: "REPRODUCTION", runs: 0, planted: 0,
+        fatal: 0, atAnchor: 0,
+        reason: ("no native run: " + $reason)}' \
+      >"${campaign_final}/reproduce.json"
+    campaign_log "reproduce: $(jq -r .reason "${campaign_final}/reproduce.json")"
+    return 0
+  fi
+  name=$(campaign_target_names | head -n 1)
+  for (( run = 1; run <= reproduce_runs; run++ )); do
+    trace="${dir}/run-${run}"
+    # The run's own outcome is its summary: a planted fault may well fail
+    # the test.
+    campaign_head_charged "${obligation_memory_mb}" 300 \
+      run_configured_workload "${trace}" "${record_timeout_s}" \
+      "${dir}/plant.jsonl" >"${trace}.log" 2>&1 || true
+    run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+      --trace-dir "${trace}" --test "${trace_test}" \
+      --target "${name}=${campaign_target_slice},${trace}/${name}" \
+      --summary "${trace}/summary.json" >>"${trace}.log" 2>&1 || true
+  done
+  find "${dir}" -mindepth 2 -maxdepth 2 -name summary.json -print0 \
+    | xargs -0 -r cat \
+    | jq -s --argjson runs "${reproduce_runs}" --arg name "${name}" \
+      --arg anchor "$(jq -r '.anchor' "${campaign_final}/claim.json")" '
+      {schemaVersion: 1, kind: "REPRODUCTION", runs: $runs,
+       planted: map(select(.plantsApplied > 0)) | length,
+       fatal: map(select((.targets[$name].fatalOccurrences // [])
+                         | length > 0)) | length,
+       atAnchor: map(select((.targets[$name].fatalOccurrences // [])
+                            | index($anchor) != null)) | length,
+       reason: ""}' >"${campaign_final}/reproduce.json"
+  jq -r '"  reproduced at the anchor in \(.atAnchor) of \(.runs) native run(s) (\(.planted) planted, \(.fatal) fatal)"' \
+    "${campaign_final}/reproduce.json"
+}
+
 # The one shape of final/confirm.json.
 campaign_confirm_verdict() {
   local confirmed=$1 reason=$2 session_id=$3
@@ -4005,9 +4168,20 @@ campaign_emit() {
         "the confirmation states no boolean confirmed and string reason"
     confirmation=$(cat "${campaign_final}/confirm.json")
   fi
+  # REPRODUCE's answer for a confirmed candidate, beside the confirmation it
+  # never changes; null for every other claim.
+  local reproduction=null
+  if [[ "$(jq -r '.confirmed' <<<"${confirmation}")" == true ]]; then
+    require_nonempty "reproduction" "${campaign_final}/reproduce.json"
+    campaign_require_json "reproduction" "${campaign_final}/reproduce.json" \
+      || campaign_fail EMIT REPRODUCE "${campaign_final}/reproduce.json" \
+        "the reproduction is malformed"
+    reproduction=$(cat "${campaign_final}/reproduce.json")
+  fi
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --argjson confirmation "${confirmation}" \
+    --argjson reproduction "${reproduction}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
     $composedDocuments[0] as $c | ($c.solver // {}) as $r |
@@ -4039,6 +4213,8 @@ campaign_emit() {
      # The confirmation itself, so a reader of result.json sees which
      # session answered and why, not only that the claim was downgraded.
      confirmation: $confirmation,
+     # How often the confirmed world reproduced natively (REPRODUCE).
+     reproduction: $reproduction,
      # WHICH mechanism the formula supports, beside WHETHER the run is
      # accepted.  Two questions, and a reader of result.json alone could
      # answer only the second: the ClaimKind, the valuation that carried it
@@ -4189,6 +4365,255 @@ campaign_emit() {
   }
 }
 
+# SEED of a batch campaign: one recording for every target of the spec, each
+# on its own slice (campaign_record_batch, the workload unbounded as SEED's
+# is); a workload that exits nonzero fails SEED as it does alone.  Each
+# target's directory then holds what a campaign of its own reads beside its
+# slice: the batch's region skeletons, grown scope, lineage and recording
+# weave, and the recorded schedule, linked, so every weave and replay of
+# every target stands on the recording's frames.
+campaign_batch_seed() {
+  local name target
+  campaign_record_batch
+  jq -e '.exit == 0' "${causynth_output_dir}/runtime/record-summary.json" \
+    >/dev/null || campaign_fail SEED WORKLOAD "${causynth_output_dir}/runtime" \
+    "the recorded workload exited $(jq -r .exit \
+      "${causynth_output_dir}/runtime/record-summary.json"): the test failed, \
+or its run never opened a recording window (its output is above)"
+  while IFS= read -r name; do
+    target="${causynth_output_dir}/targets/${name}"
+    ln -s ../../region_skeletons.jsonl.gz "${target}/region_skeletons.jsonl.gz"
+    ln -s ../../scope-classes "${target}/scope-classes"
+    ln -s ../../lineage-classes "${target}/lineage-classes"
+    ln -s ../../instrumented-classes "${target}/instrumented-classes"
+    ln -s ../../../runtime/schedule.jsonl "${target}/runtime/schedule.jsonl"
+    campaign_log "target ${name}: $(jq -r --arg name "${name}" \
+      '.targets[$name] | .state + " " + .detail' \
+      "${causynth_output_dir}/runtime/record-summary.json")"
+  done < <(campaign_target_names)
+}
+
+# A batch campaign (causynth_static_root: an ad-hoc sweep's case).  SEED
+# records once for every target (campaign_batch_seed); each target the
+# recording activated is planned on its own slice (campaign_batch_plan); the
+# plans are grouped so that each group's union is one plan one replay runs
+# (plan.PlanUnion) -- the targets' plans stand on one recording, so the
+# tasks they share are one task -- and each group is woven, seed-replayed
+# and imported once (campaign_batch_group), all groups at once; then every
+# target its group's seed replay reached runs its own campaign from EXPLORE
+# on (campaign_batch_target), all at once.  Each target logs to
+# targets/<name>/campaign.log.  The batch fails when SEED does, when the
+# recording activated no target, or when a target that was planned ends
+# before EMIT (its PLAN, its group's seed, or its own stages); each target's
+# claim is its own targets/<name>/schedule/final/result.json.
+campaign_batch() {
+  local summary="${causynth_output_dir}/runtime/record-summary.json"
+  local groups="${campaign_root}/groups"
+  local name group index status failed=0
+  local -a names=() planned=() members=() served=() pids=()
+  campaign_stage SEED campaign_batch_seed
+  mapfile -t names < <(jq -r '.targets | to_entries[]
+    | select(.value.state == "ACTIVATED") | .key' "${summary}")
+  (( ${#names[@]} > 0 )) || campaign_fail SEED CausynthTraceRecorder \
+    "${summary}" "the recording activated no target of the batch"
+  for name in "${names[@]}"; do
+    if ( campaign_batch_plan "${name}" ) \
+        >>"${causynth_output_dir}/targets/${name}/campaign.log" 2>&1; then
+      planned+=("${name}")
+    else
+      campaign_log "target ${name}: $(campaign_batch_verdict \
+        "${causynth_output_dir}/targets/${name}")"
+      failed=$((failed + 1))
+    fi
+  done
+  (( ${#planned[@]} > 0 )) || campaign_fail PLAN CAMPAIGN \
+    "${causynth_output_dir}/targets" "no target of the batch was planned"
+  campaign_stage UNION campaign_batch_union "${groups}" "${planned[@]}"
+  mapfile -t members < <(jq -r '.[] | .targets | join(" ")' \
+    "${groups}/groups.json")
+  for group in "${!members[@]}"; do
+    # shellcheck disable=SC2086 # the members are words
+    ( campaign_batch_group "${groups}/group-${group}" ${members[$group]} ) \
+      >"${groups}/group-${group}.log" 2>&1 &
+    pids[group]=$!
+  done
+  for group in "${!members[@]}"; do
+    if wait "${pids[$group]}"; then
+      mapfile -t -O "${#served[@]}" served <"${groups}/group-${group}/served"
+      failed=$((failed + $(wc -w <<<"${members[$group]}") \
+        - $(wc -l <"${groups}/group-${group}/served")))
+    else
+      campaign_log "group ${group} (${members[$group]}) ended before \
+EXPLORE: $(campaign_batch_verdict "${groups}/group-${group}" \
+        "${groups}/group-${group}.log")"
+      # Each member's campaign ended there: its own log says where.
+      for name in ${members[$group]}; do
+        sed -n '/^\[campaign:error\]/,$p' "${groups}/group-${group}.log" \
+          >>"${causynth_output_dir}/targets/${name}/campaign.log"
+      done
+      failed=$((failed + $(wc -w <<<"${members[$group]}")))
+    fi
+  done
+  pids=()
+  if [[ "${campaign_stop_after}" == "IMPORT" ]]; then
+    campaign_log "stopping after IMPORT: campaign_stop_after=IMPORT"
+    return 0
+  fi
+  for index in "${!served[@]}"; do
+    name=${served[$index]%%$'\t'*}
+    ( campaign_batch_target "${name}" "${served[$index]#*$'\t'}" ) \
+      >>"${causynth_output_dir}/targets/${name}/campaign.log" 2>&1 &
+    pids[index]=$!
+  done
+  for index in "${!served[@]}"; do
+    name=${served[$index]%%$'\t'*}
+    status=0
+    wait "${pids[$index]}" || status=$?
+    campaign_log "target ${name}: exit ${status}, $(\
+      campaign_batch_verdict "${causynth_output_dir}/targets/${name}")"
+    # EMIT's own exits: 2, no accepted claim; 3, BLOCKING gaps.
+    case "${status}" in
+      0|2|3) ;;
+      *) failed=$((failed + 1)) ;;
+    esac
+  done
+  (( failed == 0 )) || campaign_fail EMIT CAMPAIGN \
+    "${causynth_output_dir}/targets" "${failed} of ${#names[@]} target \
+campaign(s) ended before EMIT; each names its stage in its campaign.log"
+}
+
+# One target's PLAN, in its own campaign root (campaign_batch_enter).
+campaign_batch_plan() {
+  campaign_batch_enter "$1"
+  local iteration_dir="${campaign_root}/iteration-0000"
+  mkdir -p "${iteration_dir}"
+  campaign_member_rows=""
+  campaign_stage PLAN campaign_plan "${iteration_dir}"
+}
+
+# The planned targets' groups (plan.PlanUnion): <dir>/groups.json and each
+# group's union plan, <dir>/group-<n>/execution_task_plan.jsonl.
+campaign_batch_union() {
+  local dir=$1 name
+  shift
+  local -a plans=()
+  for name in "$@"; do
+    plans+=(--plan "${name}=${causynth_output_dir}/targets/${name}/schedule/\
+iteration-0000/execution_task_plan.jsonl")
+  done
+  run_java_main edu.uva.liftlab.graphchecker.plan.PlanUnion \
+    "${plans[@]}" --output-dir "${dir}" >/dev/null
+  campaign_log "groups: $(jq -r -c 'map(.targets)' "${dir}/groups.json")"
+}
+
+# One group's seed: its union plan woven once (INSTRUMENT), replayed once on
+# the recording's schedule (REPLAY) under the union of its targets' scope
+# maps -- what the replay's guarded stores are, and its target coverage: any
+# target -- and imported once (IMPORT), in <dir>, which a campaign reads as
+# its iteration.  Each target the replay reached is written to <dir>/served
+# as "<name><TAB><dir>"; one it did not reach is named and not run.
+campaign_batch_group() {
+  local dir=$1 name reached
+  shift
+  local targets="${causynth_output_dir}/targets"
+  mkdir -p "${dir}/seed-replay"
+  ln -f "${dir}/execution_task_plan.jsonl" \
+    "${dir}/seed-replay/execution_task_plan.jsonl"
+  # As campaign_plan freezes it: a recording that states no schedule has none.
+  [[ ! -s "${causynth_output_dir}/runtime/schedule.jsonl" ]] \
+    || cp -f "${causynth_output_dir}/runtime/schedule.jsonl" \
+      "${dir}/recorded_schedule.jsonl"
+  for name in "$@"; do
+    cat "${targets}/${name}/static_scope_map.jsonl"
+  done | awk '!seen[$0]++' >"${dir}/static_scope_map.jsonl"
+  causynth_static_scope_map="${dir}/static_scope_map.jsonl"
+  campaign_stage INSTRUMENT campaign_instrument "${dir}"
+  campaign_stage REPLAY campaign_session_replay "${dir}"
+  campaign_stage IMPORT campaign_import_session "${dir}" iteration-0000
+  : >"${dir}/served"
+  for name in "$@"; do
+    reached=$(campaign_target_reached "${dir}/sessions" \
+      "${targets}/${name}/static_scope_map.jsonl")
+    if [[ -n "${reached}" ]]; then
+      printf '%s\t%s\n' "${name}" "${dir}" >>"${dir}/served"
+    else
+      # Its campaign's own failure, in its own log, as a solo REPLAY's.
+      ( campaign_fail REPLAY WORKLOAD "${dir}/sessions" "the group's seed \
+replay published no target row of ${name}; the workload's terminating \
+exception is in ${dir}/seed-result/focused/replay.log" ) \
+        2>>"${targets}/${name}/campaign.log" || true
+      campaign_log "target ${name}: the group's seed replay published no \
+target row of it"
+    fi
+  done
+}
+
+# One target's verdict line: its claim, else the failure its log names
+# (<dir>/campaign.log, or the log given).
+campaign_batch_verdict() {
+  local result="$1/schedule/final/result.json" log=${2:-$1/campaign.log}
+  if [[ -s "${result}" ]]; then
+    jq -r '"\(.claim) \(.findingKind // "")"' "${result}"
+  else
+    grep -A4 '^\[campaign:error\]' "${log}" \
+      | sed -n 's/^ *\(stage\|reason\)=//p' | tail -n 2 | paste -sd ' ' -
+  fi
+}
+
+# One target of a batch campaign as its own campaign, in targets/<name>/:
+# its causynth_output_dir (so every stage -- and every peer of its waves,
+# which derive their paths from it -- reads its slice and its region plan
+# there), its spec that one target's line, its region plan aggregated on its
+# view of the merged skeletons (campaign_target_slice), and its campaign
+# root targets/<name>/schedule/.  In a subshell of its own.
+campaign_batch_enter() {
+  local name=$1
+  causynth_output_dir="${causynth_output_dir}/targets/${name}"
+  derive_output_paths
+  causynth_target_spec="${causynth_output_dir}/target.yaml"
+  campaign_target_slice="${candidate_graph},${causynth_static_scope_map},\
+${causynth_output_dir}/view_region_skeletons.jsonl.gz"
+  campaign_root="${schedule_output_dir}"
+  campaign_final="${campaign_root}/final"
+  campaign_stage_metrics="${campaign_root}/stage_metrics.tsv"
+  mkdir -p "${campaign_root}"
+  touch "${campaign_stage_metrics}"
+  campaign_init_local_scratch_root
+}
+
+# A planned target's campaign from EXPLORE on, over its group's seed <group>
+# (campaign_batch_group): its iteration takes the group's union plan (a copy:
+# GROW appends to it), its woven classes and seed session (hard links: GROW
+# re-weaves its own), and its census and import gate; its own PLAN is read
+# again (campaign_plan_read).
+campaign_batch_target() {
+  local name=$1 group=$2
+  campaign_batch_enter "${name}"
+  local iteration_dir="${campaign_root}/iteration-0000" worker
+  campaign_seed_provenance
+  campaign_plan_read "${iteration_dir}"
+  cp -f -- "${group}/execution_task_plan.jsonl" \
+    "${iteration_dir}/execution_task_plan.jsonl.union"
+  mv -f -- "${iteration_dir}/execution_task_plan.jsonl.union" \
+    "${iteration_dir}/execution_task_plan.jsonl"
+  ln -f "${iteration_dir}/execution_task_plan.jsonl" \
+    "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
+  for worker in "${iteration_dir}"/workers/*/; do
+    ln -f "${iteration_dir}/execution_task_plan.jsonl" \
+      "${worker}execution_task_plan.jsonl"
+  done
+  cp -al -- "${group}/instrumented-classes" "${group}/sessions" \
+    "${iteration_dir}/"
+  cp -- "${group}/session_census.jsonl" "${group}/import_gate.json" \
+    "${group}/woven_class_verification.log" "${iteration_dir}/"
+  # The gate writes its gap rows only when a row states one.
+  [[ ! -e "${group}/campaign_gaps.jsonl" ]] \
+    || cp -- "${group}/campaign_gaps.jsonl" "${iteration_dir}/"
+  campaign_log "target ${name}: campaign root ${campaign_root}, seed of \
+${group}"
+  campaign_iteration_explore "${iteration_dir}" iteration-0000
+}
+
 # ONE obligation of somebody else's wave, on this machine.
 #
 # The peer loads the same configuration file the campaign loaded, from the
@@ -4290,8 +4715,21 @@ do_campaign() {
     campaign_stage SETUP campaign_setup
   fi
   campaign_stage FREEZE campaign_freeze
+  # A campaign over a build's slices -- an ad-hoc sweep's batch case --
+  # records once for all its targets and runs each on its own.
+  if [[ -n "${causynth_static_root}" ]]; then
+    campaign_batch
+    return
+  fi
   campaign_stage SEED campaign_seed
+  campaign_iteration
+}
 
+# The campaign's one iteration once SEED has run: PLAN .. EMIT in
+# ${campaign_root}/iteration-0000.
+campaign_iteration() {
+  local iteration_id=iteration-0000
+  local iteration_dir="${campaign_root}/${iteration_id}"
   mkdir -p "${iteration_dir}"
   campaign_member_rows=""
   campaign_stage PLAN campaign_plan "${iteration_dir}"
@@ -4305,12 +4743,19 @@ do_campaign() {
     campaign_log "stopping after IMPORT: campaign_stop_after=IMPORT"
     return 0
   fi
+  campaign_iteration_explore "${iteration_dir}" "${iteration_id}"
+}
+
+# The iteration from EXPLORE on, once its seed session is imported.
+campaign_iteration_explore() {
+  local iteration_dir=$1 iteration_id=$2
   campaign_stage EXPLORE campaign_explore "${iteration_dir}" "${iteration_id}"
   campaign_publish_iteration_manifest "${iteration_dir}" "${iteration_id}"
   campaign_stage COMPOSE campaign_compose "${iteration_dir}"
   campaign_stage SOLVE campaign_solve
   campaign_stage DECIDE campaign_decide
   campaign_stage CONFIRM campaign_confirm "${iteration_dir}"
+  campaign_stage REPRODUCE campaign_reproduce "${iteration_dir}"
   campaign_stage EMIT campaign_emit "${iteration_dir}"
 }
 

@@ -88,12 +88,14 @@ public class MultiTargetAggregationTest {
                     outcomes.get((String) target[0]);
             assertEquals(target[0] + ": " + outcome.detail, target[4],
                     outcome.state);
-            assertEquals(target[0] + " took the fatal arm", target[5],
-                    outcome.fatalArmObserved);
-            assertEquals(target[0] + "'s target occurrences",
-                    target[6] == null ? Collections.emptyList()
-                            : Collections.singletonList(target[6]),
+            List<Object> occurrences = target[6] == null
+                    ? Collections.emptyList()
+                    : Collections.singletonList(target[6]);
+            assertEquals(target[0] + "'s target occurrences", occurrences,
                     outcome.occurrences);
+            assertEquals(target[0] + "'s occurrences that took the fatal arm",
+                    (Boolean) target[5] ? occurrences : Collections.emptyList(),
+                    outcome.fatalOccurrences);
         }
         try {
             CausynthTraceRecorder.AggregationTarget.parse("a=graph,map,out");

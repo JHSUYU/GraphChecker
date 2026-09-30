@@ -21,7 +21,10 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
+import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
+import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -49,6 +52,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *   --claim &lt;file&gt;      final/claim.json
  *   --manifest &lt;file&gt;   final/candidate_composition_manifest.json
  *   --output &lt;dir&gt;      the worker directory the replay is run from
+ *
+ *   or, with --iteration and --claim, a native reproduction's plant
+ *   ({@link #plant}):
+ *   --plant &lt;file&gt;      the markers the confirmation's world plants
  *
  *   once the replay has published, the decision ({@link #decide}), printed
  *   as final/confirm.json:
@@ -113,19 +120,21 @@ public final class ConfirmMain {
         Path manifest = options.path("manifest");
         Path out = options.path("output");
         Path sessions = options.path("sessions");
+        Path plant = options.path("plant");
         if (sessions != null && claim != null && out != null) {
             System.out.println(ExploreMain.pretty(
                     decide(claim, out, sessions)));
             return;
         }
-        if (iteration == null || claim == null || manifest == null
-                || out == null) {
-            throw new IllegalArgumentException("--iteration, --claim, "
-                    + "--manifest and --output are required");
+        if (iteration == null || claim == null
+                || (plant == null && (manifest == null || out == null))) {
+            throw new IllegalArgumentException("--iteration, --claim, and "
+                    + "--plant or --manifest and --output are required");
         }
         JsonObject summary;
         try {
-            summary = write(iteration, claim, manifest, out);
+            summary = plant != null ? writePlant(iteration, claim, plant)
+                    : write(iteration, claim, manifest, out);
         } catch (Refused refused) {
             System.err.println("CONFIRM refused: " + refused.getMessage());
             JsonObject row = new JsonObject();
@@ -227,18 +236,12 @@ public final class ConfirmMain {
         }
 
         // The selected path's world, values only, nothing forced.
-        JsonObject world = obligationWorld(iteration, sessionId);
-        Map<String, String> assignments =
-                ExploreCodec.map(object(world, "rootAssignments"));
-        Map<String, String> clockDeltas =
-                ExploreCodec.map(object(world, "clockDeltas"));
-        Map<String, String> mints =
-                ExploreCodec.map(object(world, "rootMints"));
-        Map<String, String> answers =
-                ExploreCodec.map(object(world, "answers"));
-        plantModel(decided, session,
-                SessionReader.read(iteration, seedSessionId), manifest,
-                assignments, clockDeltas, mints);
+        World world = world(iteration, decided, manifest, session,
+                seedSessionId);
+        Map<String, String> assignments = world.assignments;
+        Map<String, String> clockDeltas = world.clockDeltas;
+        Map<String, String> mints = world.mints;
+        Map<String, String> answers = world.answers;
         List<JsonObject> markers = markerEdges(manifest, assignments);
         Map<String, SessionReader> armSessions =
                 new LinkedHashMap<String, SessionReader>();
@@ -292,6 +295,132 @@ public final class ConfirmMain {
         summary.addProperty("expectedEdges", edges.size());
         summary.add("schedulePrefix", cut.toJson());
         return summary;
+    }
+
+    /** What a confirmation plants: root values, clock skews, the occurrence
+     *  each root is minted at, and the answers at attach endpoints. */
+    static final class World {
+        final Map<String, String> assignments;
+        final Map<String, String> clockDeltas;
+        final Map<String, String> mints;
+        final Map<String, String> answers;
+
+        World(JsonObject focus) {
+            assignments = ExploreCodec.map(object(focus, "rootAssignments"));
+            clockDeltas = ExploreCodec.map(object(focus, "clockDeltas"));
+            mints = ExploreCodec.map(object(focus, "rootMints"));
+            answers = ExploreCodec.map(object(focus, "answers"));
+        }
+    }
+
+    /** The world the claim is confirmed in: the selected session's own
+     *  obligation world overlaid with the model's moved roots ({@link
+     *  #plantModel}). */
+    static World world(Path iteration, JsonObject decided,
+                       JsonObject manifest, SessionReader session,
+                       String seedSessionId) throws IOException {
+        World world = new World(obligationWorld(iteration,
+                session.sessionId()));
+        plantModel(decided, session,
+                SessionReader.read(iteration, seedSessionId), manifest,
+                world.assignments, world.clockDeltas, world.mints);
+        return world;
+    }
+
+    /**
+     * A native reproduction's plant (ADHOC-INFRA WP5.D; {@code
+     * runtime.RecordingPlant}): the confirmation's world ({@link #world}), one
+     * row per root at the site its plan input action calls and the id of the
+     * occurrence it is minted at.  The recording weave plants only fault
+     * markers: a world that also moves a clock, answers an attach or assigns
+     * any other root is refused by name.  Whatever CONFIRM decided, and
+     * whether or not it replayed.
+     */
+    static JsonObject writePlant(Path iteration, Path claimFile, Path out)
+            throws IOException {
+        JsonObject claim = ExploreCodec.readObject(claimFile);
+        JsonObject decided = claim.getAsJsonObject("claim");
+        String sessionId = optionalString(valuation(claim,
+                decided.get("valuationOrdinal").getAsInt()),
+                "selectedSessionId");
+        if (sessionId.isEmpty()) {
+            throw new Refused("the claim's valuation selected no session");
+        }
+        SessionReader session = SessionReader.read(iteration, sessionId);
+        // COMPOSE publishes its manifest beside the claim (final/).
+        Path manifestFile = claimFile.resolveSibling(
+                "candidate_composition_manifest.json");
+        if (!Files.isRegularFile(manifestFile)) {
+            throw new Refused("the claim has no composition manifest beside it: "
+                    + manifestFile);
+        }
+        World world = world(iteration, decided,
+                ExploreCodec.readObject(manifestFile), session,
+                optionalString(claim, "seedSessionId"));
+        if (!world.clockDeltas.isEmpty() || !world.answers.isEmpty()) {
+            throw new Refused("NATIVE_PLANT_UNSUPPORTED: a native run plants "
+                    + "fault markers only, and this world skews clocks "
+                    + world.clockDeltas.keySet() + " and answers attaches "
+                    + world.answers.keySet());
+        }
+        Map<String, RootKind> kinds = new LinkedHashMap<String, RootKind>();
+        for (RootMintRow row : session.roots()) {
+            kinds.put(row.rootId(), row.kind());
+        }
+        Map<String, Set<String>> sites = inputSites(
+                iteration.resolve("execution_task_plan.jsonl"));
+        List<JsonObject> rows = new ArrayList<JsonObject>();
+        for (Map.Entry<String, String> assigned
+                : world.assignments.entrySet()) {
+            String rootId = assigned.getKey();
+            Set<String> site = sites.getOrDefault(rootId,
+                    Collections.<String>emptySet());
+            String mint = world.mints.getOrDefault(rootId, "");
+            if (kinds.get(rootId) != RootKind.MARKER || site.size() != 1
+                    || mint.isEmpty()) {
+                throw new Refused("NATIVE_PLANT_UNSUPPORTED: root " + rootId
+                        + " is " + kinds.get(rootId) + ", called at " + site
+                        + ", minted at '" + mint + "'; a native run plants "
+                        + "a fault marker of one call site at the occurrence "
+                        + "it is minted at");
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty(RecordingPlant.KIND, RecordingPlant.MARKER);
+            row.addProperty(RecordingPlant.OCCURRENCE,
+                    OccurrenceAddress.parse(mint).id());
+            row.addProperty(RecordingPlant.SITE, site.iterator().next());
+            row.addProperty(RecordingPlant.VALUE,
+                    Boolean.parseBoolean(assigned.getValue().trim()));
+            rows.add(row);
+        }
+        if (rows.isEmpty()) {
+            throw new Refused("NATIVE_PLANT_UNSUPPORTED: the world plants no "
+                    + "root, so a native run would repeat the recording");
+        }
+        RowCodec.writeJsonl(out, rows);
+        JsonObject summary = new JsonObject();
+        summary.addProperty("sessionId", sessionId);
+        summary.addProperty("markers", rows.size());
+        return summary;
+    }
+
+    /** Each input port of the plan: the call sites its input actions name. */
+    private static Map<String, Set<String>> inputSites(Path plan)
+            throws IOException {
+        Map<String, Set<String>> sites =
+                new LinkedHashMap<String, Set<String>>();
+        for (JsonObject task : ArtifactIO.readJsonl(plan)) {
+            for (JsonElement element : ExecutionTask.decode(task)
+                    .inputActions().all()) {
+                JsonObject action = element.getAsJsonObject();
+                String port = optionalString(action, "portId");
+                String site = optionalString(action, "siteId");
+                if (port.isEmpty() || site.isEmpty()) continue;
+                sites.computeIfAbsent(port,
+                        key -> new LinkedHashSet<String>()).add(site);
+            }
+        }
+        return sites;
     }
 
     /**

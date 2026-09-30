@@ -12,8 +12,9 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | FREEZE_TOOL | `campaign_freeze_graphchecker_jar` | `frozen-inputs/GraphChecker.jar` | the jar changed while copied |
 | SETUP (optional) | `campaign_setup` | whatever `campaign_setup_command` does | the command fails |
 | FREEZE | `campaign_freeze` | the provenance (published by EMIT) | an input cannot be digested |
-| SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
-| PLAN | `campaign_plan`; `plan.ConcolicScheduler` | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
+| SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` (a batch: `campaign_batch_seed`, §2b) | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
+| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
+| UNION (a batch) | `campaign_batch_union`; `plan.PlanUnion` | `groups/groups.json`, `groups/group-<n>/execution_task_plan.jsonl` | `PlanUnion` exits nonzero |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
@@ -22,6 +23,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
 | CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
+| REPRODUCE | `campaign_reproduce`; `explore.ConfirmMain --plant`, `reproduce_runs` recordings with the plant, `runtime.CausynthTraceRecorder` | `final/reproduce/`, `final/reproduce.json` | never (it ranks a finding, and moves no claim) |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed; exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
 
 There is one iteration (`iteration-0000`); what a replay learns past the recording is taken up by GROW
@@ -81,6 +83,7 @@ marked * below.
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `concolic_worker_count`* (8), `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | slots per host, the hosts, one obligation's memory at the host gate, the head JVMs' heap |
 | `campaign_stop_after` | empty, or `IMPORT` |
+| `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording and of each native reproduction run; how many of those (§10b) |
 
 Defaults in parentheses; `solver_timeout_ms`, `schedule_max_jobs` and `obligation_memory_mb` have
 none.
@@ -133,6 +136,66 @@ none.
    (the runtime region plan) and `runtime/region_skeletons.jsonl`; the recording's
    `runtime/schedule.jsonl` sits beside them.
 3. Both skeleton views are copied to `<campaign root>/seed-skeletons/`.
+
+### 2b. A batch campaign: one recording for several targets
+
+A campaign given `causynth_static_root` (an ad-hoc sweep's batch case, `tools/adhoc/cover.py
+cases`; ADHOC-INFRA WP3) runs no static pass of its own. Its spec names k ≥ 1 targets, each sliced
+by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FREEZE,
+`campaign_batch`:
+
+1. SEED (`campaign_batch_seed` → `campaign_record_batch`, the same code as the pre-screen's `record`):
+   each target's slice is frozen into `targets/<name>/` (candidate graph, scope map, frontier,
+   communication gaps, its spec line as `target.yaml`); ONE recording is woven with every target's
+   skeletons merged by root (the weave opens one region per root, the first the merged file names
+   there; two targets may root one method under two authorities, hence two region ids) and every
+   target's grown scope united (`campaign_union_static`), its workload run as SEED's (a nonzero exit
+   fails SEED), and each target aggregated on its own slice into `targets/<name>/runtime/`, over
+   its view of the merged skeletons (`campaign_region_view`, `view_region_skeletons.jsonl.gz`):
+   every region the recording opened, so that a region of this target entered inside another
+   target's -- folded into that occurrence -- is found there, with this target's selection at the
+   roots it plans and another target's exception context as state, so that no other target's
+   failure context is taken for its own.
+   `runtime/record-summary.json` states each target's state (`ACTIVATED` or the refusal). Each
+   target directory links the batch's merged skeletons, grown scope, lineage classes, recording
+   weave and recorded schedule, so every weave and replay of every target stands on the recording's
+   frames.
+2. PLAN, per `ACTIVATED` target (`campaign_batch_plan`, a subshell logging to
+   `targets/<name>/campaign.log`): its `causynth_output_dir` is `targets/<name>/` (so it, and every
+   peer of its waves, derives its slice, scope map and region plan there), its campaign root
+   `targets/<name>/schedule/`, its spec its one line, its region plan's aggregation slice the one
+   REPRODUCE reuses (`campaign_target_slice`), `first` resolved per target; PLAN is the ordinary
+   stage (`campaign_plan`).
+3. UNION (`campaign_batch_union`, `plan.PlanUnion`): the planned targets' plans grouped, each
+   target joining the first group it agrees with -- every occurrence both plan is the same task
+   there (one task id: occurrence, region content, ports and, for a target's own reach, its
+   target branch), every tracked site both observe the same observation. The plans stand on one
+   recording and one weave, so the tasks they share are one task; two targets' different tasks at
+   one occurrence (both reaching their own target there) would need one task carrying several
+   target branches, which the runtime does not have, so such targets replay apart. A group's union
+   plan is every task once, every task observing every site any target observes, under the union's
+   own replay group: `groups/group-<n>/execution_task_plan.jsonl`, `groups/groups.json`.
+4. Per group, all groups at once (`campaign_batch_group`, logging to `groups/group-<n>.log`; each
+   engine JVM and replay charged to the head's host as any head's): INSTRUMENT, REPLAY and
+   IMPORT once, in `groups/group-<n>/`, under the union of its targets' scope maps (the replay's
+   guarded stores, and its target coverage: any target). A target the seed replay published no
+   target row of fails as a solo REPLAY does, in its own log (`campaign_target_reached`); a seed
+   that ended before IMPORT ends every target of its group, its failure copied into each one's log.
+5. Every target its group's seed reached runs its own campaign from EXPLORE on, all at once, each in
+   a subshell (`campaign_batch_target`): its iteration takes the group's union plan (a copy: GROW
+   appends to it), woven classes and seed session (hard links: GROW re-weaves its own), census and
+   import gate, and reads its own PLAN again (`campaign_plan_read`); EXPLORE .. EMIT are the
+   ordinary stages (`campaign_iteration_explore`). `campaign_stop_after=IMPORT` stops the batch after
+   the groups' IMPORT.
+6. The batch fails when SEED does, when the recording activated no target, or when a target that
+   was planned ends before EMIT -- its PLAN, its group's seed, or its own stages (EMIT's exits 2 and
+   3 are verdicts); each target's claim is its own `targets/<name>/schedule/final/result.json`.
+
+What is shared is the static pass (the build's), the recording weave, the recording and its
+aggregation, and per group the seed's weave, replay and import; each target plans and explores on
+its own. A target's EXPLORE reads the union's seed session, whose tasks include the other targets':
+its closure is rooted at its own declared anchor (§7.1), so another target's task is taken up only
+where it writes what that anchor depends on.
 
 ## 3. PLAN
 
@@ -929,6 +992,29 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, reason, sessionId}`, the
 same shape for a refusal, `realized.json` and the decision.
 
+## 10b. REPRODUCE: the confirmed world, natively
+
+A confirmed `SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the
+concolic VM (`campaign_reproduce`; ADHOC-INFRA WP5.D). `ConfirmMain --iteration --claim --plant
+<file>` writes the plant from CONFIRM's own world (`ConfirmMain#world`: the selected session's focus
+row overlaid by `plantModel`), one row per root, `{kind MARKER, occurrence: <mint occurrence id>,
+siteId: <the call site its plan input action names>, value}`; a world that also skews a clock,
+answers an attach or assigns any other root is refused (`NATIVE_PLANT_UNSUPPORTED`), and so is an
+empty one. The recording command runs `reproduce_runs` (10) times, each under `record_timeout_s` and
+charged as a replay, with `-Dcausynth.plant` (`execute.sh`, `CAUSYNTH_PLANT`): there
+`Debug.makeSymbolicBoolean` answers a row's value when its call site is the row's and a region
+occurrence enclosing it on the thread (`CausynthTraceRecorder#enclosingOccurrences`) has the row's id,
+inside the window, and states each answer as a `PLANT_APPLIED` trace row (`runtime.RecordingPlant`).
+A planted run is not the recording's world, so the workload's checks of that world are off in it as
+in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`).
+Each run is aggregated for the target as the pre-screen aggregates (`--summary`: `plantsApplied`, and
+per target its `occurrences` and `fatalOccurrences`, those that took the fatal arm).
+`final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs, planted, fatal, atAnchor,
+reason}` -- runs whose plant answered a marker, runs where a target occurrence took the fatal arm,
+runs where the claim's own anchor did; `runs` 0 with the refusal as `reason` when nothing can be
+planted. A native run holds no schedule, so the planted occurrence may not recur: the rate ranks a
+finding (`tools/adhoc/findings.py`) and never refutes it.
+
 ## 11. EMIT
 
 1. `campaign_verify_frozen_inputs` (§1).
@@ -941,7 +1027,8 @@ same shape for a refusal, `realized.json` and the decision.
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
    `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `byStage`, `byCode`.
 3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a
-   `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in); `findingKind`,
+   `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in, and a
+   confirmed one's `reproduction`, required then, null otherwise); `findingKind`,
    `polarityDecides`, `valuationOrdinal`, `movedRoots`, `blockers`, `reachability`, `finalStatus`,
    `gapCount`, `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
    `targetOccurrence`, `valuations`, `witnessFindings`.

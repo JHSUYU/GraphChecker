@@ -120,6 +120,9 @@ emit_fixture() {
   jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: true,
     reason: "every edge the model chose was taken, and the anchor observed the fatal",
     sessionId: "CONFIRM-1"}' >"${campaign_final}/confirm.json"
+  # REPRODUCE's answer for that confirmed claim, which EMIT copies beside it.
+  jq -n '{schemaVersion: 1, kind: "REPRODUCTION", runs: 10, planted: 10,
+    fatal: 7, atAnchor: 6, reason: ""}' >"${campaign_final}/reproduce.json"
   # One replay session, per kind, as the runtime publishes it.  IMPORT
   # counted these into the census EMIT requires; the fixture states both.
   for session_kind in activations decisions exports attaches writes reads \
@@ -189,6 +192,8 @@ run_emit
   || fail "a complete candidate was withheld: $(<"${emit_root}/emit.log")"
 [[ $(jq -r '.claim' "${campaign_final}/result.json") == SAT_CANDIDATE ]] \
   || fail "the accepted SAT claim was not published"
+[[ $(jq -r '.reproduction.atAnchor' "${campaign_final}/result.json") == 6 ]] \
+  || fail "the result lost the native reproduction"
 [[ $(jq -r '.provenance.loopBounds.sha256' \
       "${campaign_final}/result.json") \
     == "$(campaign_digest "${emit_bounds}")" ]] \
@@ -718,7 +723,9 @@ done
 # 50: `causynth_static_root` and `record_timeout_s` joined it with `record`,
 # the pre-screen: which static slices it aggregates each target on, and how
 # long its recording may run.
-[[ "$(print_normalized_config | wc -l)" -eq 50 ]] \
+# 51: `reproduce_runs` joined it with REPRODUCE: how often a confirmed
+# witness is run natively.
+[[ "$(print_normalized_config | wc -l)" -eq 51 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -967,9 +974,102 @@ stop_after_campaign "${stop_after_dir}/campaign-full" \
   || fail "a campaign with campaign_stop_after unset did not exit 0"
 [[ "$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")" == \
     "PREFLIGHT FREEZE_TOOL FREEZE SEED PLAN INSTRUMENT REPLAY IMPORT EXPLORE \
-COMPOSE SOLVE DECIDE CONFIRM EMIT " ]] \
+COMPOSE SOLVE DECIDE CONFIRM REPRODUCE EMIT " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
+
+# REACHED-1: a replay reached its target when a session published a target
+# row at a TARGET_SITE method of the scope map (any of them: a batch group's
+# map names each target's); no session, or rows of another method, is "".
+reached_dir="${test_tmp}/reached"
+mkdir -p "${reached_dir}/sessions/s1"
+jq -n -c '{role: "TARGET_SITE", siteId: "<A: void m()>#u20"},
+  {role: "TARGET_SITE", siteId: "<B: void n()>#u3"},
+  {role: "GUARD", siteId: "<C: void o()>#u1"}' >"${reached_dir}/map.jsonl"
+while IFS='|' read -r reached_anchor reached_expected; do
+  if [[ -n "${reached_anchor}" ]]; then
+    jq -n -c --arg site "${reached_anchor}" '{anchorSiteId: $site}' \
+      >"${reached_dir}/sessions/s1/targets.jsonl"
+  else
+    rm -f -- "${reached_dir}/sessions/s1/targets.jsonl"
+  fi
+  [[ "$(campaign_target_reached "${reached_dir}/sessions" \
+      "${reached_dir}/map.jsonl")" == "${reached_expected}" ]] \
+    || fail "a target row at '${reached_anchor}' is not reached as \
+'${reached_expected}'"
+done <<'EOF'
+<A: void m()>#u8#1|<A: void m()>#u8#1
+<B: void n()>#u1#2|<B: void n()>#u1#2
+<A: void mm()>#u8#1|
+<C: void o()>#u1#1|
+|
+EOF
+
+# BATCH-1: a batch campaign (causynth_static_root) plans every target its
+# recording activated, seed-replays each group of plans once, all groups at
+# once, and runs the campaign of every target its group's seed reached, all
+# at once, each logging to its own targets/<name>/campaign.log.  A target
+# whose campaign reached EMIT (exit 0, 2 or 3) is its own verdict; one its
+# group's seed did not reach or ended before, whose log then names that
+# failure, or whose campaign ended before EMIT, fails the batch once every
+# other has finished.  Per row: b's exit, the targets the seeds reached, the
+# group whose seed fails, the batch's status, and the last line of b's log.
+batch_out="${test_tmp}/batch"
+while IFS='|' read -r batch_exit batch_served batch_broken batch_status \
+    batch_last; do
+  rm -rf -- "${batch_out}"
+  mkdir -p "${batch_out}/runtime" "${batch_out}/targets/a" \
+    "${batch_out}/targets/b" "${batch_out}/targets/c"
+  jq -n '{exit: 0, wallSeconds: 1, timedOut: false,
+    targets: {a: {state: "ACTIVATED"}, b: {state: "ACTIVATED"},
+              c: {state: "NOT_IN_WINDOW", detail: "no activation"}}}' \
+    >"${batch_out}/runtime/record-summary.json"
+  status=0
+  (
+    causynth_output_dir="${batch_out}"
+    campaign_root="${batch_out}/schedule"
+    campaign_stage_metrics="${batch_out}/metrics.tsv"
+    campaign_batch_seed() { :; }
+    campaign_batch_plan() { echo "plan of $1"; }
+    campaign_batch_union() {
+      mkdir -p "$1"
+      jq -n '[{group: 0, targets: ["a"]}, {group: 1, targets: ["b"]}]' \
+        >"$1/groups.json"
+    }
+    campaign_batch_group() {
+      local dir=$1 name
+      shift
+      mkdir -p "${dir}"
+      [[ "$*" != "${batch_broken}" ]] \
+        || campaign_fail REPLAY WORKLOAD "${dir}" "broken seed"
+      for name in "$@"; do
+        [[ " ${batch_served} " != *" ${name} "* ]] \
+          || printf '%s\t%s\n' "${name}" "${dir}"
+      done >"${dir}/served"
+    }
+    campaign_batch_target() {
+      echo "campaign of $1 on $(basename "$2")"
+      [[ "$1" == a ]] && exit 2
+      exit "${batch_exit}"
+    }
+    campaign_batch
+  ) </dev/null >"${batch_out}/batch.log" 2>&1 || status=$?
+  [[ "${status}" -eq "${batch_status}" ]] \
+    || fail "a batch (${batch_served}) exited ${status}: \
+$(cat "${batch_out}/batch.log")"
+  [[ "$(cat "${batch_out}/targets/a/campaign.log")" == \
+      $'plan of a\ncampaign of a on group-0' \
+      && "$(head -n 1 "${batch_out}/targets/b/campaign.log")" == "plan of b" \
+      && "$(tail -n 1 "${batch_out}/targets/b/campaign.log")" \
+        == "${batch_last}" \
+      && ! -e "${batch_out}/targets/c/campaign.log" ]] \
+    || fail "a batch (${batch_served}) ran other campaigns than its targets'"
+done <<'EOF'
+3|a b||0|campaign of b on group-1
+1|a b||1|campaign of b on group-1
+0|a||1|plan of b
+0|a|b|1|  reason=broken seed
+EOF
 
 # IMPORT-GATE: the row contract stops the campaign at IMPORT, or records.
 #
@@ -2900,9 +3000,12 @@ grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
 $(cat "${fanout_dir}/ledger/$(command hostname -s)/starts")"
 
 # UNION-1: a batch's one recording weave (do_record) is woven with every
-# target's skeletons merged by region, their lists united and the first
+# target's skeletons merged by root -- one region per root, whichever
+# authority each target rooted it under -- their lists united and the first
 # target's words kept, and over every target's grown classes with one GROWN
-# row per class.
+# row per class.  Each target is aggregated on its view of it: its own
+# selection at a root it plans, and another target's exception context as
+# state.
 union_dir="${test_tmp}/union"
 causynth_static_root="${union_dir}/static"
 causynth_output_dir="${union_dir}/out"
@@ -2914,17 +3017,30 @@ for target in a b; do
     >"${causynth_static_root}/${target}/scope-classes/GROWN"
 done
 printf '%s\n' \
-  '{"regionId":"R1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2"]}' \
-  '{"regionId":"R2","selection":"STATE_CONTEXT","methods":["m3"]}' \
+  '{"regionId":"R1","rootMethod":"r1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2"]}' \
+  '{"regionId":"R2","rootMethod":"r2","selection":"STATE_CONTEXT","methods":["m3"]}' \
+  '{"regionId":"R4","rootMethod":"r4","selection":"EXCEPTION_CONTEXT","methods":["m6"]}' \
   | gzip -c >"${causynth_static_root}/a/region_skeletons.jsonl.gz"
 printf '%s\n' \
-  '{"regionId":"R1","selection":"STATE_CONTEXT","methods":["m2","m4"]}' \
+  '{"regionId":"R1","rootMethod":"r1","selection":"STATE_CONTEXT","methods":["m2","m4"]}' \
+  '{"regionId":"R3","rootMethod":"r2","selection":"EXCEPTION_CONTEXT","methods":["m5"]}' \
   | gzip -c >"${causynth_static_root}/b/region_skeletons.jsonl.gz"
 campaign_union_static a b
 [[ "$(zcat "${causynth_region_skeletons}" | jq -c .)" == \
-    '{"regionId":"R1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2","m4"]}
-{"regionId":"R2","selection":"STATE_CONTEXT","methods":["m3"]}' ]] \
+    '{"regionId":"R1","rootMethod":"r1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2","m4"]}
+{"regionId":"R2","rootMethod":"r2","selection":"STATE_CONTEXT","methods":["m3","m5"]}
+{"regionId":"R4","rootMethod":"r4","selection":"EXCEPTION_CONTEXT","methods":["m6"]}' ]] \
   || fail "the union skeletons: $(zcat "${causynth_region_skeletons}")"
+for target in a b; do
+  campaign_region_view "${causynth_static_root}/${target}" | zcat \
+    | jq -r .selection | paste -sd ' ' - >"${union_dir}/${target}.view"
+done
+[[ "$(cat "${union_dir}/a.view")" == \
+    "EXCEPTION_CONTEXT STATE_CONTEXT EXCEPTION_CONTEXT" \
+    && "$(cat "${union_dir}/b.view")" == \
+    "STATE_CONTEXT EXCEPTION_CONTEXT STATE_CONTEXT" ]] \
+  || fail "a target's view of the union: a $(cat "${union_dir}/a.view"), \
+b $(cat "${union_dir}/b.view")"
 [[ -e "${causynth_output_dir}/scope-classes/p/A.class" \
     && -e "${causynth_output_dir}/scope-classes/p/B.class" ]] \
   || fail "a target's grown classes are missing from the union"
