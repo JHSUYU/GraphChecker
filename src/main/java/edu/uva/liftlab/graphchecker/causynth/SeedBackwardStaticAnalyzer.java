@@ -186,6 +186,8 @@ final class SeedBackwardStaticAnalyzer {
     /** The ports {@link #deriveWirePort} found, by message field. */
     private final Map<String, WireFlowCatalog.WireFlow> derivedPorts =
             new LinkedHashMap<>();
+    /** {@link #rpcMessages}, computed at the first demanded getter. */
+    private Set<String> rpcMessages;
     /** README section 5's declared per-loop {@code K_L}. */
     private final DeclaredLoopBodyBounds loopBodyBounds;
     private boolean globalStaticIndexBuilt;
@@ -453,12 +455,13 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * F3: a demanded {@code x = r.<M: T getF()>()} on a protobuf message M
-     * reads a value some process wrote through {@code M$Builder.setF(T)}.
-     * The call is a consumer of port (M, F), every call of that setter in
-     * the analysed program is a producer, and each producer's argument is
-     * demanded in turn, so the slice continues on the sending side.  Only
-     * demanded getters derive, so the ports stay few; a capture a declared
-     * row holds is that row's.
+     * that an RPC carries ({@link #rpcMessages}) reads a value another
+     * process wrote through {@code M$Builder.setF(T)}.  The call is a
+     * consumer of port (M, F), every call of that setter in the analysed
+     * program is a producer, and each producer's argument is demanded in
+     * turn, so the slice continues on the sending side.  Only demanded
+     * getters derive, so the ports stay few; a capture a declared row holds
+     * is that row's.
      */
     private void deriveWirePort(String method, Fact fact, MethodSig getter,
                                 List<String> defs, Set<String> relevant) {
@@ -466,7 +469,7 @@ final class SeedBackwardStaticAnalyzer {
                 || getter.name.length() == "get".length()
                 || !WIRE_LEAF_TYPES.contains(getter.returnType)
                 || !exactIntersects(relevant, defs)
-                || !protobufMessage(getter.owner)) {
+                || !rpcMessages().contains(getter.owner)) {
             return;
         }
         WireFlowCatalog.CaptureSite consumer =
@@ -505,6 +508,50 @@ final class SeedBackwardStaticAnalyzer {
             if (!wireFlows.captures(producer)) port.producers.add(producer);
         }
         return port;
+    }
+
+    /**
+     * The protobuf messages that cross a process through a door: the
+     * request and response of every protobuf service method -- a method
+     * whose first parameter is the runtime's {@code RpcController}, the
+     * shape protoc emits for an {@code rpc}, which a system's RPC engine
+     * proxies on the client and dispatches on the server, so each call
+     * passes its transport's door -- and every message a field of one holds
+     * (an instance method's message return: a field getter, singular or
+     * repeated), which the RPC carries inside it.  A message no service
+     * reaches (an on-disk image section, an edit-log record, a streamed op)
+     * is written to a file or a socket with no door and is none.  The
+     * services are those of the loaded program: Soot resolves the analysis
+     * scope's references transitively.
+     */
+    private Set<String> rpcMessages() {
+        if (rpcMessages != null) return rpcMessages;
+        List<String> pending = new ArrayList<>();
+        for (SootClass type : Scene.v().getClasses()) {
+            if (type.resolvingLevel() < SootClass.SIGNATURES) continue;
+            for (SootMethod method : type.getMethods()) {
+                if (method.getParameterCount() > 1 && method
+                        .getParameterType(0).toString()
+                        .endsWith(".protobuf.RpcController")) {
+                    pending.add(method.getParameterType(1).toString());
+                    pending.add(method.getReturnType().toString());
+                }
+            }
+        }
+        Set<String> found = new LinkedHashSet<>();
+        while (!pending.isEmpty()) {
+            String name = pending.remove(pending.size() - 1);
+            if (found.contains(name) || !protobufMessage(name)) continue;
+            found.add(name);
+            for (SootMethod method : sceneClass(name).getMethods()) {
+                if (!method.isStatic()) {
+                    pending.add(method.getReturnType().toString());
+                }
+            }
+        }
+        LOG.info("{} protobuf message types cross a process by RPC",
+                found.size());
+        return rpcMessages = found;
     }
 
     /**

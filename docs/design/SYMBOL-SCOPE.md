@@ -318,12 +318,27 @@ SEED demands every capture and joins each producer to each consumer (`wire_hando
 ### 6.2 Protobuf derivation
 
 `SeedBackwardStaticAnalyzer#deriveWirePort`: a demanded `x = r.getF()` with no parameter, returning
-a primitive or `String`, on a class whose hierarchy reaches `*.protobuf.GeneratedMessage` or
-`*.protobuf.GeneratedMessageV3`, is the consumer of port `auto:<SimpleName>.<F>`. Its producers
-are argument 0 of every call of `<M>$Builder.setF(T)` in the analysed program (the application
-classes in scope). A capture a declared row already holds stays that row's; a port with no
-producer derives nothing. A derived port names no frame method. Any setter call is a producer,
-whether or not the message is ever sent through a door.
+a primitive or `String`, on a message an RPC carries, is the consumer of port
+`auto:<SimpleName>.<F>`. Its producers are argument 0 of every call of `<M>$Builder.setF(T)` in the
+analysed program (the application classes in scope). A capture a declared row already holds stays
+that row's; a port with no producer derives nothing. A derived port names no frame method.
+
+A message an RPC carries (`#rpcMessages`) is a protobuf message (its hierarchy reaches
+`*.protobuf.GeneratedMessage` or `*.protobuf.GeneratedMessageV3`) that is the request or the
+response of a protobuf service method, or that a field of such a message holds, transitively (an
+instance method returning a protobuf message: a singular or repeated field getter). A service method
+is one whose first parameter is `*.protobuf.RpcController`: the shape protoc emits for an `rpc`,
+which the system's RPC engine proxies on the client and dispatches on the server, so every call
+crosses the transport's door (Hadoop: the IPC door in `Client`). The services are those of the
+loaded program (Soot resolves the analysis scope's references transitively), read once, at the
+first demanded getter. The rule does not read the DOOR rows: which transport serves a proxy is
+decided at run time, where no static pass follows it. A message no service reaches (an fsimage
+section, an edit-log record, a DataTransfer op) is written to a file or a stream that no door
+carries values over, and derives no port.
+
+The rule is by type. A message that an RPC carries and a stream also writes (`ExtendedBlockProto`,
+in `LocatedBlockProto` and in a DataTransfer op header) exports at every setter call, including one
+whose message never reaches a door.
 
 ### 6.3 At run time
 
@@ -358,8 +373,10 @@ DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTI
 - Control dependence ignores exception edges and follows a call up only for constant stores,
   field-effect calls and write-site guards (three calls up); it never crosses a thread start, an
   executor submission or the wire.
-- Derived ports cover only scalar protobuf getters with a setter call in scope: no repeated, enum,
-  `bytes`, nested or map-keyed fields, no string codecs, no frames. `String`, boxed and reference
-  leaves get no `v_H`. Every other cross-process value needs a declared row.
+- Derived ports cover only scalar getters of protobuf messages a protobuf service carries, with a
+  setter call in scope: no repeated, enum, `bytes`, nested or map-keyed fields, no string codecs,
+  no frames, no message of a transport without services (DataTransfer ops, HTTP bodies, ZooKeeper
+  nodes). `String`, boxed and reference leaves get no `v_H`. Every other cross-process value needs
+  a declared row.
 - Growth is capped by `causynth_scope_growth_budget`, spent nearest-first on every class a row
   resolves to (all CHA implementations), and never reaches classes outside the lineage roots.
