@@ -52,6 +52,34 @@ moves lie outside the selected path's causal cone. In that formula, the DataNode
 comparison is against recorded constants. No clock value crosses the process into it as data,
 so R2's 11741 chain (the NameNode clock reaching the DataNode check) is not in the formula.
 
+Rounds r3 (VM f13) and r4 (VM R3) ended hdfs-11741 `INCONCLUSIVE_PARTIAL`, `NO_SUPPORTED_WITNESS`,
+on engine defects the richer recordings exposed, fixed on HEAD:
+
+- PLAN `OCCURRENCE_ADDRESS_SHARED` (3): a pool's worker inherits no frames
+  (`gc/runtime/PoolWorkers`), so the balancer's two move tasks, each submitted from the one site of
+  an `executePendingMove` call, shared one address, and so did the two DataNode SASL handlers they
+  reached. A task now stands on the frames it was submitted under (`gc/runtime/Identity#startWork`);
+  a recording on it (`/bigtemp/vnr3ne/gc-out/accept-agent-a0f-id1`) plans no shared address.
+- EXPLORE `TOPOLOGY_DIVERGENCE` (32 in r3, 36 in r4): the order check ranked two events by the
+  anchor chain, so the dispatcher's later `isDelayActive` reads came before the move task's
+  `activateDelay` writes they observed. It reads the rows' seqs (`gc/explore/SlotTable`).
+- COMPOSE `UNPRODUCIBLE_ANSWER`: every arm of the SASL message was refused. Independence walked a
+  field projection's owner chain, which no lowering reads, and so demanded the balancer's
+  storage-group lookups (a key built from an enum's `toString`); the NameNode's exported keys (a
+  `toArray` of its key map's values) bounded no view positions, the view not following the map read
+  to its chain (`gc/compose/Independence`, `ContainerSmtCodec#fieldOperands`,
+  `#associativeViewKeys`).
+- r4 also: the second move task's export, sharing the first's endpoint and stating no expression,
+  was read as a missing table entry (BLOCKING).
+
+Offline over r3's final corpus (`tools/regress/offline-ab.sh --round r3 --round r1`,
+`/bigtemp/vnr3ne/ab/agent-a0f-gate3`), HEAD admits 47 paths at the anchor (none before), and the
+closing wave proposes 112 obligations (none: the false order contradictions had closed it). The
+claim is still `INCONCLUSIVE_PARTIAL`: z3 decides valuations 1–6 but not 0 within 30 minutes (item
+33 below). Over r4 (`/bigtemp/vnr3ne/ab/agent-a0f-gate3-r4`) hdfs-17899-bug2, refused the same
+way, claims `MARKER_FLIPPED` again (its IPC client door's marker). hdfs-17960 and hdfs-17899-bug1
+keep their claims.
+
 Neither Solr case has ever produced `SAT_CANDIDATE`. `experiments/accept/report.py` expects
 `CLOCK_SKEW` of both (`EXPECTED_MECHANISM`). It has no entry for hdfs-token-key or any ad-hoc
 case, so those cannot pass the gate.
@@ -207,6 +235,17 @@ Correctness:
     `CausynthTraceRecorder#outboundExchange` observed its SEND, and the schedule may run the
     version's reader from that SEND on: `consumed` or `fetched` can find nothing, and the
     delivery pairs with no export (SOLR-18413 r5's seed, the Overseer's queue item).
+29. No read row states Java null: in hdfs-17899-bug2 r4's seed none of 333 reference reads
+    states `N`, though the VM serializes a null it returned as `concreteValue: null`
+    (`ReturnedValue::NULL_REFERENCE`). A read of a null at an `INITIAL` version (bug2's
+    `KeyManager.encryptionKey`) then has no pin and is refused. `RowCodec#toLine` (a default
+    `Gson`) also drops null members from `expressions.jsonl`.
+30. VM: a container query (a `MAP_STATE` read: `get`, an iterator) states no value it returned, and
+    `toString` of an object the VM names (an enum constant) is an `OpStrExpression` over its symbol
+    with no string (`NON_INTEGRAL_TERM`): a read whose join rests on either can be neither joined
+    nor pinned.
+31. `gc/smt/Arms#concurrent` orders an anchor-chain ancestor occurrence before all of its
+    descendant, so the writes of a task are no alternative arm for its starter's later reads.
 
 Scale and robustness:
 
@@ -219,6 +258,13 @@ Scale and robustness:
 11. Every obligation solver reads the whole corpus (`gc/explore/ObligationSolverMain`).
 12. The seed recording has no wall-clock bound; only the case budget ends it.
 13. VM: every expression is kept until the session closes, under one global mutex.
+32. COMPOSE lowers and states a message family once per path that binds it
+    (`gc/compose/ComposedFamilies#messageFamily`): hdfs-11741 r3's 47 paths carry 7 MB of family
+    text per query, each arm body up to twice.
+33. A valuation is one query over the disjunction of every path (`gc/compose/ClaimPolicy#outcome`).
+    hdfs-11741 r3's valuation 0 over 47 paths is undecided after 30 minutes, while each path with
+    its selector asserted decides in about a second (paths 6 and 16 sat, the rest unsat); tracked
+    for a core, as every run was before `gc/smt/Z3#CORE_TRACKING`, the same query took 122 s.
 
 Fallbacks and dead code:
 
