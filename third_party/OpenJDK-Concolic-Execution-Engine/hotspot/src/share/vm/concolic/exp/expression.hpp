@@ -82,6 +82,12 @@ public:
   // a position that is itself symbolic is not one this engine can subtract.
   virtual bool concrete_int_value(jint *value) { return false; }
 
+  // The exact String content this node denotes, in the VM's UTF-8 spelling
+  // (OopUtils::java_string_to_c), or false when it denotes anything else.  A
+  // peek of a recorded map state (ContainerSupport::entry_answer) decides
+  // whether a recorded key is the key it looks for with this.
+  virtual bool concrete_string_value(std::string *value) { return false; }
+
   // Consumer-boundary nodes are semantic identities.  Pointer identity is
   // still authoritative for every ordinary expression, but a field/version
   // check that already accepted `value` must also accept any chain of
@@ -292,8 +298,10 @@ struct ReturnedValue {
   int length;
   ReturnedValue() : kind(UNSTATED), constant(NULL), length(0) {}
 
-  // Writes the `concreteValue` member of the node being serialized.
-  void serialize(rapidjson::Writer<rapidjson::StringBuffer> &writer) const;
+  // Writes the `concreteValue` member of the node being serialized, or the
+  // member `key` of another object (a leaf answer's `concrete`).
+  void serialize(rapidjson::Writer<rapidjson::StringBuffer> &writer,
+                 const char *key = "concreteValue") const;
 };
 
 typedef std::vector<Expression *> exp_list_t;

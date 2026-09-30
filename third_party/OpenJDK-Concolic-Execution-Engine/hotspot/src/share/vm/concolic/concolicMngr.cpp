@@ -155,6 +155,17 @@ void ConcolicMngr::session_snapshot(int *members, bool *workload_open,
   pthread_mutex_unlock(&mutex);
 }
 
+bool ConcolicMngr::may_use_session_heap() {
+  if (has_active_context()) return GlobalSymbolicSession::is_open();
+  int members = 0;
+  bool workload_open = false;
+  SessionState state = SESSION_CLOSED;
+  jlong session_id = 0;
+  session_snapshot(&members, &workload_open, &state, &session_id);
+  return workload_open && state == SESSION_OPEN
+      && GlobalSymbolicSession::is_open();
+}
+
 const char *ConcolicMngr::session_state_name(SessionState state) {
   switch (state) {
     case SESSION_OPEN:    return "OPEN";

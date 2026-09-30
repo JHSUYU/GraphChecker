@@ -276,6 +276,8 @@ SUNWprivate_1.1 {
                 JVM_TrackContainerExpression;
                 JVM_ExportExpression;
                 JVM_AttachExpression;
+                JVM_ExportLeaf;
+                JVM_MintLeaf;
                 JVM_GetConcolicPathConditionRange;
                 JVM_ArmSharedPrimitiveFieldRead;
                 JVM_ConfirmSharedPrimitiveFieldRead;
