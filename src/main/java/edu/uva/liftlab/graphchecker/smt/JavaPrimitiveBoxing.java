@@ -25,7 +25,15 @@ public final class JavaPrimitiveBoxing {
     }
 
     public static boolean unboxReturn(String cell) {
-        String signature = returnMethod(cell);
+        return unboxing(returnMethod(cell));
+    }
+
+    /** Whether a method is a wrapper's own nullary unboxing accessor ({@code
+     *  <java.lang.Long: long longValue()>}): it passes its receiver's value
+     *  on. */
+    public static boolean unboxing(String methodSignature) {
+        String signature = methodSignature == null ? ""
+                : methodSignature.trim();
         for (Primitive primitive : BY_WRAPPER.values()) {
             if (signature.equals("<" + primitive.wrapper + ": "
                     + primitive.javaType + " " + primitive.accessor

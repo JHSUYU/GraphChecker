@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import org.slf4j.Logger;
@@ -89,12 +90,6 @@ final class SeedBackwardStaticAnalyzer {
             Pattern.compile("-?\\d+");
     private static final Pattern FIELD_NAME_PATTERN = Pattern.compile(
             "<[^:]+:\\s+.+\\s+([^\\s>]+)>");
-    /** The nullary unboxing accessors that pass their receiver's value on. */
-    private static final Set<String> VALUE_LIKE_UNBOXING = names(
-            "java.lang.Byte.byteValue", "java.lang.Short.shortValue",
-            "java.lang.Integer.intValue", "java.lang.Long.longValue",
-            "java.lang.Character.charValue", "java.lang.Float.floatValue",
-            "java.lang.Double.doubleValue");
     /** Collection views backed by their receiver: mutating one mutates both. */
     private static final Set<String> BACKED_MAP_VIEWS = names(
             "entrySet", "keySet", "values", "navigableKeySet",
@@ -2545,11 +2540,12 @@ final class SeedBackwardStaticAnalyzer {
         if (invoked == null) {
             return false;
         }
-        String owner = invoked.owner;
-        if (invoked.params.isEmpty() && VALUE_LIKE_UNBOXING.contains(
-                owner + "." + invoked.name)) {
+        // A wrapper's own unboxing accessor, Boolean's included: solr-18413's
+        // DocCollection.isReadOnly() unboxes its Boolean readOnly.
+        if (JavaPrimitiveBoxing.unboxing(invoked.raw)) {
             return true;
         }
+        String owner = invoked.owner;
         if ("java.lang.String".equals(owner)) {
             return true;
         }
