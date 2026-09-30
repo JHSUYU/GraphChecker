@@ -4,7 +4,8 @@
 # "<check>.<TestClass>-<method>": checks.tsv declares each check, and the
 # workload is any MiniSolrCloudCluster test of solr/core as it is written
 # (CausynthSolrCluster's automatic cluster).  All run one tree;
-# tools/adhoc/annotate.py annotates it and writes targets/.  A sweep has no
+# tools/adhoc/targets.py writes targets/, each check's class and throw line,
+# and the tree is not edited.  A sweep has no
 # failure to name an occurrence by: the target is the first observed
 # occurrence of the check in the campaign's own recording, unless
 # occurrences.tsv names one.

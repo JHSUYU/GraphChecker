@@ -1,1 +1,1 @@
-exception_target_id: adhoc-FSImage-1205
+exception_target: adhoc-FSImage-1205 org.apache.hadoop.hdfs.server.namenode.FSImage 1205

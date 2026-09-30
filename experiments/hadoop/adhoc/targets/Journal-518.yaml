@@ -1,1 +1,1 @@
-exception_target_id: adhoc-Journal-518
+exception_target: adhoc-Journal-518 org.apache.hadoop.hdfs.qjournal.server.Journal 518

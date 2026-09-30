@@ -1,1 +1,1 @@
-exception_target_id: adhoc-token-expired
+exception_target: adhoc-token-expired org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager 388

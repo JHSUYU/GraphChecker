@@ -1,1 +1,1 @@
-exception_target_id: adhoc-preprecovery-leader
+exception_target: adhoc-preprecovery-leader org.apache.solr.handler.admin.PrepRecoveryOp 86

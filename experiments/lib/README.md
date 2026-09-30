@@ -6,7 +6,7 @@ A case directory under `experiments/hadoop/` holds DECLARATIONS only:
 | --- | --- |
 | `case.sh` | per case id: the Hadoop worktree (`repo`), the workload (`test_class`, `test_method`), the declared target (`target_occurrence`), the analysis `scope`, and optionally `loop_bounds`, `target_spec`, `hadoop_javac` |
 | `workflow.properties` | the campaign's budgets and inputs |
-| `target.yaml`, `*.jsonl` | the target, communication mappings, symbolic inputs, root domains, loop bounds |
+| `target.yaml`, `*.jsonl` | the target (`exception_target: <name> <binary class name> <source line> [<thrown type>]`: no annotation, no tree rebuild), communication mappings, symbolic inputs, root domains, loop bounds |
 
 Everything executable is here, one copy for every case:
 

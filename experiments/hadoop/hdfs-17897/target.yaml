@@ -1,1 +1,1 @@
-exception_target_id: hdfs-17897
+exception_target: hdfs-17897 org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager 587

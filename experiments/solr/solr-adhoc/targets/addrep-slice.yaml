@@ -1,1 +1,1 @@
-exception_target_id: adhoc-addrep-slice
+exception_target: adhoc-addrep-slice org.apache.solr.cloud.api.collections.AddReplicaCmd 119

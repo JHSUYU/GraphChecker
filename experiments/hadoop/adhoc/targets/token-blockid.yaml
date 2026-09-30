@@ -1,1 +1,1 @@
-exception_target_id: adhoc-token-blockid
+exception_target: adhoc-token-blockid org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager 384

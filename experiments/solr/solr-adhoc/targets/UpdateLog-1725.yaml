@@ -1,1 +1,1 @@
-exception_target_id: adhoc-UpdateLog-1725
+exception_target: adhoc-UpdateLog-1725 org.apache.solr.update.UpdateLog 1725

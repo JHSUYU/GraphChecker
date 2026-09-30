@@ -50,7 +50,7 @@ region skeleton has no authoritative execution context root:
 ```
 
 The client-side reconstruction in `DataTransferSaslUtil` fails the same way, for the same
-reason. So the three paths share one `exception_target_id` — `hdfs-17967` — and are told
+reason. So the three paths share one `exception_target` — `hdfs-17967` — and are told
 apart by `declared_target_occurrence`, exactly as HDFS-17899's three bugs are.
 
 ## What these cases declare
@@ -61,7 +61,7 @@ carries what is per case, including the per-case analysis scope.
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
-| the failure | `@CausynthExceptionTarget("hdfs-17967")` in each worktree's `BlockTokenSecretManager`; `target.yaml` | `exception_target_id: hdfs-17967` |
+| the failure | `target.yaml` | `exception_target: hdfs-17967 …BlockTokenSecretManager 582`, the same line in each of the three worktrees |
 | the occurrence | `target_occurrence` in `case.sh` | `pathA` `hdfs-17967/mirror-dn#epoch0/region/REGION.7c569c3f…#1`; `pathB` `…/proxy-dn#…`; `pathC` `…/target-dn#…`. `REGION.7c569c3f` is the per-connection `SaslDataTransferServer` callback handler, the region every passing case in this family anchors on |
 | clock roots | the program text (`causynth/RootCatalog`) | every read the slice reaches of a clock -- a JVM clock or a method returning one under constant arithmetic (`Timer.now()`, `Time.now()`, `Time.monotonicNow()`) -- is a root, and the occurrence that reads it is admitted as a root reader |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `+0` to `+3`: the recorded value and up to three rotations past it |

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-ulog-searcher
+exception_target: adhoc-ulog-searcher org.apache.solr.update.UpdateLog 2208

@@ -1,6 +1,6 @@
 # Symbol scope: what is symbolic, and from where
 
-SEED computes one static slice `S` backwards from the annotated throw and publishes, per site of
+SEED computes one static slice `S` backwards from the declared throw and publishes, per site of
 `S`, what a replay does there: mint a root, observe shared state, export or attach a wire value, or
 nothing. Java paths below are under `src/main/java/edu/uva/liftlab/graphchecker/`.
 
@@ -36,7 +36,8 @@ bind is pinned to its recorded value or refused as `UNSTATED_VALUE` (`compose/Co
 
 ### 2.1 Seeds
 
-- The annotated throw (`@CausynthExceptionTarget`, one Jimple throw or the analysis refuses): the
+- The declared throw (the target spec's class and line, `ExceptionTargetLineResolver`; one Jimple
+  throw or the analysis refuses): the
   thrown value (`exception_throw`) and the operands of every branch from which the throw is
   reachable (`exception_guard`).
 - Every capture of every declared WIRE_FLOW port (`seedDeclaredWireFlows`), whether or not the throw
@@ -123,7 +124,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 
 | role | one row per | extra members |
 |---|---|---|
-| `TARGET_SITE` | the annotated throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
+| `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` |
 | `READ_SITE` | a read of a tracked cell (§5.1) | |

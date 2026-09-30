@@ -9,7 +9,9 @@
 # Format: <class under edu.uva.liftlab.graphchecker.> <method> <return> <parameters...>
 # Also external, and checked by the compiler rather than here:
 #   annotation.CausynthExceptionTarget, the marker on BlockTokenSecretManager
-#   (7 trees) and FSImageFormatPBSnapshot (17960, 17960-jdk8).
+#   (7 trees), FSImageFormatPBSnapshot (17960, 17960-jdk8) and the ad-hoc
+#   trees' checks; no engine code reads it (a target is a class and a line,
+#   causynth.ExceptionTargetLineResolver).
 
 # ipc.CausynthSymbolicSource.symbolize -- every case's configured roots
 runtime.ConcolicRegionRuntime symbolizeConfiguredSourceField boolean string object string

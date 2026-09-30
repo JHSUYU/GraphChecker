@@ -1,1 +1,1 @@
-exception_target_id: hdfs-token-key
+exception_target: hdfs-token-key org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager 545

@@ -4,7 +4,7 @@ GraphChecker is an academic research tool in software engineering. It studies ho
 distributed Java systems (HDFS, Solr) fail under fault, clock and ordering counterfactuals.
 
 It starts from one recorded run of a system's own cluster test that does **not** fail, plus one
-annotated failure site (a `throw`). It then asks whether a small change could have made that
+declared failure site (a `throw`, named by class and source line). It then asks whether a small change could have made that
 run fail at that site, and it answers with a witness. The changes it considers are a transport
 fault, a skewed clock, a flipped configuration value, or a different pairing of a message or of
 shared state.
@@ -75,7 +75,10 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
 - `case.sh`: the tree, the workload test, the target occurrence and the analysis scope;
 - `workflow.properties`: budgets and inputs. `run_engine.sh` accepts only the keys it knows, so
   an unknown key is refused;
-- `target.yaml`;
+- `target.yaml`: `exception_target: <name> <binary class name> <source line> [<thrown type>]`.
+  The engine finds the one `throw new` at that line of the class or of a class nested in it (a
+  lambda body, an anonymous class) in the compiled classes; the tree carries no annotation and is
+  not rebuilt. The thrown type is needed only when the line holds two throws;
 - optionally `communication-mappings.jsonl` (`DOOR` and `WIRE_FLOW` rows),
   `root-domains.jsonl` and `loop-bounds*.jsonl`.
 
@@ -129,8 +132,8 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
 3. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
 4. `select.py <system-dir> <sweep-dir> <experiment> <N> [per-check] [tree]`: rank and choose
    checks. It appends them to `checks.tsv` and prints the case ids.
-5. `annotate.py <experiment> <tree>`: put `@CausynthExceptionTarget("adhoc-<check>")` on each
-   chosen throw and write `targets/`. Then rebuild the tree and commit it (a manual step).
+5. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
+   line (`exception_target: adhoc-<check> …`). Nothing in the tree is edited or rebuilt.
 6. `sweep.sh <snapshot> <round> <cases-file> [heads-per-host]`: one campaign per case over all
    ten lifts, with `PRUNE=1` and a 5400 s case budget. Head starts are gated on memory by
    `fanout.sh`.
@@ -183,7 +186,7 @@ src/main/java/edu/uva/liftlab/graphchecker/
   compose/     Composer, families, SMT lowering, container codec, ClaimPolicy, ComposeMain
   contract/    row kinds, identity types, gap registry, session layout, IMPORT gate
   smt/         expression IR, arms and families, z3 driver
-  annotation/  @CausynthExceptionTarget, Debug.makeSymbolicBoolean
+  annotation/  Debug.makeSymbolicBoolean; @CausynthExceptionTarget (the trees' compile ABI only)
 src/shim/java/                    the Hadoop shim (org.apache.hadoop.ipc.*) the HDFS trees call
 src/test/                         unit tests; shell/run_engine_campaign_helpers_test.sh
 third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/share/vm/concolic,

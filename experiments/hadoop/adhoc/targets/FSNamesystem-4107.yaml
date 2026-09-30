@@ -1,1 +1,1 @@
-exception_target_id: adhoc-FSNamesystem-4107
+exception_target: adhoc-FSNamesystem-4107 org.apache.hadoop.hdfs.server.namenode.FSNamesystem 4107

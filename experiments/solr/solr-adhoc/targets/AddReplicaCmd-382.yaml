@@ -1,1 +1,1 @@
-exception_target_id: adhoc-AddReplicaCmd-382
+exception_target: adhoc-AddReplicaCmd-382 org.apache.solr.cloud.api.collections.AddReplicaCmd 382

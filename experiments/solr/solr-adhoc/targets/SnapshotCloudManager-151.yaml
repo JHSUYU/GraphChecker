@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SnapshotCloudManager-151
+exception_target: adhoc-SnapshotCloudManager-151 org.apache.solr.cloud.autoscaling.sim.SnapshotCloudManager 151

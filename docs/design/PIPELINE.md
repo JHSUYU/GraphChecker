@@ -1,6 +1,6 @@
 # PIPELINE — the stages as the code runs them
 
-One campaign answers one question: can the case's declared occurrence of the annotated target site
+One campaign answers one question: can the case's declared occurrence of the declared target site
 (the *anchor*) reach its fatal arm, and by which mechanism. `./run_engine.sh --config
 <workflow.properties> campaign` runs `do_campaign`, which calls these stages in order through
 `campaign_stage` (each stage's wall time goes to `stage_metrics.tsv`; a failing stage ends the run
@@ -110,6 +110,13 @@ none.
    (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
    `causynth_lineage_roots` is set, `plan.ScopeGrowth` adds classes where the slice stops at the scope
    into `scope-classes/` and the pass runs again, until it adds nothing ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md)).
+   The target spec holds one line, `exception_target: <name> <binary class name> <source line>
+   [<thrown type>]`; `causynth.ExceptionTargetLineResolver` finds the one `throw new` javac compiled at
+   that line of the class or a class nested in it (a lambda body, an anonymous class), by the
+   LineNumberTable of the analysis inputs, and refuses `TARGET_LINE_UNRESOLVED` or
+   `TARGET_LINE_AMBIGUOUS` (state the type) otherwise. Its identity is the method, the thrown type and
+   the `NEW`'s ordinal among the method's `NEW`s of that type, which the analyzer matches on Jimple.
+   A spec of more than one line is refused (`MULTI_TARGET_UNSUPPORTED`).
    The scope map is [SYMBOL-SCOPE.md §3](SYMBOL-SCOPE.md); its `TARGET_SITE` rows state the
    target's `guards` with their fatal arms, the helper branch deciding a guard on a helper's
    returned 0/1 (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards before them;

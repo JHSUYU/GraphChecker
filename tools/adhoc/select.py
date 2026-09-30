@@ -23,7 +23,7 @@ the fanout log states it): its recording fails the same way.  Nor is a
 workload whose coverage never ran the system's node class (system.sh's
 system_node_class): a test that starts no node opens no recording window, so
 its seed fails.  Both are named on stderr.  Given the <tree> the sweep
-annotates, a check whose line no longer holds its `throw new` (the tree moved
+runs, a check whose line no longer holds its `throw new` (the tree moved
 since coverage) is skipped and named on stderr."""
 import collections
 import json

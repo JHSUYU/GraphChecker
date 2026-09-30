@@ -1,1 +1,1 @@
-exception_target_id: adhoc-zsr-wait
+exception_target: adhoc-zsr-wait org.apache.solr.common.cloud.ZkStateReader 1965

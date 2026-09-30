@@ -226,7 +226,7 @@ public class WirePortDerivationTest {
                         Jimple.v().newNewExpr(failure)),
                 Jimple.v().newThrowStmt(thrown),
                 done);
-        return new CausynthTargetContext(Paths.get("unused"), "t",
+        return new CausynthTargetContext(Paths.get("unused"),
                 new ExceptionTargetSite("t", "m.Codec", "check",
                         "(Lm/Protos$KeyProto;Lm/Protos$KeyProto;"
                                 + "Lm/Protos$SectionProto;)V", CHECK,

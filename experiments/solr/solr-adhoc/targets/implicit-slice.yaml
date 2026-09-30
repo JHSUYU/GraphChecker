@@ -1,1 +1,1 @@
-exception_target_id: adhoc-implicit-slice
+exception_target: adhoc-implicit-slice org.apache.solr.common.cloud.ImplicitDocRouter 93

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-register-shard
+exception_target: adhoc-register-shard org.apache.solr.cloud.ZkController 1956

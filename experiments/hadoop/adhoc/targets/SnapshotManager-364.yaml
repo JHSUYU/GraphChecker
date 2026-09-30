@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SnapshotManager-364
+exception_target: adhoc-SnapshotManager-364 org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager 364

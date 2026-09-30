@@ -1,1 +1,1 @@
-exception_target_id: adhoc-ExecutePlanAction-150
+exception_target: adhoc-ExecutePlanAction-150 org.apache.solr.cloud.autoscaling.ExecutePlanAction 150

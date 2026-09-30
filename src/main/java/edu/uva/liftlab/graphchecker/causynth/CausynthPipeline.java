@@ -147,14 +147,11 @@ public final class CausynthPipeline {
             return;
         }
 
-        CausynthTargetContext target = CausynthTargetResolver.resolve();
-        ExceptionTargetSite exceptionTarget =
-                ExceptionTargetAnnotationScanner.select(
-                        options.getInputList(), target.exceptionTargetId);
-        target = target.withExceptionTarget(exceptionTarget);
-
-        LOG.info("Seed backward analysis starts at annotated exception {}",
-                exceptionTarget.stableIdentity());
+        CausynthTargetContext target =
+                CausynthTargetResolver.resolve(options.getInputList());
+        LOG.info("Seed backward analysis starts at exception target {}: {}",
+                target.exceptionTargetSite.id,
+                target.exceptionTargetSite.stableIdentity());
         long seedAnalysisStart = System.nanoTime();
         StaticProgram result =
                 new SeedBackwardStaticAnalyzer(target).analyze();

@@ -1,1 +1,1 @@
-exception_target_id: adhoc-ExclusiveSliceProperty-92
+exception_target: adhoc-ExclusiveSliceProperty-92 org.apache.solr.cloud.ExclusiveSliceProperty 92

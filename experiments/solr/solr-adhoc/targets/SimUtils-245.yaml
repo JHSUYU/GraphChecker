@@ -1,1 +1,1 @@
-exception_target_id: adhoc-SimUtils-245
+exception_target: adhoc-SimUtils-245 org.apache.solr.cloud.autoscaling.sim.SimUtils 245

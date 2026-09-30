@@ -179,7 +179,7 @@ workflow_config_keys=(
   # The composer runs z3 per valuation while it composes, so this bounds the
   # solving a campaign does, not a separate stage's budget.
   "compose_max_valuations CAUSYNTH_COMPOSE_MAX_VALUATIONS krp 16"
-  # The occurrence of the annotated site this campaign is about, as the case
+  # The occurrence of the declared target site this campaign is about, as the case
   # declares it: an occurrence address.  A campaign is target-directed -- the
   # case knows which instance can fail -- and the declaration is what says
   # so; it is the anchor COMPOSE composes and the claim DECIDE publishes.
@@ -691,7 +691,7 @@ campaign_analyze_grown_scope() {
   done
 }
 
-# The occurrence of the annotated site the case declares.  It is a config
+# The occurrence of the declared target site the case declares.  It is a config
 # key rather than a member of the target spec because the spec accepts one
 # entry and three cases share one file: hdfs-17899's per-bug selection lives
 # in case.sh, which exports it, and a single-case experiment states it in its
@@ -2098,7 +2098,7 @@ a truncated run and its log is in ${worker}/replay.log"
     # decision it left by.
     local declared_target reached=""
     local -a target_rows=()
-    # The annotated target's method, off the TARGET_SITE row of the static
+    # The declared target's method, off the TARGET_SITE row of the static
     # scope map, which already states that site.
     declared_target=$(jq -r -s '
       [.[] | select(.role == "TARGET_SITE") | .siteId
@@ -3253,11 +3253,11 @@ campaign_publish_iteration_manifest() {
 # COMPOSE: one anchor, one formula.
 #
 # The anchor is the occurrence the case declares.  Which execution of the
-# annotated site a campaign answers about is the case's to state, so there is
-# no fan-out over observed occurrences here and nothing to elect afterwards:
-# the composer reads every session this iteration produced, factorizes the paths
-# that reach the declared anchor, and writes one candidate.smt2 beside one
-# manifest.
+# declared target site a campaign answers about is the case's to state, so
+# there is no fan-out over observed occurrences here and nothing to elect
+# afterwards: the composer reads every session this iteration produced,
+# factorizes the paths that reach the declared anchor, and writes one
+# candidate.smt2 beside one manifest.
 campaign_compose() {
   local iteration_dir=$1
   local started ended millis status=0
@@ -3315,7 +3315,7 @@ valuations=$(jq -r '(.solver.valuations // []) | length' "${report}")"
 # DECIDE: the claim the composition reached, checked and printed.
 #
 # There is one anchor and therefore one claim, and no ranking of observed
-# occurrences: which execution of the annotated site the campaign is about
+# occurrences: which execution of the declared target site the campaign is about
 # is the case's declaration, and the claim about it is whatever its own
 # formula decided.
 campaign_decide() {
@@ -3722,7 +3722,7 @@ campaign_emit() {
      # sat" gets the mechanism narrative here rather than having to rebuild it
      # from the model.
      witnessFindings: ($decided.witnessFindings // []),
-     # Which execution of the annotated target this claim is about: the one
+     # Which execution of the declared target this claim is about: the one
      # the case declares and the composer anchored on.  A campaign answers
      # about one anchor, so there is no ledger of runners-up to publish.
      targetOccurrence: ($c.anchor // ""),

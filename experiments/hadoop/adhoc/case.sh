@@ -4,8 +4,8 @@
 # sweep's are chosen by select.py, named <Class>-<throw line>).  One case per
 # check and workload, "<check>.<workload>": checks.tsv declares the checks and
 # the workloads each is reached on.  All run one JDK 8 tree,
-# gc/hdfs-17967-pathC; tools/adhoc/annotate.py annotates it and writes
-# targets/.  The target is the occurrence occurrences.tsv names, else the
+# gc/hdfs-17967-pathC; tools/adhoc/targets.py writes targets/, each check's
+# class and throw line, and the tree is not edited.  The target is the occurrence occurrences.tsv names, else the
 # first observed occurrence of the check in the campaign's own recording.
 # DataXceiver is never woven.  Coverage counts the whole JVM, set-up before
 # the recording window included; only a discovery run says the window
