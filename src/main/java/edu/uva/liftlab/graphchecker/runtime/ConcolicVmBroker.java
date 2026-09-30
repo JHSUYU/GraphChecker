@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -191,7 +192,10 @@ final class ConcolicVmBroker {
      * Attaches the current value of one exact integral field as its concrete
      * expression ({@code ConExpression}, not a symbolic input).  Its point:
      * the VM versions only tracked locations, so without it a selected write
-     * site would publish nothing.
+     * site would publish nothing.  A REFERENCE cell the scope map tracks
+     * (SYMBOL-SCOPE F2) is refused here by name, and the caller files the
+     * gap: this observer takes an integral value only, and the VM would
+     * answer a reference with a warning no row states.
      */
     void observeExactPrimitiveField(Object owner, String fieldSignature)
             throws Exception {
@@ -201,6 +205,13 @@ final class ConcolicVmBroker {
             throw new UnsupportedOperationException(
                     "no exact declared field for observed leaf: "
                             + safe(fieldSignature));
+        }
+        if (JavaPrimitiveSmtSemantics.domainOfJavaType(field.type())
+                == null) {
+            throw new UnsupportedOperationException(
+                    "REFERENCE_OBSERVATION_UNSUPPORTED: the VM observes an"
+                            + " integral field only, and "
+                            + safe(fieldSignature) + " holds a reference");
         }
         observeExactPrimitiveField.invoke(null, owner, field.owner(),
                 field.name(), javaTypeDescriptor(field.type()));

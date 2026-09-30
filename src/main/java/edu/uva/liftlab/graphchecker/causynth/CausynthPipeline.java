@@ -171,7 +171,8 @@ public final class CausynthPipeline {
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
                 result.edges, result.regions, clockTicks,
                 method -> !CausynthStaticFacts.applicationMethod(method),
-                CausynthStaticFacts::versionableField);
+                CausynthStaticFacts::trackedKind,
+                CausynthStaticFacts::staticField);
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
                         StaticScopeMap.siteIds(scopeSites)));

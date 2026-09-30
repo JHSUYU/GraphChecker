@@ -9,6 +9,16 @@ import java.util.Set;
 
 /** Stable vocabulary for shared-location replay-scope edges. */
 public final class SharedFieldFlow {
+    /**
+     * How the replay versions a field (SYMBOL-SCOPE F2): by the {@code
+     * VALUE} it holds -- an integral primitive or its wrapper -- or as a
+     * {@code REFERENCE} a store re-points, whose referent a reader then
+     * queries or projects; {@code NONE} is no tracked cell.
+     */
+    public enum TrackedKind {
+        VALUE, REFERENCE, NONE
+    }
+
     /** Each JDK atomic, with the one field every call of it reads or
      *  writes. */
     private static final Map<String, String> ATOMIC_VALUES =

@@ -61,6 +61,11 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 - **Constant stores**: a store of a constant carries no data, so the guards of the calls into the
   storing method are demanded too, up to three calls up, dispatch included
   (`expandStoreCallerGuards`, `STORE_CALLER_DEPTH`).
+- **Field reads**: a demanded `x = b.f` demands `f` (`field_read`, then the field jump) and `b`,
+  the object it reads from (`local_def_use`: the base is a use of the read), as an accessor's
+  receiver (`accessor_receiver`) and a dispatched call's (`dispatch_receiver`) are. A reference
+  read only to reach a projection (SOLR-18406's `latestCommit`, whose generation the throw
+  compares) is therefore a cell a branch decides through (§5.1).
 - **Library calls**: the result of a non-application call depends on its arguments only; its
   receiver is dropped (`localValueUses`). Exceptions: `String`, `StringBuilder`,
   `StringBuffer` and every wrapper's unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`,
@@ -153,7 +158,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `TARGET_SITE` | the annotated throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` |
-| `READ_SITE` | a read of a tracked cell (§5.1) | |
+| `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field) |
 | `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers` |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
@@ -252,13 +257,20 @@ window (by site and count before it), so a replay draws what the recording drew.
 
 A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
 
-- is versionable: a non-static field holding an integral value, `boolean`, `byte`, `char`,
-  `short`, `int`, `long`, or its wrapper (`Boolean`, `Byte`, `Character`, `Short`, `Integer`,
-  `Long`)
-  (`causynth/CausynthStaticFacts#versionableField`, `smt/JavaPrimitiveSmtSemantics#domainOfJavaType`).
-  A box is immutable and a store puts a new one, so a wrapper field's value (or null) is all a
-  reader observes; it is read at the `getfield` of the field, the box's own `value` being a
-  projection of that read;
+- is tracked (`causynth/CausynthStaticFacts#trackedKind`), with its `trackedKind`:
+  - `VALUE`: a non-static field holding an integral value, `boolean`, `byte`, `char`, `short`,
+    `int`, `long`, or its wrapper (`Boolean`, `Byte`, `Character`, `Short`, `Integer`, `Long`)
+    (`smt/JavaPrimitiveSmtSemantics#domainOfJavaType`). A box is immutable and a store puts a new
+    one, so a wrapper field's value (or null) is all a reader observes; it is read at the
+    `getfield` of the field, the box's own `value` being a projection of that read. An atomic's
+    `value` is one (`AtomicInteger`, `AtomicLong`, `AtomicBoolean`'s `int`);
+  - `REFERENCE`: a field a store re-points holding any other object, an array included, except a
+    `String` or a float wrapper: a reader queries or projects the referent the field held when it
+    read (SOLR-18406's `knownCommits`, a map each commit replaces, and `latestCommit`). A static
+    one too (`static: true`: its location is its class's). A final field is none, nor a private
+    one only its own class's constructors store (`#storedOnlyAtConstruction`: Lucene's
+    `IndexFileDeleter.refCounts`, a lambda's captured value): its only writer is its
+    constructor, so there is nothing to re-pair;
 - decides a branch: the read's value reaches a branch operand within eight flows
   (`StaticScopeMap#decidingCells`, `DECIDING_FLOWS`), never through a field and never across a
   `wire_handoff` edge; a read that only feeds data stays untracked;
@@ -284,6 +296,13 @@ its object's constructor call, and a read site that is no `getfield` of its cell
 unobserved; a VM failure is an `UNSTATED_VALUE` DIAGNOSTIC row. The VM observes only primitive
 integral fields: for a wrapper-typed field it prints a warning and starts no log, so such a field
 is versioned only once a symbolic value is stored into it.
+
+Each observed row states its cell's `trackedKind`. A `REFERENCE` cell's access is observed like a
+value's, and until the VM's observer takes a reference (R3-REFCONT WP2) the observation is refused
+before the VM by name (`runtime/ConcolicVmBroker`, `REFERENCE_OBSERVATION_UNSUPPORTED`): one
+DIAGNOSTIC `UNSTATED_VALUE` gap per site and session, and the field is versioned only once a
+shadowed object is stored into it. Not observed: a static cell, whose location is its class's
+mirror, which no observer takes yet (the map names it, `static: true`).
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).
@@ -389,12 +408,14 @@ DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTI
   read through a field, a parameter, `java.time`, or an interface whose implementation is outside
   the scope is not recognized; configuration values and pre-window state are roots only where a
   tree hook says so.
-- Tracked state is integral instance fields and the value of `AtomicInteger`, `AtomicLong` and
-  `AtomicBoolean`; wrapper fields pass the static rule but the VM starts no log for them, and a
-  CAS, `lazySet` or `getAndSet` goes through Unsafe, unhooked. Not tracked from a concrete store:
-  static, `float`/`double`, wrapper, `String` and reference fields (and a container reached
-  through a replaced reference), array elements, `AtomicReference`, and containers the VM does
-  not model (`ConcurrentHashMap`, `TreeMap` and the queues are classified by interface here).
+- The VM versions integral instance fields and the atomics' integral `value` from an observed
+  access; wrapper fields pass the static rule but the VM starts no log for them. `REFERENCE`
+  cells (reference fields and `AtomicReference.value`) are named by the map and observed at every
+  access, but the observer refuses them (a named gap, §5.2) until R3-REFCONT WP2, and a static one
+  is not observed at all; a container reached through a replaced reference is re-paired only once
+  COMPOSE selects its referent's state (WP5). Not tracked: `float`/`double` fields, static values,
+  `String` fields, array elements, and containers the VM does not model (`ConcurrentHashMap`,
+  `TreeMap` and the queues are classified by interface here, modeled by WP3).
 - A non-application call's receiver is dropped from the slice (§2.2) unless the call is a
   container query or an atomic's accessor, so state behind any other library object never
   enters `S`.
