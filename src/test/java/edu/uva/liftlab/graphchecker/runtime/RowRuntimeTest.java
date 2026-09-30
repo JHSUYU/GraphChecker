@@ -218,13 +218,13 @@ public class RowRuntimeTest {
             opened[0] = Identity.occurrence(NN.key(), "REGION.run", true)
                     .render();
             Identity.occurrence(NN.key(), "REGION.handshake", true);
-            folded[0] = Identity.foldedEntry();
+            folded[0] = Identity.openedNone();
             Identity.regionExit();
             long scope = RuntimeTraceContext.enterCarriedScope(carried,
                     "DATA_XCEIVER", "write-block");
             opened[1] = Identity.occurrence(NN.key(), "REGION.check", true)
                     .render();
-            folded[1] = Identity.foldedEntry();
+            folded[1] = Identity.openedNone();
             Identity.regionExit();
             RuntimeTraceContext.exitCarriedScope(scope);
             Identity.regionExit();
@@ -1584,7 +1584,7 @@ public class RowRuntimeTest {
         assertFalse("nothing is running here, so this entry opens an"
                         + " occurrence and the recording states its address",
                 recordedAddress("REGION.ba3902cd").isEmpty());
-        assertFalse("it is no fold", Identity.foldedEntry());
+        assertFalse("it is no fold", Identity.openedNone());
 
         Identity.enterFrame(
                 "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7", null);
@@ -1592,11 +1592,11 @@ public class RowRuntimeTest {
                         + " address for it and PLAN records no activation",
                 "", recordedAddress("REGION.094a8e3d"));
         assertTrue("and while the fold stands, no activation starts here",
-                Identity.foldedEntry());
+                Identity.openedNone());
         Identity.regionExit();
         Identity.regionExit();
         assertFalse("and the enclosing occurrence is no fold",
-                Identity.foldedEntry());
+                Identity.openedNone());
 
         // A declared region on a thread running no occurrence opens its own.
         Identity.resetForTests();

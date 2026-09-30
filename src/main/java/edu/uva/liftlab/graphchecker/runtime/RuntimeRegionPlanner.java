@@ -108,8 +108,10 @@ public final class RuntimeRegionPlanner {
                     continue;
                 }
                 for (MethodEvent root : trace.methods(skeleton.rootMethod)) {
-                    // IDENTITY §1: a FOLDED entry is a call inside its thread's
-                    // occurrence, not an activation; its owner is stated below.
+                    // IDENTITY §1: an entry that opened no occurrence is no
+                    // activation: a FOLDED one is a call inside its thread's
+                    // occurrence, whose owner is stated below; unnamed work's
+                    // has none.
                     if (root.regionFolded) {
                         foldedRoots.put(root.callId, skeleton);
                         continue;
@@ -1810,8 +1812,9 @@ public final class RuntimeRegionPlanner {
         /** The RECORDING's occurrence address (IDENTITY §1) on a region
          * entry, else {@code ""}; never re-derived. */
         final String occurrenceAddress;
-        /** FOLDED into its thread's occurrence (IDENTITY §1); not the same as
-         * an empty {@link #occurrenceAddress}, which is a refused hole. */
+        /** Opened no occurrence (IDENTITY §1): FOLDED into its thread's, or
+         * entered by unnamed work, which has no owner; not the same as an
+         * empty {@link #occurrenceAddress}, which is a refused hole. */
         final boolean regionFolded;
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,

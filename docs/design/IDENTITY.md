@@ -36,6 +36,14 @@ the thread has a context of its own. A thread boundary always ends an occurrence
 inherits region depth but no occurrence. PLAN records the folded regions on their owner
 (`RuntimeRegionPlanner#stampFoldedRegionEntries`).
 
+**Unnamed work** (`Identity#occurrence`): work started under a `Lost` context (§3) opens no
+occurrence while no hop names it (its lineage is empty); its region entries push a marker as a
+fold does, and its events are its role's. Such siblings differ by nothing an address names: a
+DataNode's connection threads, which its acceptor starts under no root, each enter the SASL
+server's regions before their first message, and would share one address. Once the message's hop
+stands, the regions they enter open under it. Neither pass records an activation for an entry that
+opened none (the trace states `regionFolded`; an unnamed one has no owner).
+
 ## 2. The causal context `c`
 
 `contract/CausalContext`, exactly three forms:
@@ -77,7 +85,9 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
 - **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, a frame
   (site, k-th start at that site) with the carrier; the started work claims it at its first
   identity event or at its functional method's entry (`#claimStart`), so siblings started from one
-  site differ by that frame alone. Claimed starts nest.
+  site differ by that frame alone. Claimed starts nest. A start under a `Lost` context files no
+  frame (its k would count arrivals, which nothing schedules) but an unnamed start, which makes
+  the work unnamed (§1) until the next claim takes its place or a level below it exits.
 - **Scope base** (`Identity#scopeStart`, `Hop`): an occurrence's index starts at its context's
   origin: the inbound scope for `ANCHOR` (which pooled handler serves a request is scheduling, not
   identity), the scope start for `SCOPE_ROOT` (a request, a carried scope, a wake turn), the claimed
@@ -172,7 +182,8 @@ another node than its address is `TASK_UNANSWERED` BLOCKING
 
 A start captures the starter's scope with the carrier (`RuntimeTraceContext#captureAsync`) and
 writes a `START` event; the claim restores it (`RuntimeTraceContext#claimCarried`) and writes a
-`CLAIM` event. A pool's own worker thread
+`CLAIM` event. A start under a `Lost` context captures nothing and writes no event; its work is
+unnamed (§1). A pool's own worker thread
 inherits no scope (`runtime/PoolWorkers`: `ThreadPoolExecutor.addWorker`,
 `ForkJoinPool.createWorker`, Jetty `QueuedThreadPool.startThread`); each task carries its own.
 

@@ -321,10 +321,12 @@ public final class CausynthTraceRecorder {
             // No start claim here: #claimStart is the one claim point.
             String node = RuntimeTraceContext.activationSource(receiver).key();
             address = occurrenceAddress(node, region);
-            // IDENTITY §1: a folded entry is no activation.  Asked of the
-            // identity, not read off the empty address: a node-less entry is
-            // a hole PLAN refuses, not a fold it skips.
-            folded = Identity.foldedEntry();
+            // IDENTITY §1: an entry that opened no occurrence (a fold, or
+            // unnamed work's) is no activation; the trace states it as
+            // regionFolded.  Asked of the identity, not read off the empty
+            // address: a node-less entry is a hole PLAN refuses, not a fold
+            // it skips.
+            folded = Identity.openedNone();
         }
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
@@ -352,10 +354,11 @@ public final class CausynthTraceRecorder {
     private static String occurrenceAddress(String nodeKey, String regionId) {
         OccurrenceAddress address =
                 Identity.occurrence(nodeKey, regionId, true);
-        // IDENTITY §1: a folded entry states no address (else a second
-        // activation of one occurrence); the call above must still run to
-        // push the fold marker.
-        if (Identity.foldedEntry()) return "";
+        // IDENTITY §1: an entry that opened no occurrence states no address
+        // (a fold's would be a second activation of one occurrence, unnamed
+        // work's one its siblings share); the call above must still run to
+        // push the marker.
+        if (Identity.openedNone()) return "";
         return address == null ? "" : address.render();
     }
 

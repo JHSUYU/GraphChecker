@@ -668,14 +668,16 @@ public final class ConcolicRegionRuntime {
         frames.push(frame);
         // No index frame here: the entry hook owns it (#enterRegionEntry).
         //
-        // IDENTITY §1 -- a folded entry (I1) starts no activation: it is a call
-        // inside the running occurrence, and a second activation would give
-        // one address two rows.  The tokenless frame still pairs the exit.
+        // IDENTITY §1 -- an entry that opened no occurrence starts no
+        // activation: a fold (I1) is a call inside the running occurrence,
+        // and a second activation would give one address two rows; unnamed
+        // work has no address of its own (Identity#occurrence).  The
+        // tokenless frame still pairs the exit.
         // Exception: a LOOP_BODY_ROOT body is an iteration of the loop-root
         // occurrence, not a region entry (LoopAccounting#bodiesAddressedHere).
         // Trap: loop contexts are keyed by the LOOP hook-group key, not the
         // one #rootHookGroup gives this selector.
-        ActiveRegion active = Identity.foldedEntry()
+        ActiveRegion active = Identity.openedNone()
                 && !LoopAccounting.bodiesAddressedHere(
                         config.loopRootHookGroup(instrumentationSelector,
                                 rootMethod).key)

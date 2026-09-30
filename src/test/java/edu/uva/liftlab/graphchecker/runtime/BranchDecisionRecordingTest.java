@@ -231,7 +231,7 @@ public class BranchDecisionRecordingTest {
 
             Identity.enterFrame(METHOD + "#u0", null);
             Identity.occurrence(NODE, "REGION.2", true);
-            assertTrue(Identity.foldedEntry());
+            assertTrue(Identity.openedNone());
             int live = ConcolicRegionRuntime.ACTIVE.size();
             assertEquals("no token, so no activation",
                     0L, ConcolicRegionRuntime.enterRegionFrame("sel", METHOD,
@@ -250,7 +250,7 @@ public class BranchDecisionRecordingTest {
             Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
             Identity.enterFrame(METHOD + "#u0", null);
             Identity.occurrence(NODE, "REGION.2", true);
-            assertFalse(Identity.foldedEntry());
+            assertFalse(Identity.openedNone());
             try {
                 ConcolicRegionRuntime.enterRegionFrame("sel", METHOD, null,
                         new Object[0]);
