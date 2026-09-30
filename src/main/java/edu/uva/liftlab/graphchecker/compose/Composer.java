@@ -867,7 +867,8 @@ public final class Composer {
      * The state joins THIS CONJUNCTION ASKS ABOUT, to a fixed point seeded
      * by the path's terms and its family terms.  An unreached join
      * constrains nothing but drags its theory (e.g. {@code assoc_put}) into
-     * the query, which can cost z3 its whole budget.  Same rule as
+     * the query, which can cost z3 its whole budget; it goes with what its
+     * lowering required ({@link SmtLowering#ownConditions}).  Same rule as
      * {@link SmtLowering#body}, applied to assertions.
      */
     List<String> statedJoins(Map<String, String> joins,
@@ -1765,7 +1766,7 @@ public final class Composer {
                                 + "not in this corpus"));
                 continue;
             }
-            lowering.bind(key, version, null, new SmtLowering.Binder<Boolean>() {
+            SmtLowering.Binder<Boolean> binder = new SmtLowering.Binder<Boolean>() {
                 @Override
                 public Term join(JsonElement value) {
                     return lowering.dispatch(value, SmtLowering.whole(value,
@@ -1810,7 +1811,16 @@ public final class Composer {
                             detail));
                     return false;
                 }
-            });
+            };
+            // What binding the read required rides with the join that binds
+            // it: stated where the conjunction asks about it (#statedJoins).
+            List<String> own = lowering.ownConditions(
+                    () -> lowering.bind(key, version, null, binder)
+                            && joins.containsKey(read.symbol()));
+            if (!own.isEmpty()) {
+                own.add(0, joins.get(read.symbol()));
+                joins.put(read.symbol(), VmTermLowering.and(own));
+            }
         }
     }
 

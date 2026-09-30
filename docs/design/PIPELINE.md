@@ -453,8 +453,11 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   of that version (a placeholder), else PIN to the value the row states, else REFUSE
   (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
   can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
-  dropped it raises nothing (no refusal, side condition or gap); an object the VM named
-  (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a whole value is asked
+  dropped it raises nothing (no refusal, side condition or gap); what a read row's binding required
+  (container membership and cell tags, recorded readings) is stated with its join, so only where
+  the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
+  object the VM named (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a
+  whole value is asked
   (`SmtLowering#whole`: a join, a published expression, a stated value) or a reference is (a
   comparison asks a named operand at the other's sort, on either side, `#binary`); an operator
   asks for its own operands, and a named container there is its state, at its class's sort

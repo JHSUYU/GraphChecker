@@ -2859,6 +2859,27 @@ public class ComposerTest {
                         at("list#2", 0), 0),
                 LocationId.of(LocationKind.INSTANCE, "8", "16"), 3L,
                 "INSTANCE/8#16@v3", "java/util/ArrayList", null);
+        // A read no term names whose join REQUIRES something: one cell of
+        // that list, at a position another field held (a stream's pos, its
+        // row stating 0).  The position in range and the cell a boxed int
+        // are what the join required, and they go with the join: neither
+        // the position nor its read is in the query (hdfs-17899-bug3 r4
+        // left 480 such requires on free positions in the path).
+        session.expression("EXPR.00000000000000c5", relation("INDEXED",
+                "READ", "I", three, read("INSTANCE_FIELD", 8L, 32L, 6L,
+                        "I")));
+        session.write(Endpoint.of(ANCHOR, "Saver#cell#7:WRITE",
+                        at("cell#1", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "8", "40"), 7L,
+                "EXPR.00000000000000c5");
+        session.read(Endpoint.of(ANCHOR, "Saver#cell#8:READ",
+                        at("cell#2", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "8", "40"), 7L,
+                "INSTANCE/8#40@v7", "I", null);
+        session.read(Endpoint.of(ANCHOR, "Saver#pos#9:READ",
+                        at("pos#1", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "8", "32"), 6L,
+                "INSTANCE/8#32@v6", "I", "0");
         // Two reference-typed field reads, each asked the question every
         // key case's predicate asks of one: is what it returned null?  A
         // reference read states what it returned exactly as a primitive
@@ -3166,17 +3187,18 @@ public class ComposerTest {
                 fatalArm(composition).contains(SmtNames.legalSymbols(
                         "(not (= " + MINTED_JOINED + " 9))")));
         // A ROW'S OWN SYMBOL IS STATED WHERE THE QUESTION ASKS ABOUT IT,
-        // and the five above are the rows it does not.  A read symbol is
+        // and the rows below are the ones it does not.  A read symbol is
         // the runtime's handle for a row; a published expression names a
         // VERSION, which the join resolves to the WRITE's expression, so a
         // reader row's own symbol is reachable from a term only where some
-        // row's expression spells it.  These five are spelled nowhere: the
+        // row's expression spells it.  These are spelled nowhere: the
         // equation binds a variable no other conjunct, no family arm and
         // no side condition mentions, which is satisfiable for every value
         // of everything it names and therefore constrains nothing -- while
         // its right-hand side drags its whole theory into the query.  The
         // conjunction states what the question reaches
-        // ({@code Composer#statedJoins}).
+        // ({@code Composer#statedJoins}), each join with what it required
+        // (the list cell's position and tag above).
         //
         // MEASURED on hdfs-11741 campaign #4: 119 such joins over 7 paths,
         // among them the anchor's OWN allKeys read as an AssocState
@@ -3193,7 +3215,8 @@ public class ComposerTest {
         for (String unasked : new String[]{
                 "INSTANCE/Manager#count@v2", "INSTANCE/22#24@v174",
                 "INSTANCE/2#24@v178", "INSTANCE/Snapshot#32@e-1",
-                "INSTANCE/Snapshot#40@e-1"}) {
+                "INSTANCE/Snapshot#40@e-1", "INSTANCE/8#40@v7",
+                "INSTANCE/8#32@v6"}) {
             assertFalse("a row symbol no term of this path names is not "
                             + "written into the query: " + unasked,
                     composition.body().contains(
