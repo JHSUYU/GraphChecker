@@ -480,7 +480,9 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   attach, an attach that minted no `v_H`; `Corpus#refusedIn`) refuses the path, and an arm whose
   closure reaches one is no option;
 - constraint independence (`compose.Independence`): conditions and reads sharing no variable with phi
-  (or a root) stay out;
+  (or a root) stay out; a field projection's variables are what its lowering reads
+  (`ContainerSmtCodec#fieldOperands`: the cell, and the owner only as a boxed payload), never the
+  owner's `concreteOwner` chain;
 - the valuation this session ran each non-clock root at (`valuationOf`; `Corpus.rootValue`: the
   focus row's assignment where the replay planted it, else the mint's reading): a declared root
   minted with no value, or a mint whose `recordedValue` differs from the assignment ("stated twice
