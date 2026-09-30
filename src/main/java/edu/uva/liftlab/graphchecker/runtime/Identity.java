@@ -936,6 +936,20 @@ public final class Identity {
     }
 
     /**
+     * An endpoint at {@code site} whose event frame is {@code frameSite}: a
+     * codec hole's (IDENTITY §7.5), its site the static port and its frame
+     * {@code port@<storeKey><keyPath>#<hole>}, counted as any event frame.
+     * Two items one occurrence decodes stay apart by their store key.
+     */
+    public static Endpoint endpointAt(OccurrenceAddress occurrence,
+                                      String site, String frameSite,
+                                      int attempt) {
+        if (occurrence == null) return null;
+        return Endpoint.of(occurrence, JvmNames.stable(Text.safe(site)),
+                eventSiteIndex(Text.safe(frameSite)), attempt);
+    }
+
+    /**
      * The site-local index of the event minting an endpoint here, with the
      * event itself as the innermost frame (IDENTITY §4).  Without that
      * frame two events of one occurrence at one site share an endpoint id.

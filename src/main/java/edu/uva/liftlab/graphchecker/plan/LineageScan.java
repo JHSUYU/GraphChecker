@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.plan;
 
+import edu.uva.liftlab.graphchecker.contract.WireDeclarations;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
@@ -13,7 +14,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -22,7 +25,10 @@ import java.util.stream.Stream;
  * {@code Lost:UNKNOWN}, so the weave's work-start, claim and timed-wait hooks
  * cover this scope ({@code CausynthPipeline.instrumentApplicationScope}).
  * Bytecode only, no hierarchy: wide {@link WorkStartSites} predicates; classes
- * already analysed are skipped.
+ * already analysed are skipped.  A class that declares a codec's encoder or
+ * decoder, or an exchange bracket ({@link WireDeclarations#configured}), is
+ * kept whatever it does: the codec weave hooks it
+ * ({@code causynth.CodecWeave}).
  *
  * <p>Usage: {@code LineageScan <out-dir> <analysed-dirs> <class-root>...},
  * {@code <analysed-dirs>} path-separated: the case's scope and what SEED grew
@@ -43,6 +49,8 @@ public final class LineageScan {
                 java.io.File.pathSeparator))) {
             if (!dir.isEmpty()) analysed.add(Paths.get(dir));
         }
+        Set<String> declared = declaredClassFiles(
+                WireDeclarations.configured());
         int scanned = 0;
         int kept = 0;
         for (int index = 2; index < args.length; index++) {
@@ -58,7 +66,11 @@ public final class LineageScan {
                         -> Files.exists(dir.resolve(relative)))) {
                     continue;
                 }
-                if (!handsOffWork(file)) continue;
+                if (!declared.contains(relative.toString().replace(
+                        java.io.File.separatorChar, '/'))
+                        && !handsOffWork(file)) {
+                    continue;
+                }
                 Path target = out.resolve(relative);
                 Files.createDirectories(target.getParent());
                 Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING);
@@ -66,8 +78,34 @@ public final class LineageScan {
             }
         }
         System.out.println("lineage scope: " + kept + " of " + scanned
-                + " class(es) start, hand off, run, wait or signal outside the "
-                + "analysis scope");
+                + " class(es) start, hand off, run, wait, signal or hold a "
+                + "declared codec method outside the analysis scope");
+    }
+
+    /**
+     * The class files that declare a hooked method: every codec method
+     * hook's and every exchange's ({@code a/b/C.class}); a call pattern
+     * names no class of its own.
+     */
+    static Set<String> declaredClassFiles(WireDeclarations declared) {
+        Set<String> files = new LinkedHashSet<>();
+        List<String> methods = new ArrayList<>();
+        for (WireDeclarations.Codec codec : declared.codecs()) {
+            for (WireDeclarations.Hook hook : codec.encoders()) {
+                if (!hook.call()) methods.add(hook.target());
+            }
+            for (WireDeclarations.Hook hook : codec.decoders()) {
+                if (!hook.call()) methods.add(hook.target());
+            }
+        }
+        for (WireDeclarations.Exchange exchange : declared.exchanges()) {
+            methods.add(exchange.method());
+        }
+        for (String method : methods) {
+            files.add(method.substring(1, method.indexOf(':')).replace('.',
+                    '/') + ".class");
+        }
+        return files;
     }
 
     private static List<Path> classFiles(Path root) throws IOException {

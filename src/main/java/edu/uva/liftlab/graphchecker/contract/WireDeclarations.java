@@ -2,7 +2,13 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -63,7 +69,7 @@ public final class WireDeclarations {
         MEMBERS.put(KEY, names("space", "role", "method", "key", "value",
                 "pairs"));
         MEMBERS.put(TRANSPORT, names("transport", "request", "response",
-                "store"));
+                "store", "envelopeBytes"));
         MEMBERS.put(EXCHANGE, names("transport", "method"));
     }
 
@@ -174,6 +180,68 @@ public final class WireDeclarations {
         return read;
     }
 
+    /**
+     * The declarations of one file, one JSON row per line, keyed
+     * {@code file:line}.  A {@code DOOR} row is the door weave's
+     * ({@code causynth.DoorWeave}) and is passed over; any other row is one of
+     * the five kinds or refused.
+     */
+    public static WireDeclarations read(Path file) throws IOException {
+        Map<String, JsonObject> rows = new LinkedHashMap<>();
+        int line = 0;
+        for (String text : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+            line++;
+            if (text.trim().isEmpty()) continue;
+            String at = file + ":" + line;
+            JsonElement parsed;
+            try {
+                parsed = JsonParser.parseString(text);
+            } catch (RuntimeException malformed) {
+                throw refused(at, "not JSON: " + malformed.getMessage(),
+                        malformed);
+            }
+            if (!parsed.isJsonObject()) {
+                throw refused(at, "a row is a JSON object", null);
+            }
+            JsonElement kind = parsed.getAsJsonObject().get("kind");
+            if (kind != null && kind.isJsonPrimitive()
+                    && DOOR.equals(kind.getAsString())) continue;
+            rows.put(at, parsed.getAsJsonObject());
+        }
+        return of(rows);
+    }
+
+    /**
+     * The declarations this JVM was given ({@link #PROPERTY}, else
+     * {@link #ENVIRONMENT}): the weave that hooks the codecs and the replay
+     * that runs them read the same file.  None when neither names one: the
+     * system declares no codec.
+     */
+    public static WireDeclarations configured() throws IOException {
+        String named = System.getProperty(PROPERTY);
+        if (named == null || named.trim().isEmpty()) {
+            named = System.getenv(ENVIRONMENT);
+        }
+        if (named == null || named.trim().isEmpty()) return NONE;
+        Path file = Paths.get(named.trim()).toAbsolutePath().normalize();
+        if (!Files.isRegularFile(file)) {
+            throw new IOException("wire declarations not found: " + file);
+        }
+        return read(file);
+    }
+
+    /** The system property naming the declarations file. */
+    public static final String PROPERTY = "causynth.wire.declarations";
+    /** The environment variable naming it when the property does not. */
+    public static final String ENVIRONMENT = "CAUSYNTH_WIRE_DECLARATIONS";
+    /** A row kind this schema leaves to the door weave. */
+    private static final String DOOR = "DOOR";
+    /** No declaration at all. */
+    public static final WireDeclarations NONE = new WireDeclarations(
+            new ArrayList<Codec>(), new ArrayList<View>(),
+            new ArrayList<Key>(), new ArrayList<Transport>(),
+            new ArrayList<Exchange>());
+
     /** Every name a row uses is declared, by a row of the right kind. */
     private void resolve(Map<Value, String> located) {
         for (View view : views) {
@@ -230,6 +298,20 @@ public final class WireDeclarations {
 
     public List<Transport> transports() {
         return transports;
+    }
+
+    /** The transport of that name, or null. */
+    public Transport transport(String name) {
+        for (Transport transport : transports) {
+            if (transport.name().equals(name)) return transport;
+        }
+        return null;
+    }
+
+    /** Whether nothing is declared: no codec runs, no door walks. */
+    public boolean empty() {
+        return codecs.isEmpty() && transports.isEmpty()
+                && exchanges.isEmpty();
     }
 
     public List<Exchange> exchanges() {
@@ -401,9 +483,16 @@ public final class WireDeclarations {
                     + "walks a request or a response with a codec: one of "
                     + "the two");
         }
+        int bytes = index(row, "envelopeBytes");
+        if (bytes == 0 || bytes > 0 && stored) {
+            throw new IllegalArgumentException("envelopeBytes bounds the "
+                    + "header a message's envelope travels in: a positive "
+                    + "count, beside a request or a response");
+        }
         return new Transport(name(text(row, "transport"), "transport"),
                 request == null ? null : name(request, "request"),
-                response == null ? null : name(response, "response"), stored);
+                response == null ? null : name(response, "response"), stored,
+                Math.max(bytes, 0));
     }
 
     // ---- members ---------------------------------------------------------
@@ -614,6 +703,18 @@ public final class WireDeclarations {
             return exchange;
         }
 
+        /** Whether a call of {@code callee} is this call hook's: its
+         *  pattern with {@code *} as any run of characters. */
+        public boolean calls(String callee) {
+            if (!call) return false;
+            StringBuilder regex = new StringBuilder();
+            for (String piece : target.split("\\*", -1)) {
+                if (regex.length() > 0) regex.append(".*");
+                regex.append(Pattern.quote(piece));
+            }
+            return callee.matches(regex.toString());
+        }
+
         @Override
         Object[] parts() {
             return new Object[] {target, call, graph, encoded, exchange};
@@ -745,19 +846,24 @@ public final class WireDeclarations {
     }
 
     /** The codecs a transport's doors walk their payloads with (null: that
-     *  half has no payload in hand), or a store's. */
+     *  half has no payload in hand), or a store's; and the most bytes a
+     *  message's envelope may take in the header it travels in (an HTTP
+     *  header: the server's header limit), 0 for no bound but the entry
+     *  count. */
     public static final class Transport extends Value {
         private final String name;
         private final String request;
         private final String response;
         private final boolean store;
+        private final int envelopeBytes;
 
         private Transport(String name, String request, String response,
-                          boolean store) {
+                          boolean store, int envelopeBytes) {
             this.name = name;
             this.request = request;
             this.response = response;
             this.store = store;
+            this.envelopeBytes = envelopeBytes;
         }
 
         public String name() {
@@ -772,14 +878,25 @@ public final class WireDeclarations {
             return response;
         }
 
+        /** The codec one half's door walks its payload with, or null. */
+        public String codec(boolean requestHalf) {
+            return requestHalf ? request : response;
+        }
+
         /** Whether its doors write and read stored versions. */
         public boolean store() {
             return store;
         }
 
+        /** The envelope's byte bound in its header, 0 for none. */
+        public int envelopeBytes() {
+            return envelopeBytes;
+        }
+
         @Override
         Object[] parts() {
-            return new Object[] {name, request, response, store};
+            return new Object[] {name, request, response, store,
+                    envelopeBytes};
         }
 
         @Override

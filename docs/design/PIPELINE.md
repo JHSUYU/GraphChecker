@@ -156,6 +156,14 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 tree must hold a class file, and `causynth.VerifyWovenClasses` must verify every woven class against
 the replay's class path, or the stage fails naming the class. GROW re-runs this stage's function.
 
+The union weave also hooks the codecs and exchange brackets the wire declarations state
+(`causynth.CodecWeave`, [IDENTITY.md §7.5](IDENTITY.md)): the file the property
+`causynth.wire.declarations` or the environment variable `CAUSYNTH_WIRE_DECLARATIONS` names, which
+`plan.LineageScan` reads too, so a class declaring a hooked method joins the woven set. A declared
+method that is no concrete method of a woven class ends the stage (`CODEC_METHOD_UNAVAILABLE`). No
+`workflow.properties` key names the file yet; a replay reads the same variable, and the demanded
+ports from `CAUSYNTH_CODEC_PORTS` (a file of `CODEC_PORT` rows).
+
 ## 5. REPLAY
 
 `campaign_replay` runs `concolic_replay_command` (the adapter) with the plan, task ids, class tree,

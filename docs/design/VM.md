@@ -318,7 +318,8 @@ with a `reason`.
   condition; on a thread inside a region it opens the admission gate. This JDK's
   `Integer/Long/Short/Byte.valueOf` box afresh, so a JVM-wide box is only a `Character` cache entry
   or `Boolean.TRUE/FALSE`.
-- No engine code calls them yet (WIRE-CODEC W4); the runtime still uses the expression broker.
+- The codec runtime calls them (`runtime/CodecExport`, `HandoffMint#mintHoles`; IDENTITY.md §7.5);
+  a `WIRE_FLOW` row still crosses through the expression broker.
 
 **Expression broker** (`VM/concolic/expressionBroker.{hpp,cpp}`): `exportExpression` publishes the
 live expression of an instance field and returns an opaque handle `(epoch << 32) | serial`;
@@ -361,8 +362,7 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   `call: {holder, name, descriptor, arguments}`.
 - Natives no engine code calls: `getPathCondition`, `trackContainerExpression`,
   `getSharedFieldVersions`, `getSharedElementVersions`, `getSharedMapVersions`,
-  `getConcolicRegionSummary` (only the smoke tests use them); `exportLeaf` and `mintLeaf` are bound
-  but not yet called (WIRE-CODEC W4). `armSharedPrimitiveFieldRead` and
+  `getConcolicRegionSummary` (only the smoke tests use them). `armSharedPrimitiveFieldRead` and
   `confirmSharedPrimitiveFieldRead` are refusals kept for `libjava`'s binding.
 
 ## 9. Value movement

@@ -10,11 +10,13 @@ import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.exactFieldSignatu
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -24,7 +26,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -43,9 +47,11 @@ import java.util.UUID;
  *
  * <p>Identity is {@code (port, consumer occurrence, k-th attach, element
  * path)} only, so the same attach in two replays mints the same variable.
- * The consumer occurrence is the one the PLAN declares the IN site on, not
- * the live one.  The attached leaf is a field of the carrier ({@link
- * ConcolicRegionRuntime#CARRIER_CLASS}).</p>
+ * For a {@code WIRE_FLOW} port the consumer occurrence is the one the PLAN
+ * declares the IN site on, not the live one, and the attached leaf is a
+ * field of the carrier ({@link ConcolicRegionRuntime#CARRIER_CLASS}).  A
+ * codec's holes ({@link #mintHoles}) are minted on the decoded leaf itself,
+ * wherever the decode runs, the element path its key path and hole.</p>
  */
 final class HandoffMint {
     private HandoffMint() {
@@ -358,6 +364,288 @@ final class HandoffMint {
         synchronized (ATTACHES) {
             ATTACHES.clear();
         }
+    }
+
+    // ---- codec holes (WIRE-CODEC §4.7) --------------------------------------
+
+    /**
+     * Mints one applied encode's holes on a decoded graph, leaf by leaf:
+     * each hole a fresh boundary symbol, the leaf the template over them, an
+     * attach row per hole paired by the envelope that carried its producer.
+     * The consumer is the innermost live region, else the occurrence running
+     * here (an ambient mint, which records no path).  Answers the graph, or
+     * the fresh object a re-homed or answered root was replaced by.
+     */
+    static Object mintHoles(CodecWalker walker, Object graph,
+                            CodecMessages.Message message,
+                            List<CodecMessages.Entry> encode) {
+        Map<List<Object>, List<CodecMessages.Entry>> leaves =
+                new LinkedHashMap<>();
+        for (CodecMessages.Entry entry : encode) {
+            leaves.computeIfAbsent(entry.path, path -> new ArrayList<>())
+                    .add(entry);
+        }
+        Object root = graph;
+        for (List<CodecMessages.Entry> holes : leaves.values()) {
+            holes.sort((left, right) -> Integer.compare(left.hole,
+                    right.hole));
+            root = mintLeafHoles(walker, root, message, holes);
+        }
+        return root;
+    }
+
+    private static Object mintLeafHoles(CodecWalker walker, Object root,
+                                        CodecMessages.Message message,
+                                        List<CodecMessages.Entry> entries) {
+        CodecMessages.Entry first = entries.get(0);
+        String port = first.port();
+        String at = walker.codec() + " " + CodecWalker.text(first.path);
+        CodecExport.Template template = first.template;
+        for (int hole = 0; hole < entries.size(); hole++) {
+            if (entries.get(hole).hole != hole
+                    || entries.size() != template.holes().size()) {
+                RowRuntime.gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
+                        message.key, "the message carried " + entries.size()
+                                + " of the " + template.holes().size()
+                                + " holes of " + at + ", so the leaf stays"
+                                + " concrete");
+                return root;
+            }
+        }
+        CodecWalker.Leaf leaf = walker.resolve(root, first.path);
+        if (leaf == null || leaf.value == null
+                || !CodecWalker.leafValue(leaf.value)
+                || leaf.value instanceof Enum) {
+            codecMismatch(message, leaf == null || leaf.value == null
+                    ? "NULL_LEAF" : "LEAF_UNSUPPORTED", at + " decoded "
+                    + (leaf == null ? "nothing" : String.valueOf(leaf.value))
+                    + ", which no hole is minted on");
+            return root;
+        }
+        boolean numeric = !(leaf.value instanceof String);
+        String text = numeric ? String.valueOf(leaf.value)
+                : (String) leaf.value;
+        List<String> texts = !text.equals(first.recorded)
+                || template.numeric() != numeric ? null
+                : template.match(text);
+        List<CodecMessages.Entry> producers = entries;
+        if (texts == null) {
+            codecMismatch(message, !text.equals(first.recorded)
+                    ? "VALUE_MISMATCH" : "TEMPLATE_MISMATCH", at
+                    + " decoded " + text + " where its producer wrote "
+                    + first.recorded + " as " + template.holes().size()
+                    + " hole(s); the leaf is one hole paired with the first");
+            template = CodecExport.Template.whole(numeric, null);
+            texts = new ArrayList<>(Collections.singletonList(text));
+            producers = Collections.singletonList(first);
+        }
+        texts = new ArrayList<>(texts);
+
+        ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+        OccurrenceAddress consumer = CodecRuntime.occurrenceHere(port);
+        if (consumer == null) {
+            RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.BLOCKING, port,
+                    "a decode of " + at + " ran on a thread naming no node,"
+                            + " so its holes have no consumer address");
+            return root;
+        }
+        String consumerId = active != null && active.d3Address != null
+                ? active.activation.occurrenceId : consumer.render();
+        List<CodecExport.Part> kinds = template.holes();
+        int count = kinds.size();
+        List<Endpoint> endpoints = new ArrayList<>();
+        List<String> answers = new ArrayList<>();
+        List<String> labels = new ArrayList<>();
+        boolean answered = false;
+        for (int hole = 0; hole < count; hole++) {
+            Endpoint endpoint = Identity.endpointAt(consumer, port,
+                    CodecRuntime.frameSite(port, message.storeKey,
+                            first.path, hole), CodecRuntime.attempt());
+            endpoints.add(endpoint);
+            String answer = FocusedReplay.answer(endpoint.id());
+            answers.add(answer);
+            if (!answer.isEmpty()) {
+                String rendered = rendered(kinds.get(hole).kind, answer,
+                        leaf.value.getClass());
+                if (rendered == null) {
+                    RowRuntime.gap(GapKind.ASSIGNMENT_UNPLANTED,
+                            GapClass.BLOCKING, port, "the wave's answer "
+                                    + answer + " for hole " + hole + " of "
+                                    + at + " is no " + kinds.get(hole).kind
+                                    + " text");
+                    return root;
+                }
+                texts.set(hole, rendered);
+                answered = true;
+            }
+            String element = CodecWalker.text(first.path) + "#" + hole;
+            labels.add(mintLabel(handoffMintKey(port, consumerId,
+                    nextAttach(consumerId, port, element), element), port));
+        }
+        if (answered) {
+            // The wave's value is the delivered one: rendered into the leaf
+            // before it is minted, through its holder's own API.
+            Object planted = numeric ? ModelValues.coerce("", texts.get(0),
+                    leaf.value.getClass()) : template.render(texts);
+            Placed placed = planted == ModelValues.UnsupportedReplayValue
+                    .INSTANCE ? null : place(leaf, root, planted);
+            if (placed == null) {
+                RowRuntime.gap(GapKind.ASSIGNMENT_UNPLANTED, GapClass.BLOCKING,
+                        port, "the wave's answer for " + at + " could not be"
+                                + " written into its decoded slot");
+                return root;
+            }
+            leaf = placed.leaf;
+            root = placed.root;
+        }
+        Minted minted = mintTemplate(leaf, root, template.mintJson(labels,
+                texts), message, at);
+        if (minted == null) return root;
+        if (active != null) active.pathRecordingStarted = true;
+        long seq;
+        try {
+            seq = engine().currentEventId();
+        } catch (Throwable none) {
+            seq = 0L;
+        }
+        for (int hole = 0; hole < count && hole < minted.holes.size();
+             hole++) {
+            JsonObject symbol = minted.holes.get(hole).getAsJsonObject();
+            RowRuntime.attachedHole(endpoints.get(hole), seq,
+                    producers.get(Math.min(hole, producers.size() - 1))
+                            .producer, message.key,
+                    Hole.of(first.codec, first.path, hole),
+                    optionalString(symbol, "exp"),
+                    optionalString(symbol, "javaType"), texts.get(hole),
+                    !answers.get(hole).isEmpty(), answers.get(hole));
+        }
+        return minted.root;
+    }
+
+    /** A hole's text for the wave's answer, or null when it is none. */
+    private static String rendered(CodecExport.Kind kind, String answer,
+                                   Class<?> leafType) {
+        Class<?> requested = kind == CodecExport.Kind.NUM ? leafType
+                : kind == CodecExport.Kind.DEC_INT ? int.class
+                : kind == CodecExport.Kind.DEC_LONG ? long.class
+                : kind == CodecExport.Kind.BOOL ? boolean.class
+                : String.class;
+        Object value = ModelValues.coerce("", answer, requested);
+        return value == ModelValues.UnsupportedReplayValue.INSTANCE
+                || value == null ? null : String.valueOf(value);
+    }
+
+    /** A leaf after a store, and the graph's root after it. */
+    private static final class Placed {
+        final CodecWalker.Leaf leaf;
+        final Object root;
+
+        Placed(CodecWalker.Leaf leaf, Object root) {
+            this.leaf = leaf;
+            this.root = root;
+        }
+    }
+
+    /** Stores {@code fresh} in the leaf's slot, or as the new root. */
+    private static Placed place(CodecWalker.Leaf leaf, Object root,
+                                Object fresh) {
+        CodecWalker.Leaf moved = new CodecWalker.Leaf(leaf.path, leaf.key,
+                fresh, leaf.holder, leaf.holding, leaf.slot);
+        if (leaf.holding == CodecWalker.Holding.ROOT) {
+            return new Placed(moved, fresh);
+        }
+        return leaf.store(fresh) ? new Placed(moved, root) : null;
+    }
+
+    /** One leaf's mint: its holes, and the root after a re-home. */
+    private static final class Minted {
+        final JsonArray holes;
+        final Object root;
+
+        Minted(JsonArray holes, Object root) {
+            this.holes = holes;
+            this.root = root;
+        }
+    }
+
+    /**
+     * Mints a template on one leaf.  A JVM-wide leaf object ({@code SHARED})
+     * is re-homed: a fresh equal object is stored through its holder's API
+     * and minted instead; one that cannot be ({@code LEAF_SHARED}, an enum
+     * constant or an immutable holder) stays concrete, named.
+     */
+    private static Minted mintTemplate(CodecWalker.Leaf leaf, Object root,
+                                       String template,
+                                       CodecMessages.Message message,
+                                       String at) {
+        JsonObject answer = mintAt(leaf, template);
+        String status = answer == null ? "UNANSWERED"
+                : optionalString(answer, "status");
+        if ("SHARED".equals(status)) {
+            Object fresh = freshCopy(leaf.value);
+            Placed placed = fresh == null ? null : place(leaf, root, fresh);
+            if (placed == null) {
+                codecMismatch(message, "LEAF_SHARED", at + " decoded a"
+                        + " JVM-wide " + leaf.value.getClass().getName()
+                        + " its holder cannot replace");
+                return null;
+            }
+            leaf = placed.leaf;
+            root = placed.root;
+            answer = mintAt(leaf, template);
+            status = answer == null ? "UNANSWERED"
+                    : optionalString(answer, "status");
+        }
+        if (!"OK".equals(status)) {
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    message.key, "the VM minted no hole on " + at + " ("
+                            + status + " " + (answer == null ? ""
+                            : optionalString(answer, "reason"))
+                            + "), so the value crossed concrete");
+            return null;
+        }
+        return new Minted(answer.getAsJsonArray("holes"), root);
+    }
+
+    /** The VM's mint at the leaf's slot, else (an unmodeled container) on
+     *  the leaf object. */
+    private static JsonObject mintAt(CodecWalker.Leaf leaf, String template) {
+        try {
+            ConcolicVmBroker vm = engine();
+            JsonObject answer = CodecExport.parse(vm.mintLeaf(
+                    CodecRuntime.vmParent(leaf), CodecRuntime.vmSlotKind(leaf),
+                    CodecRuntime.vmSlot(leaf), template));
+            if (CodecRuntime.unmodeled(answer)) {
+                answer = CodecExport.parse(vm.mintLeaf(leaf.value,
+                        ConcolicVmBroker.SlotKind.VALUE, null, template));
+            }
+            return answer;
+        } catch (Throwable refused) {
+            return null;
+        }
+    }
+
+    /** A fresh object equal to a JVM-wide leaf, or null (an enum). */
+    @SuppressWarnings({"deprecation", "UnnecessaryBoxing"})
+    private static Object freshCopy(Object value) {
+        if (value instanceof String) return new String((String) value);
+        if (value instanceof Boolean) return new Boolean((Boolean) value);
+        if (value instanceof Character) {
+            return new Character((Character) value);
+        }
+        if (value instanceof Long) return new Long((Long) value);
+        if (value instanceof Integer) return new Integer((Integer) value);
+        if (value instanceof Short) return new Short((Short) value);
+        if (value instanceof Byte) return new Byte((Byte) value);
+        if (value instanceof Double) return new Double((Double) value);
+        if (value instanceof Float) return new Float((Float) value);
+        return null;
+    }
+
+    private static void codecMismatch(CodecMessages.Message message,
+                                      String reason, String detail) {
+        RowRuntime.gap(GapKind.CODEC_MISMATCH, GapClass.DIAGNOSTIC,
+                message.key, reason + ": " + detail);
     }
 
     /** One primitive leaf of one attach, and how the row names it. */
