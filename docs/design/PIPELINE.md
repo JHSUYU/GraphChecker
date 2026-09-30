@@ -709,8 +709,9 @@ valuation, its selected path and session, and the selected arms of that path; th
 must have a target row at the anchor that reached it (else refused, exit 1 → unconfirmed).
 
 - **Realized**: when that target row observed the fatal, every selected arm is the session's own
-  delivery, every write the model chose for a read of the join closure is the one that read saw
-  (`StateClosure#ran`), and the session minted every moved root at the model's value, the session
+  delivery, every write the model chose for a read of the join closure at a location the fatal
+  rests on (`restsOn`, below) is the one that read saw (`StateClosure#ran`), and the session minted
+  every moved root at the model's value, the session
   is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
   overlaid with the model's moved roots (`plantModel`: a clock as a skew off this session's reading,
@@ -720,8 +721,11 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits
   for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
   as that arm's session paired it), `STATE` per read of the anchor's join closure (each reached
-  occurrence's reads before its cutoff, the anchor's before its target seq; the write the model
-  chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
+  occurrence's reads before its cutoff, the anchor's before its target seq) at a location the
+  selected path's fatal rests on (its manifest `restsOn`: `Composer`'s constraint independence of
+  phi and the roots alone, without the locations a family merely binds: a read elsewhere holds no
+  value the witness needs, and under a moved root the run may make it at another endpoint or not at
+  all; the write the model chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
   endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a
   query through a re-pointable reference the write of the state its arm's `referentStates` name,
   §8), `ORDER` rows (the writer's activation exits before the reader's enters; every other writer of

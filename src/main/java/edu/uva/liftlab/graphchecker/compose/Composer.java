@@ -129,13 +129,16 @@ public final class Composer {
         private final String selector;
         private final boolean fatalObserved;
         private final Set<String> interactionIds;
+        private final Set<String> restsOn;
 
         private Disjunct(Corpus.RecordedPath path, String selector,
-                         boolean fatalObserved, Set<String> interactionIds) {
+                         boolean fatalObserved, Set<String> interactionIds,
+                         Set<String> restsOn) {
             this.path = path;
             this.selector = selector;
             this.fatalObserved = fatalObserved;
             this.interactionIds = Collections.unmodifiableSet(interactionIds);
+            this.restsOn = Collections.unmodifiableSet(restsOn);
         }
 
         public Corpus.RecordedPath path() {
@@ -153,6 +156,11 @@ public final class Composer {
         /** Every interaction this path's chain reaches. */
         public Set<String> interactionIds() {
             return interactionIds;
+        }
+
+        /** The tracked locations its fatal predicate rests on. */
+        public Set<String> restsOn() {
+            return restsOn;
         }
     }
 
@@ -534,7 +542,8 @@ public final class Composer {
             if (disjunct != null) {
                 disjuncts.add(disjunct);
                 entries.add(PathEntry.of(path.pathId, path.sessionId,
-                        disjunct.selector(), disjunct.fatalObserved()));
+                        disjunct.selector(), disjunct.fatalObserved(),
+                        disjunct.restsOn()));
                 ordinal++;
             }
         }
@@ -731,6 +740,14 @@ public final class Composer {
         Independence relevant = independence(session,
                 Collections.singletonList(target.phiTerm()),
                 familyBound(session, repaired), reached, conditions);
+        //       What the fatal itself rests on, of phi and the roots alone: a
+        //       location a family binds and nothing else reaches holds the
+        //       formula's alternatives, not the witness (a confirming run is
+        //       held to these only).
+        Set<String> restsOn = independence(session,
+                Collections.singletonList(target.phiTerm()),
+                Collections.<String>emptySet(), reached, conditions)
+                .locations();
 
         // (0b) Reads whose value the row states outright, bound BEFORE any
         //      lowering so every leaf naming them resolves, not just later
@@ -866,7 +883,7 @@ public final class Composer {
                 arrivals(corpus.attachesOn(session, anchor)));
         heldArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, target.observedFatal(),
-                interactionIds);
+                interactionIds, restsOn);
     }
 
     private static List<String> selectors(List<Disjunct> disjuncts) {

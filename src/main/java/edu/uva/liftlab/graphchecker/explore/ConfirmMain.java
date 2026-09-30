@@ -73,7 +73,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *       schedule_suffix.jsonl} (the whole schedule);</li>
  *   <li>{@code expected_edges.jsonl}: {@code WIRE} per consumer of each
  *       selected message arm, {@code STATE} per read of the anchor's join
- *       closure (the write the model chose, else the observed one: a
+ *       closure at a location the selected path's fatal rests on (the
+ *       manifest's {@code restsOn}; the write the model chose, else the
+ *       observed one: a
  *       {@code writer_arm__}'s write for a read of its location, and for a
  *       query through a re-pointable reference the state of the delivered
  *       object its nested selector chose, the arm's {@code
@@ -166,15 +168,19 @@ public final class ConfirmMain {
         // Only the selected path's arms (others are free in the model),
         // joined by the path ordinal in the composer's selector names.
         String ordinalOfPath = "";
+        Set<String> restsOn = new LinkedHashSet<String>();
+        boolean stated = false;
         for (JsonElement element : array(manifest, "paths")) {
             JsonObject path = element.getAsJsonObject();
             if (pathId.equals(optionalString(path, "pathId"))) {
                 ordinalOfPath = ordinalOf(optionalString(path, "selector"));
+                stated = path.has("restsOn");
+                restsOn.addAll(strings(path, "restsOn"));
             }
         }
-        if (ordinalOfPath.isEmpty()) {
-            throw new Refused("the manifest states no selector for the "
-                    + "selected path " + pathId);
+        if (ordinalOfPath.isEmpty() || !stated) {
+            throw new Refused("the manifest states no selector or no "
+                    + "restsOn for the selected path " + pathId);
         }
         List<JsonObject> arms = new ArrayList<JsonObject>();
         for (JsonElement element : array(valuation, "selectedArms")) {
@@ -199,6 +205,11 @@ public final class ConfirmMain {
         // The writes the model chose for the anchor's join closure.
         StateClosure closure = new StateClosure(session, anchor, target.seq());
         Map<String, WriteRow> chosen = closure.chosen(arms);
+        // A choice at a location the fatal does not rest on is the solver's
+        // free pick among the formula's alternatives, not the witness.
+        chosen.keySet().removeIf(reader -> !restsOn.contains(
+                SmtLowering.locationKey(closure.readers.get(reader)
+                        .location())));
         // A session that already took every chosen edge at the model's root
         // values and observed the fatal IS the confirmation; re-running it only
         // tests a race twice. A model mixing sessions' deliveries, or choosing
@@ -253,7 +264,7 @@ public final class ConfirmMain {
         // The edges the model chose.
         List<JsonObject> edges = new ArrayList<JsonObject>();
         edges.addAll(wireEdges(arms, armSessions));
-        edges.addAll(stateEdges(closure, chosen));
+        edges.addAll(stateEdges(closure, chosen, restsOn));
         edges.addAll(markers);
         JsonObject anchorRow = new JsonObject();
         anchorRow.addProperty("kind", "ANCHOR");
@@ -697,18 +708,26 @@ public final class ConfirmMain {
     }
 
     /**
-     * STATE and ORDER edges over the join closure: every join of it, the
-     * write the model chose or else the one the run read -- the run is held
-     * to no recorded order, so a pinned join is the model's as much as a
-     * choice.  A read no row answers is held only where the model chose a
-     * writer for it; otherwise its outside store is the run's own.
+     * STATE and ORDER edges over the join closure at the locations the
+     * fatal rests on ({@code restsOn}): every such join, the write the model
+     * chose or else the one the run read -- the run is held to no recorded
+     * order, so a pinned join is the model's as much as a choice.  A read
+     * elsewhere holds no value the witness needs; under a moved root the run
+     * may make it at another endpoint or not at all (r7 hdfs-17960: the
+     * fsimage's name maps, re-serialized after the flip).  A read no row
+     * answers is held only where the model chose a writer for it; otherwise
+     * its outside store is the run's own.
      */
     private static List<JsonObject> stateEdges(StateClosure closure,
-                                               Map<String, WriteRow> chosen) {
+                                               Map<String, WriteRow> chosen,
+                                               Set<String> restsOn) {
         List<JsonObject> edges = new ArrayList<JsonObject>();
         Set<String> orders = new LinkedHashSet<String>();
         for (Map.Entry<String, ReadRow> reader : closure.readers.entrySet()) {
             ReadRow read = reader.getValue();
+            if (!restsOn.contains(SmtLowering.locationKey(read.location()))) {
+                continue;
+            }
             WriteRow held = chosen.containsKey(reader.getKey())
                     ? chosen.get(reader.getKey())
                     : closure.joined.get(reader.getKey());
