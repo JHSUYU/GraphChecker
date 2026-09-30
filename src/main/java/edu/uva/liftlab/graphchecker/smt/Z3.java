@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -217,6 +218,21 @@ public final class Z3 {
      */
     static final long ORPHAN_MARGIN_SECONDS = 10L;
 
+    /**
+     * The z3 processes running now.  A JVM that ends (a bound's or a
+     * stop's TERM) takes them with it at once; one killed outright runs no
+     * hook, and its z3 stops on its own clock ({@link #hardTimeout}) --
+     * budgets run to 30 minutes.
+     */
+    private static final Set<Process> LIVE = Collections.newSetFromMap(
+            new ConcurrentHashMap<Process, Boolean>());
+
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            for (Process process : LIVE) process.destroyForcibly();
+        }, "graphchecker-z3-reaper"));
+    }
+
     /** z3's own wall clock for one run of {@code budgetMillis}. */
     static String hardTimeout(long budgetMillis) {
         return "-T:" + ((budgetMillis + 999L) / 1000L + ORPHAN_MARGIN_SECONDS);
@@ -240,11 +256,20 @@ public final class Z3 {
             // z3 never ran: undecided, not a z3 "(error ...)".
             return "error " + notLaunched.getMessage();
         }
-        Process running = process;
+        LIVE.add(process);
+        try {
+            return drive(process, input, budget);
+        } finally {
+            LIVE.remove(process);
+        }
+    }
+
+    /** One launched z3, fed and read under its budget. */
+    private String drive(Process process, String input, long budget) {
         byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
         AtomicReference<String> read = new AtomicReference<String>("");
         Thread writer = new Thread(() -> {
-            try (OutputStream stream = running.getOutputStream()) {
+            try (OutputStream stream = process.getOutputStream()) {
                 stream.write(bytes);
                 stream.flush();
             } catch (IOException closed) {
@@ -253,7 +278,7 @@ public final class Z3 {
         }, "graphchecker-z3-writer");
         Thread reader = new Thread(() -> {
             try {
-                read.set(readAll(running.getInputStream()));
+                read.set(readAll(process.getInputStream()));
             } catch (IOException truncated) {
                 // A broken pipe answers nothing: "" is undecided.
             }
