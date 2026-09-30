@@ -2290,6 +2290,13 @@ public final class SmtLowering {
         assertions.add(new Stated(formula, name));
     }
 
+    /** Takes back the named assertions of a refused path. */
+    public void retract(List<String> names) {
+        if (names.isEmpty()) return;
+        Set<String> taken = new LinkedHashSet<String>(names);
+        assertions.removeIf(held -> taken.contains(held.label));
+    }
+
     public void assertPlain(String formula) {
         if (formula == null || formula.isEmpty()
                 || "true".equals(formula)) {

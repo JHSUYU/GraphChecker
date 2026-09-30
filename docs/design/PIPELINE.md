@@ -439,9 +439,9 @@ contained in the path's; one `message_arm__` selector per sender (identical arm 
 exactly one, each arm closed like a path in its own session (producer prefix before the delivery, its
 P3 closure, nested families to depth 16). A message no session can send drops the path. A path's
 families (message and state) are all or nothing: their named assertions, arm choices and families
-are held until the path is a disjunct (`ComposedFamilies#commit`) and dropped with a refused path
-(`#discard`), so the next path, composed at the ordinal a refused one left free, names nothing
-twice.
+are stated as they are made and taken back with a refused path (`ComposedFamilies#discard`,
+`SmtLowering#retract`), so the next path, composed at the ordinal a refused one left free, names
+nothing twice.
 
 **State families** (`stateFamilies`), for joined reads at the anchor only, of a static field or of a heap
 location whose owner is an object rid (`Arms.namedOwner`; a class-name owner gets no alternatives):
