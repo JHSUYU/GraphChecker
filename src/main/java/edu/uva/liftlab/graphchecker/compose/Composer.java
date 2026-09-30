@@ -1140,7 +1140,7 @@ public final class Composer {
         if (producer == null) return false;
         for (ExportRow export : arms.attestedExports(producer)) {
             Term delivered = composedFamilies.lower(export.sessionId(),
-                    export.expressionRef(), "paired-arm");
+                    export.expressionRef(), "paired-arm", null);
             if (delivered == null) continue;
             lowering.declareStated(attach.symbol(), delivered.sort);
             return true;
@@ -1440,7 +1440,7 @@ public final class Composer {
                 attempt = lowering.attempt(expression, null,
                         "state-join:" + key + "@" + read.observedVersion());
                 if (attempt.lowered()) {
-                    Term value = attempt.value();
+                    Term value = lowering.commit(attempt);
                     lowering.declareStated(read.symbol(), value.sort);
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");

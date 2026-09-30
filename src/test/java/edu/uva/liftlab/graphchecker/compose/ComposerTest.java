@@ -2633,13 +2633,15 @@ public class ComposerTest {
                 composition.body().contains("indexed_insert")
                         || composition.body().contains("indexed_remove")
                         || composition.body().contains("indexed_contains"));
-        assertTrue("each insertion and the removal carry the operation's "
-                        + "own definedness, at the size the recording "
-                        + "stated and a write in place kept: "
+        assertTrue("each insertion, the write and the removal carry the "
+                        + "operation's own definedness, at the size the "
+                        + "recording stated and a write in place kept: "
                         + composition.body(),
                 composition.body().contains("(and (<= 0 0) (<= 0 0))")
                         && composition.body().contains(
                         "(and (<= 0 1) (<= 1 1))")
+                        && composition.body().contains(
+                        "(i 1)) (and (<= 0 i) (< i (indexed_size s))))")
                         && composition.body().contains(
                         "(and (<= 0 1) (< 1 2))"));
         assertTrue("and the element lands at the index, cell by cell, with "
@@ -3759,8 +3761,12 @@ public class ComposerTest {
             Path iteration = folder.newFolder("attempt-" + stated).toPath();
             Session session = new Session(iteration, "s0", false);
             session.serial("3", "0", "8");
-            session.expression("EXPR.00000000000000a3", binary("+",
-                    symbol(NO_ROW, "I"), integer("I", 1L)));
+            // The write refuses (its leaf is undeclared) and states what
+            // the run read of it: a side condition of the join attempt.
+            JsonObject written = binary("+", symbol(NO_ROW, "I"),
+                    integer("I", 1L));
+            written.add(VmRows.RECORDED_READING, integer("I", 4242L));
+            session.expression("EXPR.00000000000000a3", written);
             LocationId stamp = LocationId.of(LocationKind.INSTANCE, "58",
                     "40");
             session.write(Endpoint.of(ANCHOR, "Replica#set#1:WRITE",
@@ -3786,6 +3792,14 @@ public class ComposerTest {
                                 && fatalArm(composition).contains(
                                 SmtNames.legalSymbols(
                                         "(= INSTANCE/58#40@v158 1001)")));
+                // What the dropped join raised went with it: its side
+                // condition and its cut (M3, L3).
+                assertFalse("the dropped join's recorded reading binds "
+                                + "nothing: " + composition.body(),
+                        composition.body().contains("4242"));
+                assertFalse("and its cut is no gap",
+                        named(composition.gaps(),
+                                "UndeclaredFreeSymbol:" + NO_ROW));
                 continue;
             }
             assertEquals("with no pin nothing binds it", 0,

@@ -168,9 +168,6 @@ public final class SmtLowering {
      */
     private final Map<String, Declared> declarations =
             new LinkedHashMap<String, Declared>();
-    /** What this corpus states at two sorts: name -> "<held> and <new>". */
-    private final Map<String, String> sortConflicts =
-            new LinkedHashMap<String, String>();
     /**
      * Everything this lowering states, as {@link Stated}: FACTS about a name
      * (non-null identity, integral domain, cell shape) and LABELED questions
@@ -195,10 +192,6 @@ public final class SmtLowering {
     private final Map<String, SharedTerm> sharedByName =
             new LinkedHashMap<String, SharedTerm>();
     private final Map<String, String> unsupportedDetail =
-            new LinkedHashMap<String, String>();
-    private final Set<String> cuts = new LinkedHashSet<String>();
-    /** Undeclared symbols lowered to the value their node states. */
-    private final Map<String, String> pinnedLeaves =
             new LinkedHashMap<String, String>();
     /**
      * The reads {@code Composer#pin} bound to what their row states, as
@@ -231,10 +224,8 @@ public final class SmtLowering {
     /** The session's expression table, for {@link #lower(String)}. */
     private final ExpressionTable table;
 
-    /** Side conditions the conjunction now open raised, or null. */
-    private Set<String> openSideConditions;
-    /** What the conjunction now open refused: its frame of {@link #raising}. */
-    private Set<String> openRefusals;
+    /** What the conjunction now open raised: its frame of {@link #raising}. */
+    private Raised open;
     private String scope = "";
     private SessionJoin join = NO_JOIN;
     /** The expression table of the session whose conjunction is open. */
@@ -248,22 +239,30 @@ public final class SmtLowering {
      * was lowered again (a Solr cluster state rebuilt per notification:
      * millions of terms), and a refused leaf minted a fresh name at each
      * visit, so no subterm above it deduplicated.  One conjunction has one
-     * memo ({@link #begin}): a hit's side conditions are already in it.  An
-     * entry holds while the declarations it read stand; a name newly stated
-     * clears the memo ({@link #put}).
+     * memo ({@link #begin}).  An entry holds while the declarations it read
+     * stand; a name newly stated clears the memo ({@link #put}).
      */
     private Map<MemoKey, Attempt<?>> memo = new HashMap<MemoKey, Attempt<?>>();
     /**
-     * THE REFUSAL FRAMES, innermost last (null while one raised nothing).  A
-     * refusal is raised into the innermost only; what a frame collected
-     * reaches the one enclosing it only when {@link #commit}ted.  The open
-     * conjunction is the outermost ({@link #begin}); a memoized lowering is
-     * committed on every hit; an {@link #attempt} is committed or dropped by
-     * its caller.  No other route puts a refusal on a path: a path-level list
-     * filled at once kept a join's refusals after its pin bound the read, and
-     * missed a memo hit's (SOLR-18406 s46).
+     * THE FRAMES, innermost last (null while one raised nothing): what each
+     * lowering in progress raised ({@link Raised}).  Anything is raised into
+     * the innermost only, and reaches the one enclosing it only when
+     * {@link #commit}ted.  The open conjunction is a frame ({@link #begin});
+     * a memoized lowering is committed on every hit; an {@link #attempt} is
+     * committed or dropped by its caller, and dropped it raised NOTHING --
+     * no refusal, no side condition, no gap.  No other route puts anything
+     * on a path: a path-level list filled at once kept a join's refusals
+     * after its pin bound the read and missed a memo hit's (SOLR-18406 s46),
+     * and a dropped writer's recorded readings and container requires still
+     * bound the path.
      */
-    private final List<Set<String>> raising = new ArrayList<Set<String>>();
+    private final List<Raised> raising = new ArrayList<Raised>();
+    /**
+     * What reached no frame: this lowering's own.  A side condition here is
+     * a FACT ({@link #assertPlain}, as when no conjunction is open), a
+     * diagnostic the corpus's gap; a refusal refuses nothing.
+     */
+    private final Raised root = new Raised();
 
     /** The lowering of one CORPUS: its rows declare every symbol. */
     public SmtLowering(Map<String, Sort> declaredSymbols) {
@@ -409,7 +408,16 @@ public final class SmtLowering {
             return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
         }
         return new Lowered(value.text, value.sort.smt, lowered.lowered()
-                ? "" : lowered.refusals.iterator().next());
+                ? "" : lowered.refusals().iterator().next());
+    }
+
+    /**
+     * One expression of the open conjunction's session, by {@link
+     * #reference}: its definedness is a side condition of that conjunction,
+     * answered by {@link #end} with the rest.  Null when the table lacks it.
+     */
+    public Term term(String expressionRef, String origin) {
+        return reference(expressionRef, origin);
     }
 
     /**
@@ -542,50 +550,105 @@ public final class SmtLowering {
         // NESTED, not replaced: an arm is lowered in its producer's scope
         // mid-path; overwriting the path's frame would leave the rest of the
         // path with no join, no table and no refusal sink.
-        frames.push(new Frame(openSideConditions, openRefusals, scope, join,
-                openTable, memo));
-        this.openSideConditions = new LinkedHashSet<String>();
-        this.openRefusals = new LinkedHashSet<String>();
-        raising.add(openRefusals);
+        frames.push(new Frame(open, scope, join, openTable, memo));
+        this.open = new Raised();
+        raising.add(open);
         this.scope = sessionId;
         this.join = sessionJoin;
         this.openTable = expressions;
         this.memo = new HashMap<MemoKey, Attempt<?>>();
     }
 
-    /** Closes it, answering the side conditions its lowering raised. */
+    /**
+     * Closes it, answering the side conditions its lowering raised.  Its
+     * refusals are the caller's to read before ({@link #openRefusals}); its
+     * gaps reach the frame enclosing it, whatever the caller does with the
+     * conjunction.
+     */
     public List<String> end() {
-        List<String> conditions = new ArrayList<String>(openSideConditions);
+        Raised closed = open;
         raising.remove(raising.size() - 1);
         Frame previous = frames.pop();
-        openSideConditions = previous.conditions;
-        openRefusals = previous.refusals;
+        open = previous.open;
         scope = previous.scope;
         join = previous.join;
         openTable = previous.table;
         memo = previous.memo;
-        return conditions;
+        top().gaps(closed);
+        return new ArrayList<String>(closed.conditions);
     }
 
     /** One enclosing conjunction, kept while a nested one is open. */
     private static final class Frame {
-        private final Set<String> conditions;
-        private final Set<String> refusals;
+        private final Raised open;
         private final String scope;
         private final SessionJoin join;
         private final ExpressionTable table;
         private final Map<MemoKey, Attempt<?>> memo;
 
-        private Frame(Set<String> conditions, Set<String> refusals,
-                      String scope, SessionJoin join, ExpressionTable table,
-                      Map<MemoKey, Attempt<?>> memo) {
-            this.conditions = conditions;
-            this.refusals = refusals;
+        private Frame(Raised open, String scope, SessionJoin join,
+                      ExpressionTable table, Map<MemoKey, Attempt<?>> memo) {
+            this.open = open;
             this.scope = scope;
             this.join = join;
             this.table = table;
             this.memo = memo;
         }
+    }
+
+    /**
+     * What one frame raised: REFUSALS (the value does not stand), SIDE
+     * CONDITIONS (what its lowering requires of it: definedness, recorded
+     * readings, container requires) and GAPS (cuts, sort conflicts, pinned
+     * returns).  Held until committed to the frame enclosing it.
+     */
+    private final class Raised {
+        private final Set<String> refusals = new LinkedHashSet<String>();
+        private final Set<String> conditions = new LinkedHashSet<String>();
+        private final Set<String> cuts = new LinkedHashSet<String>();
+        /** name -> "<held> and <new>". */
+        private final Map<String, String> sortConflicts =
+                new LinkedHashMap<String, String>();
+        /** symbol -> the value its node states it returned. */
+        private final Map<String, String> pinnedLeaves =
+                new LinkedHashMap<String, String>();
+
+        private void refusal(String subject) {
+            if (this != root) refusals.add(subject);
+        }
+
+        private void condition(String predicate) {
+            if (this == root) {
+                assertPlain(predicate);
+            } else {
+                conditions.add(predicate);
+            }
+        }
+
+        /** Everything another frame raised, as this frame's own. */
+        private void all(Raised other) {
+            for (String subject : other.refusals) refusal(subject);
+            for (String predicate : other.conditions) condition(predicate);
+            gaps(other);
+        }
+
+        private void gaps(Raised other) {
+            cuts.addAll(other.cuts);
+            sortConflicts.putAll(other.sortConflicts);
+            pinnedLeaves.putAll(other.pinnedLeaves);
+        }
+    }
+
+    /** The innermost frame, made on the first thing raised into it. */
+    private Raised top() {
+        int top = raising.size() - 1;
+        if (top < 0) return root;
+        Raised held = raising.get(top);
+        if (held == null) {
+            held = new Raised();
+            raising.set(top, held);
+        }
+        return held;
     }
 
     /** A node by identity (the decoder shares it), and the sort asked. */
@@ -613,17 +676,18 @@ public final class SmtLowering {
     }
 
     /**
-     * One lowering and what it refused, held in a frame of its own until
-     * {@link #commit}ted to the frame enclosing it; dropped, it refuses
+     * One lowering and what it raised, held in a frame of its own until
+     * {@link #commit}ted to the frame enclosing it; dropped, it raised
      * nothing.
      */
     public static final class Attempt<T> {
         private final T value;
-        private final Set<String> refusals;
+        /** Null when it raised nothing. */
+        private final Raised raised;
 
-        private Attempt(T value, Set<String> refusals) {
+        private Attempt(T value, Raised raised) {
             this.value = value;
-            this.refusals = refusals;
+            this.raised = raised;
         }
 
         /** What it lowered to: a refused construct as its fresh name. */
@@ -633,22 +697,27 @@ public final class SmtLowering {
 
         /** Whether it lowered with no refusal. */
         public boolean lowered() {
-            return refusals.isEmpty();
+            return raised == null || raised.refusals.isEmpty();
+        }
+
+        /** What it refused, each cause once. */
+        private Set<String> refusals() {
+            return raised == null ? Collections.<String>emptySet()
+                    : raised.refusals;
         }
     }
 
-    /** One lowering run in a refusal frame of its own ({@link #raising}). */
+    /** One lowering run in a frame of its own ({@link #raising}). */
     private <T> Attempt<T> attempting(Supplier<T> lowering) {
         raising.add(null);
         T value;
-        Set<String> refused;
+        Raised raised;
         try {
             value = lowering.get();
         } finally {
-            refused = raising.remove(raising.size() - 1);
+            raised = raising.remove(raising.size() - 1);
         }
-        return new Attempt<T>(value, refused == null
-                ? Collections.<String>emptySet() : refused);
+        return new Attempt<T>(value, raised);
     }
 
     /**
@@ -661,15 +730,15 @@ public final class SmtLowering {
         return attempting(() -> dispatch(expression, expected, origin));
     }
 
-    /** Keeps what an attempt refused, raised where it is committed. */
+    /** Keeps what an attempt raised, raised where it is committed. */
     public <T> T commit(Attempt<T> attempt) {
-        for (String subject : attempt.refusals) raise(subject);
+        if (attempt.raised != null) top().all(attempt.raised);
         return attempt.value;
     }
 
     /**
      * One node lowered once per conjunction ({@link #memo}), committed on
-     * every hit: each lowering reaching it rests on what it refused.
+     * every hit: each lowering reaching it rests on what it raised.
      */
     @SuppressWarnings("unchecked")
     private <T> T memoized(JsonElement node, Object expected,
@@ -684,22 +753,10 @@ public final class SmtLowering {
         return (T) commit(held);
     }
 
-    /** Raises one refusal into the innermost frame. */
-    private void raise(String subject) {
-        int top = raising.size() - 1;
-        if (top < 0) return;
-        Set<String> held = raising.get(top);
-        if (held == null) {
-            held = new LinkedHashSet<String>();
-            raising.set(top, held);
-        }
-        held.add(subject);
-    }
-
     /** What the conjunction now open refused, each cause once. */
     public List<String> openRefusals() {
-        return openRefusals == null ? Collections.<String>emptyList()
-                : new ArrayList<String>(openRefusals);
+        return open == null ? Collections.<String>emptyList()
+                : new ArrayList<String>(open.refusals);
     }
 
     // ------------------------------------------------------------------
@@ -857,7 +914,7 @@ public final class SmtLowering {
         String returned = ReadRow.returned(expression);
         Term pinned = statedValue(returned, javaType);
         if (pinned != null) {
-            pinnedLeaves.put(raw, returned);
+            top().pinnedLeaves.put(raw, returned);
             return pinned;
         }
         return cut("UndeclaredFreeSymbol:" + raw,
@@ -930,9 +987,9 @@ public final class SmtLowering {
                         expected, origin + ":join"), expression, location,
                         key, version, expected), key, version));
                 if (joined.lowered()) {
-                    String read = rowSymbol(key, version,
-                            joined.value().sort);
-                    return read == null ? joined.value()
+                    Term lowered = commit(joined);
+                    String read = rowSymbol(key, version, lowered.sort);
+                    return read == null ? lowered
                             : symbolTerm(symbolNode(read, javaType), expected);
                 }
             }
@@ -1645,7 +1702,7 @@ public final class SmtLowering {
         }
         if (held != null && held.sort != sort) {
             String detail = held.sort + " and " + sort;
-            sortConflicts.put(name, detail);
+            top().sortConflicts.put(name, detail);
             refuse(SORT_CONFLICT + ":" + name, "this corpus states one "
                     + "solver name at two sorts, " + detail + ": the "
                     + "first stands and nothing is composed over it");
@@ -1659,7 +1716,7 @@ public final class SmtLowering {
 
     /** Names this corpus would give two sorts, and the two sorts. */
     public Map<String, String> sortConflicts() {
-        return Collections.unmodifiableMap(sortConflicts);
+        return Collections.unmodifiableMap(root.sortConflicts);
     }
 
     /** Truncated minted names that would stand for two identities. */
@@ -1714,15 +1771,11 @@ public final class SmtLowering {
                 || "true".equals(predicate)) {
             return;
         }
-        if (openSideConditions != null) {
-            openSideConditions.add(predicate);
-        } else {
-            assertPlain(predicate);
-        }
+        top().condition(predicate);
     }
 
     private void refuse(String subject, String detail) {
-        raise(subject);
+        top().refusal(subject);
         if (detail != null && !detail.isEmpty()) {
             unsupportedDetail.put(subject, detail);
         }
@@ -1731,7 +1784,7 @@ public final class SmtLowering {
     /** A refused LEAF of this Java type ({@link #leaf}). */
     private Term cut(String subject, String detail, Sort expected,
                      String javaType) {
-        cuts.add(subject);
+        top().cuts.add(subject);
         refuse(CUT + ":" + subject, detail);
         return leaf(expected, javaType);
     }
@@ -1853,7 +1906,7 @@ public final class SmtLowering {
      */
     public Map<String, String> cuts() {
         Map<String, String> named = new LinkedHashMap<String, String>();
-        for (String cut : cuts) {
+        for (String cut : root.cuts) {
             named.put(cut,
                     unsupportedDetail.getOrDefault(CUT + ":" + cut, ""));
         }
@@ -1865,7 +1918,7 @@ public final class SmtLowering {
      * that value: a dependency the formula no longer carries, named once.
      */
     public Map<String, String> pinnedLeaves() {
-        return Collections.unmodifiableMap(pinnedLeaves);
+        return Collections.unmodifiableMap(root.pinnedLeaves);
     }
 
     /**

@@ -540,7 +540,7 @@ final class ComposedFamilies {
         Map<String, String> guards = new LinkedHashMap<String, String>();
         for (Out out : outs) {
             Term delivered = lower(session, out.arm.expressionRef(),
-                    "arm:" + out.arm.slotId());
+                    "arm:" + out.arm.slotId(), conjuncts);
             if (delivered == null) {
                 stated = false;
                 break;
@@ -1022,8 +1022,14 @@ final class ComposedFamilies {
     /**
      * One row's expression, lowered in its OWN session's scope: its
      * identities and reads belong to that execution, not the consumer's.
+     * What that lowering requires of the value -- its definedness, the
+     * recorded readings and container requires beneath it -- goes into
+     * {@code conditions}, to be conjoined wherever the value is; without
+     * them the value is free of what the run established about it.  Null
+     * {@code conditions}: only the value's sort is asked.
      */
-    Term lower(String session, String expressionRef, String origin) {
+    Term lower(String session, String expressionRef, String origin,
+               List<String> conditions) {
         SessionReader reader = corpus.session(session);
         if (reader == null) return null;
         JsonObject expression = reader.expressions()
@@ -1037,10 +1043,10 @@ final class ComposedFamilies {
         }
         lowering.begin(session, corpus.join(session),
                 reader.expressions());
-        Term value = lowering.dispatch(expression, null, origin);
+        Term value = lowering.term(expressionRef, origin);
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
-        lowering.end();
+        List<String> required = lowering.end();
         if (!refused.isEmpty()) {
             for (String refusal : refused) {
                 composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, refusal,
@@ -1049,6 +1055,7 @@ final class ComposedFamilies {
             }
             return null;
         }
+        if (conditions != null) conditions.addAll(required);
         return value;
     }
 }
