@@ -203,6 +203,14 @@ public final class ContainerStateModel {
                            Host host) {
         if (value == null || value.sort != Sort.VALUE) return value;
         String kind = valueKind(javaType);
+        if (cellSort == Sort.STRING) {
+            // A String a container answers may be null (a value stored
+            // null): the cell is a String or the null cell, and says which.
+            String isNull = "(= " + value.text + " " + NULL_CELL + ")";
+            host.require("(or ((_ is VString) " + value.text + ") " + isNull
+                    + ")");
+            return Term.string("(valueString " + value.text + ")", isNull);
+        }
         if (!kind.isEmpty()) {
             host.require("((_ is " + kind + ") " + value.text + ")");
         }
@@ -223,9 +231,6 @@ public final class ContainerStateModel {
         if (cellSort == Sort.FLOAT64) {
             return new Term("(valueDouble " + value.text + ")",
                     Sort.FLOAT64);
-        }
-        if (cellSort == Sort.STRING) {
-            return new Term("(valueString " + value.text + ")", Sort.STRING);
         }
         return value;
     }

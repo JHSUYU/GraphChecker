@@ -1725,7 +1725,17 @@ public final class SmtLowering {
             refuse(origin + ":CONTAINER_STATE_USED_AS_VALUE", "");
             return free(Sort.VALUE, IntegralWidth.NONE);
         }
-        return Term.vm(value.text, sort, value.integralWidth);
+        return lowered(value);
+    }
+
+    /** A codec value as a term: a String keeps the nullness its cell
+     *  states, else it stays unknown. */
+    private static Term lowered(ContainerSmtCodec.Term value) {
+        Sort sort = VmTermLowering.sortOfContainer(value.sort);
+        return value.nullness.isEmpty()
+                ? Term.vm(value.text, sort, value.integralWidth)
+                : Term.of(value.text, sort, value.integralWidth,
+                value.nullness, "", "true");
     }
 
     // ------------------------------------------------------------------
@@ -2385,9 +2395,7 @@ public final class SmtLowering {
             required.addAll(asked.raised.conditions);
             top().gaps(asked.raised);
         }
-        ContainerSmtCodec.Term value = asked.value();
-        return Term.vm(value.text, VmTermLowering.sortOfContainer(value.sort),
-                value.integralWidth).withPrecondition(and(required));
+        return lowered(asked.value()).withPrecondition(and(required));
     }
 
     /**
@@ -2631,8 +2639,9 @@ public final class SmtLowering {
             sharedTerms.put(digest, held);
             sharedByName.put(held.name, held);
         }
-        return new ContainerSmtCodec.Term(held.name, value.sort,
-                value.integralWidth, value.indexedSize);
+        return value.nullness.isEmpty() ? new ContainerSmtCodec.Term(
+                held.name, value.sort, value.integralWidth, value.indexedSize)
+                : ContainerSmtCodec.Term.string(held.name, value.nullness);
     }
 
     // ------------------------------------------------------------------

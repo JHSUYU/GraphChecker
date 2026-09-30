@@ -2258,6 +2258,34 @@ public class ComposerTest {
     }
 
     /**
+     * A String a map answers is null where its cell is the null cell (a key
+     * never put, a value stored null), so {@code get(k) != null} is a
+     * condition over the state, never refused for an unknown nullness.
+     */
+    @Test
+    public void aStringAMapAnswersIsNullWhereItsCellIs() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        declared.put("k", VmTermLowering.Sort.INT);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        JsonObject put = relation("ASSOCIATIVE", "PUT", "java/util/Map",
+                relation("ASSOCIATIVE", "SNAPSHOT_BASE", "java/util/HashMap",
+                        null), integer("I", 5L),
+                vmLeaf("SymbolExpression", "s", "Ljava/lang/String;"));
+        JsonObject asked = relation("ASSOCIATIVE", "READ",
+                "Ljava/lang/String;", put,
+                vmLeaf("SymbolExpression", "k", "I"));
+        String text = lowering.dispatch(binary("!=", asked, vmNull()),
+                VmTermLowering.Sort.BOOL, "test").text;
+        lowering.end();
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        assertTrue(text, text.contains(ContainerStateModel.NULL_CELL));
+    }
+
+    /**
      * A reference compared with an object the VM named is an identity
      * test whichever side the object is on.
      */

@@ -182,7 +182,9 @@ name its symbols (IMPORT invariant 11).
 A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
 admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
 only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the
-identity it returned, which a read no write row states is pinned to. A referent's version is a
+identity it returned, which a read no write row states is pinned to; an exact read
+(`observedExact`) the VM left unstated returned its version's leaf -- null, a constant or a named
+object, a reference cell's INITIAL null among them (`ReadRow#returned`). A referent's version is a
 write row or the write refuses it by name (`RowPublication#unrowedReferent`): the read-out refused
 the container's log (its fault, e.g. `CONTAINER_BASE_UNSTATED` for a class the VM walks no base of,
 a truncated envelope), or holds the version as no row (`VERSION_NOT_ROWED`) or no longer
@@ -504,7 +506,8 @@ is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formul
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
 lowers to the run's cell, except through an owner that is a read `stateJoins` joined at the anchor
-(`SmtLowering#movable`: a state family may bind it to another writer's object). There it is the
+at a location a STATE family re-pairs (`SmtLowering#movable`: the family may bind it to another
+writer's object). There it is the
 field of the object the owner is, by the one rule for what is asked through such an owner
 (`perCandidate`, R3-REFCONT's "answer per candidate identity"):
 `(ite (= owner id_run) cell_run (ite (= owner id_k) cell_k ...))`, conjoined with "the owner is one
@@ -551,9 +554,11 @@ DIAGNOSTIC). An answer holds only where the
 owner is its object, so what its lowering requires is its case's precondition, never the path's. A
 store that states no state (`referentStateRefused`, none, a version no write row states
 (`UNPUBLISHED`), or no version lowers) delivers no case,
-named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A movable owner that is no
-reference read (a map's own read, `outer.get(k).get(k2)`) names no candidates and refuses the path
-(`UNSTATED_VALUE:OwnerCandidates:<location>`). `ENTRY` is a view to walk through; as a value no
+named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A container query's read
+names no object, so a location a family re-pairs whose query reads a field or a query is asked
+through keeps the run's pairing (`OWNER_PINNED_BY_CONTAINER_READ`, below); a re-paired reference
+whose write and row name no object refuses the path (`UNSTATED_VALUE:OwnerCandidates:<location>`).
+`ENTRY` is a view to walk through; as a value no
 `Value` spells it, and it is refused by name.
 
 **What a state arm states for CONFIRM** (`SmtLowering#stateChoices`, `ComposedFamilies.ArmChoice#states`).
@@ -571,7 +576,11 @@ key m's chain names above its exact empty base, where m holds it (`assoc_put_if`
 each component as `assoc_remove_if`'s); a source whose chain bounds no keys is refused by name
 (`ContainerRelation:ASSOCIATIVE:PUT_ALL:source-keys-unstated`), and a view over the result counts
 the source's keys. The presence and match conditions of `putIfAbsent`, `replace` and `remove(k, v)`
-are comparisons of a `READ` with null or the argument, lowered as any comparison.
+are comparisons of a `READ` with null or the argument, lowered as any comparison. A String a map
+answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
+(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A view's positions are
+stated linearly in its chain's puts: each position below the size names a present key held at that
+position, and each put key present is held at a position below the size.
 
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
@@ -592,7 +601,9 @@ object no row records the mutation of), or when a store of it states or refuses 
 the object it stored has no container log of its own in the session, a `Collections` wrapper or a
 view (`OWNER_PINNED_BY_WRAPPER:<location>@<session>`: a query through a wrapper reaches its map
 through a field no row records and names no owner, so it would be the run's map's answer whichever
-object the family delivered).
+object the family delivered), or when the anchor or a reached occurrence asks a field or a query
+through a container query's read of it (`OWNER_PINNED_BY_CONTAINER_READ:<location>@<session>`, the
+read names no object, `Composer#containerOwners`).
 
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint
