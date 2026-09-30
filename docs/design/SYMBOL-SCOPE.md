@@ -299,22 +299,18 @@ referent: carrier and cell are the field, `declaredCallee` the mutator, `publish
 sites. The concolic weave puts `ConcolicRegionRuntime.observeTrackedSite(siteId, cell, receiver)`
 before each (`CausynthPipeline#instrumentConcolicObservedSites`): before the `putfield`, before the
 atomic's RMW call, before the `getfield`. Inside an active region it calls the VM's
-`observeExactPrimitiveField`, which starts the location's log with an INITIAL version holding the
-current value unless a log stands (VM.md §5). A concrete store after it is then a version, and a
-read states the version it saw, INITIAL when no store of the window came first. An access before
-its object's constructor call, and a read site that is no `getfield` of its cell, are left
-unobserved; a VM failure is an `UNSTATED_VALUE` DIAGNOSTIC row. The VM observes only primitive
-integral fields: for a wrapper-typed field it prints a warning and starts no log, so such a field
-is versioned only once a symbolic value is stored into it.
+`observeField(owner, declaringClass, name, descriptor)` (`runtime/ConcolicVmBroker#observeField`),
+which starts the location's log with an INITIAL version holding the current value -- an integral's
+or a wrapper's word, a reference's identity -- unless a log stands (VM.md §5). A concrete store
+after it is then a version, and a read states the version it saw, INITIAL when no store of the
+window came first. An access before its object's constructor call, and a read site that is no
+`getfield` of its cell, are left unobserved; a status the VM refuses with (`UNSUPPORTED_TARGET`
+for a `float` or `double` field) is an `UNSTATED_VALUE` DIAGNOSTIC row naming it.
 
-Each observed row states its cell's `trackedKind`. A `REFERENCE` cell's access is observed like a
-value's, and until the VM's observer takes a reference (R3-REFCONT WP2) the observation is refused
-before the VM by name (`runtime/ConcolicVmBroker`, `REFERENCE_OBSERVATION_UNSUPPORTED`): one
-DIAGNOSTIC `UNSTATED_VALUE` gap per site and session, and the field is versioned only once a
-shadowed object is stored into it. Not observed: a `publishedFrom` write site, whose receiver is
-the local's container, not the carrier's holder (its log starts at its first model event); and a
-static cell, whose location is its class's mirror, which no observer takes yet (the map names it,
-`static: true`).
+Each observed row states its cell's `trackedKind`; a `REFERENCE` cell's access is observed like a
+value's. Not observed: a `publishedFrom` write site, whose receiver is the local's container, not
+the carrier's holder (its log starts at its first model event); and a static cell, whose location
+is its class's mirror: the map names it (`static: true`) and the weave passes no class owner yet.
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).

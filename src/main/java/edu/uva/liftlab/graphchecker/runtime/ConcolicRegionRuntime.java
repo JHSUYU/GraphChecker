@@ -741,7 +741,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         try {
-            engine().observeExactPrimitiveField(receiver, fieldSignature);
+            engine().observeField(receiver, fieldSignature);
             active.pathRecordingStarted = true;
         } catch (Throwable failure) {
             // Not one lost row: every later read of the cell joins nothing.
