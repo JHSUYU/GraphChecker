@@ -973,9 +973,11 @@ public final class ScheduleLog {
                             ? Collections.<ScheduleEvent>emptyList()
                             : SessionReader.readSchedule(restFile));
         } catch (IOException | RuntimeException unreadable) {
-            System.err.println("Causynth could not read the schedule "
-                    + file + " / " + restFile + ": " + unreadable
-                    + "; the replay runs free");
+            // An order it cannot read, it left at its first event.
+            stateLocked(String.valueOf(file == null ? restFile : file),
+                    "the schedule " + file + " / " + restFile + " could not"
+                            + " be read (" + unreadable + "), so the replay"
+                            + " runs free from its first event");
             return;
         }
         Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
