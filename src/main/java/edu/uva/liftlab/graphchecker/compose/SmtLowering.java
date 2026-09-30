@@ -2593,8 +2593,20 @@ public final class SmtLowering {
         };
     }
 
+    /**
+     * One cell's {@code Value}: the constructor its Java type names, else
+     * the width its lowering carries -- an arithmetic node states no Java
+     * type, and a long sum stored in a map is a Long cell that a
+     * {@code getOrDefault(k, 0L)} reads back as {@code VLong} (SOLR-18406's
+     * reservation, {@code nanoTime() + reserve}, was boxed {@code VInt} and
+     * every read of it contradicted its own tag) -- else its sort.
+     */
     private static String boxed(Term value, String javaType) {
         String integral = ContainerStateModel.boxIntegral(value.text, javaType);
+        if (integral.isEmpty()
+                && value.integralWidth == IntegralWidth.JAVA_LONG) {
+            integral = ContainerStateModel.boxIntegral(value.text, "J");
+        }
         if (!integral.isEmpty()) return integral;
         switch (value.sort) {
             case BOOL: return "(VBool " + value.text + ")";

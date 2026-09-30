@@ -2603,9 +2603,10 @@ public class ComposerTest {
         session.roots.add(RootMintRow.of(id, ++session.seq, reserver,
                 "ROOT.RESERVED", RESERVED, RootKind.CLOCK,
                 Long.toString(seed - 1_000L), null, null, true, 1L));
+        // As the VM publishes it: an arithmetic node states no Java type,
+        // and the deadline is a Long cell by its width alone.
         JsonObject deadline = binary("+", symbol(RESERVED, "J"),
                 integer("J", 6_000L));
-        deadline.addProperty("_java_type", "J");
         JsonObject reserved = relation("ASSOCIATIVE", "PUT", "java/util/Map",
                 relation("ASSOCIATIVE", "SNAPSHOT_BASE",
                         "java/util/concurrent/ConcurrentHashMap", null),
