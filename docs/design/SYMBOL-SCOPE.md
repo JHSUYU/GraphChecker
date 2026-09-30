@@ -1,172 +1,360 @@
-# Symbol scope: what is symbolic, derived from the fatal slice (2026-09-26)
+# Symbol scope: what is symbolic, and from where
 
-Owner's direction (2026-09-26): the symbolic variables are chosen too narrowly.  From
-the fatal condition, take the operands of the branch that decides it; the backward
-data-flow analysis from those operands covers many variables, and the variables they
-are control dependent on -- in other regions too -- can all be symbolic.  Symbols
-propagate as usual; a downstream symbol that receives an upstream value is not free,
-it is bound by symbolic propagation, composition and merge.  Automate it.
+SEED computes one static slice `S` backwards from the annotated throw and publishes, per site of
+`S`, what a replay does there: mint a root, observe shared state, export or attach a wire value, or
+nothing. Java paths below are under `src/main/java/edu/uva/liftlab/graphchecker/`.
 
-This document states the rule and maps it onto the mechanisms that already exist
-(LEAN-DESIGN §1, DESIGN4 §2, GreyGraph §3.1).  It changes WHICH values are symbols,
-not how a symbol is bound or validated.
+Three things are kept apart:
+
+- a **root** is a fresh symbol the replay mints (a clock reading, a fault marker, a configured
+  source). Only roots add freedom.
+- a value is **symbolic by propagation** when the VM's shadow carries an upstream root's expression.
+  The VM propagates through every bytecode a region's thread interprets, whatever the analysis
+  scope (VM.md); the slice decides only where roots, tracked reads and ports are.
+- a **tracked** location is one the VM versions from its first observed access, so COMPOSE can
+  re-pair a read of it with another writer (a STATE family).
 
 ## 1. The rule
 
-A value is symbolic iff it lies in the fatal slice `S` and either comes from the
-environment or enters an occurrence from another occurrence.  Nothing else is a new
-symbol: everything downstream of a symbol is symbolic by propagation (the VM's
-shadows), and a value that already carries an expression is never minted again.
-
-| where the value is born | what it becomes | bound by |
+| where a value comes from | what it is | bound by |
 |---|---|---|
-| **F1** environment: a clock read, a fault door, (later) a restart or a delivery delay | ROOT | free inside its domain -- the only free symbols |
-| **F2** a read of a shared location `ℓ` (field, static, container entry, atomic) that another occurrence writes | TRACKED READ | the version it observed, plus every attested writer occurrence HB-concurrent with it in the same session (`Writers_W(ℓ)`, rule 3: a writer's writes move as a block) |
-| **F3** a message leaf that crosses a process | WIRE ATTACH | the producer's export (message families) |
-| **F4** a return or a parameter crossing into code outside the analysis scope | grow the scope (§2) so the value propagates; if the producer stays out of reach | PINNED to the recorded value |
-| a read of `ℓ` no occurrence of the recording wrote (state from before the window) | PINNED | the recorded value |
+| **F1** the environment: a clock read, a door fault, a configured source hook (§4) | ROOT | its domain: a marker both values, a configured source its `root-domains.jsonl` row (none: pinned), a clock its window (`contract/RootKind`, `contract/RootDomain`) |
+| **F2** a read of shared state another occurrence writes (§5) | TRACKED READ, or a READ placeholder where the accessor is unwoven | the version it observed, and every attested HB-concurrent writer occurrence of the same session (`smt/Arms#stateArms`) |
+| **F3** a message leaf that crosses a process (§6) | WIRE ATTACH, a fresh `v_H` per primitive leaf | the producer's export, paired within the run (message families) |
+| **F4** a return or parameter from code outside the analysis scope | grow the scope (§2.4); what stays outside has no root, tracked read or port, and is symbolic only by propagation | its inputs' expressions, else the recorded value |
+| a read of state from before the window | the INITIAL version of its log | pinned to the recorded value |
 
-Never free: a symbol with no producer is pinned, not released.  A free leaf is a
-witness the engine invented (the v9 lesson; a planted field value would "reproduce"
-any failure).  CONFIRM plants ROOTS only; a tracked read or an attach is realized by
-its producer running in the replay, or not at all.
+A value no rule makes symbolic is concrete: `plan/ConcolicScheduler.SymbolicInputSelection` marks
+every other proposed input `CONCRETE` (`UNDECLARED_SYMBOLIC_INPUT`), and its expression, if any,
+still rides with the value. A root with no domain is pinned (`RootDomain`). A read COMPOSE cannot
+bind is pinned to its recorded value or refused as `UNSTATED_VALUE` (`compose/Composer`).
 
 ## 2. The slice `S`, and its scope
 
-`S` is the backward slice of the operands of the target's deciding branch(es):
-data flow through locals, arguments and returns; the jumping step from a field read
-to every type-compatible write of the field (GreyGraph §3.1.1); message leaves back to
-their senders (F3); and CONTROL DEPENDENCE: a demanded definition demands the branches
-deciding it (`SeedBackwardStaticAnalyzer#demandControllingGuards`), in whatever method
-and region the definition is -- so the guards under which a writer in another region
-stores `ℓ` are in `S`, and their operands in turn obey §1.
+`causynth/SeedBackwardStaticAnalyzer#analyze`, run by `causynth/CausynthPipeline#analyze` after
+`DoorWeave.apply()` (§4.2), so every pass sees the woven doors as program text.
 
-The case's declared class scope (`case.sh` `scope`) is where `S` starts, not where it
-ends: e.g. adhoc sender-gs stopped at `getReplica`'s return.  SEED grows the scope to a
-fixpoint (`run_engine.sh campaign_analyze_grown_scope`):
+### 2.1 Seeds
 
-1. The static pass publishes `scope_frontier.jsonl` (`plan.ScopeFrontier`), each row
-   with its distance to the throw's guards over `S`'s edges (the thrown value's own
-   construction, its message, is not the fatal condition; a cell the throw does not
-   depend on, a declared wire flow's or fault's own seed, is no part of `S`):
-   * `CALLEE`: a callee whose return `S` demands but whose body is not analysed (its
-     class is out of scope, or it is abstract with no implementation in scope);
-   * `FIELD`: a field `S` reads or stores;
-   * `FORMAL`: a method whose primitive or string formal `S` demands only through a
-     field -- a writer's value (`Block.setGenerationStamp(long)`), whose callers are
-     writers too;
-2. `plan.ScopeGrowth` resolves the rows nearest first over the lineage roots (the
-   modules common, hdfs-client, hdfs):
-   * a callee of a type of the roots: the class whose body it runs, or for an
-     abstract one the class each implementation inherits it from, unless that body
-     only returns constants;
-   * a field: its owner and, unless it is private or final, every class storing it;
-     a static final field is a constant, no state;
-   * a formal: every class calling the method.
-   It copies each class into `<output>/scope-classes/` and lists it with its row in
-   `GROWN`, until `causynth_scope_growth_budget` classes are grown (default 24).
-3. The static pass reruns with that directory as a further process directory
-   (`causynth.process.dirs`), and so does every later pass: one application scope.
-   It stops when a round changes nothing.
+- The annotated throw (`@CausynthExceptionTarget`, one Jimple throw or the analysis refuses): the
+  thrown value (`exception_throw`) and the operands of every branch from which the throw is
+  reachable (`exception_guard`).
+- Every capture of every declared WIRE_FLOW port (`seedDeclaredWireFlows`), whether or not the throw
+  needs it.
+- Every call of `Debug.makeSymbolicBoolean` (`seedExplicitFaultEntries`): its result cell and the
+  guards of that call.
 
-What never grows the scope:
-* The target's own callers: they would move the region root, and with it the
-  identity of the occurrence under test (DataXceiver's `run()` swallowed the anchored
-  SASL occurrence).  A formal the throw depends on without a field in between stays
-  pinned (F4).
-* A platform type (the VM models `java.*`), a protobuf message, or a formal of object
-  type: payloads (F3), or objects whose own state is a frontier row of its own.
-* A clock callee, which is a root already (F1).
+### 2.2 Propagation rules
 
-Growth still changes the region structure of the declared scope: new state makes more
-of its methods state-writer roots, and at run time a new root can enclose the target
-through frames the static call graph never sees (a JDK SASL callback).  v60: with
-`Configuration` grown, `getEncryptedStreams` became a root and enclosed the SASL
-handler holding 11741's target, so 8 of the 9 declared target occurrences were no
-longer observed.  A static guard (no new root in the declared scope) could not name
-the grown class responsible -- demand spreads over the whole slice -- and was dropped.
-So a target occurrence is declared against a grown scope or not at all: the nine
-regression cases, declared before growth, run with `causynth_scope_growth_budget=0`;
-cases discovered with growth (the cluster-test workloads) keep it.  Growth is
-deterministic, so their declarations stay valid.
+The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 
-## 3. Control flow across regions
+- **Locals, arguments, returns** into callees whose body is analysed: a concrete method of a
+  non-abstract application class that is not a structural field accessor (`isExpandableMethod`).
+  Callers of a demanded formal or of a demanded `this`, constructor callers, and CHA dispatch to the
+  application implementations of an interface or abstract call (`processDispatchInvoke`; owners in
+  `java.`, `javax.`, `com.google.`, `org.slf4j.` are not dispatched).
+- **Field jump**: a demanded read of an application field demands every write of that field in the
+  scope (`expandFieldWriters`). Field-level, not per object.
+- **Control dependence**: a demanded definition demands the operands of every branch from which it
+  is reachable by a proper subset of the branch's successors (`demandControllingGuards`,
+  `SiteControlDependence.MethodGuards#reaching`), published as `guard_dependency` edges.
+- **Constant stores**: a store of a constant carries no data, so the guards of the calls into the
+  storing method are demanded too, up to three calls up, dispatch included
+  (`expandStoreCallerGuards`, `STORE_CALLER_DEPTH`).
+- **Library calls**: the result of a non-application call depends on its arguments only; its
+  receiver is dropped (`localValueUses`). Exceptions: `String`, `StringBuilder`,
+  `StringBuffer` and every wrapper's unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`,
+  `Boolean.booleanValue` included) keep the receiver (`isValueLikeLibraryInvoke`), and a
+  VM-modeled container operation depends on receiver and arguments
+  (`processSemanticContainerOperation`, the classes in `smt/JavaContainerTypes`: `List`,
+  `ArrayList`, `AbstractList`, `Queue`, `Deque`, `ArrayDeque`, `Map`, `HashMap`, `LinkedHashMap`,
+  `Set`, `HashSet`, `LinkedHashSet`).
+- **Arrays**: element cells stay in the slice; an index never turns symbolic
+  (`processArrayAccesses`). Literals are ignored.
 
-A writer occurrence's decision prefix is already part of every path that joins to it
-(Composer P3, `closureConditions`).  What makes it matter is F2: a store in another
-region is a version -- published and joinable -- when its value is symbolic OR when it
-is a concrete store under a guard the replay decided symbolically (the VM's guarded
-stores, `GuardedStoreSites`, VM24).  The guarded-store table is derived from `S` (every
-method of `S` that stores a tracked location, with its guard sites), not from a
-declared cell list.  So a value is world-dependent through the writer's control flow,
-and exploration can flip the writer's guard to change what the reader sees.
+### 2.3 What SEED publishes
 
-## 4. Binding and validation (unchanged; now exercised)
+`causynth/StaticProgram` is the in-memory catalog (edges, selected methods, region skeletons,
+communication call sites, retained loops). `causynth/CausynthArtifactWriter` writes, into the
+causynth output directory:
 
-* COMPOSE: a tracked read's alternatives are STATE families (one selector per writer
-  occurrence and session); attaches are message families; eligibility per session.
-* DECIDE: a witness is claimed only under a mechanism the recording decides --
-  a moved root, a clock, or a single replaced pairing whose pin refutes it
-  (STATE_PAIRING_FLIPPED / MESSAGE_PAIRING_FLIPPED).  Pairings only another run's
-  delivery makes fatal name no mechanism (adhoc token-nokey).
-* CONFIRM: holds the model's reads-from as ORDER rows (the writer's activation exits
-  before the reader's enters, competitor writers outside).  Eligibility (`Arms#concurrent`)
-  over-approximates: two NameNode occurrences a client thread caused one after the
-  other (addBlock, then complete) are not causal-anchor ancestors of each other --
-  the client's wait for the first response is in no row -- so a read may be given
-  the earlier call's write as an alternative the program order forbids.  An alternative writer the
-  schedule cannot put before the reader stalls the gate: `CONFIRM_MISMATCH`, the
-  claim unconfirmed.  This is the shared-field false positive the owner expects: with
-  F2 wide, STATE_PAIRING candidates appear, and the unrealizable ones stop here.
+| file | content |
+|---|---|
+| `candidate_dataflow_edges.jsonl.gz` | the slice's edges (`kind`, `fromCell`, `toCell`, `method`, `unitIndex`, `invoke`, ...) |
+| `region_skeletons.jsonl.gz` | the regions built around execution-context entries (`causynth/SymbolicRegionPlanner`), with their ports and retained loops |
+| `communication_gaps.jsonl.gz` | ports or loops the planner could not place |
+| `static_scope_map.jsonl` | §3; built before any weaving, so site ids are original unit indices |
+| `scope_frontier.jsonl` | §2.4 |
 
-## 5. Bounds
+### 2.4 Scope growth
 
-Only locations of `S`, and only those read by an occurrence other than their writer;
-alternatives only HB-concurrent and attested writers; the closure's version chains
-(P3c) stay as they are.  Costs to measure per case: tracked locations, guarded store
-methods, STATE families and their arms, formula size, replay slowdown.
+The case's `scope=(...)` class list is where `S` starts. `run_engine.sh
+campaign_analyze_grown_scope` reruns the static pass until nothing is added or the budget is spent:
 
-## 6. Automation, in order
+1. `plan/ScopeFrontier#rows` lists where `S` stops, each row with its `distance` (edges from its
+   cell back to the throw's sinks), nearest first:
+   - `CALLEE`: a callee whose return `S` demands but whose body is not analysed (and is no clock);
+   - `FIELD`: a field `S` reads or stores;
+   - `FORMAL`: a method whose primitive or `String` formal `S` demands only through a field. A
+     formal reached without a field in between is on the target's own call chain and is never a
+     row: growing its callers would move the region root and with it the target's identity.
+2. `plan/ScopeGrowth` resolves each row over the classes of `causynth_lineage_roots`:
+   - `CALLEE`: the class whose body runs it (for an abstract method, the class each implementation
+     inherits it from), unless that body only loads constants;
+   - `FIELD`: its owner and, unless the field is private or final, every class storing it; a
+     static final field is a constant and grows nothing;
+   - `FORMAL`: every class calling the method;
+   - never a generated protobuf class (a supertype in `*.protobuf.*`).
+   Each class taken is copied into `<causynth_output_dir>/scope-classes/` and listed in `GROWN`
+   (`class`, `kind`, `signature`, `distance`) until `causynth_scope_growth_budget` classes
+   (default 24; `0` disables growth) are grown.
+3. The grown directory joins every later pass as `-Dcausynth.process.dirs`: one application scope.
 
-1. **F2 from `S`**: the scope map classifies as tracked every read of an integral (boolean to long)
-   instance field `S` also stores, when a branch decides on the value within a few
-   flows, before any store and on this side of the wire (`StaticScopeMap#READ_SITE`);
-   every store of it is an observed write site, and a region reading it records its
-   branches from entry.  A read that only feeds data is not tracked: in v59
-   `tokenLifetime` and `serialNo`, read on the NameNode only to build a token, carried
-   symbols into the token's bytes and its HMAC (17899-bug3's seed expressions grew from
-   0.9 MB to 27 MB, the orchestrator ran out of heap) and bound nothing.  Nor is a read
-   whose value a receiver decides on (F3 carries it): in v61/v62 `DataEncryptionKey.keyId`,
-   read into the SASL user name that the DataNode checks, went through DIGEST-MD5 into
-   the session cipher, and bug3's fault-world expressions reached 33 MB of CBC writes.  A static final field is a
-   constant, no shared state (`SymbolicRegionPlanner#failureRelevantState`).
-   Integral fields only (boolean, byte, char, short, int, long; until 2026-09-29 int and
-   long, which left SOLR-18406's commit-point `deleted` flag unversioned): the VM's
-   `observeExactPrimitiveField` versions no other type.  A container, a reference or a string -- where most of HDFS's
-   shared state lives (a key map, a lease holder) -- is versioned only once a
-   symbolic value is stored into it; observing one from its first concrete store
-   needs a VM hook of its own (the container log's INITIAL version exists).
-   The VM starts a field's log at the observation (INITIAL, the value from before
-   the window), so the concrete store it precedes is a WRITE and a later getfield
-   resolves over the log; until 578bd7e2f the observation only set the shadow and no
-   observed concrete store left a version.
-   A read site is observed as a store is (2026-09-29): a read of a location no store
-   of the window reached still starts its log, states the INITIAL it saw, and names
-   the cell's carrier, so the closure asks the cell's static writers on the reader's
-   node about it (SOLR-18406: nothing deletes the reserved commit point in the
-   recording, and the replication request reads its `deleted` flag).  A store's
-   guards include those of the calls into its method, a few calls up: the commit
-   point's `deleted = true` runs only where the deletion policy called its
-   `delete()`, which a clock guard decides.  Open still: a writer region no session
-   activated on the reader's node stays out of the closure (visible-gs), which
-   §3.1's writer index by concrete object would close.
-2. **Scope growth** (§2): the declared class list is the fixpoint's start.
-3. **Wire pairing** (F3): protobuf `Builder.setF` / `getF` pairs per message type,
-   direction from the RPC interface's request/response types, IPC and DataTransfer
-   carriers; a hand-written WIRE_FLOW stays only where no rule derives it.
-4. **Workloads**: existing MiniDFSCluster tests, ranked by how many checks they reach
-   INSIDE the recording window (coverage split at `startRecording`), for bug finding
-   with the fault doors.
+Only classes under the lineage roots are indexed, so nothing else (the JDK, a library jar) is
+ever grown.
 
-Each step is validated on the nine cases (9/9, causal chains per `chaincheck.py`) and
-on the ad-hoc cases, counting what §5 lists and what CONFIRM rejects.
+## 3. The static scope map
+
+`plan/StaticScopeMap` builds `static_scope_map.jsonl` (`#sites`, `#rows`) from the edges and the
+region skeletons. One row per (role, region, site); every row states `schemaVersion` 1,
+`kind: STATIC_SCOPE_SITE`, `role`, `regionId`, `siteId` (`<method>#u<unitIndex>`), `vmSite` (the
+method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`, `portId`,
+`guards` and `guardOutcomes`.
+
+| role | one row per | extra members |
+|---|---|---|
+| `TARGET_SITE` | the annotated throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
+| `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
+| `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` |
+| `READ_SITE` | a read of a tracked cell (§5.1) | |
+| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers` |
+| `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
+
+**Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
+some successor of `b` is post-dominated by `t` and `b` is not; the outcome names the arm that
+reaches `t`. The CFG has no exception edges (`BriefUnitGraph`). A `WRITE_SITE` also carries the
+guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
+those callers (`Guards#callersOf`). A guard that tests a helper's constant return names the helper
+branch that decides it (`causynth/BooleanReturns`, `guardDeciders`).
+
+The slice (§2.2) and the map use two relations: the slice widens by may-reach, the map's guards
+are post-dominance.
+
+Readers: `ConcolicScheduler` (admission, observed sites), `runtime/GuardedStoreSites` (§5.3),
+`explore/ClosurePlanner` (static producers of a port, `#exportsOf`; static candidate writers of a
+demanded read, §5.5), `RuntimeSelectedRegionFinalizer` (root admission, §4.4).
+
+## 4. Roots (F1)
+
+### 4.1 Clocks
+
+`causynth/RootCatalog#clockTicks`, over the slice's `call_return` edges. A clock is
+`System.currentTimeMillis()` or `System.nanoTime()`, or a method with no parameter, returning
+`int` or `long`, each of whose returns is a clock value under constant arithmetic (casts, negation,
+binary operations with constants), each local defined once, followed up to four wrappers deep
+(`MAX_DEPTH`). The clock's tick in nanoseconds is read off the arithmetic (`nanoTime / 1000000`
+ticks in milliseconds); a wrapper with no readable scale ticks in milliseconds.
+
+A `DECLARED_SITE` with `inputKind: CLOCK` is published for a `call_return` of a clock that no
+region holds as its own method. A `CLOCK` root's value in a replay is the reading plus a skew the
+obligation states (`FocusedReplay.clockSkew`).
+
+### 4.2 Fault markers
+
+A `DOOR` row of the communication mapping (`causynth/DoorWeave`):
+
+```json
+{"schemaVersion": 1, "kind": "DOOR", "transport": "HADOOP_IPC", "direction": "REQUEST",
+ "method": "<...Client$Connection: void sendRpcRequest(...)>",
+ "after": "<...CausynthMessagePropagation: ...Outbound outbound(...)>",
+ "faults": ["java.io.IOException", "org.apache.hadoop.net.ConnectTimeoutException"]}
+```
+
+At the first call of `after` (or before the first call of `before`) in `method`, the weave inserts,
+per fault kind in row order, `if (Debug.makeSymbolicBoolean(name)) throw new Kind("symbolic
+<name>")`, the false arm falling to the next marker. `name` is `FAULT:<TRANSPORT>:<DIRECTION>` for
+`java.io.IOException` and `FAULT:<TRANSPORT>:<DIRECTION>:<SimpleName>` otherwise. A method, call or
+exception class that does not resolve is refused by name (`DOOR_METHOD_UNAVAILABLE`,
+`DOOR_SITE_UNAVAILABLE`, `DOOR_FAULT_KIND_UNAVAILABLE`). A kind is an environment failure the
+transport can raise and a caller tells apart (a retry policy fails over on one and retries
+another); a semantic server exception is never a kind, it must come from the causal chain. The
+weave runs before any analysis (`CausynthPipeline#run`), so every pass numbers units over the same
+woven body and site ids agree across passes; they differ from the unwoven method's.
+
+A `FAULT:` marker is a `DECLARED_SITE` (`inputKind: FAULT`) iff its transport has a DOOR row
+(`StaticScopeMap#declaredFault`, `WireFlowCatalog#declaredTransports`); a marker whose name does
+not start with `FAULT:` is the workload's own and always declared. The recorded polarity is
+`false`. How fault decisions become flip sites is IDENTITY.md §7.
+
+### 4.3 Configured sources
+
+A tree calls `CausynthSymbolicSource.symbolize(String sourceId, Object owner, String
+fieldSignature)` (the Hadoop copy is `src/shim/java/org/apache/hadoop/ipc/CausynthSymbolicSource`).
+`causynth/StaticSymbolicSourceDiscovery` finds the call by class simple name and signature and
+attaches one declaration per source to every region that can run it (one hook site per source
+per region, else refused). At the hook, `runtime/RootMint#configuredSource` mints one symbol per
+source on the owner's primitive instance field, keeps a propagated expression instead when the
+field already carries one (`reused`), and plants the value the obligation asks for. Its domain is
+the `root-domains.jsonl` row for `sourceId` (absolute or `+k`/`-k` from the recording); without a
+row it is pinned.
+
+### 4.4 Admission
+
+`plan/ConcolicScheduler.SymbolicInputSelection#decide` gives each proposed input one verdict:
+
+| input | verdict |
+|---|---|
+| a clock's return, a READ placeholder's own site, a `FAULT` marker | declared root: the replay mints (`DECLARED_SYMBOLIC_ROOT`; a clock also `DECLARED_WALL_CLOCK` = its tick) |
+| a field a configured-source hook of the region mints | `CONCRETE`, `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` (the hook mints) |
+| a declared communication port (`COMMUNICATION_SITE_PORT`) | tracked, never minted (the attach installs the producer's value) |
+| anything else | `CONCRETE`, `UNDECLARED_SYMBOLIC_INPUT` |
+
+At PLAN, `causynth/RuntimeSelectedRegionFinalizer` admits every recorded occurrence that reads a
+clock or a fault marker, whether or not the target demands its outputs, and seeds the demand walk
+with its declared-site captures.
+
+### 4.5 Randomness is not a root
+
+The weave replaces `new Random()`, `Math.random()`, `Collections.shuffle(List)` and
+`UUID.randomUUID()` in both passes with `runtime/Randoms`, seeded by the draw's endpoint inside the
+window (by site and count before it), so a replay draws what the recording drew.
+
+## 5. Tracked shared state (F2)
+
+### 5.1 Which reads are tracked
+
+A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
+
+- is versionable: a non-static field holding an integral value, `boolean`, `byte`, `char`,
+  `short`, `int`, `long`, or its wrapper (`Boolean`, `Byte`, `Character`, `Short`, `Integer`,
+  `Long`)
+  (`causynth/CausynthStaticFacts#versionableField`, `smt/JavaPrimitiveSmtSemantics#domainOfJavaType`).
+  A box is immutable and a store puts a new one, so a wrapper field's value (or null) is all a
+  reader observes; it is read at the `getfield` of the field, the box's own `value` being a
+  projection of that read;
+- decides a branch: the read's value reaches a branch operand within eight flows
+  (`StaticScopeMap#decidingCells`, `DECIDING_FLOWS`), never through a field and never across a
+  `wire_handoff` edge; a read that only feeds data stays untracked;
+- is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
+
+`WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,
+`container_call_mutation_effect`, `container_array_store_value`. A numeric read-modify-write on an
+`AtomicInteger` or `AtomicLong` (`getAndIncrement`, `getAndDecrement`, `getAndAdd`,
+`incrementAndGet`, `decrementAndGet`, `addAndGet`) is a write of its `value` field
+(`plan/SharedFieldFlow#atomicValueField`).
+
+### 5.2 Observation
+
+`StaticScopeMap#observedSites` lists every access of a tracked cell: its write sites and its read
+sites. The concolic weave puts `ConcolicRegionRuntime.observeTrackedSite(siteId, cell, receiver)`
+before each (`CausynthPipeline#instrumentConcolicObservedSites`): before the `putfield`, before the
+atomic's RMW call, before the `getfield`. Inside an active region it calls the VM's
+`observeExactPrimitiveField`, which starts the location's log with an INITIAL version holding the
+current value unless a log stands (VM.md §5). A concrete store after it is then a version, and a
+read states the version it saw, INITIAL when no store of the window came first. An access before
+its object's constructor call, and a read site that is no `getfield` of its cell, are left
+unobserved; a VM failure is an `UNSTATED_VALUE` DIAGNOSTIC row. The VM observes only primitive
+integral fields: for a wrapper-typed field it prints a warning and starts no log, so such a field
+is versioned only once a symbolic value is stored into it.
+
+An occurrence of a region that reads a tracked cell records its branches from region entry
+(`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).
+
+### 5.3 Guarded stores
+
+`runtime/GuardedStoreSites#install` hands the VM one line per method holding a guarded
+`WRITE_SITE` (`methodKey`, then its guard site ids, tab-separated), from the map named by
+`CAUSYNTH_STATIC_SCOPE_MAP`; a missing or refused table fails the session by name
+(`GUARDED_STORE_SITES_*`). The VM uses it to version a concrete container mutation made under a
+guard of a listed method that decided symbolically (VM.md §5.3).
+
+### 5.4 READ placeholders
+
+A `DECLARED_SITE` `ACCESSOR_RETURN` whose accessor runs outside the woven program (not an
+application method) and whose cell some other region stores becomes `inputKind: READ`
+(`StaticScopeMap#markReads`). Keyed by site and cell (`#readSites`, `#readKey`), since the cell
+alone (`AtomicInteger.value`) names every object of its type. The replay mints a placeholder there
+(`runtime/RowPlaceholderMint`) that the closure binds to that location's writers.
+
+### 5.5 Writers of a read
+
+For a demanded read, `explore/ClosurePlanner#writers` asks the session's rows for eligible writers
+and the map for the static write sites of the read's carrier (`#carriersAt`, `#writersOf`), on the
+reader's node only. A recorded site's type matches a map row's by sort, or by the value it holds:
+a wrapper location agrees with a row of its primitive (a stored box states its value) and with a
+reference row (a stored null) (`StaticScopeMap#sameType`).
+
+## 6. Wire ports (F3)
+
+A port is one carried value: every capture that writes it and every capture that reads it
+(`causynth/WireFlowCatalog.WireFlow`). It states no direction or transport; the recording binds each
+capture to the exchange it ran in (IDENTITY.md §7.4). Its `portId` derives from its identity and
+id (`plan/CommunicationCatalogContract#portId`).
+
+### 6.1 Declared rows
+
+`communication-mappings.jsonl` (`-Dcausynth.communication.mappings` or
+`CAUSYNTH_COMMUNICATION_MAPPINGS`, from `causynth_communication_mappings`) holds DOOR rows (§4.2)
+and WIRE_FLOW rows:
+
+```json
+{"schemaVersion": 2, "kind": "WIRE_FLOW", "id": "block-key-id", "javaType": "int",
+ "producer": {"method": "<...PBHelper: ...BlockKeyProto convert(...BlockKey)>", "kind": "CALL_ARGUMENT",
+              "callee": "<...BlockKeyProto$Builder: ... setKeyId(int)>", "occurrence": 0, "index": 0},
+ "consumer": {"method": "<...PBHelper: ...BlockKey convert(...BlockKeyProto)>", "kind": "CALL_RETURN",
+              "callee": "<...BlockKeyProto: int getKeyId()>", "occurrence": 0},
+ "producerFrameMethod": "...", "consumerFrameMethod": "..."}
+```
+
+Capture kinds: `METHOD_PARAMETER` (`index`), `METHOD_RETURN` (no selector), `CALL_ARGUMENT`
+(`callee`, `occurrence` = the k-th call of the callee in the method, `index`), `CALL_RETURN`
+(`callee`, `occurrence`). Both captures' types must equal `javaType`. A frame method is the method
+one call of which builds one value instance, so same-shaped groups in one message stay apart; with
+none, the message is the frame. Any other schema or kind is refused, never skipped.
+
+SEED demands every capture and joins each producer to each consumer (`wire_handoff`,
+`wire_capture_argument` edges), so the slice continues on the sending side.
+
+### 6.2 Protobuf derivation
+
+`SeedBackwardStaticAnalyzer#deriveWirePort`: a demanded `x = r.getF()` with no parameter, returning
+a primitive or `String`, on a class whose hierarchy reaches `*.protobuf.GeneratedMessage` or
+`*.protobuf.GeneratedMessageV3`, is the consumer of port `auto:<SimpleName>.<F>`. Its producers
+are argument 0 of every call of `<M>$Builder.setF(T)` in the analysed program (the application
+classes in scope). A capture a declared row already holds stays that row's; a port with no
+producer derives nothing. A derived port names no frame method. Any setter call is a producer,
+whether or not the message is ever sent through a door.
+
+### 6.3 At run time
+
+The OUT capture exports the carrier leaf's expression through the VM (`runtime/WireExport`) and
+stages the handle on the thread's outbound envelope (`runtime/SymbolicMessageEnvelope`, schema
+`CSE5`, at most 64 entries and 64 frames per message), which the next outbound door of that thread
+carries (IDENTITY.md §7). The IN capture takes the element by (frame, port, ordinal), attaches it,
+and `runtime/HandoffMint` mints a fresh `v_H` per primitive leaf, named by (port, consumer
+occurrence, k-th attach, element path), at most 64 leaves per attach. The export row and the attach
+row are paired by the VM handle, else by correlation and port (`runtime/Interactions#pairing`).
+
+## 7. Current limits
+
+- Roots are clocks recognized by the call-return rule, declared door faults and tree hooks. A clock
+  read through a field, a parameter, `java.time`, or an interface whose implementation is outside
+  the scope is not recognized; configuration values and pre-window state are roots only where a
+  tree hook says so.
+- Tracked state is integral instance fields and the `AtomicInteger`/`AtomicLong` value through
+  numeric RMW; wrapper fields pass the static rule but the VM starts no log for them. Not
+  tracked from a concrete store: static, `float`/`double`, wrapper, `String` and
+  reference fields (and a container reached through a replaced reference), array elements,
+  `AtomicBoolean`, `AtomicReference`, atomic `set`/`lazySet`/`compareAndSet`/`getAndSet`, and
+  containers the VM does not model.
+- A non-application call's receiver is dropped from the slice (§2.2), so state behind an unmodeled
+  library object (a `ConcurrentHashMap`, a `TreeMap`, an `AtomicBoolean`) never enters `S` and gets
+  no write site, tracked read or frontier row that could grow it.
+- Control dependence ignores exception edges and follows a call up only for constant stores,
+  field-effect calls and write-site guards (three calls up); it never crosses a thread start, an
+  executor submission or the wire.
+- Derived ports cover only scalar protobuf getters with a setter call in scope: no repeated, enum,
+  `bytes`, nested or map-keyed fields, no string codecs, no frames. `String`, boxed and reference
+  leaves get no `v_H`. Every other cross-process value needs a declared row.
+- Growth is capped by `causynth_scope_growth_budget`, spent nearest-first on every class a row
+  resolves to (all CHA implementations), and never reaches classes outside the lineage roots.
