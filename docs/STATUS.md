@@ -73,7 +73,7 @@ token-expiry checks, which were judged to be HDFS's clock-sync assumption, not b
 | READ placeholder roots | partial | `StaticScopeMap#markReads` | Only an accessor with an unwoven (JDK) body, a primitive return, and a location another region stores: in practice `AtomicInteger`/`AtomicLong.get`. |
 | Configuration roots | not done | `gc/causynth/StaticSymbolicSourceDiscovery`; `gc/runtime/RootMint#configuredSource` | Only a hand-written tree hook `CausynthSymbolicSource.symbolize` mints one, and only on a primitive instance field. There are six such hooks in every block-key tree and one in 17960. |
 | Randomness | deterministic, not symbolic | `gc/causynth/CausynthPipeline#replaceRandom`; `gc/runtime/Randoms` | `ThreadLocalRandom` and `SecureRandom` are not replaced. |
-| Method-return symbols | partial | VM `Integer.parseInt`/`Long.parseLong` only; `gc/compose/SmtLowering#symbolTerm` pins an undeclared symbol whose node states its returned value (gap `UndeclaredSymbolPinned:<symbol>`, DIAGNOSTIC) | Other library returns are not symbols. |
+| Method-return symbols | partial | VM `Integer.parseInt`/`Long.parseLong` only, each stating its returned value and its call (`call: {holder, name, descriptor, arguments}`, argument expressions as table references); `gc/compose/SmtLowering#symbolTerm` pins an undeclared symbol whose node states its returned value (gap `UndeclaredSymbolPinned:<symbol>`, DIAGNOSTIC) | Other library returns are not symbols. COMPOSE does not yet read `call` (to lower a known function, or to refuse a pin whose arguments name a moved root). |
 | Scope growth to a fixpoint | partial | `gc/plan/ScopeFrontier`, `gc/plan/ScopeGrowth`; `run_engine.sh` `campaign_analyze_grown_scope` | The default budget is 24 classes, and the audited sweeps hit it. Growth is switched off (`causynth_scope_growth_budget=0`) for every named case. CHA spends the budget on every implementation. Protobuf classes are never grown into. |
 | Root admission | over-admits | `gc/causynth/RuntimeSelectedRegionFinalizer#readsARoot` | Every occurrence that reads any clock or marker is admitted, whether or not the slice needs it. |
 | Loop-body roots (a service-loop iteration is the activation) | done | `gc/causynth/StaticProgram`; `CausynthPipeline#loopBodyEntry` | An unsupported loop shape throws `LOOP_BODY_ROOT_ENTRY_UNAVAILABLE` at INSTRUMENT and ends the campaign. |
@@ -100,15 +100,15 @@ token-expiry checks, which were judged to be HDFS's clock-sync assumption, not b
 | family | status | where | missing |
 | --- | --- | --- | --- |
 | Integral instance fields (boolean…long) | done | `gc/causynth/CausynthStaticFacts#versionableField`; `StaticScopeMap#decidingCells`; VM `observeExactPrimitiveField`, `sharedFieldVersions` | Tracked only when the read reaches a branch within 8 flows and the slice stores the field. |
-| Unobserved writes | done | VM `sharedFieldVersions` (a contradicted loaded word publishes an UNOBSERVED version) | See VM defects below. |
-| Wrapper-typed fields (`Boolean`, `Byte`, `Character`, `Short`, `Integer`, `Long`) | partial | `CausynthStaticFacts#versionableField` admits an integral wrapper as a value cell (a `READ_SITE`); `StaticScopeMap#sameType` joins its write rows by the value's type (`JavaPrimitiveBoxing#valueDescriptor`) | The VM's `observeExactPrimitiveField` refuses a wrapper field, so no log starts at a concrete store; the field is versioned only once a symbolic value is stored into it. |
+| Unobserved writes | done | VM `sharedFieldVersions`: a tracked access and its log entry are one critical section, so a loaded word no version stored is a writer no hook saw; the read observes a retained version that stored it, else publishes an UNOBSERVED version, and the location is marked incomplete by name. Every read states `observedExact`; `gc/smt/VmRows#joinable` joins an exact read at an incomplete location | A reference or container read states no word, so an unhooked write to one is not detected. |
+| Wrapper-typed fields (`Boolean`, `Byte`, `Character`, `Short`, `Integer`, `Long`) | done | `CausynthStaticFacts#versionableField` admits an integral wrapper as a value cell (a `READ_SITE`); `StaticScopeMap#sameType` joins its write rows by the value's type (`JavaPrimitiveBoxing#valueDescriptor`); VM `observeExactPrimitiveField` observes it, and its stores and reads state the box's primitive word or the null word (`SharedFieldVersions::boxed_word`); a read is the value's sort | A `Float` or `Double` field. |
 | Reference fields; a container behind a replaced reference | not done | VM `putfield` publishes only a symbolic value or an already-tracked location | State follows the container object, not the field, so swapping the field carries no state. |
 | Containers | partial | VM models `HashMap`, `LinkedHashMap`, `HashSet`, `LinkedHashSet`, `ArrayList`, `ArrayDeque` (`symbolicMap`, `symbolicSet`, `symbolicList`; shape in `ContainerSupport::shape`); `gc/smt/JavaContainerTypes` | Not `ConcurrentHashMap`, `TreeMap`, `CopyOnWrite*`, `PriorityQueue` or blocking queues. `putIfAbsent`, `compute*`, `merge`, `putAll` and `replaceAll` abandon the state. |
-| Atomics | partial | `gc/plan/SharedFieldFlow#atomicArithmetic`; VM `symbolicAtomic` | `AtomicInteger` and `AtomicLong` read-modify-write methods only. Not `set`, `lazySet` or `getAndSet`, and not `AtomicBoolean` or `AtomicReference`. |
-| Arrays | partial | VM array stores; a load at a concrete position resolves through the recorded writes (VM f13, `ContainerSupport::recorded_element`) | Versioned only from a symbolic store into an already-symbolic array. |
+| Atomics | partial | `gc/plan/SharedFieldFlow#atomicArithmetic`; VM `symbolicAtomic` (`AtomicInteger`/`AtomicLong` read-modify-write, linearized at the compare-and-swap that versions it), `unsafeAccess` (`lazySet`, `getAndSet`, `AtomicReference`, `AtomicBoolean`, field updaters: Unsafe writes versioned with their captured operands) | Only the two atomics' arithmetic is a symbolic relation; `AtomicBoolean`/`AtomicReference` values are the operands they stored. |
+| Arrays | partial | VM array stores (the first symbolic store into an array starts its element's log); a load at a concrete position resolves through the recorded writes, each stating the word it left (`ContainerSupport::recorded_element`); `System.arraycopy`/`Arrays.copyOf` and `clone` carry element values and versions (`heapCopy`) | A copy past 16384 elements drops a shadowed destination's state (named). |
 | Static, float and double fields | not done | `CausynthStaticFacts#versionableField` | — |
-| Guarded concrete stores | containers only | `gc/runtime/GuardedStoreSites#of`; VM `containerSupport` | A guarded concrete store to a scalar field or an array element starts no log. |
-| STATE families at COMPOSE | partial | `gc/compose/Composer`, `ComposedFamilies#stateFamilies`, `Arms#stateArms` (the observed writer's arm is the write its reads saw; a location whose reads no one arm states is a BLOCKING `UNSTATED_VALUE`) | Only for reads at the anchor occurrence, only from writers in the same session, and never for a class-owned location. Location owners are per-run VM ids (`gc/contract/LocationId`), so no state joins across sessions. `cone.py` does not follow writer families. No run has produced a STATE_PAIRING witness. |
+| Guarded concrete stores | done | `gc/runtime/GuardedStoreSites#of`; VM `containerSupport` (containers), `bytecodeInterpreter` putfield and array stores (an INITIAL of the replaced word, then the WRITE) | An element of an array with no shadow. |
+| STATE families at COMPOSE | partial | `gc/compose/Composer`, `ComposedFamilies#stateFamilies`, `Arms#stateArms` (the observed writer's arm is the write its reads saw; a location whose reads no one arm states is a BLOCKING `UNSTATED_VALUE`; alternatives only where the reads' writer set was whole, `ReadRow#writerSetComplete`) | Only for reads at the anchor occurrence, only from writers in the same session, and never for a class-owned location. Location owners are per-run VM ids (`gc/contract/LocationId`), so no state joins across sessions. `cone.py` does not follow writer families. No run has produced a STATE_PAIRING witness. |
 | A field read through a reference a STATE family re-points | partial | `gc/compose/SmtLowering#projection`, `#perCandidate`, `#candidates`, `#fieldOf` | Only when the owner is the anchor read itself; an owner reached through an inlined chain (a symbolic list index) keeps the run's cell. A candidate's field is answered only by one write before the object was stored or, never written, by reads stating one value; a field mutated after publication (R3-REFCONT §1.4) refuses its arms (`CANDIDATE_UNANSWERED`). Only objects of exactly the run object's class. Offline evidence (`/bigtemp/vnr3ne/analysis/proj/v2/index.txt`): with the s46 witness's `M_J_return28` stated (validation only, so its path composes), latestCommit's four arms read generations 1, 1, 2 and 3 of four distinct commits, and the fatal holds under the observed arm only; before, all four read commit 1182's 3 and all four were fatal. |
 
 ## R4. Large-scale ad-hoc checks on HDFS and Solr
@@ -185,58 +185,46 @@ Correctness:
 4. `gc/explore/FlipQuery`: a CLOCK with no reading gets the window `[0, Long.MAX]`.
 5. `==` and `!=` between a boxed container cell and a primitive are not unboxed. They are
    refused as `BinarySortConflict` (`gc/compose/SmtLowering`).
-6. VM: `Object.clone` copies the identity word, so a clone aliases the original's shadows,
-   container state and version log.
-7. VM: boxing `valueOf` annotates the returned object (`SymPrimitive::set_symbolic_field`),
-   which contaminates JDK-cached boxes and `Boolean.TRUE`/`FALSE` for every thread until the
-   session closes.
-8. VM: these lose the expression with no trace: `System.arraycopy`, every `Unsafe` write or CAS,
-   `String.toCharArray`/`getBytes`/`getChars`, and `StringBuilder` mutators other than `append`.
-9. VM:
-   - a non-null reference stored by a thread outside every region is dropped;
-   - a container attach publishes no container-state version;
-   - the INITIAL snapshot's `stated` is true for a refusal;
-   - `getTrackedLocationVersions` paging can repeat pages.
-10. VM: implicit exceptions (NPE, AIOOBE, division by zero, a failed cast) and `instanceof` are
-    never symbolic branch outcomes.
+6. VM: `String.toCharArray`/`getBytes`/`getChars`, `new String(bytes)` and a native method with a
+   symbolic argument lose the expression with no trace; an `Unsafe` get of a tracked location is not
+   a versioned read.
+7. VM: implicit exceptions (NPE, AIOOBE, division by zero, a failed cast) and `instanceof` are
+   never symbolic branch outcomes.
 
 Scale and robustness:
 
-11. One remote obligation worker that exits nonzero fails the wave and the campaign
-    (`run_engine.sh`).
-12. One BLOCKING row invariant in any focused session fails the campaign at the wave gate. The
-    offending session is not withdrawn.
-13. A truncated closure is BLOCKING (`gc/explore/ExploreMain#plan`). It is DIAGNOSTIC only
+8. One remote obligation worker that exits nonzero fails the wave and the campaign
+   (`run_engine.sh`).
+9. One BLOCKING row invariant in any focused session fails the campaign at the wave gate. The
+   offending session is not withdrawn.
+10. A truncated closure is BLOCKING (`gc/explore/ExploreMain#plan`). It is DIAGNOSTIC only
     when `region_path_stop_at_fatal` is set and a replay has already observed the fatal.
-14. Every obligation solver reads the whole corpus (`gc/explore/ObligationSolverMain`).
-15. The seed recording has no wall-clock bound; only the case budget ends it.
-16. VM: every expression is kept until the session closes, under one global mutex.
+11. Every obligation solver reads the whole corpus (`gc/explore/ObligationSolverMain`).
+12. The seed recording has no wall-clock bound; only the case budget ends it.
+13. VM: every expression is kept until the session closes, under one global mutex.
 
 Fallbacks and dead code:
 
-17. `gc/explore/ClosurePlanner#holds` falls back to region-id equality when the scope map knows
+14. `gc/explore/ClosurePlanner#holds` falls back to region-id equality when the scope map knows
     no method set.
-18. `gc/plan/SelectorResolution#resolve` returns a degraded `unresolved` address instead of
+15. `gc/plan/SelectorResolution#resolve` returns a degraded `unresolved` address instead of
     refusing.
-19. `gc/runtime/ScheduleLog#timeoutMillis` silently takes the default for a malformed value.
-20. VM dead code:
-    - the armed replay reads (`armSharedPrimitiveFieldRead`) are still consumed in the
-      `getfield` path with no engine caller;
-    - the guarded-store clause of `SharedFieldVersions::publish_value` starts no log;
+16. `gc/runtime/ScheduleLog#timeoutMillis` silently takes the default for a malformed value.
+17. VM dead code:
     - six natives serve only the smoke tests: `getPathCondition`, `trackContainerExpression`,
       `getSharedFieldVersions`, `getSharedElementVersions`, `getSharedMapVersions`,
       `getConcolicRegionSummary`;
     - nothing runs `causynth_smoke_test.sh`.
-21. `gc/compose/SmtLowering`: the `PlaceholderExpression` dispatch has no producer.
+18. `gc/compose/SmtLowering`: the `PlaceholderExpression` dispatch has no producer.
 
 Harness and declarations:
 
-22. `experiments/solr/solr-adhoc/case.sh` names `TestCausynthMigrateRuleTarget` as its
+19. `experiments/solr/solr-adhoc/case.sh` names `TestCausynthMigrateRuleTarget` as its
     `classpath_test`, a class the ad-hoc tree no longer has.
-23. `experiments/hbase/token-key-roll-concolic/workflow.properties` uses a key `run_engine.sh`
+20. `experiments/hbase/token-key-roll-concolic/workflow.properties` uses a key `run_engine.sh`
     refuses, so that case cannot run.
-24. `src/test/resources/external-callers.txt` lists APIs no tree calls, and omits
+21. `src/test/resources/external-callers.txt` lists APIs no tree calls, and omits
     `MessageDoors`, which the Solr trees call.
-25. `tools/rounds/launch-round.sh` leaves `lift11` out, while the sweep tools use all ten lifts.
-26. `tools/analysis/confirmrun.sh` calls `campaign_confirm_decide`, which `run_engine.sh` no
+22. `tools/rounds/launch-round.sh` leaves `lift11` out, while the sweep tools use all ten lifts.
+23. `tools/analysis/confirmrun.sh` calls `campaign_confirm_decide`, which `run_engine.sh` no
     longer has: the decision is `explore.ConfirmMain --sessions`, which also needs the claim.

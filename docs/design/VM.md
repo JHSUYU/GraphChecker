@@ -23,9 +23,12 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 ## 2. Shadows, sessions, regions
 
 - **Object identity.** Every object carries an extra header word `_sym_rid` (`VM/oops/oop.hpp`);
-  it survives GC and is reset at every allocation path. Heap shadows (`SymInstance`, `SymArr`,
-  container states) live in the session heap keyed by it (`VM/concolic/sessionSymbolicHeap.cpp`).
-  Interned strings get a detached shadow, never the shared object's.
+  it survives GC and is reset at every allocation path and on an `Object.clone` copy. Heap shadows
+  (`SymInstance`, `SymArr`, container states) live in the session heap keyed by it
+  (`VM/concolic/sessionSymbolicHeap.cpp`). Interned strings get a detached shadow, never the shared
+  object's. A JVM-wide object (an interned String, a JDK box-cache entry, `Boolean.TRUE/FALSE`;
+  `symbolicPrimitive.cpp#jvm_shared_object`) never carries an expression: a value it stands for
+  rides the slot that holds it.
 - **Stack shadows.** One `ThreadContext` per thread (`__thread`, `VM/concolic/concolicMngr.cpp`)
   shadows operand slots and locals; arguments and returns move through `ShadowStack` at every Zero
   frame push and pop (`VM/concolic/shadow/shadowStack.cpp`).
@@ -51,8 +54,8 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 | int/long/float/double arithmetic, `neg`, shifts; the 15 conversions (`TypeCastExpression`) | build the expression; `iand`/`ior`/`ixor` over booleans become `&&`, `\|\|`, `!=` |
 | `lcmp`, `fcmp*`, `dcmp*`, `if*`, `if_icmp*`, `if_acmp*`, `ifnull`/`ifnonnull` | branch conditions |
 | `tableswitch`, `lookupswitch` | the taken case; the default arm is the conjunction of `sel != k` over every key |
-| array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE`; a load at a concrete position the recorded writes decide builds no READ (§6) |
-| `getfield`/`getstatic` | the field shadow, resolved through the version log where tracked (§5); a demand-minted `FieldAccessExpression` where the owner is shadowed |
+| array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE`; a load at a concrete position the recorded writes decide builds no READ (§6); the first symbolic store into an array starts its element's log |
+| `getfield`/`getstatic` | the field shadow, resolved through the version log where tracked (§5); a demand-minted `FieldAccessExpression` where the owner is shadowed; a box's `value` read from a box that carries no expression is the box slot's expression (the unboxing of a slot-carried value) |
 | `putfield`/`putstatic` | set the field shadow; publish a version (§5) |
 | `invoke*` | argument and return transfer; model dispatch (§4) |
 | `Method.invoke`, `Constructor.newInstance` | boxed arguments and result carried (`VM/runtime/reflection.cpp`) |
@@ -67,7 +70,19 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 registered model, a boxing class, or a muted prefix (exact name: a subclass of a modeled class is
 not modeled). Any other Java callee is interpreted and propagates normally. A native with a
 symbolic argument returns a concrete value, except `Unsafe.get<Primitive>(Object, long)`, which
-returns the field shadow at that offset (`VM/concolic/native/nativeGetPrimitiveHandler.cpp`).
+returns the field shadow at that offset (`VM/concolic/native/nativeGetPrimitiveHandler.cpp`). A
+model never reads a native's primitive result: it is still in `native_entry`'s C local when the
+frame pops (`MethodSymbolizerHandle::result_readable`).
+
+**Unsafe writes** (`VM/concolic/unsafeAccess.{hpp,cpp}`, hooked in `VM/prims/unsafe.cpp`):
+`put*`, `put*Volatile`, `putOrdered*` and `compareAndSwap*` on a location of a shadowed object are
+versioned in the native, in one critical section with the concrete operation. The value is the
+caller's operand shadow, captured by the Unsafe model at the call boundary (`put*`,
+`compareAndSwap*`, `getAndAdd*`, `getAndSet*` called from ordinary code), or the atomic model's
+intent; a write from a thread outside every region is unattributed; any other write (a muted
+subtree's) is versioned with its concrete word and marks the location
+`UNSAFE_WRITE_UNCAPTURED`. A write to a shadowed object also updates its field shadow or the
+array's state.
 
 **Muted subtrees** run concretely and return no expression: `org/slf4j/`, `org/apache/log4j/`,
 `org/apache/commons/logging/`, `java/util/logging/` (observation only), `com/sun/crypto/provider/`,
@@ -79,12 +94,12 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | class | modeled | not modeled |
 |---|---|---|
 | `String` (entered only with a symbolic operand) | `charAt compareTo concat contains endsWith equals equalsIgnoreCase hashCode indexOf isEmpty lastIndexOf length matches regionMatches replace* split startsWith substring toLowerCase toUpperCase trim valueOf ...`; results are string operations | `toCharArray`, `getBytes`, `getChars`, `new String(bytes/chars)` return no expression |
-| `StringBuilder` | `append` (as concat), `toString`, `length` | `insert delete deleteCharAt replace reverse setCharAt setLength` leave the builder's expression unchanged; `StringBuffer` |
-| boxing `valueOf`, `new X(v)` for `Boolean Byte Character Short Integer Long` | the box's `value` shadow on the returned object | `Float`/`Double.valueOf` |
+| `StringBuilder` (and its `AbstractStringBuilder` methods) | `append` (as concat), `toString`, `length`; `insert delete deleteCharAt replace setCharAt setLength` as a concat of substrings of the content (an operand's slot shadow first) | `reverse`, `appendCodePoint` and a padding `setLength` drop the expression (the next use states the concrete content); `StringBuffer` |
+| boxing `valueOf`, `new X(v)` for `Boolean Byte Character Short Integer Long` | the value on the result slot, and on the returned object unless it is JVM-wide | `Float`/`Double.valueOf`. This JDK's `Integer/Long/Short/Byte/Boolean.valueOf` box afresh; `Character.valueOf` caches 0..127 |
 | `Integer.toString(int)`, `Integer.toString()` | string of the int | other primitive-to-string conversions become a named `unsupportedPrimitiveStringConversion:` operation |
-| `Integer.parseInt`, `Long.parseLong` | a method-return symbol stating its concrete value, plus a `MethodExpression` condition | |
+| `Integer.parseInt`, `Long.parseLong` | a method-return symbol stating its concrete value and its call (holder, name, descriptor, argument expressions), plus a `MethodExpression` condition | |
 | `BigDecimal` | 8 signatures | `<init>(double)`, `<init>(String)` mint symbols unrelated to the argument; `BigInteger` |
-| `AtomicInteger`, `AtomicLong` | `getAndIncrement getAndDecrement incrementAndGet decrementAndGet getAndAdd addAndGet compareAndSet weakCompareAndSet` as read-modify-write versions, when the receiver is shadowed | `set lazySet getAndSet accumulate*`; `AtomicBoolean`, `AtomicReference`, `LongAdder`, atomic arrays, field updaters |
+| `AtomicInteger`, `AtomicLong` | `getAndIncrement getAndDecrement incrementAndGet decrementAndGet getAndAdd addAndGet compareAndSet weakCompareAndSet`, when the receiver is shadowed: the model states `new = old op delta` (or the CAS's expect/update) as an intent, and the compare-and-swap that performs it reads `old` at the word it compared and publishes the RMW version, in one critical section; a failed CAS reads the word it lost to | `set` is a putfield; `lazySet`, `getAndSet`, `AtomicReference`/`AtomicBoolean`, field updaters are versioned as Unsafe writes with their captured operands, not modeled; `accumulate*`, `LongAdder`, atomic arrays |
 | `HashMap`, `LinkedHashMap` (views, iterators, entries) | `put get remove containsKey isEmpty clear size entrySet keySet values iterator hasNext next getKey getValue`, conditional removal | `putAll putIfAbsent replace replaceAll compute* merge` abandon the state; `Entry.setValue` abandons the entry |
 | `ArrayList`, `ArrayDeque`, `AbstractList` iterators | list and deque operations | `removeIf` abandons |
 | `HashSet`, `LinkedHashSet` | set operations | reads are not bound to versions |
@@ -100,46 +115,65 @@ plain objects: its elements' fields propagate, but it has no container state and
 `STATIC_FIELD` (owner = the class mirror), `ARRAY_ELEMENT`, or `MAP_STATE` (a container's whole
 state, slot `-3`; a view and its map are one location). Version kinds: `INITIAL`, `WRITE`, `RMW`,
 `STATE`, `UNOBSERVED`. A version carries its expression, writer, site, path guard and, for a
-scalar, the concrete word the store left.
+scalar, the concrete word the store left (a wrapper-typed field's word is its box's primitive, or
+the null word).
+
+**One critical section per tracked access.** A tracked scalar store is the concrete store, its
+version id and its append under the location's lock (one of 64 stripes); a tracked load is the
+concrete load, the comparison with the newest version and the read record under it
+(`SFV::begin_store_locked`/`end_store_locked`, `plan_read_locked`; `BI` getfield/putfield and array
+paths). Log order is heap order, so a mismatch can only mean a writer no hook saw. Container
+versions carry no word: a container mutation is a Java call no lock can span.
 
 ### 5.1 When a location is tracked
 
-Tracking is by value; nothing is declared in advance. A log starts at the first symbolic store, a
-mint, an attach, a symbolic container operation, or `observeExactPrimitiveField` (§5.4). Once
-tracked, every store to it is versioned, concrete ones included. A version is published after the
-concrete store completes, with the stored operand, not a heap re-read.
+Tracking is by value; nothing is declared in advance. A log starts at the first symbolic store
+(field or array element), a mint, an attach, a symbolic container operation, an admitted guarded
+store (§5.3), or `observeExactPrimitiveField` (§5.4). Once tracked, every store to it is versioned,
+concrete ones included, with the stored operand, not a heap re-read. A mint, an attach and an
+observation read the word they state under the location's lock (`publish_held`,
+`publish_initial_held`).
 
 ### 5.2 Reads
 
 A read of a tracked location resolves to the newest retained version and states the word it
-loaded. When the newest scalar version's word differs from the loaded one (a write the hooks never
-saw: another thread outside every region, `Unsafe`, reflection), the read publishes an
-`UNOBSERVED` version holding the loaded constant and permanently clears `writerSetComplete`.
+loaded. When that version stored another word, a write the hooks never saw came between (a muted
+subtree's store, JNI): the read observes a retained version that stored exactly the loaded word if
+there is one, else publishes an `UNOBSERVED` version holding the loaded constant, minted under the
+lock; either way the location is marked incomplete (`UNOBSERVED_WRITE`). Every read states
+`observedExact` (the loaded word equals its observed version's stored word; never for a reference
+or a container read) and `writerSetComplete` (the location's writer set as of the read); a read that
+returned its version's word shares that version's constant.
 
 ### 5.3 Guarded concrete stores
 
 The session's guarded-store table (`installGuardedStoreSites`, from `runtime/GuardedStoreSites`)
-lists methods with control-dependent stores and their guard branch sites. A container mutation
-(`put`, `remove`, `clear`, `add`, `offer`, `set`) in a listed method, after one of its guards
-decided symbolically on this path, publishes a `STATE` version and starts the container's log
-(`ContainerSupport#guarded_mutation`). Field and array stores publish only a symbolic value or into
-an already-tracked location (`BI` putfield/array-store paths), so the guarded clause of
-`publish_value` never starts a scalar log.
+lists methods with control-dependent stores and their guard branch sites. A concrete store in a
+listed method, after one of its guards decided symbolically on this path, starts the location's log:
+a container mutation (`put`, `remove`, `clear`, `add`, `offer`, `set`;
+`ContainerSupport#guarded_mutation`) publishes a `STATE` version over its stated base; a field or
+array-element store publishes an `INITIAL` of the word it replaced, then its `WRITE` (the owner is
+given a shadow if it has none).
 
 ### 5.4 Observation
 
 `observeExactPrimitiveField(owner, fieldSignature)` (`VM/concolic/concolicMngr.cpp`) accepts a
-non-static field of type `boolean`, `byte`, `char`, `short`, `int` or `long` (anything else prints a
-warning and does nothing). Unless the location is tracked, it installs the current value as a
-concrete expression and publishes an INITIAL version with it, so the next concrete store is a
-`WRITE` and the next read names a version. SYMBOL-SCOPE.md §5.2 says where it is woven.
+non-static field of type `boolean`, `byte`, `char`, `short`, `int` or `long`, or of the wrappers
+`Boolean`, `Byte`, `Character`, `Short`, `Integer`, `Long` (anything else prints a warning and does
+nothing). Unless the location is tracked, it installs the current value (a wrapper field: its box's
+constant, or null) as a concrete expression and publishes an INITIAL version with it, so the next
+concrete store is a `WRITE` and the next read names a version. SYMBOL-SCOPE.md §5.2 says where it
+is woven. A read of a wrapper field is its value's sort (`J` for a `Long`) and its unboxing reads
+the read.
 
 ### 5.5 Bounds and threads
 
-At most 64 versions per location (dropping the oldest clears `writerSetComplete`) and 1024 reads
-(dropping sets `readLogTruncated`). Locations are never evicted before session close. A thread
-outside every region has no `ThreadContext`: its scalar stores to tracked locations are versioned
-without writer, guard or site; its reference stores are dropped (§8).
+At most 64 versions per location and 1024 reads (dropping sets `readLogTruncated`). Locations are
+never evicted before session close. A location's first incompleteness reason is published
+(`incompleteReason`: `VERSION_BOUND`, `UNOBSERVED_WRITE`, `UNSAFE_WRITE_UNCAPTURED`,
+`UNHOOKED_ELEMENT_WRITE`, `ARRAYCOPY_FAILED`, a container model's reason). A thread outside every
+region has no `ThreadContext`: its stores (bytecode, Unsafe, arraycopy) to tracked locations are
+versioned without writer, guard or site, a reference by the referent it names.
 
 ## 6. Containers
 
@@ -152,11 +186,13 @@ at 64 members, else a stated refusal (`NO_MODELLED_SHAPE`, `UNREADABLE_CONTAINER
 the chains (`AssocState` for maps, `IndexedState` for lists and arrays).
 
 **Array reads over recorded writes.** The writes at concrete positions of one array chain share
-one index of what was stored where (`ElementWrites`, `ContainerExpression::stored_at`: one lookup,
-no walk of the chain). An array load at a concrete position is answered from it
-(`ContainerSupport#recorded_element`): the value the newest write at that position stored, or,
-for an element no recorded write replaced, the heap's own value as a concrete; no READ node, no
-index and no condition. The load stays a READ below a write at a symbolic position, on a forked
+one index of what was stored where, and what each left in the heap (`ElementWrites`,
+`ContainerExpression::stored_at`: one lookup, no walk of the chain). An array load at a concrete
+position is answered from it (`ContainerSupport#recorded_element`): the value the newest write at
+that position stored, or, for an element no recorded write replaced, for a write that stored a
+concrete value, or for one whose word the element no longer holds (a write no hook saw; the log is
+marked `UNHOOKED_ELEMENT_WRITE`), the heap's own value as a concrete; no READ node, no index and no
+condition. The load stays a READ below a write at a symbolic position, on a forked
 chain or a consumer-boundary receiver, at a symbolic position, and for an array whose elements are
 an input (one a symbolization reached, or whose shadow stands for a semantic value). The array's
 identity node is built only when it roots a new state.
@@ -170,8 +206,9 @@ container leaf becomes the destination container's state). Handles live for the 
 region on any attached thread of that session can attach; a handle of another session is
 `FOREIGN`. Statuses: `NO_ACTIVE_REGION -1`, `MISSING_METADATA -2`, `FIELD_NOT_FOUND -3`,
 `NOT_SYMBOLIC -4`, `FOREIGN_HANDLE -5`, `UNKNOWN_HANDLE -6`, `SORT_MISMATCH -9`,
-`UNSUPPORTED_TARGET -12`. The handoff is same-JVM: bytes cross between nodes concretely, and the
-handle rides the message envelope (SYMBOL-SCOPE.md §6.3).
+`UNSUPPORTED_TARGET -12`. An attach is a version of the destination (a container attach: a
+`STATE_ATTACH` version, and one per tracked element of an array). The handoff is same-JVM: bytes
+cross between nodes concretely, and the handle rides the message envelope (SYMBOL-SCOPE.md §6.3).
 
 ## 8. What the VM publishes
 
@@ -190,12 +227,18 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
 
 - Expressions are published as a DAG envelope (`VM/concolic/exp/expression.cpp`, iterative
   serializer); the engine keeps them in each session's `expressions.jsonl` (CONTRACT-SPEC.md).
-- `getTrackedLocationVersions(afterEventId, maxBytes)` pages the version and read logs by the
-  session clock (`SFV`).
+- `getTrackedLocationVersions(afterEventId, maxBytes)` pages the version and read logs by each
+  location's highest event: `nextAfterEventId` is one past the last emitted location's, so a
+  resume neither repeats nor skips a location (`SFV`). An envelope states `writerSetComplete` and,
+  when false, `incompleteReason`; an INITIAL's `initialSnapshot.stated` is true only for a stated
+  count.
+- A read node states `observedExact`, `writerSetComplete` and `concreteValue` (a String past 4 KB
+  as `{"_type":"TruncatedValue","length":n}`); a method-return symbol states `concreteValue` and
+  `call: {holder, name, descriptor, arguments}`.
 - Natives no engine code calls: `getPathCondition`, `trackContainerExpression`,
-  `armSharedPrimitiveFieldRead`, `confirmSharedPrimitiveFieldRead`, `getSharedFieldVersions`,
-  `getSharedElementVersions`, `getSharedMapVersions`, `getConcolicRegionSummary` (only the smoke
-  tests use them).
+  `getSharedFieldVersions`, `getSharedElementVersions`, `getSharedMapVersions`,
+  `getConcolicRegionSummary` (only the smoke tests use them). `armSharedPrimitiveFieldRead` and
+  `confirmSharedPrimitiveFieldRead` are refusals kept for `libjava`'s binding.
 
 ## 9. Value movement
 
@@ -213,23 +256,26 @@ that does not hold.
 | `Method.invoke`, `Constructor.newInstance` | hooked |
 | byte encode/decode inside one heap array (`i2b`, shifts, `DataOutputStream.writeInt`, heap `ByteBuffer.putLong`) | hooked (INDEXED chains) |
 | `Unsafe.get<Primitive>(Object, long)` | hooked (field shadow, bypassing the version log) |
-| `String` and `StringBuilder.append`, boxing, `HashMap`/`ArrayList`/... operations, atomic RMW | modeled (§4) |
+| `System.arraycopy`, `Arrays.copyOf` | hooked: element values into the destination's state (a stated word per element; past 16384 elements a shadowed destination's state is dropped and named), tracked destination elements versioned in one critical section with the copy (`VM/concolic/heapCopy.cpp`) |
+| `Object.clone`, array `clone()` | hooked: the clone gets its own identity and the original's field shadows or state |
+| `Unsafe` puts, CAS, `getAndAdd*`/`getAndSet*` (`ConcurrentHashMap` slots, `lazySet`, `AtomicReference`, field updaters, reflective `Field.set`) on a shadowed object | hooked: versioned with the captured operand; uncaptured ones detected (`UNSAFE_WRITE_UNCAPTURED`) |
+| `String` and `StringBuilder`, boxing, `HashMap`/`ArrayList`/... operations, atomic RMW | modeled (§4) |
 | `Integer.parseInt`, `Long.parseLong` | detected and pinned (return symbol with its concrete value) |
 | primitive-to-string conversions other than `Integer.toString` | detected (a named operation, not pinned) |
-| a tracked scalar changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`) |
+| a tracked scalar changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
+| an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
 | map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`, list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
-| `System.arraycopy`, `Arrays.copyOf`, stream `write(byte[])`/`readFully`, `ByteArrayOutputStream` | silently lost; wrong where the destination already has an INDEXED chain |
-| `Object.clone` and array `clone()` | silently wrong: `JVM_Clone` copies `_sym_rid`, so the clone shares the original's shadow, container state and version log |
-| `valueOf` returning a cached box (`Integer`/`Short`/`Long`/`Byte` in -128..127, `Character` <= 127, `Boolean.TRUE/FALSE`), and a container result that is a shared object | silently wrong: the expression is set on the JVM-wide shared object |
-| `Unsafe` puts, volatile or object gets, CAS and `getAndX` (`ConcurrentHashMap` slots, atomic `lazySet`/`getAndSet`, `AtomicBoolean`/`AtomicReference`, field updaters, reflective `Field.set`) | silently lost, or wrong (the old field shadow stays); detected only at a later in-region read of a tracked scalar |
+| stream `write(byte[])`/`readFully`, `ByteArrayOutputStream` | through arraycopy: hooked |
+| a cached box, `Boolean.TRUE/FALSE`, an interned String returned by `valueOf` or a container | hooked: the value rides the result slot; the shared object stays clean |
+| `Unsafe` volatile or object gets | the field shadow or nothing; a tracked location's get is not a versioned read |
 | a native method with a symbolic argument (JNI, most JDK natives) | silently lost |
 | `String.toCharArray`/`getBytes`/`getChars`, `new String(bytes)` | silently lost |
-| `StringBuilder.insert`/`delete`/`replace`/`reverse`/`setCharAt`/`setLength` | silently wrong (stale builder expression) |
+| `StringBuilder.reverse`/`appendCodePoint`, a padding `setLength` | dropped: the builder's next use states its concrete content |
 | `StringBuilder.append(Object)` of an unshadowed non-String | silently wrong (appends `""`) |
 | operations of an unmodeled collection | element fields hooked; the container relation silently lost |
 | digests, MACs, ciphers, logging | silently lost by design (muted) |
 | Jackson generator and bean writer, direct `ByteBuffer` | silently lost (muted or `Unsafe`) |
-| a value handed to a thread outside every region | silently lost; its scalar writes to tracked locations are versioned unattributed, its reference writes dropped |
+| a value handed to a thread outside every region | silently lost; its writes to tracked locations are versioned unattributed |
 | a separate process | silently lost (no mechanism) |
 | clocks, `Random`, `identityHashCode` | concrete natives; clocks become roots only through the Java-side mint |
 
@@ -241,33 +287,30 @@ that does not hold.
   outcomes; `multianewarray` dimensions; branches before a region's admission gate; symbolic
   branches the weave did not mark (they enter only the thread-wide condition, which the engine
   never reads). A version's guard holds only the innermost region's decisions.
-- Re-pairable state is integral fields, modeled containers and the two atomics. A container
-  reached through a replaced reference field carries no state (the state follows the object, not
-  the field); a guarded concrete store to a scalar field or array element starts no log (§5.3).
-- A reference stored by a thread outside every region publishes nothing, so readers keep resolving
-  to the stale referent with `writerSetComplete` still true.
-- A container attach sets the destination's state but publishes no `MAP_STATE` version.
-- An INITIAL snapshot that is a refusal is serialized with `stated: true`.
-- `getTrackedLocationVersions` paging selects locations by their highest event but resumes at the
-  lowest event of the first unemitted one, so above the byte budget pages repeat and the resume id
-  can go backwards.
-- A reader that loads a new word before its writer publishes records a spurious `UNOBSERVED`.
+- Re-pairable state is integral and wrapper fields, modeled containers and Unsafe-written
+  locations. A container reached through a replaced reference field carries no state (the state
+  follows the object, not the field). A reference or container read states no word, so it is never
+  exact, and an unhooked write to one is not detected.
+- A write from a muted or paused thread is unhooked (detected at the next read of a word it
+  changed, not attributed).
 - `symbolize` stops at depth 5; mint failures print to the console only; a null argument to a mint
   native aborts through `guarantee`. Symbol names are truncated at 1024 bytes; some model paths
   abort on unexpected shapes (`symbolicString.cpp`, `symbolicStringBuilder.cpp`,
   `symbolicBigDecimal.cpp`).
 - Cost: every expression lives until session close under one global arena mutex; every in-region
-  field access takes the heap lock; a tracked read takes the version lock twice; the path-condition
-  byte bound (`-Dcausynth.vm.pathcondition.bytes`) counts reference bytes only.
-- The armed-read override (`armSharedPrimitiveFieldRead`) is still consulted in the `getfield`
-  path though no engine code arms it.
+  field access takes the heap lock; a tracked access takes its location's stripe once and the slot
+  map's lock briefly; the path-condition byte bound (`-Dcausynth.vm.pathcondition.bytes`) counts
+  reference bytes only.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 47
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 56
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
-`run_engine.sh` runs it. No smoke test covers the collections the VM does not model,
-`AtomicBoolean`/`AtomicReference`, `System.arraycopy`, `clone`, a cached box, reflective
-`Field.get/set`, or anything across JVMs.
+`run_engine.sh` runs it. Value movement has one smoke per hook (`RegionArrayCopySmoke`,
+`RegionCloneSmoke`, `RegionUnsafeWriteSmoke`, `RegionSharedBoxSmoke`,
+`RegionStringBuilderMutatorSmoke`, `RegionWrapperFieldSmoke`), and the versioning rules theirs
+(`RegionTrackedRaceSmoke`, `RegionReadExactnessSmoke`, `RegionLoadedValueSmoke`,
+`RegionVersionDefectsSmoke`). No smoke test covers the collections the VM does not model or
+anything across JVMs.
