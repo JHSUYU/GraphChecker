@@ -59,8 +59,12 @@ public:
     Expression *operand;
     // CAS: the expected value.  NULL: concrete.
     Expression *expect;
-    // The model's pre-state of a location with no log.
+    // The model's pre-state of a location with no log, and the word it stood
+    // for when the call began: a CAS that compares another word read a
+    // concurrent write, not this pre-state.
     Expression *prior;
+    bool prior_stated;
+    jlong prior_bits;
     // Filled by the write.
     bool done;
     bool succeeded;

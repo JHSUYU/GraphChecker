@@ -157,6 +157,13 @@ bool SymbolicAtomic::invoke_method_helper(MethodSymbolizerHandle &handle) {
   intent->owner = instance->get_sym_rid();
   intent->offset = value.offset();
   intent->prior = prior;
+  if (prior != NULL) {
+    const SharedFieldVersions::ConcreteBits held =
+        SharedFieldVersions::field_bits(receiver, value.offset(),
+                                        operation.type);
+    intent->prior_stated = held.stated();
+    intent->prior_bits = held.bits;
+  }
   if (operation.is_cas) {
     intent->kind = UnsafeAccess::CAS;
     intent->expect = handle.get_primitive_exp(1, operation.type);

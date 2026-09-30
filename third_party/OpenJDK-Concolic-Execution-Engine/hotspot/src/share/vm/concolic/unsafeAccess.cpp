@@ -198,8 +198,12 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
       old_value = SharedFieldVersions::scalar_read(
           access->plan, access->location, type_name, witnessed,
           witnessed_reference);
-    } else {
+    } else if (intent->prior != NULL
+               && (!intent->prior_stated || !witnessed.stated()
+                   || intent->prior_bits == witnessed.bits)) {
       old_value = intent->prior;
+    } else {
+      old_value = concrete(witnessed, witnessed_reference);
     }
   }
 
