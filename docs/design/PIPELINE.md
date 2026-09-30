@@ -145,11 +145,16 @@ by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FR
 
 1. SEED (`campaign_batch_seed` → `campaign_record_batch`, the same code as the pre-screen's `record`):
    each target's slice is frozen into `targets/<name>/` (candidate graph, scope map, frontier,
-   communication gaps, its own skeletons as `own_region_skeletons.jsonl.gz`, its spec line as
-   `target.yaml`); ONE recording is woven with every target's skeletons merged by region and every
+   communication gaps, its spec line as `target.yaml`); ONE recording is woven with every target's
+   skeletons merged by root (the weave opens one region per root, the first the merged file names
+   there; two targets may root one method under two authorities, hence two region ids) and every
    target's grown scope united (`campaign_union_static`), its workload run as SEED's (a nonzero exit
-   fails SEED), and each target aggregated on its own slice into `targets/<name>/runtime/`, asked of
-   its own skeletons so that no other target's exception context is taken for its own.
+   fails SEED), and each target aggregated on its own slice into `targets/<name>/runtime/`, over
+   its view of the merged skeletons (`campaign_region_view`, `view_region_skeletons.jsonl.gz`):
+   every region the recording opened, so that a region of this target entered inside another
+   target's -- folded into that occurrence -- is found there, with this target's selection at the
+   roots it plans and another target's exception context as state, so that no other target's
+   failure context is taken for its own.
    `runtime/record-summary.json` states each target's state (`ACTIVATED` or the refusal). Each
    target directory links the batch's merged skeletons, grown scope, lineage classes, recording
    weave and recorded schedule, so every weave and replay of every target stands on the recording's

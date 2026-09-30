@@ -867,12 +867,12 @@ do_record() {
 # spec, each on its own static slice -- a pre-screen's `record`, a batch
 # campaign's SEED.  Each target's slice (${causynth_static_root}/<name>/, as
 # `slice` wrote it, tools/adhoc/slice.sh) is frozen into targets/<name>/:
-# its candidate graph, scope map, frontier and communication gaps, its own
-# region skeletons as own_region_skeletons.jsonl.gz, and its line of the
-# spec as target.yaml; a target without one is refused before any work.
-# ONE recording is woven for all of them (campaign_union_static) and its
-# workload runs under <seconds> when given; then each target is aggregated
-# on its own slice into targets/<name>/runtime/.
+# its candidate graph, scope map, frontier and communication gaps, and its
+# line of the spec as target.yaml; a target without one is refused before
+# any work.  ONE recording is woven for all of them (campaign_union_static)
+# and its workload runs under <seconds> when given; then each target is
+# aggregated on its own slice and on its view of the merged skeletons
+# (campaign_region_view) into targets/<name>/runtime/.
 # runtime/record-summary.json states the workload's exit, its seconds,
 # whether the bound ended it, and each target's outcome
 # (runtime.CausynthTraceRecorder: ACTIVATED, or the refusal).
@@ -895,15 +895,17 @@ campaign_record_batch() {
     cp -- "${static}/candidate_dataflow_edges.jsonl.gz" \
       "${static}/static_scope_map.jsonl" "${static}/scope_frontier.jsonl" \
       "${static}/communication_gaps.jsonl.gz" "${target}/"
-    cp -- "${static}/region_skeletons.jsonl.gz" \
-      "${target}/own_region_skeletons.jsonl.gz"
     awk -v name="${name}" '$1 == "exception_target:" && $2 == name' \
       "${causynth_target_spec}" >"${target}/target.yaml"
     targets+=(--target "${name}=${target}/candidate_dataflow_edges.jsonl.gz,\
-${target}/static_scope_map.jsonl,${target}/own_region_skeletons.jsonl.gz,\
+${target}/static_scope_map.jsonl,${target}/view_region_skeletons.jsonl.gz,\
 ${target}/runtime")
   done
   campaign_union_static "${names[@]}"
+  for name in "${names[@]}"; do
+    campaign_region_view "${causynth_static_root}/${name}" \
+      >"${causynth_output_dir}/targets/${name}/view_region_skeletons.jsonl.gz"
+  done
   CAUSYNTH_TRACE_MODE=region-state do_analyze
   ensure_output_directory "${trace_dir}"
   started=${SECONDS}
@@ -929,11 +931,39 @@ ${target}/runtime")
   rm -f -- "${trace_dir}/targets.json"
 }
 
+# campaign_region_view <static-slice>: the batch's merged skeletons as that
+# slice's target labels them, gzipped on stdout -- what it is aggregated on.
+# Its regions are every target's: the recording opened all of them, and a
+# region of this target entered inside another target's is folded into that
+# occurrence, where the aggregation finds it only if it knows the enclosing
+# region (a check whose exception context BlockSender.<init> folds into
+# another check's DataXceiver.readBlock was lost as NOT_IN_WINDOW).  Its
+# labels are this target's: a region at a root this target plans keeps its
+# own selection, and another's exception context is state to this target,
+# so that no other target's failure context is taken for its own.
+campaign_region_view() {
+  zcat -- "${causynth_region_skeletons}" | jq -c --slurpfile own \
+    <(zcat -- "$1/region_skeletons.jsonl.gz" | jq -s \
+      "${campaign_region_key} map({(region_key): .selection}) | add // {}") \
+    "${campaign_region_key}"'
+    .selection = ($own[0][region_key]
+      // (if .selection | startswith("EXCEPTION") then "STATE_CONTEXT"
+          else .selection end))' | gzip -c
+}
+
+# What one region of a batch is: its root, the one region a weave opens
+# there (a skeleton row naming no root is its id), as a jq function.
+campaign_region_key='def region_key:
+  if (.rootMethod // "") == "" then .regionId else .rootMethod end;'
+
+
 # A batch's one recording weave (do_record): the case's skeleton file is
-# every target's region skeletons merged by region -- a region's id is its
-# authority and root, whatever the target, so one root is one region -- with
-# their lists united; its grown scope is every target's grown classes, the
-# GROWN manifest one row per class.
+# every target's region skeletons merged by root -- the weave opens ONE
+# region at a root, the first the file names there (a region's id is its
+# authority and root, and two targets may root one method under two
+# authorities) -- the first row's words kept and their lists united; its
+# grown scope is every target's grown classes, the GROWN manifest one row
+# per class.
 campaign_union_static() {
   local name static grown
   grown=$(campaign_grown_scope)
@@ -955,10 +985,10 @@ campaign_union_static() {
       >"${grown}/${scope_growth_manifest}"
   fi
   rm -f -- "${grown}/${scope_growth_manifest}.all"
-  zcat -- "${skeletons[@]}" | jq -c -s '
+  zcat -- "${skeletons[@]}" | jq -c -s "${campaign_region_key}"'
     def unite($a; $b): reduce $b[] as $x ($a;
       if any(.[]; . == $x) then . else . + [$x] end);
-    reduce .[] as $row ({}; .[$row.regionId] |=
+    reduce .[] as $row ({}; .[$row | region_key] |=
       (if . == null then $row else
         reduce ($row | to_entries[] | select(.value | type == "array")) as $e
           (.; .[$e.key] = unite(.[$e.key] // []; $e.value)) end))
@@ -4298,7 +4328,8 @@ campaign_batch_verdict() {
 # targets/<name>/ (its causynth_output_dir, so every stage -- and every peer
 # of its waves, which derive their paths from it -- reads its slice and its
 # region plan there), its spec that one target's line, its region plan
-# aggregated on its own region skeletons (campaign_target_slice), and its
+# aggregated on its view of the merged skeletons (campaign_target_slice),
+# and its
 # campaign root targets/<name>/schedule/.  Run in a subshell of its own.
 campaign_batch_target() {
   local name=$1
@@ -4306,7 +4337,7 @@ campaign_batch_target() {
   derive_output_paths
   causynth_target_spec="${causynth_output_dir}/target.yaml"
   campaign_target_slice="${candidate_graph},${causynth_static_scope_map},\
-${causynth_output_dir}/own_region_skeletons.jsonl.gz"
+${causynth_output_dir}/view_region_skeletons.jsonl.gz"
   campaign_root="${schedule_output_dir}"
   campaign_final="${campaign_root}/final"
   campaign_stage_metrics="${campaign_root}/stage_metrics.tsv"

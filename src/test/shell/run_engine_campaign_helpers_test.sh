@@ -2793,9 +2793,12 @@ grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
 $(cat "${fanout_dir}/ledger/$(command hostname -s)/starts")"
 
 # UNION-1: a batch's one recording weave (do_record) is woven with every
-# target's skeletons merged by region, their lists united and the first
+# target's skeletons merged by root -- one region per root, whichever
+# authority each target rooted it under -- their lists united and the first
 # target's words kept, and over every target's grown classes with one GROWN
-# row per class.
+# row per class.  Each target is aggregated on its view of it: its own
+# selection at a root it plans, and another target's exception context as
+# state.
 union_dir="${test_tmp}/union"
 causynth_static_root="${union_dir}/static"
 causynth_output_dir="${union_dir}/out"
@@ -2807,17 +2810,30 @@ for target in a b; do
     >"${causynth_static_root}/${target}/scope-classes/GROWN"
 done
 printf '%s\n' \
-  '{"regionId":"R1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2"]}' \
-  '{"regionId":"R2","selection":"STATE_CONTEXT","methods":["m3"]}' \
+  '{"regionId":"R1","rootMethod":"r1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2"]}' \
+  '{"regionId":"R2","rootMethod":"r2","selection":"STATE_CONTEXT","methods":["m3"]}' \
+  '{"regionId":"R4","rootMethod":"r4","selection":"EXCEPTION_CONTEXT","methods":["m6"]}' \
   | gzip -c >"${causynth_static_root}/a/region_skeletons.jsonl.gz"
 printf '%s\n' \
-  '{"regionId":"R1","selection":"STATE_CONTEXT","methods":["m2","m4"]}' \
+  '{"regionId":"R1","rootMethod":"r1","selection":"STATE_CONTEXT","methods":["m2","m4"]}' \
+  '{"regionId":"R3","rootMethod":"r2","selection":"EXCEPTION_CONTEXT","methods":["m5"]}' \
   | gzip -c >"${causynth_static_root}/b/region_skeletons.jsonl.gz"
 campaign_union_static a b
 [[ "$(zcat "${causynth_region_skeletons}" | jq -c .)" == \
-    '{"regionId":"R1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2","m4"]}
-{"regionId":"R2","selection":"STATE_CONTEXT","methods":["m3"]}' ]] \
+    '{"regionId":"R1","rootMethod":"r1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2","m4"]}
+{"regionId":"R2","rootMethod":"r2","selection":"STATE_CONTEXT","methods":["m3","m5"]}
+{"regionId":"R4","rootMethod":"r4","selection":"EXCEPTION_CONTEXT","methods":["m6"]}' ]] \
   || fail "the union skeletons: $(zcat "${causynth_region_skeletons}")"
+for target in a b; do
+  campaign_region_view "${causynth_static_root}/${target}" | zcat \
+    | jq -r .selection | paste -sd ' ' - >"${union_dir}/${target}.view"
+done
+[[ "$(cat "${union_dir}/a.view")" == \
+    "EXCEPTION_CONTEXT STATE_CONTEXT EXCEPTION_CONTEXT" \
+    && "$(cat "${union_dir}/b.view")" == \
+    "STATE_CONTEXT EXCEPTION_CONTEXT STATE_CONTEXT" ]] \
+  || fail "a target's view of the union: a $(cat "${union_dir}/a.view"), \
+b $(cat "${union_dir}/b.view")"
 [[ -e "${causynth_output_dir}/scope-classes/p/A.class" \
     && -e "${causynth_output_dir}/scope-classes/p/B.class" ]] \
   || fail "a target's grown classes are missing from the union"

@@ -523,9 +523,10 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
    named by its workload and a digest of its checks.
 10. `prescreen.sh <experiment> <sweep-dir>/prescreen-jobs.tsv`: one recording per batch woven
     for every check of it (`$GC_OUT/prescreen/<key>/<batch>/runtime/record-summary.json`: each
-    check's ACTIVATED or refusal; a batch the build recorded already is kept). ~35 % of
-    check/test pairs are not in the recording window and are dropped here instead of dying at
-    SEED.
+    check's ACTIVATED or refusal; a batch the build recorded already is kept). Pairs not in the
+    recording window are dropped here instead of dying at SEED (WP2 measured ~35 %, while a check
+    whose region folds into another check's was still lost as `NOT_IN_WINDOW`; each check is
+    now aggregated on its view of the merged skeletons).
 11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`, one batch
     case per workload with the checks it activated (at most four).
 12. `STATIC_ROOT=$GC_OUT/static/<key> sweep.sh <snapshot> <round> <sweep-dir>/cases.txt
@@ -589,7 +590,8 @@ tools/rounds/                     launch, monitor and stop campaigns on the lift
 tools/adhoc/                      ad-hoc check discovery, build key, slicing, selection, pre-screen,
                                   sweeps, the nightly, triage, findings
 tools/regress/                    offline-ab.sh: the offline merge gate
-tools/analysis/                   one-off analyses (chain check, graph diff, pairing probe)
+tools/analysis/                   one-off analyses (chain check, graph diff, pairing probe, batch_share.py:
+                                  how much of a batch's per-target seed plans one replay could share)
 tools/case_onepager.py            one page per case from a campaign's artifacts
 docs/STATUS.md                    done / partial / not done, per requirement; open defects
 docs/design/                      the design of main (index: docs/design/README.md)
