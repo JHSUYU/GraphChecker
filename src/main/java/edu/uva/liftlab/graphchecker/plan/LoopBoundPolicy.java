@@ -59,7 +59,7 @@ public final class LoopBoundPolicy {
 
     /** Declared backedge ceiling for retained loops the case did not narrow
      *  ({@code causynth_loop_default_bound} via {@code run_engine.sh}). Never a
-     *  silent constant (README {@code LOOP-1}); each inheritance is published
+     *  silent constant (PIPELINE §0); each inheritance is published
      *  as an {@code INHERITED_K_L_<n>} gap, and an undeclared campaign is
      *  refused. */
     public static final String DEFAULT_BOUND_PROPERTY =
@@ -97,7 +97,7 @@ public final class LoopBoundPolicy {
                     "the inherited loop body bound must be at least one body "
                             + "execution, not " + defaultBackedgeTraversals);
         }
-        // Sorted: one declaration set, one identity (README section 1).
+        // Sorted: one declaration set, one identity.
         SortedMap<String, Integer> bounds = new TreeMap<String, Integer>();
         int limit = defaultBackedgeTraversals;
         if (declared != null) {

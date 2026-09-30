@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * CONTRACT-SPEC 4: the conclusion, with what it took and what it stepped
+ * CONTRACT-SPEC §4: the conclusion, with what it took and what it stepped
  * over.  {@code polarityDecides} separates an explanation from a formula
  * that was always satisfiable.  Gaps travel with the claim so no report
  * states it without them.

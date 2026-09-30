@@ -129,7 +129,8 @@ the flip solver:
 - a STATE read's arms are its observed writer plus every attested writer occurrence of the same
   session that is HB-concurrent with the reader (not the same thread, not an anchor-chain
   ancestor either way, both chains reaching a `Root`; a `Lost` context is never concurrent), one
-  arm per writer occurrence at its last write. Locks are not constraints.
+  arm per writer occurrence: the observed writer's at the write the read observed, any other at
+  its last write of the location. Locks are not constraints.
 - an occurrence is attested in a session that has an instrumented activation row for it
   (`Arms#attested`); no witness may move a root inside an unattested arm.
 
@@ -246,17 +247,35 @@ order:
 - an event takes the earliest open or given-up slot of its key; with none it runs free. A slot
   before the cut, or a `WAKE` slot anywhere, is held until every earlier slot is settled;
   `INTERRUPT` is never held;
+- while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
+  recording never made waits at the cut. One past its recorded count (a loop polling longer than
+  recorded) waits until its context's next slot is due, then polls once per move of the order
+  (a settled slot) since its previous `WAKE`; the slot its last recorded `WAKE` took counts, so
+  the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
+  slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
+  scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
+  wait is missed). The watchdog lets held waits go when the run idles; a released timed wait still
+  waits out its own deadline. Past the cut a `WAKE` with no slot runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
-  not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog,
-  after `causynth.schedule.timeout.ms` (default 15 s) with waiters and no computing thread, gives
-  up every open slot before the earliest waiter; a stall of eight timeouts is given up whatever the
-  CPU does; after two give-ups past the cut the rest is released. Each give-up is a
+  not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog
+  acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled, and none
+  of the threads that owe the stalled slots computing, or after eight timeouts whatever they do.
+  A thread owes a slot when its last event stood in the slot's context, or in work that context
+  handed on (`context|…`), and it neither waits nor polls past what the order holds
+  (`ScheduleLog#computingLocked`); the result publication, store-notification work and threads
+  no event bound never count. The watchdog first lets the waits held without a slot go; a grace
+  (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter, and when
+  that settles nothing it lets the held waits go again, a grace apart. A let-go does not restart
+  the stall's clock, so an event that never comes costs a timeout and a grace.
+  After two give-ups past the cut the rest is released. Each let-go and give-up is a
   `SCHEDULE_DIVERGED` DIAGNOSTIC row;
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that
   session's world (its flips and planted values); flips are cut only from ADMITTED sessions
-  (`explore/ObligationFactory`). CONFIRM cuts the selected session's schedule the same way
-  (`explore/ConfirmMain`);
+  (`explore/ObligationFactory`). CONFIRM writes the selected session's schedule unheld
+  (`explore/ConfirmMain`, `SchedulePrefix#write` with `held` false): every event is rest, so only
+  a `WAKE` still waits for what it followed, and the model's order is held by the `ORDER` rows of
+  its expected edges (`runtime/Confirmation`, PIPELINE.md §10);
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
   runs on virtual time (it ends at a real signal or when its slot is due), and a woven notify marks
   the longest-standing wait.

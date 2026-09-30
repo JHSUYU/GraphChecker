@@ -495,7 +495,7 @@ public class ComposerTest {
         Composer.Composition armed = compose(guarded, 8);
         assertEquals(1, armed.families().size());
         // TWO arms: neither run was held to a flip, so each is a
-        // delivery the other's path could have received (DESIGN4 3.4),
+        // delivery the other's path could have received (PIPELINE §8),
         // and each arm carries its own replay's valuation.
         assertEquals(2, armed.families().get(0).arms().size());
         for (Arm arm : armed.families().get(0).arms()) {
@@ -977,7 +977,7 @@ public class ComposerTest {
         assertTrue("the upstream delivery carries the root",
                 composition.body().contains(MARKER));
 
-        // ONE RUN BEHIND EVERY OUT OF ONE OCCURRENCE (rule 3).  The
+        // ONE RUN BEHIND EVERY OUT OF ONE OCCURRENCE (PIPELINE §8).  The
         // producer exports at TWO ports and the anchor attaches both; one
         // run delivered (true, false) there and the other (false, true).
         // With a selector per family a witness takes the first port from
@@ -1807,7 +1807,7 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
-    // 11. Which writer the read could have seen (R-I7.1).
+    // 11. Which writer the read could have seen (IDENTITY §4).
     // ------------------------------------------------------------------
 
     @Test
@@ -1922,7 +1922,7 @@ public class ComposerTest {
                 arms.stateArms(readAt, "s0", keysKey, 1L, true).size());
         assertEquals("a partial one only the writer the read observed", 1,
                 arms.stateArms(readAt, "s0", keysKey, 1L, false).size());
-        // IDENTITY-V3 sec 5: alternatives need an owner that names the
+        // PIPELINE §8: alternatives need an owner that names the
         // storage.  The class-owned copy of the same state gets the
         // delivery its own run gave it, and says so.
         assertTrue("the rid the runtime writes names the storage",
@@ -1999,6 +1999,132 @@ public class ComposerTest {
                             + observed + " " + symbol + "))")));
             assertEquals("a write no row states is the run's own arm",
                     observed == 3L, body.contains("observed_arm__"));
+        }
+    }
+
+    @Test
+    public void aFieldThroughAMovedOwnerIsTheFieldOfTheObjectItIs()
+            throws Exception {
+        // SOLR-18406's latestCommit: two writers each build a commit, store
+        // it and a flag as one block; phi reads the generation THROUGH the
+        // reference.  The run read commit 11 (generation 5) and the healthy
+        // flag.  Moved to the other writer, phi reads commit 12's
+        // generation, never 11's: 3 is no witness, 7 is one, whether a write
+        // before the store states it or, never written, a read of it.  A
+        // cell with no one value while 12 was stored -- written twice, or
+        // only after the store -- answers nothing: that pairing is refused
+        // by name.
+        String commit = "org/apache/Commit";
+        LocationId latest = LocationId.of(LocationKind.INSTANCE, "8", "48");
+        LocationId flag = LocationId.of(LocationKind.INSTANCE, "8", "56");
+        LocationId own = LocationId.of(LocationKind.INSTANCE, "11", "24");
+        LocationId other = LocationId.of(LocationKind.INSTANCE, "12", "24");
+        for (Object[] each : new Object[][]{
+                {3L, "written", ClaimKind.NO_SUPPORTED_WITNESS},
+                {7L, "written", ClaimKind.STATE_PAIRING_FLIPPED},
+                {7L, "read", ClaimKind.STATE_PAIRING_FLIPPED},
+                {7L, "twice", ClaimKind.NO_SUPPORTED_WITNESS},
+                {7L, "late", ClaimKind.NO_SUPPORTED_WITNESS}}) {
+            long generation = (Long) each[0];
+            String row = generation + " " + each[1];
+            Path iteration = folder.newFolder("moved-owner-" + generation
+                    + "-" + each[1]).toPath();
+            OccurrenceAddress reader = occurrence("case/leader",
+                    "REGION.fetch", CausalContext.of(Role.of("DATA_XCEIVER"),
+                            "", 1), frame("Stream#write#4", 0));
+            OccurrenceAddress mine = occurrence("case/leader",
+                    "REGION.commit", CausalContext.of(Role.of("IPC_HANDLER"),
+                            "", 1), frame("Policy#onCommit#2", 0));
+            OccurrenceAddress theirs = occurrence("case/leader",
+                    "REGION.init", CausalContext.of(Role.of("HEARTBEAT_TICK"),
+                            "", 1), frame("Policy#onInit#9", 0));
+            Session session = new Session(iteration, "s0", false);
+            session.occurrence = reader;
+            session.activation(reader);
+            session.activation(mine);
+            session.activation(theirs);
+            session.expression("EXPR.v1.theirs",
+                    symbol("M_L'" + commit + "'_12", commit));
+            session.expression("EXPR.v1.mine",
+                    symbol("M_L'" + commit + "'_11", commit));
+            session.expression("EXPR.v1.five", integer("I", 5L));
+            session.expression("EXPR.v1.true", constant("true"));
+            session.expression("EXPR.v1.false", constant("false"));
+            session.expression("EXPR.v1.generation",
+                    integer("I", generation));
+            // The other writer first: it builds commit 12, then stores it.
+            long version = 0L;
+            for (int index = 0; index < ("twice".equals(each[1]) ? 2
+                    : "written".equals(each[1]) ? 1 : 0); index++) {
+                session.write(Endpoint.of(theirs, "Commit#init#3:WRITE",
+                        at("generation#" + index, 0), 0), other, ++version,
+                        "EXPR.v1.generation");
+            }
+            if ("read".equals(each[1])) {
+                session.read(Endpoint.of(theirs, "Commit#get#2:READ",
+                        at("generation#0", 0), 0), other, 99L,
+                        SmtLowering.locationKey(other) + "@v99@s0", "I",
+                        Long.toString(generation));
+            }
+            session.write(Endpoint.of(theirs, "Policy#update#4:WRITE",
+                    at("latest#1", 0), 0), latest, ++version,
+                    "EXPR.v1.theirs");
+            session.write(Endpoint.of(theirs, "Policy#update#5:WRITE",
+                    at("flag#1", 0), 0), flag, ++version, "EXPR.v1.true");
+            if ("late".equals(each[1])) {
+                session.write(Endpoint.of(theirs, "Commit#set#6:WRITE",
+                        at("generation#0", 0), 0), other, ++version,
+                        "EXPR.v1.generation");
+            }
+            // Then the writer whose versions the reader observed.
+            long constructed = ++version;
+            session.write(Endpoint.of(mine, "Commit#init#3:WRITE",
+                    at("generation#9", 0), 0), own, constructed,
+                    "EXPR.v1.five");
+            long stored = ++version;
+            session.write(Endpoint.of(mine, "Policy#update#4:WRITE",
+                    at("latest#2", 0), 0), latest, stored, "EXPR.v1.mine");
+            long flagged = ++version;
+            session.write(Endpoint.of(mine, "Policy#update#5:WRITE",
+                    at("flag#2", 0), 0), flag, flagged, "EXPR.v1.false");
+            session.read(Endpoint.of(reader, "Stream#latest#6:READ",
+                    at("read#1", 0), 0), latest, stored,
+                    SmtLowering.locationKey(latest) + "@v" + stored + "@s0",
+                    "L", null);
+            session.read(Endpoint.of(reader, "Stream#flag#7:READ",
+                    at("read#2", 0), 0), flag, flagged,
+                    SmtLowering.locationKey(flag) + "@v" + flagged + "@s0",
+                    "Z", null);
+            // The VM's pair: concreteValue is the run's cell, 11#24.
+            JsonObject owner = read("INSTANCE_FIELD", 8L, 48L, stored, "L");
+            session.expression("EXPR.00000000000000f1", binary(">",
+                    fieldRead(commit, 24L, "I", owner, read("INSTANCE_FIELD",
+                            11L, 24L, constructed, "I")),
+                    integer("I", 4L)));
+            session.expression("EXPR.00000000000000f2", read("INSTANCE_FIELD",
+                    8L, 56L, flagged, "Z"));
+            session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
+                    false, true);
+            session.write();
+
+            Composer.Composition composition = Composer.compose(
+                    Corpus.read(iteration, null), reader,
+                    Collections.<String,
+                            edu.uva.liftlab.graphchecker.contract.RootDomain>
+                            emptyMap(), 4);
+            assertTrue(row + ": the other writer is an alternative",
+                    composition.body().contains("state_family__"));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals(row, each[2], decision.claim().kind());
+            boolean named = false;
+            for (GapRow gap : composition.gaps()) {
+                named |= gap.subject().equals("CANDIDATE_UNANSWERED:"
+                        + SmtLowering.locationKey(other) + "@s0");
+            }
+            assertEquals(row + ": a cell with no one value is named",
+                    each[2] == ClaimKind.NO_SUPPORTED_WITNESS
+                            && generation == 7L, named);
         }
     }
 
@@ -3340,7 +3466,7 @@ public class ComposerTest {
 
     // ------------------------------------------------------------------
     // 16. A message's arms are the runs whose world is compatible with
-    //     the path's (DESIGN4 3.4).
+    //     the path's (PIPELINE §8).
     // ------------------------------------------------------------------
 
     @Test
@@ -3997,7 +4123,7 @@ public class ComposerTest {
      *
      * <p>An allocation endpoint id, not a session rid: the spelling a
      * location needs before alternatives may be asked for it
-     * (IDENTITY-V3 sec 5, {@code Arms.namedOwner}).</p>
+     * (PIPELINE §8, {@code Arms.namedOwner}).</p>
      */
     private static JsonObject read(String kind, String owner, String slot,
                                    long version, String javaType) {
@@ -4029,9 +4155,16 @@ public class ComposerTest {
     private static JsonObject fieldRead(String ownerClass, long offset,
                                         JsonObject owner,
                                         JsonObject concreteValue) {
+        return fieldRead(ownerClass, offset, "L", owner, concreteValue);
+    }
+
+    /** The same, of a field of this Java type. */
+    private static JsonObject fieldRead(String ownerClass, long offset,
+                                        String javaType, JsonObject owner,
+                                        JsonObject concreteValue) {
         JsonObject node = new JsonObject();
         node.addProperty("_type", "FieldAccessExpression");
-        node.addProperty("_java_type", "L");
+        node.addProperty("_java_type", javaType);
         node.addProperty("ownerClass", ownerClass);
         node.addProperty("fieldOffset", offset);
         node.add("owner", owner);

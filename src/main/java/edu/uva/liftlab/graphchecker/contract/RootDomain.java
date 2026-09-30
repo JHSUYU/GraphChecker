@@ -13,7 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * CONTRACT-SPEC 4: how far a root may move, as absolute bounds.  A root with
+ * CONTRACT-SPEC §4: how far a root may move, as absolute bounds.  A root with
  * neither bound is pinned, in the composer and the flip solver alike.
  * {@link #declared(Path)} is the one reader of {@code root-domains.jsonl} and
  * {@link #resolved} the one join with a mint, so the two consumers cannot

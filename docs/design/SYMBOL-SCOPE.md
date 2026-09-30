@@ -83,7 +83,7 @@ causynth output directory:
 | `candidate_dataflow_edges.jsonl.gz` | the slice's edges (`kind`, `fromCell`, `toCell`, `method`, `unitIndex`, `invoke`, ...) |
 | `region_skeletons.jsonl.gz` | the regions built around execution-context entries (`causynth/SymbolicRegionPlanner`), with their ports and retained loops |
 | `communication_gaps.jsonl.gz` | ports or loops the planner could not place |
-| `static_scope_map.jsonl` | §3; built before any weaving, so site ids are original unit indices |
+| `static_scope_map.jsonl` | §3; built before any hook is woven, over the door-woven bodies (§4.2), so site ids are the unit indices every pass and every replay decides at |
 | `scope_frontier.jsonl` | §2.4 |
 
 ### 2.4 Scope growth

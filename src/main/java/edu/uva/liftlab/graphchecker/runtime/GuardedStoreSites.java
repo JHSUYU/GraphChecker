@@ -18,22 +18,24 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * PLAN's control-dependence answer ({@code static_scope_map.jsonl},
- * REPORT-CLOSURE-V2 SS1) installed as the VM's session table: the VM logs a
- * concrete store only inside a method named here, once one of its guard
- * branches decided symbolically (REPORT-VM22 VM24).  Decides nothing itself.
+ * SEED's control-dependence answer ({@code static_scope_map.jsonl},
+ * SYMBOL-SCOPE §3) installed as the VM's session table: a concrete container
+ * mutation starts a location's log only inside a method named here, once one
+ * of its guard branches decided symbolically (VM §5.3); a store into an
+ * already-tracked location is versioned anywhere.  Decides nothing itself.
  *
  * <p>Store methods go to the VM with the owner's dots made slashes; guard
  * site ids ({@link edu.uva.liftlab.graphchecker.plan.SiteId#of}) go
- * verbatim, and contain commas, hence tab-separated fields (VM25).</p>
+ * verbatim, and contain commas, hence tab-separated fields.</p>
  *
- * <p>Required: a missing table would silently mean no concrete store is
- * ever evidence, so it is refused by name.</p>
+ * <p>Required: a missing table would silently mean no guarded concrete
+ * mutation ever starts a log, so it is refused by name.</p>
  */
 final class GuardedStoreSites {
-    private static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
+    /** Names this epoch's scope map; {@link ClockLoops} reads it too. */
+    static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
-    /** VM25: {@code line ::= methodKey ( '\t' guardSite )*}. */
+    /** SYMBOL-SCOPE §5.3: {@code line ::= methodKey ( '\t' guardSite )*}. */
     private static final char LINE = '\n';
     private static final char FIELD = '\t';
 

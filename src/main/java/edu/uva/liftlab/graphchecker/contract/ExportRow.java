@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 2: a value a producer endpoint put on the wire, {@code e_p}
+ * CONTRACT-SPEC §2.2: a value a producer endpoint put on the wire, {@code e_p}
  * in the {@link ExpressionTable}.  {@code seq} is where the producer's path
  * condition is cut; the sort comes from {@code javaType}, never from the
  * recorded characters.

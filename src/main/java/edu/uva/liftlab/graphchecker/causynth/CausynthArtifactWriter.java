@@ -39,8 +39,9 @@ final class CausynthArtifactWriter {
                 program.regions);
         writeGzipJsonl(outputDir.resolve("communication_gaps.jsonl.gz"),
                 program.communicationGaps);
-        // CLOSURE-V2 SS4: plain JSONL for EXPLORE.  Built before any
-        // weaving, so guard ids share the woven branch sites' numbering.
+        // SYMBOL-SCOPE §2.3: plain JSONL for EXPLORE.  Built over the
+        // door-woven bodies before any hook is woven, so guard ids share the
+        // woven branch sites' numbering.
         ArtifactIO.replaceJsonl(outputDir.resolve(StaticScopeMap.FILE),
                 staticScopeMap);
         ArtifactIO.replaceJsonl(outputDir.resolve(ScopeFrontier.FILE),

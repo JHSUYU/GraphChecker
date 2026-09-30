@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.contract;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 /**
- * IDENTITY-IMPL A: the one address of a region occurrence,
+ * CONTRACT-SPEC §1, IDENTITY §1: the one address of a region occurrence,
  * {@code node#epochN/region/REGION.x/ctx:<why>/idx:<where>} -- node and epoch,
  * static region, the {@link CausalContext} that started it, and the
  * {@link ExecutionIndex} from scope root to region entry.  Nothing else (no

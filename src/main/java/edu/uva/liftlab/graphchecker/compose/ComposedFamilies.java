@@ -189,10 +189,10 @@ final class ComposedFamilies {
     }
 
     /**
-     * Rule 3: ONE SELECTOR PER (MESSAGE, SESSION), exactly one eligible
+     * ONE SELECTOR PER (MESSAGE, SESSION), exactly one eligible
      * session per message.  The unit is the MESSAGE (correlation id), not
      * the producer occurrence: per-leaf choices let a witness mix halves of
-     * two runs' responses.  Wire arrivals are bound HERE only (CLOSURE-V2);
+     * two runs' responses.  Wire arrivals are bound HERE only (PIPELINE §8);
      * a message no session could send is refused by name.
      *
      * @return whether every message this path binds has an eligible
@@ -212,7 +212,8 @@ final class ComposedFamilies {
     /**
      * The message groups of one set of attaches, under one guard: the path
      * selector for its own attaches, or a family guard for the attaches a
-     * delivery was itself handed (R3b iv) -- the same rule at every depth.
+     * delivery was itself handed (item (iv) below) -- the same rule at every
+     * depth.
      * A message closed at an outer level is not closed again.
      */
     private boolean closeMessages(int ordinal, String guard, String owner,
@@ -293,8 +294,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * R3c': the sessions that could have SENT this message -- those with an
-     * attested arm at EVERY interaction it covers.  A per-leaf check would
+     * The sessions that could have SENT this message (PIPELINE §8) -- those
+     * with an attested arm at EVERY interaction it covers.  A per-leaf check would
      * accept a run that sent only part of the response.
      *
      * @return the eligible sessions, or null (refused by name) when none is
@@ -425,7 +426,7 @@ final class ComposedFamilies {
 
     /**
      * The eligible sessions whose WORLD is compatible with this path's
-     * (DESIGN4 3.4): one flip set contains the other.  Each is one arm, so
+     * (PIPELINE §8): one flip set contains the other.  Each is one arm, so
      * the value read is an {@code ite} over the deliveries its world admits,
      * and a producer flip becomes an alternative inside the path.  The own
      * session is the case where the two worlds are equal.
@@ -513,8 +514,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * R3b: AN ARM IS CLOSED LIKE A PATH, under {@code sel_{P,S}} in S's
-     * scope: (i) P's decisions before the LAST delivery this path takes;
+     * AN ARM IS CLOSED LIKE A PATH (PIPELINE §8), under {@code sel_{P,S}}
+     * in S's scope: (i) P's decisions before the LAST delivery this path takes;
      * (ii) P's closure at that cutoff plus the versions the delivered
      * expressions read ({@link #expressionWrites}); (iii) the prefixes and
      * the joins this arm's text reaches, by the path's own routines; (iv)
@@ -645,7 +646,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * The attaches one delivery was itself handed (R3b iv): the handoff
+     * The attaches one delivery was itself handed (item (iv) of an arm's
+     * closure, above): the handoff
      * variables {@link Arms.Arm#nested} names, resolved in the delivering
      * session.
      */
@@ -667,7 +669,8 @@ final class ComposedFamilies {
      * names the read, but the closure needs the write the producer had in
      * hand (latest version at or before the read).  Resolved only by
      * {@link Corpus#expressionStateReads}, the edge exploration grows by
-     * too (E2), so arms and waves agree on what a delivery is made of.
+     * too (PIPELINE §7.2), so arms and waves agree on what a delivery is made
+     * of.
      */
     private List<WriteRow> expressionWrites(String session, List<Out> outs) {
         List<WriteRow> writes = new ArrayList<WriteRow>();
@@ -710,7 +713,7 @@ final class ComposedFamilies {
     }
 
     /**
-     * Files every arm {@link Arms} refused since the last drain (R4 item 3)
+     * Files every arm {@link Arms} refused since the last drain
      * as this composition's gap, once.
      */
     private void fileRefusals() {
@@ -793,7 +796,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * THE STATE FAMILIES: rule 3 with the WRITER as P.  A writer
+     * THE STATE FAMILIES: one selector per writer, as a message family has
+     * one per sender (PIPELINE §8), with the WRITER as P.  A writer
      * occurrence's writes move as a BLOCK, so one selector per writer binds
      * every joined read of every location it writes, its body stated once;
      * then exactly-one PER LOCATION over its writers (none for a single

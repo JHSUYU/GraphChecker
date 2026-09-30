@@ -1,9 +1,9 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 2: one write, the producer half of a STATE interaction.
+ * CONTRACT-SPEC §2.2: one write, the producer half of a STATE interaction.
  * {@code version} joins reads within a run; across runs the endpoint is the
- * identity (INTERACTION-ID R-I4).
+ * identity (CONTRACT-SPEC §1).
  */
 public final class WriteRow extends Value {
     private final String sessionId;

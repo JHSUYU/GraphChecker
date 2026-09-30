@@ -93,8 +93,10 @@ A case id names its experiment by its longest prefix, for example `hdfs-17899-bu
 
 `accept.sh` runs the campaign, a z3 probe and `report.py`. `experiments/accept/README.md` says
 what PASS means: the claim, no BLOCKING gap, the case's expected mechanism, `polarityDecides`,
-a confirmation, and every moved root inside the causal cone (`cone.py`). Only the nine HDFS
-cases are in `report.py`'s table.
+a confirmation, and every moved root inside the causal cone (`cone.py`). `report.py`'s table
+names the nine HDFS cases and the two Solr cases; a case it does not name cannot pass. Before
+each case `accept.sh` waits for `MIN_FREE_GB` free where `OUT` is written (a refused write there,
+such as a full quota, counts as none).
 
 To run from a frozen snapshot (a round) instead of the working tree:
 
@@ -125,17 +127,19 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
 
 1. `sites.py <system-dir> <repo>`: every guarded `throw new` in the system's sources.
 2. `coverage.sh`, fanned out by `fanout.sh`: one JaCoCo run per workload test, which writes
-   `<w>.lines` and a `.node` marker. You supply the list of workload tests (`workloads.tsv`).
+   `<w>.lines` and a `.node` marker and exits with the test's own status. You supply the list of
+   workload tests (`workloads.tsv`).
 3. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
 4. `select.py <system-dir> <sweep-dir> <experiment> <N> [per-check] [tree]`: rank and choose
-   checks. It appends them to `checks.tsv` and prints the case ids.
+   checks. It appends them to `checks.tsv` and prints the case ids. A workload whose test failed
+   under coverage, or that starts no node, is skipped and named on stderr.
 5. `annotate.py <experiment> <tree>`: put `@CausynthExceptionTarget("adhoc-<check>")` on each
    chosen throw and write `targets/`. Then rebuild the tree and commit it (a manual step).
 6. `sweep.sh <snapshot> <round> <cases-file> [heads-per-host]`: one campaign per case over all
    ten lifts, with `PRUNE=1` and a 5400 s case budget. Head starts are gated on memory by
    `fanout.sh`.
-7. `triage.py <round> [gc-out]`: one row per case with its outcome class, finding, stage and
-   reason.
+7. `triage.py <round> [gc-out]`: one row per case with its outcome class (CONFIRMED, REFUTED,
+   NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING), finding, stage and reason.
 
 Set `GC_OUT=/bigtemp/vnr3ne/gc-out` for sweeps. The scripts default to `/u/vnr3ne/gc-out`,
 which is on the quota-limited home.

@@ -185,7 +185,7 @@ ExpressionBroker::HandoffStatus ExpressionBroker::resolve(jlong handle,
 jlong ConcolicMngr::exportExpression(
     Handle owner, const char *declaring_class, const char *field_name,
     const char *descriptor, jlong *export_event_out) {
-  // README RPC-1: the exporter is an endpoint of the VALUE_HANDOFF edge and
+  // CONTRACT-SPEC §1: the exporter is an endpoint of the VALUE_HANDOFF edge and
   // has to be able to name its own event, or its interaction row cannot say
   // which export it published and the Composer is left counting ports.
   if (export_event_out != NULL) *export_event_out = 0;
@@ -278,7 +278,7 @@ jlong ConcolicMngr::exportExpression(
 jlong ConcolicMngr::attachExpression(
     Handle owner, const char *declaring_class, const char *field_name,
     const char *descriptor, jlong handle, jlong *attach_event_out) {
-  // README RPC-1: one export may be attached at several explicit receivers,
+  // VM §7: one export may be attached at several explicit receivers,
   // so the export id alone does not name *this* receive.  Both endpoints of
   // the handoff leave the VM together; nothing downstream may guess the
   // attach from the export id alone.

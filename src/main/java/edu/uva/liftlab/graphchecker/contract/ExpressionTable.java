@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * CONTRACT-SPEC 2: the session's expressions, ref to the VM's expression
+ * CONTRACT-SPEC §2.3: the session's expressions, ref to the VM's expression
  * object unchanged.  Rows carry refs into this shared DAG, never inlined
  * trees; the file holds it as a DAG too ({@link SessionExpressionLog}).
  */

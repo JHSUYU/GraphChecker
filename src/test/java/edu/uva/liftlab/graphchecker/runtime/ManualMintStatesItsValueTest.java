@@ -758,7 +758,7 @@ public class ManualMintStatesItsValueTest {
     /**
      * A configured source mints where its occurrence runs SYMBOLIC.
      *
-     * <p>README SS9 rule 1: a concretely run region contributes literals,
+     * <p>SYMBOL-SCOPE §1: a concretely run region contributes literals,
      * never freedom.  The hook fires wherever its site runs -- occurrences
      * do not nest, so everything executed synchronously below an
      * occurrence belongs to it -- and the mint used to be made on whatever

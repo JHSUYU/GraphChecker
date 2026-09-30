@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 4: what a composition may conclude.
+ * CONTRACT-SPEC §4: what a composition may conclude.
  */
 public enum ClaimKind {
     /** A declared marker root at its other value reaches the fatal read. */

@@ -240,8 +240,8 @@ final class ActiveRegion {
     /**
      * Whether a configured-source hook may mint where it just fired.
      *
-     * <p>A concretely run region contributes literals, never freedom (README
-     * SS9 rule 1): minting under a concrete occurrence adds a free root that
+     * <p>A concretely run region contributes literals, never freedom:
+     * minting under a concrete occurrence adds a free root that
      * is decoupled from what computed the value (e.g. an expiry from its
      * clock).  The owning occurrence is the thread's active one (occurrences
      * do not nest), and the question is {@code FocusedReplay}'s: does it run

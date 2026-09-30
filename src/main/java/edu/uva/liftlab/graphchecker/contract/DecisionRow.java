@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Map;
 
 /**
- * CONTRACT-SPEC 2: one branch the focused region decided.  {@code
+ * CONTRACT-SPEC §2.2: one branch the focused region decided.  {@code
  * clockReadings} belong inside the path's own conjunction, never a global
  * assertion.  {@code seq} cuts a producer's path condition at its export, so a
  * consumer never conditions on a branch taken after the send.

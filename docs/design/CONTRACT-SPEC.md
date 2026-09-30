@@ -127,7 +127,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `TOPOLOGY_DIVERGENCE` | a pairing that contradicts the slot table or the run's order, an interaction outside the closure |
 | `UNATTESTED_ARM` | an arm whose producer states no path condition (no instrumented activation) |
 | `SCHEDULE_DIVERGED` | a focused replay left its schedule prefix (stated with both events; DIAGNOSTIC) |
-| `UNSTATED_VALUE` | a value no row states: a read joining no version and pinning no value, a lowering refusal, a malformed row |
+| `UNSTATED_VALUE` | a value no row states: a read joining no version and pinning no value, a lowering refusal, a malformed row; a STATE location at the anchor whose reads' recorded pairing no family arm states (BLOCKING, [PIPELINE.md §8](PIPELINE.md)) |
 | `UNPRODUCIBLE_ANSWER` | an attach answered or needed with a value no producer arm can produce |
 | `FORMULA_SAT_AT_RECORDED_VALUATION` | the composed formula reaches the fatal arm at the recorded valuation on a healthy path |
 | `DECLARATION_MISSING` | a root, port or name the case never declared; an undecided or erroring solver ask |
@@ -147,7 +147,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `ASSIGNMENT_UNPLANTED` | an assigned root whose mint ran without planting the value |
 | `ASSIGNMENT_UNMINTABLE` | an assigned root the recording mints nowhere (the obligation is not run) |
 | `PATH_SELF_CONTRADICTORY` | a composed path unsatisfiable with every root free (BLOCKING when every path is) |
-| `CONFIRM_MISMATCH` | the confirmation replay took an edge the model did not choose, or could not hold its order |
+| `CONFIRM_MISMATCH` | the confirmation replay took an edge the model did not choose, could not hold its order, or could not read the edges it was handed (`EDGES:`) |
 
 ### 2.6 The row invariants (`RowInvariants`, run by `ImportGateMain`)
 
@@ -203,7 +203,10 @@ field=<f> <subject>`.
   root's mint occurrence is focused.
 - CONFIRM's worker adds `expected_edges.jsonl` (`runtime.Confirmation.FILE`): `WIRE {consumer,
   producer, selector}`, `STATE {reader, mint, writer, version, location}`, `ORDER {before, after}`
-  (activation keys), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`.
+  (activation keys), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation
+  flips nothing (`Obligation.confirming`) owes these rows: missing or unreadable, it files a
+  `CONFIRM_MISMATCH`. `final/confirm.json` is `{schemaVersion 1, kind CONFIRMATION, confirmed,
+  reason, sessionId}` ([PIPELINE.md §10](PIPELINE.md)).
 
 ## 4. Composition contract
 
@@ -235,7 +238,9 @@ field=<f> <subject>`.
 - A decision's polarity is applied by its reader (`Arms.conjunct`, `Arms.pathCondition`), for
   COMPOSE and flip queries alike.
 - One lowering, `compose.SmtLowering`, serves COMPOSE and the flip queries
-  (`explore.FlipQuery.statedTerm`).
+  (`explore.FlipQuery.statedTerm`), and one tokenizer and vocabulary, `compose.SmtNames`: a name
+  is a theory operator iff `SmtNames.BUILTIN` lists it, and it lists every operator the lowering
+  writes; any other name must be declared, let-bound or in the preamble.
 - A read binds, in order: to the expression of the write it observed if that lowers with no
   refusal, else to its version's mint, else to the value its row states, else it is refused
   `UNSTATED_VALUE` (`compose.Composer.stateJoins`). A flip query offers eligible writers as choices

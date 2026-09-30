@@ -82,7 +82,7 @@ public class RowRuntimeTest {
      *
      * <p>Asserted on the ADDRESS the scope produces rather than on a
      * rendered chain: what an occurrence is addressed by is its causal
-     * context (IDENTITY-V3 SS4), so the root role and the window index the
+     * context (IDENTITY §2), so the root role and the window index the
      * carried scope hands the worker are what "the scope reached the work"
      * means -- the innermost role beside them says which hop is running.</p>
      */
@@ -93,7 +93,7 @@ public class RowRuntimeTest {
         RuntimeTraceContext.registerSource(anchor, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "balance-block");
         // The api the k was counted under is part of the context: two
-        // declared apis of one node are not one root (G11).
+        // declared apis of one node are not one root (IDENTITY §2).
         assertEquals("Root:CLIENT/balance-block#1", rootContext());
         assertEquals(Role.CLIENT, Lineage.role());
 
@@ -1472,8 +1472,8 @@ public class RowRuntimeTest {
         assertEquals("and it is still the occurrence this thread runs",
                 addKeys, Identity.currentOccurrence(NN.key()));
 
-        // F1: A FOLDED ENTRY IS NOT AN ENTRY OF AN OCCURRENCE.  Neither pass
-        // records an activation for it -- the recording states no occurrence
+        // IDENTITY §1: A FOLDED ENTRY IS NOT AN ENTRY OF AN OCCURRENCE.  Neither
+        // pass records an activation for it -- the recording states no occurrence
         // address on its trace row, so PLAN builds one activation per
         // occurrence and a SHARED_ADDRESS_ROOT_CALLS row keeps meaning a
         // real identity failure.
@@ -1527,7 +1527,7 @@ public class RowRuntimeTest {
         // the handler, so an index measured from the level that opened it
         // is empty once that level is gone -- and the four
         // PBHelper.convert activations of one refresh then answered one
-        // address (G11).
+        // address (IDENTITY §3).
         Identity.resetForTests();
         Identity.enterFrame("Server.processRpcRequest()#u3", null);
         long inbound = Identity.enterFrame("Propagation.inbound()#u7", null);
@@ -1564,7 +1564,7 @@ public class RowRuntimeTest {
         // A tick is the other arm of the one rule: it IS the started work,
         // so its index begins at the start frame it claimed rather than at
         // the point the tick was opened -- the start site and its iteration
-        // are what tell two started siblings apart (G10/G11).
+        // are what tell two started siblings apart (IDENTITY §3).
         Identity.resetForTests();
         Lineage.resetForTests();
         Object updating = new Object();
@@ -1868,8 +1868,8 @@ public class RowRuntimeTest {
 
         // The three causal contexts, and the one that is not an ordinal.
         // A ROOT names the api its k was counted under, because that is
-        // what the k counts (G11): two declared apis of one node are two
-        // roots, and a tick declares none.
+        // what the k counts (IDENTITY §2): two declared apis of one node are
+        // two roots, and a tick declares none.
         assertEquals("Root:HEARTBEAT_TICK#4", Identity.context("", "",
                 Role.of("HEARTBEAT_TICK"), "", 4).render());
         assertEquals("Root:CLIENT/balance-block#1", Identity.context("", "",

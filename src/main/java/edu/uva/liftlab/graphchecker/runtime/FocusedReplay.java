@@ -325,7 +325,8 @@ public final class FocusedReplay {
      * Whether this occurrence has taken the decision ITS OWN obligation
      * flips; true when it has no obligation, or none is addressed at it.
      *
-     * <p>The other half of I2, the same join as {@link #observe} (R4a).
+     * <p>The other half of I2, the same join as {@link #observe} (by id,
+     * IDENTITY §10).
      * Trap: asked occurrence-blind, a root's mint or factor member is
      * abandoned for a flip it was never asked to take, and all its rows
      * (mint row included) are thrown away.</p>
@@ -387,7 +388,7 @@ public final class FocusedReplay {
 
     /**
      * What this replay settled, one row per obligation.  Topology divergence
-     * is EXPLORE's finding (rule E8), not decided here.
+     * is EXPLORE's finding (PIPELINE §7.1), not decided here.
      *
      * <p>FAIL-CLOSED: ADMITTED is a claim about the SESSION's rows, so the
      * flip alone does not admit -- an abandoned prefix, a missing mint row or
@@ -551,7 +552,8 @@ public final class FocusedReplay {
                         : strings(row, "rootMints").entrySet()) {
                     OccurrenceAddress at =
                             OccurrenceAddress.parse(mint.getValue());
-                    // By id(), not render(): a join across passes (R4a).
+                    // By id(), not render(): a join across passes
+                    // (IDENTITY §10).
                     if (at != null) ROOT_MINTS.add(at.id());
                 }
                 // Inherited flips, parent's first (see Inherited).

@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 2: one refusal or diagnostic, always naming its
+ * CONTRACT-SPEC §2.2: one refusal or diagnostic, always naming its
  * {@code subject} (endpoint id, root, location, address), never a category.
  */
 public final class GapRow extends Value {

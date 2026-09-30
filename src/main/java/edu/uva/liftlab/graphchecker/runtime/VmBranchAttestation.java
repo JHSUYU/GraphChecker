@@ -23,7 +23,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.shallowCopy;
 
 /**
  * Whether the VM's branch event is the decision the workload just took --
- * R3's gate, the only thing that lets a decision row carry a term.
+ * the gate, the only thing that lets a decision row carry a term.
  *
  * <p>Two checks: the event's exact ownership (thread context, region, task,
  * site, occurrence, outcome, one record, a condition index in the new

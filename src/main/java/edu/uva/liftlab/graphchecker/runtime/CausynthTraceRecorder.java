@@ -163,16 +163,16 @@ public final class CausynthTraceRecorder {
         calls.push(new ActiveCall(id, parentSiteId, method,
                 context.spanId, parent == null, !region.isEmpty()));
         // No frame push here: #enterMethodFrame already opened this level
-        // (G11); a second push would shift every address below it.
+        // (IDENTITY §3); a second push would shift every address below it.
         String address = "";
         boolean folded = false;
         if (!region.isEmpty()) {
             // No start claim here: #claimStart is the one claim point.
             String node = RuntimeTraceContext.activationSource(receiver).key();
             address = occurrenceAddress(node, region);
-            // F1: a folded entry is no activation.  Asked of the identity,
-            // not read off the empty address: a node-less entry is a hole
-            // PLAN refuses, not a fold it skips.
+            // IDENTITY §1: a folded entry is no activation.  Asked of the
+            // identity, not read off the empty address: a node-less entry is
+            // a hole PLAN refuses, not a fold it skips.
             folded = Identity.foldedEntry();
         }
         RuntimeRegionPlanner.MethodEvent event =
@@ -201,9 +201,9 @@ public final class CausynthTraceRecorder {
     private static String occurrenceAddress(String nodeKey, String regionId) {
         OccurrenceAddress address =
                 Identity.occurrence(nodeKey, regionId, true);
-        // F1: a folded entry states no address (else a second activation
-        // of one occurrence); the call above must still run to push the
-        // fold marker.
+        // IDENTITY §1: a folded entry states no address (else a second
+        // activation of one occurrence); the call above must still run to
+        // push the fold marker.
         if (Identity.foldedEntry()) return "";
         return address == null ? "" : address.render();
     }
@@ -312,7 +312,7 @@ public final class CausynthTraceRecorder {
      *
      * <p>The one frame rule: every application-scope method opens a level at
      * entry and closes it at every exit, in both passes ({@code
-     * CausynthPipeline.instrumentApplicationScope}, IDENTITY-V3 §1).  Counts
+     * CausynthPipeline.instrumentApplicationScope}, IDENTITY §3).  Counts
      * are keyed by (level, root hop, site), never by node ({@code
      * Identity.State#nextSiteEvent}).</p>
      *
@@ -495,8 +495,8 @@ public final class CausynthTraceRecorder {
                     + MapFields.safe(half), noFlow.getMessage());
             return "";
         }
-        // IDENTITY-V3 §C: the message carries its producer's endpoint,
-        // filed by correlation (it exceeds the header slot); one mint for
+        // IDENTITY §4: the message's producer endpoint is filed in-JVM by
+        // correlation (the header does not carry it); one mint for
         // both passes.  A response was given its endpoint and its stance
         // where its request was received, whichever thread sends it.
         Receipt receipt = RESPONSE.equals(half) ? RECEIPTS.remove(
@@ -1783,7 +1783,7 @@ public final class CausynthTraceRecorder {
                 // only.
                 "occurrenceAddress", event.occurrenceAddress.isEmpty()
                         ? null : event.occurrenceAddress,
-                // F1: folded entry, no activation.
+                // IDENTITY §1: folded entry, no activation.
                 "regionFolded", event.regionFolded ? 1 : null);
     }
 

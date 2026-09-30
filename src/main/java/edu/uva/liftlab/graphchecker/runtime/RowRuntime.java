@@ -396,7 +396,7 @@ public final class RowRuntime {
     /**
      * One read, at the site index the event itself stood on, plus its
      * placeholder mint's version ({@link ReadRow#UNKNOWN_VERSION} for none,
-     * CONTRACT v2.4).
+     * CONTRACT-SPEC §2.2).
      */
     public static void read(OccurrenceAddress occurrence, long seq,
                             String site, LocationId location,
@@ -441,7 +441,7 @@ public final class RowRuntime {
      *
      * <p>They are stated, not separated by a counter: an ordinal moves when
      * a branch flip inserts an earlier event, and two replays would then
-     * disagree which event is which (IDENTITY-V3 sec 1).</p>
+     * disagree which event is which (IDENTITY §3).</p>
      */
     private static void distinct(Endpoint at, String event) {
         if (at == null) return;
@@ -604,7 +604,7 @@ public final class RowRuntime {
 
     /**
      * Files the frame of one work start (thread start, executor submit,
-     * fork) for the started work to claim (IDENTITY-V3 SS1).  The start
+     * fork) for the started work to claim (IDENTITY §3).  The start
      * happens either way; a frame that cannot be filed is a stated gap.
      */
     public static void startWork(String startSiteId, Object carrier) {
@@ -825,9 +825,9 @@ public final class RowRuntime {
      * One event, one occurrence: the first publisher wins.
      *
      * <p>VM logs are read out per activation over overlapping ranges, so one
-     * event is reachable from every enclosing activation; the first to
-     * publish is the innermost, which performed it (INTERACTION-ID
-     * R-I7.1).</p>
+     * event is reachable from every enclosing activation.  The first read-out
+     * publishes it, addressed to the occurrence that performed it (IDENTITY
+     * §4); a later one publishes nothing.</p>
      */
     public static boolean claimEvent(String kind, String identity) {
         return CLAIMED_EVENTS.put(Text.safe(kind) + "\n"

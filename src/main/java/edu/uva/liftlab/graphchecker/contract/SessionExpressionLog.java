@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * CONTRACT-SPEC 2: a session's {@code expressions.jsonl}, the DAG its rows'
+ * CONTRACT-SPEC §2.3: a session's {@code expressions.jsonl}, the DAG its rows'
  * refs name, appended as the replay files it: a header line, then each
  * expression node once (children first, a child named by its session-local
  * node number), and one line per ref naming its node.

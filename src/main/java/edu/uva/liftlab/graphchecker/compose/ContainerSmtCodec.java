@@ -120,6 +120,10 @@ public final class ContainerSmtCodec {
      * value the host refuses is refused, never re-guessed.  REFUSE: anything
      * else -- a free accessor over an uninterpreted Ref lets a model hold by
      * a value no execution produced.</p>
+     *
+     * <p>The pair states the run's own object; the host answers what the
+     * projection is where a family may re-point its owner to another
+     * ({@link Host#projection}).</p>
      */
     public static Term field(JsonObject expression, Host host) {
         String ownerClass = optionalString(expression, "ownerClass");
@@ -137,7 +141,8 @@ public final class ContainerSmtCodec {
         JsonElement concreteValue = expression.get("concreteValue");
         if (stated(concreteOwner) && stated(concreteValue)) {
             // No expectation: the host's table decides the value's sort.
-            return host.operand(concreteValue, null);
+            Term cell = host.operand(concreteValue, null);
+            return cell == null ? null : host.projection(expression, cell);
         }
         host.unsupported(UNSTATED_FIELD_PROJECTION + ownerClass + "@"
                 + JsonFields.optionalInteger(expression, "fieldOffset", -1)
@@ -1179,6 +1184,12 @@ public final class ContainerSmtCodec {
         Term box(JsonElement expression);
 
         Term unbox(Term value, String javaType);
+
+        /**
+         * One field projection, given the {@code cell} the run's own object
+         * held there: that cell, unless the owner may be another object.
+         */
+        Term projection(JsonObject fieldAccess, Term cell);
 
         void require(String predicate);
 

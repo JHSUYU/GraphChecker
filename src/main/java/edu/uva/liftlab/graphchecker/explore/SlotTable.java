@@ -33,7 +33,7 @@ import java.util.Set;
  * world ({@link ObligationFactory#worldDigest}). An unseen pairing OPENS one, a
  * repeat FILLS it, a consumer outside the closure is only recorded.</p>
  *
- * <p>A REPLACEMENT (DESIGN4 SS3.3c) is a WIRE consumer paired with another
+ * <p>A REPLACEMENT (PIPELINE §7.1) is a WIRE consumer paired with another
  * producer IN THE SAME WORLD: the schedule did not hold, BLOCKING. In another
  * world it is growth (a new slot). STATE pairings are never replacements.</p>
  *
@@ -192,7 +192,7 @@ public final class SlotTable {
                     }
                     continue;
                 }
-                // R-I7.1: a read happening before the write it claims to
+                // PIPELINE §7.1: a read happening before the write it claims to
                 // observe (Arms.ancestor) contradicts the run's order.
                 if (contradictsOrder(corpus, read, writer)) {
                     gaps.add(GapRow.of(session.sessionId(),
@@ -404,8 +404,7 @@ public final class SlotTable {
      * A closure member that ran under a different causal context. The context
      * is part of the occurrence id, so this is an absence beside a presence at
      * one code point; a session running BOTH is growth (two requests). BLOCKING
-     * only in a world where the member ran; elsewhere a new occurrence (DESIGN4
-     * SS3.3a).
+     * only in a world where the member ran; elsewhere a new occurrence.
      */
     private static boolean contextChanged(Corpus corpus, Set<String> closure,
                                           List<GapRow> gaps) {

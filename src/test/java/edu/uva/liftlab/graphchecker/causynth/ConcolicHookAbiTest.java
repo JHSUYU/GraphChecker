@@ -48,7 +48,7 @@ import static org.junit.Assert.fail;
  * and Solr call GraphChecker from their own source, compiled against an
  * older jar, so a {@code git grep} of this repository returns empty for
  * every one of them and the reference resolves only at campaign SEED.
- * {@code external-callers.txt} is that list; MECHANISMS §10 is why.</p>
+ * {@code external-callers.txt} is that list.</p>
  */
 public class ConcolicHookAbiTest {
     private static final String PIPELINE_SOURCE =

@@ -19,7 +19,7 @@ import java.util.TreeSet;
 import static org.junit.Assert.assertEquals;
 
 /**
- * SYMBOL-SCOPE section 2: the scope grows where the slice stops at it --
+ * SYMBOL-SCOPE §2.4: the scope grows where the slice stops at it --
  * toward a callee's body, a field's owner and writers, a writer's callers,
  * nearest the throw first -- and never toward the target's own callers or a
  * clock.

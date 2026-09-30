@@ -635,7 +635,7 @@ done
 # set it, and its own test asserted it dropped no task.  `composer` joined it
 # when the composition became selectable, `declared_target_occurrence` joined
 # it in 05d413cae -- again without this count being raised, which left the
-# whole helper test red on staging until REPORT-GAPJOIN found it -- and
+# whole helper test red on staging until an audit found it -- and
 # `causynth_root_domains` joined it in a6da088f1, where the case gained a way
 # to say what a declared root may be.
 # `composer` left with the stage reduction; `reach_max_inputs` and
@@ -653,7 +653,7 @@ done
 # window -- the composer and the flip query both assert `(>= clock 0)` and
 # nothing else -- so no stage read the key, and both invocations that passed
 # `--clock-skew-ms` handed it to a main that did not read it either.
-# 42: `causynth_static_scope_map` joined it with CLOSURE-V2's static scope
+# 42: `causynth_static_scope_map` joined it with SYMBOL-SCOPE §3's static scope
 # map.  TWO stages read that file -- the workload JVM installs the guard sites
 # it names and EXPLORE flips at them -- so which file it is belongs to the
 # configuration a campaign publishes, and both readers take it from this one
@@ -666,8 +666,8 @@ done
 # a different frame stack and address a different occurrence for one event.
 # 44: `causynth_loop_default_bound` joined it when the bound an unnarrowed
 # retained loop inherits stopped being a constant in LoopBoundPolicy.  It was
-# applied silently to 54 of hdfs-17960's retained loops, which README LOOP-1
-# forbids a retained condition loop doing, so the case states it and the
+# applied silently to 54 of hdfs-17960's retained loops; no retained
+# condition loop may inherit a bound silently, so the case states it and the
 # campaign publishes what it stated.
 # 45: `replay_timeout_s` joined it when the focused replay got a wall clock.
 # The solver had a budget and the replay had none, so one replay JVM that
@@ -2033,7 +2033,7 @@ grep -q 'CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root:+' \
 grep -q 'CAUSYNTH_LOCAL_SCRATCH=%q' "${repo}/run_engine.sh" \
   || fail "the peers are not handed the run's local scratch root"
 
-# GROW-1: the growth step (DESIGN4 SS3.3b).  ExploreMain named a region an
+# GROW-1: the growth step (PIPELINE §7.8).  ExploreMain named a region an
 # obligation's replay reached without its hooks; the step plans it, weaves
 # it and re-runs that obligation's replay in its own worker directory, and
 # the corpus ends up holding the re-run's session in place of the exposing
@@ -2324,7 +2324,7 @@ $(cat "${nogrowth_loop}/explore.err")"
 reset_config
 
 
-# CONFIRM-1: a SAT claim, checked by one replay (DESIGN4 §5).  ConfirmMain's
+# CONFIRM-1: a SAT claim, checked by one replay (PIPELINE §10).  ConfirmMain's
 # task and the replay are stubbed -- the first writes the focus row and the
 # expected edges, the second publishes a session and its verdict -- and the
 # decision is the production code, ConfirmMain --sessions on the built jar:

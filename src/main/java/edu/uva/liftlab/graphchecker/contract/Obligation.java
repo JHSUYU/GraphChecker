@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * CONTRACT-SPEC 3: one path prefix plus one flipped decision, with the
+ * CONTRACT-SPEC §3: one path prefix plus one flipped decision, with the
  * valuation meant to produce it: {@code rootAssignments} at the mints,
  * {@code answers} keyed by attach {@link Endpoint#id()} (one attach, not a
  * port).  {@code unproducible} attaches are answered anyway and reported.

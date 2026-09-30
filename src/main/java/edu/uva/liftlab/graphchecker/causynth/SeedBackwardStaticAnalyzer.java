@@ -188,7 +188,7 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     /** {@link #rpcMessages}, computed at the first demanded getter. */
     private Set<String> rpcMessages;
-    /** README section 5's declared per-loop {@code K_L}. */
+    /** The declared per-loop {@code K_L} (PIPELINE §2). */
     private final DeclaredLoopBodyBounds loopBodyBounds;
     private boolean globalStaticIndexBuilt;
     private int edgeCounter;
@@ -281,7 +281,7 @@ final class SeedBackwardStaticAnalyzer {
         return result;
     }
 
-    /** README Step 1 items 1-3, over the selected methods. */
+    /** The selected methods' port and loop catalog (SYMBOL-SCOPE §2.3). */
     private void planCommunicationCatalog(StaticProgram result) {
         List<String> selected = new ArrayList<>(selectedMethods);
         Collections.sort(selected);

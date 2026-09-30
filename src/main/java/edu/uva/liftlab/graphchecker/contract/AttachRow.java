@@ -1,12 +1,12 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 2: a value a consumer endpoint took off the wire.
+ * CONTRACT-SPEC §2.2: a value a consumer endpoint took off the wire.
  * {@code symbol} is the handoff control {@code v_H}, minted at every declared
  * port; {@code arrival} is what arrived; {@code producer} is null only when
- * unpaired (INTERACTION-ID R-I1).  {@code javaType} must equal every arm's
+ * unpaired (IDENTITY §4).  {@code javaType} must equal every arm's
  * {@code e_q} descriptor in the family.  {@code pairedBy} names which key
- * paired it (not equal evidence, INTERACTION-ID SS1); null means unstated,
+ * paired it (not equal evidence, IDENTITY §4); null means unstated,
  * not unpaired.
  */
 public final class AttachRow extends Value {

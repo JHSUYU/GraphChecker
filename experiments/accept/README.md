@@ -24,7 +24,10 @@ Defaults, all overridable by environment: `JAR` = `<repo>/target/GraphChecker-
 jar's own repo, because `run_engine.sh` resolves the jar relative to its own
 tree), `OUT` = `<repo>/target/accept`, `CASES` = the nine cases in `ACCEPT_ALL_CASES`,
 `CASE_TIMEOUT_SECONDS` = 21600, `Z3_BIN` = `z3`, `Z3_TIMEOUT_SECONDS` = 600,
-`MIN_FREE_GB` = 6, `PRUNE` = 0. `CAUSYNTH_CUSTOM_JDK_HOME` has no default: unset,
+`MIN_FREE_GB` = 6 and `DISK_WAIT_SECONDS` = 1800 (free space on the filesystem
+`OUT` is written to; a 1 MB probe write there that is refused, as under a full
+per-user quota, counts as none: the preflight fails, and a case waits and is
+then skipped as `no disk`), `PRUNE` = 0. `CAUSYNTH_CUSTOM_JDK_HOME` has no default: unset,
 the preflight refuses it by name rather than guessing a VM image.
 `SKIP_BUILD=1` reuses the jar already in `<repo>/target`.
 
@@ -62,7 +65,11 @@ when all of these hold:
   `CLOCK_SKEW` finding (11741) is exempt from the ordinal alone: a clock has a
   floor and no window, so the witness sits at the recorded valuation and the
   clock cells the model moved are its `movedRoots`, which must still be
-  non-empty.
+  non-empty;
+* `cone.py`: every moved root is in the causal cone of the selected path (the
+  constants its `path_fatal__` assertion names, closed over the message
+  families under the same path selector), and no wire boundary variable in a
+  path's fatal condition is unnamed by that path's message families.
 
 A case the table does not name cannot pass. The z3 probe is reported, never
 gated on: it asks the published formula, unpinned, about the accepted

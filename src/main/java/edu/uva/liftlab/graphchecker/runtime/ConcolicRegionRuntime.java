@@ -654,7 +654,7 @@ public final class ConcolicRegionRuntime {
         frames.push(frame);
         // No index frame here: the entry hook owns it (#enterRegionEntry).
         //
-        // F1 -- a folded entry (I1) starts no activation: it is a call
+        // IDENTITY §1 -- a folded entry (I1) starts no activation: it is a call
         // inside the running occurrence, and a second activation would give
         // one address two rows.  The tokenless frame still pairs the exit.
         // Exception: a LOOP_BODY_ROOT body is an iteration of the loop-root
@@ -962,7 +962,7 @@ public final class ConcolicRegionRuntime {
      * consumers, handoff rows and root mints alike.
      *
      * <p>If none declares it, the innermost live region carries the row and
-     * R5 reports the unplanned execution.</p>
+     * the unplanned execution is reported.</p>
      */
     static ActiveRegion declaringRegion(Declares what) {
         ActiveRegion innermost = activeRegion();

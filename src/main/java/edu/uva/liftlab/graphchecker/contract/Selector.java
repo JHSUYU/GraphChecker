@@ -1,11 +1,11 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * IDENTITY-IMPL A and D: what a case declaration selects, before resolution
- * ({@link OccurrenceAddress#parseSelector}).  This type answers only "is this
- * occurrence a candidate"; the scheduler picks the k-th in seed order.  The
- * node is optional but kept when spelled.  Never an address: only resolved
- * ids reach exploration and composition.
+ * CONTRACT-SPEC §1, IDENTITY §9: what a case declaration selects, before
+ * resolution ({@link OccurrenceAddress#parseSelector}).  This type answers
+ * only "is this occurrence a candidate"; the scheduler picks the k-th in
+ * seed order.  The node is optional but kept when spelled.  Never an
+ * address: only resolved ids reach exploration and composition.
  */
 public final class Selector extends Value {
     private final String regionId;

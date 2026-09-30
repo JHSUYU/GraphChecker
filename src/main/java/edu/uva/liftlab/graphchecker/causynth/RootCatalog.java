@@ -27,7 +27,7 @@ import java.util.TreeSet;
 
 /**
  * The roots of the world a program reads, recognized by category from the
- * program text rather than listed per case (GreyGraph SS3.1: the analysis
+ * program text rather than listed per case (GreyGraph §3.1: the analysis
  * derives its inputs).  A CLOCK is one of the JVM's clocks, or a method with
  * no parameter whose every returned value is a clock under constant
  * arithmetic -- {@code Time.now()}, {@code Time.monotonicNow()} ({@code
