@@ -1008,14 +1008,15 @@ EOF
 # BATCH-1: a batch campaign (causynth_static_root) plans every target its
 # recording activated, seed-replays each group of plans once, all groups at
 # once, and runs the campaign of every target its group's seed reached, all
-# at once, each
-# logging to its own targets/<name>/campaign.log.  A target whose campaign
-# reached EMIT (exit 0, 2 or 3) is its own verdict; one its group's seed did
-# not reach, or whose campaign ended before EMIT, fails the batch once every
-# other has finished.
+# at once, each logging to its own targets/<name>/campaign.log.  A target
+# whose campaign reached EMIT (exit 0, 2 or 3) is its own verdict; one its
+# group's seed did not reach or ended before, whose log then names that
+# failure, or whose campaign ended before EMIT, fails the batch once every
+# other has finished.  Per row: b's exit, the targets the seeds reached, the
+# group whose seed fails, the batch's status, and the last line of b's log.
 batch_out="${test_tmp}/batch"
-for batch_case in "3 a b" "1 a b" "0 a"; do
-  read -r batch_exit batch_served <<<"${batch_case}"
+while IFS='|' read -r batch_exit batch_served batch_broken batch_status \
+    batch_last; do
   rm -rf -- "${batch_out}"
   mkdir -p "${batch_out}/runtime" "${batch_out}/targets/a" \
     "${batch_out}/targets/b" "${batch_out}/targets/c"
@@ -1039,6 +1040,8 @@ for batch_case in "3 a b" "1 a b" "0 a"; do
       local dir=$1 name
       shift
       mkdir -p "${dir}"
+      [[ "$*" != "${batch_broken}" ]] \
+        || campaign_fail REPLAY WORKLOAD "${dir}" "broken seed"
       for name in "$@"; do
         [[ " ${batch_served} " != *" ${name} "* ]] \
           || printf '%s\t%s\n' "${name}" "${dir}"
@@ -1050,18 +1053,23 @@ for batch_case in "3 a b" "1 a b" "0 a"; do
       exit "${batch_exit}"
     }
     campaign_batch
-  ) >"${batch_out}/batch.log" 2>&1 || status=$?
-  [[ "${status}" -eq $(( batch_exit == 1 || ${#batch_served} < 3 )) ]] \
-    || fail "a batch (${batch_case}) exited ${status}: \
+  ) </dev/null >"${batch_out}/batch.log" 2>&1 || status=$?
+  [[ "${status}" -eq "${batch_status}" ]] \
+    || fail "a batch (${batch_served}) exited ${status}: \
 $(cat "${batch_out}/batch.log")"
   [[ "$(cat "${batch_out}/targets/a/campaign.log")" == \
       $'plan of a\ncampaign of a on group-0' \
       && "$(head -n 1 "${batch_out}/targets/b/campaign.log")" == "plan of b" \
-      && ( "${batch_served}" == a || "$(tail -n 1 \
-        "${batch_out}/targets/b/campaign.log")" == "campaign of b on group-1" ) \
+      && "$(tail -n 1 "${batch_out}/targets/b/campaign.log")" \
+        == "${batch_last}" \
       && ! -e "${batch_out}/targets/c/campaign.log" ]] \
-    || fail "a batch (${batch_case}) ran other campaigns than its targets'"
-done
+    || fail "a batch (${batch_served}) ran other campaigns than its targets'"
+done <<'EOF'
+3|a b||0|campaign of b on group-1
+1|a b||1|campaign of b on group-1
+0|a||1|plan of b
+0|a|b|1|  reason=broken seed
+EOF
 
 # IMPORT-GATE: the row contract stops the campaign at IMPORT, or records.
 #

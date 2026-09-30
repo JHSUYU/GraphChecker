@@ -179,7 +179,8 @@ by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FR
    engine JVM and replay charged to the head's host as any head's): INSTRUMENT, REPLAY and
    IMPORT once, in `groups/group-<n>/`, under the union of its targets' scope maps (the replay's
    guarded stores, and its target coverage: any target). A target the seed replay published no
-   target row of fails as a solo REPLAY does, in its own log (`campaign_target_reached`).
+   target row of fails as a solo REPLAY does, in its own log (`campaign_target_reached`); a seed
+   that ended before IMPORT ends every target of its group, its failure copied into each one's log.
 5. Every target its group's seed reached runs its own campaign from EXPLORE on, all at once, each in
    a subshell (`campaign_batch_target`): its iteration takes the group's union plan (a copy: GROW
    appends to it), woven classes and seed session (hard links: GROW re-weaves its own), census and

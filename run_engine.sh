@@ -4337,6 +4337,11 @@ campaign_batch() {
       campaign_log "group ${group} (${members[$group]}) ended before \
 EXPLORE: $(campaign_batch_verdict "${groups}/group-${group}" \
         "${groups}/group-${group}.log")"
+      # Each member's campaign ended there: its own log says where.
+      for name in ${members[$group]}; do
+        sed -n '/^\[campaign:error\]/,$p' "${groups}/group-${group}.log" \
+          >>"${causynth_output_dir}/targets/${name}/campaign.log"
+      done
       failed=$((failed + $(wc -w <<<"${members[$group]}")))
     fi
   done
@@ -4405,8 +4410,10 @@ campaign_batch_group() {
   mkdir -p "${dir}/seed-replay"
   ln -f "${dir}/execution_task_plan.jsonl" \
     "${dir}/seed-replay/execution_task_plan.jsonl"
-  cp -f "${causynth_output_dir}/runtime/schedule.jsonl" \
-    "${dir}/recorded_schedule.jsonl"
+  # As campaign_plan freezes it: a recording that states no schedule has none.
+  [[ ! -s "${causynth_output_dir}/runtime/schedule.jsonl" ]] \
+    || cp -f "${causynth_output_dir}/runtime/schedule.jsonl" \
+      "${dir}/recorded_schedule.jsonl"
   for name in "$@"; do
     cat "${targets}/${name}/static_scope_map.jsonl"
   done | awk '!seen[$0]++' >"${dir}/static_scope_map.jsonl"
