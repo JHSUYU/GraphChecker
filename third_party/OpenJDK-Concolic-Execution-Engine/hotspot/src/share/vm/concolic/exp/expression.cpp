@@ -789,6 +789,7 @@ void ReturnedValue::serialize(
   // Absent, not null, when nothing is stated: null is a value.
   switch (kind) {
     case CONSTANT:
+    case REFERENCE:
       writer.Key("concreteValue");
       constant->serialize(writer);
       break;

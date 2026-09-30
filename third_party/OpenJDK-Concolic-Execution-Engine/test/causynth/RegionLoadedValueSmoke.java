@@ -59,9 +59,9 @@ public final class RegionLoadedValueSmoke {
         final AtomicInteger refCount = new AtomicInteger(1);
         require(System.startConcolicRegion("REGION.loaded-value",
                 "TASK.loaded-value") == 0L, "region start rejected");
-        System.observeExactPrimitiveField(core, Core.class.getName(),
+        System.observeField(core, Core.class.getName(),
                 "count", "I");
-        System.observeExactPrimitiveField(refCount,
+        System.observeField(refCount,
                 AtomicInteger.class.getName(), "value", "I");
 
         Thread outside = new Thread(new Runnable() {

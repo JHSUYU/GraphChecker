@@ -2405,7 +2405,7 @@ run:
 #define CONCOLIC_ALOAD_RESOLVE_WORD(element_type, word, reference)             \
   if (aload_selected) {                                                        \
     const bool aload_planned = SharedFieldVersions::plan_read_locked(          \
-        aload_location, (word), &aload_plan);                                  \
+        aload_location, (word), (reference), &aload_plan);                     \
     SharedFieldVersions::unlock(aload_location);                               \
     if (aload_planned) {                                                       \
       ConcolicMngr::ctx->set_pc_admitted(true);                                \
@@ -2581,9 +2581,12 @@ run:
 #endif
           SET_STACK_OBJECT(((objArrayOop) arrObj)->obj_at(index), -2);
 #ifdef ENABLE_CONCOLIC
+          // The word a reference element holds is its referent's id.
           CONCOLIC_ALOAD_RESOLVE_WORD(T_OBJECT,
-                                      SharedFieldVersions::ConcreteBits(),
-                                      STACK_OBJECT(-2))
+              aload_selected
+                  ? SharedFieldVersions::reference_word(STACK_OBJECT(-2))
+                  : SharedFieldVersions::ConcreteBits(),
+              STACK_OBJECT(-2))
 #endif
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);
       }
@@ -2682,7 +2685,7 @@ run:
       Expression *next_container_state = new ContainerExpression(             \
           "INDEXED", "WRITE",                                                \
           container_state,                                                     \
-          container_arguments, T, std::string(), NULL, astore_word);          \
+          container_arguments, T, std::string(), NULL, NULL, astore_word);    \
       ConcolicMngr::ctx->set_container_state(                                 \
           arrObj, next_container_state);                                      \
                                                                                \
@@ -2812,7 +2815,7 @@ run:
                   arrObj, new ContainerExpression(
                       "INDEXED", "WRITE", container_state,
                       container_arguments, T_OBJECT, std::string(), NULL,
-                      astore_word));
+                      NULL, astore_word));
               sym_arr->store();
             }
             CONCOLIC_ASTORE_SELECT(astore_operand)
@@ -2821,6 +2824,10 @@ run:
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 1, 1);
           } else if (CONCOLIC_OUTSIDE_EVERY_REGION(arrObj)) {
             CONCOLIC_ASTORE_UNATTRIBUTED
+          }
+          // What a stored container's state was, asked before the stripe.
+          if (astore_selected) {
+            SharedFieldVersions::prepare_referent(&astore, rhsObject);
           }
           CONCOLIC_ASTORE_LOCK(T_OBJECT)
 #endif
@@ -3323,13 +3330,17 @@ run:
 #ifdef ENABLE_CONCOLIC
           if (carrier_read) {
             // The word the load took, from the operand rather than the heap:
-            // for a wrapper-typed carrier its box's value (or the null word).
+            // for a wrapper-typed carrier its box's value (or the null word),
+            // for any other reference its referent's id.
             const SharedFieldVersions::ConcreteBits loaded_word =
-                carrier_boxed != T_ILLEGAL
-                    ? SharedFieldVersions::boxed_word(STACK_OBJECT(-1))
+                tos_type == atos
+                    ? SharedFieldVersions::reference_word(
+                          STACK_OBJECT(-1), carrier_boxed != T_ILLEGAL)
                     : concolic_top_word(tos_type, topOfStack);
             const bool planned = SharedFieldVersions::plan_read_locked(
-                carrier_location, loaded_word, &carrier_plan);
+                carrier_location, loaded_word,
+                tos_type == atos ? STACK_OBJECT(-1) : (oop) NULL,
+                &carrier_plan);
             SharedFieldVersions::unlock(carrier_location);
             if (planned) {
               ConcolicMngr::ctx->set_pc_admitted(true);
@@ -3571,6 +3582,12 @@ run:
           // A wrapper-typed field holds a value: its word is its box's.
           const BasicType carrier_boxed = carrier_write && tos_type == atos
               ? SharedFieldVersions::wrapper_value_type(cache) : T_ILLEGAL;
+          // What a stored container's state was, asked before the stripe.
+          if (carrier_write && tos_type == atos
+              && carrier_boxed == T_ILLEGAL) {
+            SharedFieldVersions::prepare_referent(&carrier_store,
+                                                  STACK_OBJECT(-1));
+          }
           if (carrier_write) {
             SharedFieldVersions::lock(carrier_store.location);
             SharedFieldVersions::begin_store_locked(

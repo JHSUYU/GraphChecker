@@ -18,6 +18,7 @@
 #include "concolic/reference/symbolicAtomic.hpp"
 #include "concolic/reference/internal/symbolicUnsafe.hpp"
 #include "concolic/sharedFieldVersions.hpp"
+#include "concolic/reference/containerSupport.hpp"
 #include "memory/resourceArea.hpp"
 #include "runtime/thread.hpp"
 #include "runtime/signature.hpp"
@@ -190,6 +191,7 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
   }
 
   if (need_symbolize) {
+    if (!disabled) register_functional_arguments();
     // MethodSymbolizer captures arguments directly at the call boundary and
     // then pauses ordinary bytecode propagation for the callee.  Its
     // structural shadow frame cannot perform normal caller cleanup, so
@@ -201,6 +203,153 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
   } else {
     _handle.reset();
   }
+}
+
+void MethodSymbolizer::register_functional_arguments() {
+  Method *callee = _handle.get_callee_method();
+  ResourceMark rm;
+  int offset = callee->is_static() ? 0 : 1;
+  for (SignatureStream stream(callee->signature()); !stream.at_return_type();
+       stream.next()) {
+    const BasicType type = stream.type();
+    if (type == T_OBJECT) {
+      // A probe: a parameter's class is loaded, and nothing is interned.
+      Symbol *name = stream.as_symbol_or_null();
+      const bool functional = name != NULL
+          && (name->starts_with("java/util/function/")
+              || name->equals("java/util/Comparator"));
+      oop argument = functional ? _handle.get_param<oop>(offset) : (oop) NULL;
+      if (argument != NULL) {
+        _handle.add_functional(
+            ConcolicMngr::ctx->name_reference(argument));
+      }
+    }
+    offset += type2size[type];
+  }
+}
+
+bool MethodSymbolizer::enter_callback(ZeroFrame *caller_frame,
+                                      ZeroFrame *callee_frame) {
+  if (!_symbolizing_method || !_handle.has_functional()
+      || _windows.size() >= MAX_CALLBACK_DEPTH
+      || !callee_frame->is_interpreter_frame()) {
+    return false;
+  }
+  interpreterState istate =
+      callee_frame->as_interpreter_frame()->interpreter_state();
+  Method *method = istate->method();
+  if (method->is_static() || method->is_native()) return false;
+  oop receiver = *(oop *) istate->locals();
+  if (receiver == NULL || !_handle.is_functional(receiver->get_sym_rid())) {
+    return false;
+  }
+  // The callback's arguments, as its locals hold them, and the local each
+  // one's shadow anchors at (a two-word value at its second word).
+  std::vector<oop> arguments;
+  std::vector<int> anchors;
+  {
+    ResourceMark rm;
+    int local = 1;
+    for (SignatureStream stream(method->signature());
+         !stream.at_return_type(); stream.next()) {
+      const BasicType type = stream.type();
+      arguments.push_back(type == T_OBJECT || type == T_ARRAY
+          ? *(oop *)(istate->locals() - local) : (oop) NULL);
+      anchors.push_back(local + type2size[type] - 1);
+      local += type2size[type];
+    }
+  }
+  exp_list_t seeds;
+  CallbackWindow window;
+  window.frame = callee_frame;
+  window.key = NULL;
+  window.path_start = ConcolicMngr::ctx->get_path_condition().size();
+  if (_handle.seeder() != NULL) {
+    _handle.seeder()(_handle, arguments, &seeds, &window.key);
+  }
+  _windows.push_back(window);
+  _suspended.push_back(_handle);
+  _handle.reset();
+  _symbolizing_method = false;
+  ConcolicMngr::ctx->get_shadow_stack().push_callback(callee_frame, anchors,
+                                                      seeds);
+  return true;
+}
+
+bool MethodSymbolizer::exit_callback(ZeroFrame *callee_frame) {
+  if (_windows.empty() || _windows.back().frame != callee_frame) return false;
+  CallbackResult result;
+  result.key = _windows.back().key;
+  const int path_start = _windows.back().path_start;
+  _windows.pop_back();
+  // The conditions the callback's path recorded, and their complement.
+  PathCondition &path = ConcolicMngr::ctx->get_path_condition();
+  bool negatable = true;
+  for (int index = path_start; index < path.size(); ++index) {
+    Expression *condition = path.getConds()[index]->getExp();
+    if (condition == NULL) continue;
+    Expression *negation = condition->logical_negation();
+    negatable = negatable && negation != NULL;
+    result.path = result.path == NULL ? condition
+        : new OpSymExpression(result.path, condition, op_land);
+    if (negatable) {
+      result.path_negation = result.path_negation == NULL ? negation
+          : new OpSymExpression(result.path_negation, negation, op_lor);
+    }
+  }
+  if (!negatable) result.path_negation = NULL;
+  interpreterState istate =
+      callee_frame->as_interpreter_frame()->interpreter_state();
+  const BasicType type = istate->method()->result_type();
+  result.threw = ConcolicMngr::ctx->get_thread()->has_pending_exception();
+  Expression *returned = ConcolicMngr::ctx->get_shadow_stack().pop_callback(
+      callee_frame, result.threw ? T_VOID : type);
+  _handle = _suspended.back();
+  _suspended.pop_back();
+  if (!result.threw && type != T_VOID) {
+    // Where a returning frame leaves its result, as get_result reads it.  A
+    // concrete result is stated for a call that records, or when the
+    // callback's path decided it; one admitted for its callbacks alone
+    // keeps nothing else.
+    intptr_t *slot = istate->stack() + 1;
+    result.symbolic = returned != NULL;
+    const bool stated = returned != NULL || result.path != NULL
+        || _handle.is_recording();
+    if (type == T_OBJECT || type == T_ARRAY) {
+      oop value = *(oop *) slot;
+      result.returned_null = value == NULL;
+      result.result = returned != NULL ? returned
+          : stated ? ContainerSupport::concrete_value(value) : NULL;
+    } else if (type == T_BOOLEAN || type == T_BYTE || type == T_CHAR
+               || type == T_SHORT || type == T_INT) {
+      result.returned_int = *(jint *) slot;
+      result.result = returned != NULL ? returned
+          : !stated ? NULL
+          : type == T_BOOLEAN
+              ? static_cast<Expression *>(
+                    new ConExpression((jboolean)(result.returned_int & 1)))
+              : static_cast<Expression *>(
+                    new ConExpression(result.returned_int));
+    } else {
+      result.result = returned;
+    }
+  }
+  _symbolizing_method = true;
+  _handle.callbacks().push_back(result);
+  return true;
+}
+
+bool MethodSymbolizer::reenters(oop container) {
+  if (container == NULL) return false;
+  // A suspended call's frame is still on the stack, under its callback.
+  for (size_t index = 0; index < _suspended.size(); ++index) {
+    if (ContainerSupport::backing_container(
+            _suspended[index].get_param<oop>(0)) == container) {
+      _suspended[index].mark_reentered();
+      return true;
+    }
+  }
+  return false;
 }
 
 void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *caller_frame) {

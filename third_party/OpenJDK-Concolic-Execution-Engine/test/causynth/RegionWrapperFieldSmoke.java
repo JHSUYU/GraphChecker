@@ -28,7 +28,7 @@ public final class RegionWrapperFieldSmoke {
         require(System.openWorkloadSession() > 0L, "no workload session");
         require(System.startConcolicRegion("REGION.wrapper.write",
                 "TASK.wrapper") == 0L, "region start rejected");
-        System.observeExactPrimitiveField(rule, Rule.class.getName(),
+        System.observeField(rule, Rule.class.getName(),
                 "expireAt", "Ljava/lang/Long;");
         Input in = new Input();
         System.symbolizeExactField(in, Input.class.getName(), "t", "J",

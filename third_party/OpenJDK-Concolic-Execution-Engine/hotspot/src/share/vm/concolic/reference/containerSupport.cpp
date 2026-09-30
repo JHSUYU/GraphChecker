@@ -13,10 +13,10 @@
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/reference/symbolicArray.hpp"
-#include "concolic/reference/symbolicList.hpp"
-#include "concolic/reference/symbolicMap.hpp"
-#include "concolic/reference/symbolicSet.hpp"
 #include "concolic/reference/symbolicString.hpp"
+#include "oops/fieldStreams.hpp"
+
+#include <pthread.h>
 
 #include <algorithm>
 #include <map>
@@ -24,41 +24,268 @@
 #include <string.h>
 #include <vector>
 
-const char *ContainerSupport::shape(oop value) {
-  if (value == NULL) return NULL;
-  if (value->is_array()) return "INDEXED";
-  if (value->klass() == NULL || value->klass()->name() == NULL) return NULL;
-  Symbol *name = value->klass()->name();
-  bool abstract_list = false;
-  for (Klass *current = value->klass(); current != NULL;
-       current = current->super()) {
-    Symbol *current_name = current->name();
-    if (current_name != NULL
-        && current_name->equals("java/util/AbstractList")) {
-      abstract_list = true;
-      break;
+namespace {
+
+bool klass_name_is(Klass *klass, const char *name) {
+  return klass != NULL && klass->name() != NULL
+      && klass->name()->equals(name, (int) strlen(name));
+}
+
+bool klass_name_is(oop obj, const char *name) {
+  return obj != NULL && klass_name_is(obj->klass(), name);
+}
+
+// The classes whose contract this engine models, by exact name; see
+// ContainerSupport::Capability.
+ContainerSupport::Capability exact_capability(Klass *klass) {
+  if (klass_name_is(klass, "java/util/HashMap")
+      || klass_name_is(klass, "java/util/LinkedHashMap")) {
+    return ContainerSupport::CAPABILITY_HASH_MAP;
+  }
+  if (klass_name_is(klass, "java/util/concurrent/ConcurrentHashMap")) {
+    return ContainerSupport::CAPABILITY_CONCURRENT_MAP;
+  }
+  if (klass_name_is(klass, "java/util/Hashtable")) {
+    return ContainerSupport::CAPABILITY_HASHTABLE;
+  }
+  if (klass_name_is(klass, "java/util/HashSet")
+      || klass_name_is(klass, "java/util/LinkedHashSet")) {
+    return ContainerSupport::CAPABILITY_HASH_SET;
+  }
+  if (klass_name_is(klass, "java/util/ArrayDeque")) {
+    return ContainerSupport::CAPABILITY_INDEXED;
+  }
+  return ContainerSupport::CAPABILITY_NONE;
+}
+
+// One backing field of a JDK view, iterator, entry or wrapper: the class it
+// is declared on and its name and descriptor.  A walk follows these until it
+// reaches a modeled container.
+struct BackingField {
+  const char *klass;
+  const char *name;
+  const char *descriptor;
+};
+
+const BackingField BACKING_FIELDS[] = {
+  {"java/util/HashMap$KeySet", "this$0", "Ljava/util/HashMap;"},
+  {"java/util/HashMap$Values", "this$0", "Ljava/util/HashMap;"},
+  {"java/util/HashMap$EntrySet", "this$0", "Ljava/util/HashMap;"},
+  {"java/util/HashMap$KeyIterator", "this$0", "Ljava/util/HashMap;"},
+  {"java/util/HashMap$ValueIterator", "this$0", "Ljava/util/HashMap;"},
+  {"java/util/HashMap$EntryIterator", "this$0", "Ljava/util/HashMap;"},
+  {"java/util/LinkedHashMap$LinkedKeySet", "this$0",
+   "Ljava/util/LinkedHashMap;"},
+  {"java/util/LinkedHashMap$LinkedValues", "this$0",
+   "Ljava/util/LinkedHashMap;"},
+  {"java/util/LinkedHashMap$LinkedEntrySet", "this$0",
+   "Ljava/util/LinkedHashMap;"},
+  {"java/util/LinkedHashMap$LinkedKeyIterator", "this$0",
+   "Ljava/util/LinkedHashMap;"},
+  {"java/util/LinkedHashMap$LinkedValueIterator", "this$0",
+   "Ljava/util/LinkedHashMap;"},
+  {"java/util/LinkedHashMap$LinkedEntryIterator", "this$0",
+   "Ljava/util/LinkedHashMap;"},
+  {"java/util/concurrent/ConcurrentHashMap$KeySetView", "map",
+   "Ljava/util/concurrent/ConcurrentHashMap;"},
+  {"java/util/concurrent/ConcurrentHashMap$ValuesView", "map",
+   "Ljava/util/concurrent/ConcurrentHashMap;"},
+  {"java/util/concurrent/ConcurrentHashMap$EntrySetView", "map",
+   "Ljava/util/concurrent/ConcurrentHashMap;"},
+  {"java/util/concurrent/ConcurrentHashMap$KeyIterator", "map",
+   "Ljava/util/concurrent/ConcurrentHashMap;"},
+  {"java/util/concurrent/ConcurrentHashMap$ValueIterator", "map",
+   "Ljava/util/concurrent/ConcurrentHashMap;"},
+  {"java/util/concurrent/ConcurrentHashMap$EntryIterator", "map",
+   "Ljava/util/concurrent/ConcurrentHashMap;"},
+  {"java/util/concurrent/ConcurrentHashMap$MapEntry", "map",
+   "Ljava/util/concurrent/ConcurrentHashMap;"},
+  {"java/util/Hashtable$KeySet", "this$0", "Ljava/util/Hashtable;"},
+  {"java/util/Hashtable$ValueCollection", "this$0", "Ljava/util/Hashtable;"},
+  {"java/util/Hashtable$EntrySet", "this$0", "Ljava/util/Hashtable;"},
+  {"java/util/Hashtable$Enumerator", "this$0", "Ljava/util/Hashtable;"},
+  {"java/util/Collections$UnmodifiableMap", "m", "Ljava/util/Map;"},
+  {"java/util/Collections$UnmodifiableCollection", "c",
+   "Ljava/util/Collection;"},
+  {"java/util/Collections$UnmodifiableSet", "c", "Ljava/util/Collection;"},
+  {"java/util/Collections$UnmodifiableMap$UnmodifiableEntrySet", "c",
+   "Ljava/util/Collection;"},
+  {"java/util/Collections$SynchronizedMap", "m", "Ljava/util/Map;"},
+  {"java/util/Collections$SynchronizedCollection", "c",
+   "Ljava/util/Collection;"},
+  {"java/util/Collections$SynchronizedSet", "c", "Ljava/util/Collection;"},
+  {"java/util/Collections$CheckedMap", "m", "Ljava/util/Map;"},
+  {"java/util/Collections$CheckedCollection", "c", "Ljava/util/Collection;"},
+  {"java/util/Collections$CheckedSet", "c", "Ljava/util/Collection;"},
+};
+const size_t BACKING_FIELD_COUNT =
+    sizeof(BACKING_FIELDS) / sizeof(BACKING_FIELDS[0]);
+
+const BackingField *backing_field_of(Klass *klass) {
+  for (size_t index = 0; index < BACKING_FIELD_COUNT; ++index) {
+    if (klass_name_is(klass, BACKING_FIELDS[index].klass)) {
+      return &BACKING_FIELDS[index];
     }
-  }
-  if (abstract_list || name->equals("java/util/ArrayDeque")) {
-    return "INDEXED";
-  }
-  if (name->equals("java/util/HashMap")
-      || name->equals("java/util/LinkedHashMap")
-      || name->equals("java/util/HashSet")
-      || name->equals("java/util/LinkedHashSet")) {
-    return "ASSOCIATIVE";
   }
   return NULL;
 }
 
-bool ContainerSupport::indexed(oop value) {
-  const char *value_shape = shape(value);
-  return value_shape != NULL && value_shape[0] == 'I';
+// One field offset, looked up by name on first use and then cached per
+// klass.  The lookup walks the klass's field streams comparing names -- no
+// symbol is made, so no SymbolTable lock is taken -- and the cache has its
+// own leaf mutex: it is asked by every thread, some of them under a stripe.
+class FieldOffsetCache {
+public:
+  FieldOffsetCache() { pthread_mutex_init(&_mutex, NULL); }
+
+  int offset(oop holder, const char *name, const char *signature) {
+    if (holder == NULL || holder->klass() == NULL) return -1;
+    const Key key(holder->klass(), name);
+    pthread_mutex_lock(&_mutex);
+    std::map<Key, int>::const_iterator found = _offsets.find(key);
+    const bool cached = found != _offsets.end();
+    const int known = cached ? found->second : -1;
+    pthread_mutex_unlock(&_mutex);
+    if (cached) return known;
+    const int resolved = lookup(holder->klass(), name, signature);
+    pthread_mutex_lock(&_mutex);
+    _offsets[key] = resolved;
+    pthread_mutex_unlock(&_mutex);
+    return resolved;
+  }
+
+private:
+  static int lookup(Klass *klass, const char *name, const char *signature) {
+    for (Klass *current = klass; current != NULL;
+         current = current->super()) {
+      if (!current->oop_is_instance()) continue;
+      for (JavaFieldStream fields(InstanceKlass::cast(current));
+           !fields.done(); fields.next()) {
+        if (!fields.access_flags().is_static()
+            && fields.name()->equals(name, (int) strlen(name))
+            && fields.signature()->equals(signature,
+                                          (int) strlen(signature))) {
+          return fields.offset();
+        }
+      }
+    }
+    return -1;
+  }
+
+  struct Key {
+    Klass *klass;
+    const char *name;
+    Key(Klass *k, const char *n) : klass(k), name(n) {}
+    bool operator<(const Key &other) const {
+      if (klass != other.klass) return klass < other.klass;
+      return strcmp(name, other.name) < 0;
+    }
+  };
+  pthread_mutex_t _mutex;
+  std::map<Key, int> _offsets;
+};
+
+FieldOffsetCache *field_offsets() {
+  // Function-local so it is constructed on first use and never during
+  // static initialisation.
+  static FieldOffsetCache cache;
+  return &cache;
 }
 
-bool ContainerSupport::associative(oop value) {
-  const char *value_shape = shape(value);
-  return value_shape != NULL && value_shape[0] == 'A';
+oop object_field(oop holder, const char *name, const char *signature) {
+  const int offset = field_offsets()->offset(holder, name, signature);
+  return offset < 0 ? (oop) NULL : holder->obj_field(offset);
+}
+
+// The one hop from a view, iterator, entry or wrapper to what it is backed
+// by, or NULL.
+oop backing_of(oop value) {
+  const BackingField *field = backing_field_of(value->klass());
+  return field == NULL ? (oop) NULL
+      : object_field(value, field->name, field->descriptor);
+}
+
+}  // namespace
+
+ContainerSupport::Capability ContainerSupport::capability(oop value) {
+  if (value == NULL) return CAPABILITY_NONE;
+  if (value->is_array()) return CAPABILITY_INDEXED;
+  Klass *klass = value->klass();
+  const Capability exact = exact_capability(klass);
+  if (exact == CAPABILITY_HASH_MAP
+      && klass_name_is(klass, "java/util/LinkedHashMap")) {
+    // A LinkedHashMap built in access order moves an entry on every get:
+    // its iteration order is a function of its reads.
+    const int offset =
+        field_offsets()->offset(value, "accessOrder", "Z");
+    if (offset < 0 || value->bool_field(offset)) return CAPABILITY_NONE;
+  }
+  if (exact != CAPABILITY_NONE) return exact;
+  // The existing positional rule: every AbstractList subclass.
+  for (Klass *current = klass; current != NULL; current = current->super()) {
+    if (klass_name_is(current, "java/util/AbstractList")) {
+      return CAPABILITY_INDEXED;
+    }
+  }
+  return CAPABILITY_NONE;
+}
+
+const char *ContainerSupport::shape(oop value) {
+  switch (capability(value)) {
+    case CAPABILITY_INDEXED: return "INDEXED";
+    case CAPABILITY_HASH_MAP:
+    case CAPABILITY_CONCURRENT_MAP:
+    case CAPABILITY_HASHTABLE:
+    case CAPABILITY_HASH_SET: return "ASSOCIATIVE";
+    default: return NULL;
+  }
+}
+
+std::string ContainerSupport::unmodeled_reason(oop value) {
+  if (value == NULL || value->is_array()
+      || capability(value) != CAPABILITY_NONE) {
+    return std::string();
+  }
+  Klass *klass = value->klass();
+  if (klass_name_is(klass, "java/util/LinkedHashMap")) {
+    return "ACCESS_ORDER_UNMODELED";
+  }
+  for (Klass *current = klass->super(); current != NULL;
+       current = current->super()) {
+    if (exact_capability(current) != CAPABILITY_NONE) {
+      ResourceMark rm;
+      return std::string("CONTAINER_SUBCLASS_UNMODELED:")
+          + klass->name()->as_C_string();
+    }
+  }
+  return std::string();
+}
+
+oop ContainerSupport::backing_container(oop value) {
+  // A wrapper of a view of a map is two hops; four bounds a cycle.
+  for (int hop = 0; value != NULL && hop < 4; ++hop) {
+    if (!value->is_array() && capability(value) != CAPABILITY_NONE) {
+      return value;
+    }
+    if (value->is_array()) return NULL;
+    value = backing_of(value);
+  }
+  return NULL;
+}
+
+bool ContainerSupport::names_container(oop value) {
+  if (value == NULL || value->is_array()) return false;
+  return exact_capability(value->klass()) != CAPABILITY_NONE
+      || backing_field_of(value->klass()) != NULL;
+}
+
+oop ContainerSupport::canonicalize(oop value) {
+  oop container = backing_container(value);
+  if (container == NULL || container == value || ConcolicMngr::ctx == NULL) {
+    return value;
+  }
+  ConcolicMngr::ctx->alias_container(value, container);
+  return container;
 }
 
 BasicType ContainerSupport::result_type(oop result, BasicType declared) {
@@ -178,64 +405,70 @@ namespace {
 // is reported by name rather than guessed at -- see unsupported_class below.
 // ---------------------------------------------------------------------------
 
-// One field offset, looked up by name on first use and then cached per klass.
-// find_field walks the field stream, and this runs on the first symbolic
-// access of every tracked container, so the lookup is done once per (klass,
-// field) and never again.
-class FieldOffsetCache {
+// The members one walk reads, and where it stops: past `limit` members it
+// says only that it is over the bound, and a walker that meets a state it
+// cannot read names why (`refused`).
+class MemberWalk {
 public:
-  FieldOffsetCache() {}
+  MemberWalk(std::vector<oop> *keys, std::vector<oop> *values, size_t limit)
+      : _keys(keys), _values(values), _limit(limit), _over_bound(false),
+        _refused(NULL) {}
 
-  int offset(oop holder, const char *name, const char *signature) {
-    if (holder == NULL || holder->klass() == NULL) return -1;
-    const Key key(holder->klass(), name);
-    std::map<Key, int>::const_iterator found = _offsets.find(key);
-    if (found != _offsets.end()) return found->second;
-    fieldDescriptor fd;
-    const int resolved =
-        OopUtils::get_fd_by_name(holder, name, signature, fd) == NULL
-            ? -1 : fd.offset();
-    _offsets[key] = resolved;
-    return resolved;
-  }
-
-private:
-  struct Key {
-    Klass *klass;
-    const char *name;
-    Key(Klass *k, const char *n) : klass(k), name(n) {}
-    bool operator<(const Key &other) const {
-      if (klass != other.klass) return klass < other.klass;
-      return strcmp(name, other.name) < 0;
+  // Records one member; false when the walk should stop.
+  bool add(oop key, oop value) {
+    if (_keys != NULL) _keys->push_back(key);
+    _values->push_back(value);
+    if (_values->size() > _limit) {
+      _over_bound = true;
+      return false;
     }
-  };
-  std::map<Key, int> _offsets;
-};
-
-FieldOffsetCache *field_offsets() {
-  // Function-local so it is constructed on first use and never during static
-  // initialisation; the engine is single-session and this is only reached
-  // with a context, which serialises it well enough for a cache whose worst
-  // case is a redundant lookup.
-  static FieldOffsetCache cache;
-  return &cache;
-}
-
-bool klass_name_is(oop obj, const char *name) {
-  if (obj == NULL || obj->klass() == NULL || obj->klass()->name() == NULL) {
+    return true;
+  }
+  bool refuse(const char *reason) {
+    _refused = reason;
     return false;
   }
-  return obj->klass()->name()->equals(name, (int) strlen(name));
-}
+  // Over the bound without being walked.
+  void exceed() { _over_bound = true; }
+  bool over_bound() const { return _over_bound; }
+  const char *refused() const { return _refused; }
 
-bool read_hash_map(oop map, std::vector<oop> *keys, std::vector<oop> *values);
+private:
+  std::vector<oop> *_keys;
+  std::vector<oop> *_values;
+  size_t _limit;
+  bool _over_bound;
+  const char *_refused;
+};
+
+// A chain of entries linked by `next`, from `node`: HashMap's and
+// Hashtable's bins, a ConcurrentHashMap bin or tree bin.  Bounded against a
+// corrupted cycle.
+bool walk_chain(oop node, const char *key_name, const char *value_name,
+                const char *next_descriptor, MemberWalk *walk) {
+  for (int guard = 0; node != NULL && guard < (1 << 20); ++guard) {
+    const int key_offset =
+        field_offsets()->offset(node, key_name, "Ljava/lang/Object;");
+    const int value_offset =
+        field_offsets()->offset(node, value_name, "Ljava/lang/Object;");
+    const int next_offset =
+        field_offsets()->offset(node, "next", next_descriptor);
+    if (key_offset < 0 || value_offset < 0 || next_offset < 0) return false;
+    if (!walk->add(node->obj_field(key_offset),
+                   node->obj_field(value_offset))) {
+      return true;
+    }
+    node = node->obj_field(next_offset);
+  }
+  return true;
+}
 
 // HashMap/LinkedHashMap: table is a Node[]; each bin is a chain linked by
 // `next`.  A treeified bin holds TreeNodes, and TreeNode extends
 // LinkedHashMap.Entry extends HashMap.Node, so `next` still threads every
 // member of the bin -- one chain walk covers both bin kinds and no red-black
 // traversal is needed.
-bool read_hash_map(oop map, std::vector<oop> *keys, std::vector<oop> *values) {
+bool read_hash_map(oop map, MemberWalk *walk) {
   const int table_offset =
       field_offsets()->offset(map, "table", "[Ljava/util/HashMap$Node;");
   if (table_offset < 0) return false;
@@ -245,22 +478,72 @@ bool read_hash_map(oop map, std::vector<oop> *keys, std::vector<oop> *values) {
   if (table == NULL) return true;
   if (!table->is_objArray()) return false;
   objArrayOop bins = objArrayOop(table);
-  for (int bin = 0; bin < bins->length(); ++bin) {
+  for (int bin = 0; bin < bins->length() && !walk->over_bound(); ++bin) {
+    if (!walk_chain(bins->obj_at(bin), "key", "value",
+                    "Ljava/util/HashMap$Node;", walk)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// A ConcurrentHashMap's table: a bin whose hash is >= 0 is a chain by
+// `next`; a TREEBIN (-2) threads its TreeNodes from `first` by `next`; a
+// RESERVED (-3) placeholder of a computeIfAbsent in flight holds nothing; a
+// MOVED (-1) forwarding node means a resize is copying the table, and what
+// the map holds is then split between two tables no lock-free walk can read
+// at one instant.  More than CONCURRENT_MAP_MAX_BINS bins is over the bound
+// without being walked.
+const int CONCURRENT_MAP_MAX_BINS = 4096;
+const int CONCURRENT_MAP_MOVED = -1;
+const int CONCURRENT_MAP_TREEBIN = -2;
+const int CONCURRENT_MAP_RESERVED = -3;
+const char *const CONCURRENT_NODE =
+    "Ljava/util/concurrent/ConcurrentHashMap$Node;";
+
+bool read_concurrent_hash_map(oop map, MemberWalk *walk) {
+  const int table_offset = field_offsets()->offset(
+      map, "table", "[Ljava/util/concurrent/ConcurrentHashMap$Node;");
+  if (table_offset < 0) return false;
+  oop table = map->obj_field(table_offset);
+  // Never written: the table is allocated lazily.  Exactly empty.
+  if (table == NULL) return true;
+  if (!table->is_objArray()) return false;
+  objArrayOop bins = objArrayOop(table);
+  if (bins->length() > CONCURRENT_MAP_MAX_BINS) {
+    walk->exceed();
+    return true;
+  }
+  for (int bin = 0; bin < bins->length() && !walk->over_bound(); ++bin) {
     oop node = bins->obj_at(bin);
-    // Bounded by the table length times the longest chain; a corrupted cycle
-    // would otherwise spin here.
-    int guard = 0;
-    while (node != NULL && guard++ < (1 << 20)) {
-      const int key_offset =
-          field_offsets()->offset(node, "key", "Ljava/lang/Object;");
-      const int value_offset =
-          field_offsets()->offset(node, "value", "Ljava/lang/Object;");
-      const int next_offset =
-          field_offsets()->offset(node, "next", "Ljava/util/HashMap$Node;");
-      if (key_offset < 0 || value_offset < 0 || next_offset < 0) return false;
-      keys->push_back(node->obj_field(key_offset));
-      values->push_back(node->obj_field(value_offset));
-      node = node->obj_field(next_offset);
+    if (node == NULL) continue;
+    const int hash_offset = field_offsets()->offset(node, "hash", "I");
+    if (hash_offset < 0) return false;
+    const int hash = node->int_field(hash_offset);
+    if (hash == CONCURRENT_MAP_MOVED) return walk->refuse("RESIZING");
+    if (hash == CONCURRENT_MAP_RESERVED) continue;
+    if (hash == CONCURRENT_MAP_TREEBIN) {
+      node = object_field(node, "first",
+                          "Ljava/util/concurrent/ConcurrentHashMap$TreeNode;");
+    }
+    if (!walk_chain(node, "key", "val", CONCURRENT_NODE, walk)) return false;
+  }
+  return true;
+}
+
+// Hashtable: table is an Entry[] of chains by `next`.
+bool read_hashtable(oop table_owner, MemberWalk *walk) {
+  const int table_offset = field_offsets()->offset(
+      table_owner, "table", "[Ljava/util/Hashtable$Entry;");
+  if (table_offset < 0) return false;
+  oop table = table_owner->obj_field(table_offset);
+  if (table == NULL) return true;
+  if (!table->is_objArray()) return false;
+  objArrayOop bins = objArrayOop(table);
+  for (int bin = 0; bin < bins->length() && !walk->over_bound(); ++bin) {
+    if (!walk_chain(bins->obj_at(bin), "key", "value",
+                    "Ljava/util/Hashtable$Entry;", walk)) {
+      return false;
     }
   }
   return true;
@@ -269,17 +552,17 @@ bool read_hash_map(oop map, std::vector<oop> *keys, std::vector<oop> *values) {
 // HashSet/LinkedHashSet are a HashMap whose values are a shared placeholder;
 // the members are its keys, and an ASSOCIATIVE shape is not what a set reads
 // back as, so the members are reported as values.
-bool read_hash_set(oop set, std::vector<oop> *values) {
-  const int map_offset =
-      field_offsets()->offset(set, "map", "Ljava/util/HashMap;");
-  if (map_offset < 0) return false;
-  oop map = set->obj_field(map_offset);
-  if (map == NULL) return true;
+bool read_hash_set(oop set, MemberWalk *walk, size_t limit) {
+  oop map = object_field(set, "map", "Ljava/util/HashMap;");
+  if (map == NULL) {
+    return field_offsets()->offset(set, "map", "Ljava/util/HashMap;") >= 0;
+  }
   std::vector<oop> keys;
   std::vector<oop> ignored;
-  if (!read_hash_map(map, &keys, &ignored)) return false;
+  MemberWalk inner(&keys, &ignored, limit);
+  if (!read_hash_map(map, &inner)) return false;
   for (size_t index = 0; index < keys.size(); ++index) {
-    values->push_back(keys[index]);
+    if (!walk->add(NULL, keys[index])) break;
   }
   return true;
 }
@@ -287,7 +570,7 @@ bool read_hash_set(oop set, std::vector<oop> *values) {
 // ArrayList: elementData is the backing array and `size` is how much of it is
 // live.  The array is usually longer than the list; reading past `size` would
 // state stale members a clear() left behind.
-bool read_array_list(oop list, std::vector<oop> *values) {
+bool read_array_list(oop list, MemberWalk *walk) {
   const int data_offset =
       field_offsets()->offset(list, "elementData", "[Ljava/lang/Object;");
   const int size_offset = field_offsets()->offset(list, "size", "I");
@@ -299,14 +582,14 @@ bool read_array_list(oop list, std::vector<oop> *values) {
   objArrayOop elements = objArrayOop(data);
   if (size < 0 || size > elements->length()) return false;
   for (int index = 0; index < size; ++index) {
-    values->push_back(elements->obj_at(index));
+    if (!walk->add(NULL, elements->obj_at(index))) break;
   }
   return true;
 }
 
 // ArrayDeque: a circular buffer between head and tail, so iteration order is
 // head..tail modulo the capacity rather than 0..length.
-bool read_array_deque(oop deque, std::vector<oop> *values) {
+bool read_array_deque(oop deque, MemberWalk *walk) {
   const int data_offset =
       field_offsets()->offset(deque, "elements", "[Ljava/lang/Object;");
   const int head_offset = field_offsets()->offset(deque, "head", "I");
@@ -324,7 +607,7 @@ bool read_array_deque(oop deque, std::vector<oop> *values) {
     return false;
   }
   for (int index = head; index != tail; index = (index + 1) % capacity) {
-    values->push_back(elements->obj_at(index));
+    if (!walk->add(NULL, elements->obj_at(index))) break;
   }
   return true;
 }
@@ -334,9 +617,13 @@ bool read_array_deque(oop deque, std::vector<oop> *values) {
 bool ContainerSupport::read_concrete_members(oop container,
                                              std::vector<oop> *keys,
                                              std::vector<oop> *values,
-                                             const char **unsupported_class) {
+                                             const char **unsupported_class,
+                                             bool *over_bound) {
   if (unsupported_class != NULL) *unsupported_class = NULL;
+  if (over_bound != NULL) *over_bound = false;
   if (container == NULL || keys == NULL || values == NULL) return false;
+  // One past the snapshot bound is enough to know a walk is over it.
+  const size_t limit = (size_t) ConcolicMngr::initialSnapshotMaxEntries();
 
   if (container->is_array()) {
     if (!container->is_objArray()) {
@@ -352,27 +639,47 @@ bool ContainerSupport::read_concrete_members(oop container,
     return true;
   }
 
-  if (klass_name_is(container, "java/util/HashMap")
-      || klass_name_is(container, "java/util/LinkedHashMap")) {
-    return read_hash_map(container, keys, values);
+  MemberWalk associative(keys, values, limit);
+  MemberWalk positional(NULL, values, limit);
+  MemberWalk *walk = &positional;
+  bool read = false;
+  switch (capability(container)) {
+    case CAPABILITY_HASH_MAP:
+      walk = &associative;
+      read = read_hash_map(container, walk);
+      break;
+    case CAPABILITY_CONCURRENT_MAP:
+      walk = &associative;
+      read = read_concurrent_hash_map(container, walk);
+      break;
+    case CAPABILITY_HASHTABLE:
+      walk = &associative;
+      read = read_hashtable(container, walk);
+      break;
+    case CAPABILITY_HASH_SET:
+      read = read_hash_set(container, walk, limit);
+      break;
+    case CAPABILITY_INDEXED:
+      if (klass_name_is(container, "java/util/ArrayList")) {
+        read = read_array_list(container, walk);
+      } else if (klass_name_is(container, "java/util/ArrayDeque")) {
+        read = read_array_deque(container, walk);
+      }
+      break;
+    default:
+      break;
   }
-  if (klass_name_is(container, "java/util/HashSet")
-      || klass_name_is(container, "java/util/LinkedHashSet")) {
-    return read_hash_set(container, values);
+  if (read && walk->refused() == NULL) {
+    if (over_bound != NULL) *over_bound = walk->over_bound();
+    return true;
   }
-  if (klass_name_is(container, "java/util/ArrayList")) {
-    return read_array_list(container, values);
-  }
-  if (klass_name_is(container, "java/util/ArrayDeque")) {
-    return read_array_deque(container, values);
-  }
-
-  // Admitted by the model but not walked here.  Named, never guessed at: a
-  // reader that could not tell "held nothing" from "this engine cannot read
-  // it" would solve with an empty container.
-  if (unsupported_class != NULL && container->klass() != NULL
-      && container->klass()->name() != NULL) {
-    *unsupported_class = container->klass()->name()->as_C_string();
+  // Admitted by the model but not walked here, or caught in a state no walk
+  // can read.  Named, never guessed at: a reader that could not tell "held
+  // nothing" from "this engine cannot read it" would solve with an empty
+  // container.
+  if (unsupported_class != NULL) {
+    *unsupported_class = walk->refused() != NULL ? walk->refused()
+        : container->klass()->name()->as_C_string();
   }
   return false;
 }
@@ -388,19 +695,21 @@ int ContainerSupport::install_receiver_snapshot(
 
   std::vector<oop> keys;
   std::vector<oop> values;
-  if (!read_concrete_members(container, &keys, &values, unsupported_class)) {
+  bool over_bound = false;
+  if (!read_concrete_members(container, &keys, &values, unsupported_class,
+                             &over_bound)) {
     return -1;
   }
 
   const bool associative = strcmp(shape, "ASSOCIATIVE") == 0;
-  if (associative && keys.size() != values.size()) return -1;
+  if (!over_bound && associative && keys.size() != values.size()) return -1;
   const int entries = (int) values.size();
 
   // The same bound the Java-driven offer obeyed.  Past it the container keeps
   // its opaque root and the refusal is stated: "held something this engine
   // declined to state" is a different fact from "held nothing", and a reader
   // that cannot tell them apart would solve with an empty container.
-  if (entries > ConcolicMngr::initialSnapshotMaxEntries()) {
+  if (over_bound || entries > ConcolicMngr::initialSnapshotMaxEntries()) {
     ConcolicMngr::ctx->container_state(container, shape);
     if (truncated != NULL) *truncated = true;
     return -2;
@@ -518,52 +827,95 @@ bool ContainerSupport::undo_indexed_history(
   return true;
 }
 
-bool ContainerSupport::whole_state_selectable(oop container) {
-  if (container == NULL || container->is_array()) return false;
-  if (shape(container) == NULL) return false;
-  if (container->klass() == NULL || container->klass()->name() == NULL) {
-    return false;
-  }
-  ResourceMark rm;
-  const std::string name(container->klass()->name()->as_C_string());
-  return SymList::target(name) || SymMap::target(name)
-      || SymSet::target(name);
-}
-
 SharedFieldVersions::Location ContainerSupport::state_location(oop container) {
   SharedFieldVersions::Location location;
-  if (container == NULL || ConcolicMngr::ctx == NULL) return location;
-  sym_rid_t owner = ConcolicMngr::ctx->canonical_container_id(container);
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
+  if (container == NULL || heap == NULL) return location;
+  // A view a modeled call made is aliased to its container already; one the
+  // program built (a wrapper, a view of a map nobody tracked yet) is found
+  // through its backing fields.
+  sym_rid_t owner = heap->canonical_container_id(container);
+  const bool own = owner == NULL_SYM_RID || owner == container->get_sym_rid();
+  oop backing = own ? backing_container(container) : (oop) NULL;
+  if (backing != NULL && backing != container) {
+    owner = heap->canonical_container_id(backing);
+  }
   if (owner == NULL_SYM_RID) return location;
   return SharedFieldVersions::Location(
       owner, SharedFieldVersions::SLOT_WHOLE_STATE,
       SharedFieldVersions::LOC_MAP_STATE);
 }
 
-void ContainerSupport::state_base_before_operation(oop container) {
-  if (container == NULL || ConcolicMngr::ctx == NULL) return;
-  if (shape(container) == NULL) return;
+SharedFieldVersions::Location ContainerSupport::state_base_before_operation(
+    oop container, SharedFieldVersions::InitialSnapshot *started) {
+  SharedFieldVersions::Location none;
+  if (started != NULL) *started = SharedFieldVersions::InitialSnapshot();
+  if (container == NULL || ConcolicMngr::ctx == NULL) return none;
+  if (shape(container) == NULL) return none;
 
   // Called from a model's invoke hook: the arguments are in hand and the
   // callee body has NOT run, so the receiver still holds exactly the contents
   // the log must begin from.  This is the only place a write-first container
   // can be read honestly -- by the time the finish hook publishes the
   // mutation, the concrete put has already happened and a walk would state a
-  // base that includes the entry being written.
+  // base that includes the entry being written.  A reference store of the
+  // container asks before its store the same way.
   SharedFieldVersions::Location existing = state_location(container);
-  if (existing.is_valid() && SharedFieldVersions::is_tracked(existing)) return;
+  if (existing.is_valid() && SharedFieldVersions::is_tracked(existing)) {
+    return existing;
+  }
 
   SharedFieldVersions::InitialSnapshot snapshot;
   snapshot_for_receiver(container, &snapshot, true);
 
   // state_location needs the container shadow, which the walk above mints.
   SharedFieldVersions::Location location = state_location(container);
-  if (!location.is_valid()) return;
-  if (SharedFieldVersions::is_tracked(location)) return;
+  if (!location.is_valid()) return none;
+  if (SharedFieldVersions::is_tracked(location)) return location;
   Expression *base = ConcolicMngr::ctx->find_container_state(container);
-  if (base == NULL) return;
+  if (base == NULL) return none;
   SharedFieldVersions::publish_initial(
       location, base, SharedFieldVersions::ConcreteBits(), snapshot);
+  if (started != NULL) *started = snapshot;
+  return location;
+}
+
+void ContainerSupport::referent_state(
+    oop referent, SharedFieldVersions::ReferentState *out) {
+  oop container = backing_container(referent);
+  if (container == NULL) return;
+  SharedFieldVersions::Location location;
+  if (ConcolicMngr::ctx == NULL) {
+    // A thread outside every region cannot start a log; one that stands is
+    // still named.
+    location = state_location(container);
+    if (!location.is_valid() || !SharedFieldVersions::is_tracked(location)) {
+      out->refused = "NO_CONTEXT";
+      return;
+    }
+  } else {
+    SharedFieldVersions::InitialSnapshot started;
+    location = state_base_before_operation(container, &started);
+    if (!location.is_valid()) {
+      ResourceMark rm;
+      out->refused = std::string("UNREADABLE_CONTAINER:")
+          + container->klass()->name()->as_C_string();
+      return;
+    }
+    if (started.present() && !started.stated) {
+      // The log began here and could not state what the container held.
+      if (started.truncated) {
+        out->refused = "TRUNCATED";
+      } else if (started.unsupported_class == "RESIZING") {
+        out->refused = "RESIZING";
+      } else {
+        out->refused = "UNREADABLE_CONTAINER:" + started.unsupported_class;
+      }
+      return;
+    }
+  }
+  out->owner = location.owner;
+  out->version_id = SharedFieldVersions::live_version(location, NULL);
 }
 
 void ContainerSupport::snapshot_for_receiver(
@@ -676,7 +1028,7 @@ bool ContainerSupport::mark_state_gap(oop container, const char *reason) {
 ContainerSupport::StateQuery ContainerSupport::query_state(
     oop container, const char *shape, const char *operation,
     const exp_list_t &arguments, BasicType result_type,
-    const std::string &java_type) {
+    const std::string &java_type, Expression *owner) {
   StateQuery answer;
   if (operation == NULL) return answer;
   const std::string type_name = java_type.empty()
@@ -717,9 +1069,31 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
   answer.expression = SharedFieldVersions::build_read_from(
       plan, location, type_name,
       new ContainerExpression(shape, operation, plan.observed.value,
-                              arguments, result_type, type_name),
+                              arguments, result_type, type_name, NULL,
+                              owner),
       ReturnedValue());
   return answer;
+}
+
+Expression *ContainerSupport::receiver_owner(Expression *receiver) {
+  if (receiver == NULL) return NULL;
+  Expression *inherited = NULL;
+  if (receiver->derived_container_value(&inherited)) return inherited;
+  return receiver->is_guarded_reference_read() ? receiver : NULL;
+}
+
+Expression *ContainerSupport::observed_state(oop container) {
+  if (container == NULL || ConcolicMngr::ctx == NULL) return NULL;
+  SharedFieldVersions::Location location = state_location(container);
+  SharedFieldVersions::ReadPlan plan;
+  if (location.is_valid()
+      && SharedFieldVersions::plan_read(
+             location, SharedFieldVersions::ConcreteBits(), &plan)
+      && plan.observed.value != NULL) {
+    return SharedFieldVersions::build_read_from(
+        plan, location, "L", plan.observed.value, ReturnedValue());
+  }
+  return ConcolicMngr::ctx->find_container_state(container);
 }
 
 // Naming an object is not making it symbolic.  This function answers what a

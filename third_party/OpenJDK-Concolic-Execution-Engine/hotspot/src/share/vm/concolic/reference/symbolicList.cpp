@@ -70,7 +70,8 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
       return false;
     }
     if ((callee_name == "add" || callee_name == "set")
-        && !ContainerSupport::indexed(receiver)) {
+        && ContainerSupport::capability(receiver)
+               != ContainerSupport::CAPABILITY_INDEXED) {
       ContainerSupport::abandon_state(receiver,
           "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
       return false;
@@ -194,7 +195,8 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
   if (parameters.empty()) return NULL;
   oop receiver_object = handle.get_param<oop>(0);
   Expression *receiver = parameters[0];
-  bool root_container = ContainerSupport::indexed(receiver_object);
+  bool root_container = ContainerSupport::capability(receiver_object)
+      == ContainerSupport::CAPABILITY_INDEXED;
   bool list_operation = root_container && (method == "add"
       || method == "offer"
       || method == "poll" || method == "peek" || method == "element"

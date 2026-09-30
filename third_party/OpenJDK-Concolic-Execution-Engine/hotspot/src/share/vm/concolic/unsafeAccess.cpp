@@ -54,9 +54,7 @@ bool locate(oop holder, jlong offset, BasicType type,
 // The constant a concrete word stands for, else a reference's identity.
 Expression *concrete(const SharedFieldVersions::ConcreteBits &word,
                      oop reference) {
-  return word.stated()
-      ? SharedFieldVersions::primitive_expression(word.type, word.bits)
-      : SharedFieldVersions::reference_expression(reference);
+  return SharedFieldVersions::word_value(word, reference);
 }
 
 }  // namespace
@@ -122,9 +120,10 @@ void UnsafeAccess::release_capture() {
 }
 
 void UnsafeAccess::begin(Access *access, oop holder, jlong offset,
-                         BasicType type) {
+                         BasicType type, oop stored) {
   access->active = false;
   access->intent = NULL;
+  access->referent_prepared = false;
   if (!GlobalSymbolicSession::is_open()) return;
   const bool intended = _intent.kind != NONE && !_intent.done;
   if (!intended && !SharedFieldVersions::has_carriers()) return;
@@ -133,11 +132,22 @@ void UnsafeAccess::begin(Access *access, oop holder, jlong offset,
       && _intent.offset == offset) {
     access->intent = &_intent;
   }
-  // A reference cell states its box's word (a wrapper field's value);
-  // anything else it holds states none.
-  access->cell = SharedFieldVersions::Cell(holder, type, type == T_OBJECT);
+  // A wrapper-typed field states its box's word; any other reference cell
+  // its referent's id, as a bytecode store's does.
+  access->cell = SharedFieldVersions::Cell(
+      holder, type,
+      type == T_OBJECT
+          && SharedFieldVersions::wrapper_field_at(holder, offset));
   access->path_guard = ConcolicMngr::ctx == NULL
       ? NULL : ConcolicMngr::ctx->path_guard();
+  // A referent's container state is asked before the carrier's stripe,
+  // never under it.  A write with a captured operand may start the log.
+  if (access->cell.reference() && stored != NULL) {
+    access->referent_prepared = SharedFieldVersions::referent_state(
+        access->location, access->intent != NULL
+            && access->intent->operand != NULL,
+        stored, &access->referent);
+  }
   SharedFieldVersions::prepare_read(&access->plan);
   SharedFieldVersions::lock(access->location);
   access->active = true;
@@ -155,6 +165,8 @@ void UnsafeAccess::end_put(Access *access,
   SharedFieldVersions::prepare_store(&store, access->location, value,
                                      access->path_guard, value != NULL,
                                      value != NULL);
+  store.referent = access->referent;
+  store.referent_prepared = access->referent_prepared;
   SharedFieldVersions::begin_store_locked(&store, access->cell);
   const jlong version = SharedFieldVersions::end_store_locked(
       &store, stored, stored_reference);
@@ -169,17 +181,23 @@ void UnsafeAccess::end_put(Access *access,
     intent->done = true;
     intent->succeeded = true;
     intent->new_value = value;
+    consume(intent);
   }
   update_shadow(*access, value, stored, stored_reference);
 }
 
 void UnsafeAccess::end_cas(Access *access, bool succeeded,
-                           const SharedFieldVersions::ConcreteBits &witnessed,
+                           const SharedFieldVersions::ConcreteBits &given,
                            oop witnessed_reference,
                            const SharedFieldVersions::ConcreteBits &stored,
                            oop stored_reference) {
   if (!access->active) return;
   Intent *intent = access->intent;
+  // The word the compare read: a reference cell's is its referent's id.
+  const SharedFieldVersions::ConcreteBits witnessed =
+      access->cell.reference()
+          ? SharedFieldVersions::reference_word(witnessed_reference)
+          : given;
   // A retry of a loop (getAndAdd, getAndSet) that lost the race decides
   // nothing: the loop reads again and tries again.
   if (!succeeded && (intent == NULL || intent->kind != CAS)) {
@@ -189,12 +207,16 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
   // The read the compare made, of the word it compared -- never a re-read of
   // the heap after the fact.
   Expression *old_value = NULL;
+  // Whether the compare read a tracked location (a read of its version).
+  bool read_tracked = false;
   if (intent != NULL) {
     const std::string type_name(1, type2char(
         witnessed.stated() && !witnessed.is_null() ? witnessed.type
                                                    : T_OBJECT));
     if (SharedFieldVersions::plan_read_locked(access->location, witnessed,
+                                              witnessed_reference,
                                               &access->plan)) {
+      read_tracked = true;
       old_value = SharedFieldVersions::scalar_read(
           access->plan, access->location, type_name, witnessed,
           witnessed_reference);
@@ -209,6 +231,10 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
 
   Expression *value = NULL;
   Expression *guard = access->path_guard;
+  // A captured compare-and-swap's decision, which no model states as a
+  // result (AtomicReference.compareAndSet, AtomicBoolean's): the path
+  // condition says which way it went over the value it compared.
+  Expression *decision = NULL;
   int kind = SharedFieldVersions::VERSION_WRITE;
   if (intent != NULL) {
     if (intent->kind == ADD) {
@@ -234,7 +260,15 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
             intent->expect != NULL
                 ? intent->expect : concrete(witnessed, witnessed_reference),
             op_eq, true);
-        if (intent->model) intent->new_value = matched;
+        // Recorded only when it compared something symbolic: a tracked
+        // location's read, or a symbolic expected value.  Every concrete CAS
+        // of an unmuted JDK body (a lambda's bootstrap interning its method
+        // types) would otherwise put `x == x` into the path.
+        if (intent->model) {
+          intent->new_value = matched;
+        } else if (read_tracked || intent->expect != NULL) {
+          decision = succeeded ? matched : matched->logical_negation();
+        }
         if (succeeded) {
           guard = guard == NULL ? matched
               : (Expression *) new OpSymExpression(guard, matched, op_land);
@@ -251,6 +285,8 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
     SharedFieldVersions::prepare_store(&store, access->location, value,
                                        guard, value != NULL, value != NULL,
                                        kind);
+    store.referent = access->referent;
+    store.referent_prepared = access->referent_prepared;
     SharedFieldVersions::begin_store_locked(&store, access->cell);
     version = SharedFieldVersions::end_store_locked(&store, stored,
                                                     stored_reference);
@@ -260,13 +296,27 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
     }
   }
   SharedFieldVersions::unlock(access->location);
+  if (decision != NULL && ConcolicMngr::ctx != NULL) {
+    ConcolicMngr::record_path_condition(decision);
+  }
   if (intent != NULL) {
     intent->done = true;
     intent->succeeded = succeeded;
     intent->old_value = old_value;
     if (intent->kind != CAS || !intent->model) intent->new_value = value;
+    consume(intent);
   }
   if (succeeded) update_shadow(*access, value, stored, stored_reference);
+}
+
+void UnsafeAccess::consume(Intent *intent) {
+  // A caller's capture names exactly the one write it was taken for.  Its
+  // call is often a native whose primitive result no finish hook reads
+  // (MethodSymbolizerHandle::result_readable), so it is cleared here: left
+  // standing, it refused every later capture of the thread
+  // (AtomicBoolean.compareAndSet twice decided only the first).  The atomic
+  // model reads its intent back at its own finish.
+  if (!intent->model) clear_intent();
 }
 
 void UnsafeAccess::update_shadow(const Access &access, Expression *value,

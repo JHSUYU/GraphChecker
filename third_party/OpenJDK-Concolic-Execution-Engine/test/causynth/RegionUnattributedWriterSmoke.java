@@ -26,7 +26,7 @@ public final class RegionUnattributedWriterSmoke {
         Input input = new Input();
         require(System.startConcolicRegion("REGION.unattributed-writer",
                 "TASK.unattributed-writer") == 0L, "region start rejected");
-        System.observeExactPrimitiveField(block, Block.class.getName(),
+        System.observeField(block, Block.class.getName(),
                 "generationStamp", "J");
         block.generationStamp = 2L;
         System.symbolizeExactField(input, Input.class.getName(), "value",

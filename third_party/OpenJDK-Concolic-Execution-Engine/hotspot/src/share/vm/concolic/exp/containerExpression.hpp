@@ -47,6 +47,13 @@ class ContainerExpression : public Expression {
   // guard is oriented as the *removal condition* (true => the key is gone),
   // independent of which way the concrete run branched.
   Expression *_guard;
+  // The reference the receiver was read through, when the call's receiver
+  // slot carried a guarded reference read (a tracked reference field, an
+  // AtomicReference, a container READ result): which object that read
+  // chose survives, while `_receiver` stays the observed object's state.
+  // Views, iterators and entries inherit it.  NULL otherwise, and then not
+  // serialized, so every other node's JSON is unchanged.
+  Expression *_owner;
   // See has_constant_size().
   bool _constant_size;
   // See stored_at().  `_writes` is the log this chain's WRITEs share, and
@@ -62,10 +69,12 @@ class ContainerExpression : public Expression {
                       BasicType result_type = T_OBJECT,
                       const std::string &java_type = std::string(),
                       Expression *guard = NULL,
+                      Expression *owner = NULL,
                       const ElementWord &word = ElementWord());
   virtual ~ContainerExpression();
 
   virtual ContainerExpression *as_container_expression() { return this; }
+  virtual bool derived_container_value(Expression **owner);
 
   // Whether SIZE of this state is a constant: the STATE root of a Java array
   // allocated with a concrete length, and every WRITE over one, which
@@ -88,6 +97,7 @@ class ContainerExpression : public Expression {
   const std::string &get_shape() const { return _shape; }
   Expression *get_receiver() const { return _receiver; }
   Expression *get_guard() const { return _guard; }
+  Expression *get_owner() const { return _owner; }
   const exp_list_t &get_arguments() const { return _arguments; }
 
   virtual void serialize_internal(

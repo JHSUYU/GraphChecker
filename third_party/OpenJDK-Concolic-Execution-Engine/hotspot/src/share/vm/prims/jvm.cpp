@@ -474,15 +474,16 @@ JVM_ENTRY(void, JVM_SymbolizeExactField(
 #endif
 JVM_END
 
-JVM_ENTRY(void, JVM_ObserveExactPrimitiveField(
+JVM_ENTRY(jint, JVM_ObserveField(
     JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
     jstring field_name, jstring descriptor))
-  JVMWrapper("JVM_ObserveExactPrimitiveField");
+  JVMWrapper("JVM_ObserveField");
 #ifdef ENABLE_CONCOLIC
+  // A missing argument is a status the caller files, not a VM abort: the
+  // woven site passes what the scope map named.
   if (owner == NULL || declaring_class == NULL || field_name == NULL
       || descriptor == NULL) {
-    guarantee(false,
-        "JVM_ObserveExactPrimitiveField: arguments must be non-null");
+    return ExpressionBroker::HANDOFF_MISSING_METADATA;
   }
   HandleMark hm;
   ResourceMark rm(THREAD);
@@ -493,10 +494,9 @@ JVM_ENTRY(void, JVM_ObserveExactPrimitiveField(
       JNIHandles::resolve_non_null(field_name));
   const char *type = java_lang_String::as_utf8_string(
       JNIHandles::resolve_non_null(descriptor));
-  ConcolicMngr::observeExactPrimitiveField(
-      field_owner, holder, name, type);
+  return ConcolicMngr::observeField(field_owner, holder, name, type);
 #else
-  return;
+  return 0;
 #endif
 JVM_END
 
