@@ -63,14 +63,27 @@ public final class RegionStringBuilderMutatorSmoke {
                         && !range.contains("toString"),
                 "a ranged append is not a substring of its sequence: "
                         + range);
-        // A char[]'s range no String expression states: dropped, not a
-        // concat of the array and its bounds.
+        // A char[]'s or another CharSequence's range no String operation
+        // states: with no expression of its own it is the text it appended,
+        // a constant after the builder's earlier content, which stays.
         StringBuilder chars = new StringBuilder();
         chars.append(in.name);
         chars.append(new char[]{'x', 'y'}, 0, 1);
         sink.text = chars.toString();
-        require(sink.text.equals("abcx") && !text(sink).contains("SB.NAME"),
-                "a char[] range kept a stale expression: " + text(sink));
+        String charRange = text(sink);
+        require(sink.text.equals("abcx") && charRange.contains("SB.NAME")
+                        && charRange.contains("Y_L'String'_x")
+                        && !charRange.contains("toString"),
+                "a char[] range is not its appended text: " + charRange);
+        StringBuilder other = new StringBuilder();
+        other.append(in.name);
+        other.append(java.nio.CharBuffer.wrap("xyz"), 1, 2);
+        sink.text = other.toString();
+        String otherRange = text(sink);
+        require(sink.text.equals("abcy") && otherRange.contains("SB.NAME")
+                        && otherRange.contains("Y_L'String'_y"),
+                "a CharSequence range is not its appended text: "
+                        + otherRange);
 
         StringBuilder reversed = new StringBuilder();
         reversed.append(in.name);

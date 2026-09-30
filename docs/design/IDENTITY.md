@@ -260,14 +260,21 @@ of the same codec is transparent; and brackets each declared `EXCHANGE` method.
   is counted (`CODEC_MISMATCH` `UNSENT`, one row per codec at the run's close).
 - **Envelope** (`runtime/CodecEnvelope`, `CSE6`): per hole its codec, encode ordinal, key path,
   hole index, the leaf's template, the producer endpoint, the export event and the recorded texts;
-  at most 256 per message and a transport's `envelopeBytes`. Each hole a message carries publishes
+  at most 256 per message, and the whole symbolic header (`CSE5` first) within its transport's
+  `envelopeBytes` (4096 unless declared), each cut named `BOUND_INSUFFICIENT`. A header segment of
+  no scheme is refused by name (`MESSAGE_CONTEXT_REFUSED`). Each hole a message carries publishes
   its `ExportRow` then, keyed by the message (`<transport> <path>@<version>` or the correlation id).
 - **Decode** (`CodecRuntime#decoded`): the message bound to the encoded argument (a stored
   version's read), else the thread's inbound exchange's, else none; the first encode of the codec
-  whose paths all resolve in the graph. `HandoffMint#mintHoles` matches each leaf against its
-  template, plants a wave's answer, mints the holes (`mintLeaf`: a String's template on its own
-  object, so any read that returns it hands a parse or split the template itself; a primitive or a
-  box at its slot; a JVM-wide leaf is re-homed by a fresh equal object stored through its holder) and publishes one `AttachRow` per hole, paired by
+  whose paths all resolve in the graph. `HandoffMint#mintHoles` reads each leaf against its
+  template (`CodecExport.Reading`): only the value the producer recorded is minted, as the template
+  or, when the producer's template was one whole-leaf hole, as one hole of the leaf's own sort;
+  anything else is a `CODEC_MISMATCH` and the leaf stays concrete (local data of the same message
+  type meets an exchange's entries this way). It plants a wave's answer, stores a fresh copy of a
+  String leaf wherever its holder can hold one, and mints the holes (`mintLeaf`: a String's template
+  on its own object, so any read that returns it hands a parse or split the template itself; a
+  primitive or a box at its slot; the VM never replaces an expression: a JVM-wide or already
+  expressed leaf is re-homed by a fresh equal object stored through its holder, else named) and publishes one `AttachRow` per hole, paired by
   `ENVELOPE`. Entries are never consumed: N readers of one version, and one decode twice, each mint
   their own.
 - **Endpoints**: a hole's endpoint site is the port; its event frame is

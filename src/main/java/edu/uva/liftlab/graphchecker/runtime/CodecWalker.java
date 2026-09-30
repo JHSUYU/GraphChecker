@@ -15,6 +15,7 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
@@ -449,17 +450,28 @@ final class CodecWalker {
         if (!generatedMessage(type)) return false;
         Boolean known = reaches.get(type);
         if (known != null) return known;
-        reaches.put(type, Boolean.FALSE);
+        // The whole closure first, so nothing half-known is ever cached: a
+        // walk on another thread must never read a class as reaching none
+        // while this one is still looking.
+        Set<Class<?>> seen = new LinkedHashSet<>();
+        Deque<Class<?>> open = new ArrayDeque<>();
+        open.add(type);
         boolean found = false;
-        for (Field field : messageFields(type)) {
-            String name = field.getName().substring(0,
-                    field.getName().length() - 1);
-            Class<?> nested = List.class.isAssignableFrom(field.getType())
-                    ? elementType(field) : field.getType();
-            if (demanded.test(port(type.getSimpleName() + "." + name))
-                    || nested != null && reaches(nested)) {
-                found = true;
-                break;
+        while (!open.isEmpty() && !found) {
+            Class<?> at = open.poll();
+            if (!seen.add(at)) continue;
+            for (Field field : messageFields(at)) {
+                String name = field.getName().substring(0,
+                        field.getName().length() - 1);
+                if (demanded.test(port(at.getSimpleName() + "." + name))) {
+                    found = true;
+                    break;
+                }
+                Class<?> nested = List.class.isAssignableFrom(field.getType())
+                        ? elementType(field) : field.getType();
+                if (nested != null && generatedMessage(nested)) {
+                    open.add(nested);
+                }
             }
         }
         reaches.put(type, found);

@@ -45,10 +45,15 @@ public:
                                  int locals_offset, oop obj);
   static void prepare_mutation(MethodSymbolizerHandle &handle);
   static Expression *mutated(MethodSymbolizerHandle &handle);
-  // What append(sequence, start, end) leaves: the content, then the
-  // sequence's range [start, end).
-  static Expression *ranged(Expression *content, Expression *sequence,
-                            Expression *start, Expression *end);
+  // append(sequence, start, end): the range [start, end) a String or
+  // builder sequence appends (its substring), a named operation over another
+  // sequence's own expression, or NULL for one without (appended_text).
+  static Expression *range_of(MethodSymbolizerHandle &handle, int offset,
+                              Expression *start, Expression *end);
+  // The text an append left past `before` (the builder's length before it),
+  // as a constant.
+  static Expression *appended_text(oop builder, Expression *before);
+  static Expression *appended(Expression *content, Expression *range);
 
   static void init_register_class(MethodSymbolizer* m_symbolizer);
 

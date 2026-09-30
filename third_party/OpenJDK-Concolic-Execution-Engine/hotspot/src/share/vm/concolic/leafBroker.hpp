@@ -24,8 +24,10 @@
  *     and String hole symbols.  The expression lands on the slot for a field
  *     or an array element, and on the leaf object for a value, a map entry or
  *     a list position; a JVM-shared object (JVM-wide: an interned String, a
- *     JDK box-cache entry, Boolean.TRUE/FALSE) is refused as SHARED, so the
- *     caller can store a fresh equal object and mint again.
+ *     JDK box-cache entry, Boolean.TRUE/FALSE), as the landing object or the
+ *     slot's holder, is refused as SHARED, and a landing object that already
+ *     carries an expression as SHADOWED, so the caller can store a fresh
+ *     equal object and mint again.  A mint never replaces an expression.
  *
  * Both run on any thread of the open session: one inside a region, or one
  * outside every region while a workload session holds the session

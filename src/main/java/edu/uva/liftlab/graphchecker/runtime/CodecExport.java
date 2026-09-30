@@ -46,20 +46,24 @@ final class CodecExport {
 
     /** A hole's kind: the VM's template grammar (System#mintLeaf). */
     enum Kind {
-        NUM("", ""),
-        DEC_INT("I", "-?(?:0|[1-9][0-9]*)"),
-        DEC_LONG("J", "-?(?:0|[1-9][0-9]*)"),
-        BOOL("Z", "true|false"),
-        STR("Ljava/lang/String;", ".*?");
+        NUM("", "", ""),
+        DEC_INT("I", "-?(?:0|[1-9][0-9]*)", "-??(?:0|[1-9][0-9]*?)"),
+        DEC_LONG("J", "-?(?:0|[1-9][0-9]*)", "-??(?:0|[1-9][0-9]*?)"),
+        BOOL("Z", "true|false", "true|false"),
+        STR("Ljava/lang/String;", ".*", ".*?");
 
         /** The hole symbol's sort, as a JVM descriptor ("" for NUM: the
          *  leaf's). */
         final String javaType;
-        final String pattern;
+        /** Its text, as long as it may be. */
+        final String longest;
+        /** Its text, as short as it may be. */
+        final String shortest;
 
-        Kind(String javaType, String pattern) {
+        Kind(String javaType, String longest, String shortest) {
             this.javaType = javaType;
-            this.pattern = pattern;
+            this.longest = longest;
+            this.shortest = shortest;
         }
     }
 
@@ -114,9 +118,10 @@ final class CodecExport {
         /**
          * Each hole's text in {@code text}, or null when the literals are
          * not its text, a decimal is not Java's rendering of an int or a
-         * long, or the literals do not tell two String holes apart (the
-         * shortest and the longest reading differ).  One reading for both
-         * sides: the producer states the texts the consumer reads back.
+         * long, or the literals do not tell the holes apart (the reading
+         * with every hole as short as it may be and the one with every hole
+         * as long differ).  One reading for both sides: the producer states
+         * the texts the consumer reads back.
          */
         List<String> match(String text) {
             if (numeric()) return Collections.singletonList(text);
@@ -125,13 +130,12 @@ final class CodecExport {
                     ? shortest : null;
         }
 
-        private List<String> match(String text, boolean greedy) {
+        private List<String> match(String text, boolean longest) {
             StringBuilder regex = new StringBuilder();
             for (Part part : parts) {
-                String pattern = part.kind == Kind.STR && greedy ? ".*"
-                        : part.hole() ? part.kind.pattern : null;
-                regex.append(pattern != null ? "(" + pattern + ")"
-                        : Pattern.quote(part.literal));
+                regex.append(!part.hole() ? Pattern.quote(part.literal)
+                        : "(" + (longest ? part.kind.longest
+                        : part.kind.shortest) + ")");
             }
             Matcher matched = Pattern.compile(regex.toString(),
                     Pattern.DOTALL).matcher(text);
@@ -212,6 +216,45 @@ final class CodecExport {
         }
     }
 
+    /**
+     * How a decoded leaf reads against its producer's template: the
+     * template and each hole's text when the leaf is the value the producer
+     * recorded and reads as the template; one hole of the whole leaf when it
+     * is that value and the producer's template was itself one whole-leaf
+     * hole (a box the codec decodes as text, or text as a box); otherwise
+     * the mismatch, and the leaf stays concrete -- local data of the same
+     * message type meets an exchange's entries this way.
+     */
+    static final class Reading {
+        final Template template;
+        final List<String> texts;
+        /** {@code VALUE_MISMATCH}, {@code TEMPLATE_MISMATCH}, or "". */
+        final String mismatch;
+
+        private Reading(Template template, List<String> texts,
+                        String mismatch) {
+            this.template = template;
+            this.texts = texts;
+            this.mismatch = mismatch;
+        }
+
+        static Reading of(Template produced, Object leaf, String recorded) {
+            boolean numeric = !(leaf instanceof String);
+            String text = numeric ? String.valueOf(leaf) : (String) leaf;
+            if (!text.equals(recorded)) {
+                return new Reading(null, null, "VALUE_MISMATCH");
+            }
+            List<String> texts = produced.numeric() == numeric
+                    ? produced.match(text) : null;
+            if (texts != null) return new Reading(produced, texts, "");
+            if (produced.parts.size() == 1 && produced.parts.get(0).hole()) {
+                return new Reading(Template.whole(numeric, null),
+                        Collections.singletonList(text), "");
+            }
+            return new Reading(null, null, "TEMPLATE_MISMATCH");
+        }
+    }
+
     /** Whether a hole's text is one its kind renders. */
     static boolean inRange(Kind kind, String text) {
         try {
@@ -284,7 +327,7 @@ final class CodecExport {
     }
 
     private static boolean decimal(String text) {
-        return text.matches(Kind.DEC_LONG.pattern);
+        return text.matches(Kind.DEC_LONG.longest);
     }
 
     /** One term's part: literal, a typed hole, or an STR hole. */

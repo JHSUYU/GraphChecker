@@ -80,16 +80,17 @@ public final class CausynthMessagePropagation {
       String attemptId, String half, Object localOwner, Object scope,
       Object payload) {
     return new Outbound(MessageDoors.outbound(transport, correlationId,
-        attemptId, half, localOwner, scope, message(payload)));
+        attemptId, half, localOwner, scope, message(transport, payload)));
   }
 
   /**
    * The protobuf message an IPC payload wraps: an {@code RpcProtobufRequest}
    * holds it in its {@code payload} field, a {@code ProtobufWrapper} answers
    * it from {@code getMessage()} (both package-private in Hadoop, read here
-   * reflectively); anything else is its own message.
+   * reflectively); anything else is its own message.  One it cannot read
+   * is named, and the message carries none of its values.
    */
-  static Object message(Object payload) {
+  static Object message(String transport, Object payload) {
     if (payload == null) {
       return null;
     }
@@ -107,6 +108,8 @@ public final class CausynthMessagePropagation {
           return payload;
       }
     } catch (ReflectiveOperationException | RuntimeException unreadable) {
+      MessageDoors.payloadUnread(transport, payload.getClass().getName()
+          + ": " + unreadable);
       return null;
     }
   }

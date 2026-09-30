@@ -15,12 +15,21 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import org.apache.hadoop.ipc.CausynthMessagePropagation;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 /**
  * What binds a codec's entries to the message that carries them
@@ -55,7 +64,7 @@ public class CodecMessagesTest {
         // N readers of one version, and one array decoded twice: each read
         // binds its own array to the one message, which no decode consumes.
         CodecMessages.Message stored = CodecMessages.stored(ZK,
-                "/queue/qn-0001@0", item);
+                "/queue/qn-0001@0", item).message;
         assertEquals("SOLR_ZK /queue/qn-0001@0", stored.key);
         assertEquals("/queue/qn-0001@0", stored.storeKey);
         byte[] overseer = new byte[]{1};
@@ -80,6 +89,14 @@ public class CodecMessagesTest {
                 new byte[0]).dropped);
         assertTrue(CodecMessages.fetched(ZK, "/state.json@3", new byte[0])
                 .message != null);
+        // The paths are bounded too, the least recently used dropped.
+        String first = "";
+        for (int path = 0; path <= CodecMessages.MAX_PATHS; path++) {
+            String pushed = CodecMessages.stored(ZK, "/p" + path + "@0",
+                    item).dropped;
+            if (first.isEmpty()) first = pushed;
+        }
+        assertEquals("SOLR_ZK /queue/qn-0001", first);
 
         // A bracket: its encodes are drained by the next door of its
         // transport; what is left at its close is unsent.
@@ -103,12 +120,49 @@ public class CodecMessagesTest {
                 CodecMessages.unsentCounts().get("PARAMS"));
     }
 
+    @Rule
+    public final TemporaryFolder iteration = new TemporaryFolder();
+
+    /** Named as Hadoop's IPC request wrapper is, with no payload field. */
+    static final class RpcProtobufRequest {
+    }
+
+    /**
+     * A door names what it cannot carry: a symbolic header segment of no
+     * scheme, a payload its adapter cannot unwrap.
+     */
+    @Test
+    public void theDoorsNameWhatTheyCannotCarry() throws Exception {
+        Path root = iteration.getRoot().toPath().resolve("iteration-0000");
+        Path results = root.resolve("seed-result")
+                .resolve("concolic_region_results.jsonl");
+        Files.createDirectories(results.getParent());
+        RowRuntime.configure(results);
+        MessageDoors.inbound(null, "not-an-envelope", "SOLR_HTTP", "c1", "1",
+                MessageDoors.REQUEST, null, false);
+        MessageDoors.endInbound();
+        CausynthMessagePropagation.outbound("HADOOP_IPC", "c2", "0",
+                MessageDoors.REQUEST, null, null, new RpcProtobufRequest());
+        RowRuntime.closeSession();
+        List<String> named = new ArrayList<>();
+        for (GapRow gap : RowCodec.readAll(SessionDir.of(root,
+                RowRuntime.sessionId()).gaps(), RowCodec::readGap)) {
+            named.add(gap.kind() + " " + gap.subject() + " " + gap.detail());
+        }
+        assertTrue(named.toString(), named.stream().anyMatch(gap ->
+                gap.startsWith("MESSAGE_CONTEXT_REFUSED inbound symbolic")));
+        assertTrue(named.toString(), named.stream().anyMatch(gap ->
+                gap.startsWith("UNSTATED_VALUE HADOOP_IPC")
+                        && gap.contains("RpcProtobufRequest")));
+    }
+
     @Test
     public void theEnvelopeCarriesTheProducerAndIsBounded() {
         List<CodecMessages.Entry> entries = Arrays.asList(
                 entry("JSON", 0, 0, "expireAt"),
                 entry("JSON", 0, 1, "expireAt"));
-        CodecEnvelope.Written written = CodecEnvelope.write("m", entries, 0);
+        CodecEnvelope.Written written = CodecEnvelope.write("m", entries,
+                Integer.MAX_VALUE);
         assertTrue(written.wire.startsWith("CSE6;"));
         List<CodecMessages.Entry> read = CodecEnvelope.read(written.wire);
         assertEquals(2, read.size());
@@ -126,6 +180,8 @@ public class CodecMessagesTest {
                 written.wire.length() - 1);
         assertEquals("a byte bound keeps what fits", 1,
                 capped.carried.size());
+        assertEquals("a header already full carries no hole", "",
+                CodecEnvelope.write("m", entries, 0).wire);
         assertTrue("a malformed envelope installs nothing",
                 CodecEnvelope.read("CSE6;%%%").isEmpty());
     }
@@ -159,6 +215,9 @@ public class CodecMessagesTest {
                     Collections.singletonList("80000000-ffffffff")},
             {concat(literal("k-"), toString(n)), "x-1727",
                     "[k-, DEC_LONG]", null},
+            // A decimal before a literal that could end it: two readings.
+            {concat(toString(i), literal("0"), s), "1000x",
+                    "[DEC_INT, 0, STR]", null},
         };
         for (Object[] row : rows) {
             CodecExport.Template template = CodecExport.cut(json(
@@ -173,6 +232,32 @@ public class CodecMessagesTest {
                         CodecExport.Template.fromWire(template.wire())));
             }
         }
+        // A decoded leaf is read against its producer's template: minted
+        // only as the value the producer recorded; one whole-leaf hole only
+        // when the producer's template was one; else it stays concrete.
+        CodecExport.Template pair = CodecExport.cut(json(concat(toString(i),
+                literal(":"), s)), false, "Ljava/lang/String;", "42:abc");
+        CodecExport.Template whole = CodecExport.cut(json(n), true, "J",
+                "1727");
+        Object[][] readings = {
+            // producer's template, decoded leaf, recorded, shape or mismatch
+            {pair, "42:abc", "42:abc", "[DEC_INT, :, STR]"},
+            {pair, "42:abd", "42:abc", "VALUE_MISMATCH"},
+            {pair, 42L, "42:abc", "VALUE_MISMATCH"},
+            {whole, "1727", "1727", "[STR]"},
+            {whole, 1727L, "1727", "[NUM]"},
+            {CodecExport.cut(json(concat(toString(i), literal("0"), s)),
+                    false, "Ljava/lang/String;", "1000x"), "1000x",
+                    "1000x", "TEMPLATE_MISMATCH"},
+        };
+        for (Object[] row : readings) {
+            CodecExport.Reading reading = CodecExport.Reading.of(
+                    (CodecExport.Template) row[0], row[1], (String) row[2]);
+            assertEquals(row[1] + " against " + row[2], row[3],
+                    reading.mismatch.isEmpty() ? shape(reading.template)
+                            : reading.mismatch);
+        }
+
         CodecExport.Template box = CodecExport.cut(json(n), true, "J",
                 "1727");
         assertTrue(box.numeric());

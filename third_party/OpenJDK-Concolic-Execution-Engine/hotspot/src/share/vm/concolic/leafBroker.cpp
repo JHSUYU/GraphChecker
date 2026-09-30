@@ -53,8 +53,13 @@ enum Status {
   STATUS_OK,
   // exportLeaf: no shadow anywhere, so the leaf's typed constant.
   STATUS_CONSTANT,
-  // mintLeaf: the object the expression would land on is JVM-wide.
+  // mintLeaf: the object the expression would land on, or the object that
+  // holds the leaf's slot, is JVM-wide.
   STATUS_SHARED,
+  // mintLeaf: the object the expression would land on already carries an
+  // expression (a cached String another decode minted): the caller stores a
+  // fresh equal object and mints that.
+  STATUS_SHADOWED,
   // mintLeaf: the container holding the leaf already has a recorded state
   // (an entry or position), or the element is a versioned location.
   STATUS_TRACKED_CONTAINER,
@@ -77,6 +82,7 @@ const char *status_name(Status status) {
     case STATUS_OK:                return "OK";
     case STATUS_CONSTANT:          return "CONSTANT";
     case STATUS_SHARED:            return "SHARED";
+    case STATUS_SHADOWED:          return "SHADOWED";
     case STATUS_TRACKED_CONTAINER: return "TRACKED_CONTAINER";
     case STATUS_UNSUPPORTED:       return "UNSUPPORTED";
     case STATUS_NO_SESSION:        return "NO_SESSION";
@@ -813,12 +819,39 @@ Status build(const Leaf &leaf, const std::vector<Part> &parts,
   return STATUS_OK;
 }
 
-// Refuses a mint whose container already records the leaf's member, or
-// whose element is a versioned location: a decoded graph is fresh, and a
-// state that names the member would bypass the leaf's own expression.
+// Whether the object a mint would land on already states an expression of
+// its own: a String another decode (or the program) gave one, a box whose
+// value has one.  A mint never replaces it: an object a cache shares would
+// carry one message's holes for every holder.
+bool carries_expression(const Leaf &leaf) {
+  SymInstance *instance =
+      GlobalSymbolicSession::heap()->find_sym_inst(leaf.object());
+  if (instance == NULL) return false;
+  if (leaf.string()) return instance->get_ref_exp() != NULL;
+  return instance->get(java_lang_boxing_object::value_offset_in_bytes(
+      leaf.sort)) != NULL;
+}
+
+// Refuses a mint whose container already records the leaf's member, whose
+// element or field is a versioned location, whose holder or landing object
+// is JVM-wide, or whose landing object already carries an expression: a
+// decoded graph is fresh, and anything else would bypass the leaf's own
+// expression or put it where every holder of a shared object reads it.
 Status fresh(const Leaf &leaf, std::string *reason) {
   SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
-  if (leaf.kind == LeafBroker::SLOT_ENTRY
+  if (leaf.kind != LeafBroker::SLOT_VALUE && jvm_shared_object(leaf.holder())) {
+    *reason = "HOLDER_JVM_SHARED:" + class_of(leaf.holder());
+    return STATUS_SHARED;
+  }
+  if (leaf.kind == LeafBroker::SLOT_FIELD) {
+    oop owner = leaf.holder();
+    if (owner->is_symbolic()
+        && SFV::is_tracked(SFV::Location(owner->get_sym_rid(), leaf.offset,
+                                         SFV::LOC_INSTANCE_FIELD))) {
+      *reason = "FIELD_TRACKED";
+      return STATUS_TRACKED_CONTAINER;
+    }
+  } else if (leaf.kind == LeafBroker::SLOT_ENTRY
       || leaf.kind == LeafBroker::SLOT_POSITION) {
     if (heap->find_container_state(leaf.holder()) != NULL) {
       *reason = "CONTAINER_HAS_STATE";
@@ -837,6 +870,10 @@ Status fresh(const Leaf &leaf, std::string *reason) {
   if (leaf.lands_on_object() && jvm_shared_object(leaf.object())) {
     *reason = "JVM_SHARED:" + class_of(leaf.object());
     return STATUS_SHARED;
+  }
+  if (leaf.lands_on_object() && carries_expression(leaf)) {
+    *reason = "OBJECT_CARRIES_EXPRESSION:" + class_of(leaf.object());
+    return STATUS_SHADOWED;
   }
   return STATUS_OK;
 }

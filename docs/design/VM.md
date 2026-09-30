@@ -39,8 +39,10 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   each region frame owns its guard, auxiliary conditions and branch events
   (`VM/concolic/threadContext.cpp`). Nothing is recorded in a region until it reads something
   symbolic (the admission gate); `observeField`, every mint, a getfield that yields an expression,
-  and a modeled call whose operand object carries its own expression (a String or box a decode
-  minted, `MethodSymbolizerHandle::general_check_param_symbolized`) open it.
+  and a modeled call whose value operand (a String, a box or a StringBuilder) carries its own
+  expression (one a decode minted, `MethodSymbolizerHandle::general_check_param_symbolized`) open
+  it. An owner whose field was symbolized is marked the same way, but passing it along (a
+  `map.put(k, owner)`) opens nothing, and nothing opens it while observation is paused.
 - **Branches.** The weave marks decision sites with `markConcolicBranch(siteId, ...)`; a marked
   branch is an event even when concrete (zero conditions). `getConcolicBranchEvents` returns the
   events since the last read; `getConcolicPathConditionRange` a range of the region's conditions.
@@ -119,7 +121,7 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | class | modeled | not modeled |
 |---|---|---|
 | `String` (entered only with a symbolic operand) | `charAt compareTo concat contains endsWith equals equalsIgnoreCase hashCode indexOf isEmpty lastIndexOf length matches regionMatches replace* split startsWith substring toLowerCase toUpperCase trim valueOf ...`; results are string operations | `toCharArray`, `getBytes`, `getChars`, `new String(bytes/chars)` return no expression |
-| `StringBuilder` (and its `AbstractStringBuilder` methods) | `append` (as concat; `append(CharSequence, start, end)` of a String or builder as a concat with its `substring` of `[start, end)`), `toString`, `length`; `insert delete deleteCharAt replace setCharAt setLength` as a concat of substrings of the content (an operand's slot shadow first) | `reverse`, `appendCodePoint`, a padding `setLength` and a ranged append of a `char[]` or another `CharSequence` drop the expression (the next use states the concrete content); `StringBuffer` |
+| `StringBuilder` (and its `AbstractStringBuilder` methods) | `append` (as concat; `append(CharSequence, start, end)` of a String or builder as a concat with its `substring` of `[start, end)`, of a `char[]` or another `CharSequence` with no expression of its own as a concat with the text it appended, of one with an expression as a concat with a named `unsupportedCharArrayRange`/`unsupportedCharSequenceRange` over it), `toString`, `length`; `insert delete deleteCharAt replace setCharAt setLength` as a concat of substrings of the content (an operand's slot shadow first) | `reverse`, `appendCodePoint` and a padding `setLength` drop the expression (the next use states the concrete content); `StringBuffer` |
 | boxing `valueOf`, `new X(v)` for `Boolean Byte Character Short Integer Long` | the value on the result slot, and on the returned object unless it is JVM-wide | `Float`/`Double.valueOf`. This JDK's `Integer/Long/Short/Byte/Boolean.valueOf` box afresh; `Character.valueOf` caches 0..127 |
 | decimal and boolean renderings: `Byte/Short/Integer/Long/Boolean.toString` (static of the class's own primitive, and the instance form), `String.valueOf` of an `int`, `long` or `boolean` or of such a box | one `toString` op of the value (`StringBuilder.append` wraps every primitive in the same op) | radix and hexadecimal conversions and char or floating renderings become a named `unsupportedPrimitiveStringConversion:` operation; `String.valueOf` of a char, float, double or other object stays a `valueOf` op |
 | `Integer.parseInt`, `Long.parseLong` | a method-return symbol stating its concrete value and its call (holder, name, descriptor, argument expressions), plus a `MethodExpression` condition | |
@@ -311,9 +313,11 @@ with a `reason`.
   `concreteValue`. A String leaf becomes `concat(parts)`, whose texts must be its content exactly,
   compared in UTF-16. The expression lands on the slot for a field (a `WRITE` version, as a
   putfield publishes) or an element (an INDEXED `WRITE`, the array named), and on the leaf object for
-  a value, an entry or a position. Refusals: `SHARED` (that object is JVM-wide, so the caller
-  stores a fresh equal one and mints again; a slot-landing mint never is), `TRACKED_CONTAINER` (an
-  entry's or position's container has a state, or an element is versioned), `TEMPLATE_MISMATCH`,
+  a value, an entry or a position. A mint never replaces an expression. Refusals: `SHARED` (the
+  landing object or the holder of the slot is JVM-wide, so the caller stores a fresh equal object and
+  mints again), `SHADOWED` (the landing object already carries an expression, e.g. a String a codec's
+  cache shares: the same), `TRACKED_CONTAINER` (an entry's or position's container has a state, an
+  element is versioned, or a field is a tracked location), `TEMPLATE_MISMATCH`,
   `MALFORMED_TEMPLATE`, `NO_SESSION`, `SLOT_MISSING`, `NULL_LEAF`, `UNSUPPORTED`. A mint records no
   condition; on a thread inside a region it opens the admission gate. This JDK's
   `Integer/Long/Short/Byte.valueOf` box afresh, so a JVM-wide box is only a `Character` cache entry
@@ -398,6 +402,7 @@ that does not hold.
 | a native method with a symbolic argument (JNI, most JDK natives) | silently lost |
 | `String.toCharArray`/`getBytes`/`getChars`, `new String(bytes)` | silently lost |
 | `StringBuilder.reverse`/`appendCodePoint`, a padding `setLength` | dropped: the builder's next use states its concrete content |
+| `StringBuilder.append` of a range of a `char[]` or a non-String `CharSequence` | modeled: the appended text as a constant, or a named operation over the sequence's own expression; the builder's earlier content stays |
 | `StringBuilder.append(Object)` of an unshadowed non-String | silently wrong (appends `""`) |
 | operations of an unmodeled collection | element fields hooked; the container relation silently lost |
 | digests, MACs, ciphers, logging | silently lost by design (muted) |

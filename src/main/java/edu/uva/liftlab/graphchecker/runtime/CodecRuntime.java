@@ -230,13 +230,26 @@ final class CodecRuntime {
     // ---- the doors ----------------------------------------------------------
 
     /**
-     * The codec envelope of one outbound message: its payload walked with
-     * its transport's codec for this half, then what the thread's innermost
-     * bracket of the transport staged.  Every entry carried publishes its
-     * export row now, keyed by {@code correlationId}.
+     * The most bytes one message's symbolic header may take on
+     * {@code transport}: its declared bound, else none.
+     */
+    static int headerBytes(String transport) {
+        if (!ConcolicRegionRuntime.sessionOpen()) return Integer.MAX_VALUE;
+        WireDeclarations.Transport declared =
+                setup().declared.transport(transport);
+        return declared == null || declared.envelopeBytes() == 0
+                ? Integer.MAX_VALUE : declared.envelopeBytes();
+    }
+
+    /**
+     * The codec envelope of one outbound message, within {@code maxBytes}:
+     * its payload walked with its transport's codec for this half, then
+     * what the thread's innermost bracket of the transport staged.  Every
+     * entry carried publishes its export row now, keyed by
+     * {@code correlationId}.
      */
     static String outbound(String transport, String correlationId,
-                           boolean request, Object payload) {
+                           boolean request, Object payload, int maxBytes) {
         if (!ConcolicRegionRuntime.sessionOpen()) return "";
         ConcolicRegionRuntime.pauseObservation();
         try {
@@ -253,8 +266,7 @@ final class CodecRuntime {
             entries.addAll(CodecMessages.drain(transport));
             if (entries.isEmpty()) return "";
             CodecEnvelope.Written written = CodecEnvelope.write(
-                    correlationId, entries, declared == null ? 0
-                            : declared.envelopeBytes());
+                    correlationId, entries, maxBytes);
             for (CodecMessages.Entry entry : written.carried) {
                 RowRuntime.exportedHole(entry, correlationId);
             }
@@ -295,10 +307,18 @@ final class CodecRuntime {
         try {
             List<CodecMessages.Entry> entries = CodecMessages.written(data);
             if (entries.isEmpty()) return;
-            CodecMessages.Message message = CodecMessages.stored(transport,
+            CodecMessages.Stored stored = CodecMessages.stored(transport,
                     key, entries);
             for (CodecMessages.Entry entry : entries) {
-                RowRuntime.exportedHole(entry, message.key);
+                RowRuntime.exportedHole(entry, stored.message.key);
+            }
+            if (!stored.dropped.isEmpty()) {
+                RowRuntime.gap(GapKind.BOUND_INSUFFICIENT,
+                        GapClass.DIAGNOSTIC, stored.dropped, "the run keeps "
+                                + "the codec values of " + CodecMessages
+                                .MAX_PATHS + " stored paths; this path's were"
+                                + " dropped, so a later read of them crosses"
+                                + " concrete");
             }
         } finally {
             ConcolicRegionRuntime.resumeObservation();

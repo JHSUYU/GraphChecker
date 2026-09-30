@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -92,11 +95,33 @@ public final class MessageDoors {
                                     Object payload) {
         String trace = CausynthTraceRecorder.outboundExchange(transport,
                 correlationId, attemptId, half, localOwner, scope);
-        String symbolic = envelope(SymbolicMessageEnvelope.takeOutbound(),
-                CodecRuntime.outbound(transport, correlationId,
-                        REQUEST.equals(half), payload));
+        // One bound for the whole symbolic header: the declared ports' segment
+        // first, the codec envelope in what is left.
+        String declared = SymbolicMessageEnvelope.takeOutbound();
+        int bytes = CodecRuntime.headerBytes(transport);
+        if (declared.length() > bytes) {
+            RowRuntime.gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
+                    transport, "a message's declared-port values take "
+                            + declared.length() + " bytes, past its"
+                            + " transport's header bound of " + bytes
+                            + ", so it carries none of them");
+            declared = "";
+        }
+        String symbolic = envelope(declared, CodecRuntime.outbound(transport,
+                correlationId, REQUEST.equals(half), payload,
+                declared.isEmpty() ? bytes : bytes - declared.length() - 1));
         return trace.isEmpty() && symbolic.isEmpty() ? Outbound.EMPTY
                 : new Outbound(correlationId, attemptId, trace, symbolic);
+    }
+
+    /**
+     * A door's payload its adapter could not read: named, and the message
+     * carries none of its values.
+     */
+    public static void payloadUnread(String transport, String detail) {
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, transport,
+                "a door's payload could not be read, so the message carries"
+                        + " none of its values: " + detail);
     }
 
     /**
@@ -119,13 +144,25 @@ public final class MessageDoors {
         return codec.isEmpty() ? declared : declared + " " + codec;
     }
 
-    /** The segment of {@code scheme} in a symbolic header, or "". */
-    private static String segment(String symbolic, String scheme) {
+    /**
+     * A symbolic header's codec envelope (its first {@code CSE6} segment),
+     * or, with {@code codec} false, everything else: the declared ports'
+     * segment, which the declared envelope installs or refuses by name.
+     */
+    private static String segment(String symbolic, boolean codec) {
         if (symbolic == null) return "";
-        for (String segment : symbolic.split(" ")) {
-            if (segment.startsWith(scheme + ";")) return segment;
+        StringBuilder declared = new StringBuilder();
+        boolean found = false;
+        for (String segment : symbolic.split(" ", -1)) {
+            if (!found && segment.startsWith(CodecEnvelope.SCHEMA + ";")) {
+                if (codec) return segment;
+                found = true;
+                continue;
+            }
+            if (declared.length() > 0) declared.append(' ');
+            declared.append(segment);
         }
-        return "";
+        return codec ? "" : declared.toString();
     }
 
     /**
@@ -146,9 +183,9 @@ public final class MessageDoors {
         if (!keepSymbolic) {
             SymbolicMessageEnvelope.clearInbound();
         }
-        String declared = segment(symbolic, "CSE5");
+        String declared = segment(symbolic, false);
         CodecMessages.Message carried = CodecRuntime.inbound(
-                segment(symbolic, CodecEnvelope.SCHEMA), correlationId);
+                segment(symbolic, true), correlationId);
         CodecMessages.Message codec = kept == null ? carried
                 : carried == null ? kept : kept.with(carried.entries);
         boolean hasTrace = trace != null && !trace.isEmpty();

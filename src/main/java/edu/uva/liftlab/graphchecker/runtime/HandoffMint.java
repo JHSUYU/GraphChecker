@@ -26,7 +26,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -423,23 +422,17 @@ final class HandoffMint {
             return root;
         }
         boolean numeric = !(leaf.value instanceof String);
-        String text = numeric ? String.valueOf(leaf.value)
-                : (String) leaf.value;
-        List<String> texts = !text.equals(first.recorded)
-                || template.numeric() != numeric ? null
-                : template.match(text);
-        List<CodecMessages.Entry> producers = entries;
-        if (texts == null) {
-            codecMismatch(message, !text.equals(first.recorded)
-                    ? "VALUE_MISMATCH" : "TEMPLATE_MISMATCH", at
-                    + " decoded " + text + " where its producer wrote "
+        CodecExport.Reading reading = CodecExport.Reading.of(template,
+                leaf.value, first.recorded);
+        if (!reading.mismatch.isEmpty()) {
+            codecMismatch(message, reading.mismatch, at + " decoded "
+                    + leaf.value + " where its producer wrote "
                     + first.recorded + " as " + template.holes().size()
-                    + " hole(s); the leaf is one hole paired with the first");
-            template = CodecExport.Template.whole(numeric, null);
-            texts = new ArrayList<>(Collections.singletonList(text));
-            producers = Collections.singletonList(first);
+                    + " hole(s), so the leaf stays concrete");
+            return root;
         }
-        texts = new ArrayList<>(texts);
+        template = reading.template;
+        List<String> texts = new ArrayList<>(reading.texts);
 
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
         OccurrenceAddress consumer = CodecRuntime.occurrenceHere(port);
@@ -497,6 +490,17 @@ final class HandoffMint {
             }
             leaf = placed.leaf;
             root = placed.root;
+        } else if (!numeric) {
+            // A String a decoder hands out may be shared (interned, or a
+            // codec's cache of them): minted, every holder of it would read
+            // this message's holes.  A fresh copy takes them where its
+            // holder can hold one; the VM refuses a shared or already
+            // expressed one it cannot replace (mintTemplate).
+            Placed placed = place(leaf, root, new String((String) leaf.value));
+            if (placed != null) {
+                leaf = placed.leaf;
+                root = placed.root;
+            }
         }
         Minted minted = mintTemplate(leaf, root, template.mintJson(labels,
                 texts), message, at);
@@ -512,8 +516,7 @@ final class HandoffMint {
              hole++) {
             JsonObject symbol = minted.holes.get(hole).getAsJsonObject();
             RowRuntime.attachedHole(endpoints.get(hole), seq,
-                    producers.get(Math.min(hole, producers.size() - 1))
-                            .producer, message.key,
+                    entries.get(hole).producer, message.key,
                     Hole.of(first.codec, first.path, hole),
                     optionalString(symbol, "exp"),
                     optionalString(symbol, "javaType"), texts.get(hole),
@@ -570,9 +573,11 @@ final class HandoffMint {
 
     /**
      * Mints a template on one leaf.  A JVM-wide leaf object ({@code SHARED})
-     * is re-homed: a fresh equal object is stored through its holder's API
-     * and minted instead; one that cannot be ({@code LEAF_SHARED}, an enum
-     * constant or an immutable holder) stays concrete, named.
+     * or one that already carries an expression ({@code SHADOWED}) is
+     * re-homed: a fresh equal object is stored through its holder's API and
+     * minted instead; one that cannot be ({@code LEAF_SHARED}: an enum
+     * constant, a view's rendering, an immutable holder) stays concrete,
+     * named.
      */
     private static Minted mintTemplate(CodecWalker.Leaf leaf, Object root,
                                        String template,
@@ -581,7 +586,7 @@ final class HandoffMint {
         JsonObject answer = mintAt(leaf, template);
         String status = answer == null ? "UNANSWERED"
                 : optionalString(answer, "status");
-        if ("SHARED".equals(status)) {
+        if ("SHARED".equals(status) || "SHADOWED".equals(status)) {
             Object fresh = freshCopy(leaf.value);
             Placed placed = fresh == null ? null : place(leaf, root, fresh);
             if (placed == null) {

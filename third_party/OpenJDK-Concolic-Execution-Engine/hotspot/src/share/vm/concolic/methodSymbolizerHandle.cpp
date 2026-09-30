@@ -3,6 +3,23 @@
 #include "concolic/concolicMngr.hpp"
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/containerSupport.hpp"
+#include "classfile/javaClasses.hpp"
+#include "classfile/systemDictionary.hpp"
+
+namespace {
+
+// A value an operand carries by itself: a String, a box or a StringBuilder.
+// Any other object marked semantic is an owner whose field was symbolized
+// (ThreadContext::symbolize_field, a mint), which reads nothing by being
+// passed along.
+bool value_operand(oop obj) {
+  if (obj == NULL || obj->is_array()) return false;
+  return obj->klass() == SystemDictionary::String_klass()
+      || java_lang_boxing_object::is_instance(obj)
+      || obj->klass()->name()->equals("java/lang/StringBuilder");
+}
+
+}  // namespace
 
 Expression *MethodSymbolizerHandle::get_primitive_exp(int offset, BasicType type) {
   Expression *exp;
@@ -166,14 +183,19 @@ bool MethodSymbolizerHandle::general_check_param_symbolized_helper(BasicType typ
         && ConcolicMngr::ctx->find_container_state(obj) != NULL)) {
       recording = true;
     }
-    // An operand that carries its own expression is a symbolic value this
-    // thread's code reads here -- a String or a box a decode minted outside
-    // every region (System.mintLeaf), a container READ's result -- so, as a
+    // A value operand that carries its own expression is a symbolic value
+    // this thread's code reads here -- a String or a box a decode minted
+    // outside every region (System.mintLeaf), a builder over one -- so, as a
     // getfield that yields an expression does, it opens the path-condition
     // gate (by value).  Without it a region whose first symbolic read is
-    // such an operand recorded none of its decisions.  A container's state
-    // does not open it: a query of it opens the gate through its own read.
-    if (carried) ConcolicMngr::ctx->set_pc_admitted(true);
+    // such an operand recorded none of its decisions.  Only a value: an
+    // owner of a symbolized field passed along (map.put(k, blockKey)) reads
+    // nothing, and a container's state opens the gate through its own read.
+    // Never inside paused GraphChecker code, which is no program read.
+    if (carried && value_operand(obj)
+        && ConcolicMngr::ctx->path_condition_pause_depth() == 0) {
+      ConcolicMngr::ctx->set_pc_admitted(true);
+    }
   } else {
     ShouldNotCallThis();
   }

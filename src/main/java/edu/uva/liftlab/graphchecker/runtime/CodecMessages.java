@@ -39,6 +39,8 @@ final class CodecMessages {
     static final int MAX_ENCODED = 4096;
     /** Stored versions kept per path. */
     static final int VERSIONS = 8;
+    /** Paths whose versions are kept, the least recently used dropped. */
+    static final int MAX_PATHS = 4096;
 
     private CodecMessages() {
     }
@@ -135,8 +137,9 @@ final class CodecMessages {
     private static final WeakIdentity<Message> FETCHED =
             new WeakIdentity<>();
     /** Per {@code transport\npath}: version to message, and the newest
-     *  version dropped. */
-    private static final Map<String, Versions> STORED = new HashMap<>();
+     *  version dropped; the least recently used path first. */
+    private static final LinkedHashMap<String, Versions> STORED =
+            new LinkedHashMap<>(64, 0.75f, true);
     private static final Map<String, Long> UNSENT = new TreeMap<>();
 
     private static final class Versions {
@@ -165,14 +168,27 @@ final class CodecMessages {
 
     // ---- stores ---------------------------------------------------------
 
+    /** A write's message, and the path whose versions it pushed out. */
+    static final class Stored {
+        final Message message;
+        /** {@code transport path} dropped to stay within
+         *  {@link #MAX_PATHS}, or "". */
+        final String dropped;
+
+        Stored(Message message, String dropped) {
+            this.message = message;
+            this.dropped = dropped;
+        }
+    }
+
     /** Files the message a write of {@code key} ({@code path@version})
      *  sent. */
-    static synchronized Message stored(String transport, String key,
-                                       List<Entry> entries) {
+    static synchronized Stored stored(String transport, String key,
+                                      List<Entry> entries) {
         Message message = new Message(transport + " " + key, key, entries);
         int at = key.lastIndexOf('@');
         long version = version(key);
-        if (at < 0 || version < 0L) return message;
+        if (at < 0 || version < 0L) return new Stored(message, "");
         Versions versions = STORED.computeIfAbsent(transport + "\n"
                 + key.substring(0, at), path -> new Versions());
         versions.kept.put(version, message);
@@ -180,7 +196,13 @@ final class CodecMessages {
             versions.droppedThrough = Math.max(versions.droppedThrough,
                     versions.kept.pollFirstEntry().getKey());
         }
-        return message;
+        String dropped = "";
+        if (STORED.size() > MAX_PATHS) {
+            Iterator<String> eldest = STORED.keySet().iterator();
+            dropped = eldest.next().replace('\n', ' ');
+            eldest.remove();
+        }
+        return new Stored(message, dropped);
     }
 
     /** What a read of a stored version found. */

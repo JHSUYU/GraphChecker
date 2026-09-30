@@ -48,10 +48,8 @@ final class CodecEnvelope {
         }
     }
 
-    /**
-     * The envelope of {@code entries}, within the bounds; {@code maxBytes} 0
-     * bounds only the entry count.
-     */
+    /** The envelope of {@code entries}, within the entry count and
+     *  {@code maxBytes}. */
     static Written write(String messageKey, List<CodecMessages.Entry> entries,
                          int maxBytes) {
         StringBuilder wire = new StringBuilder(SCHEMA);
@@ -59,8 +57,8 @@ final class CodecEnvelope {
         for (CodecMessages.Entry entry : entries) {
             String token = ENCODER.encodeToString(json(entry).toString()
                     .getBytes(StandardCharsets.UTF_8));
-            if (carried.size() == MAX_ENTRIES || maxBytes > 0
-                    && wire.length() + 1 + token.length() > maxBytes) {
+            if (carried.size() == MAX_ENTRIES
+                    || (long) wire.length() + 1 + token.length() > maxBytes) {
                 RowRuntime.gap(GapKind.BOUND_INSUFFICIENT,
                         GapClass.DIAGNOSTIC, messageKey, "the message's "
                                 + "envelope holds " + carried.size() + " of "

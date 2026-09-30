@@ -234,6 +234,12 @@ public final class WireDeclarations {
     public static final String PROPERTY = "causynth.wire.declarations";
     /** The environment variable naming it when the property does not. */
     public static final String ENVIRONMENT = "CAUSYNTH_WIRE_DECLARATIONS";
+    /**
+     * The header bound of a request/response transport that states none:
+     * half of Jetty's 8 KB request-header default, so the trace header and
+     * the transport's own fit beside it.
+     */
+    public static final int DEFAULT_ENVELOPE_BYTES = 4096;
     /** A row kind this schema leaves to the door weave. */
     private static final String DOOR = "DOOR";
     /** No declaration at all. */
@@ -486,7 +492,7 @@ public final class WireDeclarations {
         return new Transport(name(text(row, "transport"), "transport"),
                 request == null ? null : name(request, "request"),
                 response == null ? null : name(response, "response"), stored,
-                Math.max(bytes, 0));
+                stored ? 0 : bytes < 0 ? DEFAULT_ENVELOPE_BYTES : bytes);
     }
 
     // ---- members ---------------------------------------------------------
@@ -841,9 +847,8 @@ public final class WireDeclarations {
 
     /** The codecs a transport's doors walk their payloads with (null: that
      *  half has no payload in hand), or a store's; and the most bytes a
-     *  message's envelope may take in the header it travels in (an HTTP
-     *  header: the server's header limit), 0 for no bound but the entry
-     *  count. */
+     *  message's symbolic header may take ({@link #DEFAULT_ENVELOPE_BYTES}
+     *  unless stated; 0 for a store, whose versions travel in no header). */
     public static final class Transport extends Value {
         private final String name;
         private final String request;
@@ -882,7 +887,7 @@ public final class WireDeclarations {
             return store;
         }
 
-        /** The envelope's byte bound in its header, 0 for none. */
+        /** The symbolic header's byte bound, 0 for a store. */
         public int envelopeBytes() {
             return envelopeBytes;
         }

@@ -41,6 +41,7 @@ public final class RegionLeafBrokerSmoke {
         Minted minted = mintsOutsideEveryRegion(built);
         aRegionReadsAnEntryMintThroughParseLong(minted);
         aRegionReadsTheOtherMints(minted);
+        onlyAValueOperandOpensTheGate(minted);
         require(System.closeWorkloadSession() == 0L,
                 "workload session not closed");
         System.out.println("RegionLeafBrokerSmoke OK");
@@ -340,7 +341,51 @@ public final class RegionLeafBrokerSmoke {
                 "HOLE_LABEL");
         mint(minted.message, FIELD, field(Message.class, "absent"),
                 parts(dec("STR", "HOFF.null", "")), "NULL_LEAF");
+
+        // A mint never replaces an expression: an object that already
+        // carries one (a String a cache shares) is SHADOWED, a field whose
+        // location is versioned is TRACKED; a JVM-wide holder is SHARED.
+        mint(minted.pair, VALUE, null, parts(dec("DEC_INT", "HOFF.again",
+                "42"), literal(":"), dec("STR", "HOFF.again2", "abc")),
+                "SHADOWED", "OBJECT_CARRIES_EXPRESSION");
+        mint(minted.message, FIELD, field(Message.class, "id"),
+                num("HOFF.again"), "TRACKED_CONTAINER", "FIELD_TRACKED");
+        mint(Boolean.TRUE, FIELD, field(Boolean.class, "value"),
+                num("HOFF.shared"), "SHARED", "HOLDER_JVM_SHARED");
         return minted;
+    }
+
+    /**
+     * Only a value operand that carries its own expression opens a region's
+     * gate: an owner a mint marked (a field of it symbolized), passed to a
+     * modeled call, reads nothing, and paused bookkeeping opens nothing.
+     */
+    private static void onlyAValueOperandOpensTheGate(Minted minted) {
+        require(System.startConcolicRegion("REGION.leaf-gate",
+                "TASK.leaf-gate") == 0L, "region start rejected");
+        Map<String, Object> holders = new HashMap<String, Object>();
+        holders.put("k", minted.message);
+        System.markConcolicBranch("LEAF.GATE.OWNER", 1);
+        if (holders == null) throw new AssertionError("owner");
+        String closed = System.getConcolicBranchEvents();
+        require(closed.contains("\"events\":[]"),
+                "an owner passed along opened the gate: " + closed);
+        System.pauseConcolicPathCondition();
+        boolean pausedRead = minted.pair.startsWith("42");
+        System.resumeConcolicPathCondition();
+        System.markConcolicBranch("LEAF.GATE.PAUSED", 1);
+        if (!pausedRead) throw new AssertionError("paused read");
+        String paused = System.getConcolicBranchEvents();
+        require(paused.contains("\"events\":[]"),
+                "paused code opened the gate: " + paused);
+        boolean read = minted.pair.startsWith("42");
+        System.markConcolicBranch("LEAF.GATE.VALUE", 1);
+        if (!read) throw new AssertionError("value read");
+        String opened = System.getConcolicBranchEvents();
+        require(opened.contains("LEAF.GATE.VALUE"),
+                "a value operand did not open the gate: " + opened);
+        require(System.finishConcolicRegion().contains("\"complete\":true"),
+                "region finish failed");
     }
 
     /**
