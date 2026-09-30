@@ -1169,7 +1169,9 @@ public final class SmtLowering {
                     + "known", sort, javaType);
         }
         JsonObject call = stated.getAsJsonObject();
-        Term related = knownCall(call, raw);
+        Term related = knownCall(optionalString(call, "holder") + " "
+                + optionalString(call, "name"), array(call, "arguments"),
+                "call:" + raw);
         if (related != null) return related;
         if (moves(call)) {
             return cut("MethodReturnOverMovingArgument:" + raw, "an "
@@ -1213,14 +1215,15 @@ public final class SmtLowering {
      * digit outside ASCII, which Java reads too, is outside what z3's
      * {@code str.to_int} states, so such a string has no value here.
      * {@code String.valueOf} and {@code Integer}/{@code Long.toString} of an
-     * integral are the inverse, its decimal rendering.  A known callee whose
+     * integral are the inverse, its decimal rendering, and a parse of a lone
+     * decimal rendering is the value rendered, widened to the parse's type
+     * ({@link StringIdentities#parsedOperand}).  A known callee whose
      * arguments this lowering cannot state is refused by name.
+     * {@code callee} is {@code "<holder> <name>"}, as a method-return node's
+     * call and a {@code MethodExpression} spell it.
      */
-    private Term knownCall(JsonObject call, String raw) {
-        String callee = optionalString(call, "holder") + " "
-                + optionalString(call, "name");
-        JsonArray arguments = array(call, "arguments");
-        String origin = "call:" + raw;
+    private Term knownCall(String callee, JsonArray arguments,
+                           String origin) {
         if (RENDERINGS.contains(callee) && arguments.size() == 1) {
             return javaToString(arguments, origin);
         }
@@ -1240,6 +1243,18 @@ public final class SmtLowering {
             return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
                     callee + ":ARITY", sort);
         }
+        IntegralWidth width = integer ? IntegralWidth.JAVA_INT
+                : IntegralWidth.JAVA_LONG;
+        JsonElement rendered = StringIdentities.parsedOperand(integer,
+                arguments.get(0));
+        if (rendered != null) {
+            // The rendering's own lowering lowers it first, so falling
+            // through below raises nothing it would not have.
+            Term value = dispatch(rendered, null, origin + ":rendered");
+            if (value.sort == Sort.INT) {
+                return dependent(Term.of(value.text, Sort.INT, width), value);
+            }
+        }
         Term text = dispatch(arguments.get(0), null, origin + ":string");
         if (text.sort != Sort.STRING
                 || nullnessUnknown(Collections.singletonList(text))) {
@@ -1255,8 +1270,7 @@ public final class SmtLowering {
                 + digits + ") " + digits + ")";
         JavaPrimitiveSmtSemantics.IntegralDomain domain =
                 JavaPrimitiveSmtSemantics.domainOfJavaType(integer ? "I" : "J");
-        return definedResult(value, sort, integer ? IntegralWidth.JAVA_INT
-                        : IntegralWidth.JAVA_LONG,
+        return definedResult(value, sort, width,
                 and(Arrays.asList(stringDefinedness(
                         Collections.singletonList(text),
                         Collections.<Term>emptyList()),
@@ -1644,19 +1658,16 @@ public final class SmtLowering {
     Term statedValue(String concreteValue, String javaType) {
         String text = concreteValue == null ? "" : concreteValue.trim();
         if (text.isEmpty()) return null;
-        String string = ReadRow.stringContent(text);
-        if (string != null) return Term.nonNullString(quote(string), "true");
+        // A String literal is a String whatever the row's Java type says.
+        String string = smtLiteral(text, Sort.STRING);
+        if (!string.isEmpty()) return Term.nonNullString(string, "true");
         if (VmExpressionIr.SYMBOLIC_NULL.equals(text)
                 || VmRows.referencedObjectRid(text) > 0L) {
             return symbolTerm(symbolNode(text, javaType), Sort.REF);
         }
         Sort sort = JavaSmtSorts.sortOfJava(javaType);
-        String literal = sort == Sort.BOOL
-                ? ("1".equals(text) ? "true" : "0".equals(text) ? "false" : "")
-                : sort.floating() ? JavaPrimitiveSmtSemantics.floatingLiteral(
-                        text, floatingKind(sort))
-                : sort == Sort.INT ? smtLiteral(text) : null;
-        if (literal == null || literal.isEmpty()) return null;
+        String literal = smtLiteral(text, sort);
+        if (literal.isEmpty()) return null;
         return Term.of(literal, sort,
                 JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
     }
@@ -2685,6 +2696,12 @@ public final class SmtLowering {
         return true;
     }
 
+    /** The sort the corpus states for this name, or null if it states none. */
+    public Sort statedSort(String name) {
+        Declared held = declarations.get(name);
+        return held != null && held.stated ? held.sort : null;
+    }
+
     /**
      * One name, one sort.  A second sort is refused by name (dropping the
      * path) and kept in {@link #sortConflicts} for a BLOCKING gap, never
@@ -3262,19 +3279,21 @@ public final class SmtLowering {
     }
 
     /**
-     * A Java library call: this lowering proves no call's exact value
-     * relation, so each is a named gap at the sort the call returns.
+     * A Java library call: a callee this lowering knows is its relation
+     * ({@link #knownCall}), a split element its piece of a template
+     * ({@link StringIdentities#splitElement}); any other is a named gap at
+     * the sort the call returns.
      */
     private Term methodTerm(JsonObject expression, String origin) {
         String method = optionalString(expression, "_name");
-        if (VmExpressionIr.isJavaParseInt(method)) {
-            // Nothing proves the argument is exactly a decimal int rendering.
-            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
-                    "java/lang/Integer.parseInt:PARSE_INT_NOT_LOWERED",
-                    Sort.INT);
-        }
+        Term related = knownCall(method, array(expression, "_param_list"),
+                origin);
+        if (related != null) return related;
         if (VmExpressionIr.isJavaSplitElement(method)) {
-            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+            JsonElement element = StringIdentities.splitElement(expression);
+            return element != null
+                    ? dispatch(element, null, origin + ":split-element")
+                    : refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
                     "java/lang/String.splitElement", Sort.STRING);
         }
         Term result = dispatch(expression.get("_res_exp"), null, origin);
@@ -3659,9 +3678,24 @@ public final class SmtLowering {
 
     /** One recorded {@code OpStrExpression}. */
     private Term stringOperation(JsonObject expression, String origin) {
+        JsonObject rendered = StringIdentities.asRenderings(expression);
+        if (rendered != null) return dispatch(rendered, null, origin);
         String operation = optionalString(expression, "_name");
         boolean negated = optionalBool(expression, "_is_not", false);
         JsonArray params = array(expression, "_param_list");
+        if ("equalsIgnoreCase".equals(operation)) {
+            StringIdentities.BooleanTest test =
+                    StringIdentities.booleanTest(params, true);
+            if (test != null) {
+                Term flag = dispatch(test.flag, null,
+                        origin + ":equalsIgnoreCase");
+                return flag.sort == Sort.BOOL
+                        ? booleanStringResult(truth(test, flag), negated,
+                        flag.precondition)
+                        : codecGap(operation, "NON_BOOLEAN_RENDERING", origin,
+                        Sort.BOOL);
+            }
+        }
         if ("isEmpty".equals(operation)) {
             StringParameters strings = stringParameters(params, 1,
                     operation, origin, Sort.BOOL);
@@ -3744,7 +3778,9 @@ public final class SmtLowering {
     /**
      * The String form of one value: a String is itself; a char is its one
      * character; byte, short, int and long are decimal (the file names that
-     * carry a block's id and generation stamp, blk_<id>_<gs>.meta).
+     * carry a block's id and generation stamp, blk_<id>_<gs>.meta), as is a
+     * binary operator's value, an int or a long whatever its width; a
+     * boolean is {@code "true"} or {@code "false"}.
      */
     private Term javaToString(JsonArray params, String origin) {
         if (params.size() != 1) {
@@ -3761,7 +3797,15 @@ public final class SmtLowering {
                     Collections.singletonList(value),
                     Collections.<Term>emptyList()));
         }
-        if (value.sort != Sort.INT || !DECIMAL_OR_CHAR.contains(javaType)) {
+        if (value.sort == Sort.BOOL) {
+            return Term.nonNullString("(ite " + value.text
+                    + " \"true\" \"false\")", value.precondition);
+        }
+        boolean promoted = "BinaryExpression".equals(
+                VmExpressionIr.typeOf(params.get(0)))
+                && value.integralWidth != IntegralWidth.NONE;
+        if (value.sort != Sort.INT
+                || !DECIMAL_OR_CHAR.contains(javaType) && !promoted) {
             return codecGap("toString", "NON_INTEGRAL_TERM", origin,
                     Sort.STRING);
         }
@@ -3881,7 +3925,19 @@ public final class SmtLowering {
     /** How many last indexes this lowering has named. */
     private int lastIndexes;
 
-    /** Java String.equals requires a non-null receiver but accepts null. */
+    /** What a boolean rendering compared with a literal is, over the flag. */
+    private static String truth(StringIdentities.BooleanTest test, Term flag) {
+        return test.truth == StringIdentities.Truth.FLAG ? flag.text
+                : test.truth == StringIdentities.Truth.NEGATED
+                ? "(not " + flag.text + ")" : "false";
+    }
+
+    /**
+     * Java String.equals requires a non-null receiver but accepts null.  A
+     * rendering compared as text is compared as the value it renders
+     * ({@link StringIdentities#booleanTest}, {@link
+     * StringIdentities#pieceWise}), within the same definedness.
+     */
     private Term stringEquals(JsonArray params, boolean negated,
                               String origin) {
         if (params.size() != 2) {
@@ -3910,11 +3966,44 @@ public final class SmtLowering {
                     "equals:1", Sort.BOOL);
         } else {
             predicate = and(Arrays.asList(stringNonNull(argument),
-                    "(= " + receiver.text + " " + argument.text + ")"));
+                    renderedEquality(params, origin, "(= " + receiver.text
+                            + " " + argument.text + ")")));
         }
         return booleanStringResult(predicate, negated, stringDefinedness(
                 Collections.singletonList(receiver),
                 Collections.singletonList(argument)));
+    }
+
+    /**
+     * Two lowered Strings' equality as the values their renderings render,
+     * else {@code text}.  Both sides are lowered already, so every piece
+     * lowered here was lowered with them.
+     */
+    private String renderedEquality(JsonArray params, String origin,
+                                    String text) {
+        StringIdentities.BooleanTest test =
+                StringIdentities.booleanTest(params, false);
+        if (test != null) {
+            Term flag = dispatch(test.flag, null, origin + ":equals:flag");
+            return flag.sort == Sort.BOOL ? truth(test, flag) : text;
+        }
+        List<StringIdentities.Part[]> pairs = StringIdentities.pieceWise(
+                params.get(0), params.get(1));
+        if (pairs == null) return text;
+        List<String> equalities = new ArrayList<String>();
+        for (StringIdentities.Part[] pair : pairs) {
+            boolean string = pair[0].kind == StringIdentities.Kind.STR;
+            Term one = dispatch(string ? pair[0].node : pair[0].operand, null,
+                    origin + ":equals:piece");
+            Term other = dispatch(string ? pair[1].node : pair[1].operand,
+                    null, origin + ":equals:piece");
+            Sort sort = string ? Sort.STRING
+                    : pair[0].kind == StringIdentities.Kind.BOOL ? Sort.BOOL
+                    : Sort.INT;
+            if (one.sort != sort || other.sort != sort) return text;
+            equalities.add("(= " + one.text + " " + other.text + ")");
+        }
+        return and(equalities);
     }
 
     /**

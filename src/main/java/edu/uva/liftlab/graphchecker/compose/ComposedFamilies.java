@@ -658,17 +658,19 @@ final class ComposedFamilies {
         }
         // The delivering replay's valuation of every varied root.
         for (Map.Entry<String, String> guard : guards.entrySet()) {
-            String literal = smtLiteral(guard.getValue());
-            if (literal.isEmpty()) continue;
             // The guard's root must be declared: an arm need not mention
             // it, and an undeclared constant makes z3 answer with an error.
-            if (!lowering.declareStated(guard.getKey())) {
+            VmTermLowering.Sort sort = lowering.statedSort(guard.getKey());
+            if (sort == null) {
                 composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                         guard.getKey(), "an arm of " + subject
                                 + " is guarded by a symbol no row of this "
                                 + "corpus declares a sort for");
                 continue;
             }
+            String literal = smtLiteral(guard.getValue(), sort);
+            if (literal.isEmpty()) continue;
+            lowering.declareStated(guard.getKey());
             conjuncts.add("(= " + guard.getKey() + " " + literal + ")");
         }
         List<String> nested = new ArrayList<String>();

@@ -265,10 +265,30 @@ field=<f> <subject>`.
   STATE family may re-pair, through every read's own write; otherwise the read is refused. A flip
   query offers eligible writers as choices first ([PIPELINE.md §7.5](PIPELINE.md)).
 - A method-return symbol (`M_<t>_return<n>`) is the call its node states (VM f14 member `call`:
-  `_name` `"<holder> <method>"`, `_param_list`): `Integer.parseInt`/`Long.parseLong` of a String and
-  `String.valueOf`/`Integer`/`Long.toString` of an integral are relations; any other callee is pinned
-  to the node's `concreteValue` by a named assertion, only if nothing its arguments rest on can move.
-  A node stating no call is refused.
+  `holder`, `name`, `arguments`), as a `MethodExpression` node is the call it names (`_name`
+  `"<holder> <method>"`, `_param_list`): `Integer.parseInt`/`Long.parseLong` (radix 10) of a String
+  and `String.valueOf`/`Integer`/`Long.toString` of an integral are relations; any other callee's
+  return is pinned to the node's `concreteValue` by a named assertion, only if nothing its
+  arguments rest on can move. A method-return node stating no call is refused.
+- A decimal or boolean rendering is compared, parsed and split as the value it renders
+  (WIRE-CODEC §6.2, `compose.StringIdentities`), read on the expression IR before any text and
+  never through a read (its value is the write a family pairs it with): `String.valueOf` of a
+  primitive and a primitive `concat` operand are its `toString`; a parse of a lone decimal
+  rendering `toString(e)` is `e`, widened to the parse's type (`parseInt` of a long's rendering is
+  the relation); `equals`/`equalsIgnoreCase` of a boolean rendering and a literal is the flag, its
+  negation or `false` (`Boolean.parseBoolean(s)` is `"true".equalsIgnoreCase(s)`); element `i` of a
+  one-character literal `split` of a template -- a `concat` of literals, renderings and opaque
+  Strings -- is its segment, when the pieces up to that segment's end are literals and renderings
+  that cannot hold the delimiter and the segment is not empty; `equals` of two templates with the
+  same literals and kinds of piece, each with one reading (a decimal followed by the end or by
+  what cannot start with a digit, an opaque String by literals alone), is piece-wise equality.
+  Otherwise a rendering is a String: `java_int_to_string` of an integral (a binary operator's
+  value too), `(ite b "true" "false")` of a boolean, `str.from_code` of a char.
+- In COMPOSE a recorded value is a literal of the sort it is read at
+  (`compose.VmTermLowering#smtLiteral`): a Bool `true`/`false` (the VM's `1`/`0`), an integral's
+  decimal, a floating value's bits, a String's JSON string literal's content quoted; Java null
+  (`N`) is no String literal. A flip query's literals (`explore.SmtText#literal`) are Bool or
+  integral only.
 - A per-session fact — arrivals, clock readings, the valuation — stays inside that path's
   conjunction, never a global assertion.
 - A root without a domain is pinned in COMPOSE and in flip queries; a declared MARKER is free over
