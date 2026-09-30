@@ -12,11 +12,20 @@ import soot.SootMethod;
 import soot.SootMethodRef;
 import soot.Type;
 import soot.Unit;
+import soot.Value;
 import soot.VoidType;
+import soot.jimple.AssignStmt;
+import soot.jimple.EqExpr;
+import soot.jimple.IfStmt;
 import soot.jimple.IntConstant;
+import soot.jimple.InvokeStmt;
 import soot.jimple.Jimple;
+import soot.jimple.NewExpr;
+import soot.jimple.SpecialInvokeExpr;
+import soot.jimple.StaticInvokeExpr;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
+import soot.jimple.ThrowStmt;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -130,6 +139,64 @@ final class DoorWeave {
             }
         }
         return "";
+    }
+
+    /** One woven fault's throw: the marker local its branch tests, the
+     *  marker's name and the kind thrown. */
+    static final class Fault {
+        final Local marker;
+        final String name;
+        final String kind;
+
+        private Fault(Local marker, String name, String kind) {
+            this.marker = marker;
+            this.name = name;
+            this.kind = kind;
+        }
+    }
+
+    /**
+     * The woven fault {@code unit} throws, or null: the shape {@link #fault}
+     * weaves -- {@code m = makeSymbolicBoolean(FAULT:..); if m == 0 goto ..;
+     * e = new Kind; e.<init>(..); throw e} -- read back off the unit chain.
+     */
+    static Fault woven(Body body, Unit unit) {
+        if (!(unit instanceof ThrowStmt)) return null;
+        soot.util.Chain<Unit> units = body.getUnits();
+        Unit init = units.getPredOf(unit);
+        Unit allocation = init == null ? null : units.getPredOf(init);
+        Unit test = allocation == null ? null : units.getPredOf(allocation);
+        Unit call = test == null ? null : units.getPredOf(test);
+        if (!(init instanceof InvokeStmt)
+                || !(((InvokeStmt) init).getInvokeExpr()
+                instanceof SpecialInvokeExpr)
+                || !(allocation instanceof AssignStmt)
+                || !(((AssignStmt) allocation).getRightOp()
+                instanceof NewExpr)
+                || ((AssignStmt) allocation).getLeftOp()
+                != ((ThrowStmt) unit).getOp()
+                || !(test instanceof IfStmt)
+                || !(((IfStmt) test).getCondition() instanceof EqExpr)
+                || !(call instanceof AssignStmt)
+                || !(((AssignStmt) call).getRightOp()
+                instanceof StaticInvokeExpr)) {
+            return null;
+        }
+        StaticInvokeExpr marker = (StaticInvokeExpr)
+                ((AssignStmt) call).getRightOp();
+        Value tested = ((EqExpr) ((IfStmt) test).getCondition()).getOp1();
+        if (!MARKER_CLASS.equals(marker.getMethodRef().getDeclaringClass()
+                .getName())
+                || marker.getArgCount() != 1
+                || !(marker.getArg(0) instanceof StringConstant)
+                || ((AssignStmt) call).getLeftOp() != tested
+                || !(tested instanceof Local)) {
+            return null;
+        }
+        String name = ((StringConstant) marker.getArg(0)).value;
+        return name.startsWith("FAULT:") ? new Fault((Local) tested, name,
+                ((NewExpr) ((AssignStmt) allocation).getRightOp())
+                        .getBaseType().getClassName()) : null;
     }
 
     /** {@code if (marker) throw new kind("..")}, falling to {@code next}. */

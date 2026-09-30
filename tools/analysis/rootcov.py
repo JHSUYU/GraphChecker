@@ -56,7 +56,7 @@ Static approximations (M-f):
   does, except a receiver edge (accessor/method/constructor/dispatch): it
   names which object is read, not the value, so it is followed only when the
   receiver is the value itself (a box, a String, an enum).  container_receiver
-  is followed.
+  and library_receiver are followed.
 - A `<callee>.return` is CLOCK when a CLOCK DECLARED_SITE names the callee or
   it is System.currentTimeMillis/nanoTime; CONFIG_CALL for a JVM property
   getter or a CONFIG_SOURCE row of the engine's library catalog, matched by
@@ -130,9 +130,9 @@ VALUE_LIKE = re.compile(r'^(?:java\.lang\.(?:Boolean|Byte|Character|Short|Intege
                         r'|java\.math\.Big(?:Integer|Decimal))$')
 # Edges from a call's operands into its result: a library return they carry is
 # no boundary (an accessor's field, a value-like call's arguments, a container's
-# receiver and key).
+# receiver and key, a shared receiver's state).
 OPERAND_EDGES = {'accessor_field_return', 'local_def_use', 'container_receiver',
-                 'container_argument'}
+                 'container_argument', 'library_receiver'}
 ATOMIC = 'java.util.concurrent.atomic.'
 INTEGRAL = {'boolean', 'byte', 'char', 'short', 'int', 'long', 'float',
             'double'} | {'java.lang.' + box for box in (

@@ -58,6 +58,18 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 - **Control dependence**: a demanded definition demands the operands of every branch from which it
   is reachable by a proper subset of the branch's successors (`demandControllingGuards`,
   `SiteControlDependence.MethodGuards#reaching`), published as `guard_dependency` edges.
+- **Door faults** (`causynth/FaultPropagation`): a *raise* is a unit that can throw a door kind (a
+  catalog door's checked exception, §4.2): a woven door throw (`DoorWeave#woven`), a call whose
+  targets (CHA over the analysed program) let one escape, a call of an application interface method
+  no analysed class implements that declares a supertype of the kind (a proxy: it raises the kinds
+  of the doors an analysed `InvocationHandler#invoke` reaches by calls), and a handler's rethrow of
+  what it caught (a `finally` or `synchronized` block). A kind goes to the handler of the first trap
+  covering the raise that catches it, else it escapes the method; to a fixed point. A call that can
+  leave a fault to a handler is a *fault branch* (§3): the sites only one of its exits reaches
+  depend on it, and its operand is `<callee>.throws` of each callee it escapes. A demanded
+  `<m>.throws` (`expandThrows`) takes an `exception_flow` edge from the origin of each raise a fault
+  escapes `m` from -- the woven throw's marker local, a callee's `<callee>.throws` -- under the
+  raise's guards, so a handler's effects lead back to the door's marker.
 - **Constant stores**: a store of a constant carries no data, so the guards of the calls into the
   storing method are demanded too, up to three calls up, dispatch included
   (`expandStoreCallerGuards`, `STORE_CALLER_DEPTH`).
@@ -66,14 +78,20 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   receiver (`accessor_receiver`) and a dispatched call's (`dispatch_receiver`) are. A reference
   read only to reach a projection (SOLR-18406's `latestCommit`, whose generation the throw
   compares) is therefore a cell a branch decides through (§5.1).
-- **Library calls**: the result of a non-application call depends on its arguments only; its
-  receiver is dropped (`localValueUses`). Exceptions: `String`, `StringBuilder`,
-  `StringBuffer` and every wrapper's unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`,
-  `Boolean.booleanValue` included) keep the receiver (`isValueLikeLibraryInvoke`); a JDK
-  atomic's `get()` is an accessor of its `value` (`AtomicBoolean.get()` is `value != 0`), read
-  off a table rather than its body (`plan/SharedFieldFlow#atomicRead`,
-  `StructuralFieldAccessorProof#atomicField`); and a container query depends on receiver and
-  arguments (`processSemanticContainerOperation`, `container_receiver`, `container_argument`).
+- **Library calls**: the result of a non-application call depends on its arguments, and on its
+  receiver by one of these rules: `String`, `StringBuilder`, `StringBuffer` and every wrapper's
+  unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`, `Boolean.booleanValue` included) keep
+  the receiver as a value (`isValueLikeLibraryInvoke`); a JDK atomic's `get()` is an accessor of
+  its `value` (`AtomicBoolean.get()` is `value != 0`), read off a table rather than its body
+  (`plan/SharedFieldFlow#atomicRead`, `StructuralFieldAccessorProof#atomicField`); a container
+  query depends on receiver and arguments (`processSemanticContainerOperation`,
+  `container_receiver`, `container_argument`); and any other call on a receiver that is shared
+  state -- its definition, through copies and casts, is `this`, a field read or a structural
+  accessor's result -- depends on it (`processLibraryReceiver`, `causynth/LibraryReceivers`,
+  `library_receiver`, `dependencyRole VALUE_FRONTIER`): `conf.getBoolean(k, d)` on a field's
+  object, `blockPoolManager.get(id)`. Not a receiver the method allocated or was passed, not a
+  call on `Object`, `Class`, a logger or a `metrics` package, and not a clock, whose value is a
+  root (§4.1).
 - **Containers, by interface** (`smt/JavaContainerTypes`): a call's contract is its receiver
   type's interface's -- `Map` (`ConcurrentMap`, `SortedMap`, `NavigableMap` alike), `Set`
   (`NavigableSet`), `List`, `Queue`, `Deque`, `Iterator`, `Map.Entry` -- read off the Soot
@@ -172,7 +190,12 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 
 **Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
 some successor of `b` is post-dominated by `t` and `b` is not; the outcome names the arm that
-reaches `t`. The CFG has no exception edges (`BriefUnitGraph`). A `WRITE_SITE` also carries the
+reaches `t`. The CFG has no exception edges (`BriefUnitGraph`), but for door faults a handler
+catches (§2.2): over the CFG with those edges, a site also depends on each fault branch (a call
+that can leave a fault to a handler) that decides it, with outcome `null` (no decision is ever
+recorded at a call; a fault flips at its marker), and on that call's own guards. A fault branch
+adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
+behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
 those callers (`Guards#callersOf`). A guard that tests a helper's constant return names the helper
 branch that decides it (`causynth/BooleanReturns`, `guardDeciders`).
@@ -474,12 +497,14 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
   fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
   queues are classified by interface here, modeled by R3-REFCONT WP3b/c).
-- A non-application call's receiver is dropped from the slice (§2.2) unless the call is a
-  container query or an atomic's accessor, so state behind any other library object never
-  enters `S`.
-- Control dependence ignores exception edges and follows a call up only for constant stores,
-  field-effect calls and write-site guards (three calls up); it never crosses a thread start, an
-  executor submission or the wire.
+- A library call's receiver enters `S` only when it is shared state in the calling method (§2.2):
+  a receiver passed in as a parameter is the caller's to demand, and is not followed up.
+- Control dependence follows only door faults a handler catches; any other exception edge is
+  ignored. A fault reaches a caller only through the analysed program: a protocol call of a class
+  outside the scope (HDFS's `*TranslatorPB`, whose RPC engine invoker is out of scope too) raises
+  nothing, so the IPC doors of the named HDFS cases stay outside their callers' slices. It
+  follows a call up only for constant stores, field-effect calls and write-site guards (three
+  calls up); it never crosses a thread start, an executor submission or the wire.
 - Derived ports cover only scalar getters of protobuf messages a protobuf service carries, with a
   setter call in scope: no repeated, enum, `bytes`, nested or map-keyed fields, no string codecs,
   no frames, no message of a transport without services (DataTransfer ops, HTTP bodies, ZooKeeper

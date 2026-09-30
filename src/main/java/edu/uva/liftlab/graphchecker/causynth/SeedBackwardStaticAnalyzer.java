@@ -23,6 +23,7 @@ import soot.jimple.Constant;
 import soot.jimple.DefinitionStmt;
 import soot.jimple.FieldRef;
 import soot.jimple.IdentityStmt;
+import soot.jimple.InstanceInvokeExpr;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
 import soot.jimple.NewExpr;
@@ -183,6 +184,8 @@ final class SeedBackwardStaticAnalyzer {
     /** The ports {@link #deriveWirePort} found, by message field. */
     private final Map<String, WireFlowCatalog.WireFlow> derivedPorts =
             new LinkedHashMap<>();
+    /** Which library calls are clocks ({@link #processLibraryReceiver}). */
+    private final RootCatalog roots = new RootCatalog();
     /** {@link #rpcMessages}, computed at the first demanded getter. */
     private Set<String> rpcMessages;
     /** The declared per-loop {@code K_L} (PIPELINE §2). */
@@ -791,6 +794,7 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             processMethod(method);
+            expandThrows(method);
             expandDispatchCallers(method);
             expandFieldWriters(method);
             expandConstructorCallers(method);
@@ -1685,6 +1689,8 @@ final class SeedBackwardStaticAnalyzer {
                 callee, callerRelevant);
         processAccessorInvoke(callerMethod, fact, callee, defs,
                 callerRelevant);
+        processLibraryReceiver(callerMethod, fact, callee, defs,
+                callerRelevant);
         List<String> actuals = canonicalPositionList(callerMethod,
                 actualInvokeArgs(fact.unitText));
         processContainerCallMutationEffects(callerMethod, fact, callee,
@@ -2101,6 +2107,58 @@ final class SeedBackwardStaticAnalyzer {
         }
         callerRelevant.add(receiverNode);
         callerRelevant.add(declaredFieldNode);
+    }
+
+    /**
+     * A demanded result of any other library call depends on its receiver's
+     * state when the receiver is shared ({@link LibraryReceivers}): one
+     * {@code library_receiver} row from the receiver to each demanded def.
+     * Application calls, container contracts, value types, accessors and
+     * dispatched calls state their dependence themselves, and a clock's
+     * value is a root whatever its receiver holds.
+     */
+    private void processLibraryReceiver(String callerMethod, Fact fact,
+                                        MethodSig callee, List<String> defs,
+                                        Set<String> callerRelevant) {
+        List<String> demanded = new ArrayList<>();
+        for (String def : defs) {
+            if (!ignoreNode(def) && callerRelevant.contains(def)) {
+                demanded.add(def);
+            }
+        }
+        InvokeExpr call = ((Stmt) fact.unit).getInvokeExpr();
+        if (demanded.isEmpty() || !(call instanceof InstanceInvokeExpr)
+                || "<init>".equals(callee.name)
+                || isApplicationClassName(callee.owner)
+                || isValueLikeLibraryInvoke(callee)
+                || JavaContainerTypes.query(callee.raw, this::libraryHierarchy)
+                || JavaContainerTypes.mutation(callee.raw,
+                this::libraryHierarchy)
+                || containerArray(callee)
+                || structuralFieldAccessor(callee) != null
+                || !resolveDispatchTargets(callee).isEmpty()
+                || !LibraryReceivers.stateful(callee.owner, callee.name)
+                || roots.clock(callee.raw)) {
+            return;
+        }
+        Value base = ((InstanceInvokeExpr) call).getBase();
+        List<Unit> units = new ArrayList<>();
+        for (Fact each : factsByMethod.get(callerMethod)) units.add(each.unit);
+        if (!(base instanceof Local) || !LibraryReceivers.shared(units,
+                fact.unitIndex, (Local) base, invoked -> structuralFieldAccessor(
+                        parseMethodSig(invoked.getMethodRef().getSignature()))
+                        != null)) {
+            return;
+        }
+        String receiver = canonical(callerMethod, base.toString());
+        for (String def : demanded) {
+            Map<String, Object> edge = addEdge("library_receiver", receiver,
+                    def, callerMethod, fact);
+            if (edge != null) {
+                edge.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
+            }
+        }
+        callerRelevant.add(receiver);
     }
 
     private void annotateAccessorDeclaredFieldEdge(
@@ -2574,7 +2632,12 @@ final class SeedBackwardStaticAnalyzer {
         return computed;
     }
 
-    /** Visits each canonical operand of each branch {@code site} depends on. */
+    /**
+     * Visits each canonical operand of each branch {@code site} depends on.
+     * A call a door fault leaves for a handler is such a branch, and its
+     * operand is where the fault comes from: the {@code .throws} cell of each
+     * callee it escapes ({@link FaultPropagation}), demanded there.
+     */
     private void forEachGuardOperand(
             String method, Fact site, boolean controllingOnly,
             BiConsumer<Fact, String> visit) {
@@ -2583,12 +2646,69 @@ final class SeedBackwardStaticAnalyzer {
                 site.unitIndex, controllingOnly)) {
             Fact guardFact = indexedFact(method, guardIndex.intValue());
             if (guardFact == null) continue;
+            FaultPropagation.Raise raise = guardFact.isBranch ? null
+                    : FaultPropagation.current().raise(method,
+                    guardFact.unit);
+            if (raise != null) {
+                for (String origin : raise.callees) {
+                    demandThrows(origin);
+                    visit.accept(guardFact, origin);
+                }
+                continue;
+            }
             for (String use : causalGuardUses(guardFact)) {
                 String guardNode = canonical(method, use);
                 if (!ignoreNode(guardNode)) {
                     visit.accept(guardFact, guardNode);
                 }
             }
+        }
+    }
+
+    /** Demands a method's {@code .throws} cell in that method. */
+    private void demandThrows(String cell) {
+        String method = cell.substring(0,
+                cell.length() - FaultPropagation.THROWS.length());
+        loadMethod(concreteMethod(method));
+        relevant(method).add(cell);
+        selectedMethods.add(method);
+    }
+
+    /**
+     * A demanded {@code <m>.throws}: each raise a door fault escapes {@code
+     * m} from ({@link FaultPropagation}) flows into it ({@code
+     * exception_flow}) from its origins -- a woven throw's marker local, a
+     * callee's {@code .throws} -- under the raise's own guards.
+     */
+    private void expandThrows(String method) {
+        String cell = FaultPropagation.throwsCell(method);
+        List<Fact> facts = factsByMethod.get(method);
+        if (facts == null || !relevant(method).contains(cell)
+                || !expandOnce("THROWS", method)) {
+            return;
+        }
+        Set<String> relevant = relevant(method);
+        for (FaultPropagation.Raise raise
+                : FaultPropagation.current().escapes(method)) {
+            Fact fact = null;
+            for (Fact candidate : facts) {
+                if (candidate.unit == raise.unit) fact = candidate;
+            }
+            if (fact == null) continue;
+            List<String> origins = new ArrayList<>(raise.callees);
+            for (Local marker : raise.markers) {
+                origins.add(canonical(method, marker.getName()));
+            }
+            for (String origin : origins) {
+                addEdge("exception_flow", origin, cell, method, fact);
+                if (origin.endsWith(FaultPropagation.THROWS)) {
+                    demandThrows(origin);
+                } else {
+                    relevant.add(origin);
+                }
+            }
+            demandControllingGuards(method, fact, relevant,
+                    Collections.singletonList(cell));
         }
     }
 
