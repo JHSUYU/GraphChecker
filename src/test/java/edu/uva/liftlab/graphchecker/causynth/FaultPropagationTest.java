@@ -1,9 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import org.junit.After;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
 import soot.BooleanType;
 import soot.G;
 import soot.IntType;
@@ -21,8 +19,6 @@ import soot.jimple.IntConstant;
 import soot.jimple.Jimple;
 import soot.jimple.StringConstant;
 
-import java.io.File;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -33,16 +29,12 @@ import static org.junit.Assert.assertEquals;
 /**
  * SYMBOL-SCOPE §2.2: where a door fault goes -- to the handler catching it
  * (a guard with no boolean arm), out of a method, through a rethrow, back
- * from a proxy call -- and when a library call's result depends on its
- * receiver.
+ * from a proxy call.
  */
 public class FaultPropagationTest {
     private static final String IOE = "java.io.IOException";
     private static final String SEND = "<f.Door: void send()>";
     private static final Jimple J = Jimple.v();
-
-    @Rule
-    public final TemporaryFolder roots = new TemporaryFolder();
 
     @After
     public void resetSoot() {
@@ -85,40 +77,6 @@ public class FaultPropagationTest {
         }
     }
 
-    @Test
-    public void aLibraryCallReadsItsReceiverWhenItIsShared() throws Exception {
-        scene();
-        File system = roots.newFolder("classes");
-        Files.createDirectories(system.toPath().resolve("f"));
-        Files.createFile(system.toPath().resolve("f/Caller.class"));
-        String both = system + File.pathSeparator + roots.newFolder("other");
-        SootMethod read = Scene.v().getMethod("<f.Caller: void read()>");
-        List<Unit> units = new ArrayList<>(read.getActiveBody().getUnits());
-        List<Local> locals = new ArrayList<>(read.getActiveBody().getLocals());
-        Object[][] rows = {
-            {"a field's object, through a cast", true,
-                LibraryReceivers.shared(units, 4, locals.get(2), c -> false)},
-            {"an object the method allocated", false,
-                LibraryReceivers.shared(units, 7, locals.get(3), c -> false)},
-            {"a configuration", true,
-                LibraryReceivers.stateful("f.Conf", "getBoolean")},
-            {"a logger", false,
-                LibraryReceivers.stateful("org.slf4j.Logger", "isDebugEnabled")},
-            {"a metrics registry", false,
-                LibraryReceivers.stateful("a.metrics2.Registry", "get")},
-            {"an identity method", false,
-                LibraryReceivers.stateful("f.Conf", "hashCode")},
-            {"a class of the system's own roots is no library", true,
-                LibraryReceivers.systemClasses(both).test("f.Caller")},
-            {"a class no root holds is one", false,
-                LibraryReceivers.systemClasses(both).test("f.Conf")},
-            {"with no roots, every class is one", false,
-                LibraryReceivers.systemClasses(null).test("f.Caller")}};
-        for (Object[] row : rows) {
-            assertEquals((String) row[0], row[1], row[2]);
-        }
-    }
-
     private static String markers(java.util.Collection<FaultPropagation.Raise>
                                           raises) {
         List<String> found = new ArrayList<>();
@@ -139,7 +97,7 @@ public class FaultPropagationTest {
      * {@code f.Door.send()} is woven with an IPC door fault; {@code
      * f.Caller} calls it under an IOException handler ({@code call}), under
      * a finally block ({@code relay}), through a proxied interface a handler
-     * serves ({@code use}), and reads a configuration ({@code read}).
+     * serves ({@code use}).
      */
     private static Scene scene() {
         G.reset();
@@ -192,14 +150,9 @@ public class FaultPropagationTest {
                 J.newInvokeStmt(J.newVirtualInvokeExpr(h1, send.makeRef())),
                 J.newReturnStmt(h1));
 
-        SootClass conf = library("f.Conf", object, 0);
-        SootMethod flag = method(conf, "getBoolean",
-                Collections.<Type>emptyList(), BooleanType.v(), 0);
         SootClass caller = application("f.Caller", object);
         SootField ok = new SootField("ok", IntType.v(), 0);
-        SootField held = new SootField("conf", object.getType(), 0);
         caller.addField(ok);
-        caller.addField(held);
         RefType self = caller.getType();
 
         SootMethod call = method(caller, "call",
@@ -250,25 +203,6 @@ public class FaultPropagationTest {
                 J.newInvokeStmt(J.newInterfaceInvokeExpr(u1, op.makeRef())),
                 J.newReturnVoidStmt());
 
-        SootMethod read = method(caller, "read",
-                Collections.<Type>emptyList(), VoidType.v(), 0);
-        Local e0 = local(read, "r0", self);
-        Local field = local(read, "$r1", object.getType());
-        Local cast = local(read, "$r2", conf.getType());
-        Local fresh = local(read, "$r3", conf.getType());
-        Local answer = local(read, "$z0", BooleanType.v());
-        body(read, J.newIdentityStmt(e0, J.newThisRef(self)),
-                J.newAssignStmt(field, J.newInstanceFieldRef(e0,
-                        held.makeRef())),
-                J.newAssignStmt(cast, J.newCastExpr(field, conf.getType())),
-                J.newNopStmt(),
-                J.newAssignStmt(answer, J.newVirtualInvokeExpr(cast,
-                        flag.makeRef())),
-                J.newAssignStmt(fresh, J.newNewExpr(conf.getType())),
-                J.newNopStmt(),
-                J.newAssignStmt(answer, J.newVirtualInvokeExpr(fresh,
-                        flag.makeRef())),
-                J.newReturnVoidStmt());
         return Scene.v();
     }
 

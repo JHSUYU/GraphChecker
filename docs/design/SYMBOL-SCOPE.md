@@ -92,7 +92,8 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   `causynth/LibraryReceivers`, `library_receiver`, `dependencyRole VALUE_FRONTIER`):
   `lock.isWriteLockedByCurrentThread()` on a field's lock, a ZooKeeper client's `zk.getState()`.
   A library is code no class root of the system holds (`LibraryReceivers#systemClasses`, over
-  the campaign's `causynth_lineage_roots`, `-Dcausynth.lineage.roots`): a call into the system's
+  the campaign's `causynth_lineage_roots`, `-Dcausynth.lineage.roots`; a static pass that meets a
+  library call with no roots stated is refused by name): a call into the system's
   own code outside the scope is the frontier's (§2.4), where the slice stops and scope growth
   takes the class whose body says what the result rests on. Not a receiver the method allocated
   or was passed, not a call on `Object`, `Class`, a logger or a `metrics` package, and not a

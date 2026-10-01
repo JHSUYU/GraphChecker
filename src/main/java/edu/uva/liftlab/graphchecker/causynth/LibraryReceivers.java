@@ -80,16 +80,21 @@ final class LibraryReceivers {
 
     /**
      * Whether a class is the system's own: a class file of one of the
-     * {@code roots} (path-separated directories or jars; none when null or
-     * blank).  Asked once per class.
+     * {@code roots} (path-separated directories or jars).  Asked once per
+     * class.  No root is refused by name: without them a class outside the
+     * scope cannot be told from a library.
      */
     static Predicate<String> systemClasses(String roots) {
+        if (roots == null || roots.trim().isEmpty()) {
+            throw new IllegalStateException("-D" + ROOTS + " names no class"
+                    + " root of the system, so a class outside the scope"
+                    + " cannot be told from a library and no library"
+                    + " call's receiver may be read (SYMBOL-SCOPE §2.2)");
+        }
         List<Predicate<String>> holders = new ArrayList<>();
-        if (roots != null) {
-            for (String root : roots.split(Pattern.quote(File.pathSeparator))) {
-                if (!root.trim().isEmpty()) {
-                    holders.add(holder(Paths.get(root.trim())));
-                }
+        for (String root : roots.split(Pattern.quote(File.pathSeparator))) {
+            if (!root.trim().isEmpty()) {
+                holders.add(holder(Paths.get(root.trim())));
             }
         }
         Map<String, Boolean> asked = new ConcurrentHashMap<>();
