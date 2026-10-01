@@ -240,7 +240,7 @@ public final class Corpus implements Arms.Rows {
     /** session id -> the world its focus row states it ran in. */
     private final Map<String, World> worlds =
             new LinkedHashMap<String, World>();
-    /** Obligation id -> the verdict the wave's own file states. */
+    /** Obligation id -> the verdict its worker's own file states. */
     private final Map<String, ObligationResult> waveVerdicts =
             new LinkedHashMap<String, ObligationResult>();
     /** Producer endpoint id of a SEND -> the occurrence that sent it. */

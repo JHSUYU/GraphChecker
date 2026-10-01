@@ -86,7 +86,7 @@ public final class ClosurePlanner {
         public final List<GapRow> gaps;
         /** task id -> why it is in the closure. */
         public final Map<String, String> why;
-        /** task id -> site ids this wave may flip. */
+        /** task id -> site ids this round may flip. */
         public final Map<String, Set<String>> flipSites;
         /** A demanded occurrence no session captured -> the admitted
          *  focused session whose rows name it: GROWTH (PIPELINE §7.8). */
@@ -195,7 +195,7 @@ public final class ClosurePlanner {
      * it has no decisions to flip.  It is the retained set that must grow
      * (PIPELINE §7.2, §7.8): an admitted focused
      * session naming it is re-run with a plan row at its address, and the
-     * next wave has it as a task.  hdfs-17899: a DataNode's periodic
+     * next round has it as a task.  hdfs-17899: a DataNode's periodic
      * heartbeat sends its request through the woven IPC door under no task,
      * and the closure demands that door as the sender of a message the
      * NameNode served.

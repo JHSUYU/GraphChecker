@@ -178,7 +178,7 @@ public final class ExploreMain {
         }
         Set<String> closure = closureOf(tasks);
         // Reconcile the skeleton; a same-world replacement is BLOCKING but
-        // never empties the wave (PIPELINE §7.1).
+        // never empties the round (PIPELINE §7.1).
         SlotTable slots = SlotTable.read(iteration);
         SlotTable.Reconciliation skeleton = slots.reconcile(corpus, closure,
                 round);
@@ -352,7 +352,7 @@ public final class ExploreMain {
 
     /**
      * Resolves the declared anchor via {@link SelectorResolution} (IDENTITY
-     * §9) and refuses the wave, BLOCKING, when it does not resolve -- naming
+     * §9) and refuses the round, BLOCKING, when it does not resolve -- naming
      * what the seed ran that region as, since the cause is usually a spelling
      * mismatch. A full address resolves by parsing alone, so it is also checked
      * against the seed's activations: no replay can focus an occurrence no run
@@ -467,7 +467,7 @@ public final class ExploreMain {
         return planned;
     }
 
-    /** Every occurrence this wave's tasks hold: focused, and their factors. */
+    /** Every occurrence this round's tasks hold: focused, and their factors. */
     private static Set<String> closureOf(List<Task> tasks) {
         Set<String> closure = new LinkedHashSet<String>();
         for (Task task : tasks) {
