@@ -1,8 +1,5 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.contract.CausalContext;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -18,29 +15,21 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
 /**
- * The two relations by which a root an occurrence read can matter to the
- * failure (R1-ROOTS item 3, SYMBOL-SCOPE §4.4); {@link
- * RuntimeSelectedRegionFinalizer} admits a root-reading occurrence by them.
+ * Where a root an occurrence read goes inside it (R1-ROOTS item 3,
+ * SYMBOL-SCOPE §4.4): its influence, by which {@link
+ * RuntimeSelectedRegionFinalizer} admits a root-reading occurrence.
  *
- * <ul>
- * <li><b>Influence</b> ({@link #influence}): the forward reach of the read's
- * dependency cell over the candidate graph, through the methods the
- * occurrence performed (its region's and those of the regions folded into
- * it), along value, guard and exception edges alike.  It ends at a stored
- * location -- a cell some WRITE_SITE names: the carrier a store writes, or
- * would write on the arm the root decides, which the recording may never
- * have taken -- and at a wire producer, whose {@code wire_handoff} names the
- * consumer cell the value is handed to on another node.  The candidate graph
- * holds only edges the backward slice put there, so every forward path
- * already leads toward the failure, and the reach stays small.</li>
- * <li><b>Message</b> ({@link #doorsOf}): a fault at a message's door decides
- * whether the message, and every occurrence its receipt started, exists.
- * The doors of the message an occurrence was started by -- the occurrence
- * that sent it and those that took it in, read off the recorded schedule --
- * are the control producers {@code explore.ClosurePlanner} proposes their
- * faults as flips at (IDENTITY §7.3); a door no planned occurrence holds
- * mints no fault to flip.</li>
- * </ul>
+ * <p>The influence is the forward reach of the read's dependency cell over
+ * the candidate graph, through the methods the occurrence performed (its
+ * region's and those of the regions folded into it), along value, guard and
+ * exception edges alike.  It ends at a stored location -- a cell some
+ * WRITE_SITE names: the carrier a store writes, or would write on the arm
+ * the root decides, which the recording may never have taken -- and at a
+ * wire producer, whose {@code wire_handoff} names the consumer cell the
+ * value is handed to on another node.  The candidate graph holds only edges
+ * the backward slice put there, so every forward path already leads toward
+ * the failure, and the reach stays small.  A fault decides whether a message
+ * exists instead ({@link RecordedMessages#doorsOf}).</p>
  */
 final class RootRelevance {
     /** Candidate edges by the cell they leave. */
@@ -50,23 +39,15 @@ final class RootRelevance {
     /** Each region's methods: an occurrence performs those of its regions. */
     private final Map<String, List<String>> methodsByRegion;
     private final Map<String, Influence> influences = new HashMap<>();
-    /** Producer endpoint id -> the occurrence id that sent the message. */
-    private final Map<String, String> senders = new HashMap<>();
-    /** Producer endpoint id -> the occurrence ids that took it in. */
-    private final Map<String, Set<String>> receivers = new HashMap<>();
 
     /**
      * @param graph           the candidate graph's rows
      * @param stored          every location a WRITE_SITE of the scope map
      *                        names ({@code StaticScopeMap#writeSitesByCell})
      * @param methodsByRegion each region skeleton's methods
-     * @param schedule        the recording's schedule: its SEND and RECV
-     *                        events name the occurrences at a message's
-     *                        two doors
      */
     RootRelevance(Collection<Map<String, Object>> graph, Set<String> stored,
-                  Map<String, List<String>> methodsByRegion,
-                  Collection<ScheduleEvent> schedule) {
+                  Map<String, List<String>> methodsByRegion) {
         for (Map<String, Object> edge : graph) {
             String from = text(edge.get("fromCell"));
             String to = text(edge.get("toCell"));
@@ -77,24 +58,6 @@ final class RootRelevance {
         }
         this.stored = stored;
         this.methodsByRegion = methodsByRegion;
-        for (ScheduleEvent event : schedule) {
-            if (event.occurrence().isEmpty()) continue;
-            if (event.kind() == ScheduleEvent.Kind.SEND
-                    && !event.endpoint().isEmpty()) {
-                senders.put(event.endpoint(), event.occurrence());
-            } else if (event.kind() == ScheduleEvent.Kind.RECV) {
-                // "node|Anchor:<producer endpoint>@<site>[|...]"
-                String[] stance = event.context().split("\\|", -1);
-                CausalContext context = CausalContext.parse(
-                        stance.length < 2 ? stance[0] : stance[1]);
-                if (context instanceof CausalContext.Anchor) {
-                    receivers.computeIfAbsent(((CausalContext.Anchor) context)
-                            .producerEndpointId(),
-                            ignored -> new LinkedHashSet<>())
-                            .add(event.occurrence());
-                }
-            }
-        }
     }
 
     /** One candidate edge out of a cell. */
@@ -173,24 +136,5 @@ final class RootRelevance {
         }
         influences.put(key, influence);
         return influence;
-    }
-
-    /**
-     * The occurrence ids at the doors of the message that started {@code
-     * occurrence}: its sender, and every occurrence that took it in.  None
-     * when its context is no {@code Anchor}.
-     */
-    Set<String> doorsOf(OccurrenceAddress occurrence) {
-        if (!(occurrence.context() instanceof CausalContext.Anchor)) {
-            return Collections.emptySet();
-        }
-        String endpoint = ((CausalContext.Anchor) occurrence.context())
-                .producerEndpointId();
-        Set<String> doors = new LinkedHashSet<>(receivers.getOrDefault(
-                endpoint, Collections.<String>emptySet()));
-        String sender = senders.get(endpoint);
-        if (sender != null) doors.add(sender);
-        doors.remove(occurrence.id());
-        return doors;
     }
 }

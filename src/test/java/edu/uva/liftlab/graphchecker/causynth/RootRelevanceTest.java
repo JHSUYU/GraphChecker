@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import org.junit.Test;
 
 import java.util.Arrays;
@@ -16,8 +14,7 @@ import static org.junit.Assert.assertEquals;
 
 /**
  * SYMBOL-SCOPE §4.4: where a root an occurrence read goes inside it (its
- * influence, and the way into what is demanded), and the doors of the
- * message that started an occurrence.
+ * influence), and its way into what is demanded.
  */
 public class RootRelevanceTest {
     private static final String M = "<a.C: void m()>";
@@ -40,8 +37,7 @@ public class RootRelevanceTest {
         Map<String, List<String>> methods = new LinkedHashMap<>();
         methods.put("REGION.r", Collections.singletonList(M));
         RootRelevance relevance = new RootRelevance(graph,
-                Collections.singleton(STORED), methods,
-                Collections.<ScheduleEvent>emptyList());
+                Collections.singleton(STORED), methods);
         RootRelevance.Influence influence = relevance.influence(
                 Collections.singletonList("REGION.r"), ROOT);
         Object[][] rows = {
@@ -63,37 +59,6 @@ public class RootRelevanceTest {
         };
         for (Object[] row : rows) {
             assertEquals((String) row[0], row[1], new HashSet<>((Set<?>) row[2]));
-        }
-    }
-
-    @Test
-    public void aMessagesDoorsAreItsSenderAndItsReceivers() {
-        List<ScheduleEvent> schedule = Arrays.asList(
-                ScheduleEvent.of(0, ScheduleEvent.Kind.SEND,
-                        "s/n0#epoch0|Root:CLIENT/hb#1", "HADOOP_IPC#REQUEST",
-                        0, "sender", "e1"),
-                ScheduleEvent.of(1, ScheduleEvent.Kind.RECV,
-                        "s/n1#epoch0|Anchor:e1@HADOOP_IPC/hb",
-                        "HADOOP_IPC#REQUEST", 0, "receiver"),
-                // a role's send: no occurrence holds its door
-                ScheduleEvent.of(2, ScheduleEvent.Kind.SEND,
-                        "s/n1#epoch0|Anchor:e1@HADOOP_IPC/hb",
-                        "HADOOP_IPC#RESPONSE", 0, "", "e2"));
-        RootRelevance relevance = new RootRelevance(
-                Collections.<Map<String, Object>>emptyList(),
-                Collections.<String>emptySet(),
-                Collections.<String, List<String>>emptyMap(), schedule);
-        Object[][] rows = {
-            {"started by message e1", "Anchor:e1@HADOOP_IPC/hb",
-                set("sender", "receiver")},
-            {"started by a role's message", "Anchor:e2@HADOOP_IPC/hb", set()},
-            {"started by no message", "Root:CLIENT/hb#1", set()},
-        };
-        for (Object[] row : rows) {
-            OccurrenceAddress occurrence = OccurrenceAddress.parse(
-                    "s/n1#epoch0/region/REGION.h/ctx:" + row[1] + "/idx:");
-            assertEquals((String) row[0], row[2],
-                    relevance.doorsOf(occurrence));
         }
     }
 

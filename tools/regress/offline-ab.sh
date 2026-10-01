@@ -251,10 +251,14 @@ ab_stage_seed_trace() {
   [[ -s "${ab_acc}/runtime/runtime_trace.jsonl" ]] \
     || ab_skip "${dir}" "the run recorded no trace" || return
   printf '%s\n' "${ab_static}" >"${dir}/static-from.txt"
+  local -a declared=()
+  [[ -z "$(ab_cfg declared_target_occurrence)" ]] || declared=(
+    --target-occurrence "$(ab_cfg declared_target_occurrence)")
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
     "${ab_jar}:${ab_project_cp}" \
     edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
     --trace-dir "${ab_acc}/runtime" --test "$(ab_cfg trace_test)" \
+    "${declared[@]}" \
     --target "ab=${ab_static}/candidate_dataflow_edges.jsonl.gz,\
 ${ab_static}/static_scope_map.jsonl,${ab_static}/region_skeletons.jsonl.gz,\
 ${dir}"

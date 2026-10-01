@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -7,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -70,7 +73,7 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * {@code admissionBasis} of an activation carried because it read a
      * fault marker at a door of the message that started an admitted
-     * occurrence ({@link RootRelevance#doorsOf}).
+     * occurrence ({@link RecordedMessages#doorsOf}).
      */
     private static final String CONTROL_PRODUCER_ADMISSION =
             "CONTROL_PRODUCER_V1";
@@ -114,13 +117,20 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String FOLDED_ENTRY_CALLERS = "foldedEntryCallers";
     /**
-     * Activation member: this occurrence is the failure the case is about.
-     * Stated on the row because under the fold rule the
+     * Activation member: this occurrence is the failure the case is about,
+     * an occurrence of the declared target site under the question's own
+     * {@code (r,c)}.  Stated on the row because under the fold rule the
      * static {@code selection} names the region the failure is in, not the
      * occurrence that ran it.
      */
     public static final String FAILURE_TARGET_OCCURRENCE =
             "failureTargetOccurrence";
+    /**
+     * Activation and plan-row member: this occurrence is the one the case
+     * declared, resolved once here ({@link
+     * RuntimeWorkflowDiscovery#declaredOccurrence}); PLAN reads it.
+     */
+    public static final String DECLARED_OCCURRENCE = "declaredOccurrence";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -129,8 +139,11 @@ public final class RuntimeSelectedRegionFinalizer {
      * Finalizes the selected runtime graph.  Symbolic values cross
      * occurrences only through VM VALUE_HANDOFF edges.
      *
-     * @param recordedSchedule the recording's schedule: which occurrence
-     *     sent and which took in each message ({@link RootRelevance#doorsOf})
+     * @param declaredOccurrence the case's declaration ({@code
+     *     declared_target_occurrence}: an address, a selector, or {@link
+     *     RuntimeWorkflowDiscovery#FIRST})
+     * @param recordedSchedule the recording's schedule: who sent and who took
+     *     in each message ({@link RecordedMessages})
      */
     public static Result finalizeRegions(
             List<Map<String, Object>> graph,
@@ -138,7 +151,7 @@ public final class RuntimeSelectedRegionFinalizer {
             String skeletonSource, Collection<String> observedMethods,
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> runtimeObservations,
-            StaticScopeMap scopeMap,
+            StaticScopeMap scopeMap, String declaredOccurrence,
             Collection<ScheduleEvent> recordedSchedule)
             throws IOException {
         Set<String> observed = new LinkedHashSet<>();
@@ -236,7 +249,8 @@ public final class RuntimeSelectedRegionFinalizer {
         // One index shared by the fatal-prefix pass and the closure walk.
         RegionDemandIndex demands = new RegionDemandIndex(program, scopeMap);
         applyClosure(program, failureDirectedClosure(program, demands,
-                skeletonSource, scopeMap, cutPorts, recordedSchedule));
+                skeletonSource, scopeMap, cutPorts, declaredOccurrence,
+                new RecordedMessages(recordedSchedule)));
         // AFTER the closure: the class of a shared address is whether the
         // kept slice holds its region.
         stateSharedAddressClasses(program, sharedAddresses);
@@ -679,7 +693,7 @@ public final class RuntimeSelectedRegionFinalizer {
     private static Set<String> failureDirectedClosure(
             StaticProgram program, RegionDemandIndex demands, String source,
             StaticScopeMap scopeMap, Map<String, List<CutPort>> cutPorts,
-            Collection<ScheduleEvent> recordedSchedule)
+            String declaredOccurrence, RecordedMessages messages)
             throws IOException {
         Map<String, Map<String, Object>> instances = program.activations;
         if (instances.isEmpty()) {
@@ -727,7 +741,29 @@ public final class RuntimeSelectedRegionFinalizer {
                     + "exception-context activation observed its explicit "
                     + "fatal target branch: " + source);
         }
-        DemandWalk walk = new DemandWalk(program, demands, scopeMap);
+        // The question is the declared occurrence's (r,c), at any index i
+        // (explore.Branches asks the same of every replay): only the target
+        // occurrences of its region, node and context shape are the walk's
+        // origins.  Another target occurrence -- the same throw reached
+        // under another request -- is not the question's: no rule plans it,
+        // so nothing only it would demand is planned either.
+        String declared = RuntimeWorkflowDiscovery.declaredOccurrence(
+                new ArrayList<>(targets), declaredOccurrence.isEmpty()
+                        ? RuntimeWorkflowDiscovery.FIRST : declaredOccurrence);
+        OccurrenceAddress question = OccurrenceAddress.parse(declared);
+        Map<CausalContext, List<String>> shapes = new HashMap<>();
+        Set<String> otherTargets = new LinkedHashSet<>();
+        for (String target : targets) {
+            if (!ContextShape.sameQuestion(OccurrenceAddress.parse(target),
+                    question, context -> shapes.computeIfAbsent(context,
+                            messages::shape))) {
+                otherTargets.add(target);
+            }
+        }
+        targets.removeAll(otherTargets);
+        instances.get(declared).put(DECLARED_OCCURRENCE, true);
+        DemandWalk walk = new DemandWalk(program, demands, scopeMap,
+                otherTargets);
         List<String> seeds = new ArrayList<>();
         for (String target : targets) {
             // Stated once here; the plan builder publishes TARGET_REACH for
@@ -770,6 +806,7 @@ public final class RuntimeSelectedRegionFinalizer {
             declaredCaptureOccurrences.add(entry.getKey());
         }
         declaredCaptureOccurrences.removeAll(targets);
+        declaredCaptureOccurrences.removeAll(otherTargets);
         for (String occurrence : declaredCaptureOccurrences) {
             walk.admit(occurrence, 1, DECLARED_COMMUNICATION_ADMISSION);
             for (String cell : declaredCells(instances.get(occurrence),
@@ -791,7 +828,7 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         walk.walk(seeds);
-        admitRelevantRoots(program, walk, scopeMap, recordedSchedule);
+        admitRelevantRoots(program, walk, scopeMap, messages);
         // Restated after the walk, so a writer the walk reached twice
         // publishes the shortest chain that reached it.
         for (String occurrence : walk.reached) {
@@ -865,7 +902,7 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     private static void admitRelevantRoots(StaticProgram program,
             DemandWalk walk, StaticScopeMap scopeMap,
-            Collection<ScheduleEvent> recordedSchedule) throws IOException {
+            RecordedMessages messages) throws IOException {
         Map<String, List<RootRead>> reading = new LinkedHashMap<>();
         Map<String, String> occurrenceById = new LinkedHashMap<>();
         Map<String, List<String>> methodsByRegion = new LinkedHashMap<>();
@@ -880,7 +917,7 @@ public final class RuntimeSelectedRegionFinalizer {
             if (!reads.isEmpty()) reading.put(entry.getKey(), reads);
         }
         RootRelevance relevance = new RootRelevance(program.graph,
-                walk.writeSites.keySet(), methodsByRegion, recordedSchedule);
+                walk.writeSites.keySet(), methodsByRegion);
         Set<String> served = new HashSet<>();
         boolean progressed;
         do {
@@ -889,6 +926,7 @@ public final class RuntimeSelectedRegionFinalizer {
             for (Map.Entry<String, List<RootRead>> entry
                     : reading.entrySet()) {
                 String occurrence = entry.getKey();
+                if (walk.excluded.contains(occurrence)) continue;
                 List<String> regions = performedRegionIds(
                         program.activations.get(occurrence));
                 Set<String> through = new LinkedHashSet<>();
@@ -910,10 +948,11 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             for (String occurrence : new ArrayList<>(walk.reached)) {
                 if (!served.add(occurrence)) continue;
-                for (String door : relevance.doorsOf(
+                for (String door : messages.doorsOf(
                         OccurrenceAddress.parse(occurrence))) {
                     String held = occurrenceById.get(door);
                     if (held == null || walk.reached.contains(held)
+                            || walk.excluded.contains(held)
                             || !readsAFault(reading.get(held))) {
                         continue;
                     }
@@ -959,6 +998,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 new HashMap<>();
         /** The occurrences admitted, in admission order. */
         private final Set<String> reached = new LinkedHashSet<>();
+        /** The occurrences no rule may plan: targets not the question's. */
+        private final Set<String> excluded;
         /** Hop count of each admission: the shortest chain that reached it. */
         private final Map<String, Integer> depths = new HashMap<>();
         private final Set<String> visited = new HashSet<>();
@@ -967,9 +1008,10 @@ public final class RuntimeSelectedRegionFinalizer {
         private final Set<String> consumers = new HashSet<>();
 
         private DemandWalk(StaticProgram program, RegionDemandIndex demands,
-                           StaticScopeMap scopeMap) {
+                           StaticScopeMap scopeMap, Set<String> excluded) {
             this.program = program;
             this.demands = demands;
+            this.excluded = excluded;
             this.writeSites = scopeMap.writeSitesByCell();
             for (Map<String, Object> edge : program.graph) {
                 if ("wire_handoff".equals(text(edge.get("kind")))) {
@@ -1053,6 +1095,7 @@ public final class RuntimeSelectedRegionFinalizer {
                                 writer.get("occurrenceId"));
                         if (writerOccurrence.isEmpty()
                                 || writerOccurrence.equals(occurrenceId)
+                                || excluded.contains(writerOccurrence)
                                 || !node.equals(activationSourceKey(writer))
                                 || !strings(writer.get("observedMethods"))
                                 .contains(storingMethod)) {

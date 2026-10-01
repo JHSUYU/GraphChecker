@@ -204,8 +204,12 @@ recording's schedule to `recorded_schedule.jsonl`, and runs `plan.ConcolicSchedu
 (`scheduleTargetFirst`). `RuntimeWorkflowDiscovery.workflow` schedules the declared target first, then
 every other occurrence the plan states is replayable, in recorded order; no slice is applied here
 (the closure is EXPLORE's). The declaration is `declared_target_occurrence`: a resolved address, a
-selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first`, which
-PLAN resolves against this recording and the shell then uses as the address. More tasks than
+selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first` (also
+when none is stated). SEED's aggregation resolves it once against the recording's target occurrences
+(`RuntimeWorkflowDiscovery#declaredOccurrence`) and marks that row `declaredOccurrence`; PLAN takes
+the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNED`), and the shell
+uses the address PLAN's index states for every later stage, whatever form the declaration had
+(`campaign_plan_read`). More tasks than
 `schedule_max_jobs` fail the stage. Outputs: `execution_task_plan.jsonl` (every row stamped with one
 `replayGroupId` = `REPLAY.GROUP.<sha256 of the rows>`) and `runtime_workflow_schedule_index.json`
 (members TARGET/DEPENDENCY; the shell checks it commits the frozen region plan's sha256 and size and
@@ -486,9 +490,10 @@ flip may shift (a fault's retry, a loop that runs once more) -- ran it under ano
 all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`): its BRANCH STOPS. Its world is never
 inherited, its paths are never flipped, and nothing it exposes is grown (§7.2's `uncaptured`: one
 named only by stopped branches is DIAGNOSTIC); it stays in the corpus as evidence (its rows still
-attest arms, §7.3). Contexts compare by `Corpus#contextShape`: per anchor hop the RPC site and the
-sending node, then the root's role and api, without the per-site invocation counts; a sender no row
-names is unknown, never a difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
+attest arms, §7.3). Contexts compare by `contract/ContextShape` (`Corpus#contextShape`, the rule
+PLAN picks its walk origins by): per anchor hop the RPC site and the sending node, then the root's
+role and api, without the per-site invocation counts; a sender no row names is unknown, never a
+difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
 the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):

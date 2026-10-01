@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import java.io.BufferedWriter;
@@ -114,9 +115,11 @@ public final class CausynthTraceRecorder {
      * Aggregates one recording for every target it was made for: {@code
      * --trace-dir --test}, one {@code --target <name>=<candidate-graph>,
      * <static-scope-map>,<region-skeletons>,<output-dir>} per target (its
-     * static slice, and where its runtime region plan goes), and optionally
-     * {@code --summary <file>}, where each target's {@link TargetOutcome} is
-     * written.  A target the recording does not serve fails alone,
+     * static slice, and where its runtime region plan goes), optionally
+     * {@code --target-occurrence} (the case's declaration, resolved here
+     * against each target's observed occurrences; a sweep's {@code first}
+     * when not stated) and {@code --summary <file>}, where each target's
+     * {@link TargetOutcome} is written.  A target the recording does not serve fails alone,
      * named on stderr; the run exits 1 when no target was served, or when the
      * trace itself cannot be read.
      */
@@ -124,6 +127,8 @@ public final class CausynthTraceRecorder {
         LongOptions options = LongOptions.parse(args);
         File directory = new File(required(options, "trace-dir"));
         String test = required(options, "test");
+        String declared = options.value("target-occurrence",
+                RuntimeWorkflowDiscovery.FIRST);
         List<AggregationTarget> targets = new ArrayList<>();
         for (String target : options.all("target")) {
             targets.add(AggregationTarget.parse(target));
@@ -135,7 +140,7 @@ public final class CausynthTraceRecorder {
         Throwable unread = null;
         try {
             outcomes = aggregateTargets(readStateTrace(directory, test),
-                    targets);
+                    targets, declared);
         } catch (Throwable throwable) {
             // The trace itself: every target's outcome.
             unread = throwable;
@@ -218,9 +223,12 @@ public final class CausynthTraceRecorder {
      * region of the throw ran in the window), {@code
      * TARGET_BRANCH_NOT_OBSERVED} (one ran, and never decided the throw's
      * branch), {@code POLICY_ABSENT} (its region declares no fatal branch),
-     * {@code NO_REGION} (no candidate region ran) or {@code ERROR} -- with
-     * the target occurrences, those of them that took the throw's fatal arm
-     * (the TARGET_SITE guards' outcomes), and the refusal's words.
+     * {@code NO_REGION} (no candidate region ran), {@code
+     * DECLARATION_UNRESOLVED} (the case's declaration names none of the
+     * observed target occurrences, or does not read) or {@code ERROR} -- with
+     * the target occurrences of the question's {@code (r,c)}, those of them
+     * that took the throw's fatal arm (the TARGET_SITE guards' outcomes), and
+     * the refusal's words.
      */
     static final class TargetOutcome {
         /** A finalizer refusal's code -> the state it is. */
@@ -232,6 +240,10 @@ public final class CausynthTraceRecorder {
                     "TARGET_BRANCH_NOT_OBSERVED");
             refusals.put("FATAL_TARGET_POLICY_ABSENT", "POLICY_ABSENT");
             refusals.put("NO_REGION_ACTIVATION", "NO_REGION");
+            refusals.put("DECLARED_TARGET_OCCURRENCE_UNOBSERVED",
+                    "DECLARATION_UNRESOLVED");
+            refusals.put("DECLARED_TARGET_OCCURRENCE_UNREADABLE",
+                    "DECLARATION_UNRESOLVED");
             REFUSALS = Collections.unmodifiableMap(refusals);
         }
 
@@ -1381,11 +1393,13 @@ public final class CausynthTraceRecorder {
      * refuses is that target's outcome, never the others'.
      */
     static Map<String, TargetOutcome> aggregateTargets(
-            TraceData trace, List<AggregationTarget> targets) {
+            TraceData trace, List<AggregationTarget> targets,
+            String declaredOccurrence) {
         Map<String, TargetOutcome> outcomes = new LinkedHashMap<>();
         for (AggregationTarget target : targets) {
             try {
-                outcomes.put(target.name, aggregateTarget(trace, target));
+                outcomes.put(target.name, aggregateTarget(trace, target,
+                        declaredOccurrence));
             } catch (IOException | RuntimeException refusal) {
                 TargetOutcome outcome =
                         TargetOutcome.refused(target.name, refusal);
@@ -1408,7 +1422,8 @@ public final class CausynthTraceRecorder {
      * taken for its own.
      */
     private static TargetOutcome aggregateTarget(
-            TraceData trace, AggregationTarget target) throws IOException {
+            TraceData trace, AggregationTarget target,
+            String declaredOccurrence) throws IOException {
         // Regions exercised: root entered and an anchor reached, anchors
         // narrowed to those reached.  Asked of entries folded or not: a fold
         // is about occurrences, this is about the region having run.
@@ -1465,7 +1480,7 @@ public final class CausynthTraceRecorder {
                         String.valueOf(selectedSkeletons),
                         observedMethods, activationGraph.runtimeInstances,
                         runtimeObservations(trace.execution, trace.methods),
-                        scopeMap, trace.schedule);
+                        scopeMap, declaredOccurrence, trace.schedule);
         // Plan gaps = this pass's plus those the recording stated.
         List<Map<String, Object>> planGaps = new ArrayList<>(closure.gaps);
         planGaps.addAll(trace.lineageGaps);

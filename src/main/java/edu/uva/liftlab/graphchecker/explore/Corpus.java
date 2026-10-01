@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
@@ -249,10 +250,10 @@ public final class Corpus implements Arms.Rows {
     /** Obligation id -> the verdict its worker's own file states. */
     private final Map<String, ObligationResult> waveVerdicts =
             new LinkedHashMap<String, ObligationResult>();
+    /** Producer endpoint id of a SEND -> the stance its SEND stood in. */
+    private final Map<String, ContextShape.Stance> senderStanceByEndpoint =
+            new HashMap<String, ContextShape.Stance>();
     /** Producer endpoint id of a SEND -> the occurrence that sent it. */
-    /** producer endpoint -> "node|context" its SEND stood in. */
-    private final Map<String, String> senderStanceByEndpoint =
-            new HashMap<String, String>();
     private final Map<String, String> senderByEndpoint =
             new LinkedHashMap<String, String>();
     /** Producer endpoint id of a RECV -> the occurrence that took it in. */
@@ -335,12 +336,10 @@ public final class Corpus implements Arms.Rows {
         while (context instanceof CausalContext.Anchor) {
             String producer =
                     ((CausalContext.Anchor) context).producerEndpointId();
-            String stance = senderStanceByEndpoint.get(producer);
+            ContextShape.Stance stance = senderStanceByEndpoint.get(producer);
             if (stance == null || !walked.add(producer)) break;
-            String[] parts = stance.split("\\|", 3);
-            if (parts.length < 2) break;
-            node = parts[0];
-            context = CausalContext.parse(parts[1]);
+            node = stance.node();
+            context = stance.context();
         }
         CausalContext.Root tick = daemonTick(context);
         if (tick == null) return null;
@@ -351,49 +350,19 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * A causal context as the branch rule compares it ({@link Branches}):
-     * per anchor hop, outermost last, the RPC site the message arrived on and
-     * the node that sent it, then the root's role and api -- the chain
-     * {@code runtime.Identity} renders, without the per-site invocation
-     * counts (the root's window index, a sender's execution index, site
-     * index and retry), which a flip may move.  The sender is the endpoint a
-     * row of the corpus states, else the stance its SEND stood in; one no
-     * row names ends the chain with {@code ?}, which {@link
-     * Branches#sameContext} reads as unknown, never as a mismatch.
+     * A causal context as the branch rule compares it ({@link Branches},
+     * {@link ContextShape}): each sender is the endpoint a row of the corpus
+     * states, else the stance its SEND stood in.
      */
     public List<String> contextShape(CausalContext context) {
-        List<String> hops = new ArrayList<String>();
-        Set<String> walked = new HashSet<String>();
-        CausalContext cursor = context;
-        while (cursor instanceof CausalContext.Anchor) {
-            CausalContext.Anchor anchor = (CausalContext.Anchor) cursor;
-            String producer = anchor.producerEndpointId();
+        return ContextShape.of(context, producer -> {
             Endpoint sender = endpointById.get(producer);
-            String sent = senderStanceByEndpoint.get(producer);
-            String[] stance = sender != null || sent == null ? new String[0]
-                    : sent.split("\\|", 3);
-            if (!walked.add(producer)
-                    || sender == null && stance.length < 2) {
-                hops.add(UNKNOWN_HOP);
-                return hops;
-            }
-            hops.add(anchor.rpcSite() + "@" + (sender != null
-                    ? sender.occurrence().node().render() : stance[0]));
-            cursor = sender != null ? sender.occurrence().context()
-                    : CausalContext.parse(stance[1]);
-        }
-        if (cursor instanceof CausalContext.Root) {
-            CausalContext.Root root = (CausalContext.Root) cursor;
-            hops.add("Root:" + root.role().name()
-                    + (root.api().isEmpty() ? "" : "/" + root.api()));
-        } else {
-            hops.add(cursor.render());
-        }
-        return hops;
+            return sender == null ? senderStanceByEndpoint.get(producer)
+                    : new ContextShape.Stance(
+                            sender.occurrence().node().render(),
+                            sender.occurrence().context());
+        });
     }
-
-    /** The hop {@link #contextShape} states for a sender no row names. */
-    static final String UNKNOWN_HOP = "?";
 
     /** The world of each replay, off its FOCUS ROW (not {@code
      *  obligation.jsonl}, a subset without clocks or flips: reading a world
@@ -560,7 +529,11 @@ public final class Corpus implements Arms.Rows {
             // daemon tick's heartbeat is sent from the tick's root alone.
             if (event.kind() == ScheduleEvent.Kind.SEND
                     && !event.endpoint().isEmpty()) {
-                senderStanceByEndpoint.put(event.endpoint(), event.context());
+                ContextShape.Stance stance =
+                        ContextShape.Stance.ofSend(event.context());
+                if (stance != null) {
+                    senderStanceByEndpoint.put(event.endpoint(), stance);
+                }
             }
             if (event.occurrence().isEmpty()) continue;
             if (event.kind() == ScheduleEvent.Kind.SEND

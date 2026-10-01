@@ -262,7 +262,7 @@ the occurrence that runs the door; `explore/ClosurePlanner#controlProducer` adds
 receiver of the message a demanded occurrence served (found through its `Anchor`,
 `explore/Corpus#senderOf`, `#receiverOf`) as control producers, so their door faults are proposed
 as flips. PLAN plans the door occurrences that read a fault marker on the same relation, over the
-recording's schedule (`causynth/RootRelevance#doorsOf`, SYMBOL-SCOPE.md §4.4), so the faults EXPLORE
+recording's schedule (`causynth/RecordedMessages#doorsOf`, SYMBOL-SCOPE.md §4.4), so the faults EXPLORE
 proposes are minted.
 
 ### 7.4 Captures bound to exchanges
@@ -406,10 +406,15 @@ order:
 A case names its target occurrence (`declared_target_occurrence`) as a selector
 (`contract/Selector`), `<node>#epoch<N>/region/REGION.x[@<src>#epoch<N>/<api>]#k`, or as `first`,
 the first observed occurrence of the declared target site in the recording (an ad-hoc sweep's default,
-`plan/RuntimeWorkflowDiscovery.FIRST`). `plan/SelectorResolution#resolve` takes the k-th seed
-activation a selector matches (region, and the anchor's api when given); an already-resolved
-address passes through. No match yields a degraded address, reported downstream as
-`DECLARATION_MISSING`.
+`plan/RuntimeWorkflowDiscovery.FIRST`, also for a case stating none). The recording's aggregation
+resolves it once, against the target occurrences it observed in recorded order
+(`RuntimeWorkflowDiscovery#declaredOccurrence`: the k-th a selector matches, by `SelectorResolution`'s
+rule), marks that occurrence's plan row, and plans only the question `(r,c)` around it: the target
+occurrences of its region and node whose context has its shape (`contract/ContextShape#sameQuestion`,
+the rule `explore/Branches` stops replays by), at any index (SYMBOL-SCOPE.md §4.4). Every stage after
+PLAN reads the resolved address. `plan/SelectorResolution#resolve` takes the k-th seed activation a
+selector matches (region, and the anchor's api when given); an already-resolved address passes
+through. No match yields a degraded address, reported downstream as `DECLARATION_MISSING`.
 
 ## 10. Pass equality
 

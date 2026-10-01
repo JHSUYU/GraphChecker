@@ -332,8 +332,14 @@ At the end of SEED (the recording's aggregation, `runtime/CausynthTraceRecorder`
 `causynth/RuntimeSelectedRegionFinalizer` plans the recorded occurrences the failure's demand
 reaches, to a fixed point:
 
+- **The question** `(r,c)`: the declared occurrence, resolved once against the target occurrences
+  the recording observed (IDENTITY.md §9), and every target occurrence of its region and node whose
+  context has its shape (`contract/ContextShape#sameQuestion`, over the recording's schedule,
+  `RecordedMessages#shape`), at any index. A target occurrence outside it -- the same throw reached
+  under another request or on another node -- is not the question's: no rule below plans it, so
+  nothing only it would demand is planned either.
 - **The demand walk** (`DemandWalk`), backwards over the candidate graph, one demand per (occurrence,
-  cell). It starts at the operands of the fatal guards the target occurrences decided, and at the
+  cell). It starts at the operands of the fatal guards the question's target occurrences decided, and at the
   occurrences that performed a declared port's capture (`DECLARED_COMMUNICATION_CAPTURE_V1`): their
   declared-site cells, and the value each OUT port of theirs hands on, whose writers only the
   sending node has. Inside an occurrence it follows the edges of the methods its regions hold (its
@@ -352,7 +358,7 @@ reaches, to a fixed point:
   (`ROOT_RELEVANT_V1`, unless another rule admitted it), and every such occurrence seeds the walk
   with the cells on the root's way there, so what the root meets is demanded in turn (SOLR-18406:
   the commit's reservation a checkpoint's clock is compared with, and so the clock that set it).
-- **Doors of a demanded message** (`RootRelevance#doorsOf`): an occurrence that read a fault marker
+- **Doors of a demanded message** (`RecordedMessages#doorsOf`): an occurrence that read a fault marker
   and sent, or took in, the message that started an admitted occurrence (its `Anchor`; the
   recorded schedule's `SEND` names the sender, a `RECV` under that anchor a receiver) is admitted
   (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists. These are the control
