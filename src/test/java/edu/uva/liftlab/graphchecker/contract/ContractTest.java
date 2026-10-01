@@ -812,6 +812,37 @@ public class ContractTest {
                         + names(gate(clean(), attributed)),
                 0, stating(gate(clean(), attributed),
                         GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING));
+        // Gated a session at a time, an epoch states exactly what one gate
+        // over all of it states, each row once: the later gate judges its
+        // own session, and the rules over the set (1, 11) against the one
+        // gated before -- which it reads again only for a root the later
+        // one brings (the mint second) -- and a gate of sessions the ledger
+        // holds judges nothing.
+        for (boolean mintFirst : new boolean[] {true, false}) {
+            Path epoch = iteration.newFolder().toPath();
+            clean().read(epoch);
+            unattributed.read(epoch);
+            Path whole = epoch.resolve("whole.jsonl");
+            ImportGateMain.gate(epoch, Collections.<String>emptyList(), null,
+                    whole, "e");
+            Path ledger = epoch.resolve("gated.txt");
+            Path stepped = epoch.resolve("stepped.jsonl");
+            ImportGateMain.gate(epoch, Collections.singletonList(
+                    mintFirst ? "s-gate" : "s-abandoned"), ledger, stepped,
+                    "e");
+            ImportGateMain.gate(epoch, Collections.<String>emptyList(),
+                    ledger, stepped, "e");
+            JsonObject again = ImportGateMain.gate(epoch,
+                    Arrays.asList("s-gate", "s-abandoned"), ledger, stepped,
+                    "e");
+            List<String> filed = Files.readAllLines(stepped);
+            assertEquals("mint first: " + mintFirst,
+                    new LinkedHashSet<>(Files.readAllLines(whole)),
+                    new LinkedHashSet<>(filed));
+            assertEquals("invariants 1 and 11, each once: " + filed, 2,
+                    filed.size());
+            assertEquals(0, again.get("sessions").getAsInt());
+        }
         // 12: a reference write's container state is an older write of the
         // session (v7); a version no row states (the placeholder's minted
         // v8) is evidence lost, not a malformed row; one not older than the
@@ -1108,8 +1139,9 @@ public class ContractTest {
     private List<GapRow> gate(Rows... sessions) throws IOException {
         Path root = iteration.newFolder().toPath();
         for (Rows rows : sessions) rows.read(root);
-        return RowInvariants.check(SessionDir.sessionsIn(root),
-                java.util.Collections.<String, List<JsonObject>>emptyMap());
+        return RowInvariants.check(Collections.<SessionDir>emptyList(),
+                SessionDir.sessionsIn(root),
+                Collections.<String, List<JsonObject>>emptyMap());
     }
 
     /** That rule, that class, that subject -- and nothing silent. */

@@ -2490,7 +2490,7 @@ campaign_import_session() {
   campaign_import_gate "${iteration_dir}" "${iteration_id}"
 }
 
-# The row contract, checked once, where every row passes through.
+# The row contract, checked once per session, where every row passes through.
 #
 # A defect in a row is not one stage's problem: a row EXPLORE and COMPOSE
 # each read as valid can still break the contract, and each stage that meets
@@ -2499,19 +2499,37 @@ campaign_import_session() {
 # here: a BLOCKING violation stops the campaign at IMPORT, naming the row, and
 # a DIAGNOSTIC one is recorded and the campaign goes on.
 #
+# campaign_import_gate <iteration_dir> <iteration_id> [summary] [session...]
+# gates the named session directories of ${iteration_dir}/sessions -- every
+# one not gated yet when none is named (IMPORT: the seed) -- and summarises
+# this gate's own sessions into ${summary} (${iteration_dir}/import_gate.json
+# by default).  Each session is judged ONCE: ${iteration_dir}/import_gated.txt
+# is the ledger of the sessions gated so far, and one it names is not judged
+# again.  The rules over the SET -- one seed (invariant 1), the epoch's roots
+# (11) -- are judged against the gated sessions still in the corpus, so
+# gating a wave, or one session at a time, files exactly what one gate over
+# the whole corpus would, each row once (contract.ImportGateMain).  One
+# caller at a time: the campaign's head.
+#
 # Append-only, into the campaign's own gap file: a gap row a later stage
 # overwrites was never evidence.
 campaign_import_gate() {
   local iteration_dir=$1 iteration_id=$2
-  # A wave runs the same gate over its own session set: the gate is given
-  # the sessions to read and the file to summarise into, and appends to the
-  # one campaign gap file either way.
-  local sessions=${3:-${iteration_dir}/sessions}
-  local summary=${4:-${iteration_dir}/import_gate.json}
+  local summary=${3:-${iteration_dir}/import_gate.json}
   local gaps="${iteration_dir}/campaign_gaps.jsonl"
-  local blocking violations first
+  local blocking violations first session
+  local -a gate=()
+  shift $(( $# < 3 ? $# : 3 ))
+  for session in "$@"; do
+    [[ -d "${session}" \
+       && "$(dirname -- "${session}")" -ef "${iteration_dir}/sessions" ]] \
+      || campaign_fail IMPORT ImportGate "${session}" \
+        "not a session directory of ${iteration_dir}/sessions"
+    gate+=(--gate "$(basename -- "${session}")")
+  done
   run_java_main edu.uva.liftlab.graphchecker.contract.ImportGateMain \
-    --sessions "${sessions}" \
+    --sessions "${iteration_dir}/sessions" "${gate[@]}" \
+    --gated "${iteration_dir}/import_gated.txt" \
     --out "${gaps}" \
     --topology-epoch "${iteration_id}" >"${summary}"
   require_nonempty "import gate summary" "${summary}"
@@ -2528,63 +2546,29 @@ ${blocking} blocking"
     "${blocking} row invariants violated: ${first}"
 }
 
-# The same gate, over one wave's own replays.
-#
-# A wave is where a focused session is produced, so it is where the contract
-# is checked -- a BLOCKING violation fails the campaign at that wave, by name.
-#
-# ImportGateMain reads the session set of an ITERATION directory
-# ({@code <iteration>/sessions}) and invariant 10 needs that directory's
-# obligation workers, so the wave is given a directory of exactly that shape:
-# the ITERATION's whole session roster, and EVERY wave of workers it has,
-# each under its own name.  Nothing is copied and nothing under sessions/ is
-# written.
-#
-# Every wave, not just this one: a focus row is what says a FOCUSED session
-# ran in a world, and invariant 6 asks that of each session in the set.
-# Linking this wave alone would leave every EARLIER wave's focused session
-# reading as "no focus row this iteration".
-#
-# The whole roster, not the wave's own new sessions: invariant 1 is a
-# SET-level rule -- exactly one session of the set states role SEED -- and a
-# set built from the wave alone never holds the seed.  The wave's own
-# sessions decide only WHETHER this gate runs, not what it reads.
-#
-# The gate directory sits OUTSIDE the waves it links, at
-# ${iteration_dir}/import-gates/<wave>.  Built inside the wave it would hold
-# a link to its own ancestor, and a walker that recurses would loop; the
-# wave keeps its own summary (import_gate.json) and nothing else.
+# The same gate, over the sessions one wave added -- its replays' and GROW's
+# re-runs' -- before the next planner reads one of their rows: a BLOCKING
+# violation fails the campaign at that wave, by name.  The wave keeps its
+# own summary (import_gate.json).
 campaign_import_wave_gate() {
   local iteration_dir=$1 iteration_id=$2 wave_dir=$3 sessions=$4
-  local before="${wave_dir}/sessions-before.txt"
-  local gate="${iteration_dir}/import-gates/$(basename "${wave_dir}")"
-  local name count=0
+  local before="${wave_dir}/sessions-before.txt" name
+  local -a added=()
   require_file "wave session roster" "${before}"
-  rm -rf -- "${gate}"
-  mkdir -p "${gate}/sessions"
-  local wave
-  for wave in "${iteration_dir}"/obligations-*; do
-    [[ -d "${wave}" ]] || continue
-    ln -s "${wave}" "${gate}/$(basename "${wave}")"
-  done
   while IFS= read -r name; do
     [[ -n "${name}" && -d "${sessions}/${name}" ]] || continue
-    count=$((count + 1))
+    added+=("${sessions}/${name}")
   done < <(campaign_wave_sessions "${sessions}" "${before}")
-  if [[ "${count}" -eq 0 ]]; then
+  if [[ "${#added[@]}" -eq 0 ]]; then
     # Every obligation of the wave failed to replay, which its own result
     # rows already say; there is no row here to check.
     campaign_log "import gate: $(basename "${wave_dir}") published no session"
     return 0
   fi
   campaign_log "import gate: $(basename "${wave_dir}") published \
-${count} session(s)"
-  while IFS= read -r name; do
-    [[ -n "${name}" && -d "${sessions}/${name}" ]] || continue
-    ln -s "${sessions}/${name}" "${gate}/sessions/${name}"
-  done < <(campaign_session_roster "${sessions}")
+${#added[@]} session(s)"
   campaign_import_gate "${iteration_dir}" "${iteration_id}" \
-    "${gate}/sessions" "${wave_dir}/import_gate.json"
+    "${wave_dir}/import_gate.json" "${added[@]}"
 }
 
 # The session names under ${1} that are not in the roster file ${2}.
@@ -4578,8 +4562,9 @@ ${causynth_output_dir}/view_region_skeletons.jsonl.gz"
 # A planned target's campaign from EXPLORE on, over its group's seed <group>
 # (campaign_batch_group): its iteration takes the group's union plan (a copy:
 # GROW appends to it), its woven classes and seed session (hard links: GROW
-# re-weaves its own), and its census and import gate; its own PLAN is read
-# again (campaign_plan_read).
+# re-weaves its own), and its census and import gate (the gate's ledger with
+# them: the seed is gated, and a wave's gate judges the set against it); its
+# own PLAN is read again (campaign_plan_read).
 campaign_batch_target() {
   local name=$1 group=$2
   campaign_batch_enter "${name}"
@@ -4599,7 +4584,8 @@ campaign_batch_target() {
   cp -al -- "${group}/instrumented-classes" "${group}/sessions" \
     "${iteration_dir}/"
   cp -- "${group}/session_census.jsonl" "${group}/import_gate.json" \
-    "${group}/woven_class_verification.log" "${iteration_dir}/"
+    "${group}/import_gated.txt" "${group}/woven_class_verification.log" \
+    "${iteration_dir}/"
   # The gate writes its gap rows only when a row states one.
   [[ ! -e "${group}/campaign_gaps.jsonl" ]] \
     || cp -- "${group}/campaign_gaps.jsonl" "${iteration_dir}/"

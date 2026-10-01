@@ -17,7 +17,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | UNION (a batch) | `campaign_batch_union`; `plan.PlanUnion` | `groups/groups.json`, `groups/group-<n>/execution_task_plan.jsonl` | `PlanUnion` exits nonzero |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
-| IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
+| IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `import_gated.txt`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
 | EXPLORE | `campaign_explore`, `campaign_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions | the planner fails; an obligation does not finish; a replay states no verdict; a wave's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
@@ -298,6 +298,15 @@ one `SESSION_CENSUS` row per (session, kind) to `session_census.jsonl`. `campaig
 `contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-12,
 [CONTRACT-SPEC.md §2.6](CONTRACT-SPEC.md)) to `campaign_gaps.jsonl` and prints a summary; one BLOCKING
 violation fails IMPORT naming the first subject. The same gate runs after every EXPLORE wave (§7.9).
+
+`campaign_import_gate <iteration> <epoch> [summary] [session-dir...]` judges each session once: the
+sessions it names (none named: every session of the corpus not gated yet), recorded in the ledger
+`import_gated.txt`; a session the ledger names is not judged again. Every rule but two is one
+session's. The two over the set are judged against the gated sessions still in the corpus: exactly
+one SEED (1), and the epoch's roots (11) -- a new session against every root of the epoch, a gated
+one again only for a root (id, symbol) a new session brings. So gating the corpus a wave, or a
+session, at a time files exactly the rows one gate over all of it would, each once. One caller at a
+time (the head).
 
 ## 7. EXPLORE
 
@@ -590,8 +599,8 @@ fixed point). Otherwise stop with a DIAGNOSTIC `ADMISSION_GAP` row in `campaign_
 proposed ids, the verdict histogram and the exposures equals the previous wave's
 (`REGION_PATH_CLOSURE_NO_PROGRESS`). Else dispatch the obligations (if any), GROW (if a region is
 exposed), then gate the wave: the IMPORT
-gate over the whole session roster (linked under `import-gates/obligations-NNNN/`) whenever the wave
-added a session; one BLOCKING violation fails the campaign at IMPORT.
+gate (§6) over the sessions the wave added (its replays' and GROW's re-runs'), summarised in the
+wave's `import_gate.json`; one BLOCKING violation fails the campaign at IMPORT.
 
 `campaign_publish_iteration_manifest` then writes `iteration_manifest.json`: provenance, digests of the
 task plan, schedule index, census and obligation results, the members and their obligation digests.

@@ -1114,19 +1114,17 @@ grep -q "artifact=${gate_dir}/campaign_gaps.jsonl" "${gate_dir}/error.log" \
 [[ "$(wc -l <"${gate_dir}/campaign_gaps.jsonl")" -eq 2 ]] \
   || fail "the gate's gap file is not append-only"
 
-# The same gate over one wave's own sessions: EXPLORE calls it after the
+# The same gate over the sessions one wave added: EXPLORE calls it after the
 # wave's replays land, and a blocking violation there fails the campaign at
-# that wave.  What the wave ADDED decides whether the gate runs; what it READS
-# is the epoch's whole roster, seed included, because invariant 1 is a
-# set-level rule (exactly one session states role SEED) and a set cut down to
-# one wave never holds the seed.
+# that wave.  It names exactly the wave's own sessions -- each session is
+# judged once, and ImportGateMain judges the rules over the set (one seed,
+# the epoch's roots) against the sessions its ledger says were gated before
+# (ContractTest) -- and it reads the iteration itself, every wave's workers
+# included, so no session reads as having no focus row.
 declare -f campaign_explore | grep -q campaign_import_wave_gate \
   || fail "EXPLORE does not put its wave's sessions to the import gate"
 wave_gate="${test_tmp}/import-gate-wave"
-mkdir -p "${wave_gate}/sessions/seed-result-0" \
-         "${wave_gate}/obligations-0000/OBL.a"
-printf '{"sessionId":"focus-a"}\n' \
-  >"${wave_gate}/obligations-0000/OBL.a/obligation_result.jsonl"
+mkdir -p "${wave_gate}/sessions/seed-result-0" "${wave_gate}/obligations-0000"
 campaign_session_roster "${wave_gate}/sessions" \
   >"${wave_gate}/obligations-0000/sessions-before.txt"
 # The wave's own replay lands after the roster is taken.
@@ -1136,22 +1134,10 @@ mkdir -p "${wave_gate}/sessions/focus-a"
   || fail "the wave gate does not count exactly the sessions the wave added"
 (
   run_java_main() {
-    # The gate is handed a session directory of its own, holding the
-    # epoch's whole roster, and the wave itself as the one wave of
-    # obligation workers behind it.  It is built BESIDE the waves, never
-    # inside one: a gate under its own wave links its own ancestor.
-    [[ "$3" == "${wave_gate}/import-gates/obligations-0000/sessions" ]] \
-      || fail "the wave gate did not name its own session set: $3"
-    [[ -d "$3/focus-a" ]] \
-      || fail "the wave gate did not gate the session its wave published"
-    [[ -d "$3/seed-result-0" ]] \
-      || fail "the wave gate left the epoch's seed out of the set it gated, \
-so invariant 1 has no SEED to find"
-    [[ -f "${wave_gate}/import-gates/obligations-0000/obligations-0000/\
-OBL.a/obligation_result.jsonl" ]] \
-      || fail "the wave gate hid its own obligation workers"
-    [[ ! -e "${wave_gate}/obligations-0000/import-gate" ]] \
-      || fail "the wave gate was built inside the wave it links"
+    [[ "$*" == *"--sessions ${wave_gate}/sessions --gate focus-a --gated \
+${wave_gate}/import_gated.txt "* ]] \
+      || fail "the wave gate did not gate exactly its wave's session of the \
+iteration, against the iteration's ledger: $*"
     printf '%s\n' '{"violations":1,"blocking":1,'\
 '"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
     printf '{"schemaVersion":1,"cls":"BLOCKING"}\n' \
@@ -1169,48 +1155,19 @@ grep -q 'roots.jsonl seq=3 field=recordedValue' "${wave_gate}/error.log" \
   || fail "the wave gate's failure does not name the first blocking subject"
 [[ -s "${wave_gate}/obligations-0000/import_gate.json" ]] \
   || fail "the wave gate wrote no summary of its own"
-
-# And EVERY wave of the epoch is behind the set it gates, not just the one
-# being gated.  Invariant 6 asks of each FOCUSED session which world it ran
-# in, and its worker's focus row is the only thing that says so; a gate that
-# links this wave alone hides every earlier wave's focus rows, so each session
-# an earlier wave focused reads as "no focus row this epoch".  hdfs-11741
-# campaign #3: wave 1 was the first wave of any campaign to publish a session,
-# and its gate refused with 13 BLOCKING invariant-6 rows, one per session that
-# wave 0 had focused.
-mkdir -p "${wave_gate}/obligations-0001/OBL.b"
-printf '{"sessionId":"focus-b"}\n' \
-  >"${wave_gate}/obligations-0001/OBL.b/obligation_result.jsonl"
-campaign_session_roster "${wave_gate}/sessions" \
-  >"${wave_gate}/obligations-0001/sessions-before.txt"
-mkdir -p "${wave_gate}/sessions/focus-b"
+# A session the gate is handed is a session of the iteration's corpus, or
+# the gate refuses it by name: one outside would be judged against an epoch
+# it is not part of.
 (
-  run_java_main() {
-    [[ -f "${wave_gate}/import-gates/obligations-0001/obligations-0000/\
-OBL.a/obligation_result.jsonl" ]] \
-      || fail "the wave gate hid an EARLIER wave's obligation workers, so \
-every session that wave focused reads as having no focus row"
-    [[ -f "${wave_gate}/import-gates/obligations-0001/obligations-0001/\
-OBL.b/obligation_result.jsonl" ]] \
-      || fail "the wave gate hid its own obligation workers"
-    printf '%s\n' '{"violations":0,"blocking":0,"firstBlockingSubject":""}'
-  }
-  campaign_import_wave_gate "${wave_gate}" iteration-0000 \
-    "${wave_gate}/obligations-0001" "${wave_gate}/sessions" >/dev/null
-) || fail "a wave gate over two waves did not link both waves"
-[[ -s "${wave_gate}/obligations-0001/import_gate.json" ]] \
-  || fail "the wave gate's summary does not stay with its wave"
-# NO LINK INTO ITS OWN ANCESTOR: the gate is beside the waves, so nothing
-# under it resolves to a directory that contains it -- a walker that
-# recurses cannot loop.
-for gate_link in "${wave_gate}"/import-gates/*/*; do
-  [[ -L "${gate_link}" ]] || continue
-  gate_target=$(readlink -f "${gate_link}")
-  gate_holder=$(readlink -f "$(dirname "${gate_link}")")
-  [[ "${gate_holder}" != "${gate_target}"/* \
-     && "${gate_holder}" != "${gate_target}" ]] \
-    || fail "the wave gate links its own ancestor: ${gate_link}"
-done
+  run_java_main() { fail "the gate ran over a session outside the corpus"; }
+  campaign_import_gate "${wave_gate}" iteration-0000 \
+    "${wave_gate}/elsewhere.json" "${wave_gate}/obligations-0000"
+) 2>"${wave_gate}/outside.log" \
+  && fail "the gate took a directory outside the corpus as a session"
+grep -q "not a session directory of ${wave_gate}/sessions" \
+  "${wave_gate}/outside.log" \
+  || fail "the gate's refusal does not name the corpus: \
+$(cat "${wave_gate}/outside.log")"
 
 # INSTRUMENT-VERIFY: the woven classes are put to the JVM verifier in the
 # stage that wrote them.  9d2761c17 asked it for the first time inside the
