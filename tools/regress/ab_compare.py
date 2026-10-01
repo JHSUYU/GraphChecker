@@ -39,9 +39,11 @@ CHAINS = {"SEED": ["SEED.static", "SEED.trace", "PLAN", "EXPLORE.0",
 STAGES = [stage for chain in CHAINS.values() for stage in chain]
 SIDES = ("baseline", "candidate")
 NOT_OUTPUT = {"stdout.log", "stderr.log", "time.txt", "prepare.log"}
-# SEED.static's class output is the input scope copied in (classes/) and
+# SEED.static's class output is the input scope copied in (classes/), the
+# door classes grown into it (scope-classes/, named by doors/stdout.txt) and
 # Soot's rewrite of it, not an artifact.
-NOT_COMPARED_DIRS = {"SEED.static": {"classes", "instrumented-classes"}}
+NOT_COMPARED_DIRS = {"SEED.static": {"classes", "scope-classes",
+                                     "instrumented-classes"}}
 
 
 def read(path):

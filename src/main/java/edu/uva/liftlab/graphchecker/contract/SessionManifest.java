@@ -8,12 +8,17 @@ import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * CONTRACT-SPEC §2.1: the role one session states it ran as ({@code
  * manifest.json}, written when the session opens) -- the only answer to
  * "which session is the recording".  Never inferred from activations: a
- * FOCUSED replay that activated nothing is still FOCUSED.
+ * FOCUSED replay that activated nothing is still FOCUSED.  At the run's end
+ * it also counts the region entries unnamed work made, by {@code
+ * <node>/region/<regionId>}: each opened no occurrence (IDENTITY §1), so no
+ * row of the session states what ran there.
  */
 public final class SessionManifest {
     /** What a session ran as: the recording, or one counterfactual of it. */
@@ -24,12 +29,16 @@ public final class SessionManifest {
     private final String sessionId;
     private final Role role;
     private final List<String> obligationIds;
+    private final Map<String, Integer> unnamedEntries;
 
     private SessionManifest(String sessionId, Role role,
-                            List<String> obligationIds) {
+                            List<String> obligationIds,
+                            Map<String, Integer> unnamedEntries) {
         this.sessionId = sessionId;
         this.role = role;
         this.obligationIds = Collections.unmodifiableList(obligationIds);
+        this.unnamedEntries = Collections.unmodifiableMap(
+                new TreeMap<String, Integer>(unnamedEntries));
     }
 
     /** Obligation ids come from the worker's {@code focused_task.jsonl}. */
@@ -43,7 +52,20 @@ public final class SessionManifest {
             }
         }
         return new SessionManifest(Fields.text(sessionId, "sessionId"),
-                Fields.required(role, "role"), ids);
+                Fields.required(role, "role"), ids,
+                Collections.<String, Integer>emptyMap());
+    }
+
+    /** This manifest, counting the region entries unnamed work made. */
+    public SessionManifest withUnnamedEntries(Map<String, Integer> entries) {
+        return new SessionManifest(sessionId, role, obligationIds,
+                entries == null ? Collections.<String, Integer>emptyMap()
+                        : entries);
+    }
+
+    /** Unnamed work's region entries, by {@code <node>/region/<regionId>}. */
+    public Map<String, Integer> unnamedEntries() {
+        return unnamedEntries;
     }
 
     public String sessionId() {
@@ -75,6 +97,11 @@ public final class SessionManifest {
             ids.add(id);
         }
         json.add("obligationIds", ids);
+        JsonObject unnamed = new JsonObject();
+        for (Map.Entry<String, Integer> entry : unnamedEntries.entrySet()) {
+            unnamed.addProperty(entry.getKey(), entry.getValue());
+        }
+        json.add("unnamedEntries", unnamed);
         return json;
     }
 
@@ -89,8 +116,17 @@ public final class SessionManifest {
                     "manifest states no role this contract has: \"" + role
                             + "\"");
         }
+        Map<String, Integer> unnamed = new TreeMap<String, Integer>();
+        if (json.has("unnamedEntries")
+                && json.get("unnamedEntries").isJsonObject()) {
+            for (Map.Entry<String, com.google.gson.JsonElement> entry
+                    : json.getAsJsonObject("unnamedEntries").entrySet()) {
+                unnamed.put(entry.getKey(), entry.getValue().getAsInt());
+            }
+        }
         return of(JsonFields.optionalString(json, "sessionId"), parsed,
-                JsonFields.strings(json, "obligationIds"));
+                JsonFields.strings(json, "obligationIds"))
+                .withUnnamedEntries(unnamed);
     }
 
     @Override

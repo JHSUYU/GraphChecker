@@ -141,8 +141,12 @@ public final class ContainerStateModel {
                         + " (select (assoc_values s) k))",
                 "(define-fun assoc_key_at ((s AssocState) (i Int)) Value"
                         + " (select (assoc_order s) i))",
-                "(define-fun assoc_value_at ((s AssocState) (i Int)) Value"
-                        + " (assoc_read s (assoc_key_at s i)))",
+                // A view's positions where the chain's order is not the
+                // one the map's class iterates in: whatever bijection with
+                // its keys the view facts state, and no order
+                // (ContainerSmtCodec.ViewOrder.FREE).
+                "(declare-fun assoc_view_key (AssocState Int) Value)",
+                "(declare-fun assoc_view_position (AssocState Value) Int)",
                 "(define-fun assoc_put ((s AssocState) (k Value)"
                         + " (v Value)) AssocState"
                         + " (mkAssocState"

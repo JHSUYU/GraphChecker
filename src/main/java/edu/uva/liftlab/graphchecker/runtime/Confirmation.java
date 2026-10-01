@@ -2,7 +2,9 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import java.io.IOException;
@@ -29,7 +31,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * {@code ORDER} row holds one method activation's entry until the activations
  * it names have exited -- a join's writer before its reader, every other
  * writer of the location outside the two -- at the frame and region hooks
- * every pass weaves ({@code Identity}).  An activation that waits out
+ * every pass weaves ({@code Identity}); the held activation is the last one
+ * entered before the ordered event ({@code ConfirmMain}).  Endpoints and
+ * activations are compared as every delivery of their stored message names
+ * them ({@link #id}).  An activation that waits out
  * {@link #ORDER_TIMEOUT_PROPERTY} proves the model's order unrealizable in
  * this program: it goes on, and the stall is a {@code CONFIRM_MISMATCH}, so
  * the claim is not confirmed.  Any other difference is one too.</p>
@@ -129,10 +134,10 @@ public final class Confirmation {
     static String attached(Endpoint consumer, Endpoint producer,
                            String messageKey, String text) {
         if (!expected() || consumer == null) return "";
-        String actual = producer == null ? "" : producer.id();
+        String actual = producer == null ? "" : id(producer);
         synchronized (LOCK) {
-            ATTACHED.put(consumer.id(), actual);
-            Wire chosen = WIRE.get(consumer.id());
+            ATTACHED.put(id(consumer), actual);
+            Wire chosen = WIRE.get(id(consumer));
             if (chosen == null) return "";
             List<String> differs = new ArrayList<String>();
             if (!chosen.producer.equals(actual)) {
@@ -152,7 +157,7 @@ public final class Confirmation {
                         + (text == null ? "none" : "\"" + text + "\""));
             }
             return differs.isEmpty() ? ""
-                    : "WIRE " + consumer.id() + ": " + String.join("; ",
+                    : "WIRE " + id(consumer) + ": " + String.join("; ",
                     differs);
         }
     }
@@ -160,7 +165,7 @@ public final class Confirmation {
     static void wrote(LocationId location, long version, Endpoint writer) {
         if (!expected() || location == null || writer == null) return;
         synchronized (LOCK) {
-            WROTE.put(key(location, version), writer.id());
+            WROTE.put(key(location, version), id(writer));
         }
     }
 
@@ -172,9 +177,24 @@ public final class Confirmation {
             if (mintVersion != ReadRow.UNKNOWN_VERSION) {
                 MINTED.add(key(location, observedVersion));
             }
-            if (!STATE.containsKey(reader.id())) return;
-            READ.put(reader.id(), key(location, observedVersion));
+            if (!STATE.containsKey(id(reader))) return;
+            READ.put(id(reader), key(location, observedVersion));
         }
+    }
+
+    /**
+     * The id CONFIRM knows an endpoint by: the same for every delivery of
+     * its occurrence's stored message ({@link Endpoint#anyDelivery}), as
+     * {@code explore.ConfirmMain} writes the model's.
+     */
+    public static String id(Endpoint endpoint) {
+        return endpoint.anyDelivery().id();
+    }
+
+    /** The key CONFIRM knows one method activation by ({@link #id}). */
+    public static String activation(OccurrenceAddress occurrence,
+                                    ExecutionIndex frames) {
+        return Endpoint.activation(occurrence.anyDelivery(), frames);
     }
 
     /** Whether this run is held to an order: every frame hook asks. */

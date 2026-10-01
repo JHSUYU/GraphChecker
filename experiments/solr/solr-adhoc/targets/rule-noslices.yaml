@@ -1,1 +1,1 @@
-exception_target: adhoc-rule-noslices org.apache.solr.update.processor.DistributedZkUpdateProcessor 932
+exception_target: adhoc-rule-noslices org.apache.solr.update.processor.DistributedZkUpdateProcessor 940

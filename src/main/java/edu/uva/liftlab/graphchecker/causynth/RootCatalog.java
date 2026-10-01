@@ -110,6 +110,12 @@ final class RootCatalog {
 
     private static final long MILLISECOND = 1_000_000L;
 
+    /** Whether a callee is a clock: its value is a root, whatever state
+     *  its receiver holds. */
+    boolean clock(String signature) {
+        return clock(signature, 0);
+    }
+
     private boolean clock(String signature, int depth) {
         if (JVM_CLOCKS.contains(signature)) return true;
         // Cycles and depth answer no, and a no that read one is not

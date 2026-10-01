@@ -30,9 +30,9 @@ read -r repo <"${here}/tree"
 target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
   "${here}/occurrences.tsv")
 target_occurrence=${target_occurrence:-first}
-# The mappings' classes and the cluster state's family (system.sh), and each
-# check's own class.
-scope=("${system_mapping_scope[@]}" "${solr_state_scope[@]}")
+# The cluster state's family (system.sh) and each check's own class; the
+# library doors' classes join the scope by themselves (ScopeGrowth --doors).
+scope=("${solr_state_scope[@]}")
 for check in ${checks}; do
   row=$(awk -F'\t' -v c="${check}" '$1 == c' "${here}/checks.tsv")
   [[ -n "${row}" ]] || { echo "unknown ad-hoc check: ${check}" >&2; return 2; }

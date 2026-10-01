@@ -27,14 +27,10 @@ blockkey_scope=(
 )
 # The scope every ad-hoc check starts from: each class the ad-hoc
 # communication mappings name, which the static pass refuses to find out of
-# scope.  The fault doors (DOOR rows): the IPC client's request and response,
-# the SASL handshake, and the data-transfer SEND, one per op -- no door on
-# reads: every pipeline ack is one, and a door per packet admits an
-# occurrence per packet; and the block keys' wire flows (WIRE_FLOW rows).
+# scope -- the block keys' wire flows (WIRE_FLOW rows).  The fault doors are
+# the engine's library catalog, whose classes join the scope by themselves.
 system_mapping_scope=(
-  common:org/apache/hadoop/ipc/Client
   client:org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient
-  client:org/apache/hadoop/hdfs/protocol/datatransfer/Sender
   client:org/apache/hadoop/hdfs/protocolPB/PBHelperClient
   hdfs:org/apache/hadoop/hdfs/protocolPB/PBHelper
   hdfs:org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager

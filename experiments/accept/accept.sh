@@ -39,9 +39,10 @@
 #              test.  Turn it on for a long campaign on a small disk, after
 #              reading that list against the run you are pruning.
 #
-# Cases run one at a time.  A campaign already runs concolic_worker_count
-# workers of its own, and the standing ruling is at most two campaign lanes on
-# this host; a second lane is a second invocation of this script, not a knob.
+# Cases run one at a time.  A campaign already runs as many obligations as
+# its hosts' memory admits, and the standing ruling is at most two campaign
+# lanes on this host; a second lane is a second invocation of this script,
+# not a knob.
 #
 # Process discipline: the run re-execs under setsid, so no signal meant for
 # another run reaches this one; its group id is written to $OUT/pgid.  It is
@@ -211,6 +212,7 @@ ACCEPT_KEEP_GLOBS=(
   'schedule/final/gaps.json'
   'schedule/final/run-manifest.json'
   'schedule/final/compose.log'
+  'schedule/final/reproduce.json'
   'schedule/stage_metrics.tsv'
   'schedule/iteration-*/iteration_manifest.json'
   'static_scope_map.jsonl'

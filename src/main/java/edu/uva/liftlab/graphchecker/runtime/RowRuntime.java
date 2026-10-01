@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
@@ -247,13 +248,6 @@ public final class RowRuntime {
                 outcome)) {
             ConcolicResultPublisher.concludeAtRefusal();
         }
-    }
-
-    /** One arm's term: the ref in that polarity (the composer lowers). */
-    static String term(String expressionRef, boolean arm) {
-        String ref = Text.safe(expressionRef);
-        if (ref.isEmpty()) return "";
-        return Arms.conjunct(ref, arm);
     }
 
     /** One export, and the producer endpoint a delivery can be paired to. */
@@ -537,14 +531,15 @@ public final class RowRuntime {
         FocusedReplay.mintPublished(rootId);
     }
 
-    /** The anchor, with phi stated in the FATAL polarity as published. */
+    /** The anchor, with phi stated in the FATAL polarity as published;
+     *  an anchor the run did not reach states none. */
     public static void target(OccurrenceAddress occurrence, long seq,
                               String anchorSiteId, JsonObject condition,
                               boolean fatalArm, boolean observedFatal,
                               boolean reachedAnchor) {
-        target(occurrence, seq, anchorSiteId,
-                fatalTerm(condition, fatalArm), observedFatal,
-                reachedAnchor);
+        target(occurrence, seq, anchorSiteId, reachedAnchor
+                        ? fatalTerm(condition, fatalArm) : "",
+                observedFatal, reachedAnchor);
     }
 
     /** The anchor with phi already stated (a disjunction of fatal arms). */
@@ -562,9 +557,17 @@ public final class RowRuntime {
         }
     }
 
-    /** One decision's predicate in the polarity of its fatal arm, or "". */
+    /**
+     * One decision's predicate in the polarity of its fatal arm: the ref
+     * as the arm it states, or {@code (not ref)}.  A decision that states no
+     * predicate decided concretely, and its predicate is the constant of the
+     * arm it took: {@code true} where that arm is the fatal one, else
+     * {@code false} (CONTRACT-SPEC §2.2), never empty.
+     */
     static String fatalTerm(JsonObject condition, boolean fatalArm) {
-        return term(expressionRef(condition), fatalArm);
+        String ref = Text.safe(expressionRef(condition));
+        return ref.isEmpty() ? String.valueOf(fatalArm)
+                : Arms.conjunct(ref, fatalArm);
     }
 
     /**
@@ -607,6 +610,41 @@ public final class RowRuntime {
             return;
         }
         session.gap(GapRow.of(sessionId(), kind, cls, named, says));
+    }
+
+    /**
+     * Unnamed work's region entries, by {@code <node>/region/<regionId>}
+     * ({@link Identity#occurrence}): none opened an occurrence.
+     */
+    private static final Map<String, AtomicInteger> UNNAMED =
+            new ConcurrentHashMap<String, AtomicInteger>();
+
+    /**
+     * One region entry unnamed work made, which opened no occurrence.
+     * Never silent: each region and node is named once, in either pass, by
+     * a LINEAGE_LOST row, and the session's manifest counts every entry at
+     * the run's end ({@link #closeSession}).
+     */
+    static void unnamedEntry(String nodeKey, String regionId) {
+        // Neither the trace nor the schedule states what ran before the
+        // window opened.
+        if (!RecordingWindow.opened()) return;
+        String subject = Text.safe(nodeKey) + "/region/"
+                + Text.safe(regionId);
+        if (UNNAMED.computeIfAbsent(subject, key -> new AtomicInteger())
+                .getAndIncrement() > 0) {
+            return;
+        }
+        gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, subject,
+                "work started where no hop named its starter (a connection"
+                        + " acceptor's, a daemon's started under no root)"
+                        + " entered this region before a hop named it, so"
+                        + " the entry opened no occurrence (IDENTITY §1,"
+                        + " unnamed work): no decision, root or write of it"
+                        + " is recorded, its events are its role's, and a"
+                        + " closure reaching them stops there; the session"
+                        + " manifest counts every such entry"
+                        + " (unnamedEntries)");
     }
 
     /** The labels this session's declared mints asked the VM for. */
@@ -943,6 +981,11 @@ public final class RowRuntime {
     public static void closeSession() {
         SessionPublisher session = publisher;
         if (session == null) return;
+        Map<String, Integer> unnamed = new LinkedHashMap<String, Integer>();
+        for (Map.Entry<String, AtomicInteger> entry : UNNAMED.entrySet()) {
+            unnamed.put(entry.getKey(), entry.getValue().get());
+        }
+        session.unnamedEntries(unnamed);
         // A root the obligation assigns that no mint planted: this run did
         // not run what was asked.
         for (Map.Entry<String, String> unplanted
@@ -1030,6 +1073,7 @@ public final class RowRuntime {
             CLAIMED_EVENTS.clear();
             ENDPOINTS.clear();
             MINT_LABELS.clear();
+            UNNAMED.clear();
             expressions = new ExpressionRefs();
             Identity.resetForTests();
             CLOCK_CELLS.clear();

@@ -42,22 +42,23 @@ import java.util.TreeSet;
  * negated; never the fatal predicate (the composition's question) nor another
  * region's path (its own task). Planning ({@link ExploreMain}) and solving
  * ({@link ObligationSolverMain}, one worker per obligation) run in separate
- * processes: a wave's queries are independent.</p>
+ * processes: a round's queries are independent.</p>
  */
 public final class ObligationFactory {
-    /** How many recorded paths of one task a wave proposes flips from. */
+    /** How many recorded paths of one task a round proposes flips from. */
     public static final int DEFAULT_MAX_PATHS_PER_TASK = 32;
-    /** How many flips one path may offer in one wave. */
+    /** How many flips one path may offer in one round. */
     public static final int DEFAULT_MAX_FLIPS_PER_PATH = 32;
     /** The most flips a cut path's world may already hold: the nesting bound.
-     *  Each wave nests one more flip, so without it the search grows per world;
+     *  Each wave (a generation of worlds, PIPELINE §7.9) nests one more flip,
+     *  so without it the search grows per world;
      *  the deepest known witness chain is two flips. */
     public static final int DEFAULT_MAX_WORLD_DEPTH = 3;
 
     private ObligationFactory() {
     }
 
-    /** What a wave may propose per task. */
+    /** What a round may propose per task. */
     public static final class Bounds {
         public final int maxPathsPerTask;
         public final int maxFlipsPerPath;
@@ -82,7 +83,7 @@ public final class ObligationFactory {
         }
     }
 
-    /** One flip a wave proposes: the path, the decision, and its identity. */
+    /** One flip a round proposes: the path, the decision, and its identity. */
     public static final class Candidate {
         public final String obligationId;
         public final Task task;
@@ -108,7 +109,7 @@ public final class ObligationFactory {
             this.obligationId = obligationId;
         }
 
-        /** The row a wave publishes: what to flip, no model yet (the solver
+        /** The row a round publishes: what to flip, no model yet (the solver
          *  writes values). */
         public Obligation proposal() {
             return Obligation.of(obligationId, task.taskId(), path.pathId,
@@ -292,13 +293,19 @@ public final class ObligationFactory {
 
     /** The flip a question is about, digested: task, path, site, ordinal
      *  and the outcome asked for -- the first half of its {@link
-     *  #question}, and what a wave's no-progress stop compares (an id
-     *  drifts, a flip does not). */
+     *  #question}, and what holds an arm in flight from being proposed again
+     *  ({@code Frontier#inFlight}): an id drifts, a flip does not. */
     public static String flip(Candidate candidate) {
-        return ArtifactIO.digest(candidate.task.taskId() + "|"
-                + candidate.path.pathId + "|" + candidate.decision.siteId()
-                + "#" + candidate.decision.ordinal() + " -> "
-                + !candidate.decision.outcome(), 16);
+        return flip(candidate.task.taskId(), candidate.path.pathId,
+                candidate.decision.siteId(), candidate.decision.ordinal(),
+                !candidate.decision.outcome());
+    }
+
+    /** {@link #flip(Candidate)} of an obligation row's fields. */
+    static String flip(String taskId, String pathId, String siteId,
+                       int ordinal, boolean flippedOutcome) {
+        return ArtifactIO.digest(taskId + "|" + pathId + "|" + siteId + "#"
+                + ordinal + " -> " + flippedOutcome, 16);
     }
 
     /**
@@ -363,18 +370,22 @@ public final class ObligationFactory {
      *
      * <p>PIPELINE §7.4: only decisions at sites the closure demanded for this
      * member (target guards for the anchor, own guards for a writer/producer).
-     * Cut only from ADMITTED sessions' paths: a child inherits the parent's
-     * world (PIPELINE §7.5), and a NOT_ADMITTED replay ran no world. Such
-     * sessions still attest arms ({@link Frontier}).</p>
+     * Cut only from the paths of sessions that may parent ({@link
+     * Branches#parents}): a child inherits the parent's world (PIPELINE
+     * §7.5), a NOT_ADMITTED replay ran no world, and one whose branch
+     * stopped ran none the question is asked in. Such sessions still attest
+     * arms ({@link Frontier}).</p>
      *
      * @param flipSites site ids this task's demand names; null = none
+     * @param branches  which sessions a path may be cut from
      * @param owed      the one ledger of owed arms ({@link Frontier})
-     * @param gaps      receives settled candidates, so a shrinking wave is
+     * @param gaps      receives settled candidates, so a shrinking round is
      * explained
      */
     public static List<Candidate> candidates(Corpus corpus, Task task,
                                              Set<String> flipSites,
-                                             Bounds bounds, Frontier owed,
+                                             Bounds bounds, Branches branches,
+                                             Frontier owed,
                                              List<GapRow> gaps) {
         List<Candidate> candidates = new ArrayList<Candidate>();
         Set<String> offered = new LinkedHashSet<String>();
@@ -383,8 +394,8 @@ public final class ObligationFactory {
         int tooDeep = 0;
         for (Corpus.RecordedPath path : smallestWorldFirst(corpus,
                 corpus.pathsOf(task.focused()))) {
-            // Only admitted sessions are cut from (see above).
-            if (!corpus.session(path.sessionId).admitted()) continue;
+            // Only a parent's paths are cut (see above).
+            if (!branches.parents(path.sessionId)) continue;
             // The nesting bound; counted into a gap below.
             if (corpus.world(path.sessionId).flips.size()
                     > bounds.maxWorldDepth) {
@@ -438,10 +449,10 @@ public final class ObligationFactory {
                         task.taskId() + " max-flips-per-path="
                                 + bounds.maxFlipsPerPath,
                         "this path offered more flippable decisions than one "
-                                + "wave takes from it: " + unflipped
+                                + "round takes from it: " + unflipped
                                 + " decision(s) after the "
                                 + bounds.maxFlipsPerPath
-                                + " this wave cut, left unasked"));
+                                + " this round cut, left unasked"));
             }
         }
         if (tooDeep > 0) {
@@ -451,7 +462,7 @@ public final class ObligationFactory {
                             + bounds.maxWorldDepth,
                     tooDeep + " cuttable path(s) of this task stand in a "
                             + "world of more than " + bounds.maxWorldDepth
-                            + " flip(s), and no wave nests deeper: none of "
+                            + " flip(s), and no round nests deeper: none of "
                             + "them was cut from"));
         }
         if (unread > 0) {
@@ -460,7 +471,7 @@ public final class ObligationFactory {
                     task.taskId() + " max-paths-per-region="
                             + bounds.maxPathsPerTask,
                     "this task has " + (paths + unread) + " cuttable "
-                            + "recorded path(s) and this wave planned from "
+                            + "recorded path(s) and this round planned from "
                             + paths + ": " + unread + " path(s), the "
                             + "ones carrying the largest worlds, were not "
                             + "read at all"));
@@ -679,9 +690,9 @@ public final class ObligationFactory {
     }
 
     /** Finds the flip one published obligation names, from the corpus alone,
-     *  under the id the WAVE gave it.  Never recomputed: a solver reads the
-     *  corpus mid-wave, where sessions the wave's earlier replays published
-     *  grow a task's factor and so its dependence -- a second id for one
+     *  under the id its ROUND gave it.  Never recomputed: a solver reads the
+     *  corpus as it stands, where sessions landed since the round grow a
+     *  task's factor and so its dependence -- a second id for one
      *  obligation, whose answer the ledger then never meets (hdfs-17967
      *  pathA v82: 24 of 169 workers). */
     public static Candidate locate(Corpus corpus, Obligation obligation) {

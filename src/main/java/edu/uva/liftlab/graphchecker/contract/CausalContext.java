@@ -133,6 +133,28 @@ public abstract class CausalContext extends Value {
             return ANCHOR_PREFIX + producerEndpointId + "@" + rpcSite;
         }
 
+        /**
+         * The context every delivery of one stored message to one watcher
+         * shares: this one without the delivery ordinal {@code
+         * runtime.MessageDoors#fetched} names the second delivery on of a
+         * version by ({@code TRANSPORT.KIND.n/api}).  How many deliveries a
+         * run takes is the store's timing, never a cause.
+         */
+        public Anchor anyDelivery() {
+            int api = rpcSite.indexOf('/');
+            String head = api < 0 ? rpcSite : rpcSite.substring(0, api);
+            int ordinal = head.lastIndexOf('.');
+            if (ordinal < 0 || head.indexOf('.') == ordinal
+                    || ordinal + 1 >= head.length()) {
+                return this;
+            }
+            for (int at = ordinal + 1; at < head.length(); at++) {
+                if (!Character.isDigit(head.charAt(at))) return this;
+            }
+            return new Anchor(producerEndpointId, head.substring(0, ordinal)
+                    + (api < 0 ? "" : rpcSite.substring(api)));
+        }
+
         @Override
         Object[] parts() {
             return new Object[] {producerEndpointId, rpcSite};

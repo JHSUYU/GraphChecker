@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.option.LongOptions;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -29,24 +30,33 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * ONE obligation: build its query, solve it, say what the replay must apply.
+ * An obligation's question: build its query, solve it, say what the replay
+ * must apply.  One obligation, or every obligation one host's workers ask
+ * within an exploration, over the corpus as it stands when each is taken.
  *
  * <pre>
- *   --obligations &lt;file&gt;      the wave's obligations.jsonl
+ *   --sessions &lt;dir&gt;          the corpus the exploration has landed so far
+ *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
+ *                             declaration the round was planned under
+ *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt;
+ *   one obligation:
+ *   --obligations &lt;file&gt;      the round's obligations.jsonl
  *   --obligation-id &lt;id&gt;      which row of it this worker owns
- *   --sessions &lt;dir&gt;          the corpus every wave so far has written
  *   --output-dir &lt;dir&gt;        obligation_result.jsonl, obligation.jsonl,
- *                             obligation_query.smt2, focused_task.jsonl,
+ *                             obligation_query.smt2, gaps.jsonl,
+ *                             focused_task.jsonl, the schedule cut, and
  *                             question.txt (a decided verdict of its own
  *                             settles its question) or question.asked (SAT)
- *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
- *                             declaration the wave was planned under
- *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt;
+ *   or a host's share of them ({@link SolverService}):
+ *   --serve &lt;dir&gt;             answer the questions put there, each into its
+ *                             own output directory, until none has come for
+ *   --idle-seconds &lt;n&gt;
  * </pre>
  *
- * <p>One process per obligation (queries are independent). The verdict is
- * always written: UNSAT and NOT_ADMITTED are terminal outcomes the next wave
- * reads, never a run failure.</p>
+ * <p>Queries are independent: a question's files are the same whichever
+ * questions the JVM answered before it.  The verdict is always written: UNSAT
+ * and NOT_ADMITTED are terminal outcomes the next round reads, never a run
+ * failure.</p>
  */
 public final class ObligationSolverMain {
     private ObligationSolverMain() {
@@ -54,28 +64,88 @@ public final class ObligationSolverMain {
 
     public static void main(String[] argv) throws Exception {
         LongOptions options = LongOptions.parse(argv);
-        Path obligations = options.path("obligations");
-        String obligationId = options.value("obligation-id", "");
         Path sessions = options.path("sessions");
-        Path out = options.path("output-dir");
-        if (obligations == null || obligationId.isEmpty() || sessions == null
-                || out == null) {
-            throw new IllegalArgumentException("--obligations, "
-                    + "--obligation-id, --sessions and --output-dir are "
-                    + "required");
+        if (sessions == null) {
+            throw new IllegalArgumentException("--sessions is required");
         }
         Path iteration = sessions.getParent();
-        JsonObject result = solve(iteration,
-                options.path("root-domains"), obligations,
-                obligationId, out,
-                Paths.get(options.value("z3", "z3")),
-                options.number("solver-timeout-ms",
-                        Z3.DEFAULT_TIMEOUT_MILLIS));
+        Path rootDomains = options.path("root-domains");
+        Path z3 = Paths.get(options.value("z3", "z3"));
+        long timeoutMillis = options.number("solver-timeout-ms",
+                Z3.DEFAULT_TIMEOUT_MILLIS);
+        Path serve = options.path("serve");
+        if (serve != null) {
+            SolverService.serve(serve,
+                    options.number("idle-seconds", 0L) * 1000L,
+                    answerer(sessions, rootDomains, z3, timeoutMillis));
+            return;
+        }
+        Path obligations = options.path("obligations");
+        String obligationId = options.value("obligation-id", "");
+        Path out = options.path("output-dir");
+        if (obligations == null || obligationId.isEmpty() || out == null) {
+            throw new IllegalArgumentException("--serve, or --obligations, "
+                    + "--obligation-id and --output-dir, are required");
+        }
+        JsonObject result = solve(Corpus.read(iteration, rootDomains),
+                iteration, obligations, obligationId, out, z3,
+                timeoutMillis);
         System.out.println(ExploreMain.pretty(result));
     }
 
-    /** Solves one published obligation and writes every artifact of it. */
-    public static JsonObject solve(Path iteration, Path rootDomains,
+    /**
+     * A host's answers for one exploration.  The corpus is read when the
+     * first question is taken, and again before one whenever a session
+     * landed in it or left it since (its {@link #listing}: the head lands
+     * sessions while the exploration streams); otherwise the question starts
+     * from the corpus as read ({@link Corpus#freshLowerings}).  Either way
+     * its files are the ones a JVM of its own, reading the corpus then,
+     * would write, whatever was asked before.
+     */
+    private static SolverService.Answerer answerer(Path sessions,
+                                                   Path rootDomains, Path z3,
+                                                   long timeoutMillis) {
+        Path iteration = sessions.getParent();
+        return new SolverService.Answerer() {
+            private List<String> read;
+            private Corpus corpus;
+
+            @Override
+            public void answer(JsonObject question, Path out)
+                    throws Exception {
+                List<String> now = listing(sessions);
+                if (now.equals(read)) {
+                    corpus.freshLowerings();
+                } else {
+                    corpus = Corpus.read(iteration, rootDomains);
+                    read = now;
+                }
+                solve(corpus, iteration, Paths.get(JsonFields
+                        .primitiveString(question, "obligations")),
+                        JsonFields.primitiveString(question, "obligationId"),
+                        out, z3, timeoutMillis);
+            }
+        };
+    }
+
+    /** The session directory names of a corpus, sorted. */
+    static List<String> listing(Path sessions) throws IOException {
+        List<String> names = new ArrayList<String>();
+        try (DirectoryStream<Path> entries =
+                     Files.newDirectoryStream(sessions)) {
+            for (Path entry : entries) {
+                if (Files.isDirectory(entry)) {
+                    names.add(entry.getFileName().toString());
+                }
+            }
+        }
+        Collections.sort(names);
+        return names;
+    }
+
+    /** Solves one published obligation over the corpus of {@code
+     *  iteration} and writes every artifact of it. */
+    public static JsonObject solve(Corpus corpus, Path iteration,
                                    Path obligations, String obligationId,
                                    Path out, Path z3, long timeoutMillis)
             throws IOException {
@@ -86,10 +156,9 @@ public final class ObligationSolverMain {
             if (row.obligationId().equals(obligationId)) proposal = row;
         }
         if (proposal == null) {
-            throw new IOException("the wave has no obligation " + obligationId
+            throw new IOException("the round has no obligation " + obligationId
                     + ": " + obligations);
         }
-        Corpus corpus = Corpus.read(iteration, rootDomains);
         ObligationFactory.Candidate candidate =
                 ObligationFactory.locate(corpus, proposal);
         if (candidate == null) {

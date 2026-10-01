@@ -10,15 +10,17 @@
 # outputs are compared by tools/regress/ab_compare.py:
 #
 #   chain     stage       mirrors                       reads
-#   SEED      SEED.static do_analyze (static pass)      the case's scope, copied again from its tree
+#   SEED      SEED.static do_analyze (static pass),     the case's scope, copied again from its tree,
+#                         after the door step of        and the library doors' classes it calls
+#                         campaign_analyze_grown_scope
 #             SEED.trace  do_workload's aggregation     the recording's runtime/ + one set of static
 #                                                       artifacts for both sides (ab_seed)
 #             PLAN        do_schedule                   this side's SEED.trace plan
-#             EXPLORE.0   campaign_explore, wave 0      the seed session + this side's PLAN
+#             EXPLORE.0   campaign_explore, round 0     the seed session + this side's PLAN
 #             SOLVE.0     campaign_obligation_worker's  each EXPLORE.0 obligation (z3), no replay
 #                         solver
 #   IMPORT    IMPORT      campaign_import_gate          the recorded final corpus
-#   EXPLORE.N EXPLORE.N   campaign_explore, last wave   the recorded final corpus, verdicts, slots
+#   EXPLORE.N EXPLORE.N   campaign_explore, last round  the recorded final corpus, verdicts, slots
 #   COMPOSE   COMPOSE     do_compose (+SOLVE, DECIDE)   the recorded final corpus (z3)
 #             CONFIRM     campaign_confirm's ConfirmMain this side's COMPOSE claim, no replay
 #
@@ -29,7 +31,7 @@
 # rounds recorded by a build whose row contract HEAD still reads.
 #
 # A stage that reads an iteration reads a private one: the recorded sessions
-# and obligation waves linked, the files a stage rewrites (slots.jsonl)
+# and obligation rounds linked, the files a stage rewrites (slots.jsonl)
 # copied, so nothing under a recorded run is ever written.  Both jars are
 # copied into the output first (a rebuild under a running gate changes
 # nothing) and run under THIS checkout's case declarations and harness
@@ -136,13 +138,13 @@ ab_stage_dir() {
 
 ab_ok() { [[ "$(sed -n 's/^exit=\([^ ]*\).*/\1/p' "${ab_case_dir}/$1/status" 2>/dev/null)" == 0 ]]; }
 
-# ab_iteration <dst> full|wave0 [plan | wave left out]: a private iteration
-# over the recorded one.  full: every session and obligation wave linked
+# ab_iteration <dst> full|wave0 [plan | round left out]: a private iteration
+# over the recorded one.  full: every session and obligation round linked
 # (but the one named, which the stage writes), the iteration's files
-# copied.  wave0: the sessions wave 0 was planned over (its roster, or the
-# whole corpus of a run that planned no wave), the recorded schedule, and
-# this side's PLAN as the iteration plan; no wave, no slot table.  A wave's
-# output goes inside, where the planner reads the wave before it.
+# copied.  wave0: the sessions round 0 was planned over -- the seed alone,
+# the one session whose manifest states SEED -- the recorded schedule, and
+# this side's PLAN as the iteration plan; no round, no slot table.  A
+# round's output goes inside, where the planner reads the round before it.
 ab_iteration() {
   local dst=$1 mode=$2 extra=${3:-} name file wave
   mkdir -p "${dst}"
@@ -150,15 +152,12 @@ ab_iteration() {
     && cp "${ab_acc_it}/recorded_schedule.jsonl" "${dst}/"
   if [[ "${mode}" == wave0 ]]; then
     mkdir -p "${dst}/sessions"
-    while IFS= read -r name; do
-      [[ -n "${name}" ]] || continue
-      [[ -d "${ab_acc_it}/sessions/${name}" ]] || return 1
+    for name in "${ab_acc_it}"/sessions/*/manifest.json; do
+      jq -e '.role == "SEED"' "${name}" >/dev/null 2>&1 || continue
+      name=$(basename "$(dirname "${name}")")
       ln -s "${ab_acc_it}/sessions/${name}" "${dst}/sessions/${name}"
-    done < <(if [[ -d "${ab_acc_it}/obligations-0000" ]]; then
-        cat "${ab_acc_it}/obligations-0000/sessions-before.txt"
-      else
-        ls "${ab_acc_it}/sessions"
-      fi)
+    done
+    [[ -n "$(ls "${dst}/sessions")" ]] || return 1
     cp "${extra}" "${dst}/execution_task_plan.jsonl"
     : >"${dst}/obligation_results.jsonl"
     return 0
@@ -187,14 +186,15 @@ ab_explore_args() {
   [[ -z "${value}" ]] || ab_explore+=(--max-tasks "${value}")
   value=$(ab_cfg region_path_max_world_depth)
   [[ -z "${value}" ]] || ab_explore+=(--max-world-depth "${value}")
-  [[ -z "$(ab_cfg region_path_stop_at_fatal)" ]] || ab_explore+=(--stop-at-fatal)
 }
 
 ab_stage_seed_static() {
-  local dir classes out growth sha
+  local dir classes out grown growth sha
+  local -a roots=()
   dir=$(ab_stage_dir SEED.static)
   classes=${dir}/classes
   out=${dir}/out
+  grown=${dir}/scope-classes
   growth=$(ab_cfg causynth_scope_growth_budget)
   [[ -z "${growth}" || "${growth}" == 0 ]] \
     || ab_skip "${dir}" "scope growth (budget ${growth}) is not mirrored" || return
@@ -209,13 +209,33 @@ ab_stage_seed_static() {
   sha=$(cd "${classes}" && find . -type f -print0 | LC_ALL=C sort -z \
     | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')
   printf '%s\n' "${sha}" >"${dir}/classes.sha256"
-  mkdir -p "${out}"
-  ab_props=(
+  mkdir -p "${out}" "${grown}"
+  # campaign_analyze_grown_scope's door step, outside the budget: the class
+  # families of the library doors the analysis scope calls join it
+  # (doors/stdout.txt names them).  A jar that ships no catalog has no doors.
+  IFS=: read -r -a roots <<<"$(ab_cfg causynth_lineage_roots)"
+  # The system's own doors replace the catalog's, in the door step as in
+  # the static pass (run_engine.sh run_java_main, do_analyze).
+  ab_props=("-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)")
+  if (( ${#roots[@]} > 0 )) && unzip -Z1 "${ab_jar}" \
+      edu/uva/liftlab/graphchecker/library-catalog.jsonl >/dev/null 2>&1; then
+    mkdir -p "${dir}/doors"
+    ab_java "${dir}/doors" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
+      "${ab_jar}" edu.uva.liftlab.graphchecker.plan.ScopeGrowth --doors \
+      "${grown}" "${classes}" "${ab_project_cp}" "${roots[@]}" \
+      || ab_skip "${dir}" "the door scope failed (doors/stderr.log)" || return
+    cp "${dir}/doors/stdout.log" "${dir}/doors/stdout.txt"
+  fi
+  ab_props+=(
     "-Dcausynth.output.dir=${out}"
     "-Dcausynth.target.spec=$(ab_cfg causynth_target_spec)"
     "-Dcausynth.loop.bounds=$(ab_cfg causynth_loop_bounds)"
     "-Dcausynth.region.skeletons=${out}/region_skeletons.jsonl.gz"
   )
+  [[ ! -s "${grown}/GROWN" ]] \
+    || ab_props+=("-Dcausynth.process.dirs=${grown}")
+  [[ -z "$(ab_cfg causynth_lineage_roots)" ]] || ab_props+=(
+    "-Dcausynth.lineage.roots=$(ab_cfg causynth_lineage_roots)")
   [[ -z "$(ab_cfg causynth_communication_mappings)" ]] || ab_props+=(
     "-Dcausynth.communication.mappings=$(ab_cfg causynth_communication_mappings)")
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
@@ -259,7 +279,7 @@ ab_stage_explore0() {
   dir=$(ab_stage_dir EXPLORE.0)
   ab_iteration "${dir}/iteration-0000" wave0 \
       "${ab_case_dir}/PLAN/execution_task_plan.jsonl" \
-    || ab_skip "${dir}" "a wave-0 session is not in the recorded corpus" \
+    || ab_skip "${dir}" "the recorded corpus states no seed session" \
     || return
   ab_explore_args
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" "${ab_jar}" \
@@ -267,11 +287,11 @@ ab_stage_explore0() {
     --sessions "${dir}/iteration-0000/sessions" \
     --results "${dir}/iteration-0000/obligation_results.jsonl" \
     --static-scope-map "${ab_static}/static_scope_map.jsonl" \
-    --topology-epoch iteration-0000 --wave 0 \
+    --topology-epoch iteration-0000 --round 0 \
     --output-dir "${dir}/iteration-0000/obligations-0000" "${ab_explore[@]}"
 }
 
-# One solver per wave-0 obligation, over the iteration EXPLORE.0 left (its
+# One solver per round-0 obligation, over the iteration EXPLORE.0 left (its
 # slot table included), each into its own worker directory: the solver half
 # of campaign_obligation_worker, whose failure the campaign records as that
 # obligation's NOT_ADMITTED -- an outcome, compared by each worker's own
@@ -325,14 +345,14 @@ ab_stage_import() {
   return "${code}"
 }
 
-# The closing wave over the corpus as the campaign left it, and under the
+# The closing round over the corpus as the campaign left it, and under the
 # static map that corpus was explored with.
 ab_stage_exploren() {
   local dir last
   dir=$(ab_stage_dir EXPLORE.N)
   ab_corpus "${dir}" || return
   last=$(cd "${ab_acc_it}" && ls -d obligations-* 2>/dev/null | LC_ALL=C sort | tail -n 1)
-  [[ -n "${last}" ]] || ab_skip "${dir}" "the run planned no wave" || return
+  [[ -n "${last}" ]] || ab_skip "${dir}" "the run planned no round" || return
   ab_iteration "${dir}/iteration-0000" full "${last}"
   ab_explore_args
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" "${ab_jar}" \
@@ -340,7 +360,7 @@ ab_stage_exploren() {
     --sessions "${dir}/iteration-0000/sessions" \
     --results "${dir}/iteration-0000/obligation_results.jsonl" \
     --static-scope-map "${ab_acc}/static_scope_map.jsonl" \
-    --topology-epoch iteration-0000 --wave "$((10#${last#obligations-}))" \
+    --topology-epoch iteration-0000 --round "$((10#${last#obligations-}))" \
     --output-dir "${dir}/iteration-0000/${last}" "${ab_explore[@]}"
 }
 

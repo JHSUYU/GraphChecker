@@ -1,1 +1,1 @@
-exception_target: adhoc-fetch-incomplete org.apache.solr.handler.IndexFetcher 1863
+exception_target: adhoc-fetch-incomplete org.apache.solr.handler.IndexFetcher 1866

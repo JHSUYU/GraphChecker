@@ -14,11 +14,13 @@ tree at `Client$Connection.sendRpcRequest`) or the NameNode's answer lost after 
 the request (`FAULT:HADOOP_IPC:RESPONSE`, at `Client.getRpcResponse`), to a DataNode or to
 the application.
 
-| Case | Request flow | Hadoop worktree | Branch |
-| --- | --- | --- | --- |
-| `bug1` | NameNode -> Balancer -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug1` | `gc/hdfs-17899-bug1` |
-| `bug2` | NameNode -> SPS -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug2` | `gc/hdfs-17899-bug2` |
-| `bug3` | NameNode -> source DataNode -> target DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug3` | `gc/hdfs-17899-bug3` |
+| Case | Request flow |
+| --- | --- |
+| `bug1` | NameNode -> Balancer -> DataNode |
+| `bug2` | NameNode -> SPS -> DataNode |
+| `bug3` | NameNode -> source DataNode -> target DataNode |
+
+All three run on the unified HDFS tree `/u/vnr3ne/hadoop-hdfs-unified`, branch `gc/hdfs-unified` (trunk 734dd8a67cd; inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`); HDFS-17899's fix (62729b06d70) landed after that base.
 
 ## The workloads
 
@@ -50,10 +52,10 @@ workload asserts the gap itself.
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
-| the failure | `target.yaml` | `exception_target: hdfs-17899 …BlockTokenSecretManager 582`, the same line in each of the three checkouts |
+| the failure | the tree's marker | `@CausynthExceptionTarget` naming `hdfs-17899-bug1`, `-bug2` and `-bug3` on `BlockTokenSecretManager.retrieveDataEncryptionKey`'s missing-key `throw new` (line 582); `run.sh` derives each case's spec from it |
 | the occurrence | `target_occurrence` in `case.sh`, exported as `CAUSYNTH_TARGET_OCCURRENCE` | `bug1` `hdfs-17899/target-dn#epoch0/…@hdfs-17899/balancer#epoch0/balance-block#1`; `bug2` `…/target-dn#epoch0/…@hdfs-17899/sps#epoch0/satisfy-storage-policy#1`; `bug3` `…/target-dn#epoch0/…@hdfs-17899/source-dn#epoch0/replicate-block#1`. Left empty, the run keeps every observed occurrence |
 | clock roots | the program text (`causynth/RootCatalog`) | every read the slice reaches of a clock -- a JVM clock or a method returning one under constant arithmetic (`Timer.now()`, `Time.now()`, `Time.monotonicNow()`) -- is a root, and the occurrence that reads it is admitted as a root reader |
-| fault points | the Hadoop worktrees, not this directory | every mapped transport door mints its Boolean fault point unconditionally: `Debug.makeSymbolicBoolean("FAULT:HADOOP_IPC:REQUEST")` in `Client$Connection.sendRpcRequest` (the key-refresh RPC failure) and `…("FAULT:HDFS_SASL:REQUEST")` in `SaslDataTransferClient.doSaslHandshake`. The recorded polarity is false; true throws the transport's `IOException` before the request leaves, with no `causynth.active()` guard |
+| fault points | the engine's library catalog (`docs/design/SYMBOL-SCOPE.md` §4.2), not this directory | every catalog door of a class the system calls is woven with its Boolean fault points: `FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest` (the key-refresh RPC failure), `FAULT:HADOOP_IPC:RESPONSE`, `FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake` and `FAULT:HDFS_DATA_TRANSFER:SEND` in `datatransfer.Sender.send`. The recorded polarity is false; true throws the transport's failure before the request leaves (after the response arrives) |
 | hook-minted roots | the Hadoop checkouts | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` roots the counter each new `BlockKey` takes its id from; `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so neither is listed in `symbolic-inputs.jsonl` |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `declaredDomainMin "+0"`, `declaredDomainMax "+3"`: the recorded value and up to three rotations past it, relative because the serial starts at a `SecureRandom` int and increments once per roll. A root with no row is pinned to its recording; a clock has a floor of zero and no window |
 | wire mappings | `communication-mappings.jsonl`, four `WIRE_FLOW` rows | `block-key-id`, `block-key-expiry-date`, `data-encryption-key-id` and `namenode-data-encryption-key-id`, each with an exact producer and consumer capture (`CALL_ARGUMENT`, `CALL_RETURN`, `METHOD_PARAMETER`). Declared ports are tracked and mint nothing: the attach installs the producer's own propagated expression at the consumer |

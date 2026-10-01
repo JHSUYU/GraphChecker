@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
@@ -644,6 +645,35 @@ public class ConfirmMainTest {
         assertEquals(anchor.id(),
                 edges.get("ANCHOR").get("occurrence").getAsString());
         assertEquals(40L, edges.get("ANCHOR").get("seq").getAsLong());
+        // The reader's activation called another method before the read:
+        // the order holds that call's entry, the last one before the read,
+        // not the activation's own -- one that polls for what it caused to
+        // be written (SOLR-18413 s13a: MigrateCmd#migrateKey) is entered
+        // before the write and would wait out the order there.
+        SessionDir sel = SessionDir.of(iteration, "sel");
+        List<ReadRow> reads = new ArrayList<ReadRow>(
+                SessionReader.read(iteration, "sel").reads());
+        Frame poll = Frame.of("<a.Handler: java.util.Map rules()>", 3);
+        reads.add(ReadRow.of("sel", 25L, Endpoint.of(anchor,
+                "a.Handler#rules()#2:READ", ExecutionIndex.of(Arrays.asList(
+                        poll, Frame.of("a.Handler#rules()#2:READ", 0))), 0),
+                LocationId.of(LocationKind.INSTANCE, "9", "1"), 4L,
+                "INSTANCE_FIELD/9#1@v4", "I", "0"));
+        RowCodec.writeAll(sel.reads(), reads, RowCodec::writeRead);
+        Path polled = folder.newFolder("polled").toPath();
+        ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
+                polled);
+        int held = 0;
+        for (JsonObject edge : RowCodec.readJsonl(
+                polled.resolve(Confirmation.FILE))) {
+            if (!"ORDER".equals(edge.get("kind").getAsString())) continue;
+            held++;
+            assertEquals(Endpoint.activation(anchor, ExecutionIndex.of(
+                    Collections.singletonList(poll))),
+                    edge.get("after").getAsString());
+        }
+        assertEquals(1, held);
+
         // A join at a location the fatal does not rest on is no edge: under
         // the moved root the run may read it elsewhere or not at all.
         Path unheld = folder.newFolder("unheld").toPath();

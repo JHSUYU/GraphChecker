@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""findings.py <sweep-dir> [--ledger FILE] [--static DIR]
+"""findings.py <sweep-dir> [--ledger FILE] [--static DIR] [--annotated SYSTEM-DIR TREE]
 
 One row per mechanism among a sweep's confirmed witnesses: every
 <sweep-dir>/accept-*/out/<case>/schedule/final/result.json (a batch case's:
@@ -33,9 +33,10 @@ Weight, per witness (a signature takes its best):
                    (--static DIR: slice.sh's $GC_OUT/static/<key>, whose
                    score.json names the check's TARGET_SITE) it reaches only
                    through a field or a wire, else 0
-  reproduction     result.json's reproduction (run_engine.sh REPRODUCE): the
-                   share of its native runs that took the fatal arm at the
-                   claim's anchor; 0 when it ran none
+  reproduction     reproduce.json beside result.json (run_engine.sh
+                   REPRODUCE, after EMIT): the share of its native runs that
+                   took the fatal arm at the claim's anchor; 0 when it ran
+                   none or has not finished
   extra roots      1 per moved root beyond the first
 
 Writes <sweep-dir>/findings.tsv, best weight first, with the best case's native
@@ -43,7 +44,14 @@ reproduction (runs at the anchor / runs).  With --ledger, the
 ledger (one JSON row per signature: sig, firstSeen, lastSeen, cases, status)
 is read and rewritten: a signature it did not hold is new, one it held is
 known, and one dismissed.tsv beside it names (sig, reason, JIRA id; by hand)
-is dismissed.  What cannot be read of a witness is named on stderr."""
+is dismissed.  With --annotated, a witness whose campaign declared its target
+at a throw the sweep's tree marks as a known bug's (tools/lib/annotated.py:
+@CausynthExceptionTarget naming the bug's cases) is known whatever the ledger
+says, and its row's `known bug` column names those cases: what a sweep
+re-found of the bugs it already knows.  The declared target is the check's
+own spec (a batch case's targets/<check>/target.yaml) or the campaign's (its
+run manifest's targetSpec).  What cannot be read of a witness is named on
+stderr."""
 import argparse
 import collections
 import datetime
@@ -53,6 +61,10 @@ import json
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "lib"))
+import annotated  # noqa: E402
 
 KIND_WEIGHT = {"STATE_PAIRING_FLIPPED": 5, "MESSAGE_PAIRING_FLIPPED": 5,
                "RECORDED_FAILURE_EXPLAINED": 3}
@@ -72,6 +84,25 @@ def target_site(case_dir):
         if '"TARGET_SITE"' in line:
             return json.loads(line)["siteId"]
     raise ValueError("no TARGET_SITE in %s/static_scope_map.jsonl" % case_dir)
+
+
+def declared_target(final):
+    """(top-level class, line) of the target the witness's campaign
+    declared: its check's own spec, else the campaign's."""
+    case_dir = os.path.dirname(os.path.dirname(final))
+    path = os.path.join(case_dir, "target.yaml")
+    if not os.path.exists(path):
+        manifest = json.load(open(os.path.join(final, "run-manifest.json")))
+        path = manifest["provenance"]["targetSpec"]["path"]
+    specs = [line.split() for line in lines(path)
+             if line.split()[0] == "exception_target:"]
+    if len(specs) > 1:
+        specs = [spec for spec in specs
+                 if spec[1] == os.path.basename(case_dir)]
+    if len(specs) != 1:
+        raise ValueError("no one exception_target for %s in %s"
+                         % (case_dir, path))
+    return specs[0][2].split("$", 1)[0], int(specs[0][3])
 
 
 def actions(plan, roots):
@@ -174,7 +205,8 @@ def witness(final):
         weight = 2 if all(b in ("<=1s", "<=1min") for b in clocks) else 1
     else:
         weight = KIND_WEIGHT.get(kind, 0)
-    reproduction = result.get("reproduction") or {}
+    path = os.path.join(final, "reproduce.json")
+    reproduction = json.load(open(path)) if os.path.exists(path) else {}
     runs = reproduction.get("runs", 0)
     return {"target": target_site(case_dir), "kind": kind, "parts": parts,
             "weight": weight, "extra": len(parts) - 1,
@@ -212,7 +244,13 @@ def main():
     parser.add_argument("sweep")
     parser.add_argument("--ledger")
     parser.add_argument("--static")
+    parser.add_argument("--annotated", nargs=2,
+                        metavar=("SYSTEM_DIR", "TREE"))
     args = parser.parse_args()
+    marked = collections.defaultdict(set)
+    if args.annotated:
+        for row in annotated.sites(*args.annotated):
+            marked[(row["cls"], row["line"])].add(row["case"])
     scores = {}
     if args.static:
         for path in glob.glob(os.path.join(args.static, "*", "score.json")):
@@ -235,6 +273,13 @@ def main():
         if found is None:
             continue
         found["case"] = case
+        found["known"] = set()
+        if marked:
+            try:
+                found["known"] = marked.get(declared_target(final), set())
+            except (ValueError, KeyError, OSError) as error:
+                print("no declared target for %s: %s" % (case, error),
+                      file=sys.stderr)
         base = found["weight"] + (2 if mediated(found, scores) else 0)
         found["weight"] = round(base * (1 + found["rate"]) - found["extra"], 2)
         witnesses[signature(found)].append(found)
@@ -253,19 +298,20 @@ def main():
     for sig, found in witnesses.items():
         best = max(found, key=lambda f: (f["weight"], f["case"]))
         cases = sorted(f["case"] for f in found)
+        known = ",".join(sorted(set().union(*(f["known"] for f in found))))
         status = ("dismissed" if sig in dismissed
-                  else "known" if sig in ledger else "new")
+                  else "known" if sig in ledger or known else "new")
         row = ledger.setdefault(sig, {"sig": sig, "firstSeen": now, "cases": []})
         row.update(lastSeen=now, status=status,
                    cases=sorted(set(row["cases"]) | set(cases)))
         roots = " + ".join(describe(part) for part in sorted(best["parts"]))
-        table.append((best["weight"], best["native"], sig, status, best["kind"],
-                      best["target"], roots, best["case"], len(cases),
-                      " ".join(cases)))
+        table.append((best["weight"], best["native"], sig, status, known,
+                      best["kind"], best["target"], roots, best["case"],
+                      len(cases), " ".join(cases)))
     table.sort(key=lambda row: (-row[0], row[2]))
     with open(os.path.join(args.sweep, "findings.tsv"), "w") as out:
-        out.write("weight\tnative\tsig\tstatus\tkind\ttarget\tmoved roots"
-                  "\tbest case\tcases\tall cases\n")
+        out.write("weight\tnative\tsig\tstatus\tknown bug\tkind\ttarget"
+                  "\tmoved roots\tbest case\tcases\tall cases\n")
         for row in table:
             out.write("\t".join(str(v) for v in row) + "\n")
     if args.ledger:
@@ -274,9 +320,13 @@ def main():
             for row in sorted(ledger.values(), key=lambda r: r["firstSeen"]):
                 out.write(json.dumps(row, sort_keys=True) + "\n")
         os.replace(args.ledger + ".partial", args.ledger)
-    print("%d confirmed witness(es), %d mechanism(s), %d new"
+    print("%d confirmed witness(es), %d mechanism(s), %d new, %d at a known"
+          " bug's marked site%s"
           % (sum(map(len, witnesses.values())), len(witnesses),
-             sum(1 for row in table if row[3] == "new")), file=sys.stderr)
+             sum(1 for row in table if row[3] == "new"),
+             sum(1 for row in table if row[4]),
+             "".join(" " + row[4] for row in table if row[4])),
+          file=sys.stderr)
 
 
 if __name__ == "__main__":

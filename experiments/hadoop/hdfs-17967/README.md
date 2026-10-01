@@ -15,20 +15,10 @@ instead of clearing its cached key and retrying once, which is what the PR adds.
 | `pathB` | the move TARGET, on `DataXceiver.replaceBlock` (`DataXceiver.java:1241`) | the PROXY | `DataXceiver.java:1285 throw ioe` |
 | `pathC` | the RECONSTRUCTING node, on `StripedBlockWriter.init` | the reconstruction TARGET | `StripedWriter.java:122 throw new IOException("All targets are failed.")` |
 
-Each case has its own Hadoop worktree, so its source changes and compiled classes stay
-independent:
-
-| Case | Worktree | Branch |
-| --- | --- | --- |
-| `pathA` | `/u/vnr3ne/hadoop-hdfs-17967` | `gc/hdfs-17967-pathA` |
-| `pathB` | `/u/vnr3ne/hadoop-hdfs-17967-b` | `gc/hdfs-17967-pathB` |
-| `pathC` | `/u/vnr3ne/hadoop-hdfs-17967-c` | `gc/hdfs-17967-pathC` |
-
-All three are cut from `gc/hdfs-17899-bug3-current`, which still has the bug (its
-`DataXceiver.java` holds **0** occurrences of `InvalidEncryptionKeyException` against **5**
-on the upstream fix branch `HDFS-17899-followup-invalid-encryption-key`) and already carries
-the instrumentation stack. Do not base this case on the upstream follow-up branch: it has
-the fix, so there is no fatal arm to reach.
+All three run on the unified HDFS tree `/u/vnr3ne/hadoop-hdfs-unified`, branch `gc/hdfs-unified` (trunk 734dd8a67cd; inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`). It has the bug: no HDFS-17967 fix is in trunk (its
+`DataXceiver.java` handles no `InvalidEncryptionKeyException` in the relays). Do not base
+this case on the upstream follow-up branch `HDFS-17899-followup-invalid-encryption-key`: it
+has the fix, so there is no fatal arm to reach.
 
 ## The one target site, and why it is not any of the three throws
 
@@ -55,24 +45,25 @@ apart by `declared_target_occurrence`, exactly as HDFS-17899's three bugs are.
 
 ## What these cases declare
 
-`workflow.properties`, `target.yaml`, `root-domains.jsonl`,
+`workflow.properties`, `root-domains.jsonl`,
 `communication-mappings.jsonl` and `loop-bounds.jsonl` are shared by all three; `case.sh`
 carries what is per case, including the per-case analysis scope.
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
-| the failure | `target.yaml` | `exception_target: hdfs-17967 …BlockTokenSecretManager 582`, the same line in each of the three worktrees |
+| the failure | the tree's marker | `@CausynthExceptionTarget` naming `hdfs-17967-pathA`, `-pathB` and `-pathC` on `BlockTokenSecretManager.retrieveDataEncryptionKey`'s missing-key `throw new` (line 582); `run.sh` derives each case's spec from it |
 | the occurrence | `target_occurrence` in `case.sh` | `pathA` `hdfs-17967/mirror-dn#epoch0/region/REGION.7c569c3f…#1`; `pathB` `…/proxy-dn#…`; `pathC` `…/target-dn#…`. `REGION.7c569c3f` is the per-connection `SaslDataTransferServer` callback handler, the region every passing case in this family anchors on |
 | clock roots | the program text (`causynth/RootCatalog`) | every read the slice reaches of a clock -- a JVM clock or a method returning one under constant arithmetic (`Timer.now()`, `Time.now()`, `Time.monotonicNow()`) -- is a root, and the occurrence that reads it is admitted as a root reader |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `+0` to `+3`: the recorded value and up to three rotations past it |
 | analysis scope | `case.sh` (`scope`) | a shared narrow set (the SASL client/server, the key managers, `PBHelper`, `ipc/Client`), plus `DFSClient` for A and the erasure-coding reconstruction families for C |
 
-**Fault points.** Every mapped transport door mints its fault point unconditionally:
-`FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest` and
-`FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake`, the same code in every
-tree. The recorded polarity is false; true throws the transport's failure before the request
-leaves. `ipc/Client` stays in the analysis scope: the door and the IPC message-propagation
-calls the causal context travels on live in the same file.
+**Fault points.** The engine's library catalog doors (`docs/design/SYMBOL-SCOPE.md` §4.2):
+`FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest`, `FAULT:HADOOP_IPC:RESPONSE`,
+`FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake` and
+`FAULT:HDFS_DATA_TRANSFER:SEND` in `datatransfer.Sender.send`, the same code in every tree. The
+recorded polarity is false; true throws the transport's failure before the request leaves.
+`ipc/Client` stays in the analysis scope: the door and the IPC message-propagation calls the
+causal context travels on live in the same file.
 
 ## The workloads
 

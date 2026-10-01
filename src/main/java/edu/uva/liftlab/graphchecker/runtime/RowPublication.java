@@ -478,7 +478,9 @@ final class RowPublication {
     /**
      * The anchor row: the predicate of the arm this run took, plus whether
      * that arm is the fatal one the task declares.  No reader re-derives a
-     * polarity (a second negation is the trap).
+     * polarity (a second negation is the trap).  A reached anchor always
+     * states phi: a concrete fatal condition as the constant of the arm it
+     * took ({@link RowRuntime#fatalTerm}); an unreached one states none.
      */
     private static void target(ActiveRegion active,
                                OccurrenceAddress occurrence) {
@@ -539,12 +541,13 @@ final class RowPublication {
             }
             if (latest > 0L) at = latest;
         }
-        String phi = RowRuntime.fatalTerm(condition, takenIsFatal);
+        String phi = reached ? RowRuntime.fatalTerm(condition, takenIsFatal)
+                : "";
         boolean observedFatal = reached && observed == fatalArm;
         if (reached && task.targetGuards.size() > 1) {
             List<String> arms = new ArrayList<>();
             observedFatal = tookDisjunct(active, arms);
-            phi = arms.isEmpty() ? "" : arms.size() == 1 ? arms.get(0)
+            phi = arms.isEmpty() ? "false" : arms.size() == 1 ? arms.get(0)
                     : "(or " + String.join(" ", arms) + ")";
         }
         // seq == 0 means "no VM clock" (a CONCRETE decision stands after the
@@ -567,8 +570,10 @@ final class RowPublication {
      * every test jumps to the throw, so phi is the OR of their fatal arms,
      * each test's first decision from the target branch's on.  The target
      * stands at that first test, so none of them is in the prefix.  A test
-     * decided concretely states no arm; one that took its fatal arm ends the
-     * evaluation, and a concrete one leaves phi empty (the fatal observed).
+     * decided concretely is the constant of its arm: one that took its
+     * healthy arm adds nothing ({@code false}), one that took its fatal arm
+     * ends the evaluation and is the whole disjunction ({@code true}); no
+     * arm at all is {@code false}.
      *
      * @return whether a test took its fatal arm
      */
@@ -604,7 +609,10 @@ final class RowPublication {
                         took));
             }
             if (took) {
-                if (!symbolic) arms.clear();
+                if (!symbolic) {
+                    arms.clear();
+                    arms.add("true");
+                }
                 return true;
             }
         }

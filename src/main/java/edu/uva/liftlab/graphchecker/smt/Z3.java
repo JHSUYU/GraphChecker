@@ -5,6 +5,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -33,6 +34,14 @@ import java.util.concurrent.atomic.AtomicReference;
  * verdict: {@code (get-value ...)} on an unsat query makes z3 print a
  * routine error that would hide real ones.  Only the core run tracks the
  * named assertions ({@link #CORE_TRACKING}).</p>
+ *
+ * <p>Every run is two z3 processes, one per arithmetic engine
+ * ({@link #ARITHMETIC}), and its answer the first one DECIDED; the other is
+ * killed.  z3's time on one query swings by orders of magnitude with the
+ * engine (SOLR-18413 r9's composed query: past 30 minutes under
+ * {@code smt.arith.solver 2}, a second under 6), and neither is the faster
+ * one on every query (2 closes the nested {@code mod 2^32} terms wrapping
+ * arithmetic writes, where 6 can branch for minutes).</p>
  */
 public final class Z3 {
 
@@ -57,6 +66,28 @@ public final class Z3 {
 
     /** The status of an answer no process lived long enough to print. */
     private static final String TIMEOUT = "timeout";
+
+    /**
+     * The arithmetic engines a run races ({@code smt.arith.solver}), the
+     * preferred first: the one every lowered query states
+     * ({@code VmTermLowering#preamble}), so a published query read alone is
+     * the question its preferred run answered.
+     */
+    static final int[] ARITHMETIC = {2, 6};
+
+    /** How a query states its arithmetic engine: this, its digits, ")". */
+    static final String ARITHMETIC_OPENING = "(set-option :smt.arith.solver ";
+
+    /**
+     * How long the preferred engine may still answer after the other one
+     * decided: as long again as that one took, and at least this.  Within
+     * it the preferred answer wins, so a query the preferred engine alone
+     * decides promptly answers as it did before the race, model and all.
+     */
+    static final long PREFERRED_GRACE_MILLIS = 1000L;
+
+    /** How often a race looks at the engine it is not waiting on. */
+    private static final long POLL_MILLIS = 20L;
 
     /** What one question answered. */
     public static final class Answer {
@@ -281,14 +312,191 @@ public final class Z3 {
     }
 
     /**
-     * One z3 process.  Each pipe direction has its own thread (else large
-     * queries deadlock), and the timeout is enforced here; z3's own
+     * One run: the query under each arithmetic engine ({@link #ARITHMETIC}),
+     * two z3 processes, and the first DECIDED answer -- the preferred
+     * engine's when it decides within {@link #PREFERRED_GRACE_MILLIS} of the
+     * other's -- with the other killed.  Both undecided: the preferred
+     * one's answer.  Both share the budget, enforced here; z3's own
      * ({@link #hardTimeout}) only outlives a driver that died.
      */
     private String run(String prefix, ArtifactIO.Body query, String suffix,
                        long budgetMillis) {
         runs.incrementAndGet();
-        long budget = TimeUnit.MILLISECONDS.toNanos(budgetMillis);
+        long started = System.nanoTime();
+        long deadline = started
+                + TimeUnit.MILLISECONDS.toNanos(budgetMillis);
+        Process[] engines = new Process[ARITHMETIC.length];
+        List<AtomicReference<String>> read =
+                new ArrayList<AtomicReference<String>>();
+        List<Thread> readers = new ArrayList<Thread>();
+        try {
+            for (int at = 0; at < engines.length; at++) {
+                AtomicReference<String> output =
+                        new AtomicReference<String>(null);
+                read.add(output);
+                engines[at] = launch(ARITHMETIC[at], prefix, query, suffix,
+                        budgetMillis, output, readers);
+            }
+            return answerOf(race(engines, read, readers, started, deadline));
+        } finally {
+            for (Process engine : engines) {
+                if (engine == null) continue;
+                engine.destroyForcibly();
+                LIVE.remove(engine);
+            }
+        }
+    }
+
+    /**
+     * The printed answer {@link #run} returns, or {@link #TIMEOUT}: the
+     * preferred engine's as soon as it decides; the other's once it has
+     * decided and the preferred one has not within its grace; when neither
+     * decides, the preferred engine's.
+     */
+    private static String race(Process[] engines,
+                               List<AtomicReference<String>> read,
+                               List<Thread> readers, long started,
+                               long deadline) {
+        long otherDecidedAt = 0L;
+        try {
+            while (true) {
+                String preferred = finished(engines[0], read.get(0),
+                        readers.get(0));
+                if (preferred != null && decided(preferred)) return preferred;
+                String other = finished(engines[1], read.get(1),
+                        readers.get(1));
+                long now = System.nanoTime();
+                if (other != null && decided(other)) {
+                    if (otherDecidedAt == 0L) otherDecidedAt = now;
+                    long took = otherDecidedAt - started;
+                    long grace = Math.max(took, TimeUnit.MILLISECONDS
+                            .toNanos(PREFERRED_GRACE_MILLIS));
+                    if (preferred != null || now - otherDecidedAt >= grace) {
+                        return other;
+                    }
+                }
+                if (preferred != null && other != null) return preferred;
+                if (now >= deadline) return TIMEOUT;
+                Process waited = preferred == null ? engines[0] : engines[1];
+                waited.waitFor(Math.min(POLL_MILLIS, Math.max(1L,
+                        TimeUnit.NANOSECONDS.toMillis(deadline - now))),
+                        TimeUnit.MILLISECONDS);
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return TIMEOUT;
+        }
+    }
+
+    /** What an engine printed once it ended and its output is read, else
+     *  null; one that never launched printed why. */
+    private static String finished(Process engine,
+                                   AtomicReference<String> read,
+                                   Thread reader)
+            throws InterruptedException {
+        if (engine == null) return read.get();
+        if (engine.isAlive()) return null;
+        // Its output ends with it: bounded only against a pipe held open.
+        reader.join(TimeUnit.SECONDS.toMillis(ORPHAN_MARGIN_SECONDS));
+        return read.get() == null ? "" : read.get();
+    }
+
+    private static boolean decided(String printed) {
+        String verdict = firstLine(printed);
+        return "sat".equals(verdict) || "unsat".equals(verdict);
+    }
+
+    /** How one engine is stated ({@link #ARITHMETIC_OPENING}). */
+    static String arithmeticOption(int engine) {
+        return ARITHMETIC_OPENING + engine + ")";
+    }
+
+    /**
+     * A query on its way to one engine's z3: every arithmetic option it
+     * states replaced by that engine's as the text streams through, since
+     * the query's own would win over the one {@link #launch} states first.
+     * Streamed, never copied: a composition's query runs past 200 MB
+     * ({@link #ask(ArtifactIO.Body, List, boolean, long)}).
+     */
+    static final class EngineWriter extends Writer {
+        private final Writer out;
+        private final String option;
+        /** What may still open an option: a prefix of
+         *  {@link #ARITHMETIC_OPENING}, then its digits. */
+        private final StringBuilder held = new StringBuilder();
+
+        EngineWriter(Writer out, int engine) {
+            this.out = out;
+            this.option = arithmeticOption(engine);
+        }
+
+        @Override
+        public void write(char[] text, int from, int length)
+                throws IOException {
+            int end = from + length;
+            int at = from;
+            while (at < end) {
+                if (held.length() == 0) {
+                    int open = at;
+                    while (open < end && text[open] != '(') open++;
+                    out.write(text, at, open - at);
+                    if (open == end) return;
+                    at = open;
+                }
+                take(text[at++]);
+            }
+        }
+
+        private void take(char c) throws IOException {
+            int matched = held.length();
+            int opening = ARITHMETIC_OPENING.length();
+            if (matched < opening ? c == ARITHMETIC_OPENING.charAt(matched)
+                    : c >= '0' && c <= '9') {
+                held.append(c);
+                return;
+            }
+            if (c == ')' && matched > opening) {
+                held.setLength(0);
+                out.write(option);
+                return;
+            }
+            release();
+            // The opening's '(' is its first character and its only one.
+            if (c == '(') held.append(c);
+            else out.write(c);
+        }
+
+        private void release() throws IOException {
+            out.write(held.toString());
+            held.setLength(0);
+        }
+
+        @Override
+        public void flush() throws IOException {
+            out.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                release();
+            } finally {
+                out.close();
+            }
+        }
+    }
+
+    /**
+     * One z3 fed {@code prefix}, the query and {@code suffix} under one
+     * arithmetic {@code engine} ({@link EngineWriter}), its output read into
+     * {@code read} by a thread of its own (and its input written by another:
+     * else large queries deadlock); null when it could not start,
+     * {@code read} then saying why (undecided, not a z3 {@code (error ...)}).
+     */
+    private Process launch(int engine, String prefix, ArtifactIO.Body query,
+                           String suffix, long budgetMillis,
+                           AtomicReference<String> read,
+                           List<Thread> readers) {
         Process process;
         try {
             ProcessBuilder builder = new ProcessBuilder(z3.toString(),
@@ -296,30 +504,21 @@ public final class Z3 {
             builder.redirectErrorStream(true);
             process = builder.start();
         } catch (IOException notLaunched) {
-            // z3 never ran: undecided, not a z3 "(error ...)".
-            return "error " + notLaunched.getMessage();
+            read.set("error " + notLaunched.getMessage());
+            readers.add(null);
+            return null;
         }
         LIVE.add(process);
-        try {
-            return drive(process, prefix, query, suffix, budget);
-        } finally {
-            LIVE.remove(process);
-        }
-    }
-
-    /** One launched z3, fed and read under its budget. */
-    private String drive(Process process, String prefix,
-                         ArtifactIO.Body query, String suffix, long budget) {
-        AtomicReference<String> read = new AtomicReference<String>("");
         Thread writer = new Thread(() -> {
-            try (BufferedWriter input = new BufferedWriter(
+            try (BufferedWriter input = new BufferedWriter(new EngineWriter(
                     new OutputStreamWriter(process.getOutputStream(),
-                            StandardCharsets.UTF_8), 1 << 16)) {
+                            StandardCharsets.UTF_8), engine), 1 << 16)) {
+                input.write(arithmeticOption(engine) + "\n");
                 input.write(prefix);
                 query.writeTo(input);
                 input.write(suffix);
             } catch (IOException closed) {
-                // z3 closed its input after answering.
+                // z3 closed its input after answering, or was killed.
             }
         }, "graphchecker-z3-writer");
         Thread reader = new Thread(() -> {
@@ -327,27 +526,15 @@ public final class Z3 {
                 read.set(readAll(process.getInputStream()));
             } catch (IOException truncated) {
                 // A broken pipe answers nothing: "" is undecided.
+                read.set("");
             }
         }, "graphchecker-z3-reader");
         writer.setDaemon(true);
         reader.setDaemon(true);
         writer.start();
         reader.start();
-        try {
-            if (!process.waitFor(budget, TimeUnit.NANOSECONDS)) {
-                process.destroyForcibly();
-                writer.interrupt();
-                reader.interrupt();
-                return TIMEOUT;
-            }
-            reader.join(TimeUnit.NANOSECONDS.toMillis(budget));
-            writer.join(TimeUnit.NANOSECONDS.toMillis(budget));
-        } catch (InterruptedException interrupted) {
-            process.destroyForcibly();
-            Thread.currentThread().interrupt();
-            return TIMEOUT;
-        }
-        return answerOf(read.get());
+        readers.add(reader);
+        return process;
     }
 
     /**
