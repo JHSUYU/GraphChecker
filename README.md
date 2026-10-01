@@ -287,11 +287,24 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 - A launch must name its VM image (`CAUSYNTH_CUSTOM_JDK_HOME`; a sweep's `VM_IMAGE`): there is no
   default image.
 - `launch-round.sh` chooses each case's head host at launch from the hosts' room in the ledger
-  (`campaign_host_room`): the heaviest case first (its `engine_memory_mb`, `tools/lib/heads.sh`),
-  each to the host with the most room among those heading the fewest cases, so no host heads two
-  before every host heads one; `lift11` heads nothing. A head only drives its campaign: every
+  (`campaign_host_room`): the heaviest case first (its `engine_memory_mb`, `tools/lib/heads.sh`
+  `case_engine_heap_mb`), each to the host with the most room among those heading the fewest
+  cases, so no host heads two before every host heads one; `lift11` heads nothing. A head only drives its campaign: every
   engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
   host first (PIPELINE §7.7).
+- A round's cases explore uncapped (`stream_max_in_flight=0`): each keeps as many obligations in
+  flight as the hosts admit, so one case alone may take the whole cluster. An ad-hoc sweep caps
+  them so the cases it runs at once share it: `sweep.sh` gives every case
+  `CAUSYNTH_STREAM_MAX_IN_FLIGHT` = the lifts' obligation slots for its `obligation_memory_mb`
+  (`run_engine.sh` `campaign_pool_slots`: on each lift as many replays as fit under the 70 %
+  ceiling at their charge, at most its cores; the ten lifts hold 30 of 6000 MB), and each capped
+  exploration keeps its share in flight: those slots over the capped explorations running now
+  (their entries in `$CAUSYNTH_HOST_LEDGER/explorations/`), at least one, read again at every start
+  (`campaign_stream_has_slot`). Ten exploring cases keep 3 each; one left alone keeps all 30.
+  A sweep's head is admitted (`fanout.sh` `NEED_MB`) for the room it reserves on its host, what
+  its planner or composer starts at (`tools/lib/heads.sh` `case_head_reserve_mb`, 8 GB), not
+  its engine heap: a40's Solr heads asked for 16 GB and waited while one case's 27-32 replays
+  filled the lifts.
 - A round name is written once (`accept-<round>-<case>` exists → refused). Names used so far:
   `v*`, `r1`–`r9`, `ra1`, `rb1`, `i1`–`i3`, `stream*`, `fast*`, `g1`, agents' `a37f*`, `ee*`, `agent-*`, `w4-*`.
 - Typical wall time alone on the cluster: HDFS cases 15–45 min, solr-18406 ~25 min, solr-18413 ~50 min
@@ -486,7 +499,8 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
     case per workload with the checks it activated (at most four).
 12. `VM_IMAGE=<image> STATIC_ROOT=$GC_OUT/static/<key> sweep.sh <snapshot> <round>
     <sweep-dir>/cases.txt [heads-per-host]`: one campaign per batch over all ten lifts, `PRUNE=1`, 5400 s per case;
-    restartable. A batch records once, plans each check, and seed-replays each group of checks
+    restartable. The cases exploring at once share the lifts' obligation slots
+    (`stream_max_in_flight`, §3.4). A batch records once, plans each check, and seed-replays each group of checks
     whose plans agree once (`out/<batch>/schedule/groups/`); each check explores on its own.
 13. `triage.py <round> [gc-out]`: outcome class per case, and per check of a batch case
     (`<case>/<check>`): CONFIRMED, REFUTED, NO_ROOT, NO_WITNESS, STOPPED, DEAD, RUNNING,
@@ -541,7 +555,8 @@ experiments/accept/               accept.sh, report.py, cone.py, probe.sh
 experiments/hadoop/, experiments/solr/   per-system scripts, cases, ad-hoc experiments
 tools/lib/                        gc-env.sh (GC_OUT, host ledger, LIFTS for every tool), alive.sh
                                   (which runs a process on any lift still names), heads.sh (a
-                                  case's head need, and which host heads it)
+                                  case's configuration, its head's weight and
+                                  room, and which host heads it)
 tools/rounds/                     launch, monitor and stop campaigns on the lifts; snapshot-gc.sh
 tools/adhoc/                      ad-hoc check discovery, build key, slicing, selection, pre-screen,
                                   sweeps, the nightly, triage, findings

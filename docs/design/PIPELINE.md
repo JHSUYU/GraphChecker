@@ -82,7 +82,7 @@ marked * below.
 | `seed_replay_time_factor`* (40) | the seed replay's wall clock, as a multiple of the recorded workload's (§5) |
 | `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth` | EXPLORE's bounds (§7.4, §7.9) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
-| `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | the pool's hosts, one replay's memory at the host gate (§7.7), the most heap a head JVM is given and a solver asked again |
+| `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb`, `stream_max_in_flight` (0) | the pool's hosts, one replay's memory at the host gate (§7.7), the most heap a head JVM is given and a solver asked again, the obligations the capped explorations running at once keep in flight together (§7.7; 0 is no cap) |
 | `campaign_stop_after` | empty, or `IMPORT` |
 | `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10), `reproduce_time_factor`* (3) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording; how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload (§10b) |
 
@@ -703,13 +703,13 @@ CONFIRM it is a confirmation that did not confirm.
 
 ### 7.7 The work pool
 
-One pool for the whole exploration, no slots. The head starts each queued obligation, and each
-GROW re-run (§7.8), first first, on the next host of `campaign_worker_hosts` (empty: this machine, no
-ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), an
-obligation first on a host where it started one within the solver's idle time
-(`campaign_stream_warm`: that host's solver of its corpus likely still serves, so the question needs
-no solver started and no corpus read): a host is
-taken while it runs fewer of the campaign's starts than it has cores (read once,
+One pool for the whole exploration. The head starts each queued obligation, and each GROW re-run
+(§7.8), first first, while the exploration runs fewer than its share of `stream_max_in_flight`
+(below), on the next host of `campaign_worker_hosts` (empty: this machine, no ssh), round-robin
+from the host after the last one chosen (`campaign_stream_admit_host`), an obligation first on a
+host where it started one within the solver's idle time (`campaign_stream_warm`: that host's solver
+of its corpus likely still serves, so the question needs no solver started and no corpus read): a
+host is taken while it runs fewer of the campaign's starts than it has cores (read once,
 `campaign_host_cores`) and its memory ledger admits one more start; none admitting, the head waits
 for a return, its step's end or the poll interval (`campaign_host_poll_s`). A start runs locally in
 a background subshell, or remotely through `ssh`: an obligation as `run_engine.sh --run-obligation`
@@ -730,6 +730,22 @@ charged for it (`CAUSYNTH_CHARGED_MB`): its heap is half of it (2 GB at least), 
 resident memory grows past its charge asks its host's ledger for the excess, as one more start,
 and holds what it was granted, released when it ends; one the host cannot take is ended, saying
 so; each states its peak at its end.
+
+THE CAP. `stream_max_in_flight` = N > 0 is how many obligations the capped explorations running
+at once keep in flight together (`campaign_stream_has_slot`, the one dispatch point): each starts
+one more only while it runs fewer than its share, N over the capped explorations whose entry in
+`$CAUSYNTH_HOST_LEDGER/explorations/` is fresh (written when the loop starts, kept fresh by the
+head's heartbeat like its room, `campaign_head_reservation_stale_s`, removed when it ends), at
+least one, read again at every start; it says once for each share it waits at. So the share
+grows as others end and shrinks as others begin (what already runs past it runs out), one
+exploration alone keeps all N, and a batch's targets (§2b) each count as one. N = 0, the default
+and a named acceptance run's, is no cap. An ad-hoc sweep (`tools/adhoc/sweep.sh`) gives every case
+N = the lifts' obligation slots for its `obligation_memory_mb` (`campaign_pool_slots`: on each
+host as many starts as fit under the ceiling above at their charge, at most its cores; ten 31.5 GB
+lifts at 70 % hold 30 of 6000 MB), and admits its head for the room it reserves on its host
+(HEAD ROOM below; `tools/lib/heads.sh` `case_head_reserve_mb`). Round a40 without it: one Solr
+case kept 27-32 replays in flight on all ten lifts, the other cases' heads waited for room, and
+20 Solr checks would have taken over 15 h.
 
 HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room through one rule
 (`campaign_head_charged`, `campaign_head_place`): the head's own host when it fits there (its own

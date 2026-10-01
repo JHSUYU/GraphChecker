@@ -698,7 +698,9 @@ done
 # 51: `concolic_worker_count` and `region_path_stop_at_fatal` left with the
 # wave barrier: how many obligations run on a host is its memory, up to its
 # cores, and every campaign ends at its first accepted witness.
-[[ "$(print_normalized_config | wc -l)" -eq 51 ]] \
+# 52: `stream_max_in_flight` joined it: how many obligations the capped
+# explorations running at once keep in flight together.
+[[ "$(print_normalized_config | wc -l)" -eq 52 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -2365,6 +2367,100 @@ jq -e '.stop == "FIXED_POINT" and .answered == 3' \
 $(cat "${stream_dir}/exploration.json")"
 reset_config
 
+# STREAM-CAP: an exploration under stream_max_in_flight runs no more starts
+# at once than its share of it -- the cap over the capped explorations whose
+# ledger entry is fresh, its own among them, at least one -- says so once
+# for the share it waits at, and takes its entry with it when it ends; with
+# no cap it keeps no entry and waits for nothing but room (a40: one Solr
+# case's pool held 27-32 replays on all ten lifts while the sweep's other
+# cases waited).  Per row: the cap, the fresh and the stale entries of other
+# explorations, the most of three one-second obligations that ran at once,
+# and how many explorations the wait names (- for none).
+while read -r cap_max cap_fresh cap_stale cap_peak cap_sharers; do
+  stream_fixture "stream-cap-${cap_max}-${cap_fresh}-${cap_stale}"
+  stream_max_in_flight=${cap_max}
+  cap_entries="${campaign_host_gate_root}/explorations"
+  mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+  printf '8\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+  for ((cap_index = 0; cap_index < cap_fresh + cap_stale; cap_index++)); do
+    mkdir -p "${cap_entries}"
+    : >"${cap_entries}/other.${cap_index}"
+    (( cap_index < cap_fresh )) \
+      || touch -d @1000 "${cap_entries}/other.${cap_index}"
+  done
+  (
+    stream_stubs
+    stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B C; }
+    campaign_obligation_worker() {
+      local id=$1 worker=$4
+      date +%s.%N >"${worker}/started-at"
+      sleep 1
+      date +%s.%N >"${worker}/ended-at"
+      stream_answer "${worker}" "${id}" UNSAT
+    }
+    campaign_explore "${stream_dir}" iteration-0000
+  ) >"${stream_dir}/explore.log" 2>&1 \
+    || fail "a capped exploration did not finish: \
+$(cat "${stream_dir}/explore.log")"
+  cap_ran=$(for cap_worker in "${stream_dir}"/obligations-0000/*/; do
+      echo "$(cat "${cap_worker}started-at") $(cat "${cap_worker}ended-at")"
+    done | awk '{ s[NR] = $1; e[NR] = $2 }
+      END { for (i = 1; i <= NR; i++) { n = 0
+              for (j = 1; j <= NR; j++) if (s[j] <= s[i] && s[i] < e[j]) n++
+              if (n > peak) peak = n }
+            print peak }')
+  [[ "${cap_ran}" == "${cap_peak}" ]] \
+    || fail "cap ${cap_max} with ${cap_fresh} other exploration(s) ran \
+${cap_ran} obligation(s) at once, not ${cap_peak}"
+  cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
+    || true)
+  if [[ "${cap_sharers}" == - ]]; then
+    [[ "${cap_said}" -eq 0 && ! -e "${cap_entries}" ]] \
+      || fail "an exploration with no cap waited for a slot or kept an entry"
+  else
+    [[ "${cap_said}" -eq 1 ]] && grep -q "shared by ${cap_sharers} capped" \
+      "${stream_dir}/explore.log" \
+      || fail "the wait for a slot was not said once, naming \
+${cap_sharers} exploration(s): $(grep 'slot' "${stream_dir}/explore.log")"
+    [[ "$(ls "${cap_entries}" | wc -l)" -eq $((cap_fresh + cap_stale)) ]] \
+      || fail "the exploration's entry outlived it: $(ls "${cap_entries}")"
+  fi
+done <<'EOF'
+0 0 0 3 -
+2 0 1 2 1
+2 1 0 1 2
+1 2 0 1 3
+EOF
+reset_config
+# The cap is a declared workflow key, overridden only through the table, 0
+# by default, and a non-negative integer or refused by name.
+[[ "$(grep -c 'CAUSYNTH_STREAM_MAX_IN_FLIGHT' "${repo}/run_engine.sh")" \
+    -eq 1 && "${stream_max_in_flight}" == 0 ]] && known_config_key \
+    stream_max_in_flight \
+  || fail "stream_max_in_flight is not a declared key defaulting to 0"
+CAUSYNTH_STREAM_MAX_IN_FLIGHT=30 apply_environment_overrides
+[[ "${stream_max_in_flight}" == 30 ]] \
+  || fail "CAUSYNTH_STREAM_MAX_IN_FLIGHT does not override the key"
+reset_config
+cap_validate() (
+  stop_after_config ""
+  stream_max_in_flight=$1
+  validate_config
+)
+for cap_value in "" -1 x 08 0 30; do
+  run_capturing_status cap_validate "${cap_value}" >/dev/null \
+    2>"${test_tmp}/cap-validate.err"
+  case "${cap_value}" in
+    0|30) [[ "${status}" -eq 0 ]] \
+      || fail "validate refused stream_max_in_flight='${cap_value}'" ;;
+    *) [[ "${status}" -ne 0 ]] && grep -q 'stream_max_in_flight must be' \
+        "${test_tmp}/cap-validate.err" \
+      || fail "validate did not refuse stream_max_in_flight='${cap_value}' \
+by name" ;;
+  esac
+done
+reset_config
+
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
 # exactly like `replay_timeout_s`.
 grep -q 'CAUSYNTH_CAMPAIGN_WORKER_HOSTS' "${repo}/run_engine.sh" \
@@ -3540,6 +3636,84 @@ lift06:19000 lift07:-2000 lift08:20000 lift15:21000|16384:hdfs-11741 8192:hdfs-1
 EOF
 [[ -z "$(heads_choose </dev/null)" ]] && ! heads_choose </dev/null \
   || fail "cases were headed with no host to head them"
+
+# HEADS-2: launch-round.sh weighs a case's head by its engine heap; a sweep
+# admits it for the room it reserves on its host, what its planner or
+# composer starts at (campaign_head_need_mb), never more than that heap:
+# a40's Solr heads asked fanout for 16 GB they never held and waited 90 min
+# while one case's obligations filled the lifts.  Per row: the case's
+# configuration, its weight and its head's room.
+while IFS='|' read -r heads_config heads_heap heads_reserve; do
+  [[ "$(case_engine_heap_mb "${heads_config}")" == "${heads_heap}" \
+      && "$(case_head_reserve_mb "${heads_config}")" == "${heads_reserve}" ]] \
+    || fail "${heads_config} weighs $(case_engine_heap_mb "${heads_config}") \
+and reserves $(case_head_reserve_mb "${heads_config}")"
+done <<'EOF'
+engine_memory_mb=16384|16384|8192
+engine_memory_mb=|8192|8192
+engine_memory_mb=4096|4096|4096
+EOF
+
+# POOL-SLOTS: the obligation slots a sweep's cases share
+# (campaign_pool_slots): on each host as many starts of the need as fit
+# under its ceiling, at most its cores, summed; a host whose memory cannot
+# be read adds none.  Per row: the need, and the slots of two 31583 MB,
+# 48-core hosts and one unreadable.
+(
+  campaign_host_gate_root="${test_tmp}/pool-slots"
+  campaign_host_max_used_pct=70
+  campaign_host_total_mb() { return 1; }
+  for host in lift12 lift13; do
+    mkdir -p "${campaign_host_gate_root}/${host}"
+    echo 31583 >"${campaign_host_gate_root}/${host}/total"
+    echo 48 >"${campaign_host_gate_root}/${host}/cores"
+  done
+  while read -r slots_need slots_expected; do
+    [[ "$(campaign_pool_slots "${slots_need}" lift12 lift13 lift14)" \
+        == "${slots_expected}" ]] \
+      || fail "a need of ${slots_need} MB found \
+$(campaign_pool_slots "${slots_need}" lift12 lift13 lift14) slots"
+  done <<'EOF'
+6000 6
+100 96
+30000 0
+EOF
+)
+
+# SWEEP-1: sweep.sh launches every case with its head's room as its need
+# and the lifts' obligation slots for its obligation_memory_mb as its cap;
+# a case whose configuration states no obligation_memory_mb launches no case.
+sweep_dir="${test_tmp}/sweep"
+mkdir -p "${sweep_dir}/snap/experiments/x/c" "${sweep_dir}/snap/experiments/lib" \
+  "${sweep_dir}/snap/tools/rounds" "${sweep_dir}/out" \
+  "${sweep_dir}/ledger/$(hostname -s)"
+: >"${sweep_dir}/snap/experiments/x/c/case.sh"
+printf '%s\n' '[[ "$3" == config ]] || exit 2' \
+  'printf "obligation_memory_mb=6000\nengine_memory_mb=1\n"' \
+  >"${sweep_dir}/snap/experiments/lib/run.sh"
+printf 'echo "$2 ${CAUSYNTH_STREAM_MAX_IN_FLIGHT}" >%s/launched\n' \
+  "${sweep_dir}" >"${sweep_dir}/snap/tools/rounds/launch-run.sh"
+echo 31583 >"${sweep_dir}/ledger/$(hostname -s)/total"
+echo 48 >"${sweep_dir}/ledger/$(hostname -s)/cores"
+echo c-one >"${sweep_dir}/cases"
+sweep_run() {
+  LIFTS=localhost GC_OUT="${sweep_dir}/out" VM_IMAGE=vm \
+    CAUSYNTH_HOST_LEDGER="${sweep_dir}/ledger" CAUSYNTH_HOST_MAX_USED_PCT=70 \
+    bash "${repo}/tools/adhoc/sweep.sh" "${sweep_dir}/snap" "$1" \
+    "${sweep_dir}/cases" >"${sweep_dir}/$1.out" 2>&1
+}
+sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
+[[ "$(cat "${sweep_dir}/launched")" == "c-one 3" ]] \
+  && grep -q '^NEED_MB=1 .* CAUSYNTH_STREAM_MAX_IN_FLIGHT=3 ' \
+    "${sweep_dir}/out/sweep-s1-jobs.txt" \
+  || fail "the sweep's case did not launch with its head's room and the \
+lifts' slots: $(cat "${sweep_dir}/launched" \
+    "${sweep_dir}/out/sweep-s1-jobs.txt")"
+echo nothing-here >"${sweep_dir}/cases"
+! sweep_run s2 && grep -q 'nothing-here states no obligation_memory_mb' \
+    "${sweep_dir}/s2.out" && [[ ! -s "${sweep_dir}/out/sweep-s2-jobs.txt" ]] \
+  || fail "a case with no configuration was launched or not named: \
+$(cat "${sweep_dir}/s2.out")"
 
 # UNION-1: a batch's one recording weave (do_record) is woven with every
 # target's skeletons merged by root -- one region per root, whichever
