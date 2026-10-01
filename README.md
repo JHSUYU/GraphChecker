@@ -59,7 +59,7 @@ the system's code (§1). All runs are under `/bigtemp/vnr3ne/gc-out/accept-<roun
 | **solr-18406** | `a37f4` (branch, not main) | **PASS** | CLOCK_SKEW, polarityDecides, one clock root `M_J_field_REGION.57488ec0…Long` moved, CONFIRMED ("every edge the model chose was taken, and the claim's anchor observed the fatal"), 7 declared roots in the cone. Code is on branch `worktree-agent-ae3796f20246f25c6` (§0.3), NOT merged. On main (`r7`, `rb1`) 18406 still fails: its one anchor path is UNSAT with every root free. |
 | **solr-18413** | `r9` (main `a53174bf1`) | FAIL, last step | The `isExpired#u6` flip is SAT (Overseer `MigrateCmd` clock +262 s) and its replay REPRODUCES the bug ("Could not find collection : causynthMigrate-target") and is ADMITTED; the wave-0 IMPORT gate then stops on one BLOCKING row: invariant 9, the target row that observed the fatal states no `phiTerm` because the fatal condition (`targetColl == null`, `DistributedZkUpdateProcessor:932`) is concrete in the replay. A WIP fix is on branch `worktree-agent-a564ae2a2ad314535` (§0.3). |
 
-The 18413 chain in Solr 8.11 (tree `~/lucene-solr-18413`): Overseer task `MigrateCmd.java:196-205`
+The 18413 chain in Solr 8.11 (tree `~/lucene-solr-unified`): Overseer task `MigrateCmd.java:196-205`
 `expireAt = RoutingRule.makeExpiryAt(timeout)` (`RoutingRule.java:60-62`, Overseer clock + 1 s) →
 queue item (`ZkDistributedQueue.java:328`, store door `SolrZkClient.java:446`) → Overseer tick
 `SliceMutator.addRoutingRule` (`SliceMutator.java:225`, `:238-257`) → `state.json` write
@@ -158,7 +158,7 @@ for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f
    answer (`ContainerSupport::query_state`).
 
 **Phase 2 — the sweeps** (after 1–2): follow "Run an ad-hoc sweep" below on HDFS
-(`~/hadoop-hdfs-17967-c`) and Solr (`~/lucene-solr-8_11-adhoc`), all ten lifts; triage with
+(`~/hadoop-hdfs-17967-c`) and Solr (`~/lucene-solr-unified`), all ten lifts; triage with
 `triage.py`, dedupe with `findings.py`; a finding is new only if CONFIRMED and not a known
 mechanism (the two old token-expiry CLOCK_SKEWs were judged HDFS's clock-sync assumption).
 
@@ -313,7 +313,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | z3 | `~/.local/bin/z3` (4.14.1) |
 | concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-r3b/j2sdk-image`** (f14 + R3 + r3-fix envelope bound). Others: `vm-r3` (before r3-fix), `vm-w1` (W1, parked), `vm-w4` (W4 branch), `vm-w4b` (possibly partial — rebuild), `vm-f14`, `~/gc-out/vm-f*` (old). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME`, never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
 | HDFS trees | `~/hadoop-hdfs-<case>` (worktrees of `~/hadoop`, branch `gc/<case>`); ad-hoc HDFS checks run on `~/hadoop-hdfs-17967-c` only |
-| Solr trees | Solr 8.11 worktrees of `~/lucene-solr-8_11`: `gc/solr` (shared adapter), `~/lucene-solr-18406` (`gc/solr-18406`), `~/lucene-solr-18413` (`gc/solr-18413`), `~/lucene-solr-8_11-adhoc` (`gc/solr-adhoc`). Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
+| Solr trees | One Solr 8.11 tree, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches; solr-18406, solr-18413 and solr-adhoc all name it (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
 
 ### 3.2 Helper commands (outside the repo)
