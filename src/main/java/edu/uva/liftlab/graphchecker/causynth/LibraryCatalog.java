@@ -50,12 +50,15 @@ import java.util.regex.Pattern;
 public final class LibraryCatalog {
     static final String RESOURCE =
             "/edu/uva/liftlab/graphchecker/library-catalog.jsonl";
-    /** The system property naming a system's own DOOR rows (its {@code
-     *  experiments/<system>/doors.jsonl}), which override the catalog's. */
+    /** The system property naming a system's own HOOK rows (its {@code
+     *  experiments/<system>/doors.jsonl}), which place catalog doors after
+     *  the system's own message or store hook. */
     public static final String SYSTEM_DOORS = "causynth.system.doors";
     static final int SCHEMA_VERSION = 1;
     static final String DOOR = "DOOR";
     static final String CONFIG_SOURCE = "CONFIG_SOURCE";
+    /** A system's own row: where its hook sits relative to a catalog door. */
+    static final String HOOK = "HOOK";
 
     private static final Map<String, Set<String>> MEMBERS =
             new LinkedHashMap<>();
@@ -64,6 +67,8 @@ public final class LibraryCatalog {
         MEMBERS.put(DOOR, names("transport", "direction", "method", "before",
                 "after", "faults"));
         MEMBERS.put(CONFIG_SOURCE, names("method", "keyArg", "defaultArg"));
+        MEMBERS.put(HOOK, names("transport", "direction", "door", "method",
+                "after"));
     }
 
     /** A transport or direction name. */
@@ -123,9 +128,9 @@ public final class LibraryCatalog {
     }
 
     /**
-     * Every DOOR this run weaves, in file order: the engine's catalog, where
-     * the system's own doors ({@value #SYSTEM_DOORS}) replace the catalog's
-     * rows of their transport and direction.
+     * Every DOOR this run weaves, in file order: the engine's catalog, each
+     * placed after its system's own hook where the system states one
+     * ({@value #SYSTEM_DOORS}, {@link #placed}).
      */
     public static List<Door> doors() {
         List<Door> known = doors;
@@ -148,7 +153,7 @@ public final class LibraryCatalog {
                 Path file = Paths.get(system);
                 try (BufferedReader reader = Files.newBufferedReader(file,
                         StandardCharsets.UTF_8)) {
-                    known = overridden(known, doors(rows(reader,
+                    known = placed(known, hooks(rows(reader,
                             file.getFileName().toString())));
                 } catch (IOException unreadable) {
                     throw new UncheckedIOException(unreadable);
@@ -160,22 +165,87 @@ public final class LibraryCatalog {
     }
 
     /**
-     * The catalog's doors with the system's in place of every catalog row
-     * of a transport and direction the system states: a system whose own
-     * message or store hook follows the library's call (Solr's
-     * {@code SolrZkClient#causynthWrote}, {@code CausynthHttp#response})
-     * places the door after that hook, so the fault keeps the pairing the
-     * hook files.
+     * One system's HOOK row: the catalog door ({@code transport},
+     * {@code direction}, {@code door}, its method) is woven in {@code method}
+     * after the first call of {@code after}, the system's own message or
+     * store hook, instead of at its library anchor.  It states where the
+     * hook sits, nothing else: the door's kinds are the catalog's, and a
+     * door no hook names keeps its anchor.
      */
-    static List<Door> overridden(List<Door> catalog, List<Door> system) {
-        Set<String> replaced = new LinkedHashSet<>();
-        for (Door door : system) replaced.add(door.name());
-        List<Door> doors = new ArrayList<>();
-        for (Door door : catalog) {
-            if (!replaced.contains(door.name())) doors.add(door);
+    static final class Hook {
+        final String transport;
+        final String direction;
+        final String door;
+        final String method;
+        final String after;
+
+        private Hook(String transport, String direction, String door,
+                     String method, String after) {
+            this.transport = transport;
+            this.direction = direction;
+            this.door = door;
+            this.method = method;
+            this.after = after;
         }
-        doors.addAll(system);
+
+        boolean places(Door catalog) {
+            return catalog.transport.equals(transport)
+                    && catalog.direction.equals(direction)
+                    && catalog.method.equals(door);
+        }
+    }
+
+    /**
+     * The catalog's doors, each a system hook names placed after that hook,
+     * so the fault keeps the pairing the hook files (Solr's ZooKeeper writes
+     * after {@code SolrZkClient#causynthWrote}).  A hook naming no catalog
+     * door is refused by name.
+     */
+    static List<Door> placed(List<Door> catalog, List<Hook> hooks) {
+        List<Door> doors = new ArrayList<>();
+        Set<Hook> used = new LinkedHashSet<>();
+        for (Door door : catalog) {
+            Door placed = door;
+            for (Hook hook : hooks) {
+                if (!hook.places(door)) continue;
+                placed = new Door(door.transport, door.direction,
+                        hook.method, hook.after, true, door.faults);
+                used.add(hook);
+            }
+            doors.add(placed);
+        }
+        for (Hook hook : hooks) {
+            if (!used.contains(hook)) {
+                throw new IllegalArgumentException("HOOK " + hook.transport
+                        + ":" + hook.direction + " names no catalog door "
+                        + hook.door);
+            }
+        }
         return Collections.unmodifiableList(doors);
+    }
+
+    /** A system's HOOK rows; any other kind there is refused. */
+    static List<Hook> hooks(Map<String, JsonObject> rows) {
+        List<Hook> hooks = new ArrayList<>();
+        for (Map.Entry<String, JsonObject> entry : rows.entrySet()) {
+            try {
+                JsonObject row = entry.getValue();
+                if (!HOOK.equals(kind(row))) {
+                    throw new IllegalArgumentException("a system states "
+                            + "where its hooks are (HOOK), never a door");
+                }
+                hooks.add(new Hook(matching(NAME, text(row, "transport"),
+                        "transport").group(), matching(NAME, text(row,
+                        "direction"), "direction").group(),
+                        signature(text(row, "door")).group(),
+                        signature(text(row, "method")).group(),
+                        signature(text(row, "after")).group()));
+            } catch (RuntimeException malformed) {
+                throw refused(entry.getKey(), malformed.getMessage(),
+                        malformed);
+            }
+        }
+        return hooks;
     }
 
     /** The door transports: a {@code FAULT:<TRANSPORT>:...} marker is a
@@ -216,7 +286,12 @@ public final class LibraryCatalog {
             try {
                 JsonObject row = entry.getValue();
                 String identity;
-                if (DOOR.equals(kind(row))) {
+                String kind = kind(row);
+                if (HOOK.equals(kind)) {
+                    throw new IllegalArgumentException("a HOOK is a "
+                            + "system's row, not the catalog's");
+                }
+                if (DOOR.equals(kind)) {
                     Door door = door(row);
                     doors.add(door);
                     identity = door.name() + " " + door.method;

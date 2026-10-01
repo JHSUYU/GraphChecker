@@ -255,17 +255,20 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 A door keeps the pairing its call made: a request door lies after the tree's outbound message hook
 (or before anything is sent: the SASL magic number), a response door after its inbound hook, a
 store door after the store hook. Where a system's own hook follows the library's call, the
-library anchor cannot be there, and the system declares the door itself:
-`experiments/<system>/doors.jsonl` (rows of the catalog's shape; `run.sh` passes it as
-`-Dcausynth.system.doors`, `LibraryCatalog#doors`) replaces the catalog's rows of each transport and
-direction it states. Solr's: `ZOOKEEPER` `WRITE` in `SolrZkClient#setData` and `#create` after
-`causynthWrote` (the store hook `MessageDoors.stored`; the catalog's door inside
-`ZooKeeper#setData` would throw before it, and `SolrZkClient`'s `delete` and `multi` get no door),
-`SOLR_HTTP` `RESPONSE` in `HttpSolrClient#executeMethod` and `SOLR_HTTP2` `RESPONSE` in
-`Http2SolrClient#processErrorsAndResponse`, each after `CausynthHttp#response`. HDFS's:
-`HADOOP_IPC` `RESPONSE` in `Client#getRpcResponse` after `installCausynthResponse`, the response's
-inbound hook, which the trunk line calls after `CompletableFuture#get` (the 3.4 line's row is the
-catalog's, already after it). There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
+library anchor cannot be there, and the system states only where its hook sits: a `HOOK` row of
+`experiments/<system>/doors.jsonl` (`run.sh` passes it as `-Dcausynth.system.doors`) names a catalog
+door (`transport`, `direction`, `door`: its method) and the system call after which it is woven
+(`method`, `after`); the door keeps the catalog's kinds, no door is added or dropped, and a `HOOK`
+naming no catalog door, or a `DOOR` row in a system's file, is refused (`LibraryCatalog#placed`).
+Solr's: `ZooKeeper#setData`, `#create` and `#multiInternal` in `SolrZkClient#setData`, `#create`
+and `#multi` after `causynthWrote` (the store hook `MessageDoors.stored`; in `multi`, after the first
+operation's, so a multi's later operations are unpaired under a fault); the `SOLR_HTTP` and
+`SOLR_HTTP2` responses after `CausynthHttp#response` (in `HttpSolrClient#executeMethod` and
+`Http2SolrClient#processErrorsAndResponse`). HDFS's: the trunk line's `HADOOP_IPC` response in
+`Client#getRpcResponse` after `installCausynthResponse`, the response's inbound hook (the 3.4 line's
+catalog anchor already follows it). These rows are the tree adapters' hooks spelled out; they go
+when the engine finds a door's following hook itself (a hook call of the door method or of its
+caller after the anchor). There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
 `getChildren`): every packet and cluster-state read would be one, and ROOT_READ admission (§4.4)
 admits every occurrence that runs a marker.
 

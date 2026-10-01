@@ -51,40 +51,56 @@ public class LibraryCatalogTest {
     }
 
     /**
-     * A system's own doors replace the catalog's of their transport and
-     * direction, and only those: each system file names catalog doors, and
-     * parses as the catalog does.
+     * A system states only where its own hook sits relative to a catalog
+     * door: each door a hook names is woven after the hook, with the
+     * catalog's kinds, and no door is added or dropped; a hook naming no
+     * catalog door, or a door row in a system's file, is refused.
      */
     @Test
-    public void aSystemsDoorsReplaceTheCatalogsOfTheirTransport()
-            throws Exception {
+    public void aSystemsHooksPlaceCatalogDoorsAndAddNone() throws Exception {
         List<LibraryCatalog.Door> catalog = LibraryCatalog.doors();
         for (String system : new String[]{"hadoop", "solr"}) {
             java.nio.file.Path file = java.nio.file.Paths.get("experiments",
                     system, "doors.jsonl");
-            List<LibraryCatalog.Door> own;
+            List<LibraryCatalog.Hook> hooks;
             try (BufferedReader reader = java.nio.file.Files
                     .newBufferedReader(file)) {
-                own = LibraryCatalog.doors(LibraryCatalog.rows(reader,
+                hooks = LibraryCatalog.hooks(LibraryCatalog.rows(reader,
                         "doors.jsonl"));
             }
-            LinkedHashSet<String> named = new LinkedHashSet<>();
-            for (LibraryCatalog.Door door : own) named.add(door.name());
             List<LibraryCatalog.Door> woven =
-                    LibraryCatalog.overridden(catalog, own);
-            for (LibraryCatalog.Door door : catalog) {
-                assertEquals(system + " " + door.method,
-                        !named.contains(door.name()), woven.contains(door));
-            }
-            for (String name : named) {
-                boolean known = false;
-                for (LibraryCatalog.Door door : catalog) {
-                    known |= door.name().equals(name);
+                    LibraryCatalog.placed(catalog, hooks);
+            assertEquals(system, catalog.size(), woven.size());
+            for (int at = 0; at < catalog.size(); at++) {
+                LibraryCatalog.Door door = catalog.get(at);
+                LibraryCatalog.Door placed = woven.get(at);
+                LibraryCatalog.Hook hook = null;
+                for (LibraryCatalog.Hook each : hooks) {
+                    if (each.places(door)) hook = each;
                 }
-                assertTrue(system + " overrides no catalog door " + name,
-                        known);
+                assertEquals(system + " " + door.method,
+                        hook == null ? door.method : hook.method,
+                        placed.method);
+                assertEquals(door.name(), placed.name());
+                assertEquals(door.faults, placed.faults);
             }
-            assertTrue(woven.containsAll(own));
+        }
+        String[][] refused = {
+            {"{\"schemaVersion\": 1, \"kind\": \"HOOK\", \"transport\": "
+                    + "\"T\", \"direction\": \"SEND\", \"door\": "
+                    + "\"<a.B: void none(int)>\", \"method\": \"<a.B: void "
+                    + "send(int)>\", \"after\": \"<a.C: void hook()>\"}",
+                    "names no catalog door"},
+            {DOOR + "}", "never a door"}};
+        for (String[] row : refused) {
+            try {
+                LibraryCatalog.placed(catalog,
+                        LibraryCatalog.hooks(rows(row[0])));
+                fail("accepted " + row[0]);
+            } catch (IllegalArgumentException expected) {
+                assertTrue(expected.getMessage(),
+                        expected.getMessage().contains(row[1]));
+            }
         }
     }
 
