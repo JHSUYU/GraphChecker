@@ -9,8 +9,8 @@ the sources are the files the campaign wrote:
                      running from the log's last "[campaign] stage" line
   SEED split         .seed-started, the static artifacts' and runtime/'s mtimes,
                      the weave's "GraphChecker started/ran for" log lines
-  EXPLORE per round  obligations-NNNN/: the planner's empty stderr.log (created
-                     when it starts) to explore_manifest.json; the dispatch to
+  EXPLORE per round  obligations-NNNN/: in_flight.jsonl (written as the planner
+                     starts) to explore_manifest.json; the dispatch to
                      its last obligation's end (a GROW re-run's included); the
                      gates of the sessions its obligations landed, each from
                      its worker's end to the worker's import_gate.json
@@ -153,8 +153,7 @@ def round_rows(iteration):
     previous_end = mtime(os.path.join(iteration, "import_gate.json"))
     for wave in sorted(glob.glob(os.path.join(iteration, "obligations-[0-9]*"))):
         name = os.path.basename(wave)
-        stderr = os.path.join(wave, "stderr.log")
-        plan_start = mtime(stderr) if os.path.getsize(stderr) == 0 else previous_end
+        plan_start = mtime(os.path.join(wave, "in_flight.jsonl")) or previous_end
         plan_end = mtime(os.path.join(wave, "explore_manifest.json"))
         obligations = []
         for worker in sorted(glob.glob(os.path.join(wave, "*", ""))):

@@ -340,7 +340,8 @@ schedule) and:
    campaign has queued or running), builds the candidates (§7.4) and opens the round:
    `obligations.jsonl`, nothing settled and nothing in flight.
 6. Names the WITNESSES: every admitted focused session whose target row at the anchor observed the
-   fatal (`ExploreMain#witnesses`). Whether the exploration ends there is the campaign's (§7.9).
+   fatal (`ExploreMain#witnesses`), and states the anchor as a target row spells its occurrence
+   (`anchorOccurrences`), by which the campaign tells a witness as it lands (§7.9).
 7. States the round's WAVE, a generation of worlds: one past the deepest wave whose obligation
    published a landed session, 0 over the seed alone. It deepens only as sessions land.
 8. Writes `graph.jsonl` (`WaveGraph`: NODE per activated occurrence of admitted sessions, EDGE per
@@ -592,12 +593,16 @@ class tree and plan of the generation current when it starts (§7.8). The memory
 `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/` (`tools/lib/gc-env.sh`): each row is
 `<epoch> <mb> <ramp_s> <id>`, and a start is allowed when `MemAvailable − (rows still inside their
 own ramp) ≥ need + MemTotal × (100 − p) / 100`, where `p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no
-start leaves a host more than 70 % full. An obligation needs `obligation_memory_mb` for 60 s; on the
-head's own host it also keeps room for the head's next engine JVM (`campaign_head_need_mb`), since
-the planner, the gate and COMPOSE run there between two returns. The head (`do_campaign`,
-`campaign_head_charged`) charges each of its engine JVMs `engine_memory_mb` (else 8192) for 120 s
-and its seed and CONFIRM replays `obligation_memory_mb` for 300 s, and releases the row when the
-command returns (`campaign_host_release`); an obligation's own JVMs are inside its start's charge.
+start leaves a host more than 70 % full. An obligation needs `obligation_memory_mb` for 60 s. The
+head (`do_campaign`, `campaign_head_charged`) charges each of its engine JVMs `engine_memory_mb`
+(else 8192) for 120 s and its seed and CONFIRM replays `obligation_memory_mb` for 300 s, and
+releases the row when the command returns (`campaign_host_release`); an obligation's own JVMs are
+inside its start's charge. HEAD ROOM: a head runs its engine JVMs on its own host between the
+obligations every campaign keeps starting there, so it reserves room for the next one
+(`campaign_head_reserve`, `<host>/heads/<id>` stating its need, fresh while the head lives,
+idle unless one of its JVMs runs): a start that is no head's own counts the largest idle fresh
+reservation of the host as used, a head's own start counts none (heads take turns and never
+block each other), and the head gives its room up when it exits.
 An obligation whose worker does not finish (a nonzero exit, local or remote, or a result the head
 cannot see) is its own answer (`campaign_obligation_unfinished`): every process on its host whose
 command line names its worker directory is ended (a peer's replay JVM is in a process group the
@@ -642,10 +647,12 @@ obligation's solver reads the corpus as a landed whole. The exploration has thre
 in `exploration.json` (stop, rounds, generations, answers, attempts, and every obligation cancelled
 or reaped, by id):
 
-- **WITNESSED.** A round naming witnesses no attempt judged yet (§7.1, step 6) is followed, before
-  anything else starts, by one COMPOSE over the corpus as it stands -- `do_compose`, the stage's own
-  entry, into `witness-attempts/NNNN/` -- since an observed fatal is not yet a composable witness:
-  COMPOSE's families may need sessions later obligations would add. Each attempt is a row of
+- **WITNESSED.** A landed session whose replay was ADMITTED and whose target row at the declared
+  occurrence (the round's `anchorOccurrences`) observed the fatal -- the rule of §7.1 step 6 -- is
+  followed at once, before anything else starts, by one COMPOSE over the corpus as it stands --
+  `do_compose`, the stage's own entry, into `witness-attempts/NNNN/` -- since an observed fatal is
+  not yet a composable witness: COMPOSE's families may need sessions later obligations would add
+  (`campaign_stream_admit`, `campaign_stream_attempt`). Each attempt is a row of
   `witness_attempts.jsonl` (round, witnesses, claim, finding kind, polarity, accepted). An attempt
   that publishes `SAT_CANDIDATE` with `polarityDecides` ends the exploration at once: the queue is
   cancelled, every running obligation is reaped (its process tree here, its workers on every peer)
@@ -654,7 +661,8 @@ or reaped, by id):
   other claim, and the exploration goes on. This is every campaign's rule: the question is one
   declared occurrence (owner 2026-09-28).
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
-  work is not dispatched: the queue is cancelled, what runs lands, and the stop is a DIAGNOSTIC row.
+  work is not dispatched (its proposals are named cancelled): the queue is cancelled, what runs
+  lands, and the stop is a DIAGNOSTIC row.
 - **FIXED_POINT.** Nothing queued or running, and the last round, over every answer, proposed and
   exposed nothing.
 

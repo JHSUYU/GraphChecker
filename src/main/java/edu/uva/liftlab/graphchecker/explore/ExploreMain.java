@@ -264,8 +264,9 @@ public final class ExploreMain {
      * target row at a declared root observed the fatal.  The question is
      * that one (r,c,i) occurrence, so what a run did after its fatal is not
      * the bug's (owner 2026-09-28: hdfs-11741, hdfs-17899-bug2 kept
-     * exploring for waves after it); the campaign tries to end at each new
-     * one (PIPELINE §7.9).
+     * exploring for waves after it).  The campaign tries to end at each one
+     * as it lands, by the same rule over the manifest's anchorOccurrences
+     * (PIPELINE §7.9); here they class the closure's gaps.
      */
     private static List<String> witnesses(Corpus corpus,
                                           List<OccurrenceAddress> roots) {
@@ -491,8 +492,15 @@ public final class ExploreMain {
                                        int wave, Branches branches) {
         JsonObject manifest = new JsonObject();
         JsonArray anchors = new JsonArray();
-        for (OccurrenceAddress root : roots) anchors.add(root.render());
+        // The same anchors as a target row spells its occurrence, so the
+        // campaign tells a landed session's witness by equality alone.
+        JsonArray anchorOccurrences = new JsonArray();
+        for (OccurrenceAddress root : roots) {
+            anchors.add(root.render());
+            anchorOccurrences.add(RowCodec.writeOccurrence(root));
+        }
         manifest.add("anchors", anchors);
+        manifest.add("anchorOccurrences", anchorOccurrences);
         manifest.addProperty("topologyEpoch", topologyEpoch);
         manifest.addProperty("round", open.index);
         manifest.addProperty("wave", wave);

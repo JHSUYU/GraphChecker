@@ -1652,8 +1652,8 @@ printf 'untracked, differently\n' >"${checkout_repo}/loose.txt"
 #
 # stream_fixture <name>: an iteration and a configuration of its own; a case
 # then says what each round proposes (stream_round_plan <round> <out>: rows
-# into <out>/obligations.jsonl, and stream_witnesses / stream_wave) and what
-# each obligation does (campaign_obligation_worker).
+# into <out>/obligations.jsonl, and stream_wave) and what each obligation does
+# (campaign_obligation_worker).  The declared occurrence is {"node": "anchor"}.
 stream_fixture() {
   stream_dir="${test_tmp}/$1/iteration-0000"
   mkdir -p "${stream_dir}/sessions" "${stream_dir}/seed-replay"
@@ -1687,12 +1687,11 @@ stream_planner() {
     >"${out}/in-flight.txt"
   : >"${out}/obligations.jsonl"
   printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
-  stream_witnesses='[]'
   stream_wave=0
   stream_round_plan "${round}" "${out}"
-  jq -n --argjson witnesses "${stream_witnesses}" \
-    --argjson wave "${stream_wave}" \
-    '{wave: $wave, witnesses: $witnesses, branchesStopped: 0}' \
+  jq -n --argjson wave "${stream_wave}" \
+    '{wave: $wave, witnesses: [], branchesStopped: 0,
+      anchorOccurrences: [{node: "anchor"}]}' \
     >"${out}/explore_manifest.json"
 }
 # One obligation row per id, as a round proposes it.
@@ -1704,15 +1703,19 @@ stream_propose() {
   done
 }
 # What a worker leaves: its answer, and the session it staged when it names
-# one.
+# one -- with `fatal`, one whose target row at the declared occurrence
+# observed the fatal.
 stream_answer() {
-  local worker=$1 id=$2 verdict=$3 session=${4:-}
+  local worker=$1 id=$2 verdict=$3 session=${4:-} fatal=${5:-}
   if [[ -n "${session}" ]]; then
     mkdir -p "${worker}/sessions/${session}"
     jq -n -c --arg session "${session}" --arg id "${id}" \
       '{schemaVersion: 1, kind: "SESSION_MANIFEST", sessionId: $session,
         role: "FOCUSED", obligationIds: [$id]}' \
       >"${worker}/sessions/${session}/manifest.json"
+    jq -n -c --argjson fatal "$([[ -n "${fatal}" ]] && echo true \
+        || echo false)" '{occurrence: {node: "anchor"}, observedFatal: $fatal}' \
+      >"${worker}/sessions/${session}/targets.jsonl"
   fi
   jq -n -c --arg id "${id}" --arg verdict "${verdict}" \
     --arg session "${session}" \
@@ -1807,24 +1810,21 @@ $(cat "${stream_dir}/exploration.json")"
 [[ "$(cat "${stream_dir}"/obligations-*/*/host.txt | LC_ALL=C sort -u)" \
     == localhost ]] || fail "a local obligation did not record its host"
 
-# STREAM-2: THE END AT A WITNESS (PIPELINE §7.9).  A round that names an
-# admitted fatal at the declared occurrence stops the pool for one COMPOSE
-# over the corpus as it stands.  One that does not accept the claim lets the
-# exploration go on; one that publishes SAT_CANDIDATE with its polarity
-# deciding ends it at once: the queue cancelled, what runs reaped and moved
-# out of the iteration, each named in exploration.json, and the end a
-# DIAGNOSTIC row.  The host's cores cap the pool: two here.
+# STREAM-2: THE END AT A WITNESS (PIPELINE §7.9).  An admitted replay whose
+# target row at the declared occurrence observed the fatal stops the pool,
+# as it lands, for one COMPOSE over the corpus as it stands.  One that does
+# not accept the claim lets the exploration go on; one that publishes
+# SAT_CANDIDATE with its polarity deciding ends it at once: the queue
+# cancelled, what runs reaped and moved out of the iteration, each named in
+# exploration.json, and the end a DIAGNOSTIC row.  The host's cores cap the
+# pool: two here.
 stream_fixture stream-2
 mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
 printf '2\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
 (
   stream_stubs
   stream_round_plan() {
-    case "$1" in
-      0) stream_propose "$2" A B LONG1 LONG2 ;;
-      1) stream_witnesses='["SESSION.A"]' ;;
-      *) stream_witnesses='["SESSION.A","SESSION.B"]' ;;
-    esac
+    [[ "$1" != 0 ]] || stream_propose "$2" A B LONG1 LONG2
   }
   # Where ComposeMain stands: the claim is accepted once B's session is in.
   do_compose() {
@@ -1837,8 +1837,8 @@ printf '2\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
   campaign_obligation_worker() {
     local id=$1 worker=$4
     case "${id}" in
-      A) stream_answer "${worker}" A ADMITTED SESSION.A ;;
-      B) sleep 2; stream_answer "${worker}" B ADMITTED SESSION.B ;;
+      A) stream_answer "${worker}" A ADMITTED SESSION.A fatal ;;
+      B) sleep 2; stream_answer "${worker}" B ADMITTED SESSION.B fatal ;;
       *) sleep 60 & printf '%s\n' "$!" >"${worker}/sleep.pid"; wait ;;
     esac
   }
@@ -1903,9 +1903,11 @@ $(cat "${stream_dir}/campaign_gaps.jsonl")"
 jq -e -s 'map(.obligationId) | sort == ["A","SLOW"]' \
   "${stream_dir}/obligation_results.jsonl" >/dev/null \
   || fail "what ran when the budget stopped the exploration did not land"
-jq -e '.stop == "REGION_PATH_WAVE_BUDGET_REACHED" and .rounds == 2' \
+jq -e '.stop == "REGION_PATH_WAVE_BUDGET_REACHED" and .rounds == 2
+  and .cancelled == ["NEVER"]' \
   "${stream_dir}/exploration.json" >/dev/null \
-  || fail "exploration.json does not state the budget stop"
+  || fail "exploration.json does not state the budget stop and name what \
+it left unasked"
 [[ ! -e "${stream_dir}/obligations-0001/NEVER" ]] \
   || fail "a round past the budget was dispatched"
 
@@ -2767,6 +2769,48 @@ eval "${real_try_start}"
 campaign_head_charging=0
 campaign_head_charged 999999 120 true \
   || fail "a start outside a head waited for the ledger"
+unset -f hostname campaign_host_available_mb campaign_host_total_mb
+reset_config
+
+# MEMORY-4: HEAD ROOM.  A head's host keeps room for the head's next engine
+# JVM against every other start: an obligation counts the largest idle,
+# fresh reservation of the host as used, a head's own start counts none,
+# one of its JVMs running (busy) or a reservation gone stale frees it, and
+# the head gives it up when it exits.
+campaign_host_gate_root="${memory_dir}/head-room"
+campaign_local_host_names=" localhost gate-head "
+hostname() { echo gate-head; }
+campaign_host_available_mb() { echo 20000; }
+campaign_host_total_mb() { echo 10000; }
+campaign_host_max_used_pct=70
+campaign_host_poll_s=0
+engine_memory_mb=12000
+(
+  campaign_head_charging=1
+  campaign_head_reserve
+  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 12000 ]] \
+    || fail "the head reserved no room on its host"
+  run_capturing_status campaign_host_try_start localhost 6000
+  [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"12000 MB held \
+for a head"* ]] || fail "an obligation took the room a head reserved: \
+${campaign_host_wait_reason}"
+  campaign_host_try_start lift14 6000 \
+    || fail "a head's room was held on another host"
+  campaign_head_charged 9000 120 bash -c "ls '${campaign_host_gate_root}/\
+gate-head/heads/' >'${memory_dir}/head-busy'" \
+    || fail "the head's own start waited for its own room"
+  grep -q '\.busy\.' "${memory_dir}/head-busy" \
+    || fail "the head's room is held while its own JVM runs"
+  touch -d '20 minutes ago' "${campaign_host_gate_root}/gate-head/heads/"*
+  campaign_host_try_start localhost 6000 \
+    || fail "a stale reservation still holds room"
+  campaign_head_heartbeat
+  ( campaign_head_unreserve )
+  [[ -n "$(ls "${campaign_host_gate_root}/gate-head/heads/")" ]] \
+    || fail "a subshell of the head gave up the head's room"
+) || exit 1
+[[ -z "$(ls "${campaign_host_gate_root}/gate-head/heads/")" ]] \
+  || fail "the head kept its room after it exited"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb
 reset_config
 

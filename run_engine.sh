@@ -456,8 +456,8 @@ engine_java() {
     env "$(config_env_assignment engine_memory_mb)" "${java_bin}" "$@"
 }
 
-# What one of the head's engine JVMs is charged on its host, in MB; the pool
-# keeps that much room on the head's host (campaign_stream_admit_host).
+# What one of the head's engine JVMs is charged on its host, in MB: the room
+# a head reserves there (campaign_head_reserve).
 campaign_head_need_mb() {
   printf '%s\n' "${engine_memory_mb:-8192}"
 }
@@ -2810,6 +2810,22 @@ $(hostname -s 2>/dev/null) "
 # JVMs, one after another, are never charged twice.  A start that does not
 # fit WAITS -- an obligation goes to another host or later, never skipped --
 # and says so once.
+#
+#   ${campaign_host_gate_root}/<host>/heads/<id>  "<mb>": a campaign head's
+#                                                 room on its host
+#
+# HEAD ROOM.  A head runs its engine JVMs -- a planner round, a gate, COMPOSE
+# -- on its own host between the obligations every campaign keeps starting
+# there, and a pool keeps every host as full as the ledger allows: a head
+# that waited for room like any start would wait for its own host to empty
+# (stream1: hdfs-11741's head waited 25 min in SEED).  So a head reserves
+# room for its next JVM (campaign_head_reserve): its file states the need,
+# fresh while the head lives (campaign_head_heartbeat, at most
+# campaign_head_reservation_stale_s apart), idle unless one of its JVMs runs
+# (<id>.busy.<pid>: then that JVM's charge and its RSS stand for it).  A
+# start that is no head's own counts the largest idle fresh reservation of
+# the host as used; a head's own start counts none, so heads take turns as
+# they always did and never block each other.
 # ---------------------------------------------------------------------------
 
 # shellcheck source=tools/lib/gc-env.sh
@@ -2839,6 +2855,15 @@ campaign_host_poll_s=5
 campaign_ssh_patience_s=300
 # A lock older than this was left by a campaign that died holding it.
 campaign_host_lock_stale_s=30
+# A head reservation older than this was left by a head that is gone.
+campaign_head_reservation_stale_s=600
+# This head's reservation file (campaign_head_reserve), or empty, and the
+# process that holds it: a subshell of the head (a batch target) exits
+# without giving it up.
+campaign_head_reservation=""
+campaign_head_pid=""
+# Set while a head's own start asks the ledger (campaign_head_charged).
+campaign_host_head_start=0
 
 # The ledger's name for a host: this machine's short name for a local one,
 # so a campaign on lift11 and one addressing lift11 over ssh share one entry.
@@ -2952,7 +2977,7 @@ campaign_host_charge_id=""
 campaign_host_try_start() {
   local host=$1 need=${2:-${obligation_memory_mb}}
   local ramp=${3:-${campaign_host_ramp_s}} key dir now available total
-  local reserve charged=0 at mb row_ramp id kept=""
+  local reserve charged=0 at mb row_ramp id kept="" held=0
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
@@ -2961,6 +2986,8 @@ campaign_host_try_start() {
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
   reserve=$(( total * (100 - campaign_host_max_used_pct) / 100 ))
+  [[ "${campaign_host_head_start}" == 1 ]] \
+    || held=$(campaign_host_head_room "${dir}" "${now}")
   campaign_host_lock "${dir}" "${now}" || return 3
   if [[ -f "${dir}/starts" ]]; then
     while read -r at mb row_ramp id; do
@@ -2971,13 +2998,13 @@ campaign_host_try_start() {
       kept+="${at} ${mb} ${row_ramp} ${id}"$'\n'
     done <"${dir}/starts"
   fi
-  if (( available - charged < need + reserve )); then
+  if (( available - charged - held < need + reserve )); then
     printf '%s' "${kept}" >"${dir}/starts"
     rmdir "${dir}/lock"
-    campaign_host_wait_reason="${key} has ${available} MB available and \
-${charged} MB charged to starts still in their ramp; one needs ${need} MB \
-and ${reserve} MB stay free (at most ${campaign_host_max_used_pct}% of \
-${total} MB in use)"
+    campaign_host_wait_reason="${key} has ${available} MB available, \
+${charged} MB charged to starts still in their ramp and ${held} MB held for \
+a head; one needs ${need} MB and ${reserve} MB stay free (at most \
+${campaign_host_max_used_pct}% of ${total} MB in use)"
     return 1
   fi
   campaign_host_charge_id="$(hostname -s).${BASHPID}.${now}.${RANDOM}"
@@ -2985,6 +3012,49 @@ ${total} MB in use)"
     "${campaign_host_charge_id}" >"${dir}/starts"
   rmdir "${dir}/lock"
   return 0
+}
+
+# The largest idle, fresh head reservation of one host's ledger directory,
+# in MB (HEAD ROOM above); 0 when there is none.
+campaign_host_head_room() {
+  local dir=$1 now=$2 file need held=0 busy
+  for file in "${dir}"/heads/*; do
+    [[ -f "${file}" && "${file}" != *.busy.* ]] || continue
+    for busy in "${file}".busy.*; do
+      [[ -e "${busy}" ]] && continue 2
+    done
+    (( now - $(stat -c %Y "${file}" 2>/dev/null || echo 0) \
+      < campaign_head_reservation_stale_s )) || continue
+    read -r need 2>/dev/null <"${file}" || continue
+    [[ "${need}" =~ ^[0-9]+$ ]] && (( need > held )) && held=${need}
+  done
+  printf '%s\n' "${held}"
+}
+
+# This head's room on its host (HEAD ROOM above), until the head exits
+# (its EXIT trap, campaign_head_unreserve).
+campaign_head_reserve() {
+  local dir
+  dir="${campaign_host_gate_root}/$(campaign_host_key localhost)/heads"
+  mkdir -p "${dir}"
+  campaign_head_pid=${BASHPID}
+  campaign_head_reservation="${dir}/$(hostname -s).${BASHPID}.$(date +%s)"
+  campaign_head_need_mb >"${campaign_head_reservation}"
+  trap campaign_head_unreserve EXIT
+}
+
+# The head lives: its reservation stays fresh.
+campaign_head_heartbeat() {
+  [[ -z "${campaign_head_reservation}" ]] \
+    || touch -- "${campaign_head_reservation}" 2>/dev/null || true
+}
+
+# The head is done (or failed): its room is the hosts' again.
+campaign_head_unreserve() {
+  [[ -n "${campaign_head_reservation}" \
+     && "${BASHPID}" == "${campaign_head_pid}" ]] || return 0
+  rm -f -- "${campaign_head_reservation}" "${campaign_head_reservation}".busy.*
+  campaign_head_reservation=""
 }
 
 # Drops one start's row: what it ran has returned, and whatever it held is
@@ -3010,18 +3080,26 @@ campaign_host_release() {
 # plain command, so errexit means inside it what it meant before: a failure
 # that ends the shell leaves the charge to lapse with its ramp.
 campaign_head_charged() {
-  local need=$1 ramp=$2 id status
+  local need=$1 ramp=$2 id status busy=""
   shift 2
   if [[ "${campaign_head_charging}" != 1 ]]; then
     "$@"
     return
   fi
   # Its words go to stderr: the command's stdout is often its artifact
-  # (ImportGateMain's summary JSON).
-  campaign_await_host_memory localhost "${need}" "${ramp}" >&2 || return
+  # (ImportGateMain's summary JSON).  Its own room is not held against it.
+  campaign_head_heartbeat
+  campaign_host_head_start=1 campaign_await_host_memory localhost "${need}" \
+    "${ramp}" >&2 || return
   id=${campaign_host_charge_id}
+  if [[ -n "${campaign_head_reservation}" ]]; then
+    busy="${campaign_head_reservation}.busy.${BASHPID}"
+    : >"${busy}"
+  fi
   "$@"
   status=$?
+  [[ -z "${busy}" ]] || rm -f -- "${busy}"
+  campaign_head_heartbeat
   campaign_host_release localhost "${id}"
   return "${status}"
 }
@@ -3061,6 +3139,7 @@ ${campaign_ssh_patience_s}s"
 ${campaign_host_wait_reason}"
       said=true
     fi
+    campaign_head_heartbeat
     sleep "${campaign_host_poll_s}"
   done
 }
@@ -3137,10 +3216,10 @@ are in ${worker}"
 # EXPLORE.  Rounds of explore.ExploreMain over the corpus, each obligation
 # solved and replayed on whichever host has room, until one of three ends:
 #
-#   WITNESSED   a round names an admitted replay that observed the fatal at
-#               the declared occurrence, and COMPOSE over the corpus as it
-#               stands publishes the claim the final stages accept: the queue
-#               is cancelled and what runs is reaped (campaign_stream_end).
+#   WITNESSED   an admitted replay that observed the fatal at the declared
+#               occurrence lands, and COMPOSE over the corpus as it stands
+#               publishes the claim the final stages accept: the queue is
+#               cancelled and what runs is reaped (campaign_stream_end).
 #   FIXED_POINT nothing proposed, exposed, queued or running.
 #   REGION_PATH_WAVE_BUDGET_REACHED  a round of wave region_path_max_waves
 #               still owes work: it is not dispatched, the queue is
@@ -3159,11 +3238,11 @@ campaign_explore() {
   local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
   local stream_generation=0 stream_next_host=0 stream_ticker=""
   local stream_waiting="" stream_admitted_host="" stream_stop=""
-  local stream_stop_detail=""
+  local stream_stop_detail="" stream_anchors="[]"
   local -a stream_queue=() stream_hosts=() stream_swaps=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
   local -A stream_jobs=() stream_flying=() stream_host_jobs=()
-  local -A stream_host_cores=() stream_host_unread=() stream_tried=()
+  local -A stream_host_cores=() stream_host_unread=()
   : >"${results}"
   : >"${attempts}"
   mkdir -p "$(dirname "${stream_plan}")"
@@ -3171,9 +3250,9 @@ campaign_explore() {
   mapfile -t stream_hosts < <(campaign_worker_host_list)
   campaign_stream_round_args
   # A head that fails takes nothing it started with it: whatever still runs
-  # is ended first, here and on every peer.  The head sets no other EXIT
-  # trap.
-  trap campaign_stream_reap EXIT
+  # is ended first, here and on every peer; then its room goes, as it does
+  # when the head exits anywhere else (campaign_head_reserve).
+  trap 'campaign_stream_reap; campaign_head_unreserve' EXIT
 
   while true; do
     if [[ -z "${stream_stop}" ]] && campaign_stream_plan_due; then
@@ -3203,7 +3282,7 @@ ${stream_stop_detail}"
     kill "${stream_ticker}" 2>/dev/null || true
     wait "${stream_ticker}" 2>/dev/null || true
   fi
-  trap - EXIT
+  trap campaign_head_unreserve EXIT
   campaign_stream_promote_generation
   campaign_stream_manifest
   campaign_log "exploration stopped (${stream_stop}) after ${stream_round} \
@@ -3248,12 +3327,11 @@ campaign_stream_plan_due() {
 }
 
 # One round: the planner over the corpus as it stands, then -- in this order
-# -- a COMPOSE attempt for witnesses no attempt has judged, the wave budget,
-# and GROW for its exposures, else its obligations into the queue.
+# -- the wave budget, and GROW for its exposures, else its obligations into
+# the queue.
 campaign_stream_round() {
-  local round_dir name status=0 exposures exposed proposed wave witness index
-  local row
-  local -a ids=() rows=() fresh=()
+  local round_dir name status=0 exposures exposed proposed wave index row
+  local -a ids=() rows=()
   name=$(printf 'obligations-%04d' "${stream_round}")
   round_dir="${iteration_dir}/${name}"
   [[ ! -e "${round_dir}" ]] || die \
@@ -3287,18 +3365,14 @@ exit ${status}"
   wave=$(jq -er '.wave' "${round_dir}/explore_manifest.json") \
     || campaign_fail EXPLORE ExploreMain "${round_dir}" \
       "round $((stream_round - 1)) states no wave"
+  # The declared occurrence, as a target row spells it: what makes a landed
+  # session a witness (campaign_stream_admit).
+  stream_anchors=$(jq -c '.anchorOccurrences' \
+    "${round_dir}/explore_manifest.json")
   campaign_log "round $((stream_round - 1)) (wave ${wave}): ${proposed} \
 obligation(s), ${exposed} exposure(s), ${#stream_flying[@]} in flight, \
 $(jq -r '.branchesStopped' "${round_dir}/explore_manifest.json") branch(es) \
 stopped"
-  while IFS= read -r witness; do
-    [[ -n "${witness}" && -z "${stream_tried[${witness}]+x}" ]] || continue
-    fresh+=("${witness}")
-  done < <(jq -r '.witnesses[]' "${round_dir}/explore_manifest.json")
-  if (( ${#fresh[@]} > 0 )); then
-    campaign_stream_attempt "${name}" "${fresh[@]}"
-    [[ "${stream_stop}" != WITNESSED ]] || return 0
-  fi
   if (( proposed + exposed > 0 && wave >= region_path_max_waves )); then
     stream_stop=REGION_PATH_WAVE_BUDGET_REACHED
     stream_stop_detail="round $((stream_round - 1)) is of wave ${wave}, and \
@@ -3306,6 +3380,7 @@ the exploration reached its configured budget of \
 region_path_max_waves=${region_path_max_waves} with ${proposed} \
 obligation(s) still open and ${exposed} region exposure(s) not yet woven"
     campaign_stream_gap "${stream_stop}" "${stream_stop_detail}"
+    stream_cancelled+=("${ids[@]}")
     return 0
   fi
   # A round that exposes regions grows the corpus first: what it proposes is
@@ -3335,17 +3410,16 @@ campaign_stream_gap() {
 }
 
 # One COMPOSE over the corpus as it stands -- the stage's own entry,
-# do_compose, into a scratch directory -- for the witnesses a round names and
-# no attempt judged yet.  An observed fatal is not yet a composable witness:
-# the families COMPOSE joins may need sessions later obligations would add.
-# The exploration ends only when the attempt publishes the claim the final
-# stages accept: SAT_CANDIDATE, its polarity deciding.  Nothing starts while
-# it runs; the head does nothing else.
+# do_compose, into a scratch directory -- once a witness has landed.  An
+# observed fatal is not yet a composable witness: the families COMPOSE joins
+# may need sessions later obligations would add.  The exploration ends only
+# when the attempt publishes the claim the final stages accept:
+# SAT_CANDIDATE, its polarity deciding.  Nothing starts while it runs; the
+# head does nothing else.
 campaign_stream_attempt() {
   local round=$1 dir status=0 claim="" kind="" polarity=false
-  local accepted=false witness
+  local accepted=false
   shift
-  for witness in "$@"; do stream_tried[${witness}]=1; done
   dir=$(printf '%s/witness-attempts/%04d' "${iteration_dir}" \
     "$(grep -c '' "${attempts}" || true)")
   mkdir -p "${dir}"
@@ -3482,13 +3556,10 @@ campaign_stream_dispatch() {
 # from the host after the last one chosen.  A host is skipped while it runs
 # as many of this campaign's as it has cores, or while the ledger has no
 # room on it (campaign_host_try_start: no start leaves a host more than
-# CAUSYNTH_HOST_MAX_USED_PCT full).  The head's own host also keeps room for
-# the head's next engine JVM (campaign_head_need_mb): the planner, the gate
-# and COMPOSE run there between two returns, and an obligation that took
-# their room would hold the whole loop.  1 when no host has room now, said
-# once per wait.
+# CAUSYNTH_HOST_MAX_USED_PCT full, and none takes a head's room).  1 when no
+# host has room now, said once per wait.
 campaign_stream_admit_host() {
-  local kind=$1 host turn count need status=0
+  local kind=$1 host turn count status=0
   local -a candidates=()
   count=${#stream_hosts[@]}
   if [[ "${kind}" == RERUN ]]; then
@@ -3501,12 +3572,8 @@ campaign_stream_admit_host() {
   for ((turn = 0; turn < ${#candidates[@]}; turn++)); do
     host=${candidates[${turn}]}
     campaign_stream_has_cores "${host}" || continue
-    need=${obligation_memory_mb}
-    if [[ "${kind}" == OBLIGATION ]] && campaign_host_is_local "${host}"; then
-      need=$(( need + $(campaign_head_need_mb) ))
-    fi
     while true; do
-      run_capturing_status campaign_host_try_start "${host}" "${need}"
+      run_capturing_status campaign_host_try_start "${host}"
       (( status == 3 )) || break
       sleep 0.$(( (RANDOM % 9) + 1 ))
     done
@@ -3582,11 +3649,12 @@ campaign_stream_start() {
   stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
 }
 
-# Waits for the next return, and lands it; or, while the queue waits for
-# room, for the poll interval at most.
+# Waits for the next return, and lands it, or for the poll interval at most:
+# the queue may wait for room, and the head's room stays fresh.
 campaign_stream_wait() {
   local finished="" status=0
-  if (( ${#stream_queue[@]} > 0 )) && [[ -z "${stream_ticker}" ]]; then
+  campaign_head_heartbeat
+  if [[ -z "${stream_ticker}" ]]; then
     sleep "${campaign_host_poll_s}" &
     stream_ticker=$!
   fi
@@ -3639,7 +3707,10 @@ campaign_stream_swap_due() {
 
 # A session a worker staged (<staged>/<session>), into the corpus and
 # through the import gate, one session per call (the head is its one
-# caller).  The summary stays with <worker>.
+# caller), the summary with <worker>.  A WITNESS -- its replay ADMITTED, and
+# its target row at the declared occurrence observed the fatal
+# (ExploreMain#witnesses, the round's anchorOccurrences) -- is put to COMPOSE
+# at once (campaign_stream_attempt).
 campaign_stream_admit() {
   local worker=$1 staged=$2 session=$3
   [[ -d "${staged}/${session}" ]] || campaign_fail EXPLORE CAMPAIGN \
@@ -3649,6 +3720,13 @@ not stage"
   campaign_import_gate "${iteration_dir}" "${iteration_id}" \
     "${worker}/import_gate.json" "${sessions}/${session}"
   stream_landed=$((stream_landed + 1))
+  [[ "$(jq -r '.verdict // ""' "${worker}/obligation_result.jsonl")" \
+      == ADMITTED ]] || return 0
+  jq -e --argjson anchors "${stream_anchors}" \
+    'select(.observedFatal == true
+            and (.occurrence as $at | any($anchors[]; . == $at)))' \
+    "${sessions}/${session}/targets.jsonl" >/dev/null 2>&1 || return 0
+  campaign_stream_attempt "$(basename "$(dirname "${worker}")")" "${session}"
 }
 
 # The EXPOSED_REGION rows of a round's growth.jsonl, one `obligation region
@@ -4943,8 +5021,10 @@ do_campaign() {
   # makes it this run's and no other run's.
   campaign_init_local_scratch_root
   # This shell is the head: its engine JVMs and its replays are charged to
-  # its host (campaign_head_charged).
+  # its host (campaign_head_charged), and its host keeps room for the next
+  # one (campaign_head_reserve).
   campaign_head_charging=1
+  campaign_head_reserve
 
   campaign_stage PREFLIGHT campaign_preflight
   campaign_stage FREEZE_TOOL campaign_freeze_graphchecker_jar
