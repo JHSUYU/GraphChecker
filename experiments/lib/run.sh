@@ -30,6 +30,16 @@ export CAUSYNTH_CLASSPATH
 CAUSYNTH_CLASSPATH=${CAUSYNTH_CLASSPATH_OVERRIDE:-$(bash "${lib}/classpath.sh" \
   "${case_dir}" "${case_id}")}
 export CAUSYNTH_OUTPUT_DIR=${CAUSYNTH_OUTPUT_DIR:-/tmp/graphchecker-${tag}}
+# A case directory without a target.yaml runs on the throw its tree marks with
+# the case's id (tools/lib/annotated.py): the spec is derived from the tree,
+# never kept by hand, and stays with the run's output.
+if [[ ! -f ${target_spec} ]]; then
+  mkdir -p "${CAUSYNTH_OUTPUT_DIR}"
+  target_spec=${CAUSYNTH_OUTPUT_DIR}/declared-target.yaml
+  python3 "${lib}/../../tools/lib/annotated.py" "${system_dir}" "${repo}" \
+    "${tag}" >"${target_spec}.partial"
+  mv -- "${target_spec}.partial" "${target_spec}"
+fi
 export CAUSYNTH_LOOP_BOUNDS=${loop_bounds}
 export CAUSYNTH_TARGET_SPEC=${target_spec}
 export CAUSYNTH_WORKLOAD_WORK_DIR=${repo}

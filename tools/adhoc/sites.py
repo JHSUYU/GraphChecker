@@ -3,21 +3,21 @@
 sources (system.sh's system_sources) that stands under an `if` -- a check --
 as one JSON row: its class root, class, tree-relative file, throw line, the
 if's line and text, the exception and its operand text.  A throw under no
-`if` checks nothing and is not a row."""
+`if` checks nothing and is not a row.  A throw is read as tools/lib/annotated.py
+reads it: its line is the one its `throw new` starts on, and its type (after
+a known-bug marker, when the tree marks it) may follow on the next lines."""
 import json
 import os
 import re
-import subprocess
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "lib"))
+import annotated  # noqa: E402
+
 system_dir, repo = sys.argv[1], sys.argv[2]
-sources = subprocess.run(
-    ["bash", "-c", 'source "$1/system.sh"; printf "%s\\n" "${system_sources[@]}"',
-     "_", system_dir], check=True, capture_output=True, text=True).stdout.split()
-THROW = re.compile(r'throw\s+new\s+(?:@[\w.]+(?:\("[^"]*"\))?\s+)?([\w.]+)\s*\(')
 IF = re.compile(r'^\s*(?:}\s*else\s+)?if\s*\((.*)$')
-for entry in sources:
-    root, rel = entry.split(":", 1)
+for root, rel in annotated.sources(system_dir):
     base = os.path.join(repo, rel)
     for directory, _, files in os.walk(base):
         for name in sorted(files):
@@ -26,14 +26,14 @@ for entry in sources:
             path = os.path.join(directory, name)
             lines = open(path, errors="ignore").read().split("\n")
             cls = os.path.relpath(path, base)[:-5].replace("/", ".")
-            for i, line in enumerate(lines):
-                m = THROW.search(line)
-                if not m:
+            for i in range(len(lines)):
+                found = annotated.throw_matches(lines, i)
+                if not found:
                     continue
-                j, text = i, line[m.end():]
-                while ");" not in text and j + 1 < len(lines) and j - i < 8:
-                    j += 1
-                    text += " " + lines[j].strip()
+                m = found[0]
+                first, *rest = (m.string[m.end():].split("\n")
+                                + lines[i + 1 + annotated.CONTINUATION:i + 9])
+                text = first + "".join(" " + part.strip() for part in rest)
                 cond, cond_line = "", -1
                 for k in range(i - 1, max(-1, i - 8), -1):
                     mm = IF.match(lines[k])

@@ -6,7 +6,16 @@ A case directory under `experiments/<system>/` holds DECLARATIONS only:
 | --- | --- |
 | `case.sh` | per case id: the system's worktree (`repo`), the workload (`test_class`, `test_method`), the declared target (`target_occurrence`), the analysis `scope`, and optionally `loop_bounds`, `target_spec`, `classpath_test`, `workload_properties` (and Hadoop's `hadoop_javac`) |
 | `workflow.properties` | the campaign's budgets and inputs |
-| `target.yaml`, `*.jsonl` | the target (`exception_target: <name> <binary class name> <source line> [<thrown type>]`: no annotation, no tree rebuild), communication mappings, symbolic inputs, root domains, loop bounds |
+| `target.yaml`, `*.jsonl` | the target (`exception_target: <name> <binary class name> <source line> [<thrown type>]`, no tree rebuild), communication mappings, symbolic inputs, root domains, loop bounds |
+
+A case directory with no `target.yaml` (and no `target_spec`) is a known
+bug's: its tree marks the bug's target throw with
+`@CausynthExceptionTarget("<case id>[,<case id>...]")`, and `run.sh` derives
+the spec from that marker (`tools/lib/annotated.py <system dir> <tree> <case
+id>`, the case id being `<case dir name>-<case arg>`, e.g. `hdfs-17899-bug1`)
+into `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`, so no line is kept by hand.
+An ad-hoc sweep counts a confirmed finding at a marked throw as that known bug
+found again (`tools/adhoc/findings.py --annotated`).
 
 Everything executable is here, one copy for every case:
 

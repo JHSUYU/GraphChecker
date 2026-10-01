@@ -7,7 +7,7 @@
 # "B<n>": a row "B<n><TAB><workload><TAB><check> <check>..." of batches.tsv,
 # whose target spec is targets/B<n>.yaml (tools/adhoc/prescreen.sh writes
 # both).  checks.tsv declares the checks.  All run one JDK 8 tree, the one
-# the file `tree` names (gc/hdfs-17967-pathC), as it is written:
+# the file `tree` names (gc/hdfs-unified), as it is written:
 # tools/adhoc/targets.py writes targets/, each check's class and throw line.
 # The target occurrence is the one occurrences.tsv names, else the first
 # observed occurrence of the check in the campaign's own recording.
