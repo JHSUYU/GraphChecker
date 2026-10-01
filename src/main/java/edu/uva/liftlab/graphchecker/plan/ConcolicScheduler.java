@@ -192,9 +192,10 @@ public final class ConcolicScheduler {
         return task;
     }
 
-    /** The ONE cap rule: a selection over {@code --max-jobs} is refused by name
-     *  with its admission summary. Never truncate: dropped candidates are arms
-     *  missing from the formula, an unsound claim. */
+    /** The ONE cap rule's refusal: not even the target's own demand level
+     *  fits {@code --max-jobs} ({@link RuntimeWorkflowDiscovery.Workflow
+     *  #nearest} keeps the nearest levels that fit whole and names the
+     *  rest), refused by name with its admission summary. */
     private static IOException overMaxJobs(
             int selected, int maxJobs, List<RegionInstancePlan> regionPlans) {
         return new IOException("selected exact closure exceeds max jobs: "
@@ -304,12 +305,22 @@ public final class ConcolicScheduler {
     private static void scheduleTargetFirst(Arguments arguments)
             throws IOException {
         LoadedInputs loaded = loadInputs(arguments);
-        RuntimeWorkflowDiscovery.Workflow workflow =
+        RuntimeWorkflowDiscovery.Workflow closure =
                 RuntimeWorkflowDiscovery.workflow(loaded.regionPlans,
                         arguments.targetOccurrence);
-        if (workflow.scheduledTaskCount() > arguments.maxJobs) {
-            throw overMaxJobs(workflow.scheduledTaskCount(),
+        RuntimeWorkflowDiscovery.Workflow workflow =
+                closure.nearest(arguments.maxJobs);
+        if (workflow == null) {
+            throw overMaxJobs(closure.scheduledTaskCount(),
                     arguments.maxJobs, loaded.regionPlans);
+        }
+        if (workflow.cutCount() > 0) {
+            System.err.println("closure cut at demand depth "
+                    + workflow.keptDepth() + ": " + workflow.cutCount()
+                    + " of " + closure.scheduledTaskCount()
+                    + " occurrences not planned (max jobs "
+                    + arguments.maxJobs + "); "
+                    + closureAdmissionSummary(loaded.regionPlans));
         }
 
         List<List<ExecutionTask>> scheduled = scheduleSelections(arguments,

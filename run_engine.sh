@@ -4316,9 +4316,21 @@ campaign_stream_gap() {
 # it: nothing past that point is asked, so a truncation asks nothing more
 # (each round's own row is DIAGNOSTIC, ExploreMain).  Any other end: when its
 # last round's closure was truncated at the task bound (--max-tasks, the
-# manifest's `truncated`), a claim over it misses arms, BLOCKING.
+# manifest's `truncated`), a claim over it misses arms, BLOCKING.  The same
+# holds for the occurrences PLAN left out to fit schedule_max_jobs (the
+# index's `closureCut`, RuntimeWorkflowDiscovery.Workflow#nearest), stated
+# whatever the end: DIAGNOSTIC under a witness, BLOCKING otherwise.
 campaign_stream_truncation() {
-  local last truncated
+  local last truncated cut cls=BLOCKING
+  cut=$(jq -r '.closureCut // empty | "\(.occurrences) \(.keptDepth)"' \
+    "${iteration_dir}/runtime_workflow_schedule_index.json")
+  if [[ -n "${cut}" ]]; then
+    [[ "${stream_stop}" != WITNESSED ]] || cls=DIAGNOSTIC
+    campaign_stream_gap "${cls}" PLAN_CLOSURE_CUT "PLAN planned the \
+closure only to demand depth ${cut#* } to fit schedule_max_jobs: ${cut%% *} \
+deeper occurrence(s) were not planned, so a claim over it misses their arms \
+(the exploration ended ${stream_stop})"
+  fi
   [[ "${stream_stop}" != WITNESSED ]] && (( stream_round > 0 )) || return 0
   last=$(printf '%s/obligations-%04d' "${iteration_dir}" \
     "$((stream_round - 1))")

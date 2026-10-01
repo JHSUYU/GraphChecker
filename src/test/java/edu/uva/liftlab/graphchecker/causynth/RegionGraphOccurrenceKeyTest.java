@@ -2,9 +2,15 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
+import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -70,26 +76,30 @@ public class RegionGraphOccurrenceKeyTest {
 
     /**
      * An address two activations landed on STATES ITS CLASS, which is
-     * whether the kept closure holds its region: inside it a task addresses
-     * the occurrence and the ambiguity withholds, outside it no plan row, no
-     * task and no session row names the occurrence and the row is telemetry.
-     * All three rows of the reviewed hdfs-17960 run were the second case --
-     * {@code FSDirectory$InitQuotaTask} ForkJoin siblings, whose regions the
-     * closure drops -- and they were published with no class at all, which
-     * the campaign reads as blocking.
+     * whether the kept closure retains that occurrence: then a task
+     * addresses it and the ambiguity withholds; otherwise no plan row, no
+     * task and no session row names it and the row is telemetry, whatever
+     * else of its region is planned.  All three rows of the reviewed
+     * hdfs-17960 run were the second case -- {@code FSDirectory$InitQuotaTask}
+     * ForkJoin siblings, whose regions the closure drops -- and they were
+     * published with no class at all, which the campaign reads as blocking.
      */
     @Test
     public void aSharedAddressStatesItsClass() throws Exception {
-        assertEquals("BLOCKING", sharedAddressClass("REGION.kept"));
-        assertEquals("DIAGNOSTIC", sharedAddressClass("REGION.dropped"));
+        assertEquals("BLOCKING", sharedAddressClass(PLANNED));
+        assertEquals("DIAGNOSTIC", sharedAddressClass(
+                PLANNED.replace("TICK#1", "TICK#2")));
     }
 
-    /** The class the finalizer states for one shared address. */
-    private static String sharedAddressClass(String regionId)
+    /** The class the finalizer states for one shared address of the kept
+     *  region, the closure retaining {@code retained} of it. */
+    private static String sharedAddressClass(String retained)
             throws Exception {
+        String regionId = "REGION.kept";
         StaticProgram program = new StaticProgram();
         Map<String, Object> kept = new LinkedHashMap<String, Object>();
-        kept.put("regionId", "REGION.kept");
+        kept.put("regionId", regionId);
+        kept.put("runtimeOccurrenceIds", Collections.singletonList(retained));
         program.regions.add(kept);
         Map<String, Object> shared = new LinkedHashMap<String, Object>();
         shared.put("occurrenceId", PLANNED);
@@ -109,88 +119,198 @@ public class RegionGraphOccurrenceKeyTest {
         // infer the class from the code.
         assertTrue(String.valueOf(row.get("detail")),
                 String.valueOf(row.get("detail"))
-                        .contains(row.get("cls") + ": " + regionId));
+                        .contains(row.get("cls") + ": the closure"));
         return String.valueOf(row.get("cls"));
     }
 
     /**
-     * What names a declared wire attach across two recordings of one
-     * workload.
-     *
-     * <p>The wire transaction is minted fresh in every run, so nothing in
-     * the plan may be named from it.  The offline exchange pairing that used
-     * to mint an ordinal over (producer occurrence, consumer occurrence,
-     * port, direction), and the request-control edge that used to be named
-     * from a response edge, are both gone -- rows are the pairing authority.
-     * What decides that an activation holds a declared attach is the
-     * DECLARATION (the region's own cut port, with the call site and callee
-     * the case's communication mapping names) joined with the RECORDING (a
-     * capture at that site), and nothing else: a frame that converted
-     * nothing states no capture and is not admitted, whatever the wire
-     * called the transaction.</p>
+     * WHAT THE RECORDING HELD decides where the failure's demand crosses
+     * (SYMBOL-SCOPE §4.4).  A stored field is one object's: of the
+     * occurrences on the reader's node that ran its storing method, the walk
+     * plans those the recording saw access it on the object the reader read
+     * it on, or on no object (a store on an arm it did not take), never one
+     * that held other objects only, nor one on another node.  A message is
+     * one exchange leg: an attach whose value reaches what is demanded plans
+     * the occurrence that exported it on that leg, never an export of the
+     * same port on another leg -- the unconditional admission of every
+     * capture planned 2673 occurrences for one ad-hoc check (a40h-5).
      */
     @Test
-    public void aDeclaredAttachIsNamedByTheDeclarationNotTheWire()
-            throws Exception {
-        String frame = "<example.Helper: example.Keys convert("
-                + "example.KeysProto)>";
-        String site = "<example.Helper: example.Key convert("
-                + "example.KeyProto)>#u2";
-        String callee = "<example.KeyProto: int getKeyId()>";
-        StaticProgram.RegionRow skeleton = skeleton(frame, site, callee);
-
-        assertTrue("the recording states a capture at the declared site",
-                attached(skeleton, capture(site, callee)));
-        assertFalse("a frame that converted nothing states none",
-                attached(skeleton, capture("", "")));
-        assertFalse("a capture at some other call is not this attach",
-                attached(skeleton, capture(site,
-                        "<example.KeyProto: long getExpiryDate()>")));
+    public void theWalkCrossesWhatTheRecordingHeld() throws Exception {
+        Object[][] activations = {
+                // name, node, region, owners of EPOCH, attach leg, export leg
+                {"target", "wl/nn0#epoch0", "REGION.check", 7, "", ""},
+                {"same-object", "wl/nn0#epoch0", "REGION.bump", 7, "L1", ""},
+                {"other-object", "wl/nn0#epoch0", "REGION.bump", 8, "L2", ""},
+                {"no-access", "wl/nn0#epoch0", "REGION.bump", 0, "", ""},
+                {"other-node", "wl/dn0#epoch0", "REGION.bump", 7, "", ""},
+                {"paired-export", "wl/dn0#epoch0", "REGION.send", 0, "", "L1"},
+                {"other-leg", "wl/dn0#epoch0", "REGION.send", 0, "", "L2"},
+        };
+        List<Map<String, Object>> instances = new ArrayList<>();
+        Map<String, String> addresses = new LinkedHashMap<>();
+        for (int index = 0; index < activations.length; index++) {
+            Object[] row = activations[index];
+            String address = OccurrenceAddress.of(
+                    NodeId.parse((String) row[1]), (String) row[2],
+                    CausalContext.of(Role.of("CLIENT"), "", index + 1),
+                    ExecutionIndex.empty()).render();
+            addresses.put((String) row[0], address);
+            String method = "REGION.check".equals(row[2]) ? CHECK
+                    : "REGION.bump".equals(row[2]) ? BUMP : SEND;
+            Map<String, Object> activation = row(
+                    "kind", "RUNTIME_REGION_ACTIVATION",
+                    "regionId", row[2],
+                    "rootCallId", (long) index + 1,
+                    "occurrenceAddress", address,
+                    "selection", "REGION.check".equals(row[2])
+                            ? "EXCEPTION_CONTEXT" : "STATE_CONTEXT",
+                    "callIds", Collections.singletonList((long) index + 1),
+                    "observedMethods", Collections.singletonList(method));
+            if ((Integer) row[3] != 0) {
+                activation.put(RuntimeSelectedRegionFinalizer.FIELD_OWNERS,
+                        Collections.singletonMap(EPOCH,
+                                Collections.singleton(row[3])));
+            }
+            List<Map<String, Object>> captures = new ArrayList<>();
+            if (!((String) row[4]).isEmpty()) {
+                captures.add(row("side", "IN", "portId", PORT,
+                        "exchangeLeg", row[4]));
+            }
+            if (!((String) row[5]).isEmpty()) {
+                captures.add(row("side", "OUT", "portId", PORT,
+                        "exchangeLeg", row[5]));
+            }
+            activation.put(RuntimeSelectedRegionFinalizer
+                    .OBSERVED_COMMUNICATION_CAPTURES, captures);
+            instances.add(activation);
+        }
+        RuntimeSelectedRegionFinalizer.Result closure =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(walkGraph(),
+                        walkSkeletons(), "test", Arrays.asList(CHECK, BUMP,
+                                SEND), instances,
+                        Collections.singletonList(row("kind", "BRANCH",
+                                "eventSeq", 5L, "method", CHECK,
+                                "callId", 1L, "siteId", CHECK + "#u5",
+                                "outcome", Boolean.TRUE)),
+                        walkScopeMap(), RuntimeWorkflowDiscovery.FIRST,
+                        Collections.<ScheduleEvent>emptyList());
+        List<String> planned = new ArrayList<>();
+        for (Map<String, Object> region : closure.regions) {
+            for (Object occurrence
+                    : (List<?>) region.get("runtimeOccurrenceIds")) {
+                for (Map.Entry<String, String> named : addresses.entrySet()) {
+                    if (named.getValue().equals(occurrence)) {
+                        planned.add(named.getKey());
+                    }
+                }
+            }
+        }
+        Collections.sort(planned);
+        assertEquals(Arrays.asList("no-access", "paired-export",
+                "same-object", "target"), planned);
     }
 
-    /** One region skeleton declaring one IN cut port of a wire mapping. */
-    private static StaticProgram.RegionRow skeleton(String frame,
-                                                    String site,
-                                                    String callee) {
-        Map<String, Object> port = row(
-                CommunicationCatalogContract.PORT_ID, "XCH.a.resp.key-id",
+    private static final String CHECK = "<ex.Server: void check()>";
+    private static final String BUMP = "<ex.State: void bump(ex.Proto)>";
+    private static final String SEND = "<ex.Client: ex.Proto send()>";
+    private static final String EPOCH = "<ex.State: int epoch>";
+    private static final String GET = "<ex.Proto: int getEpoch()>";
+    private static final String SET =
+            "<ex.Proto$Builder: ex.Proto$Builder setEpoch(int)>";
+    private static final String PORT = "XCH.ex.wire.epoch";
+
+    /** The target reads EPOCH into its fatal guard; bump stores what it
+     *  attached into EPOCH; send exports it. */
+    private static List<Map<String, Object>> walkGraph() {
+        return Arrays.asList(
+                row("kind", "exception_guard", "transferKind", "GUARD",
+                        "fromCell", CHECK + "::$i0",
+                        "toCell", CHECK + "#u5#exception:ex.Fail",
+                        "method", CHECK, "siteId", CHECK + "#u5",
+                        "unitIndex", 5),
+                row("kind", "field_read", "fromCell", EPOCH,
+                        "toCell", CHECK + "::$i0", "method", CHECK,
+                        "siteId", CHECK + "#u3", "unitIndex", 3),
+                row("kind", "call_return", "fromCell", GET + ".return",
+                        "toCell", BUMP + "::$i1", "method", BUMP,
+                        "siteId", BUMP + "#u1", "unitIndex", 1),
+                row("kind", "field_write", "fromCell", BUMP + "::$i1",
+                        "toCell", EPOCH, "method", BUMP,
+                        "siteId", BUMP + "#u2", "unitIndex", 2),
+                row("kind", "wire_capture_argument",
+                        "fromCell", SEND + "::$i2",
+                        "toCell", SET + ".param0:int", "method", SEND,
+                        "siteId", SEND + "#u4", "unitIndex", 4));
+    }
+
+    private static List<StaticProgram.RegionRow> walkSkeletons() {
+        Map<String, Object> attach = row("portId", PORT,
                 RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, "IN",
                 CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND,
                 CommunicationCatalogContract.CAPTURE_CALL_RETURN,
-                CommunicationCatalogContract.CALL_SITE_ID, site,
-                CommunicationCatalogContract.DECLARED_CALLEE, callee);
-        Map<String, Object> region = row(
-                "schemaVersion", 3,
+                CommunicationCatalogContract.CALL_SITE_ID, BUMP + "#u1",
+                CommunicationCatalogContract.PORT_DEFINITION_METHOD, BUMP,
+                CommunicationCatalogContract.DECLARED_CALLEE, GET,
+                "javaType", "int");
+        Map<String, Object> export = row("portId", PORT,
+                RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, "OUT",
+                CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND,
+                CommunicationCatalogContract.CAPTURE_CALL_ARGUMENT,
+                CommunicationCatalogContract.CALL_SITE_ID, SEND + "#u4",
+                CommunicationCatalogContract.PORT_DEFINITION_METHOD, SEND,
+                CommunicationCatalogContract.DECLARED_CALLEE, SET,
+                CommunicationCatalogContract.PORT_ARGUMENT_INDEX, 0,
+                "javaType", "int");
+        return StaticProgram.regionRows(Arrays.asList(
+                walkSkeleton("REGION.check", CHECK, "EXCEPTION_CONTEXT",
+                        Collections.<Map<String, Object>>emptyList()),
+                walkSkeleton("REGION.bump", BUMP, "STATE_CONTEXT",
+                        Collections.singletonList(attach)),
+                walkSkeleton("REGION.send", SEND, "COMMUNICATION_CONTEXT",
+                        Collections.singletonList(export))),
+                RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test");
+    }
+
+    private static Map<String, Object> walkSkeleton(
+            String regionId, String method, String selection,
+            List<Map<String, Object>> ports) {
+        return row("schemaVersion",
+                RuntimeSelectedRegionFinalizer.REGION_SCHEMA_VERSION,
                 "kind", RuntimeSelectedRegionFinalizer.SKELETON_KIND,
-                "regionId", "REGION.frame",
-                "rootMethod", frame,
-                "anchorMethod", frame,
-                "methods", Collections.singletonList(frame),
-                RuntimeSelectedRegionFinalizer.COMMUNICATION_PORTS,
-                Collections.singletonList(port));
-        return StaticProgram.regionRows(Collections.singletonList(region),
-                RuntimeSelectedRegionFinalizer.SKELETON_KIND,
-                "test").get(0);
+                "regionId", regionId, "rootMethod", method,
+                "rootAuthority", "STATE_WRITER_ENTRY",
+                "anchorMethod", method,
+                "anchorMethods", Collections.singletonList(method),
+                "selection", selection,
+                "methods", Collections.singletonList(method),
+                RuntimeSelectedRegionFinalizer.COMMUNICATION_PORTS, ports);
     }
 
-    /** One activation stating one recorded declared-site capture. */
-    private static Map<String, Object> capture(String site, String callee) {
-        if (site.isEmpty()) return row("regionId", "REGION.frame");
-        return row("regionId", "REGION.frame",
-                DeclaredSiteCapture.PLAN_FIELD, Collections.singletonList(
-                        row(SiteId.MEMBER, site,
-                                DeclaredSiteCapture.DECLARED_CALLEE, callee,
-                                DeclaredSiteCapture.ORDINAL, 1)));
-    }
-
-    private static boolean attached(StaticProgram.RegionRow skeleton,
-                                    Map<String, Object> activation)
-            throws Exception {
-        Method rule = RuntimeSelectedRegionFinalizer.class
-                .getDeclaredMethod("attachedADeclaredPort",
-                        StaticProgram.RegionRow.class, Map.class);
-        rule.setAccessible(true);
-        return (Boolean) rule.invoke(null, skeleton, activation);
+    /** The guard that decides the throw, and bump's store of EPOCH. */
+    private StaticScopeMap walkScopeMap() throws IOException {
+        JsonObject target = new JsonObject();
+        target.addProperty("kind", "STATIC_SCOPE_SITE");
+        target.addProperty("role", "TARGET_SITE");
+        target.addProperty("regionId", "REGION.check");
+        target.addProperty("siteId", CHECK + "#u7");
+        JsonArray guards = new JsonArray();
+        guards.add(CHECK + "#u5");
+        target.add("guards", guards);
+        JsonArray outcomes = new JsonArray();
+        outcomes.add(true);
+        target.add("guardOutcomes", outcomes);
+        JsonObject write = new JsonObject();
+        write.addProperty("kind", "STATIC_SCOPE_SITE");
+        write.addProperty("role", "WRITE_SITE");
+        write.addProperty("regionId", "REGION.bump");
+        write.addProperty("siteId", BUMP + "#u2");
+        write.addProperty("cell", EPOCH);
+        write.addProperty("carrier", EPOCH);
+        Path file = tree.newFolder().toPath().resolve(StaticScopeMap.FILE);
+        Files.write(file, (target + "\n" + write + "\n")
+                .getBytes(StandardCharsets.UTF_8));
+        return StaticScopeMap.read(file);
     }
 
     /**

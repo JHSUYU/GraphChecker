@@ -180,8 +180,8 @@ the objects the node runs its work through), `registerSource`, `registerSourceAl
 registered node is attributed to `workload/unregistered` (`RuntimeRegionPlanner.UNREGISTERED_SOURCE`).
 
 PLAN refuses what the address cannot tell apart: activations of one region sharing one address are
-`OCCURRENCE_ADDRESS_SHARED` (BLOCKING when the region is in the published closure,
-`causynth/RuntimeSelectedRegionFinalizer`), and a plan row whose causal anchor or source names
+`OCCURRENCE_ADDRESS_SHARED` (BLOCKING when the published closure retains that occurrence, else
+DIAGNOSTIC, `causynth/RuntimeSelectedRegionFinalizer#stateSharedAddressClasses`), and a plan row whose causal anchor or source names
 another node than its address is `TASK_UNANSWERED` BLOCKING
 (`RuntimeRegionPlanner#stateAnchorOffAddress`).
 
