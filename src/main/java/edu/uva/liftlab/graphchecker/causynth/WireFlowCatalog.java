@@ -48,7 +48,6 @@ public final class WireFlowCatalog {
             Map<String, SootMethod> methods) throws IOException {
         List<WireFlow> flows = new ArrayList<>();
         for (Row row : rows()) {
-            if (DoorWeave.KIND.equals(string(row.json, "kind"))) continue;
             try {
                 flows.add(parse(row.json, methods));
             } catch (RuntimeException invalid) {
@@ -123,34 +122,6 @@ public final class WireFlowCatalog {
             if (flow.captures(site)) return true;
         }
         return false;
-    }
-
-    /** The mapping's rows of one other kind ({@link DoorWeave#KIND}). */
-    static List<JsonObject> rowsOfKind(String kind) throws IOException {
-        List<JsonObject> found = new ArrayList<>();
-        for (Row row : rows()) {
-            if (kind.equals(string(row.json, "kind"))) found.add(row.json);
-        }
-        return found;
-    }
-
-    /**
-     * The doors' transports: a door fault
-     * {@code FAULT:<TRANSPORT>:<DIRECTION>[:<kind>]} exists exactly for
-     * these.  Read off the raw rows, before method resolution.
-     */
-    public static java.util.Set<String> declaredTransports() {
-        java.util.Set<String> found = new java.util.LinkedHashSet<String>();
-        try {
-            for (JsonObject door : rowsOfKind(DoorWeave.KIND)) {
-                String transport = string(door, "transport");
-                if (!transport.isEmpty()) found.add(transport);
-            }
-        } catch (IOException unreadable) {
-            throw new IllegalStateException(
-                    "Communication mapping unreadable", unreadable);
-        }
-        return found;
     }
 
     private static WireFlow parse(JsonObject row,

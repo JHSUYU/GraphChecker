@@ -396,12 +396,13 @@ public final class ClaimPolicy {
     static final long WHOLE_BUDGET_MS = 60000L;
 
     /**
-     * How many independent asks run at once, each its own z3 process beside
-     * the composer's JVM on the campaign head (hdfs-17899-bug2: 128
-     * valuations and every path's self-check, one at a time, held COMPOSE
-     * for hours while the head's other cores sat idle).
+     * How many independent asks run at once beside the composer's JVM on the
+     * campaign head (hdfs-17899-bug2: 128 valuations and every path's
+     * self-check, one at a time, held COMPOSE for hours while the head's
+     * other cores sat idle): eight z3 processes, two per ask (one per
+     * arithmetic engine, {@code Z3#run}).
      */
-    static final int PARALLEL_ASKS = 8;
+    static final int PARALLEL_ASKS = 4;
 
     /** Independent asks answered in parallel, read back in their order. */
     private static <T, R> List<R> inParallel(List<T> items,

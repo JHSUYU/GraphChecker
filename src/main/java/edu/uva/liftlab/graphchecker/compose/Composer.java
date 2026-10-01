@@ -775,10 +775,10 @@ public final class Composer {
                             + " by a named assertion, and what it was "
                             + "computed from is not in the formula");
         }
-        for (Map.Entry<String, String> unanswered
-                : lowering.candidateUnanswered().entrySet()) {
+        for (Map.Entry<String, String> named
+                : lowering.diagnostics().entrySet()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    unanswered.getKey(), unanswered.getValue());
+                    named.getKey(), named.getValue());
         }
 
         // Valuations before the body: the body declares what pins reach.
@@ -910,12 +910,12 @@ public final class Composer {
         Independence relevant = independence(session,
                 Collections.singletonList(target.phiTerm()),
                 familyBound(session, repaired), reached, conditions);
-        //       What the fatal itself rests on, of phi and the roots alone: a
-        //       location a family binds and nothing else reaches holds the
-        //       formula's alternatives, not the witness (a confirming run is
-        //       held to these only).
+        //       What the fatal itself rests on ({@link #fatalRests}) and
+        //       the roots alone: a location a family binds and nothing else
+        //       reaches holds the formula's alternatives, not the witness (a
+        //       confirming run is held to these only).
         Set<String> restsOn = independence(session,
-                Collections.singletonList(target.phiTerm()),
+                fatalRests(target, path.decisions),
                 Collections.<String>emptySet(), reached, conditions)
                 .locations();
 
@@ -973,22 +973,23 @@ public final class Composer {
                 refusals));
 
         // (5) phi_p is the FATAL arm as published; never re-derive its
-        //     polarity.  No predicate is a concrete branch (invariant 9):
-        //     the arm this run took is the whole of phi_p, and a healthy one
-        //     is no path to the fatal arm in any world.
+        //     polarity.  A concrete fatal condition is the constant of its
+        //     arm (invariant 9): `true` rests the fatal on pi_p, the path
+        //     condition that reached the anchor; `false` is no path to the
+        //     fatal arm in any world of this one; none stated is no phi.
         String subject = "phi of " + anchor.render();
-        if (target.phiTerm() == null || target.phiTerm().isEmpty()) {
-            if (target.observedFatal()) {
-                terms.add("true");
-            } else {
-                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, subject, "the anchor decided "
-                                + "concretely on its healthy arm, so no root "
-                                + "of this path reaches the fatal one"));
-            }
+        String published = target.phiTerm().trim();
+        if (published.isEmpty() || "false".equals(published)) {
+            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, subject, published.isEmpty()
+                            ? "the target row states no phi (invariant 9), "
+                            + "so what the fatal rests on is stated by no "
+                            + "row"
+                            : "the anchor decided concretely on its healthy "
+                            + "arm, so no world of this path reaches the "
+                            + "fatal one"));
         } else {
-            String phi = lowering.statedTerm(target.phiTerm(),
-                    "phi:" + subject);
+            String phi = lowering.statedTerm(published, "phi:" + subject);
             if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
                 terms.add(phi);
             }
@@ -1052,6 +1053,20 @@ public final class Composer {
         heldArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, target.observedFatal(),
                 interactionIds, restsOn);
+    }
+
+    /**
+     * What the fatal a target row states rests on: its phi; a concrete
+     * fatal condition states phi as the constant of its arm, which names
+     * nothing, and that fatal rests on the path condition that reached the
+     * anchor, the decisions before the target (CONTRACT-SPEC §2.2).
+     */
+    private static List<String> fatalRests(TargetRow target,
+                                           List<DecisionRow> decisions) {
+        String phi = target.phiTerm().trim();
+        return "true".equals(phi) || "false".equals(phi)
+                ? Arms.pathCondition(decisions, target.seq())
+                : Collections.singletonList(target.phiTerm());
     }
 
     private static List<String> selectors(List<Disjunct> disjuncts) {

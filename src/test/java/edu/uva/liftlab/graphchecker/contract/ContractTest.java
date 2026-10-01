@@ -342,6 +342,27 @@ public class ContractTest {
                         CausalContext.of(Role.UNKNOWN), site), PORT, site, 0),
                 attach).producer().occurrence().lineageLost());
 
+        // A store's re-delivery of one version to one watcher is its own
+        // activation (MessageDoors#fetched: KIND.n from the second on), and
+        // how many a run takes is the store's timing: every delivery is
+        // addressed alike for CONFIRM (anyDelivery), and nothing else is.
+        String[][] deliveries = {
+                {"SOLR_ZK.ZKSTATEREADER$STATEWATCHER.2/OVERSEER_STATE_UPDATE",
+                        "SOLR_ZK.ZKSTATEREADER$STATEWATCHER/OVERSEER_STATE_UPDATE"},
+                {"SOLR_ZK.ZKSTATEREADER$STATEWATCHER/OVERSEER_STATE_UPDATE",
+                        null},
+                {"SOLR_HTTP/.update", null},
+                {"HADOOP_IPC/ping.2", null}};
+        for (String[] row : deliveries) {
+            OccurrenceAddress notified = OccurrenceAddress.of(DN0, REGION,
+                    CausalContext.of(PRODUCER_ID, row[0]),
+                    ExecutionIndex.of(path));
+            assertEquals(row[0], row[1] == null ? notified
+                    : OccurrenceAddress.of(DN0, REGION, CausalContext.of(
+                    PRODUCER_ID, row[1]), ExecutionIndex.of(path)),
+                    notified.anyDelivery());
+        }
+
         // ONE owner spelling, the one the runtime writes: the VM's
         // symbolic rid of the object whose state this is.  A join is per
         // session, and inside one run two rids are two objects.  The
@@ -778,16 +799,34 @@ public class ContractTest {
                 null, true, null, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=recordedValue",
                 unspelled);
-        // 9: phi is published in the FATAL polarity, so an observed fatal
-        // states one and it holds at the recording's own root values.
-        Rows silent = clean();
-        silent.targets.set(0, TargetRow.of("s-gate", 15L, silent.anchor,
-                "Guard#u8", "", true, true));
-        assertInvariant(9, GapClass.BLOCKING, "field=phiTerm", silent);
-        Rows concrete = clean();
-        concrete.targets.set(0, TargetRow.of("s-gate", 15L, concrete.anchor,
-                "Guard#u8", "", false, true));
-        assertInvariant(9, GapClass.DIAGNOSTIC, "field=phiTerm", concrete);
+        // 9: a reached anchor states phi in the FATAL polarity -- a term, or
+        // for a concrete fatal condition the constant of the arm it took
+        // (SOLR-18413 r9: the deleted target's lookup) -- and phi holds
+        // exactly on the fatal arm at the session's own root values (the
+        // marker ran true, so EXPR.1 holds).  {phi, observedFatal, class}.
+        Object[][] nine = {
+                {"", true, GapClass.BLOCKING},
+                {"", false, GapClass.DIAGNOSTIC},
+                {"true", true, null},
+                {"false", false, null},
+                {"false", true, GapClass.BLOCKING},
+                {"true", false, GapClass.BLOCKING},
+                {"EXPR.0000000000000001", false, GapClass.BLOCKING},
+                {"(not EXPR.0000000000000001)", false, null}};
+        for (Object[] row : nine) {
+            Rows stated = clean();
+            stated.targets.set(0, TargetRow.of("s-gate", 15L, stated.anchor,
+                    "Guard#u8", (String) row[0], (Boolean) row[1], true));
+            if (row[2] == null) {
+                assertTrue("phi " + row[0] + " on the " + (Boolean.TRUE.equals(
+                                row[1]) ? "fatal" : "healthy") + " arm: "
+                                + names(gate(stated)),
+                        noViolation(gate(stated), 9));
+            } else {
+                assertInvariant(9, (GapClass) row[2], "field=phiTerm",
+                        stated);
+            }
+        }
         // 11 (R4): a root symbol without its RootMintRow.  WHICH quantities
         // are roots is a fact about the SET -- CASE.MARKER is a root because
         // some session of the epoch minted a row naming it -- and a session

@@ -8,10 +8,11 @@
 #
 # Format: <class under edu.uva.liftlab.graphchecker.> <method> <return> <parameters...>
 # Also external, and checked by the compiler rather than here:
-#   annotation.CausynthExceptionTarget, the marker on BlockTokenSecretManager
-#   (7 trees), FSImageFormatPBSnapshot (17960, 17960-jdk8) and the ad-hoc
-#   trees' checks; no engine code reads it (a target is a class and a line,
-#   causynth.ExceptionTargetLineResolver).
+#   annotation.CausynthExceptionTarget, the known-bug marker on a target
+#   throw (the unified HDFS tree: BlockTokenSecretManager,
+#   FSImageFormatPBSnapshot); no engine code reads it -- a target is a class
+#   and a line, causynth.ExceptionTargetLineResolver -- but tools/lib/
+#   annotated.py derives a case's target spec from it.
 
 # ipc.CausynthSymbolicSource.symbolize -- every case's configured roots
 runtime.ConcolicRegionRuntime symbolizeConfiguredSourceField boolean string object string

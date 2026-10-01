@@ -849,14 +849,14 @@ public final class StaticScopeMap {
         }
     }
 
-    /** Whether a marker is a case fault point: a door fault ({@code
-     *  FAULT:<TRANSPORT>:<DIRECTION>}) on a mapped transport; any other name is
-     *  the workload's own declaration. */
+    /** Whether a marker is a fault point: a door fault ({@code
+     *  FAULT:<TRANSPORT>:<DIRECTION>}) of a library catalog transport; any
+     *  other name is the workload's own declaration. */
     static boolean declaredFault(String name) {
         if (!name.startsWith("FAULT:")) return true;
         String[] parts = name.split(":", -1);
         return parts.length >= 2 && edu.uva.liftlab.graphchecker.causynth
-                .WireFlowCatalog.declaredTransports().contains(parts[1]);
+                .LibraryCatalog.transports().contains(parts[1]);
     }
 
     /** Primitive type of a declared site's value (field or callee return), else

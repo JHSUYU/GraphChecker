@@ -154,11 +154,12 @@ final class LoopAccounting {
         // recording never stands on it; the REGION hook pushes the frame.
         Set<String> admittedTasks = config.addressLoopRootInvocation(
                 group.key, rootMethod, receiver, rootArguments, token);
-        // Asked here, the only place this entry's fold is still innermost:
-        // a folded entry addresses no bodies (#bodiesAddressedHere).
+        // Asked here, the only place this entry's marker is still innermost:
+        // an entry that opened no occurrence addresses no bodies
+        // (#bodiesAddressedHere).
         contexts.push(new LoopRootInvocationContext(token, group.key,
                 Math.max(0, group.hookCount - 1), admittedTasks,
-                Identity.foldedEntry()));
+                Identity.openedNone()));
         return token;
     }
 

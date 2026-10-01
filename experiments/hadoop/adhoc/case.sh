@@ -7,7 +7,7 @@
 # "B<n>": a row "B<n><TAB><workload><TAB><check> <check>..." of batches.tsv,
 # whose target spec is targets/B<n>.yaml (tools/adhoc/prescreen.sh writes
 # both).  checks.tsv declares the checks.  All run one JDK 8 tree, the one
-# the file `tree` names (gc/hdfs-17967-pathC), as it is written:
+# the file `tree` names (gc/hdfs-unified), as it is written:
 # tools/adhoc/targets.py writes targets/, each check's class and throw line.
 # The target occurrence is the one occurrences.tsv names, else the first
 # observed occurrence of the check in the campaign's own recording.
@@ -38,7 +38,8 @@ target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
   "${here}/occurrences.tsv")
 target_occurrence=${target_occurrence:-first}
 # The mappings' classes (system.sh), and each check's own class; the scope
-# grows from there to what the slice needs (SEED, `slice`).
+# grows from there to what the slice needs (SEED, `slice`), and the library
+# doors' classes join it by themselves (ScopeGrowth --doors).
 scope=("${system_mapping_scope[@]}")
 for check in ${checks}; do
   row=$(awk -F'\t' -v c="${check}" '$1 == c' "${here}/checks.tsv")

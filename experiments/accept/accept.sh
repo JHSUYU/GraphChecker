@@ -212,6 +212,7 @@ ACCEPT_KEEP_GLOBS=(
   'schedule/final/gaps.json'
   'schedule/final/run-manifest.json'
   'schedule/final/compose.log'
+  'schedule/final/reproduce.json'
   'schedule/stage_metrics.tsv'
   'schedule/iteration-*/iteration_manifest.json'
   'static_scope_map.jsonl'

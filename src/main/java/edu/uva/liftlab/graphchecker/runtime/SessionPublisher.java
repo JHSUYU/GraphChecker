@@ -58,6 +58,8 @@ public final class SessionPublisher {
      */
     private final Set<String> stated = new HashSet<String>();
     private boolean failed;
+    /** The manifest {@link #open} wrote. */
+    private SessionManifest manifest;
     /** Closed: the run ended ({@link #close}), so nothing is written. */
     private boolean closed;
 
@@ -104,12 +106,12 @@ public final class SessionPublisher {
                     append(layout.expressions(),
                             SessionExpressionLog.header());
                 }
-                RowCodec.writeManifest(layout.manifest(),
-                        SessionManifest.of(layout.sessionId(),
-                                FocusedReplay.focusedSession()
-                                        ? SessionManifest.Role.FOCUSED
-                                        : SessionManifest.Role.SEED,
-                                FocusedReplay.obligationIds()));
+                manifest = SessionManifest.of(layout.sessionId(),
+                        FocusedReplay.focusedSession()
+                                ? SessionManifest.Role.FOCUSED
+                                : SessionManifest.Role.SEED,
+                        FocusedReplay.obligationIds());
+                RowCodec.writeManifest(layout.manifest(), manifest);
             } catch (IOException unwritable) {
                 fail(unwritable);
             }
@@ -169,6 +171,22 @@ public final class SessionPublisher {
 
     public void gap(GapRow row) {
         if (row != null) append(layout.gaps(), RowCodec.writeGap(row));
+    }
+
+    /**
+     * Restates the manifest with the region entries unnamed work made, at
+     * the run's end: the count no row can state ({@link SessionManifest}).
+     */
+    public void unnamedEntries(Map<String, Integer> entries) {
+        synchronized (LOCK) {
+            if (failed || closed || manifest == null || withdrawn()) return;
+            try {
+                manifest = manifest.withUnnamedEntries(entries);
+                RowCodec.writeManifest(layout.manifest(), manifest);
+            } catch (IOException unwritable) {
+                fail(unwritable);
+            }
+        }
     }
 
     /** One scheduling event, in the order the run made it. */

@@ -23,7 +23,10 @@ public final class StaticDataflowEdgeSchema {
         String text = lower(text(unit) + "\n" + text(invoke) + "\n"
                 + text(from) + "\n" + text(to));
         if (normalizedKind.contains("guard")) return "GUARD";
-        if (normalizedKind.contains("throw")) return "EXCEPTION";
+        if (normalizedKind.contains("throw")
+                || normalizedKind.startsWith("exception_")) {
+            return "EXCEPTION";
+        }
         if (normalizedKind.contains("dispatch")) return "DYNAMIC_DISPATCH";
         if (normalizedKind.contains("field_write")
                 || normalizedKind.contains("field_mutation")

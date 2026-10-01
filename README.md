@@ -59,7 +59,7 @@ the system's code (§1). All runs are under `/bigtemp/vnr3ne/gc-out/accept-<roun
 | **solr-18406** | `a37f4` (branch, not main) | **PASS** | CLOCK_SKEW, polarityDecides, one clock root `M_J_field_REGION.57488ec0…Long` moved, CONFIRMED ("every edge the model chose was taken, and the claim's anchor observed the fatal"), 7 declared roots in the cone. Code is on branch `worktree-agent-ae3796f20246f25c6` (§0.3), NOT merged. On main (`r7`, `rb1`) 18406 still fails: its one anchor path is UNSAT with every root free. |
 | **solr-18413** | `r9` (main `a53174bf1`) | FAIL, last step | The `isExpired#u6` flip is SAT (Overseer `MigrateCmd` clock +262 s) and its replay REPRODUCES the bug ("Could not find collection : causynthMigrate-target") and is ADMITTED; the wave-0 IMPORT gate then stops on one BLOCKING row: invariant 9, the target row that observed the fatal states no `phiTerm` because the fatal condition (`targetColl == null`, `DistributedZkUpdateProcessor:932`) is concrete in the replay. A WIP fix is on branch `worktree-agent-a564ae2a2ad314535` (§0.3). |
 
-The 18413 chain in Solr 8.11 (tree `~/lucene-solr-18413`): Overseer task `MigrateCmd.java:196-205`
+The 18413 chain in Solr 8.11 (tree `~/lucene-solr-unified`): Overseer task `MigrateCmd.java:196-205`
 `expireAt = RoutingRule.makeExpiryAt(timeout)` (`RoutingRule.java:60-62`, Overseer clock + 1 s) →
 queue item (`ZkDistributedQueue.java:328`, store door `SolrZkClient.java:446`) → Overseer tick
 `SliceMutator.addRoutingRule` (`SliceMutator.java:225`, `:238-257`) → `state.json` write
@@ -158,7 +158,7 @@ for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f
    answer (`ContainerSupport::query_state`).
 
 **Phase 2 — the sweeps** (after 1–2): follow "Run an ad-hoc sweep" below on HDFS
-(`~/hadoop-hdfs-17967-c`) and Solr (`~/lucene-solr-8_11-adhoc`), all ten lifts; triage with
+(`~/hadoop-hdfs-unified`) and Solr (`~/lucene-solr-unified`), all ten lifts; triage with
 `triage.py`, dedupe with `findings.py`; a finding is new only if CONFIRMED and not a known
 mechanism (the two old token-expiry CLOCK_SKEWs were judged HDFS's clock-sync assumption).
 
@@ -312,8 +312,8 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | z3 | `~/.local/bin/z3` (4.14.1) |
 | concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-w4e/j2sdk-image`** (f14 + R3 + r3-fix + WIRE-CODEC W1/W4 natives + the containers' iteration order). Others still kept: `vm-r3b` (before W4: main refuses it since W4's natives), `vm-r3c` (vm-r3b + the iteration order), `vm-w4d` (W4 without the iteration order). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME`, never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
-| HDFS trees | `~/hadoop-hdfs-<case>` (worktrees of `~/hadoop`, branch `gc/<case>`); ad-hoc HDFS checks run on `~/hadoop-hdfs-17967-c` only |
-| Solr trees | Solr 8.11 worktrees of `~/lucene-solr-8_11`: `gc/solr` (shared adapter), `~/lucene-solr-18406` (`gc/solr-18406`), `~/lucene-solr-18413` (`gc/solr-18413`), `~/lucene-solr-8_11-adhoc` (`gc/solr-adhoc`). Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
+| HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) and the ad-hoc sweep -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
+| Solr trees | One Solr 8.11 tree, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches; solr-18406, solr-18413 and solr-adhoc all name it (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
 
 ### 3.2 Helper commands (outside the repo)
@@ -405,9 +405,10 @@ COMPOSE     merge all sessions into one disjunction over the anchor, solve it pe
             valuation with z3, decide the claim (compose/ComposeMain: Composer, ClaimPolicy)
 SOLVE/DECIDE  check and print the solver verdict and the claim COMPOSE published
 CONFIRM     re-run the witness world, check its edges (explore/ConfirmMain)
-REPRODUCE   run a confirmed witness natively: the recording weave on the stock JDK,
-            planting only its fault markers (runtime/RecordingPlant), N times
 EMIT        final/result.json, gaps.json, run-manifest.json
+REPRODUCE   after the verdict: run a confirmed witness natively, N runs at once over
+            the lifts, the recording weave on the stock JDK planting only its fault
+            markers, each ending at the fatal at its anchor (runtime/RecordingPlant)
 ```
 
 The stages, their gates and the claim kinds are specified in
@@ -422,10 +423,15 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
   an unknown key is refused;
 - `target.yaml`: `exception_target: <name> <binary class name> <source line> [<thrown type>]`.
   The engine finds the one `throw new` at that line of the class or of a class nested in it (a
-  lambda body, an anonymous class) in the compiled classes; the tree carries no annotation and is
-  not rebuilt. The thrown type is needed only when the line holds two throws;
-- optionally `communication-mappings.jsonl` (`DOOR` and `WIRE_FLOW` rows; on the R1-ROOTS branch
-  doors come from the engine's library catalog instead), `root-domains.jsonl` and
+  lambda body, an anonymous class) in the compiled classes; the tree is not rebuilt. The thrown
+  type is needed only when the line holds two throws. A known bug's case keeps no `target.yaml`:
+  its tree marks the bug's target throw with `@CausynthExceptionTarget("<case id>[,<case
+  id>...]")` (the case id is `<case dir>-<case arg>`, e.g. `hdfs-17899-bug1`), and `run.sh`
+  derives the spec from the marker (`tools/lib/annotated.py <system dir> <tree> <case id>`, into
+  `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`). An ad-hoc sweep counts a confirmed finding at a
+  marked throw as that known bug found again (`findings.py --annotated`, `nightly.sh`);
+- optionally `communication-mappings.jsonl` (`WIRE_FLOW` rows; the fault doors are the engine's
+  library catalog, `docs/design/SYMBOL-SCOPE.md` §4.2), `root-domains.jsonl` and
   `loop-bounds*.jsonl`.
 
 Everything executable is in `experiments/lib/`; its README gives the workload rules. Per-system
@@ -452,12 +458,14 @@ is written.
 
 Obligations of a campaign fan out over the hosts in `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`,
 round-robin, as many on a host as its ledger admits, up to its cores. Every start on a host is
-charged to the ledger first: an obligation
-(`obligation_memory_mb`, for 60 s), a campaign head's engine JVM (`engine_memory_mb`, else 8192, for
-120 s), its seed and CONFIRM replays (`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
+charged to the ledger first: an obligation, which is its replay (`obligation_memory_mb`, for 60 s),
+a host's solver of the exploration (its heap, for 120 s; PIPELINE §7.5), a campaign head's engine
+JVM (its main's measured need, else `engine_memory_mb`, for 120 s, and once more at
+`engine_memory_mb` if it runs out; PIPELINE §7.7), its seed and CONFIRM replays
+(`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
 (its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, every start
 still in its ramp there and a reserve that keeps the host at most `CAUSYNTH_HOST_MAX_USED_PCT`
-(70) percent full; a head's start is released when it returns.
+(70) percent full; a head's start, and an obligation's, is released when it returns.
 A head's "waiting for memory" line goes to stderr (its stdout is often an artifact).
 
 ## Run an ad-hoc sweep
@@ -468,7 +476,8 @@ A case is one check on one workload (`<check>.<workload>`), or a batch of checks
 experiments are `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds
 `checks.tsv`, `batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A
 check's slice starts from the classes its experiment's communication mappings name (`system.sh`'s
-`system_mapping_scope`) and its own class, and grows the scope from there. A sweep runs batches:
+`system_mapping_scope`) and its own class, and grows the scope from there; the library doors'
+classes join it once a class of that scope calls them. A sweep runs batches:
 given `causynth_static_root` (`sweep.sh`'s `STATIC_ROOT`), a batch campaign takes each check's
 slice from the build, records its workload once for all its checks, plans each check, replays
 one seed per group of checks whose plans agree, and runs each check's campaign from EXPLORE on,

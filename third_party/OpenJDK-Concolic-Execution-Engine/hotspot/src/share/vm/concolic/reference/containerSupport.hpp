@@ -36,6 +36,12 @@ enum Capability {
 Capability capability(oop value);
 // The shape a capability's state has: "INDEXED", "ASSOCIATIVE", or NULL.
 const char *shape(oop value);
+// The order Java's iterator of this container's class walks its members
+// in, as a snapshot states it: "INSERTION" (LinkedHashMap, LinkedHashSet:
+// the order keys were first put) or "HASH" (HashMap, HashSet,
+// ConcurrentHashMap, Hashtable: the table decides it, and an insertion may
+// rebin or resize it); NULL for a positional container.
+const char *iteration_order(oop value);
 // Why a map- or set-like receiver is not modeled, or empty when it is one
 // or is nothing of the kind: CONTAINER_SUBCLASS_UNMODELED:<class> for a
 // subclass of a modeled class, ACCESS_ORDER_UNMODELED for a LinkedHashMap

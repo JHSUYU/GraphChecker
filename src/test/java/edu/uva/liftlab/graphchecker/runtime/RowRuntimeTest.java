@@ -219,13 +219,13 @@ public class RowRuntimeTest {
             opened[0] = Identity.occurrence(NN.key(), "REGION.run", true)
                     .render();
             Identity.occurrence(NN.key(), "REGION.handshake", true);
-            folded[0] = Identity.foldedEntry();
+            folded[0] = Identity.openedNone();
             Identity.regionExit();
             long scope = RuntimeTraceContext.enterCarriedScope(carried,
                     "DATA_XCEIVER", "write-block");
             opened[1] = Identity.occurrence(NN.key(), "REGION.check", true)
                     .render();
-            folded[1] = Identity.foldedEntry();
+            folded[1] = Identity.openedNone();
             Identity.regionExit();
             RuntimeTraceContext.exitCarriedScope(scope);
             Identity.regionExit();
@@ -237,6 +237,50 @@ public class RowRuntimeTest {
         assertFalse("entered under a context, it opens its own", folded[1]);
         assertTrue(opened[1], opened[1].contains("REGION.check")
                 && !opened[1].contains("/ctx:Lost"));
+    }
+
+    /**
+     * Unnamed work opens no occurrence (IDENTITY §1), and is never silent:
+     * each region a node's unnamed work entered is one LINEAGE_LOST row, and
+     * the manifest counts every entry at the run's end.
+     */
+    @Test
+    public void unnamedEntriesAreNamedOnceAndCountedInTheManifest()
+            throws Exception {
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        try {
+            Object connection = new Object();
+            Identity.startWork("<a.Acceptor: void run()>#u5", connection);
+            List<OccurrenceAddress> opened = new ArrayList<>();
+            Thread handler = new Thread(() -> {
+                Identity.claimStart(connection);
+                for (String region : new String[]{"REGION.handshake",
+                        "REGION.handshake", "REGION.wrap"}) {
+                    opened.add(Identity.occurrence(NN.key(), region, true));
+                    Identity.regionExit();
+                }
+            });
+            handler.start();
+            handler.join();
+            assertEquals(Arrays.asList(null, null, null), opened);
+            RowRuntime.closeSession();
+        } finally {
+            RecordingWindow.reset();
+        }
+        List<String> named = new ArrayList<>();
+        for (GapRow gap : RowCodec.readAll(session().gaps(),
+                RowCodec::readGap)) {
+            if (gap.kind() == GapKind.LINEAGE_LOST) named.add(gap.subject());
+        }
+        String node = NN.key() + "/region/";
+        assertEquals(Arrays.asList(node + "REGION.handshake",
+                node + "REGION.wrap"), named);
+        Map<String, Integer> counted = new HashMap<>();
+        counted.put(node + "REGION.handshake", 2);
+        counted.put(node + "REGION.wrap", 1);
+        assertEquals(counted, new HashMap<>(RowCodec.readManifest(
+                session().manifest()).unnamedEntries()));
     }
 
     /**
@@ -1418,16 +1462,28 @@ public class RowRuntimeTest {
                 condition, true, true, true);
         RowRuntime.target(occurrence, 9L, "retrieveDataEncryptionKey#u8",
                 condition, false, false, true);
+        // A concrete fatal condition states the constant of the arm it took
+        // (SOLR-18413 r9: the deleted target's lookup); an anchor the run
+        // did not reach states none.
+        RowRuntime.target(occurrence, 10L, "retrieveDataEncryptionKey#u8",
+                null, true, true, true);
+        RowRuntime.target(occurrence, 11L, "retrieveDataEncryptionKey#u8",
+                null, false, false, true);
+        RowRuntime.target(occurrence, 0L, "retrieveDataEncryptionKey#u8",
+                null, false, false, false);
         RowRuntime.closeSession();
 
         List<TargetRow> rows = RowCodec.readAll(session().targets(),
                 RowCodec::readTarget);
-        assertEquals(2, rows.size());
+        assertEquals(5, rows.size());
         String ref = rows.get(0).phiTerm();
         assertTrue(ref.startsWith("EXPR."));
         assertTrue(rows.get(0).observedFatal());
         assertEquals("(not " + ref + ")", rows.get(1).phiTerm());
         assertFalse(rows.get(1).observedFatal());
+        assertEquals("true", rows.get(2).phiTerm());
+        assertEquals("false", rows.get(3).phiTerm());
+        assertEquals("", rows.get(4).phiTerm());
     }
 
     /**
@@ -1587,7 +1643,7 @@ public class RowRuntimeTest {
         assertFalse("nothing is running here, so this entry opens an"
                         + " occurrence and the recording states its address",
                 recordedAddress("REGION.ba3902cd").isEmpty());
-        assertFalse("it is no fold", Identity.foldedEntry());
+        assertFalse("it is no fold", Identity.openedNone());
 
         Identity.enterFrame(
                 "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7", null);
@@ -1595,11 +1651,11 @@ public class RowRuntimeTest {
                         + " address for it and PLAN records no activation",
                 "", recordedAddress("REGION.094a8e3d"));
         assertTrue("and while the fold stands, no activation starts here",
-                Identity.foldedEntry());
+                Identity.openedNone());
         Identity.regionExit();
         Identity.regionExit();
         assertFalse("and the enclosing occurrence is no fold",
-                Identity.foldedEntry());
+                Identity.openedNone());
 
         // A declared region on a thread running no occurrence opens its own.
         Identity.resetForTests();
@@ -2294,9 +2350,10 @@ public class RowRuntimeTest {
                         decided("G#u3", true, c), false,
                         Arrays.asList("(not " + refA + ")",
                                 "(not " + refC + ")")},
-                // b took its fatal arm concretely: fatal, and no arm stated.
+                // b took its fatal arm concretely: fatal, and the
+                // disjunction is the constant of that arm.
                 {decided("G#u1", false, a), decided("G#u2", true, null),
-                        null, true, Collections.emptyList()},
+                        null, true, Collections.singletonList("true")},
                 // a took it symbolically: its predicate is the arm.
                 {decided("G#u1", true, a), null, null, true,
                         Collections.singletonList(refA)}};

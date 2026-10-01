@@ -17,6 +17,11 @@ export CAUSYNTH_REPO=${repo}
 export CAUSYNTH_MODULE_DIR=${module}
 export CAUSYNTH_CLASSES_DIR=${analysis}
 export CAUSYNTH_LINEAGE_ROOTS=${lineage_roots}
+# A system's own doors (experiments/<system>/doors.jsonl), which replace the
+# engine catalog's of their transport and direction (SYMBOL-SCOPE §4.2).
+export CAUSYNTH_SYSTEM_DOORS=
+[[ ! -f "${system_dir}/doors.jsonl" ]] \
+  || CAUSYNTH_SYSTEM_DOORS=${system_dir}/doors.jsonl
 export CAUSYNTH_TEST_CLASSES_DIR=${test_classes}
 export CAUSYNTH_CLASSPATH
 # A reader of a recorded run (tools/regress/offline-ab.sh `config`) states the
@@ -25,6 +30,16 @@ export CAUSYNTH_CLASSPATH
 CAUSYNTH_CLASSPATH=${CAUSYNTH_CLASSPATH_OVERRIDE:-$(bash "${lib}/classpath.sh" \
   "${case_dir}" "${case_id}")}
 export CAUSYNTH_OUTPUT_DIR=${CAUSYNTH_OUTPUT_DIR:-/tmp/graphchecker-${tag}}
+# A case directory without a target.yaml runs on the throw its tree marks with
+# the case's id (tools/lib/annotated.py): the spec is derived from the tree,
+# never kept by hand, and stays with the run's output.
+if [[ ! -f ${target_spec} ]]; then
+  mkdir -p "${CAUSYNTH_OUTPUT_DIR}"
+  target_spec=${CAUSYNTH_OUTPUT_DIR}/declared-target.yaml
+  python3 "${lib}/../../tools/lib/annotated.py" "${system_dir}" "${repo}" \
+    "${tag}" >"${target_spec}.partial"
+  mv -- "${target_spec}.partial" "${target_spec}"
+fi
 export CAUSYNTH_LOOP_BOUNDS=${loop_bounds}
 export CAUSYNTH_TARGET_SPEC=${target_spec}
 export CAUSYNTH_WORKLOAD_WORK_DIR=${repo}

@@ -1141,15 +1141,20 @@ public class ComposerTest {
      * (ClaimPolicy#seedDisjunctUnsat): asserted together, two selectors
      * contradict the partition and read "unsat" whatever the roots, and
      * named by their path they name one label twice, which z3 refuses.
+     * (A phi of {@code false} is no path at all, invariant 9: the unsat
+     * paths state a fatal condition no world satisfies.)
      */
     @Test
     public void theSeedsPathsAreAskedEachAlone() throws Exception {
         Z3 solver = solver();
+        String never = "EXPR.0000000000000aa1";
         for (Object[] row : new Object[][]{
                 {"true", false},    // each path is sat: not unsat
-                {"false", true}}) { // each path is unsat
+                {never, true}}) {   // each path is unsat
             Path iteration = folder.newFolder("seed-" + row[0]).toPath();
             Session seed = new Session(iteration, "s0", false);
+            seed.expression(never, binary("==", integer("I", 1L),
+                    integer("I", 2L)));
             seed.target((String) row[0], true, true);
             seed.target((String) row[0], true, true);
             seed.write();
@@ -1665,6 +1670,52 @@ public class ComposerTest {
                         + "whose mechanism it never asked about",
                 named(decided.claim().gaps(),
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
+    }
+
+    /**
+     * A CONCRETE FATAL CONDITION states phi as the constant of the arm it
+     * took (SOLR-18413 r9: {@code targetColl == null} on a reference the
+     * lookup returned concretely).  {@code true} rests the fatal on the path
+     * condition that reached the anchor -- here the clock compare before
+     * it, so the witness moves the clock; {@code false} is no path to the
+     * fatal arm in any world; a row stating none is no path either, as the
+     * composer never invents phi.  {phi, observedFatal, disjuncts}.
+     */
+    @Test
+    public void aConcreteFatalConditionRestsOnThePathThatReachedIt()
+            throws Exception {
+        Object[][] rows = {{"true", true, 1}, {"false", false, 0},
+                {"", true, 0}};
+        for (Object[] row : rows) {
+            Path iteration = folder.newFolder("concrete-" + row[0] + "-"
+                    + row[1]).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.clock("700");
+            session.decision(ANCHOR, "anchor#u1", "(> " + CLOCK + " 1000)",
+                    CLOCK_ROOT, 700L);
+            session.target((String) row[0], (Boolean) row[1], true);
+            session.write();
+
+            Composer.Composition composition = compose(iteration, 4);
+            assertEquals("phi \"" + row[0] + "\": " + composition.gaps(),
+                    row[2], composition.disjuncts().size());
+            if (composition.disjuncts().isEmpty()) {
+                assertTrue("refused by name: " + composition.gaps(),
+                        named(composition.gaps(), "phi of "
+                                + ANCHOR.render()));
+                continue;
+            }
+            assertTrue("the fatal rests on the compare before the anchor: "
+                            + fatalArm(composition),
+                    fatalArm(composition).contains("(> " + CLOCK + " 1000)"));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals(ClaimKind.CLOCK_SKEW, decision.claim().kind());
+            assertTrue("the clock moved past the compare: "
+                            + decision.claim().movedRoots(),
+                    Long.parseLong(decision.claim().movedRoots().get(CLOCK)
+                            .trim()) > 1000L);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -3338,8 +3389,12 @@ public class ComposerTest {
                                 "org/apache/Store"),
                         vmNull()),
                 symbol("M_L'org/apache/Held'_9", "org/apache/Held")));
-        session.decision(ANCHOR, "anchor#u4", true, "EXPR.00000000000000d1");
-        session.decision(ANCHOR, "anchor#u5", true, "EXPR.00000000000000d2");
+        // Each asked beside the marker, which moves: a condition over
+        // nothing a witness moves is left out (Independence).
+        session.decision(ANCHOR, "anchor#u4", true,
+                "(and EXPR.00000000000000d1 " + MARKER + ")");
+        session.decision(ANCHOR, "anchor#u5", true,
+                "(and EXPR.00000000000000d2 " + MARKER + ")");
         // A declared region input, published as a READ placeholder: no
         // version to join to, the row's own value, and leaves of it in two
         // places.  Its symbol is a declared symbol of this session, so
@@ -3450,15 +3505,12 @@ public class ComposerTest {
                 integer("I", 9L)));
         // A map with three keys in it, and the three positions of the view
         // over it: the shape 11741's NameNode exports its block keys at
-        // (`allKeys.values().toArray(...)`, one element per position).  Put
-        // in an order that is NOT the ascending one, because what a
-        // traversal hands back is the map's business and "ascending ints"
-        // is not a fact any recording of a HashMap states.
-        JsonObject held = relation("ASSOCIATIVE", "SNAPSHOT_BASE",
-                "java/util/HashMap", relation("ASSOCIATIVE", "STATE",
-                        "java/util/HashMap",
-                        symbol("M_L'java/util/HashMap'_88",
-                                "java/util/HashMap")));
+        // (`allKeys.values().toArray(...)`, one element per position).  The
+        // snapshot's three members, in the order its table iterates them,
+        // which is NOT the ascending one: what a traversal hands back is
+        // the map's business and "ascending ints" is not a fact any
+        // recording of a HashMap states.
+        JsonObject held = snapshotBase("java/util/HashMap", "HASH", 3);
         for (long key : new long[]{30L, 10L, 20L}) {
             held = relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
                     held, integer("I", key), integer("I", key));
@@ -3470,10 +3522,10 @@ public class ComposerTest {
         // And one read of it at a literal key.
         session.expression("EXPR.0000000000000e50", relation("ASSOCIATIVE",
                 "READ", "I", held, integer("I", 10L)));
-        // And phi reads the array cell the decision above compares: every
-        // read of one location is one variable, so that decision is what
-        // phi rests on (a decision sharing nothing with phi or a root is
-        // left out, Independence).
+        // And phi reads the array cell the decision above compares.  That
+        // cell holds what the store wrote, which nothing moves, so the
+        // decision over it holds in every world and is left out
+        // (Independence): phi's own read is the element read asked below.
         session.expression("EXPR.00000000000000f5", binary("!=",
                 read("ARRAY_ELEMENT", 7L, 2L, 1L, "I"), integer("I", 6L)));
         // And the reference the two projections above ask about: phi rests
@@ -3527,6 +3579,8 @@ public class ComposerTest {
         assertTrue("an element read is the element, at the element's sort",
                 composition.body().contains("(valueInt (indexed_read "));
         assertTrue("and the cell it read is the slot the location names",
+                composition.body().contains(" 2)) 6)"));
+        assertFalse("a decision over a cell nothing moves is left out",
                 composition.body().contains(" 2)) 5)"));
         // What each root may be, by kind, with no root-domains row for
         // either: two valuations, the recorded one first.
@@ -3692,8 +3746,8 @@ public class ComposerTest {
         assertFalse("which is not a symbol of the recording",
                 SmtNames.symbols(guard, new LinkedHashSet<String>())
                         .contains(SERIAL));
-        Set<String> reached = lowering.reachedSymbols(guard,
-                new LinkedHashSet<String>(), new LinkedHashSet<String>());
+        Set<String> reached = lowering.reachedSymbols(
+                Collections.singletonList(guard));
         assertTrue("and the recorded symbol behind it is: " + reached,
                 reached.contains(SERIAL));
         for (String name : reached) {
@@ -3763,6 +3817,106 @@ public class ComposerTest {
                         + "refused by name: " + unbounded,
                 unbounded.contains(ContainerSmtCodec
                         .ASSOC_VIEW_SIZE_UNSTATED + ":STATE"));
+    }
+
+    /**
+     * A VIEW'S POSITION IS THE RUN'S ITERATION COUNT, and the chain states
+     * it only where the chain's order is the one the map's class iterates
+     * in (SOLR-18413 r9: a LinkedHashMap snapshot stated in hash order keyed
+     * a lookup at another key).  The VM's snapshot states its members in
+     * their iteration order and says which order that is; an
+     * insertion-ordered class iterates in the chain's order after it; a
+     * hash-ordered one keeps it through removals and updates, and a put of
+     * another key may rebin it; a recording that states no order has none.
+     * Where the order is not stated the positions are still a bijection
+     * with the keys, in no order: position 0 may name the last key put, and
+     * the map is named DIAGNOSTIC with why.  {order, members, program
+     * mutations above the members (a negative removes that key), why the
+     * chain does not state the order ("" it does)}.
+     */
+    @Test
+    public void aViewPositionIsTheOrderItsClassIteratesIn() {
+        Object[][] rows = {
+                {"INSERTION", 2, new long[]{3L}, ""},
+                {"HASH", 2, new long[]{}, ""},
+                {"HASH", 2, new long[]{1L}, ""},
+                {"HASH", 3, new long[]{-1L}, ""},
+                {"HASH", 2, new long[]{-1L, 1L}, "HASH_INSERT"},
+                {"HASH", 2, new long[]{3L}, "HASH_INSERT"},
+                {"", -1, new long[]{1L, 2L}, "UNRECORDED"},
+                {"HASH", 0, new long[]{3L, 4L}, "HASH_INSERT"}};
+        for (Object[] row : rows) {
+            int members = (Integer) row[1];
+            JsonObject state = snapshotBase("java/util/HashMap",
+                    (String) row[0], members);
+            List<Long> keys = new ArrayList<Long>();
+            for (long key = 1L; key <= Math.max(members, 0); key++) {
+                state = relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
+                        state, integer("I", key), integer("I", key));
+                keys.add(key);
+            }
+            for (long key : (long[]) row[2]) {
+                state = key < 0L
+                        ? relation("ASSOCIATIVE", "REMOVE",
+                        "java/util/HashMap", state, integer("I", -key))
+                        : relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
+                        state, integer("I", key), integer("I", key));
+                if (key < 0L) {
+                    keys.remove(Long.valueOf(-key));
+                } else if (!keys.contains(key)) {
+                    keys.add(key);
+                }
+            }
+            SmtLowering lowering = new SmtLowering(
+                    Collections.<String, VmTermLowering.Sort>emptyMap());
+            lowering.begin("s0", SmtLowering.NO_JOIN, null);
+            String view = lowering.dispatch(viewKey(state, 0), null, "view")
+                    .text;
+            assertEquals(java.util.Arrays.deepToString(row),
+                    Collections.<String>emptyList(), lowering.openRefusals());
+            List<String> facts = lowering.end();
+            String why = (String) row[3];
+            assertEquals(java.util.Arrays.deepToString(row),
+                    why.isEmpty() ? Collections.<String>emptySet()
+                            : Collections.singleton(ContainerSmtCodec
+                            .ASSOC_VIEW_UNORDERED + ":" + why
+                            + ":M_L'java/util/HashMap'_88 (java/util/HashMap)"
+                            + "@s0"), lowering.diagnostics().keySet());
+            String stated = why.isEmpty() ? "unsat" : "sat";
+            assertEquals(java.util.Arrays.deepToString(row) + ": position 0 "
+                            + "names the last key the chain put",
+                    stated, answer(lowering, facts, "(= " + view + " "
+                            + keys.get(keys.size() - 1) + ")"));
+            assertEquals(java.util.Arrays.deepToString(row) + ": and the "
+                            + "first", "sat", answer(lowering, facts,
+                    "(= " + view + " " + keys.get(0) + ")"));
+        }
+    }
+
+    /** What z3 answers a lowering's facts asked with one more question. */
+    private String answer(SmtLowering lowering, List<String> facts,
+                          String question) {
+        List<String> asked = new ArrayList<String>();
+        for (String fact : facts) asked.add(SmtNames.legalSymbols(fact));
+        asked.add(SmtNames.legalSymbols(question));
+        StringBuilder query = new StringBuilder(lowering.body(asked));
+        for (String each : asked) {
+            query.append("(assert ").append(each).append(")\n");
+        }
+        return solver().ask(query.toString(), null, false).status();
+    }
+
+    /** A snapshot's base, as the VM states its members' order and count;
+     *  an empty order and a negative count are a recording that states
+     *  neither. */
+    private static JsonObject snapshotBase(String map, String order,
+                                           int members) {
+        JsonObject base = relation("ASSOCIATIVE", "SNAPSHOT_BASE", map,
+                relation("ASSOCIATIVE", "STATE", map, symbol("M_L'" + map
+                        + "'_88", map)));
+        if (!order.isEmpty()) base.addProperty("order", order);
+        if (members >= 0) base.addProperty("members", members);
+        return base;
     }
 
     /** One element of the key view of a map, at one position. */
@@ -4647,21 +4801,24 @@ public class ComposerTest {
     // ------------------------------------------------------------------
 
     /**
-     * Constraint independence: a condition sharing no variable with phi or
-     * a root is left out, so one the composer cannot state -- a substring
-     * of a block file's name, read from a tracked location -- does not
-     * refuse the path (f4 visible-gs, sender-gs); the same condition over
-     * the location phi reads still does.  Java null is no variable: every
-     * null check spells it alike, and sharing it kept 80 of the 145
-     * conditions and reads of a SOLR-18406 path.  What a family binds is
-     * kept as phi is: a condition over an anchor handoff phi never names
-     * still refuses (C1 review M2).
+     * Constraint independence keeps what MOVES: a condition over nothing a
+     * witness can move is left out, so one the composer cannot state -- a
+     * substring of a block file's name, read from a tracked location -- does
+     * not refuse the path (f4 visible-gs, sender-gs); the same condition over
+     * the value phi reads, which the root moves, still does.  Java null is
+     * no variable: every null check spells it alike, and sharing it kept 80
+     * of the 145 conditions and reads of a SOLR-18406 path.  What a family
+     * binds moves: a condition over an anchor handoff phi never names still
+     * refuses (C1 review M2).  And sharing is no dependence: a condition
+     * over a value that does not move, read where phi reads it, stays out
+     * (SOLR-18413 r9: a closure over sharing kept 3479 conditions and
+     * reads).
      */
     @Test
     public void aConditionPhiDoesNotRestOnDoesNotRefuseThePath()
             throws Exception {
         for (String shares : new String[]{"nothing", "location", "null",
-                "handoff"}) {
+                "handoff", "fixed"}) {
             boolean shared = "location".equals(shares)
                     || "handoff".equals(shares);
             boolean nulls = "null".equals(shares);
@@ -4669,7 +4826,10 @@ public class ComposerTest {
                     .toPath();
             Session session = new Session(iteration, "s0", false);
             session.serial("3", "0", "8");
-            session.expression("EXPR.00000000000000a3", integer("I", 1001L));
+            // What phi reads: a value the root moves, or one it does not.
+            session.expression("EXPR.00000000000000a3", "fixed".equals(shares)
+                    ? integer("I", 1001L)
+                    : binary("-", symbol(SERIAL, "I"), integer("I", 1L)));
             session.write(Endpoint.of(ANCHOR, "Replica#set#1:WRITE",
                             at("stamp#1", 0), 0),
                     LocationId.of(LocationKind.INSTANCE, "58", "40"), 158L,
@@ -4683,6 +4843,7 @@ public class ComposerTest {
             name.addProperty("_is_not", false);
             JsonArray parameters = new JsonArray();
             parameters.add("location".equals(shares)
+                    || "fixed".equals(shares)
                     ? read("INSTANCE_FIELD", 58L, 40L, 158L, "I")
                     : read("INSTANCE_FIELD", 59L, 32L, 157L,
                     "Ljava/lang/String;"));
@@ -4845,17 +5006,15 @@ public class ComposerTest {
                             named(gaps, "UndeclaredFreeSymbol:" + NO_ROW));
                     // EXPLORE: the node's value stands in for the join, no
                     // flip is built over it, and the closure still reaches
-                    // what the join lowered (M1).
-                    SmtLowering.Lowered explored = Corpus.read(iteration,
-                            null).lowering("s0").lower(
-                            "EXPR.00000000000000b3");
+                    // what the join reads, through the expressions (M1).
+                    Corpus explore = Corpus.read(iteration, null);
+                    SmtLowering.Lowered explored = explore.lowering("s0")
+                            .lower("EXPR.00000000000000b3");
                     assertFalse(name + ": no flip over the pin: " + explored,
                             explored.ok());
-                    assertTrue(name + ": the join is still reached: "
-                                    + explored.reach(),
-                            explored.reach().size() == 2
-                                    && explored.reach().get(0).contains(
-                                    "1001") && explored.reach().get(1)
+                    assertTrue(name + ": the join is still reached",
+                            explore.expressionSymbols("s0",
+                                    "EXPR.00000000000000b3")
                                     .contains(NO_ROW));
                     break;
                 case "unstated":
@@ -5140,9 +5299,8 @@ public class ComposerTest {
             assertTrue(depth + ": the map is one named subterm per put",
                     text[0].contains("container_dag__"));
             assertTrue(depth + ": the query reaches the deepest put's symbol",
-                    lowering.reachedSymbols(text[0],
-                            new LinkedHashSet<String>(), null)
-                            .contains(deepest));
+                    lowering.reachedSymbols(Collections.singletonList(
+                            text[0])).contains(deepest));
             List<String> names = new ArrayList<String>();
             for (SmtLowering.Declaration declaration : lowering.reachedBy(
                     Collections.singletonList(text[0]))) {

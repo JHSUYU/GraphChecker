@@ -583,7 +583,8 @@ public final class RowInvariants {
         return planted.trim();
     }
 
-    /** Truth of a term at the valuation; null at an unevaluable leaf. */
+    /** Truth of a term at the valuation -- a reference, possibly negated,
+     *  or a constant; null at an unevaluable leaf. */
     private static Boolean truth(SessionReader session, String term,
                                  Map<String, String> declared) {
         String text = term.trim();
@@ -592,9 +593,9 @@ public final class RowInvariants {
             negated = !negated;
             text = operand(text);
         }
-        if (!REFERENCE.matcher(text).matches()) return null;
-        Object value = value(session.expressions().expression(text),
-                declared);
+        Object value = REFERENCE.matcher(text).matches()
+                ? value(session.expressions().expression(text), declared)
+                : literal(text);
         if (!(value instanceof Boolean)) return null;
         boolean held = ((Boolean) value).booleanValue();
         return Boolean.valueOf(negated != held);
@@ -840,10 +841,14 @@ public final class RowInvariants {
     // ---- 9. targets ----------------------------------------------------
 
     /**
-     * CONTRACT-SPEC §2.6: {@code phiTerm} is in the FATAL polarity.  A reached
-     * anchor with no predicate is a concrete branch (DIAGNOSTIC) unless the
-     * fatal arm was observed (BLOCKING).  An observed fatal's phi must HOLD
-     * at the session's valuation where the roots decide it.
+     * CONTRACT-SPEC §2.6: {@code phiTerm} is in the FATAL polarity, and a
+     * reached anchor states it: a decision's term, or for a concrete fatal
+     * condition the constant of the arm it took ({@code true} on the fatal
+     * arm, {@code false} on the healthy one).  None stated is BLOCKING where
+     * the run observed the fatal (the witness would rest on a predicate no
+     * row states), else DIAGNOSTIC (a path with no phi is no disjunct).  A
+     * stated phi holds exactly on the fatal arm: where the session's
+     * valuation decides it, it agrees with {@code observedFatal}.
      */
     private static void targets(SessionReader session,
                                 Map<String, String> executed,
@@ -851,32 +856,38 @@ public final class RowInvariants {
         Map<String, String> declared = executed == null
                 ? Collections.<String, String>emptyMap() : executed;
         for (TargetRow row : session.targets()) {
-            boolean empty = row.phiTerm().trim().isEmpty();
-            if (empty && row.reachedAnchor()) {
+            if (!row.reachedAnchor()) continue;
+            if (row.phiTerm().trim().isEmpty()) {
                 gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                         row.observedFatal() ? GapClass.BLOCKING
                                 : GapClass.DIAGNOSTIC, "targets", row.seq(),
                         "phiTerm", row.anchorSiteId(),
-                        "invariant 9 (CONTRACT-SPEC §2.6: phiTerm is published "
-                                + "in the FATAL polarity): the anchor was "
+                        "invariant 9 (CONTRACT-SPEC §2.6: a reached anchor "
+                                + "states phi, a concrete condition as the "
+                                + "constant of its arm): the anchor was "
                                 + "reached and states no predicate"
                                 + (row.observedFatal()
                                         ? ", and the run OBSERVED the fatal "
-                                        + "arm, so there was one"
-                                        : "; a concrete branch is "
-                                        + "legitimate")));
+                                        + "arm, so the witness would rest on "
+                                        + "a predicate no row states"
+                                        : "")));
                 continue;
             }
-            if (empty || !row.observedFatal() || declared.isEmpty()) continue;
             Boolean held = truth(session, row.phiTerm(), declared);
-            if (held == null || held.booleanValue()) continue;
+            if (held == null || held.booleanValue() == row.observedFatal()) {
+                continue;
+            }
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "targets", row.seq(), "phiTerm",
                     row.anchorSiteId(),
                     "invariant 9 (CONTRACT-SPEC §2.6: phiTerm is published in "
-                            + "the FATAL polarity): the run observed the "
-                            + "fatal arm and this term is FALSE at the root "
-                            + "values this session RAN under"));
+                            + "the FATAL polarity): the run "
+                            + (row.observedFatal()
+                                    ? "observed the fatal arm and this term "
+                                    + "is FALSE"
+                                    : "took the healthy arm and this term is "
+                                    + "TRUE")
+                            + " at the root values this session RAN under"));
         }
     }
 
