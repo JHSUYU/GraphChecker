@@ -718,7 +718,8 @@ exactly one, each arm closed like a path in its own session (producer prefix bef
 P3 closure, nested families to depth 16). The nested families bind every handoff the arm's conjunction
 names, its delivery's and those its closure's conditions and joins read
 (`ComposedFamilies#handedOn`); one its session minted no attach for, or one paired with no producer,
-refuses the arm, so no arm lowers a handoff as a free constant. A message no session can send drops
+refuses the arm, so no arm lowers a handoff as a free constant. A path closes each message once, under
+its selector, its writer arms' nested messages included (one family name, one assertion). A message no session can send drops
 the path. **A codec's
 hole** (WIRE-CODEC §6.1, §6.3) is bound by `VmTermLowering#holeArm`, never by plain equality: its
 symbol is declared at the DECODED leaf's sort (the attach's `javaType`, also in

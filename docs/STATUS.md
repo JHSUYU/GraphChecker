@@ -79,6 +79,13 @@ NameNode arms deliver that expiry as constants. The workload's `pinBlockKeys` ro
 `startRecording`, so the key the Balancer fetched and cached had an expiry no recorded clock wrote, a
 different constant in every replay. The HDFS tree (`gc/hdfs-11741` `5cff0e12b1f`) now rotates once
 inside the window before the Balancer's fetch; no round has run on it yet.
+Round m1 (main `340d27914`, the workload's second key update `8113ba8ac30`) records dn1's second
+`removeExpiredKeys` pass over the in-window keys (symbolic expiries). Its COMPOSE ran out of an 8 GB
+heap; offline on HEAD (`/bigtemp/vnr3ne/ab/r11741-m1/final`) it claims `NO_SUPPORTED_WITNESS` with no
+BLOCKING gap: 234 of 235 paths, the 17 that observed the fatal among them, are unsatisfiable with
+every root free. Their core is a nested message family (another run's six-key export) asserted
+under the path selector while the path's own run exported five, so the run as it happened is no
+world of its own formula.
 hdfs-17960, hdfs-17897, hdfs-17899-bug1 and hdfs-17967-pathB keep their claims (r3, r7).
 
 Round `rb1` (this branch before the merge of main `69edf0c06`, fresh seeds) failed hdfs-17967-pathB
