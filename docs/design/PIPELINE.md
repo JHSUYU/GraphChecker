@@ -595,7 +595,9 @@ itself. Every run, here and in COMPOSE, is two z3 processes, one per arithmetic 
 (`smt.arith.solver` 2, the one the query states, and 6; `Z3#ARITHMETIC`), and answers with the
 first that decides, killing the other; the stated engine's answer wins when it decides within as
 long again as the other took (at least a second), so what it alone decides promptly answers as it
-did alone, and an undecided pair is undecided (`Z3#run`). z3's time on one query swings by orders
+did alone, and an undecided pair is undecided (`Z3#run`). Each engine's z3 is told its engine
+first and reads the query through `Z3.EngineWriter`, which replaces the option the query states as
+the text streams (the later one would win); the query is never copied per engine. z3's time on one query swings by orders
 of magnitude with the engine: SOLR-18413 r9's composed query ran past 30 minutes under 2 and is
 sat in a second under 6. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
 `NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
@@ -913,8 +915,19 @@ exactly one, each arm closed like a path in its own session (producer prefix bef
 P3 closure, nested families to depth 16). The nested families bind every handoff the arm's conjunction
 names, its delivery's and those its closure's conditions and joins read
 (`ComposedFamilies#handedOn`); one its session minted no attach for, or one paired with no producer,
-refuses the arm, so no arm lowers a handoff as a free constant. A message no session can send drops
-the path. **A codec's
+refuses the arm, so no arm lowers a handoff as a free constant. A path closes each message once (one family,
+one name), under what rests on it: the path's own messages under the path selector; a message a
+delivery was itself handed under every arm (message or writer) whose conjunction names its
+handoffs, asserted once the path's arms are all known as `(=> <path> (=> (or <those arms>) F))`
+(`ComposedFamilies.Closed`, `#commit`), so an arm not chosen imposes nothing and a chosen one's
+nested message holds as it was closed (hdfs-11741 m1: another run's six-key export, nested under
+the path, contradicted the five-key export of the path's own run in 234 of 235 paths). Its arms
+are chosen only with one of those (`(=> (or <its arms>) (or <those arms>))`), so the model's true
+arm selectors are the chain its path took. A level's messages are closed before any of their arms
+closes its own; an arm resting on a message the path closed already is one more thing resting on
+it. A copy per arm instead is a family per arm per level: hdfs-11741 i1's body ran an 8 GB heap
+out. A refused arm, or one whose body equals an earlier arm's (it rests on the same messages),
+takes back what it stated (`ComposedFamilies#rollback`). A message no session can send drops the path. **A codec's
 hole** (WIRE-CODEC §6.1, §6.3) is bound by `VmTermLowering#holeArm`, never by plain equality: its
 symbol is declared at the DECODED leaf's sort (the attach's `javaType`, also in
 `Composer#attestedArrival`), and the arm is the operand the producer's export cut out of its leaf
@@ -1098,7 +1111,9 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ClaimPolicy`:
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
-2. Every valuation is asked (4 asks at once, 8 z3 processes) for the path selectors, arm selectors,
+2. Every valuation is asked (4 asks at once, 8 z3 processes; each question is written to its z3s
+   from the one body the composition holds, never copied per ask or per arithmetic engine,
+   `Composition#query`/`#pathQuery`, `Z3#ask`) for the path selectors, arm selectors,
    the nested state selectors a state arm's stores are chosen among (§8), clock cells and the codec
    holes the arms bind (`Composition#holeSymbols`); a selected
    state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →

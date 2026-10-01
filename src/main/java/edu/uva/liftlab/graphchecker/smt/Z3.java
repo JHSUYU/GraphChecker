@@ -1,9 +1,11 @@
 package edu.uva.liftlab.graphchecker.smt;
 
+import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -19,8 +21,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * THE z3 driver: one query text in, one answer out.  It launches the
@@ -75,10 +75,8 @@ public final class Z3 {
      */
     static final int[] ARITHMETIC = {2, 6};
 
-    /** How a query states its arithmetic engine. */
-    private static final Pattern ARITHMETIC_OPTION =
-            Pattern.compile(
-                    "\\(set-option :smt\\.arith\\.solver [0-9]+\\)");
+    /** How a query states its arithmetic engine: this, its digits, ")". */
+    static final String ARITHMETIC_OPENING = "(set-option :smt.arith.solver ";
 
     /**
      * How long the preferred engine may still answer after the other one
@@ -207,35 +205,55 @@ public final class Z3 {
         return ask(query, modelSymbols, wantCore, 0L);
     }
 
+    /** The same ask with its verdict under its own budget. */
+    public Answer ask(String query, List<String> modelSymbols,
+                      boolean wantCore, long budgetMillis) {
+        String text = query == null ? "" : query;
+        return ask(output -> output.write(text), modelSymbols, wantCore,
+                budgetMillis);
+    }
+
+    /** The same ask over a query written out rather than held. */
+    public Answer ask(ArtifactIO.Body query, List<String> modelSymbols,
+                      boolean wantCore) {
+        return ask(query, modelSymbols, wantCore, 0L);
+    }
+
     /**
      * The same ask with its verdict under its own budget ({@code <= 0}: the
      * instance's).  A decided verdict's model and core runs keep the
      * instance's: each solves again, and a tracked core run can take far
      * longer than its verdict ({@link #CORE_TRACKING}).  Same instance, so
      * the run counter and error set stay whole.
+     *
+     * <p>The query is WRITTEN to each z3, never copied into one text per
+     * run: a composition's body runs past 200 MB, asked on
+     * {@code ClaimPolicy#PARALLEL_ASKS} threads at once, and a copy per
+     * ask (the text, the text with its command, its bytes) ran the
+     * composer out of an 8 GB heap (hdfs-11741 m1).  What each run reads
+     * back is z3's answer to the one command after it.</p>
      */
-    public Answer ask(String query, List<String> modelSymbols,
+    public Answer ask(ArtifactIO.Body query, List<String> modelSymbols,
                       boolean wantCore, long budgetMillis) {
         long budget = budgetMillis > 0L ? budgetMillis : timeoutMillis;
-        String text = query == null ? "" : query;
-        String status = firstLine(run(text + "(check-sat)\n", budget));
+        String status = firstLine(run("", query, "(check-sat)\n", budget));
         Map<String, String> values = Collections.emptyMap();
         if ("sat".equals(status) && modelSymbols != null
                 && !modelSymbols.isEmpty()) {
-            values = parseValues(run(modelQuery(text, modelSymbols),
+            values = parseValues(run("", query, valueCommand(modelSymbols),
                     timeoutMillis));
         }
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
-            core = parseCore(run(CORE_TRACKING + text
-                    + "(check-sat)\n(get-unsat-core)\n", timeoutMillis));
+            core = parseCore(run(CORE_TRACKING, query,
+                    "(check-sat)\n(get-unsat-core)\n", timeoutMillis));
         }
         // Not after a timeout: it would spend the budget again for "".
         String reason = "";
         if (!"sat".equals(status) && !"unsat".equals(status)
                 && !TIMEOUT.equals(status)) {
-            reason = parseReason(run(text
-                    + "(check-sat)\n(get-info :reason-unknown)\n", budget));
+            reason = parseReason(run("", query,
+                    "(check-sat)\n(get-info :reason-unknown)\n", budget));
         }
         return new Answer(status, values, core, reason);
     }
@@ -245,8 +263,12 @@ public final class Z3 {
      * must use it so the file is the question actually solved.
      */
     public static String modelQuery(String query, List<String> modelSymbols) {
-        StringBuilder text = new StringBuilder(query == null ? "" : query);
-        text.append("(check-sat)\n(get-value (");
+        return (query == null ? "" : query) + valueCommand(modelSymbols);
+    }
+
+    /** The commands that ask a sat query for these constants' values. */
+    private static String valueCommand(List<String> modelSymbols) {
+        StringBuilder text = new StringBuilder("(check-sat)\n(get-value (");
         if (modelSymbols != null) {
             for (String symbol : modelSymbols) {
                 text.append(' ').append(symbol);
@@ -297,7 +319,8 @@ public final class Z3 {
      * one's answer.  Both share the budget, enforced here; z3's own
      * ({@link #hardTimeout}) only outlives a driver that died.
      */
-    private String run(String input, long budgetMillis) {
+    private String run(String prefix, ArtifactIO.Body query, String suffix,
+                       long budgetMillis) {
         runs.incrementAndGet();
         long started = System.nanoTime();
         long deadline = started
@@ -311,7 +334,7 @@ public final class Z3 {
                 AtomicReference<String> output =
                         new AtomicReference<String>(null);
                 read.add(output);
-                engines[at] = launch(withArithmetic(input, ARITHMETIC[at]),
+                engines[at] = launch(ARITHMETIC[at], prefix, query, suffix,
                         budgetMillis, output, readers);
             }
             return answerOf(race(engines, read, readers, started, deadline));
@@ -383,22 +406,95 @@ public final class Z3 {
         return "sat".equals(verdict) || "unsat".equals(verdict);
     }
 
-    /** The query under one arithmetic engine: its own option replaced, or
-     *  the option stated first where it states none. */
-    static String withArithmetic(String query, int engine) {
-        String option = "(set-option :smt.arith.solver " + engine + ")";
-        Matcher stated = ARITHMETIC_OPTION.matcher(query);
-        return stated.find() ? stated.replaceAll(option)
-                : option + "\n" + query;
+    /** How one engine is stated ({@link #ARITHMETIC_OPENING}). */
+    static String arithmeticOption(int engine) {
+        return ARITHMETIC_OPENING + engine + ")";
     }
 
     /**
-     * One z3 fed {@code input}, its output read into {@code read} by a
-     * thread of its own (and its input written by another: else large
-     * queries deadlock); null when it could not start, {@code read} then
-     * saying why (undecided, not a z3 {@code (error ...)}).
+     * A query on its way to one engine's z3: every arithmetic option it
+     * states replaced by that engine's as the text streams through, since
+     * the query's own would win over the one {@link #launch} states first.
+     * Streamed, never copied: a composition's query runs past 200 MB
+     * ({@link #ask(ArtifactIO.Body, List, boolean, long)}).
      */
-    private Process launch(String input, long budgetMillis,
+    static final class EngineWriter extends Writer {
+        private final Writer out;
+        private final String option;
+        /** What may still open an option: a prefix of
+         *  {@link #ARITHMETIC_OPENING}, then its digits. */
+        private final StringBuilder held = new StringBuilder();
+
+        EngineWriter(Writer out, int engine) {
+            this.out = out;
+            this.option = arithmeticOption(engine);
+        }
+
+        @Override
+        public void write(char[] text, int from, int length)
+                throws IOException {
+            int end = from + length;
+            int at = from;
+            while (at < end) {
+                if (held.length() == 0) {
+                    int open = at;
+                    while (open < end && text[open] != '(') open++;
+                    out.write(text, at, open - at);
+                    if (open == end) return;
+                    at = open;
+                }
+                take(text[at++]);
+            }
+        }
+
+        private void take(char c) throws IOException {
+            int matched = held.length();
+            int opening = ARITHMETIC_OPENING.length();
+            if (matched < opening ? c == ARITHMETIC_OPENING.charAt(matched)
+                    : c >= '0' && c <= '9') {
+                held.append(c);
+                return;
+            }
+            if (c == ')' && matched > opening) {
+                held.setLength(0);
+                out.write(option);
+                return;
+            }
+            release();
+            // The opening's '(' is its first character and its only one.
+            if (c == '(') held.append(c);
+            else out.write(c);
+        }
+
+        private void release() throws IOException {
+            out.write(held.toString());
+            held.setLength(0);
+        }
+
+        @Override
+        public void flush() throws IOException {
+            out.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                release();
+            } finally {
+                out.close();
+            }
+        }
+    }
+
+    /**
+     * One z3 fed {@code prefix}, the query and {@code suffix} under one
+     * arithmetic {@code engine} ({@link EngineWriter}), its output read into
+     * {@code read} by a thread of its own (and its input written by another:
+     * else large queries deadlock); null when it could not start,
+     * {@code read} then saying why (undecided, not a z3 {@code (error ...)}).
+     */
+    private Process launch(int engine, String prefix, ArtifactIO.Body query,
+                           String suffix, long budgetMillis,
                            AtomicReference<String> read,
                            List<Thread> readers) {
         Process process;
@@ -413,11 +509,14 @@ public final class Z3 {
             return null;
         }
         LIVE.add(process);
-        byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
         Thread writer = new Thread(() -> {
-            try (OutputStream stream = process.getOutputStream()) {
-                stream.write(bytes);
-                stream.flush();
+            try (BufferedWriter input = new BufferedWriter(new EngineWriter(
+                    new OutputStreamWriter(process.getOutputStream(),
+                            StandardCharsets.UTF_8), engine), 1 << 16)) {
+                input.write(arithmeticOption(engine) + "\n");
+                input.write(prefix);
+                query.writeTo(input);
+                input.write(suffix);
             } catch (IOException closed) {
                 // z3 closed its input after answering, or was killed.
             }

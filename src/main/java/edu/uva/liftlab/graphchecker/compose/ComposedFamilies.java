@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -323,44 +324,97 @@ final class ComposedFamilies {
     }
 
     /*
-     * ONE PATH'S FAMILIES ARE ALL OR NOTHING.  What closeFamilies and
-     * stateFamilies state for a path -- named assertions, arm choices,
-     * families -- goes into the composition as it is made, so an accepted
-     * path's assertions keep their place among the facts its lowering
-     * states, and is logged here until the path is a disjunct (commit); a
-     * refused path's is taken back (discard).  Kept, a path refused at its
-     * second message left the first message's family under a selector no
-     * partition names, and the next path, composed at the same ordinal,
-     * asserted that name again: z3 answers such a query with an error
-     * (hdfs-17899-bug1 r1: 18 names defined twice, 52 dangling selectors).
-     * An ordinal burnt per attempted path instead would still leave the
-     * refused path's assertions and arms in the query and the manifest.
+     * ONE PATH'S FAMILIES ARE ALL OR NOTHING, AND SO IS ONE ARM'S.  What
+     * closeFamilies and stateFamilies state for a path -- named assertions,
+     * arm choices, families, the messages it closed -- goes into the
+     * composition as it is made, so an accepted path's assertions keep
+     * their place among the facts its lowering states, and is logged here
+     * until the path is a disjunct (commit); a refused path's is taken back
+     * (discard), and so is what a refused or duplicate arm's nested
+     * families stated (rollback to the mark taken before its body).  Kept,
+     * a path refused at its second message left the first message's family
+     * under a selector no partition names, and the next path, composed at
+     * the same ordinal, asserted that name again: z3 answers such a query
+     * with an error (hdfs-17899-bug1 r1: 18 names defined twice, 52
+     * dangling selectors).  An ordinal burnt per attempted path instead
+     * would still leave the refused path's assertions and arms in the
+     * query and the manifest.
      */
     private final List<String> pathAssertions = new ArrayList<String>();
-    private final List<String> pathChoices = new ArrayList<String>();
-    /** Slot -> its family before this path, null when it had none. */
-    private final Map<String, Family> familiesBefore =
-            new LinkedHashMap<String, Family>();
+    /** Every other change of the path being composed, undone in reverse. */
+    private final List<Runnable> pathUndo = new ArrayList<Runnable>();
+    /** The path being composed: its selector, and its messages by group. */
+    private String path;
+    private final Map<String, Closed> closed =
+            new LinkedHashMap<String, Closed>();
 
-    /** The path is a disjunct: what its families stated stands. */
+    /**
+     * ONE MESSAGE OF THE PATH, CLOSED ONCE (one family, one name), under
+     * what rests on it: the path's selector for the path's own messages;
+     * for a message a delivery was itself handed, every arm whose
+     * conjunction names its handoffs, so it holds when one of them is
+     * chosen and an arm not chosen imposes nothing (hdfs-11741 m1: another
+     * run's six-key export, nested under the path, contradicted the path's
+     * own run's five-key export in 234 of 235 paths).  Copies per arm
+     * instead are a family per arm per level: hdfs-11741 i1's body ran an
+     * 8 GB heap out.
+     */
+    private static final class Closed {
+        final String name;
+        final boolean atPath;
+        final List<String> needers = new ArrayList<String>();
+        /** Its exactly-one and cases, once closed. */
+        String formula;
+        List<String> selectors;
+
+        Closed(String name, boolean atPath) {
+            this.name = name;
+            this.atPath = atPath;
+        }
+    }
+
+    /**
+     * The path is a disjunct: what its families stated stands, and each
+     * message closed for an arm is asserted under the arms resting on it,
+     * its own arms chosen only with one of them, so a model's true arm
+     * selectors are the chain its path took and nothing beside it.
+     */
     void commit() {
+        for (Closed message : closed.values()) {
+            if (message.atPath) continue;
+            String needed = VmTermLowering.or(message.needers);
+            assertFamily(message.name, "(=> " + path + " " + VmTermLowering
+                    .and(Arrays.asList("(=> " + needed + " "
+                            + message.formula + ")", "(=> " + VmTermLowering
+                            .or(message.selectors) + " " + needed + ")"))
+                    + ")");
+        }
         pathAssertions.clear();
-        pathChoices.clear();
-        familiesBefore.clear();
+        pathUndo.clear();
+        closed.clear();
+        path = null;
     }
 
     /** The path is refused: nothing its families stated stays. */
     void discard() {
-        lowering.retract(pathAssertions);
-        armChoices.keySet().removeAll(pathChoices);
-        for (Map.Entry<String, Family> before : familiesBefore.entrySet()) {
-            if (before.getValue() == null) {
-                families.remove(before.getKey());
-            } else {
-                families.put(before.getKey(), before.getValue());
-            }
-        }
-        commit();
+        rollback(new int[2]);
+        path = null;
+    }
+
+    /** How far the path being composed has stated, for {@link #rollback}. */
+    private int[] mark() {
+        return new int[]{pathAssertions.size(), pathUndo.size()};
+    }
+
+    /** Takes back what the path stated since {@code mark}. */
+    private void rollback(int[] mark) {
+        List<String> assertions =
+                pathAssertions.subList(mark[0], pathAssertions.size());
+        lowering.retract(assertions);
+        assertions.clear();
+        List<Runnable> undo = pathUndo.subList(mark[1], pathUndo.size());
+        for (int at = undo.size() - 1; at >= 0; at--) undo.get(at).run();
+        undo.clear();
     }
 
     /** One named assertion of the path being composed. */
@@ -371,16 +425,30 @@ final class ComposedFamilies {
 
     /** One arm selector of the path being composed, and what it stands for. */
     private void choose(String selector, ArmChoice choice) {
-        armChoices.put(selector, choice);
-        pathChoices.add(selector);
+        ArmChoice before = armChoices.put(selector, choice);
+        pathUndo.add(() -> restore(armChoices, selector, before));
     }
 
     /** One slot's family as the path being composed states it. */
     private void family(String slotId, Family family) {
-        if (!familiesBefore.containsKey(slotId)) {
-            familiesBefore.put(slotId, families.get(slotId));
+        Family before = families.put(slotId, family);
+        pathUndo.add(() -> restore(families, slotId, before));
+    }
+
+    /** One more thing resting on a message the path closed. */
+    private void needs(Closed message, String guard) {
+        message.needers.add(guard);
+        pathUndo.add(() -> message.needers.remove(
+                message.needers.size() - 1));
+    }
+
+    private static <T> void restore(Map<String, T> map, String key,
+                                    T before) {
+        if (before == null) {
+            map.remove(key);
+        } else {
+            map.put(key, before);
         }
-        families.put(slotId, family);
     }
 
     /**
@@ -397,25 +465,27 @@ final class ComposedFamilies {
                           Set<String> reached,
                           List<AttachRow> bound, List<String> stated,
                           List<GapRow> refusals) {
+        path = selector;
         return closeMessages(ordinal, selector, owner, bound, reached,
-                stated, refusals, new LinkedHashSet<String>(), 0);
+                stated, refusals, 0);
     }
 
     /** How deep one delivery may be handed on before this refuses. */
     private static final int NESTING_LIMIT = 16;
 
     /**
-     * The message groups of one set of attaches, under one guard: the path
-     * selector for its own attaches, or a family guard for the attaches a
-     * delivery was itself handed (item (iv) below) -- the same rule at every
-     * depth.
-     * A message closed at an outer level is not closed again.
+     * The message groups of one set of attaches, resting on one GUARD: the
+     * path selector for the path's own attaches, the selector of the ARM a
+     * delivery is for the attaches it was itself handed (item (iv) of
+     * {@link #producerBody}) -- the same rule at every depth.  A message the
+     * path closed already only gains the guard as one more thing resting on
+     * it ({@link Closed}); this level's messages are all closed before any
+     * of their arms closes its own.
      */
     private boolean closeMessages(int ordinal, String guard, String owner,
                                   List<AttachRow> attaches,
                                   Set<String> reached, List<String> stated,
-                                  List<GapRow> refusals,
-                                  Set<String> closedGroups, int depth) {
+                                  List<GapRow> refusals, int depth) {
         if (depth > NESTING_LIMIT) {
             composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, guard,
                     "a delivery this path rests on was handed on more than "
@@ -442,10 +512,25 @@ final class ComposedFamilies {
             add(byMessage, correlation == null || correlation.isEmpty()
                     ? "@" + attach.endpoint().id() : correlation, attach);
         }
+        Map<String, Closed> opened = new LinkedHashMap<String, Closed>();
         for (Map.Entry<String, List<AttachRow>> message
                 : byMessage.entrySet()) {
+            String group = groupId(message.getValue());
+            Closed held = closed.get(group);
+            if (held == null) {
+                held = new Closed("message_family__" + ordinal + "__"
+                        + ArtifactIO.digest(group, 12), guard.equals(path));
+                closed.put(group, held);
+                pathUndo.add(() -> closed.remove(group));
+                opened.put(message.getKey(), held);
+            }
+            needs(held, guard);
+        }
+        for (Map.Entry<String, List<AttachRow>> message
+                : byMessage.entrySet()) {
+            Closed family = opened.get(message.getKey());
+            if (family == null) continue;
             List<AttachRow> leaves = message.getValue();
-            if (!closedGroups.add(groupId(leaves))) continue;
             // (2) Each leaf's arms, one hop deep, and who attests them.
             Map<String, Interaction> slotOf =
                     new LinkedHashMap<String, Interaction>();
@@ -478,10 +563,11 @@ final class ComposedFamilies {
             // (3) and (4): eligibility, then one case split per message.
             List<String> eligible = eligibleSessions(message.getKey(),
                     slotOf.keySet(), attestedAt, refusals);
-            if (eligible == null) return false;
-            if (!messageFamily(ordinal, guard, owner, message.getKey(),
-                    leaves, slotOf, symbolOf, eligible, attestedAt,
-                    bySession, reached, stated, refusals, closedGroups,
+            // One message not closed refuses what rests on it, and the
+            // rollback of that takes the message back.
+            if (eligible == null || !messageFamily(ordinal, family, owner,
+                    message.getKey(), leaves, slotOf, symbolOf, eligible,
+                    attestedAt, bySession, reached, stated, refusals,
                     depth)) {
                 return false;
             }
@@ -537,16 +623,16 @@ final class ComposedFamilies {
      * One message as a finite case split over the runs that could have sent
      * it: {@code sel_{M,S} => (guard_S /\ closure_{M,S} /\ v_H_k = e_{k,S})}
      * with exactly-one over the eligible sessions, so z3 decides by cases
-     * and the model names which RUN's response the witness rests on.
+     * and the model names which RUN's response the witness rests on, under
+     * what rests on the message ({@link Closed}).
      */
     private boolean messageFamily(
-            int ordinal, String guard, String owner, String message,
+            int ordinal, Closed family, String owner, String message,
             List<AttachRow> leaves, Map<String, Interaction> slotOf,
             Map<String, String> symbolOf, List<String> eligible,
             Map<String, Set<String>> attestedAt,
             Map<String, List<Arms.Arm>> bySession, Set<String> reached,
-            List<String> stated, List<GapRow> refusals,
-            Set<String> closedGroups, int depth) {
+            List<String> stated, List<GapRow> refusals, int depth) {
         String group = groupId(leaves);
         List<String> senders = compatible(owner, eligible);
         if (senders.isEmpty()) {
@@ -559,8 +645,6 @@ final class ComposedFamilies {
                             + "binds what it read"));
             return false;
         }
-        String name = "message_family__" + ordinal + "__"
-                + ArtifactIO.digest(group, 12);
         List<String> selectors = new ArrayList<String>();
         List<String> cases = new ArrayList<String>();
         // Arm body -> selector: one producer path is ONE arm however many
@@ -573,28 +657,29 @@ final class ComposedFamilies {
             if (held == null || held.isEmpty()) continue;
             String selector = "message_arm__" + ordinal + "__"
                     + ArtifactIO.digest(group + "|" + session, 12);
-            // Declared BEFORE the body: nested families are asserted under
-            // this name even if the arm-set is then refused, and an
-            // undeclared name makes z3 answer with an error.
+            // Declared BEFORE the body, whose nested families name it.
             lowering.declare(selector, VmTermLowering.Sort.BOOL);
             List<String> nested = new ArrayList<String>();
             Map<String, BoundHole> holes =
                     new LinkedHashMap<String, BoundHole>();
-            String body = producerBody(ordinal, guard, message, session,
-                    bindings(held), reached, nested, closedGroups, depth,
-                    holes);
+            int[] mark = mark();
+            String body = producerBody(ordinal, selector, message, session,
+                    bindings(held), reached, nested, depth, holes);
+            String same = body == null ? null : selectorOf.get(body);
+            // A refused arm, or a copy of one taken already (which rests on
+            // the same nested messages), states nothing.
+            if (body == null || same != null) rollback(mark);
             if (body == null) continue;
-            stated.addAll(nested);
-            String same = selectorOf.get(body);
             if (same != null) {
                 choose(same, armChoices.get(same).alsoBy(session));
                 continue;
             }
+            stated.addAll(nested);
             selectorOf.put(body, selector);
             representatives.add(session);
             selectors.add(selector);
             cases.add("(=> " + selector + " " + body + ")");
-            choose(selector, ArmChoice.of(name, group,
+            choose(selector, ArmChoice.of(family.name, group,
                     endpointIds(leaves), session, held, holes));
         }
         if (selectors.isEmpty()) {
@@ -624,9 +709,15 @@ final class ComposedFamilies {
             family(slot.getKey(), Family.of(slot.getKey(), rows));
         }
         cases.add(0, Arms.exactlyOne(selectors));
-        String formula = VmTermLowering.and(cases);
-        stated.add(formula);
-        assertFamily(name, "(=> " + guard + " " + formula + ")");
+        family.formula = VmTermLowering.and(cases);
+        family.selectors = selectors;
+        stated.add(family.formula);
+        // A message an arm rests on is asserted once the path's arms are
+        // all known (commit).
+        if (family.atPath) {
+            assertFamily(family.name, "(=> " + path + " " + family.formula
+                    + ")");
+        }
         return true;
     }
 
@@ -638,11 +729,11 @@ final class ComposedFamilies {
      * session is the case where the two worlds are equal.
      */
     private List<String> compatible(String owner, List<String> eligible) {
-        Set<String> path = flips(owner);
+        Set<String> own = flips(owner);
         List<String> arms = new ArrayList<String>();
         for (String session : eligible) {
             Set<String> producer = flips(session);
-            if (path.containsAll(producer) || producer.containsAll(path)) {
+            if (own.containsAll(producer) || producer.containsAll(own)) {
                 arms.add(session);
             }
         }
@@ -767,17 +858,17 @@ final class ComposedFamilies {
      * P's own attaches as nested families.  Without (i)-(iii) an arm says
      * WHAT was delivered, not why.
      *
+     * @param selector this arm's selector, which (iv)'s families rest on
      * @param holes receives the codec holes the outs bind, by consumer
      *              endpoint id ({@link ArmChoice#holes})
      * @return the arm-set's conjunction, or null when a value it rests on is
      *         not stated -- refusing this {@code (P, S)}, not the path
      */
-    private String producerBody(int ordinal, String nestedGuard,
+    private String producerBody(int ordinal, String selector,
                                 String subject,
                                 String session,
                                 List<Out> outs, Set<String> reachedSlots,
-                                List<String> nestedStated,
-                                Set<String> closedProducers, int depth,
+                                List<String> nestedStated, int depth,
                                 Map<String, BoundHole> holes) {
         List<GapRow> local = new ArrayList<GapRow>();
         SmtLowering.SessionJoin rows = corpus.join(session);
@@ -900,17 +991,15 @@ final class ComposedFamilies {
                     }
                 }
             }
-            // Nested families go under this FAMILY's guard, not this
-            // session's selector: sessions share the leaf's handoff symbol,
-            // so a nested family under one selector leaves it unbound for
-            // the others.
+            // Nested families rest on THIS ARM's selector: what the run
+            // delivering it was handed holds when the witness takes it.
             List<String> asks = new ArrayList<String>(conjuncts);
             asks.addAll(composer.statedJoins(joins,
                     Collections.<String>emptySet(), conjuncts,
                     Collections.<String>emptyList()));
-            stated = closeMessages(ordinal, nestedGuard, session,
+            stated = closeMessages(ordinal, selector, session,
                     handedOn(session, outs, asks, local), reachedSlots,
-                    nested, local, closedProducers, depth + 1);
+                    nested, local, depth + 1);
         }
         List<String> reachTexts = new ArrayList<String>(conjuncts);
         reachTexts.addAll(nested);
@@ -1186,7 +1275,9 @@ final class ComposedFamilies {
      * arm) the run as it happened is no world of the formula, and a BLOCKING
      * gap says so: STATE_PAIRING_FLIPPED and the recording's own verdict pin
      * that pairing, and every other kind is named only once the pairing flip
-     * is ruled out ({@link ClaimPolicy}).
+     * is ruled out ({@link ClaimPolicy}).  A writer arm's delivery rests on
+     * the messages it was handed as a message arm's does
+     * ({@link #closeMessages}).
      */
     Set<String> stateFamilies(Corpus.RecordedPath path,
                               int ordinal, String selector,
@@ -1310,11 +1401,15 @@ final class ComposedFamilies {
             String name = "writer_arm__" + ordinal + "__"
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
             lowering.declare(name, VmTermLowering.Sort.BOOL);
-            String body = producerBody(ordinal, selector, writer.getKey(),
+            int[] mark = mark();
+            String body = producerBody(ordinal, name, writer.getKey(),
                     session, writer.getValue(), reached,
-                    new ArrayList<String>(), new LinkedHashSet<String>(), 0,
+                    new ArrayList<String>(), 0,
                     new LinkedHashMap<String, BoundHole>());
-            if (body == null) continue;
+            if (body == null) {
+                rollback(mark);
+                continue;
+            }
             selectorOf.put(writer.getKey(), name);
             String assertion = "writer_family__" + ordinal + "__"
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);

@@ -244,21 +244,21 @@ public final class Composer {
         }
 
         /**
-         * One question's text: the body plus these assertions.  The body is
+         * One question: the body plus these assertions, written out to its
+         * reader, never copied (a body runs past 200 MB and is asked on
+         * {@code ClaimPolicy#PARALLEL_ASKS} threads at once).  The body is
          * spelled legally once ({@link SmtLowering#body}); the assertions
          * are spelled here, since pins name raw symbols such as
          * {@code CLOCK/...#...} and a bare {@code #} is a bit-vector literal
          * to z3.  Spelling is token-local, so each assertion spelled alone
-         * spells the text, and the body is copied once, into a builder of
-         * the text's size: a body can run to 100 MB, asked on 8 threads.
+         * spells the text.
          */
-        public String query(List<String> assertions) {
+        public ArtifactIO.Body query(List<String> assertions) {
             List<String> legal = legal(assertions);
-            StringBuilder text = new StringBuilder(
-                    body.length() + length(legal));
-            text.append(body);
-            for (String assertion : legal) text.append(assertion);
-            return text.toString();
+            return output -> {
+                output.write(body);
+                for (String assertion : legal) output.write(assertion);
+            };
         }
 
         /**
@@ -269,25 +269,20 @@ public final class Composer {
          * {@link #query}'s with the selector asserted, but z3 reads what
          * every path shares and this path's own text, not every path's.
          */
-        public String pathQuery(String selector, List<String> assertions) {
+        public ArtifactIO.Body pathQuery(String selector,
+                                         List<String> assertions) {
             List<String> legal = legal(assertions);
             legal.add(0, "\n(assert " + selector + ")\n");
-            int size = length(legal);
-            int start = 0;
-            for (int index = 0; index < commandEnds.length; index++) {
-                if (kept(index, selector)) size += commandEnds[index] - start;
-                start = commandEnds[index];
-            }
-            StringBuilder text = new StringBuilder(size);
-            start = 0;
-            for (int index = 0; index < commandEnds.length; index++) {
-                if (kept(index, selector)) {
-                    text.append(body, start, commandEnds[index]);
+            return output -> {
+                int start = 0;
+                for (int index = 0; index < commandEnds.length; index++) {
+                    if (kept(index, selector)) {
+                        output.write(body, start, commandEnds[index] - start);
+                    }
+                    start = commandEnds[index];
                 }
-                start = commandEnds[index];
-            }
-            for (String assertion : legal) text.append(assertion);
-            return text.toString();
+                for (String assertion : legal) output.write(assertion);
+            };
         }
 
         private boolean kept(int command, String selector) {
@@ -304,12 +299,6 @@ public final class Composer {
                 legal.add(SmtNames.legalSymbols(assertion) + "\n");
             }
             return legal;
-        }
-
-        private static int length(List<String> texts) {
-            int length = 0;
-            for (String text : texts) length += text.length();
-            return length;
         }
 
         /**
@@ -2079,7 +2068,7 @@ public final class Composer {
                          List<GapRow> refusals, Map<String, String> joins) {
         // This row states the version; bound at step 0.
         if (minted.equals(read.symbol())) return true;
-        Sort sort = lowering.declarations().get(minted);
+        Sort sort = lowering.declaredSort(minted);
         // A DECLARED ROOT IS BOUND BY ITS DOMAIN, NOT BY A VALUE.  An
         // ordinary read needs a stated value; a clock mint deliberately
         // states none (pinning it could never show a skew), and

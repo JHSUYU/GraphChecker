@@ -5,6 +5,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
+import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -89,6 +90,39 @@ public class Z3Test {
             assertEquals(what, row[2], answer.status());
             assertEquals(what, row[3], answer.values().get("x"));
             assertTrue(what + " took " + seconds + " s", seconds < 10L);
+        }
+    }
+
+    /**
+     * A QUERY'S OWN ARITHMETIC OPTION IS REPLACED AS IT STREAMS to an
+     * engine, however the writes split it; text that only resembles one
+     * passes unchanged.  {query, what engine 6 reads}.
+     */
+    @Test
+    public void anEngineReadsItsOwnOptionWhereverTheQueryStatesOne()
+            throws IOException {
+        String[][] rows = {
+                {"(set-option :smt.arith.solver 2)\n(assert x)",
+                        "(set-option :smt.arith.solver 6)\n(assert x)"},
+                {"((set-option :smt.arith.solver 12)(",
+                        "((set-option :smt.arith.solver 6)("},
+                {"(set-option :smt.arith.solver )", "(set-option :smt.arith.solver )"},
+                {"(set-option :smt.arith.solver 2x)", "(set-option :smt.arith.solver 2x)"},
+                {"(set-option :smt.arith.random_seed 2)",
+                        "(set-option :smt.arith.random_seed 2)"},
+                {"(set-option :smt.arith.solver 2", "(set-option :smt.arith.solver 2"}};
+        for (String[] row : rows) {
+            for (int chunk : new int[] {1, 7, row[0].length()}) {
+                StringWriter read = new StringWriter();
+                try (Z3.EngineWriter engine = new Z3.EngineWriter(read, 6)) {
+                    for (int at = 0; at < row[0].length(); at += chunk) {
+                        engine.write(row[0].substring(at,
+                                Math.min(row[0].length(), at + chunk)));
+                    }
+                }
+                assertEquals(row[0] + " in " + chunk + "s", row[1],
+                        read.toString());
+            }
         }
     }
 }
