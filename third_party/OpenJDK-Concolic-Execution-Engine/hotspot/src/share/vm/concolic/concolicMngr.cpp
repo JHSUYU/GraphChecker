@@ -556,6 +556,11 @@ jint ConcolicMngr::installGuardedStoreSites(const char *table) {
   return (jint) SharedFieldVersions::install_guarded_store_sites(table);
 }
 
+void ConcolicMngr::metadata_freed() {
+  SharedFieldVersions::methods_freed();
+  ContainerSupport::klasses_freed();
+}
+
 jlong ConcolicMngr::currentEventId() {
   return GlobalSymbolicSession::last_event_id();
 }

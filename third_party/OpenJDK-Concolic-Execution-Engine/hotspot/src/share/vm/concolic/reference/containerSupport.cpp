@@ -19,6 +19,7 @@
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicString.hpp"
 #include "oops/fieldStreams.hpp"
+#include "runtime/safepoint.hpp"
 
 #include <pthread.h>
 
@@ -134,17 +135,19 @@ const BackingField *backing_field_of(Klass *klass) {
   return NULL;
 }
 
-// One field offset, looked up by name on first use and then cached per
-// klass.  The lookup walks the klass's field streams comparing names -- no
-// symbol is made, so no SymbolTable lock is taken -- and the cache has its
-// own leaf mutex: it is asked by every thread, some of them under a stripe.
+// One field offset, looked up by name and signature on first use and then
+// cached per klass.  The lookup walks the klass's field streams comparing
+// names -- no symbol is made, so no SymbolTable lock is taken -- and the cache
+// has its own leaf mutex: it is asked by every thread, some of them under a
+// stripe.  A Klass* is an address the VM reuses once it frees the class, so
+// the cache is emptied whenever classes are freed (klasses_freed).
 class FieldOffsetCache {
 public:
   FieldOffsetCache() { pthread_mutex_init(&_mutex, NULL); }
 
   int offset(oop holder, const char *name, const char *signature) {
     if (holder == NULL || holder->klass() == NULL) return -1;
-    const Key key(holder->klass(), name);
+    const Key key(holder->klass(), name, signature);
     pthread_mutex_lock(&_mutex);
     std::map<Key, int>::const_iterator found = _offsets.find(key);
     const bool cached = found != _offsets.end();
@@ -156,6 +159,12 @@ public:
     _offsets[key] = resolved;
     pthread_mutex_unlock(&_mutex);
     return resolved;
+  }
+
+  void clear() {
+    pthread_mutex_lock(&_mutex);
+    _offsets.clear();
+    pthread_mutex_unlock(&_mutex);
   }
 
 private:
@@ -179,10 +188,14 @@ private:
   struct Key {
     Klass *klass;
     const char *name;
-    Key(Klass *k, const char *n) : klass(k), name(n) {}
+    const char *signature;
+    Key(Klass *k, const char *n, const char *s)
+        : klass(k), name(n), signature(s) {}
     bool operator<(const Key &other) const {
       if (klass != other.klass) return klass < other.klass;
-      return strcmp(name, other.name) < 0;
+      const int by_name = strcmp(name, other.name);
+      if (by_name != 0) return by_name < 0;
+      return strcmp(signature, other.signature) < 0;
     }
   };
   pthread_mutex_t _mutex;
@@ -210,6 +223,11 @@ oop backing_of(oop value) {
 }
 
 }  // namespace
+
+void ContainerSupport::klasses_freed() {
+  assert(SafepointSynchronize::is_at_safepoint(), "only at a safepoint");
+  field_offsets()->clear();
+}
 
 ContainerSupport::Capability ContainerSupport::capability(oop value) {
   if (value == NULL) return CAPABILITY_NONE;

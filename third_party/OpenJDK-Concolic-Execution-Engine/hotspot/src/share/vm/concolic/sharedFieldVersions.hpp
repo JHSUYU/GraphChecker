@@ -628,7 +628,7 @@ public:
    * The VM freed methods (a redefinition's old versions, an unloaded
    * loader's classes): a Method pointer a thread's lookup remembered may now
    * name another method, so every remembered lookup is discarded.  At a
-   * safepoint (ClassLoaderData).
+   * safepoint (ConcolicMngr::metadata_freed).
    */
   static void methods_freed();
 

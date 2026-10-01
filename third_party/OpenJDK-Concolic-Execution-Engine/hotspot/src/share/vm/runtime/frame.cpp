@@ -1188,16 +1188,9 @@ void frame::nmethods_do(CodeBlobClosure* cf) {
 
 // call f() on the interpreted Method*s in the stack.
 // Have to walk the entire code cache for the compiled frames Yuck.
-//
-// Asked of the frame, not of its pc: a Zero interpreter frame has no pc and
-// no code blob, so the template interpreter's `_cb != NULL &&
-// Interpreter::contains(pc())` never held for one, and MetadataOnStackMark
-// marked no interpreted method on any stack.  A redefinition (a JVMTI
-// retransform: mockito-inline retransforms every superclass of a mocked type,
-// java.lang.Object included) then took the old methods for idle, and the next
-// class-unloading GC freed them under the frames still running them -- a
-// thread parked in the old Object.wait -- and crashed walking those frames'
-// roots (OopMapCache::lookup through the freed holder).  As JDK 9 asks it.
+// Asked of the frame, not of its pc (as JDK 9 does): a Zero interpreter frame
+// has neither pc nor code blob, so MetadataOnStackMark would mark no running
+// method and a class-unloading GC would free a redefined method under it.
 void frame::metadata_do(void f(Metadata*)) {
   if (is_interpreted_frame()) {
     Method* m = this->interpreter_frame_method();

@@ -65,7 +65,7 @@
 #include "utilities/macros.hpp"
 #include "utilities/ostream.hpp"
 #ifdef ENABLE_CONCOLIC
-#include "concolic/sharedFieldVersions.hpp"
+#include "concolic/concolicMngr.hpp"
 #endif
 
 ClassLoaderData * ClassLoaderData::_the_null_class_loader_data = NULL;
@@ -466,14 +466,14 @@ void ClassLoaderData::free_deallocate_list() {
   if (_deallocate_list == NULL) {
     return;
   }
+#ifdef ENABLE_CONCOLIC
+  const int listed = _deallocate_list->length();
+#endif
   // Go backwards because this removes entries that are freed.
   for (int i = _deallocate_list->length() - 1; i >= 0; i--) {
     Metadata* m = _deallocate_list->at(i);
     if (!m->on_stack()) {
       _deallocate_list->remove_at(i);
-#ifdef ENABLE_CONCOLIC
-      SharedFieldVersions::methods_freed();
-#endif
       // There are only three types of metadata that we deallocate directly.
       // Cast them so they can be used by the template function.
       if (m->is_method()) {
@@ -487,6 +487,11 @@ void ClassLoaderData::free_deallocate_list() {
       }
     }
   }
+#ifdef ENABLE_CONCOLIC
+  if (_deallocate_list->length() < listed) {
+    ConcolicMngr::metadata_freed();
+  }
+#endif
 }
 
 // These anonymous class loaders are to contain classes used for JSR292
@@ -822,7 +827,7 @@ void ClassLoaderDataGraph::purge() {
   _unloading = NULL;
 #ifdef ENABLE_CONCOLIC
   if (list != NULL) {
-    SharedFieldVersions::methods_freed();
+    ConcolicMngr::metadata_freed();
   }
 #endif
   ClassLoaderData* next = list;

@@ -24,7 +24,10 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   so `frame::metadata_do` (`VM/runtime/frame.cpp`) asks the frame itself whether it is interpreted,
   and `MetadataOnStackMark` marks the method it runs. A redefined method still running in some
   frame (a thread parked in the old `Object.wait`) is kept as a previous version until it returns,
-  and a class-unloading GC frees only what no stack runs.
+  and a class-unloading GC frees only what no stack runs. A GC that frees metadata (those old
+  versions, an unloaded loader's classes) drops every cache keyed by a `Method*` or `Klass*`
+  address, which the VM reuses: the guarded-store memo (§5.3) and the container field offsets
+  (`ConcolicMngr::metadata_freed`, called from `VM/classfile/classLoaderData.cpp`).
 
 ## 2. Shadows, sessions, regions
 
@@ -209,9 +212,7 @@ location's log: a container mutation (`put`, `remove`, `clear`, `add`, `offer`, 
 is given a shadow if it has none). Neither states a path guard. Another store in the same method is
 not admitted; nor is an array-element store (the scope map lists none). A method's rows are looked
 up once per thread per table (a thread-local memo keyed by the `Method*`), so the map lock is taken
-once per method, not per store; a GC that frees methods (a redefinition's old versions, an unloaded
-loader's classes) discards every memo (`SFV::methods_freed`), since a freed `Method*` can come back
-as another method.
+once per method, not per store; a GC that frees methods discards every memo (§1).
 
 ### 5.4 Observation
 
