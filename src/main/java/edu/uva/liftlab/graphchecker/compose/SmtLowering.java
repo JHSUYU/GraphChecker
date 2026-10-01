@@ -543,7 +543,7 @@ public final class SmtLowering {
     /**
      * One expression of this session, lowered to text, or a named refusal;
      * {@link #reference} is the rule, so its definedness is a fact of this
-     * lowering ({@link #facts}).  Callers ask {@link #declarations()} for
+     * lowering ({@link #facts}).  Callers ask {@link #declaredSort} for
      * the names it reaches.
      */
     public Lowered lower(String expressionRef) {
@@ -2770,16 +2770,13 @@ public final class SmtLowering {
         return declared(name) || sharedByName.containsKey(name);
     }
 
-    /** The names this query declares, at the sorts it declares them. */
-    public Map<String, Sort> declarations() {
-        Map<String, Sort> named = new LinkedHashMap<String, Sort>();
-        for (Map.Entry<String, Declared> entry
-                : declarations.entrySet()) {
-            if (entry.getValue().inQuery) {
-                named.put(entry.getKey(), entry.getValue().sort);
-            }
-        }
-        return Collections.unmodifiableMap(named);
+    /** The sort this query declares one name at, or null when it does not
+     *  declare it: one lookup, not a copy of every declaration (asked per
+     *  mint binding, a copy each made hdfs-11741 m1's composition
+     *  quadratic in its declarations). */
+    public Sort declaredSort(String name) {
+        Declared held = declarations.get(name);
+        return held != null && held.inQuery ? held.sort : null;
     }
 
     /**

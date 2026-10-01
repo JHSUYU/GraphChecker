@@ -2053,7 +2053,7 @@ public final class Composer {
                          List<GapRow> refusals, Map<String, String> joins) {
         // This row states the version; bound at step 0.
         if (minted.equals(read.symbol())) return true;
-        Sort sort = lowering.declarations().get(minted);
+        Sort sort = lowering.declaredSort(minted);
         // A DECLARED ROOT IS BOUND BY ITS DOMAIN, NOT BY A VALUE.  An
         // ordinary read needs a stated value; a clock mint deliberately
         // states none (pinning it could never show a skew), and
