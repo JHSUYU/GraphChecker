@@ -51,6 +51,10 @@ class ConStringSymbolExp : public SymbolExpression {
 public:
     ConStringSymbolExp(oop obj);
     ConStringSymbolExp(const std::string& str);
+    // Whether `text` fits a constant's name whole: past the symbol-name
+    // bound the rendering is cut, and a cut constant is not the String.
+    static bool fits(const std::string &text);
+    virtual bool concrete_string_value(std::string *value);
     virtual void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);
 };
 

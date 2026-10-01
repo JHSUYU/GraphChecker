@@ -59,3 +59,10 @@ runtime.CausynthTraceRecorder outboundExchange string string string string strin
 runtime.SymbolicMessageEnvelope takeOutbound string
 runtime.SymbolicMessageEnvelope installInbound void string
 runtime.SymbolicMessageEnvelope clearInbound void
+
+# WIRE-CODEC: the doors with the bytes and payloads they hold, which the
+# Solr trees pass once their adapters are switched (SolrZkClient's store
+# doors, HttpSolrCall.causynthRespond's response values)
+runtime.MessageDoors stored void string string object byte[]
+runtime.MessageDoors fetched void string string object byte[]
+runtime.MessageDoors outbound doors.Outbound string string string string object object object

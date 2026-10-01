@@ -60,7 +60,8 @@ Expression *concrete_value(oop value);
 // Returns the semantic expression already carried by this object, without
 // allocating an identity shadow or replacing a missing expression with a
 // concrete value.  Container iterators use this to preserve a key's upstream
-// lineage while keeping the no-lineage fallback explicit and bounded.
+// lineage while keeping the no-lineage fallback explicit and bounded.  Asked
+// of the session heap, so a thread outside every region may ask it too.
 Expression *semantic_value(oop value);
 Expression *concrete_result(MethodSymbolizerHandle &handle);
 void constrain_result(MethodSymbolizerHandle &handle,
@@ -83,6 +84,51 @@ void constrain_position(const char *shape, Expression *state,
 // saw; the container's log is then marked incomplete), answers concrete too.
 bool recorded_element(arrayOop heap_array, SymArr *array, Expression *state,
                       Expression *position, jint index, Expression **stored);
+
+// ---- one member, as the recording states it -------------------------------
+//
+// A peek (System.exportLeaf) asks what a container's recorded state says one
+// member is, without recording anything: no READ event, no condition, no gap.
+
+/** What a recorded state says of one member. */
+enum MemberAnswer {
+  // The chain cannot say (a write at a symbolic position, a key it cannot
+  // compare, an opaque or foreign node, an input's elements): the member is a
+  // READ of the state.
+  MEMBER_UNDECIDED,
+  // `*stored` is the value the newest recorded write of the member stored.
+  MEMBER_RECORDED,
+  // No recorded write names the member, or the newest stored a concrete
+  // word: the member is the heap's own.
+  MEMBER_HEAP,
+  // The recording contradicts the heap (a write no hook saw): the heap
+  // decides, and the load that meets it names the gap.
+  MEMBER_STALE
+};
+// An array element at a concrete `index`: what recorded_element decides,
+// without its side effect.
+MemberAnswer element_answer(arrayOop heap_array, SymArr *array,
+                            Expression *state, jint index,
+                            Expression **stored);
+// A map entry: the newest PUT of `key` in an ASSOCIATIVE chain, each
+// recorded key decided against `key` concretely (a constant String by
+// content, an int constant against an Integer, the key's own expression by
+// identity).
+MemberAnswer entry_answer(Expression *state, oop key, Expression **stored);
+// A list position: an INDEXED chain replayed over its stated snapshot (a
+// STATE root states no content and decides nothing); `size` is the list's
+// concrete size, which the replay must reach.
+MemberAnswer position_answer(Expression *state, jint position, int size,
+                             Expression **stored);
+// The member `container` holds under `key` (a map: identity, a String by
+// content, a box by value) or, for a NULL key, at `position` (an ArrayList
+// or ArrayDeque), read from the heap with no member bound; `*count` is how
+// many members it holds.  False when it holds none; `*unreadable` then names
+// a container no walk can read (its class, RESIZING, or OVER_BOUND for a
+// ConcurrentHashMap past 4096 bins), or is NULL.  Its text lives in the
+// caller's ResourceMark.
+bool member_of(oop container, oop key, jint position, oop *member,
+               int *count, const char **unreadable);
 void attach_result(oop result, Expression *expression, oop owner = NULL);
 // True for a call whose body the engine can follow instead of summarizing:
 // a constructor, or a method that only reads its container (its result is

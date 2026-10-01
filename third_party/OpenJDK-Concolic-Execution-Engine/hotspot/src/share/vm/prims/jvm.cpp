@@ -79,6 +79,7 @@
 #include "concolic/heapCopy.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/expressionBroker.hpp"
+#include "concolic/leafBroker.hpp"
 #ifdef TARGET_OS_FAMILY_linux
 # include "jvm_linux.h"
 #endif
@@ -762,6 +763,45 @@ JVM_ENTRY(jlong, JVM_AttachExpression(
 #else
   return -1;
 #endif
+JVM_END
+
+// The leaf natives (concolic/leafBroker.hpp).  Every argument may be null:
+// what a null addresses is a status in the answer, never a VM abort.
+JVM_ENTRY(jstring, JVM_ExportLeaf(JNIEnv *env, jclass ignored,
+                                  jobject parent, jint slot_kind,
+                                  jobject slot))
+  JVMWrapper("JVM_ExportLeaf");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  std::string serialized = LeafBroker::export_leaf(
+      Handle(THREAD, JNIHandles::resolve(parent)), slot_kind,
+      Handle(THREAD, JNIHandles::resolve(slot)));
+#else
+  std::string serialized(
+      "{\"schemaVersion\":1,\"kind\":\"VM_LEAF_EXPORT\","
+      "\"status\":\"NO_SESSION\",\"reason\":\"CONCOLIC_DISABLED\"}");
+#endif
+  Handle str = java_lang_String::create_from_str(serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+JVM_END
+
+JVM_ENTRY(jstring, JVM_MintLeaf(JNIEnv *env, jclass ignored, jobject parent,
+                                jint slot_kind, jobject slot,
+                                jstring template_json))
+  JVMWrapper("JVM_MintLeaf");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  std::string serialized = LeafBroker::mint_leaf(
+      Handle(THREAD, JNIHandles::resolve(parent)), slot_kind,
+      Handle(THREAD, JNIHandles::resolve(slot)),
+      Handle(THREAD, JNIHandles::resolve(template_json)));
+#else
+  std::string serialized(
+      "{\"schemaVersion\":1,\"kind\":\"VM_LEAF_MINT\","
+      "\"status\":\"NO_SESSION\",\"reason\":\"CONCOLIC_DISABLED\"}");
+#endif
+  Handle str = java_lang_String::create_from_str(serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
 JVM_END
 
 JVM_ENTRY(jstring, JVM_GetConcolicPathConditionRange(

@@ -426,6 +426,14 @@ public final class FocusedReplay {
      */
     private static String unsettledPublication = "";
 
+    /** Whether the run ended without a publication: its verdicts settle
+     *  no question ({@code ObligationDir#QUESTION}). */
+    static boolean unsettled() {
+        synchronized (LOCK) {
+            return !unsettledPublication.isEmpty();
+        }
+    }
+
     /** Notes the publication the run ended without; the first one stands. */
     static void noteUnsettledPublication(String detail) {
         load();

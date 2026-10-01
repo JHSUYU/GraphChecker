@@ -311,7 +311,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | local scratch | `/localtmp/$USER` on each lift (replay working directories go to `/localtmp/$USER/graphchecker/`). |
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | z3 | `~/.local/bin/z3` (4.14.1) |
-| concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-r3b/j2sdk-image`** (f14 + R3 + r3-fix envelope bound). Others: `vm-r3` (before r3-fix), `vm-w1` (W1, parked), `vm-w4` (W4 branch), `vm-w4b` (possibly partial — rebuild), `vm-f14`, `~/gc-out/vm-f*` (old). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME`, never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
+| concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-w4e/j2sdk-image`** (f14 + R3 + r3-fix + WIRE-CODEC W1/W4 natives + the containers' iteration order). Others still kept: `vm-r3b` (before W4: main refuses it since W4's natives), `vm-r3c` (vm-r3b + the iteration order), `vm-w4d` (W4 without the iteration order). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME`, never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
 | HDFS trees | `~/hadoop-hdfs-<case>` (worktrees of `~/hadoop`, branch `gc/<case>`); ad-hoc HDFS checks run on `~/hadoop-hdfs-17967-c` only |
 | Solr trees | Solr 8.11 worktrees of `~/lucene-solr-8_11`: `gc/solr` (shared adapter), `~/lucene-solr-18406` (`gc/solr-18406`), `~/lucene-solr-18413` (`gc/solr-18413`), `~/lucene-solr-8_11-adhoc` (`gc/solr-adhoc`). Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
@@ -347,7 +347,7 @@ Never overwrite an image a round uses; build a new directory.
 ```bash
 git worktree add --detach ~/gc-run/p<N> <commit>
 (cd ~/gc-run/p<N> && /bigtemp/vnr3ne/bin/onlift.sh -g 10 mvn -q -o package -DskipTests)
-GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-r3b/j2sdk-image \
+GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-w4e/j2sdk-image \
   tools/rounds/launch-round.sh ~/gc-run/p<N> <round>              # all 11 cases, heads placed per host
 CASES="hdfs-17960 solr-18413" ... tools/rounds/launch-round.sh ... # a subset
 GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
@@ -430,7 +430,7 @@ parts are in `experiments/<system>/{system.sh,build.sh,classpath.py}`.
 
 ```bash
 experiments/lib/run.sh experiments/hadoop/hdfs-17960 "" build      # build the tree, run the workload once
-export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-r3b/j2sdk-image
+export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-w4e/j2sdk-image
 CASES=hdfs-17960 bash experiments/accept/accept.sh                  # campaign + probe + report
 ```
 

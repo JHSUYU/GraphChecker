@@ -2855,7 +2855,7 @@ campaign_solve_obligation_alone() {
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
   local seed_plan=$6
-  local outcome status=0 why
+  local outcome status=0
   # Its slot charged the host obligation_memory_mb, its replay's: a local
   # slot is a subshell of the head, and its JVMs are not the head's; the
   # host's solver charges its own.
@@ -2865,41 +2865,33 @@ campaign_obligation_worker() {
     "${obligations}" "${sessions}" "${worker}"
   if [[ "${status}" -ne 0 ]]; then
     # A solver that ran out of heap or died answered nothing about the
-    # obligation: asked once more, of a solver of its own.
+    # obligation, and settles no question, whatever it left: asked once
+    # more, of a solver of its own.  Twice: the worker did not finish
+    # (campaign_obligation_unfinished), never an answer.
+    rm -f -- "${worker}/question.txt" "${worker}/question.asked"
     campaign_log "obligation ${obligation_id}: its host's solver did not \
 answer ($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
       | tail -n 1)); asked again of a solver of its own at \
 ${engine_memory_mb:-8192} MB"
     run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
       "${obligations}" "${sessions}" "${worker}"
-  fi
-  if [[ "${status}" -ne 0 ]]; then
-    why=$(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
-      | tail -n 1)
-    campaign_log "obligation solver failed on ${obligation_id} \
-(exit ${status}): ${why}"
-    # Twice: still no answer.  The wave holds one row per obligation it
-    # claimed, and this one's names the failure; the BLOCKING gap keeps it
-    # from reading as an outcome (EMIT).
-    jq -n -c --arg id "${obligation_id}" --arg detail "its solver failed \
-twice, its host's and one of its own at ${engine_memory_mb:-8192} MB, so \
-the arm has no answer: ${why}" \
-      '{sessionId: "exploration", kind: "ADMISSION_GAP", cls: "BLOCKING",
-        subject: $id, detail: $detail}' >>"${worker}/gaps.jsonl"
-    jq -n -c --arg id "${obligation_id}" --arg detail "${why}" \
-      '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
-        verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
-      >"${result_row}"
-    return 0
+    if [[ "${status}" -ne 0 ]]; then
+      rm -f -- "${worker}/question.txt" "${worker}/question.asked"
+      die "obligation ${obligation_id}: its solver failed twice, its \
+host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
+        '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null | tail -n 1)"
+    fi
   fi
   require_nonempty "obligation solver result" "${result_row}"
   require_nonempty "obligation query" "${worker}/obligation_query.smt2"
   outcome=$(jq -er '.verdict' "${result_row}")
   # The solver owns what a finished obligation is.  UNSAT and NOT_ADMITTED
   # are recorded terminal verdicts, not process failures, and the next wave
-  # reads them so the obligation is not proposed again.
+  # reads them so the obligation is not proposed again; so is an ADMITTED
+  # the solver reused from the same question a worker settled
+  # (ObligationFactory#solve).
   case "${outcome}" in
-    UNSAT|NOT_ADMITTED) return 0 ;;
+    UNSAT|NOT_ADMITTED|ADMITTED) return 0 ;;
   esac
   [[ "${outcome}" == "SAT_MODEL_READY" ]] \
     || die "the obligation verdict is not solver-backed: ${outcome}"
@@ -2951,6 +2943,8 @@ campaign_obligation_replay() {
   # statement (RowRuntime#closeSession writes replay_verdict.jsonl), or the
   # bound's.
   if [[ -n "${campaign_replay_killed}" ]]; then
+    # Killed, it decided nothing: its question stays unsettled.
+    rm -f -- "${worker}/question.asked"
     campaign_log "obligation ${obligation_id}: \
 replay ${campaign_replay_killed}"
     campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
@@ -2987,6 +2981,11 @@ replay carried and the replay ended there, so its rows are a prefix of a run"
   # In place, as the solver's row was written: a head reading a peer's file
   # over NFS opens the same inode, fresh on open.
   cat -- "${statement}" >"${result_row}"
+  # The replay decided it, so its answer settles the question its solver
+  # asked -- unless the replay ended without a publication, which withdrew
+  # the question itself (RowRuntime#closeSession).
+  [[ ! -e "${worker}/question.asked" ]] \
+    || mv -f -- "${worker}/question.asked" "${worker}/question.txt"
 }
 
 
@@ -3423,18 +3422,35 @@ campaign_wave_slot() {
 # line names its worker directory is ended on its host first; then a
 # session naming it leaves the corpus, and one row answers it, naming why.
 campaign_obligation_unfinished() {
-  local host=$1 obligation_id=$2 worker=$3 sessions=$4 status=$5 why
-  why="its worker on ${host} did not finish (exit ${status}: it failed, or \
-the head could not see what it wrote, as the campaign log says); its logs \
-are in ${worker}"
+  local host=$1 obligation_id=$2 worker=$3 sessions=$4 status=$5
+  local why failure iteration_dir
+  # What the worker said last: an engine failure (die, campaign_fail) names
+  # itself on its stderr.
+  failure=$(sed -n -E 's/^(Error: |  reason=)//p' "${worker}/stderr.log" \
+    2>/dev/null | tail -n 1) || failure=""
+  why="its worker on ${host} did not finish (exit ${status}: \
+${failure:-it failed, or the head could not see what it wrote, as the \
+campaign log says}); its logs are in ${worker}"
   campaign_log "obligation ${obligation_id}: ${why}"
   campaign_reap_on_host "${host}" "${worker}"
   campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
     "${worker}/unfinished-sessions" "${why}"
+  # Its answer settles no question.
+  rm -f -- "${worker}/question.txt" "${worker}/question.asked"
   jq -n -c --arg id "${obligation_id}" --arg detail "${why}" \
     '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
       verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
     >"${worker}/obligation_result.jsonl"
+  # Loud: the campaign's own gap row, which EMIT carries, counted in the
+  # iteration manifest (unfinishedObligations).  The slots run on the head,
+  # so the appends are one host's.
+  iteration_dir=$(dirname "$(dirname "${worker}")")
+  jq -n -c --arg id "${obligation_id}" --arg detail "${why}" \
+    --arg epoch "$(basename "${iteration_dir}")" \
+    '{schemaVersion: 1, sessionId: "", stage: "EXPLORE",
+      kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
+      subject: "OBLIGATION_UNFINISHED", detail: ($id + ": " + $detail),
+      topologyEpoch: $epoch}' >>"${iteration_dir}/campaign_gaps.jsonl"
 }
 
 # The whole wave, through the pool.
@@ -3576,13 +3592,18 @@ campaign_explore() {
       break
     fi
 
-    # Obligation identity is stable across waves, so an unchanged signature
-    # over the ids, the verdicts recorded so far AND the exposures is a fixed
-    # point the counts alone cannot see.
+    # An unchanged signature over the FLIPS the wave asks (the planner's
+    # flips.tsv, ObligationFactory#flip), the distinct questions settled so
+    # far (answeredQuestions) AND the exposures is a fixed point the counts
+    # alone cannot see: the wave before asked the same flips and settled no
+    # question it had not.  Not over the ids, nor over every verdict row: an
+    # obligation's id drifts as sessions land, and SOLR-18413 r5 asked 185
+    # questions 717 times under ids that never repeated, each re-ask one
+    # more row.
     wave_signature=$({
-        printf '%s\n' "${jobs[@]}" | LC_ALL=C sort
+        cut -f2 "${wave_dir}/flips.tsv" | LC_ALL=C sort
         printf -- '--\n'
-        jq -r '.verdict // ""' "${results}" | LC_ALL=C sort | uniq -c
+        jq -r '.answeredQuestions' "${wave_dir}/explore_manifest.json"
         printf -- '--\n'
         printf '%s\n' "${exposures}"
       } | sha256sum | cut -d' ' -f1) \
@@ -3596,8 +3617,9 @@ region_path_max_waves=${region_path_max_waves} with ${pending} obligation(s) \
 still open and ${exposed} region exposure(s) not yet woven"
     elif [[ "${wave_signature}" == "${previous_signature}" ]]; then
       stop_kind=REGION_PATH_CLOSURE_NO_PROGRESS
-      stop_reason="wave ${wave} proposes the same ${pending} obligation(s) \
-and ${exposed} exposure(s) as the wave before it with no new verdict"
+      stop_reason="wave ${wave} asks the same ${pending} flip(s) \
+and ${exposed} exposure(s) as the wave before it, which settled no \
+question not settled before"
     fi
     if [[ -n "${stop_kind}" ]]; then
       jq -n -c --arg kind "${stop_kind}" --arg detail "${stop_reason}" \
@@ -3755,7 +3777,8 @@ re-run's session stands in its place"
     "${sessions}/${session}" "the exposing session ${session} does not name \
 obligation ${obligation_id}, so it was not withdrawn from the corpus"
   for file in replay.log concolic_region_results.jsonl \
-      obligation_result.jsonl replay_verdict.jsonl stdout.log stderr.log; do
+      obligation_result.jsonl replay_verdict.jsonl question.txt \
+      question.asked stdout.log stderr.log; do
     [[ ! -e "${worker}/${file}" ]] || mv -- "${worker}/${file}" "${aside}/"
   done
   printf 'localhost\n' >"${worker}/host.txt"
@@ -3808,6 +3831,15 @@ verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 # Session gap rows stay where the replay wrote them: EMIT reads them straight
 # out of the session directories, because a GapRow states its own class and
 # nothing between the runtime and the report is in a position to change it.
+
+# How many obligations of one iteration a worker did not finish
+# (campaign_obligation_unfinished's gap rows).
+campaign_unfinished_count() {
+  local gaps="$1/campaign_gaps.jsonl"
+  [[ -s "${gaps}" ]] || { printf '0\n'; return 0; }
+  jq -s '[.[] | select(.subject == "OBLIGATION_UNFINISHED")] | length' \
+    "${gaps}"
+}
 
 campaign_publish_iteration_manifest() {
   local iteration_dir=$1 iteration=$2
@@ -3868,6 +3900,7 @@ campaign_publish_iteration_manifest() {
     --arg obligationsSha "${obligations_sha}" \
     --arg classes "${iteration_dir}/instrumented-classes" \
     --argjson workers "${concolic_worker_count}" \
+    --argjson unfinished "$(campaign_unfinished_count "${iteration_dir}")" \
     --slurpfile members "${members}" '
     {schemaVersion: 1,
      kind: "CAMPAIGN_ITERATION_MANIFEST",
@@ -3879,6 +3912,7 @@ campaign_publish_iteration_manifest() {
      obligationResults: {path: $obligations, sha256: $obligationsSha},
      instrumentedClasses: $classes,
      externalWorkerCount: $workers,
+     unfinishedObligations: $unfinished,
      members: $members}
   ' >"${iteration_dir}/iteration_manifest.json"
   rm -f "${members}"
