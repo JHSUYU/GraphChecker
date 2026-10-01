@@ -216,8 +216,10 @@ public class RegionFoldPlanTest {
             List<RuntimeRegionPlanner.MethodEvent> events) {
         return RuntimeRegionPlanner.planSkeletonGraph(cutSkeletons(), events,
                 cutRuntime(),
+                Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList(),
                 Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
-                Collections.<String>emptySet());
+                Collections.<String>emptySet(),
+                Collections.<String, String>emptyMap());
     }
 
     /** The fixture's finalized closure over those activations. */
@@ -406,8 +408,10 @@ public class RegionFoldPlanTest {
         return RuntimeRegionPlanner.planSkeletonGraph(skeletons(),
                 events(folded),
                 Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList(),
                 Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
-                Collections.<String>emptySet());
+                Collections.<String>emptySet(),
+                Collections.<String, String>emptyMap());
     }
 
     /**

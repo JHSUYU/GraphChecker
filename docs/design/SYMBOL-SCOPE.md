@@ -339,14 +339,38 @@ reaches, to a fixed point:
   under another request or on another node -- is not the question's: no rule below plans it, so
   nothing only it would demand is planned either.
 - **The demand walk** (`DemandWalk`), backwards over the candidate graph, one demand per (occurrence,
-  cell). It starts at the operands of the fatal guards the question's target occurrences decided, and at the
-  occurrences that performed a declared port's capture (`DECLARED_COMMUNICATION_CAPTURE_V1`): their
-  declared-site cells, and the value each OUT port of theirs hands on, whose writers only the
-  sending node has. Inside an occurrence it follows the edges of the methods its regions hold (its
-  own and those folded into it); at a cell a `WRITE_SITE` names it crosses, on the same node, to
-  every activation that performed a storing region -- as its own region or folded into it -- and
-  ran the storing method (`SHARED_LOCATION_DEMAND_V1`), and keeps the guards of the read locally.
-  It records the locations it demanded per node and the wire consumer cells it demanded.
+  cell), from the operands of the fatal guards the question's target occurrences decided. Inside
+  an occurrence it follows the edges of the methods its regions hold (its own and those folded into
+  it). At a cell a `WRITE_SITE` names it crosses, on the same node, to every activation that
+  performed a storing region -- as its own region or folded into it -- and ran the storing method
+  (`SHARED_LOCATION_DEMAND_V1`), and keeps the guards of the read locally; in a writer it demands
+  the guards of the store, never the store's value (value provenance stops at a stored location:
+  the values come from roots, below), nor the writer's own other writers.
+  - **A heap location is one object's field** (Writers_W(l), GreyGraph §3.1): the recording names
+    the objects each activation read or wrote a field on (`FIELD_OWNERS`, stamped by
+    `runtime/RuntimeRegionPlanner#stampFieldOwners`: a field event's receiver, a reference
+    field's referent, and the receiver of a call at a site that returns a field -- an unwoven
+    accessor, `RuntimeSelectedRegionFinalizer#fieldReadingCalls`). A writer the recording saw
+    access the field on other objects only than the reader did is not crossed to
+    (`DemandWalk#holdsOthersOnly`); a side the recording saw no access of the field on (a store on
+    an arm it did not take, an atomic's or a container's own state, a static field's one location
+    `0`) says nothing either way. hdfs ad-hoc `DataStreamer-638`: 1147 `Configuration.get`
+    occurrences ran the lazy store of `overlay`, on 10 objects; the reader read one.
+  - **A message is one exchange leg**: at a cell the capture of a declared IN port names (an IN call
+    return's assigned locals, any other's cut cell), in an occurrence performing a region that
+    declares the port, it crosses to every occurrence whose capture of the port's export the
+    recording bound to the same exchange leg (correlation, attempt and half:
+    `RuntimeRegionPlanner#bindObservedCommunicationCaptures`) -- the other side of that one
+    message -- and demands there the cells the export hands on (`WIRE_PRODUCER_V1`). A consumer the
+    recording paired with no export (no exchange bound: a ZooKeeper read, a data-transfer stream)
+    is a DIAGNOSTIC `ADMISSION_GAP` naming its cell and ports, and its value stays the one attached.
+    No capture is admitted for being one: admitting every occurrence that captured a declared port
+    planned 2673 occurrences for one ad-hoc check (`DataStreamer-1451`, round a40h).
+
+  It records, per node, the locations it demanded and the objects it demanded them on, and the wire
+  consumer cells it demanded. Every admission states its `demandDepth`: the hops of the shortest
+  chain from the question that reached it (a target 0, a root's or a door's occurrence one past
+  what it was found from).
 - **Roots by relevance** (`causynth/RootRelevance`). A root read is a capture of a `CLOCK` or
   `FAULT` `DECLARED_SITE`. Its influence is the forward reach of its `dependencyCell` over the
   candidate edges of the methods its occurrence performed -- value, guard and exception edges
@@ -354,10 +378,17 @@ reaches, to a fixed point:
   (recording the consumer cell its `wire_handoff` names). The influence is static: the arm a root
   decides counts whether the recording took it or not (an expiry check that removed nothing), and
   a value leaving by a wire counts on the consumer's side. An occurrence one of whose roots reaches
-  a location the walk demanded on its node, or a consumer cell it demanded anywhere, is admitted
+  a location the walk demanded on its node -- unless the recording saw it access that field on
+  other objects only (`Demanded#heldBy`) -- or a consumer cell it demanded anywhere, is admitted
   (`ROOT_RELEVANT_V1`, unless another rule admitted it), and every such occurrence seeds the walk
   with the cells on the root's way there, so what the root meets is demanded in turn (SOLR-18406:
   the commit's reservation a checkpoint's clock is compared with, and so the clock that set it).
+- **Attached values by relevance**: an admitted occurrence's IN capture bound to an exchange leg is
+  an input like a root. When its influence (from the cells its capture names) reaches what is
+  demanded, by the same rule, it crosses its message as the walk does (`DemandWalk#crossMessage`)
+  and seeds the cells on its way: the walk reaches an attach only where the attached value itself
+  is demanded, and a value attached and then stored (hdfs-11741: the DataNode converting the
+  KeyUpdateCommand's keys into the map its handshake reads) is found from the store it reaches.
 - **Doors of a demanded message** (`RecordedMessages#doorsOf`): an occurrence that read a fault marker
   and sent, or took in, the message that started an admitted occurrence (its `Anchor`; the
   recorded schedule's `SEND` names the sender, a `RECV` under that anchor a receiver) is admitted
@@ -366,7 +397,8 @@ reaches, to a fixed point:
   `MARKER_FLIPPED` witnesses move such an IPC door.
 
 A root read none of this reaches is not planned: its occurrence runs concrete, unless another rule
-admits it.
+admits it. PLAN schedules what this admits up to `schedule_max_jobs`, keeping the nearest demand
+depths that fit whole (PIPELINE.md §3).
 
 ### 4.5 Randomness is not a root
 

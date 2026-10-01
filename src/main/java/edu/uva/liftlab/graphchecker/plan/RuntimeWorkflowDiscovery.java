@@ -18,8 +18,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** Selects the declared target and schedules the whole region plan with it. */
@@ -250,15 +252,63 @@ public final class RuntimeWorkflowDiscovery {
 
     static final class Workflow {
         private final List<Selection> selections;
+        /** The dependencies {@link #nearest} left out, in plan order. */
+        private final List<Selection> cut;
+        /** The deepest demand depth {@link #nearest} kept. */
+        private final int keptDepth;
 
         private Workflow(List<Selection> selections) {
+            this(selections, Collections.<Selection>emptyList(), -1);
+        }
+
+        private Workflow(List<Selection> selections, List<Selection> cut,
+                         int keptDepth) {
             this.selections = Collections.unmodifiableList(
                     new ArrayList<>(selections));
+            this.cut = Collections.unmodifiableList(new ArrayList<>(cut));
+            this.keptDepth = keptDepth;
         }
 
         List<Selection> selections() { return selections; }
 
         int scheduledTaskCount() { return selections.size(); }
+
+        /** How many dependencies {@link #nearest} left out. */
+        int cutCount() { return cut.size(); }
+
+        int keptDepth() { return keptDepth; }
+
+        /**
+         * The nearest part of this closure that fits {@code maxJobs} tasks:
+         * the target and every dependency whose demand depth (the hops of
+         * the chain that admitted it, {@link
+         * RuntimeSelectedRegionFinalizer#DEMAND_DEPTH}) is at most the
+         * deepest level that fits whole.  Never part of a level: its
+         * occurrences are equally near, and keeping some would be an
+         * arbitrary choice.  This workflow when it fits; null when not even
+         * the target's own level does.
+         */
+        Workflow nearest(int maxJobs) {
+            if (selections.size() <= maxJobs) return this;
+            TreeMap<Integer, Integer> byDepth = new TreeMap<>();
+            for (Selection selection : selections) {
+                byDepth.merge(selection.depth, 1, Integer::sum);
+            }
+            int kept = -1;
+            int count = 0;
+            for (Map.Entry<Integer, Integer> level : byDepth.entrySet()) {
+                if (count + level.getValue() > maxJobs) break;
+                count += level.getValue();
+                kept = level.getKey();
+            }
+            if (kept < 0 || selections.get(0).depth > kept) return null;
+            List<Selection> near = new ArrayList<>();
+            List<Selection> far = new ArrayList<>();
+            for (Selection selection : selections) {
+                (selection.depth <= kept ? near : far).add(selection);
+            }
+            return new Workflow(near, far, kept);
+        }
 
         JsonObject scheduleIndex(List<ExecutionTask> tasks,
                                  JsonObject regionPlanIdentity,
@@ -299,6 +349,24 @@ public final class RuntimeWorkflowDiscovery {
             }
             index.add("target", targetEntry);
             index.add("members", members);
+            if (!cut.isEmpty()) {
+                // The closure PLAN did not plan (#nearest): the campaign
+                // names it (run_engine.sh campaign_stream_truncation).
+                JsonObject closureCut = new JsonObject();
+                closureCut.addProperty("keptDepth", keptDepth);
+                closureCut.addProperty("occurrences", cut.size());
+                TreeMap<Integer, Integer> byDepth = new TreeMap<>();
+                for (Selection selection : cut) {
+                    byDepth.merge(selection.depth, 1, Integer::sum);
+                }
+                JsonObject depths = new JsonObject();
+                for (Map.Entry<Integer, Integer> level : byDepth.entrySet()) {
+                    depths.addProperty(String.valueOf(level.getKey()),
+                            level.getValue());
+                }
+                closureCut.add("byDepth", depths);
+                index.add("closureCut", closureCut);
+            }
             return index;
         }
     }
@@ -312,6 +380,8 @@ public final class RuntimeWorkflowDiscovery {
         /** Captures the declared target's reach (the target and its sibling
          *  occurrences). */
         final boolean targetReach;
+        /** Demand hops from the target; a target occurrence states none. */
+        final int depth;
 
         private Selection(String campaignId, RegionInstancePlan plan,
                           Goal goal, boolean target, boolean targetReach) {
@@ -321,6 +391,8 @@ public final class RuntimeWorkflowDiscovery {
             this.goalId = goal.goalId();
             this.target = target;
             this.targetReach = targetReach;
+            this.depth = optionalInteger(plan.json(),
+                    RuntimeSelectedRegionFinalizer.DEMAND_DEPTH, 0);
         }
 
         static Selection target(Target target, boolean targetReach) {

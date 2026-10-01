@@ -1439,8 +1439,9 @@ public final class CausynthTraceRecorder {
                                 RuntimeSelectedRegionFinalizer.SKELETON_KIND,
                                 target.skeletons),
                         entries, Collections.emptyList(),
-                        Collections.emptyList(),
-                        Collections.<String>emptySet());
+                        Collections.emptyList(), Collections.emptyList(),
+                        Collections.<String>emptySet(),
+                        Collections.<String, String>emptyMap());
         if (exercised.staticRegionCount == 0
                 || exercised.runtimeInstances.isEmpty()) {
             throw new IOException("NO_REGION_ACTIVATION: the recording "
@@ -1461,11 +1462,14 @@ public final class CausynthTraceRecorder {
                         selectedSkeletons);
         // Parsed once: planner reads DECLARED_SITE, finalizer WRITE_SITE.
         StaticScopeMap scopeMap = readScopeMap(target.scopeMap);
+        List<Map<String, Object>> graph = MapFields.readRows(target.graph);
         RuntimeRegionPlanner.Result activationGraph =
                 RuntimeRegionPlanner.planSkeletonGraph(
                         skeletons, trace.methods,
-                        trace.execution, trace.protocol,
-                        declaredSites(scopeMap));
+                        trace.execution, trace.fields, trace.protocol,
+                        declaredSites(scopeMap),
+                        RuntimeSelectedRegionFinalizer.fieldReadingCalls(
+                                graph));
         Set<String> observedMethods = new LinkedHashSet<>();
         for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
             observedMethods.add(event.method);
@@ -1476,7 +1480,7 @@ public final class CausynthTraceRecorder {
         // activations, which the plan below reads.
         RuntimeSelectedRegionFinalizer.Result closure =
                 RuntimeSelectedRegionFinalizer.finalizeRegions(
-                        MapFields.readRows(target.graph), skeletons,
+                        graph, skeletons,
                         String.valueOf(selectedSkeletons),
                         observedMethods, activationGraph.runtimeInstances,
                         runtimeObservations(trace.execution, trace.methods),

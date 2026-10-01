@@ -13,7 +13,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | SETUP (optional) | `campaign_setup` | whatever `campaign_setup_command` does | the command fails |
 | FREEZE | `campaign_freeze` | the provenance (published by EMIT) | an input cannot be digested |
 | SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` (a batch: `campaign_batch_seed`, §2b) | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
-| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
+| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | not even the target's demand depth fits `schedule_max_jobs`; the index does not commit the frozen plan; no target |
 | UNION (a batch) | `campaign_batch_union`; `plan.PlanUnion` | `groups/groups.json`, `groups/group-<n>/execution_task_plan.jsonl` | `PlanUnion` exits nonzero |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
@@ -213,8 +213,13 @@ when none is stated). SEED's aggregation resolves it once against the recording'
 (`RuntimeWorkflowDiscovery#declaredOccurrence`) and marks that row `declaredOccurrence`; PLAN takes
 the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNED`), and the shell
 uses the address PLAN's index states for every later stage, whatever form the declaration had
-(`campaign_plan_read`). More tasks than
-`schedule_max_jobs` fail the stage. Outputs: `execution_task_plan.jsonl` (every row stamped with one
+(`campaign_plan_read`). When the closure holds more occurrences than
+`schedule_max_jobs`, PLAN keeps the target and the nearest demand depths that fit whole (the
+seed's `demandDepth`, SYMBOL-SCOPE.md §4.4; never part of a depth, whose occurrences are equally
+near) and states the rest in the index (`closureCut`: `keptDepth`, `occurrences`, `byDepth`;
+`RuntimeWorkflowDiscovery.Workflow#nearest`); `campaign_stream_truncation` names it as a
+`PLAN_CLOSURE_CUT` row, DIAGNOSTIC when an accepted witness ended the exploration and BLOCKING
+otherwise. Only a target depth that does not fit fails the stage. Outputs: `execution_task_plan.jsonl` (every row stamped with one
 `replayGroupId` = `REPLAY.GROUP.<sha256 of the rows>`) and `runtime_workflow_schedule_index.json`
 (members TARGET/DEPENDENCY; the shell checks it commits the frozen region plan's sha256 and size and
 decodes the membership once into `campaign_member_rows`). The seed replay's plan and every worker's
