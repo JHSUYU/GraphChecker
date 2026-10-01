@@ -1087,50 +1087,9 @@ grep -q "artifact=${gate_dir}/campaign_gaps.jsonl" "${gate_dir}/error.log" \
 [[ "$(wc -l <"${gate_dir}/campaign_gaps.jsonl")" -eq 2 ]] \
   || fail "the gate's gap file is not append-only"
 
-# The same gate over the sessions EXPLORE lands: campaign_stream_admit moves
-# the workers' staged sessions into the corpus and gates exactly those, in
-# one call, and a blocking violation there fails the campaign at IMPORT, by
-# name.  Each session is judged once, ImportGateMain judges the rules over
-# the set (one seed, the epoch's roots) against the sessions its ledger says
-# were gated before (ContractTest), and it reads the iteration itself, every
-# round's workers included, so no session reads as having no focus row.
-wave_gate="${test_tmp}/import-gate-stream"
-mkdir -p "${wave_gate}/sessions/seed-result-0" \
-  "${wave_gate}/obligations-0000/OB.a/sessions/focus-a" \
-  "${wave_gate}/obligations-0000/OB.b/sessions/focus-b"
-(
-  iteration_dir=${wave_gate}
-  iteration_id=iteration-0000
-  sessions=${wave_gate}/sessions
-  stream_landed=0
-  stream_landings=0
-  run_java_main() {
-    [[ "$*" == *"--sessions ${wave_gate}/sessions --gate focus-a --gate \
-focus-b --gated ${wave_gate}/import_gated.txt "* ]] \
-      || fail "the landing gate did not gate exactly its sessions of the \
-iteration, against the iteration's ledger: $*"
-    [[ -d "${wave_gate}/sessions/focus-a" && -d "${wave_gate}/sessions/focus-b" ]] \
-      || fail "a session was gated before it landed in the corpus"
-    printf '%s\n' '{"violations":1,"blocking":1,'\
-'"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
-    printf '{"schemaVersion":1,"cls":"BLOCKING"}\n' \
-      >>"${wave_gate}/campaign_gaps.jsonl"
-  }
-  campaign_stream_admit \
-    "${wave_gate}/obligations-0000/OB.a ${wave_gate}/obligations-0000/OB.a/sessions focus-a" \
-    "${wave_gate}/obligations-0000/OB.b ${wave_gate}/obligations-0000/OB.b/sessions focus-b" \
-    >/dev/null
-) 2>"${wave_gate}/error.log" \
-  && fail "a blocking row invariant in a landed session did not fail the \
-campaign"
-grep -q 'stage=IMPORT' "${wave_gate}/error.log" \
-  || fail "the landing gate's failure is not attributed to IMPORT: \
-$(cat "${wave_gate}/error.log")"
-grep -q 'roots.jsonl seq=3 field=recordedValue' "${wave_gate}/error.log" \
-  || fail "the landing gate's failure does not name the first blocking subject"
-[[ -s "${wave_gate}/landings/0000.json" \
-    && "$(cat "${wave_gate}/landings/0000.sessions")" == $'focus-a\nfocus-b' ]] \
-  || fail "the landing gate wrote no summary beside the list it gated"
+# The same gate over the sessions EXPLORE lands is STREAM-5's.
+wave_gate="${test_tmp}/import-gate-outside"
+mkdir -p "${wave_gate}/sessions" "${wave_gate}/obligations-0000"
 # A session the gate is handed is a session of the iteration's corpus, or
 # the gate refuses it by name: one outside would be judged against an epoch
 # it is not part of.
@@ -1652,8 +1611,8 @@ printf 'untracked, differently\n' >"${checkout_repo}/loose.txt"
 # STREAM: EXPLORE is one streaming loop (PIPELINE §7.7, §7.9).  The planner,
 # the worker, the gate and COMPOSE are stubbed -- each stands where its JVM
 # stands -- and everything between them is the production loop: the queue,
-# the ledger's admission, landing, rounds and their in-flight rows, the
-# stops.
+# the ledger's admission, landing, the head's steps, rounds and their
+# in-flight rows, the stops.
 #
 # stream_fixture <name>: an iteration and a configuration of its own; a case
 # then says what each round proposes (stream_round_plan <round> <out>: rows
@@ -1730,7 +1689,7 @@ stream_answer() {
     >"${worker}/obligation_result.jsonl"
 }
 # The stubs every STREAM case shares: a host with room, a gate that records
-# what it gated.
+# what it gated, one line per call.
 stream_stubs() {
   campaign_host_available_mb() { echo 30000; }
   campaign_host_total_mb() { echo 30000; }
@@ -1738,7 +1697,8 @@ stream_stubs() {
   campaign_import_gate() {
     shift 3
     local gated
-    for gated in "$@"; do basename "${gated}"; done >>"${stream_dir}/gated.txt"
+    for gated in "$@"; do basename "${gated}"; done | paste -sd ' ' - \
+      >>"${stream_dir}/gated.txt"
   }
 }
 
@@ -1821,7 +1781,7 @@ $(cat "${stream_dir}/exploration.json")"
     == localhost ]] || fail "a local obligation did not record its host"
 
 # STREAM-2: THE END AT A WITNESS (PIPELINE §7.9).  An admitted replay whose
-# target row at the declared occurrence observed the fatal stops the pool,
+# target row at the declared occurrence observed the fatal pauses the pool,
 # as it lands, for one COMPOSE over the corpus as it stands.  One that does
 # not accept the claim lets the exploration go on; one that publishes
 # SAT_CANDIDATE with its polarity deciding ends it at once: the queue
@@ -1933,6 +1893,90 @@ stream_fixture stream-4
 grep -q 'round growth rows' "${stream_dir}/explore.err" \
   || fail "the missing growth file is not named: \
 $(cat "${stream_dir}/explore.err")"
+
+# STREAM-5: THE GATE OVER WHAT LANDED (PIPELINE §6, §7.9).  A step gates the
+# sessions landed since the step before, once each is in the corpus, in one
+# call against the iteration's ledger, its list and summary in steps/NNNN/;
+# a blocking row there fails the campaign at IMPORT, by name, and the head
+# ends what it still runs.
+stream_fixture stream-5
+(
+  campaign_host_available_mb() { echo 30000; }
+  campaign_host_total_mb() { echo 30000; }
+  run_java_main() {
+    [[ "$1" == *.ImportGateMain ]] || { stream_planner "$@"; return; }
+    shift
+    [[ "$*" == "--sessions ${stream_dir}/sessions --gate SESSION.A \
+--gated ${stream_dir}/import_gated.txt "* ]] \
+      || fail "the step did not gate exactly what landed, against the \
+iteration's ledger: $*"
+    [[ -d "${stream_dir}/sessions/SESSION.A" ]] \
+      || fail "a session was gated before it landed in the corpus"
+    printf '%s\n' '{"violations":1,"blocking":1,'\
+'"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
+  }
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A LONG; }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    case "${id}" in
+      A) sleep 1; stream_answer "${worker}" A ADMITTED SESSION.A ;;
+      *) sleep 60 & printf '%s\n' "$!" >"${worker}/sleep.pid"; wait ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  && fail "a blocking row invariant in a landed session did not fail the \
+campaign"
+grep -q 'stage=IMPORT' "${stream_dir}/explore.log" \
+  && grep -q 'roots.jsonl seq=3 field=recordedValue' "${stream_dir}/explore.log" \
+  || fail "the gate's failure is not IMPORT's, naming the first blocking \
+subject: $(cat "${stream_dir}/explore.log")"
+[[ "$(cat "${stream_dir}/steps/0001/gate")" == SESSION.A \
+    && -s "${stream_dir}/steps/0001/import_gate.json" ]] \
+  || fail "the step wrote no summary beside the list it gated"
+! kill -0 "$(cat "${stream_dir}/obligations-0000/LONG/sleep.pid")" \
+    2>/dev/null \
+  || fail "what ran when the head failed was not ended"
+
+# STREAM-6: THE HEAD STEPS ASIDE.  A step runs in the background: while its
+# gate waits (three seconds here), the pool goes on -- B and C start, one
+# core at a time, and return -- and what returned meanwhile lands in the
+# next step, through one gate.
+stream_fixture stream-6
+mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+printf '1\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+(
+  stream_stubs
+  campaign_import_gate() {
+    shift 3
+    local gated
+    [[ -e "${stream_dir}/gate-ran" ]] \
+      || { sleep 3; : >"${stream_dir}/gate-ran"; }
+    date +%s.%N >>"${stream_dir}/gate-ended-at"
+    for gated in "$@"; do basename "${gated}"; done | paste -sd ' ' - \
+      >>"${stream_dir}/gated.txt"
+  }
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B C; }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    date +%s.%N >"${worker}/started-at"
+    stream_answer "${worker}" "${id}" ADMITTED "SESSION.${id}"
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the stepping loop did not finish: $(cat "${stream_dir}/explore.log")"
+awk -v s="$(cat "${stream_dir}/obligations-0000/C/started-at")" \
+    -v e="$(head -n 1 "${stream_dir}/gate-ended-at")" \
+    'BEGIN{exit !(s < e)}' \
+  || fail "nothing started while the head's first gate ran: a head that \
+blocks the pool"
+[[ "$(cat "${stream_dir}/gated.txt")" == $'SESSION.A\nSESSION.B SESSION.C' ]] \
+  || fail "what returned during a step did not land through one gate in the \
+next: $(cat "${stream_dir}/gated.txt")"
+jq -e '.stop == "FIXED_POINT" and .answered == 3' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "the stepping loop did not reach its fixed point: \
+$(cat "${stream_dir}/exploration.json")"
 reset_config
 
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered

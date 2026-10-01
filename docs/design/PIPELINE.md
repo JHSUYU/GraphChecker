@@ -585,8 +585,8 @@ One pool for the whole exploration, no slots. The head starts each queued obliga
 on the next host of `campaign_worker_hosts` (empty: this machine, no ssh), round-robin from the host
 after the last one chosen (`campaign_stream_admit_host`): a host is taken while it runs fewer of the
 campaign's obligations than it has cores (read once, `campaign_host_cores`) and its memory ledger
-admits one more start; none admitting, the head waits for a return or the poll interval
-(`campaign_host_poll_s`). An obligation runs locally in a background subshell, or remotely through
+admits one more start; none admitting, the head waits for a return, its step's end or the poll
+interval (`campaign_host_poll_s`). An obligation runs locally in a background subshell, or remotely through
 `ssh` running `run_engine.sh --run-obligation` with the frozen jar and its sha256; each takes the
 class tree and plan of the generation current when it starts (§7.8). The memory gate
 (`campaign_host_try_start <host> [need] [ramp]`) is a ledger shared by all campaigns and
@@ -634,39 +634,45 @@ EXPLORE.
 
 ### 7.9 The loop
 
-`campaign_explore` is one streaming loop on the head, with no wave barrier. It lands each obligation
-the moment its worker returns, with every other return since (`campaign_stream_wait`,
-`campaign_stream_land`): each verdict is appended to `obligation_results.jsonl`, and the sessions
-the workers staged move into the corpus and through ONE IMPORT gate (§6) over exactly them
-(`campaign_stream_admit`, its summary `landings/NNNN.json` beside the list `NNNN.sessions`); one
-BLOCKING violation fails the campaign at IMPORT. A round is planned (`campaign_stream_round`, §7.1)
-once a session has landed, or once nothing is queued or running and an answer came since the last
-round, while other obligations run on; what it proposes is queued and starts at once (§7.7). The
-busier the head, the more returns one gate and one round take in. Everything
-the head does between two returns -- a round, GROW's weave, a gate, a COMPOSE attempt -- it does
-alone and in order, so the corpus, the ledger and the plan change only in its hands and an
-obligation's solver reads the corpus as a landed whole. The exploration has three ends, each stated
-in `exploration.json` (stop, rounds, generations, answers, attempts, and every obligation cancelled
-or reaped, by id):
+`campaign_explore` is one streaming loop on the head, with no wave barrier. It starts queued
+obligations wherever a host admits one (§7.7) and collects each as it returns
+(`campaign_stream_wait`). Its own JVM work is one STEP at a time, in the background
+(`campaign_stream_step`, in `steps/NNNN/`), so the pool goes on starting and collecting while a step
+waits for memory or runs. Between two steps, in the head's hands (`campaign_stream_step_start`),
+everything that returned meanwhile lands: each verdict is appended to `obligation_results.jsonl`
+(`campaign_stream_land`), GROW's re-runs swap in once due (§7.8), and the sessions the workers
+staged move into the corpus (`campaign_stream_move`). The next step then takes them in: ONE IMPORT
+gate (§6) over exactly them (the list `gate`, its summary `import_gate.json`; one BLOCKING violation
+fails the campaign at IMPORT), an attempt at those that are witnesses (`witnesses`, below), and the
+round now owed (`round`, planned by `ExploreMain` into `obligations-NNNN/`, §7.1) -- owed once a
+session has landed, or once nothing is queued or running and an answer came since the last round.
+When the step returns the head takes its round (`campaign_stream_take_round`): the wave budget,
+GROW, else its proposals into the queue, where they start at once. The corpus and the ledger change
+only between two steps, so a step reads them as a landed whole, and the round's in-flight rows
+(`in_flight.jsonl`, §7.3) are what is queued or running as the step starts; the busier the head,
+the more returns one step takes in. The exploration has three ends, each stated in
+`exploration.json` (stop, rounds, steps, generations, answers, attempts, and every obligation
+cancelled or reaped, by id):
 
 - **WITNESSED.** A landed session whose replay was ADMITTED and whose target row at the declared
-  occurrence (the round's `anchorOccurrences`) observed the fatal -- the rule of §7.1 step 6 -- is
-  followed at once, before anything else starts, by one COMPOSE over the corpus as it stands --
-  `do_compose`, the stage's own entry, into `witness-attempts/NNNN/` -- since an observed fatal is
-  not yet a composable witness: COMPOSE's families may need sessions later obligations would add
-  (`campaign_stream_admit`, `campaign_stream_attempt`). Each attempt is a row of
-  `witness_attempts.jsonl` (round, witnesses, claim, finding kind, polarity, accepted). An attempt
-  that publishes `SAT_CANDIDATE` with `polarityDecides` ends the exploration at once: the queue is
-  cancelled, every running obligation is reaped (its process tree here, its workers on every peer)
-  and its worker directory moves to `<campaign>/explore-reaped/`, so the corpus COMPOSE reads next is
-  exactly the one the attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Any
-  other claim, and the exploration goes on. This is every campaign's rule: the question is one
-  declared occurrence (owner 2026-09-28).
+  occurrence (the last round's `anchorOccurrences`) observed the fatal -- the rule of §7.1 step 6 --
+  is a witness: the step that takes it in runs, after its gate, one COMPOSE over the corpus as it
+  stands -- `do_compose`, the stage's own entry, into `witness-attempts/NNNN/` -- since an observed
+  fatal is not yet a composable witness: COMPOSE's families may need sessions later obligations
+  would add (`campaign_stream_attempt`). No obligation starts while that step runs. Each attempt is
+  a row of `witness_attempts.jsonl` (step, witnesses, claim, finding kind, polarity, accepted). An
+  attempt that publishes `SAT_CANDIDATE` with `polarityDecides` ends the exploration at once: the
+  queue is cancelled, every running obligation is reaped (its process tree here, its workers on
+  every peer) and its worker directory moves to `<campaign>/explore-reaped/`, as does every one that
+  returned after the step began, so the corpus COMPOSE reads next is exactly the one the attempt
+  read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Any other claim, and the
+  exploration goes on. This is every campaign's rule: the question is one declared occurrence (owner
+  2026-09-28). Once the exploration has stopped otherwise, no attempt is made.
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
   work is not dispatched (its proposals are named cancelled): the queue is cancelled, what runs
   lands, and the stop is a DIAGNOSTIC row.
-- **FIXED_POINT.** Nothing queued or running, and the last round, over every answer, proposed and
-  exposed nothing.
+- **FIXED_POINT.** Nothing queued, running or unlanded, no step running, and the last round, over
+  every answer, proposed and exposed nothing.
 
 A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
 proposed twice; the wave budget is what bounds the derivation. COMPOSE, CONFIRM and EMIT then run on

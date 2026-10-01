@@ -9,11 +9,14 @@ the sources are the files the campaign wrote:
                      running from the log's last "[campaign] stage" line
   SEED split         .seed-started, the static artifacts' and runtime/'s mtimes,
                      the weave's "GraphChecker started/ran for" log lines
-  EXPLORE per round  obligations-NNNN/: in_flight.jsonl (written as the planner
+  EXPLORE per round  obligations-NNNN/: in_flight.jsonl (copied as the planner
                      starts) to explore_manifest.json; the dispatch to
                      its last obligation's end (a GROW re-run's included)
-  EXPLORE gates      landings/NNNN: the list of sessions one gate landed (written
-                     as it starts) to its summary NNNN.json
+  EXPLORE head steps steps/NNNN/: its inputs (gate, witnesses, round; written as
+                     it starts) to its last output -- the gate's
+                     import_gate.json, an attempt's compose.log, the round's
+                     explore_manifest.json; one step runs at a time, beside
+                     the pool
   witness attempts   witness-attempts/NNNN/: the directory's creation to its
                      compose.log, and witness_attempts.jsonl's claims
   one obligation     host.txt (claimed) -> the solver's files -> replay.log
@@ -190,14 +193,29 @@ def round_rows(iteration):
     return rows
 
 
-def landing_rows(iteration):
-    """(seconds, sessions) of each gate that landed sessions."""
+def step_rows(iteration):
+    """Each head step: (its seconds, its gate's seconds, the sessions it gated)."""
+    attempts = {}
+    try:
+        for line in open(os.path.join(iteration, "witness_attempts.jsonl")).read().splitlines():
+            attempt = json.loads(line)
+            attempts.setdefault(attempt.get("step"), []).append(os.path.join(attempt["dir"], "compose.log"))
+    except OSError:
+        pass
     rows = []
-    for listed in sorted(glob.glob(os.path.join(iteration, "landings", "*.sessions"))):
-        started = mtime(listed)
-        ended = mtime(listed[:-len(".sessions")] + ".json")
-        count = len([l for l in open(listed).read().splitlines() if l.strip()])
-        rows.append(((ended - started) if started and ended else None, count))
+    for step in sorted(glob.glob(os.path.join(iteration, "steps", "[0-9]*"))):
+        started = min([t for t in (mtime(os.path.join(step, n)) for n in ("gate", "witnesses", "round")) if t]
+                      or [None])
+        gate = os.path.join(step, "gate")
+        gated = mtime(os.path.join(step, "import_gate.json"))
+        outputs = [gated] + [mtime(p) for p in attempts.get(os.path.basename(step), [])]
+        if os.path.isfile(os.path.join(step, "round")):
+            name = open(os.path.join(step, "round")).read().strip()
+            outputs.append(mtime(os.path.join(iteration, name, "explore_manifest.json")))
+        ended = max([t for t in outputs if t] or [None])
+        count = len([l for l in open(gate).read().splitlines() if l.strip()]) if os.path.isfile(gate) else 0
+        rows.append(((ended - started) if started and ended else None,
+                     (gated - started) if started and gated else None, count))
     return rows
 
 
@@ -312,16 +330,21 @@ def report(root, label):
         if attempts:
             print("   witness attempts: " + "; ".join("%s %s%s" % (dur(t), claim, " (ended EXPLORE)" if accepted else "")
                                                    for t, claim, accepted in attempts))
-        landings = landing_rows(iteration)
-        if landings:
-            print("   landings: %d gate(s) over %d session(s), %s each" % (
-                len(landings), sum(n for _, n in landings), spread(t for t, _ in landings)))
+        steps = step_rows(iteration)
+        gates = [(g, n) for _, g, n in steps if n]
+        if steps:
+            print("   head steps: %d, %s each; %d gate(s) over %d session(s), %s each" % (
+                len(steps), spread(t for t, _, _ in steps), len(gates), sum(n for _, n in gates),
+                spread(g for g, _ in gates)))
         head = [("EXPLORE planning (%d rounds)" % len(waves), sum(w["plan"] or 0 for w in waves)),
-                ("EXPLORE import gates", sum(t or 0 for t, _ in landings)),
+                ("EXPLORE import gates", sum(g or 0 for g, _ in gates)),
                 ("EXPLORE witness attempts", sum(t or 0 for t, _, _ in attempts))]
+        # The head's JVM time: its steps, which run beside the pool, or --
+        # a wave loop's run, with no steps/ -- its rounds, between waves.
+        busy = sum(t or 0 for t, _, _ in steps) if steps else sum(t for _, t in head)
         explore = dict(stages).get("EXPLORE")
         if explore is not None:
-            head.append(("EXPLORE waiting on the pool", explore - sum(t for _, t in head)))
+            head.append(("EXPLORE with no head JVM running", explore - busy))
         sinks += head
     confirm = os.path.join(root, "final", "confirm", "worker", "replay.log")
     if os.path.isfile(confirm):
