@@ -13,6 +13,12 @@ Classes:
   REFUTED       a SAT witness CONFIRM could not realize (EMIT publishes it
                 SAT_UNCONFIRMED): a false positive the engine filtered, the
                 confirmation's reason as the reason
+  NO_ROOT       no witness, and EXPLORE ended on an anchor every admitted
+                path decided on no symbol (NO_ROOT_REACHES_ANCHOR, BLOCKING
+                at its fixed point): no root reaches the predicate; the
+                gap's detail as the reason (nothing decided on the way to
+                the throw, no shared state read before the decision, or the
+                reads the closure demanded)
   NO_WITNESS    the corpus supports no witness (or none at the recorded path)
   STOPPED       the campaign failed at a stage: the stage and its reason
   DEAD          started, no verdict, and no process on any lift names its
@@ -86,6 +92,21 @@ def stated(root, case_text):
     return stage, ""
 
 
+NO_ROOT = "NO_ROOT_REACHES_ANCHOR"
+
+
+def no_root(result_path):
+    """The detail of the BLOCKING NO_ROOT_REACHES_ANCHOR gap EMIT published
+    beside a result (final/gaps.json)."""
+    gaps = os.path.join(os.path.dirname(result_path), "gaps.json")
+    if not os.path.exists(gaps):
+        return ""
+    for gap in json.load(open(gaps)).get("gaps", []):
+        if gap.get("code") == NO_ROOT:
+            return gap.get("detail", "")[:200]
+    return ""
+
+
 def classify(row, result_path, lines, root, text):
     """A row's class from its campaign's result.json, else from its logs:
     stopped once the case has its summary row, else still running."""
@@ -99,6 +120,9 @@ def classify(row, result_path, lines, root, text):
         elif claim == "SAT_UNCONFIRMED":
             row["class"] = "REFUTED"
             row["reason"] = confirmation.get("reason", "")[:200]
+        elif NO_ROOT in (result.get("blockingGapCodes") or {}):
+            row["class"] = "NO_ROOT"
+            row["reason"] = no_root(result_path)
         else:
             row["class"] = "NO_WITNESS"
         row["finding"] = (result.get("findingKind", "") + " "

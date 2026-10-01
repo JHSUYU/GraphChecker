@@ -370,7 +370,11 @@ schedule) and:
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
    verdict histogram, gap counts, state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
    flight) | `FIXED_POINT`). What only the seed ran is BLOCKING at the fixed point alone: nothing
-   proposed, exposed or in flight, and no witness.
+   proposed, exposed or in flight, and no witness. So is a concrete anchor (§7.2): every round on it
+   states `NO_ROOT_REACHES_ANCHOR` (`ExploreMain#noRoot`), DIAGNOSTIC while the exploration has
+   work, BLOCKING at the fixed point, its detail one of three ends: none of its admitted paths
+   decided a site on its way to the throw, it read no shared state before it decided, or the reads
+   (and their locations) its closure demands.
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -386,8 +390,25 @@ exports a demanded attach paired with, the write a demanded read could observe),
 reads those name and the writes they could observe. The occurrence and its state-connected factor are
 one symbolic unit: every member's attaches and reads are asked whether a demanded value rests on them,
 and a member joins the closure only through them, as a writer or a producer below, never for touching
-what the occurrence touches (two readers of one location pass each other nothing). Each demanded
-boundary input grows the closure:
+what the occurrence touches (two readers of one location pass each other nothing).
+
+A CONCRETE anchor (R1-ROOTS D0, `ClosurePlanner#concrete`) demands what it read before it decided.
+An admitted path (the seed, or a focused session admitted whole) decided the anchor where it took
+its arm: a reached anchor at its target row, on its phi; an unreached one on its decisions at the
+flip sites (the way to the throw), the last of them where it left (none: it decided nothing on that
+way). The anchor is concrete when some admitted path is at it, none observed the fatal, and none
+decided it on a recorded symbol: every path COMPOSE takes is refused (§8, "decided concretely on
+its healthy arm" or never reached) and nothing above names a value. An unreached path with a
+symbolic decision on the way is not concrete, since flipping it is how a replay reaches the throw
+(SOLR-18413's leader leaves at a concrete test of the boolean its clock-decided `isExpired`
+returned). Its predicate reads are then the read rows the anchor made, in each admitted path,
+before that path's deciding event (a later read cannot reach a decision already taken; an earlier
+one may, through a value the VM kept no expression under, or through a branch). Their symbols are
+demanded like those a symbolic phi names, so their writers become tasks flipped at their own
+guards and fault sites. The reads are what the rows state: a cell the static slice does not track
+has no read row (the anchor then "read no shared state"); R1-ROOTS WP-F1's predicate cone, which
+tracks more of the cells the target's guards depend on, reaches here as rows. A non-concrete
+anchor plans as before. Each demanded boundary input grows the closure:
 
 - an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
   sites = the guards of the port's static export sites, contributed = its exports), and every activated
@@ -1292,12 +1313,13 @@ is then skipped as `no disk`.
 
 Ad-hoc sweeps do not use `report.py`: `tools/adhoc/triage.py` classes a case with a `result.json`
 `CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true, `REFUTED` when
-`claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), else `NO_WITNESS`
-(`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row exists (the stage
-and reason its logs state: the campaign's own failure, the case timeout, a failed trace
-aggregation, a stage's Java main, the engine's `die`, a full disk or quota), `PENDING` when never
-started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still runs a process naming
-its directory, `DEAD` when none does.
+`claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `NO_ROOT` when a
+BLOCKING `NO_ROOT_REACHES_ANCHOR` gap ended EXPLORE (§7.1; the gap's detail is the reason), else
+`NO_WITNESS` (`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row
+exists (the stage and reason its logs state: the campaign's own failure, the case timeout, a
+failed trace aggregation, a stage's Java main, the engine's `die`, a full disk or quota),
+`PENDING` when never started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still
+runs a process naming its directory, `DEAD` when none does.
 
 `tools/regress/offline-ab.sh --round <round>... <baseline-jar> <candidate-jar> [case...]` is the
 offline regression gate: per case of the first `--round` holding it, it runs every stage that is

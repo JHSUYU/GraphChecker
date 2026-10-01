@@ -19,8 +19,8 @@ import json
 import os
 import sys
 
-CLASSES = ("CONFIRMED", "REFUTED", "NO_WITNESS", "STOPPED", "DEAD",
-           "RUNNING", "PENDING")
+CLASSES = ("CONFIRMED", "REFUTED", "NO_ROOT", "NO_WITNESS", "STOPPED",
+           "DEAD", "RUNNING", "PENDING")
 
 
 def lines(path):

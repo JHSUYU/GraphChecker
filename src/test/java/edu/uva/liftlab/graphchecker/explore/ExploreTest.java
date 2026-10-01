@@ -4256,6 +4256,99 @@ public class ExploreTest {
     }
 
     /**
+     * D0 (R1-ROOTS §2.3, PIPELINE §7.2): an anchor every admitted path
+     * decided on no symbol demands the shared state it read BEFORE it
+     * decided, so the fault that chose what that state's writer wrote is
+     * asked; a read made after the decision reaches nothing.  Each round
+     * names it NO_ROOT_REACHES_ANCHOR: DIAGNOSTIC while there is work,
+     * BLOCKING at the fixed point.  An anchor whose predicate names a
+     * symbol, an unreached one with a symbolic decision on the way to the
+     * throw, or a run that observed the fatal, plans as before.
+     */
+    @Test
+    public void aConcreteAnchorDemandsWhatItReadBeforeItDecided()
+            throws Exception {
+        LocationId stored = LocationId.of(LocationKind.INSTANCE, "5", "8");
+        // phi (null: unreached), observed fatal, the anchor's read before
+        // its decision at its guard, that decision's term (null: none) ->
+        // the writer is a task, the gap's class (null: none) and the start
+        // of its detail.
+        Object[][] cases = {
+            {"false", false, true, "", true, GapClass.DIAGNOSTIC,
+                "its closure demands the 1 "},
+            {"false", false, false, "", false, GapClass.BLOCKING,
+                "it read no shared state"},
+            {null, false, true, "", true, GapClass.DIAGNOSTIC,
+                "its closure demands the 1 "},
+            {null, false, true, null, false, GapClass.BLOCKING,
+                "none of its 1 admitted paths decided"},
+            {null, false, true, "(= M_OTHER 0)", false, null, ""},
+            {"(= M_OTHER 0)", false, true, "", false, null, ""},
+            {"true", true, true, "", false, null, ""},
+        };
+        for (int at = 0; at < cases.length; at++) {
+            Object[] row = cases[at];
+            String phi = (String) row[0];
+            boolean before = (Boolean) row[2];
+            Path iteration = tree.newFolder("concrete-" + at).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            seed.activation(WRITER, false);
+            seed.root(WRITER, "CASE.DOOR", "M_DOOR", RootKind.MARKER,
+                    "false", null, null, true);
+            seed.decision(WRITER, "Door#u3", 1, false, "M_DOOR");
+            seed.constant("e.wrote", "7");
+            seed.write(at(WRITER, "Keys#put#4:WRITE", "Keys#put#4"), stored,
+                    1L, "e.wrote");
+            seed.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.INTEGRAL,
+                    "1", "0", "9", true);
+            Endpoint read = at(TARGET, "Lookup#get#2:READ", "Lookup#get#2");
+            if (before) seed.read(read, stored, 1L, "M_READ", "7");
+            if (row[3] != null) {
+                seed.decision(TARGET, "Guard#u8", 1, false, (String) row[3]);
+            }
+            if (phi == null) {
+                seed.targets.add(TargetRow.of("s-seed", ++seed.seq, TARGET,
+                        "Guard#u8#1", "", false, false));
+            } else if ((Boolean) row[1]) {
+                seed.fatal(TARGET, "Guard#u8#1", phi);
+            } else {
+                seed.target(TARGET, "Guard#u8#1", phi);
+            }
+            if (!before) seed.read(read, stored, 1L, "M_READ", "7");
+            seed.flush();
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u8"));
+
+            Path out = tree.newFolder("concrete-" + at + "-out").toPath();
+            Path results = out.resolve("obligation_results.jsonl");
+            Files.write(results, new byte[0]);
+            Path wave = out.resolve("obligations-0000");
+            JsonObject manifest = plan(iteration, TARGET_SELECTOR, null,
+                    results, wave, 0);
+            List<String> focused = new ArrayList<String>();
+            for (JsonElement task : manifest.getAsJsonArray("taskRows")) {
+                focused.add(task.getAsJsonObject().get("focused")
+                        .getAsString());
+            }
+            String label = "case " + at + ": " + focused;
+            assertEquals(label, row[4], focused.contains(WRITER.render()));
+            assertEquals(label, row[4], named(obligations(wave),
+                    "Door#u3") != null);
+            GapRow noRoot = null;
+            for (GapRow gap : RowCodec.readAll(wave.resolve("gaps.jsonl"),
+                    RowCodec::readGap)) {
+                if (gap.kind() == GapKind.NO_ROOT_REACHES_ANCHOR) noRoot = gap;
+            }
+            assertEquals(label, row[5], noRoot == null ? null : noRoot.cls());
+            if (noRoot != null) {
+                assertTrue(label + ": " + noRoot.detail(),
+                        noRoot.detail().startsWith((String) row[6]));
+            }
+        }
+    }
+
+    /**
      * The locations a term reads are every read node its expression holds,
      * each node walked once and to the end: a chain whose nodes name the one
      * below twice is 2^64 paths as a tree, and a read 100000 deep lay past
