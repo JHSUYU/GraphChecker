@@ -64,6 +64,9 @@
 #include "utilities/growableArray.hpp"
 #include "utilities/macros.hpp"
 #include "utilities/ostream.hpp"
+#ifdef ENABLE_CONCOLIC
+#include "concolic/sharedFieldVersions.hpp"
+#endif
 
 ClassLoaderData * ClassLoaderData::_the_null_class_loader_data = NULL;
 
@@ -468,6 +471,9 @@ void ClassLoaderData::free_deallocate_list() {
     Metadata* m = _deallocate_list->at(i);
     if (!m->on_stack()) {
       _deallocate_list->remove_at(i);
+#ifdef ENABLE_CONCOLIC
+      SharedFieldVersions::methods_freed();
+#endif
       // There are only three types of metadata that we deallocate directly.
       // Cast them so they can be used by the template function.
       if (m->is_method()) {
@@ -814,6 +820,11 @@ void ClassLoaderDataGraph::purge() {
   assert(SafepointSynchronize::is_at_safepoint(), "must be at safepoint!");
   ClassLoaderData* list = _unloading;
   _unloading = NULL;
+#ifdef ENABLE_CONCOLIC
+  if (list != NULL) {
+    SharedFieldVersions::methods_freed();
+  }
+#endif
   ClassLoaderData* next = list;
   while (next != NULL) {
     ClassLoaderData* purge_me = next;

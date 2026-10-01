@@ -624,6 +624,14 @@ public:
   static bool guarded_store_admitted(Method *store_method,
                                      const std::string &store);
 
+  /**
+   * The VM freed methods (a redefinition's old versions, an unloaded
+   * loader's classes): a Method pointer a thread's lookup remembered may now
+   * name another method, so every remembered lookup is discarded.  At a
+   * safepoint (ClassLoaderData).
+   */
+  static void methods_freed();
+
   /** The same for a putfield/putstatic, whose store names its field. */
   static bool guarded_field_store_admitted(Method *store_method,
                                            ConstantPoolCacheEntry *entry);
@@ -695,7 +703,8 @@ private:
   static SlotStore _slots;
   static volatile int _carrier_count;
   // Relaxed reader, _mutex writer: the guarded-store table's size, and its
-  // install count (thread-local lookups of an older table are discarded).
+  // install count (thread-local lookups of an older table are discarded),
+  // which methods_freed also advances at a safepoint.
   static volatile int _guarded_store_count;
   static volatile int _guarded_store_epoch;
   static pthread_mutex_t _mutex;

@@ -19,6 +19,12 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   campaign_freeze` refuses a campaign without its `java`, `rt.jar`, `libjava.so` and `libjvm.so`
   and digests them into the run manifest. `execute.sh` starts replays on it.
 - The Zero C++ interpreter is the only execution engine; the smoke tests run `-Xint`.
+- Class redefinition (a JVMTI agent's retransform: mockito-inline retransforms every superclass of
+  a mocked type, `java.lang.Object` included): a Zero interpreter frame has no pc and no code blob,
+  so `frame::metadata_do` (`VM/runtime/frame.cpp`) asks the frame itself whether it is interpreted,
+  and `MetadataOnStackMark` marks the method it runs. A redefined method still running in some
+  frame (a thread parked in the old `Object.wait`) is kept as a previous version until it returns,
+  and a class-unloading GC frees only what no stack runs.
 
 ## 2. Shadows, sessions, regions
 
@@ -203,7 +209,9 @@ location's log: a container mutation (`put`, `remove`, `clear`, `add`, `offer`, 
 is given a shadow if it has none). Neither states a path guard. Another store in the same method is
 not admitted; nor is an array-element store (the scope map lists none). A method's rows are looked
 up once per thread per table (a thread-local memo keyed by the `Method*`), so the map lock is taken
-once per method, not per store.
+once per method, not per store; a GC that frees methods (a redefinition's old versions, an unloaded
+loader's classes) discards every memo (`SFV::methods_freed`), since a freed `Method*` can come back
+as another method.
 
 ### 5.4 Observation
 
@@ -461,7 +469,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 62
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 63
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -476,5 +484,6 @@ tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's
 `RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers); the leaf natives have
 `RegionLeafBrokerSmoke` (every slot kind with and without a region, peeks that record nothing,
 templates, `SHARED`, a region-less mint reaching a later region's path through `parseLong`, and
-the one `toString` op). No smoke test covers the
+the one `toString` op); `RegionRedefineOnStackSmoke` attaches an agent to its own JVM and
+retransforms `Object` while a thread waits in it, then collects (§1). No smoke test covers the
 collections the VM does not model, a resize caught in flight, or anything across JVMs.
