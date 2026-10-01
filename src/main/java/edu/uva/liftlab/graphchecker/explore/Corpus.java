@@ -344,6 +344,51 @@ public final class Corpus implements Arms.Rows {
                 + tick.render() + ", the recording's last being #" + last;
     }
 
+    /**
+     * A causal context as the branch rule compares it ({@link Branches}):
+     * per anchor hop, outermost last, the RPC site the message arrived on and
+     * the node that sent it, then the root's role and api -- the chain
+     * {@code runtime.Identity} renders, without the per-site invocation
+     * counts (the root's window index, a sender's execution index, site
+     * index and retry), which a flip may move.  The sender is the endpoint a
+     * row of the corpus states, else the stance its SEND stood in; one no
+     * row names ends the chain with {@code ?}, which {@link
+     * Branches#sameContext} reads as unknown, never as a mismatch.
+     */
+    public List<String> contextShape(CausalContext context) {
+        List<String> hops = new ArrayList<String>();
+        Set<String> walked = new HashSet<String>();
+        CausalContext cursor = context;
+        while (cursor instanceof CausalContext.Anchor) {
+            CausalContext.Anchor anchor = (CausalContext.Anchor) cursor;
+            String producer = anchor.producerEndpointId();
+            Endpoint sender = endpointById.get(producer);
+            String sent = senderStanceByEndpoint.get(producer);
+            String[] stance = sender != null || sent == null ? new String[0]
+                    : sent.split("\\|", 3);
+            if (!walked.add(producer)
+                    || sender == null && stance.length < 2) {
+                hops.add(UNKNOWN_HOP);
+                return hops;
+            }
+            hops.add(anchor.rpcSite() + "@" + (sender != null
+                    ? sender.occurrence().node().render() : stance[0]));
+            cursor = sender != null ? sender.occurrence().context()
+                    : CausalContext.parse(stance[1]);
+        }
+        if (cursor instanceof CausalContext.Root) {
+            CausalContext.Root root = (CausalContext.Root) cursor;
+            hops.add("Root:" + root.role().name()
+                    + (root.api().isEmpty() ? "" : "/" + root.api()));
+        } else {
+            hops.add(cursor.render());
+        }
+        return hops;
+    }
+
+    /** The hop {@link #contextShape} states for a sender no row names. */
+    static final String UNKNOWN_HOP = "?";
+
     /** The world of each replay, off its FOCUS ROW (not {@code
      *  obligation.jsonl}, a subset without clocks or flips: reading a world
      *  from it drops skews). A planted assignment is stated by the ask alone

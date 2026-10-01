@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The one ledger of owed arms; a wave is what is still owed.
+ * The one ledger of owed arms; a round is what is still owed.
  *
  * <p><b>An arm is a fact about a PLANNED OCCURRENCE under what its guard
  * depends on, never about a session.</b> Its key is {@link
@@ -31,9 +31,15 @@ import java.util.Set;
  *       alone lets a recording over other inputs settle an arm that is still
  *       needed (hdfs-11741: the same expiry compare over a map of four keys
  *       instead of five).</li>
- *   <li><b>a wave answered it</b>: ADMITTED, UNSAT or NOT_ADMITTED. {@link
- *       Verdict#SAT_MODEL_READY} is NOT an answer (replay not run).</li>
+ *   <li><b>a round answered it</b>: ADMITTED, UNSAT or NOT_ADMITTED.
+ *       {@link Verdict#SAT_MODEL_READY} is NOT an answer (replay not
+ *       run).</li>
  * </ul>
+ *
+ * <p>An arm queued or running ({@link #inFlight}) is not settled and not
+ * proposed again: by its id, and by the question its row asks (task, path,
+ * site, ordinal, flipped outcome), whose id may move while it is in flight
+ * because sessions landing since its round grow the dependence.</p>
  *
  * <p>Trap: keying by session ({@code pathId}) re-proposes every answered arm
  * from every replay it produced. New obligations arise only from new planned
@@ -41,18 +47,22 @@ import java.util.Set;
  *
  * <p><b>Admission is per task:</b> NOT_ADMITTED closes the focused arm only; a
  * diverging producer is its own task's business. Results are keyed by
- * obligation, never by replay. The ledger is rebuilt each wave, so nested guard
- * chains deepen without re-asking settled arms.</p>
+ * obligation, never by replay. The ledger is rebuilt each round, so nested
+ * guard chains deepen without re-asking settled arms.</p>
  */
 public final class Frontier {
-    /** One wave: the flips the runtime is asked to solve and replay. */
-    public static final class Wave {
+    /** One round: the flips the runtime is asked to solve and replay. */
+    public static final class Round {
         public final int index;
         public final List<Obligation> obligations;
+        /** Candidates not proposed because they are in flight. */
+        public final int heldInFlight;
 
-        private Wave(int index, List<Obligation> obligations) {
+        private Round(int index, List<Obligation> obligations,
+                      int heldInFlight) {
             this.index = index;
             this.obligations = Collections.unmodifiableList(obligations);
+            this.heldInFlight = heldInFlight;
         }
 
         public boolean empty() {
@@ -64,12 +74,15 @@ public final class Frontier {
     /** arm key -> the reason it is settled, as a gap row prints it. */
     private final Map<String, String> settled =
             new LinkedHashMap<String, String>();
-    /** Arms a wave answered, for the manifest histogram. */
+    /** Arms a round answered, for the manifest histogram. */
     private final Map<String, Verdict> answered =
             new LinkedHashMap<String, Verdict>();
-    /** arm key -> proposing task, this wave. */
+    /** arm key -> proposing task, this round. */
     private final Map<String, String> proposedBy =
             new LinkedHashMap<String, String>();
+    /** The ids and the questions of the arms queued or running. */
+    private final Set<String> inFlight = new LinkedHashSet<String>();
+    private int inFlightCount;
 
     /** Indexes every arm the corpus recorded for these tasks, over all paths:
      *  {@code maxPathsPerTask} bounds what a flip is cut from, not what
@@ -107,14 +120,14 @@ public final class Frontier {
         }
     }
 
-    /** Takes earlier waves' verdicts; a recording, if any, stays the stated
+    /** Takes earlier rounds' verdicts; a recording, if any, stays the stated
      *  reason. */
     public void consume(Collection<ObligationResult> results) {
         for (ObligationResult result : results) {
             answered.put(result.obligationId(), result.verdict());
             if (result.verdict() == Verdict.SAT_MODEL_READY) continue;
             settle(result.obligationId(), "arm already answered "
-                    + result.verdict() + " by an earlier wave"
+                    + result.verdict() + " by an earlier round"
                     + (result.sessionId().isEmpty() ? ""
                     : " (session " + result.sessionId() + ")")
                     + ": an arm is owed once per planned occurrence, and this "
@@ -123,31 +136,66 @@ public final class Frontier {
         }
     }
 
+    /** Takes the arms a campaign has queued or started and not yet
+     *  answered: none is proposed again while it is. */
+    public void inFlight(Collection<Obligation> flying) {
+        for (Obligation obligation : flying) {
+            inFlight.add(obligation.obligationId());
+            inFlight.add(question(obligation.taskId(), obligation.pathId(),
+                    obligation.siteId(), obligation.ordinal(),
+                    obligation.flippedOutcome()));
+        }
+        inFlightCount += flying.size();
+    }
+
+    /** How many arms are queued or running. */
+    public int inFlightCount() {
+        return inFlightCount;
+    }
+
     /** The first reason this arm is settled, or {@code ""} while it is owed. */
     public String settled(String obligationId) {
         return settled.getOrDefault(obligationId, "");
+    }
+
+    /** The question an obligation row asks, apart from its id. */
+    private static String question(String taskId, String pathId,
+                                   String siteId, int ordinal,
+                                   boolean flippedOutcome) {
+        return "question|" + taskId + "|" + pathId + "|" + siteId + "#"
+                + ordinal + "=" + flippedOutcome;
     }
 
     private void settle(String obligationId, String reason) {
         settled.putIfAbsent(obligationId, reason);
     }
 
-    /** Opens one wave over the arms the tasks still owe. */
-    public Wave open(int index,
-                     List<ObligationFactory.Candidate> candidates) {
+    /** Opens one round over the arms the tasks still owe and nobody is
+     *  asking yet. */
+    public Round open(int index,
+                      List<ObligationFactory.Candidate> candidates) {
         List<Obligation> obligations = new ArrayList<Obligation>();
         Set<String> proposed = new LinkedHashSet<String>();
+        int held = 0;
         for (ObligationFactory.Candidate candidate : candidates) {
             if (settled.containsKey(candidate.obligationId)) continue;
+            if (inFlight.contains(candidate.obligationId)
+                    || inFlight.contains(question(candidate.task.taskId(),
+                    candidate.path.pathId, candidate.decision.siteId(),
+                    candidate.decision.ordinal(),
+                    !candidate.decision.outcome()))) {
+                held++;
+                continue;
+            }
             if (!proposed.add(candidate.obligationId)) continue;
             proposedBy.put(candidate.obligationId,
                     candidate.task.taskId());
             obligations.add(candidate.proposal());
         }
-        return new Wave(index, obligations);
+        return new Round(index, obligations, held);
     }
 
-    /** Per task: how many obligations this wave proposes. */
+    /** Per task: how many obligations this round proposes. */
     public Map<String, Integer> proposedPerTask() {
         Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
         for (Task task : tasks) counts.put(task.taskId(), 0);
@@ -157,7 +205,7 @@ public final class Frontier {
         return counts;
     }
 
-    /** How many queries ended in each verdict, over every wave so far. */
+    /** How many queries ended in each verdict, over every round so far. */
     public Map<String, Integer> verdictHistogram() {
         Map<String, Integer> histogram = new LinkedHashMap<String, Integer>();
         for (Verdict verdict : answered.values()) {

@@ -9,10 +9,13 @@ the sources are the files the campaign wrote:
                      running from the log's last "[campaign] stage" line
   SEED split         .seed-started, the static artifacts' and runtime/'s mtimes,
                      the weave's "GraphChecker started/ran for" log lines
-  EXPLORE per wave   obligations-NNNN/: the planner's empty stderr.log (created
+  EXPLORE per round  obligations-NNNN/: the planner's empty stderr.log (created
                      when it starts) to explore_manifest.json; the dispatch to
                      its last obligation's end (a GROW re-run's included); the
-                     gate from there to the wave's import_gate.json
+                     gates of the sessions its obligations landed, each from
+                     its worker's end to the worker's import_gate.json
+  witness attempts   witness-attempts/NNNN/: the directory's creation to its
+                     compose.log, and witness_attempts.jsonl's claims
   one obligation     host.txt (claimed) -> the solver's files -> replay.log
                      (the replay's end) -> stdout.log (the worker's end)
   a replay's outcome its obligation_result.jsonl: ADMITTED = flipped; NOT_ADMITTED
@@ -20,8 +23,8 @@ the sources are the files the campaign wrote:
                      (a timed-out-sessions/ directory) or stated no verdict
   CONFIRM            final/confirm/worker/replay.log
 
-It prints each campaign's stages, its waves and replays, and its top time
-sinks (the phases that took longest, the replays grouped by outcome).
+It prints each campaign's stages, its planner rounds and replays, and its top
+time sinks (the phases that took longest, the replays grouped by outcome).
 """
 import calendar, glob, json, os, re, statistics, sys, time
 
@@ -145,7 +148,7 @@ def early_end(worker, replay_end):
     return found.group(3), replay_end - said
 
 
-def wave_rows(iteration):
+def round_rows(iteration):
     rows = []
     previous_end = mtime(os.path.join(iteration, "import_gate.json"))
     for wave in sorted(glob.glob(os.path.join(iteration, "obligations-[0-9]*"))):
@@ -153,7 +156,6 @@ def wave_rows(iteration):
         stderr = os.path.join(wave, "stderr.log")
         plan_start = mtime(stderr) if os.path.getsize(stderr) == 0 else previous_end
         plan_end = mtime(os.path.join(wave, "explore_manifest.json"))
-        gate_end = mtime(os.path.join(wave, "import_gate.json"))
         obligations = []
         for worker in sorted(glob.glob(os.path.join(wave, "*", ""))):
             worker = worker.rstrip("/")
@@ -179,15 +181,33 @@ def wave_rows(iteration):
                 "replay": (replay_end - solve_end) if replayed and replay_end and solve_end else None,
                 "wall": (end - start) if start and end else None,
                 "rerun": bool(glob.glob(os.path.join(worker, "before-*"))),
+                "gate": (mtime(os.path.join(worker, "import_gate.json")) - end)
+                if end and mtime(os.path.join(worker, "import_gate.json")) else None,
             })
         ends = [t for t in (worker_times(os.path.join(wave, o["id"]))[3] for o in obligations) if t]
         dispatch_end = max(ends) if ends else plan_end
-        gate_start = dispatch_end if gate_end else None
         rows.append({"wave": name[-4:], "plan": (plan_end - plan_start) if plan_start and plan_end else None,
                      "dispatch": (dispatch_end - plan_end) if plan_end and dispatch_end else None,
-                     "gate": (gate_end - gate_start) if gate_start and gate_end else None,
+                     "gate": sum(o["gate"] or 0 for o in obligations),
                      "obligations": obligations})
-        previous_end = gate_end or dispatch_end or plan_end
+        previous_end = plan_end
+    return rows
+
+
+def attempt_rows(iteration):
+    """(seconds, claim, accepted) of each COMPOSE attempt at a witness."""
+    rows = []
+    try:
+        lines = open(os.path.join(iteration, "witness_attempts.jsonl")).read().splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        attempt = json.loads(line)
+        started = mtime(attempt["dir"])
+        ended = mtime(os.path.join(attempt["dir"], "compose.log"))
+        rows.append(((ended - started) if started and ended else None,
+                     "%s %s" % (attempt.get("claim") or "nothing", attempt.get("findingKind", "")),
+                     attempt.get("accepted")))
     return rows
 
 
@@ -244,10 +264,10 @@ def report(root, label):
     if running:
         print("   %-11s %s %9s  (no end)" % (running, clock(at), dur(last - at if last and at else None)))
     iteration = os.path.join(root, "iteration-0000")
-    waves = wave_rows(iteration) if os.path.isdir(iteration) else []
+    waves = round_rows(iteration) if os.path.isdir(iteration) else []
     replays = [o for w in waves for o in w["obligations"] if o["replayed"]]
     if waves:
-        print("   wave  plan     dispatch  gate    oblig  UNSAT  NOT_ADM  solver-err  replays  replay min/med/max     refused/flipped/error  longest")
+        print("   round plan     dispatch  gates   oblig  UNSAT  NOT_ADM  solver-err  replays  replay min/med/max     refused/flipped/error  longest")
         for w in waves:
             obl = w["obligations"]
             rep = [o for o in obl if o["replayed"]]
@@ -281,9 +301,17 @@ def report(root, label):
         reruns = sum(1 for w in waves for o in w["obligations"] if o["rerun"])
         if reruns:
             print("   GROW re-ran %d exposing replay(s)" % reruns)
-        sinks += [("EXPLORE planning (%d waves)" % len(waves), sum(w["plan"] or 0 for w in waves)),
-                  ("EXPLORE dispatch (solve+replay)", sum(w["dispatch"] or 0 for w in waves)),
-                  ("EXPLORE import gates", sum(w["gate"] or 0 for w in waves))]
+        attempts = attempt_rows(iteration)
+        if attempts:
+            print("   witness attempts: " + "; ".join("%s %s%s" % (dur(t), claim, " (ended EXPLORE)" if accepted else "")
+                                                   for t, claim, accepted in attempts))
+        head = [("EXPLORE planning (%d rounds)" % len(waves), sum(w["plan"] or 0 for w in waves)),
+                ("EXPLORE import gates", sum(w["gate"] or 0 for w in waves)),
+                ("EXPLORE witness attempts", sum(t or 0 for t, _, _ in attempts))]
+        explore = dict(stages).get("EXPLORE")
+        if explore is not None:
+            head.append(("EXPLORE waiting on the pool", explore - sum(t for _, t in head)))
+        sinks += head
     confirm = os.path.join(root, "final", "confirm", "worker", "replay.log")
     if os.path.isfile(confirm):
         started = mtime(os.path.join(root, "final", "confirm", "worker", "focused_task.jsonl"))

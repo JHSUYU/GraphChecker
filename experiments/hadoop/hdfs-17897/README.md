@@ -37,8 +37,8 @@ node's own readings came in, and the value each path read.
 ## Build and run
 
 Hadoop checkout `/u/vnr3ne/hadoop-hdfs-17897`, branch `gc/hdfs-17897`. Replay
-concurrency is fixed at `concolic_worker_count=8` in `workflow.properties`. From this
-directory:
+concurrency is each host's memory (`obligation_memory_mb` in `workflow.properties`)
+up to its cores. From this directory:
 
 ```bash
 ../../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,

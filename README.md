@@ -130,9 +130,9 @@ for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f
 
 5. **Time.** Merge the early-exit branch (`worktree-agent-ac487236f0fb1620e`). Then, with
    `timeline.py` after every round: decide an obligation NOT_ADMITTED before replaying it when its
-   flip needs a value the replay cannot plant; pipeline waves instead of a barrier (a wave waits
-   for all its replays; a Solr replay under Zero takes ~20 min; r5 18413 was 3 h 10 min in 6
-   waves, and all 67 focused replays served obligations that ended NOT_ADMITTED).
+   flip needs a value the replay cannot plant (r5 18413: all 67 focused replays served obligations
+   that ended NOT_ADMITTED). EXPLORE streams (no wave barrier, PIPELINE §7.9) and ends at its first
+   accepted witness.
 6. **R1-ROOTS:** fix `ra1`'s two failures, merge. Then the rest of the R1-ROOTS spec
    (`/bigtemp/vnr3ne/specs/R1-ROOTS-proposal.md`): WP-D config roots, WP-E admission by relevance,
    WP-F1/F2 root demand.
@@ -377,8 +377,9 @@ Keep jars in `/bigtemp/vnr3ne/ab/jars/`.
 `summary.tsv` (verdict row) → `logs/<case>.log` (`[campaign:error] stage=… reason=…`) →
 `report/<case>/report.md` (blocking gaps, witness findings, causal cone) → `out/<case>/schedule/final/`
 (`claim.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `gaps.json`)
-→ per wave `iteration-0000/obligations-<NNNN>/<id>/` (`obligation_query.smt2`,
-`obligation_result.jsonl`, `replay.log`) → sessions `iteration-0000/sessions/<id>/`
+→ how EXPLORE ended `iteration-0000/exploration.json` → per planner round
+`iteration-0000/obligations-<NNNN>/<id>/` (`obligation_query.smt2`, `obligation_result.jsonl`,
+`replay.log`) → sessions `iteration-0000/sessions/<id>/`
 (`targets.jsonl` has `reachedAnchor` and `observedFatal`). `experiments/accept/cone.py` and
 `probe.sh` re-check a published formula. `tools/analysis/timeline.py` (on the early-exit branch)
 breaks a campaign's time down by stage.
@@ -396,8 +397,10 @@ PLAN        the occurrences to replay, the declared target resolved, the roots t
 INSTRUMENT  weave hooks into the scoped classes, verify the woven bytecode
 REPLAY      seed replay on the concolic VM -> the seed session (one file per row kind)
 IMPORT      row-contract gate over every session (contract/RowInvariants)
-EXPLORE     waves: plan flip obligations (explore/ExploreMain), solve each, replay it
-            focused on its world (runtime/FocusedReplay), grow the woven regions (GROW)
+EXPLORE     one streaming pool: plan flip obligations in rounds (explore/ExploreMain), solve
+            each, replay it focused on its world (runtime/FocusedReplay), land each session
+            as it returns, grow the woven regions (GROW); end at the first witness COMPOSE
+            accepts
 COMPOSE     merge all sessions into one disjunction over the anchor, solve it per
             valuation with z3, decide the claim (compose/ComposeMain: Composer, ClaimPolicy)
 SOLVE/DECIDE  check and print the solver verdict and the claim COMPOSE published
@@ -447,8 +450,9 @@ is written.
 `/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes) and the hosts
 `LIFTS` (lift06–15).
 
-Obligations of a campaign fan out over the hosts in `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, the first
-host rotated per wave. Every start on a host is charged to the ledger first: an obligation
+Obligations of a campaign fan out over the hosts in `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`,
+round-robin, as many on a host as its ledger admits, up to its cores. Every start on a host is
+charged to the ledger first: an obligation
 (`obligation_memory_mb`, for 60 s), a campaign head's engine JVM (`engine_memory_mb`, else 8192, for
 120 s), its seed and CONFIRM replays (`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
 (its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, every start
@@ -548,7 +552,7 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
 | `summary.tsv`, `logs/<case>.log`, `report/<case>/{report.md,row.tsv,status}` | the verdict row, the campaign log, the readable report |
 | `out/<case>/` | SEED's static artifacts: `static_scope_map.jsonl`, `scope_frontier.jsonl`, `region_skeletons.jsonl.gz`, `candidate_dataflow_edges.jsonl.gz`, and the recording under `runtime/` |
 | `out/<case>/schedule/stage_metrics.tsv` | time per stage |
-| `out/<case>/schedule/iteration-0000/` | `execution_task_plan.jsonl`, `concolic_region_plan.jsonl`, `recorded_schedule.jsonl`, `sessions/<id>/`, `obligations-<NNNN>/` (per wave: one worker directory per obligation), `obligation_results.jsonl` |
+| `out/<case>/schedule/iteration-0000/` | `execution_task_plan.jsonl`, `concolic_region_plan.jsonl`, `recorded_schedule.jsonl`, `sessions/<id>/`, `obligations-<NNNN>/` (per planner round: one worker directory per obligation), `obligation_results.jsonl`, `exploration.json`, `witness-attempts/` |
 | `…/sessions/<id>/` | one replay's rows: `activations`, `decisions`, `reads`, `writes`, `exports`, `attaches`, `roots`, `targets`, `gaps`, `schedule` (`.jsonl`), `expressions.jsonl`, `manifest.json` |
 | `out/<case>/schedule/final/` | `result.json`, `claim.json`, `gaps.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `reproduce.json`, `run-manifest.json` |
 | `out/<batch>/targets/<check>/` | a batch case's check: its frozen slice, its region plan (`runtime/`), `campaign.log`, and its campaign root `schedule/` laid out as above; the batch's one recording and `runtime/record-summary.json` are in `out/<batch>/` |
@@ -567,7 +571,7 @@ src/main/java/edu/uva/liftlab/graphchecker/
   runtime/     recording and replay hooks, identity and attribution, schedule (ScheduleLog),
                mints, message and store doors (MessageDoors), focused replay, confirmation,
                VM broker
-  explore/     corpus, closure, frontier, flip queries, obligations, wave graph, ExploreMain,
+  explore/     corpus, closure, branches, frontier, flip queries, obligations, wave graph, ExploreMain,
                ConfirmMain
   compose/     Composer, families, SMT lowering, container codec, string identities, ClaimPolicy,
                ComposeMain

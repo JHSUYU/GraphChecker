@@ -18,7 +18,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `import_gated.txt`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
-| EXPLORE | `campaign_explore`, `campaign_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions | the planner fails; an obligation does not finish; a replay states no verdict; a wave's BLOCKING row invariant (as IMPORT) |
+| EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails; a replay states no verdict; a landed session's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
@@ -79,9 +79,9 @@ marked * below.
 | `solver_timeout_ms`* | one z3 run, in a flip query and in COMPOSE |
 | `replay_timeout_s`* (2400) | the wall clock of one obligation replay |
 | `seed_replay_time_factor`* (40) | the seed replay's wall clock, as a multiple of the recorded workload's (§5) |
-| `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth`, `region_path_stop_at_fatal` | EXPLORE's bounds (§7.4, §7.9) and the witness stop (§7.1) |
+| `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth` | EXPLORE's bounds (§7.4, §7.9) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
-| `concolic_worker_count`* (8), `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | slots per host, the hosts, one obligation's memory at the host gate, the head JVMs' heap |
+| `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | the pool's hosts, one obligation's memory at the host gate (§7.7), the head JVMs' heap |
 | `campaign_stop_after` | empty, or `IMPORT` |
 | `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording and of each native reproduction run; how many of those (§10b) |
 
@@ -162,7 +162,7 @@ by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FR
    frames.
 2. PLAN, per `ACTIVATED` target (`campaign_batch_plan`, a subshell logging to
    `targets/<name>/campaign.log`): its `causynth_output_dir` is `targets/<name>/` (so it, and every
-   peer of its waves, derives its slice, scope map and region plan there), its campaign root
+   peer of its pool, derives its slice, scope map and region plan there), its campaign root
    `targets/<name>/schedule/`, its spec its one line, its region plan's aggregation slice the one
    REPRODUCE reuses (`campaign_target_slice`), `first` resolved per target; PLAN is the ordinary
    stage (`campaign_plan`).
@@ -297,7 +297,7 @@ writes, reads, roots, targets, gaps, schedule` `.jsonl` and a non-empty `express
 one `SESSION_CENSUS` row per (session, kind) to `session_census.jsonl`. `campaign_import_gate` then runs
 `contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-12,
 [CONTRACT-SPEC.md §2.6](CONTRACT-SPEC.md)) to `campaign_gaps.jsonl` and prints a summary; one BLOCKING
-violation fails IMPORT naming the first subject. The same gate runs after every EXPLORE wave (§7.9).
+violation fails IMPORT naming the first subject. The same gate runs on every session EXPLORE lands (§7.9).
 
 `campaign_import_gate <iteration> <epoch> [summary] [session-dir...]` judges each session once: the
 sessions it names (none named: every session of the corpus not gated yet), recorded in the ledger
@@ -311,21 +311,24 @@ time (the head).
 ## 7. EXPLORE
 
 EXPLORE collects the arms the seed lacks: it flips decisions the anchor's failure can depend on, one
-focused replay per flip, in waves, and never decides a witness (only COMPOSE and z3 do).
+focused replay per flip, in planner rounds over one streaming pool (§7.9), and never decides a
+witness (only COMPOSE and z3 do).
 
-### 7.1 One wave: `explore.ExploreMain`
+### 7.1 One round: `explore.ExploreMain`
 
-One JVM per wave, `--sessions <iteration>/sessions --results obligation_results.jsonl
---static-scope-map ... --target-occurrence <declared> --wave N --output-dir obligations-NNNN` plus the
-root domains and bounds. It reads the whole corpus (`explore.Corpus.read`: every session, each
-worker's focus row as that session's world, the wave verdicts, the recorded schedule) and:
+One JVM per round, `--sessions <iteration>/sessions --results obligation_results.jsonl --in-flight
+<round>/in_flight.jsonl --static-scope-map ... --target-occurrence <declared> --round N --output-dir
+obligations-NNNN` plus the root domains and bounds. It reads the whole corpus (`explore.Corpus.read`:
+every landed session, each worker's focus row as that session's world, the verdicts, the recorded
+schedule) and:
 
 1. Names planned tasks answered at two addresses (`ADDRESS_UNSTABLE`, DIAGNOSTIC).
 2. Resolves the declaration against the seed session's activations (`plan.SelectorResolution`);
    no single SEED session, an unresolved selector, or an address the seed never activated is a
-   BLOCKING gap and leaves the wave with no root.
-3. Plans the anchor's closure (§7.2). A closure truncated at `--max-tasks` is a BLOCKING
-   `ADMISSION_GAP` (DIAGNOSTIC when the witness stop fired).
+   BLOCKING gap and leaves the round with no root.
+3. Stops the branches that cannot answer the question (`explore.Branches`, §7.4) and plans the
+   anchor's closure (§7.2). A closure truncated at `--max-tasks` is a BLOCKING `ADMISSION_GAP`
+   (DIAGNOSTIC once a witness exists, step 6).
 4. Reconciles the slot table (`explore.SlotTable`, `iteration-0000/slots.jsonl`): one slot per
    (interaction, world) inside the closure; a WIRE consumer paired with another producer in the same
    world is a replacement, and a read whose observed write the run orders after it (the two rows'
@@ -333,16 +336,21 @@ worker's focus row as that session's world, the wave verdicts, the recorded sche
    occurrences, not their events) contradicts the order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when
    the session is admitted, else DIAGNOSTIC); another
    world's pairing is a new slot.
-5. Builds the ledger (§7.3) and the candidates (§7.4) and opens the wave: `obligations.jsonl`
-   (empty = the frontier closed).
-6. Witness stop (`region_path_stop_at_fatal=true` → `--stop-at-fatal`): once an admitted non-seed
-   session's target row at the anchor observed the fatal, this wave asks nothing and grows nothing
-   (DIAGNOSTIC gap; manifest state `WITNESSED`).
-7. Writes `graph.jsonl` (`WaveGraph`: NODE per activated occurrence of admitted sessions, EDGE per
+5. Builds the ledger (§7.3), takes the arms in flight (`--in-flight`: the obligation rows the
+   campaign has queued or running), builds the candidates (§7.4) and opens the round:
+   `obligations.jsonl`, nothing settled and nothing in flight.
+6. Names the WITNESSES: every admitted focused session whose target row at the anchor observed the
+   fatal (`ExploreMain#witnesses`). Whether the exploration ends there is the campaign's (§7.9).
+7. States the round's WAVE, a generation of worlds: one past the deepest wave whose obligation
+   published a landed session, 0 over the seed alone. It deepens only as sessions land.
+8. Writes `graph.jsonl` (`WaveGraph`: NODE per activated occurrence of admitted sessions, EDGE per
    WIRE pairing and STATE join, each with the world digests it was seen in, and a FRONTIER row with
-   the counts new since the previous wave), `growth.jsonl` (§7.8), `tasks.jsonl`, `gaps.jsonl` and
-   `explore_manifest.json` (anchors, tasks with their `why`, proposed/answered counts, verdict
-   histogram, gap counts, state `FIXED_POINT` | `OBLIGATIONS_PROPOSED` | `WITNESSED`).
+   the counts new since the previous round), `growth.jsonl` (§7.8), `tasks.jsonl`, `gaps.jsonl` and
+   `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
+   proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
+   verdict histogram, gap counts, state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
+   flight) | `FIXED_POINT`). What only the seed ran is BLOCKING at the fixed point alone: nothing
+   proposed, exposed or in flight, and no witness.
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -418,13 +426,27 @@ share a variable with the guard (`compose.Independence.ofGuard`), plus the input
 (`Corpus.inputShape`): whether the task's occurrence and each factor member that writes state it reads
 ran, their handoff sites and producers, and those members' write counts at the locations the guard
 reads — never delivered values. Never the session. An arm is
-settled when some session recorded it under the same dependence, or an earlier wave answered it
-`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). The ledger is rebuilt every
-wave from the corpus and `obligation_results.jsonl`.
+settled when some session recorded it under the same dependence, or an earlier round answered it
+`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). An arm in flight is not
+proposed again, by its id or by the question its row asks (task, path, site, ordinal, flipped
+outcome), whose id may move while it flies: sessions landing since its round grow the dependence.
+The ledger is rebuilt every round from the corpus, `obligation_results.jsonl` and the arms in
+flight.
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 
-Paths of the task's occurrence, smallest world first, cut only from admitted sessions. A flip
+Paths of the task's occurrence, smallest world first, cut only from sessions that may parent an
+obligation (`explore.Branches#parents`): the seed, or an admitted focused session whose branch did
+not stop. The question is one declared occurrence `(r,c,i)`, and a focused replay whose run holds
+no activation of the declared region `r` under the declared context `c` -- at any index `i`, which a
+flip may shift (a fault's retry, a loop that runs once more) -- ran it under another chain or not at
+all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`): its BRANCH STOPS. Its world is never
+inherited, its paths are never flipped, and nothing it exposes is grown (§7.2's `uncaptured`: one
+named only by stopped branches is DIAGNOSTIC); it stays in the corpus as evidence (its rows still
+attest arms, §7.3). Contexts compare by `Corpus#contextShape`: per anchor hop the RPC site and the
+sending node, then the root's role and api, without the per-site invocation counts; a sender no row
+names is unknown, never a difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
+the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
 `--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32,
@@ -433,7 +455,7 @@ a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too.
 
 ### 7.5 One obligation: `explore.ObligationSolverMain`
 
-`ObligationFactory.locate` finds the published obligation's path in the corpus under the wave's id
+`ObligationFactory.locate` finds the published obligation's path in the corpus under its round's id
 (a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
 it up to the flipped decision, the flipped decision negated, and every inherited flip's prefix through
 its flipped decision (`Arms.conjunct`/`Arms.pathCondition` apply the recorded polarity; terms are
@@ -539,7 +561,7 @@ prefix of an obligation's own occurrence is abandoned (`REPLAY_PREFIX_UNMATCHED`
 the recorded arm, or the occurrence closed without reaching it), which holds every flipped
 obligation of the replay `NOT_ADMITTED` too, or a flip the replay inherited took the other arm. It
 ends there (`AT_REFUSAL`, §5). A flipped obligation is never decided before its replay ends: its
-session is a corpus session, cut from by later waves and read whole by the closure and COMPOSE (the
+session is a corpus session, cut from by later rounds and read whole by the closure and COMPOSE (the
 anchor, the fatal and writers after the anchor among them), so only the witness ends it early. A
 decided replay **publishes no session**: its verdict rows state the refusal and that the replay
 ended there, the worker's row names no session, and the replay withdraws the directory it opened
@@ -547,9 +569,10 @@ to `<worker>/refused-sessions/` at its close, in one rename (`RowRuntime#closeSe
 `SessionPublisher#withdrawTo`); `campaign_obligation_replay`, on the host that ran the replay,
 withdraws one a failed move left listed. A `NOT_ADMITTED` replay ran no world (§7.4 cuts no path from one),
 and rows cut at the refusal are a prefix of a run no stage could tell from a whole one. Its gap rows
-stay EMIT's (§11). The head, reading a peer's row that names no session, waits until its own
-listing holds no session naming the obligation (`campaign_await_remote_result`), so neither the
-wave's gate nor the next planner reads one a cached listing kept.
+stay EMIT's (§11). A worker's replay stages its session in `<worker>/sessions/`, from where the
+head lands it (§7.9); the head, reading a peer's row, waits until its own listing of that directory
+holds the session the row names, or none naming the obligation when it names none
+(`campaign_await_remote_result`), so it never lands one a cached listing kept.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
 answer is `NOT_ADMITTED` naming the bound. A solver JVM that exits nonzero records `NOT_ADMITTED`
@@ -557,50 +580,87 @@ with its last stderr line. A replay that states no verdict fails EXPLORE.
 
 ### 7.7 The work pool
 
-`campaign_dispatch_wave` starts `min(slots, obligations)` slots; slots = `concolic_worker_count` per
-host of `campaign_worker_hosts` (empty: local only), interleaved across hosts and starting at the
-host the wave directory's `cksum` picks, so one-obligation waves spread. A slot waits for memory
-on its host, then claims the next obligation by `mkdir` of its queue index, runs it (locally in a
-subshell, or remotely through `ssh` running `run_engine.sh --run-obligation` with the frozen jar and
-its sha256), and loops. The memory gate (`campaign_host_try_start <host> [need] [ramp]`) is a ledger
-shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/`
-(`tools/lib/gc-env.sh`): each row is `<epoch> <mb> <ramp_s> <id>`, and a start is allowed when
-`MemAvailable − (rows still inside their own ramp) ≥ need + MemTotal × (100 − p) / 100`, where
-`p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no start leaves a host more than 70 % full. An obligation needs
-`obligation_memory_mb` for 60 s. The head (`do_campaign`, `campaign_head_charged`) charges each of
-its engine JVMs `engine_memory_mb` (else 8192) for 120 s and its seed and CONFIRM replays
-`obligation_memory_mb` for 300 s, and releases the row when the command returns
-(`campaign_host_release`); an obligation's own JVMs are inside its slot's charge. An obligation
-whose worker does not finish (a nonzero exit, local or remote, or a result the head cannot see) is
-its own answer and the slot goes on (`campaign_obligation_unfinished`): every process on its host
-whose command line names its worker directory is ended (a peer's replay JVM is in a process group
-the remote wrapper's watchdog does not reach), a session naming it moves to
-`<worker>/unfinished-sessions/`, and its row is `NOT_ADMITTED` naming the host and the exit. Only a
-slot whose host's memory cannot be read fails the wave (the campaign fails at EXPLORE after
-reaping remote workers). Verdicts are appended to `obligation_results.jsonl` once the wave settled.
+One pool for the whole exploration, no slots. The head starts each queued obligation, first first,
+on the next host of `campaign_worker_hosts` (empty: this machine, no ssh), round-robin from the host
+after the last one chosen (`campaign_stream_admit_host`): a host is taken while it runs fewer of the
+campaign's obligations than it has cores (read once, `campaign_host_cores`) and its memory ledger
+admits one more start; none admitting, the head waits for a return or the poll interval
+(`campaign_host_poll_s`). An obligation runs locally in a background subshell, or remotely through
+`ssh` running `run_engine.sh --run-obligation` with the frozen jar and its sha256; each takes the
+class tree and plan of the generation current when it starts (§7.8). The memory gate
+(`campaign_host_try_start <host> [need] [ramp]`) is a ledger shared by all campaigns and
+`tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/` (`tools/lib/gc-env.sh`): each row is
+`<epoch> <mb> <ramp_s> <id>`, and a start is allowed when `MemAvailable − (rows still inside their
+own ramp) ≥ need + MemTotal × (100 − p) / 100`, where `p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no
+start leaves a host more than 70 % full. An obligation needs `obligation_memory_mb` for 60 s; on the
+head's own host it also keeps room for the head's next engine JVM (`campaign_head_need_mb`), since
+the planner, the gate and COMPOSE run there between two returns. The head (`do_campaign`,
+`campaign_head_charged`) charges each of its engine JVMs `engine_memory_mb` (else 8192) for 120 s
+and its seed and CONFIRM replays `obligation_memory_mb` for 300 s, and releases the row when the
+command returns (`campaign_host_release`); an obligation's own JVMs are inside its start's charge.
+An obligation whose worker does not finish (a nonzero exit, local or remote, or a result the head
+cannot see) is its own answer (`campaign_obligation_unfinished`): every process on its host whose
+command line names its worker directory is ended (a peer's replay JVM is in a process group the
+remote wrapper's watchdog does not reach), what it staged moves to `<worker>/unfinished-sessions/`,
+and its row is `NOT_ADMITTED` naming the host and the exit. A host whose memory or cores cannot be
+read for `campaign_ssh_patience_s` fails the campaign at EXPLORE; a head that fails mid-exploration
+ends everything it started first (an EXIT trap: each job's process tree, and every peer's workers).
 
 ### 7.8 GROW
 
-When `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session and its
-obligation), `campaign_grow` runs after the wave's replays: `plan.ExposedRegionPlanMain` synthesizes
-one task row per exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's
-`replayGroupId`), appends them to the task plan, re-runs INSTRUMENT, and re-runs the exposing
-obligations' replays side by side on the head, each in its own worker directory, their starts
-spaced by the head's memory gate; the wave waits for all of them. The exposing
-session and the worker's previous files move to `<worker>/before-<wave>/`, and the re-run's verdict
-replaces the obligation's row in `obligation_results.jsonl`. An exposure no obligation names (seed
-exposure) fails EXPLORE.
+When a round's `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session
+and its obligation), the head grows instead of queueing the round's proposals, which a later round
+asks again over the grown corpus (`campaign_stream_grow`). One GROW is one GENERATION of the plan
+and the class tree, under `generations/g<k>/`: `plan.ExposedRegionPlanMain` synthesizes one task row
+per exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's
+`replayGroupId`), the generation's plan is the one before it plus those rows, written as a new file
+-- the iteration's plan and the seed plan are its hard links from then on, and the generation before
+keeps its own inode for whatever runs on it -- and INSTRUMENT weaves it into the generation's own
+tree. Each exposing obligation's replay is queued first, to re-run on the head in
+`<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in). Until every
+re-run has returned and no obligation runs that started before them, no obligation starts and no
+round is planned; then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
+worker's previous files move to `<worker>/before-<round>/`, the re-run's files become the
+worker's, its session lands, and its verdict replaces the obligation's row in
+`obligation_results.jsonl`; the queue is left to the next round, since what it held may be cut from
+an exposing session. Once nothing runs, the last generation's tree is the iteration's
+`instrumented-classes` (CONFIRM, REPRODUCE). An exposure no obligation names (seed exposure) fails
+EXPLORE.
 
 ### 7.9 The loop
 
-`campaign_explore`: plan wave N; if `obligations.jsonl` is empty and no region is exposed, stop (the
-fixed point). Otherwise stop with a DIAGNOSTIC `ADMISSION_GAP` row in `campaign_gaps.jsonl` when
-`N ≥ region_path_max_waves` (`REGION_PATH_WAVE_BUDGET_REACHED`) or when the signature over the
-proposed ids, the verdict histogram and the exposures equals the previous wave's
-(`REGION_PATH_CLOSURE_NO_PROGRESS`). Else dispatch the obligations (if any), GROW (if a region is
-exposed), then gate the wave: the IMPORT
-gate (§6) over the sessions the wave added (its replays' and GROW's re-runs'), summarised in the
-wave's `import_gate.json`; one BLOCKING violation fails the campaign at IMPORT.
+`campaign_explore` is one streaming loop on the head, with no wave barrier. It lands each obligation
+the moment its worker returns (`campaign_stream_land`): the verdict is appended to
+`obligation_results.jsonl`, and the session the worker staged moves into the corpus and through the
+IMPORT gate (§6), that one session, its summary in the worker's `import_gate.json`; one BLOCKING
+violation fails the campaign at IMPORT. A round is planned (`campaign_stream_round`, §7.1) once a
+session has landed, or once nothing is queued or running and an answer came since the last round,
+while other obligations run on; what it proposes is queued and starts at once (§7.7). Everything
+the head does between two returns -- a round, GROW's weave, a gate, a COMPOSE attempt -- it does
+alone and in order, so the corpus, the ledger and the plan change only in its hands and an
+obligation's solver reads the corpus as a landed whole. The exploration has three ends, each stated
+in `exploration.json` (stop, rounds, generations, answers, attempts, and every obligation cancelled
+or reaped, by id):
+
+- **WITNESSED.** A round naming witnesses no attempt judged yet (§7.1, step 6) is followed, before
+  anything else starts, by one COMPOSE over the corpus as it stands -- `do_compose`, the stage's own
+  entry, into `witness-attempts/NNNN/` -- since an observed fatal is not yet a composable witness:
+  COMPOSE's families may need sessions later obligations would add. Each attempt is a row of
+  `witness_attempts.jsonl` (round, witnesses, claim, finding kind, polarity, accepted). An attempt
+  that publishes `SAT_CANDIDATE` with `polarityDecides` ends the exploration at once: the queue is
+  cancelled, every running obligation is reaped (its process tree here, its workers on every peer)
+  and its worker directory moves to `<campaign>/explore-reaped/`, so the corpus COMPOSE reads next is
+  exactly the one the attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Any
+  other claim, and the exploration goes on. This is every campaign's rule: the question is one
+  declared occurrence (owner 2026-09-28).
+- **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
+  work is not dispatched: the queue is cancelled, what runs lands, and the stop is a DIAGNOSTIC row.
+- **FIXED_POINT.** Nothing queued or running, and the last round, over every answer, proposed and
+  exposed nothing.
+
+A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
+proposed twice; the wave budget is what bounds the derivation. COMPOSE, CONFIRM and EMIT then run on
+the corpus EXPLORE left, as after any end.
 
 `campaign_publish_iteration_manifest` then writes `iteration_manifest.json`: provenance, digests of the
 task plan, schedule index, census and obligation results, the members and their obligation digests.
@@ -1078,7 +1138,7 @@ its directory, `DEAD` when none does.
 `tools/regress/offline-ab.sh --round <round>... <baseline-jar> <candidate-jar> [case...]` is the
 offline regression gate: per case of the first `--round` holding it, it runs every stage that is
 a pure function of the recording once per jar — the static pass, the trace aggregation, PLAN,
-EXPLORE wave 0 and its solves, IMPORT, the closing EXPLORE wave, COMPOSE with SOLVE and DECIDE,
+EXPLORE round 0 and its solves, IMPORT, the closing EXPLORE round, COMPOSE with SOLVE and DECIDE,
 and CONFIRM's planning — over private iterations that link the recorded sessions, with no
 workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
 2 when one could not be checked. Every stage gates on bytes, the static pass included: it is the
@@ -1093,15 +1153,20 @@ comparison.
 
 - A campaign that died names its stage: `[campaign:error] stage=… component=… artifact=… reason=…`
   on stderr. A REPLAY death: `iteration-0000/seed-result/focused/replay.log` and the seed session's
-  `gaps.jsonl`. A slot or a head that seems stalled logs `waiting for memory on <host>: …`; the
-  host ledger is `$CAUSYNTH_HOST_LEDGER/<host>/{available,starts}`.
+  `gaps.jsonl`. A pool or a head that seems stalled logs `waiting for room: …` or `waiting for
+  memory on <host>: …`; the host ledger is `$CAUSYNTH_HOST_LEDGER/<host>/{available,starts,cores}`.
+- How EXPLORE ended: `iteration-0000/exploration.json` (the stop, every COMPOSE attempt at a
+  witness, every obligation cancelled or reaped) and the log's `round N (wave W): …` lines.
 - `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.
 - Where the wall time went: `tools/analysis/timeline.py <accept-dir>...` reads a campaign's own
   files (stage metrics, file mtimes, the log) and prints each stage (SEED split into static pass,
-  weave, recording and aggregation), each wave (planning, dispatch, import gate; obligations by
+  weave, recording and aggregation), each planner round (planning, dispatch, the gates of the
+  sessions its obligations landed; obligations by
   verdict, solver JVMs that failed; focused replays with min/median/max duration and how many
   were refused, flipped or ended in error, and how many ended early (§5) with the time from the
-  end's replay-log line to the JVM's last write), the CONFIRM replay and the top time sinks. A gate or
+  end's replay-log line to the JVM's last write), the witness attempts, the CONFIRM replay and the
+  top time sinks (EXPLORE's planning, gates and attempts, and the rest of its wall: waiting on the
+  pool). A gate or
   stage that started a head JVM includes the head's wait for memory (§7.7), which the log counts.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
   `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it

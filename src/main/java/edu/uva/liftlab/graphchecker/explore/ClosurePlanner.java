@@ -114,8 +114,11 @@ public final class ClosurePlanner {
         }
     }
 
+    /** The closure of one anchor; {@code branches} says which sessions may
+     *  expose a region for growth. */
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
-                            int maxTasks, StaticScopeMap scope) {
+                            int maxTasks, StaticScopeMap scope,
+                            Branches branches) {
         Walk walk = new Walk(corpus, scope);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
@@ -167,8 +170,8 @@ public final class ClosurePlanner {
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
-                uncaptured(corpus, demand.occurrence, exposed, waiting,
-                        walk.gaps);
+                uncaptured(corpus, branches, demand.occurrence, exposed,
+                        waiting, walk.gaps);
                 continue;
             }
             String taskId = taskId(demand.occurrence);
@@ -208,8 +211,13 @@ public final class ClosurePlanner {
      * last began ({@link Corpus#tickPastRecording}) is neither grown nor
      * waited for -- only a replay slower than the recording ran it, so
      * nothing the recording decided rests on it.</p>
+     *
+     * <p>Only a session that may parent an obligation exposes ({@link
+     * Branches#parents}): one named only by admitted sessions whose branch
+     * stopped is a DIAGNOSTIC gap, since nothing grown from them could be
+     * cut from.</p>
      */
-    private static void uncaptured(Corpus corpus,
+    private static void uncaptured(Corpus corpus, Branches branches,
                                    OccurrenceAddress occurrence,
                                    Map<OccurrenceAddress, String> exposed,
                                    Set<OccurrenceAddress> waiting,
@@ -238,10 +246,15 @@ public final class ClosurePlanner {
         }
         String seed = corpus.seedSessionId();
         String exposing = "";
+        String stopped = "";
         for (String sessionId : corpus.namedBy(occurrence)) {
-            if (sessionId.equals(seed)
-                    || !corpus.session(sessionId).admitted()
-                    || corpus.session(sessionId).obligations().isEmpty()) {
+            SessionReader session = corpus.session(sessionId);
+            if (sessionId.equals(seed) || !session.admitted()
+                    || session.obligations().isEmpty()) {
+                continue;
+            }
+            if (!branches.parents(sessionId)) {
+                stopped = sessionId;
                 continue;
             }
             if (exposing.isEmpty()) exposing = sessionId;
@@ -256,6 +269,14 @@ public final class ClosurePlanner {
         }
         if (corpus.namedBy(occurrence).contains(seed)) {
             waiting.add(occurrence);
+            return;
+        }
+        if (!stopped.isEmpty()) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    occurrence.render(), "only sessions whose branch "
+                            + "stopped ran this occurrence (" + stopped
+                            + " among them), so it is not grown"));
             return;
         }
         gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,

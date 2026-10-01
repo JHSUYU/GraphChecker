@@ -116,12 +116,12 @@ final class WaveGraph {
     }
 
     /** Writes {@code graph.jsonl} with its FRONTIER against the previous
-     *  wave's. */
-    void write(Path waveDir, int wave) throws IOException {
+     *  round's. */
+    void write(Path roundDir, int round) throws IOException {
         Set<String> before = new LinkedHashSet<String>();
-        if (wave > 0) {
-            Path previous = waveDir.resolveSibling(
-                    String.format("obligations-%04d", wave - 1))
+        if (round > 0) {
+            Path previous = roundDir.resolveSibling(
+                    String.format("obligations-%04d", round - 1))
                     .resolve(GRAPH);
             if (Files.isRegularFile(previous)) {
                 for (JsonObject row : RowCodec.readJsonl(previous)) {
@@ -151,13 +151,13 @@ final class WaveGraph {
         }
         JsonObject frontier = new JsonObject();
         frontier.addProperty("kind", "FRONTIER");
-        frontier.addProperty("wave", wave);
+        frontier.addProperty("round", round);
         frontier.addProperty("nodes", nodes.size());
         frontier.addProperty("edges", edges.size());
         frontier.addProperty("newNodes", newNodes);
         frontier.addProperty("newEdges", newEdges);
         rows.add(frontier);
-        RowCodec.writeJsonl(waveDir.resolve(GRAPH), rows);
+        RowCodec.writeJsonl(roundDir.resolve(GRAPH), rows);
     }
 
     /** Writes {@code growth.jsonl}: one EXPOSED_REGION row per occurrence the
@@ -165,7 +165,7 @@ final class WaveGraph {
      *  whose replay is re-run and its obligation; returns the row count. */
     static int writeGrowth(Corpus corpus,
                            Map<OccurrenceAddress, String> exposed,
-                           Path waveDir) throws IOException {
+                           Path roundDir) throws IOException {
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Map.Entry<OccurrenceAddress, String> grown : exposed.entrySet()) {
             OccurrenceAddress occurrence = grown.getKey();
@@ -180,7 +180,7 @@ final class WaveGraph {
                     session.obligations().get(0).obligationId());
             rows.add(row);
         }
-        RowCodec.writeJsonl(waveDir.resolve(GROWTH), rows);
+        RowCodec.writeJsonl(roundDir.resolve(GROWTH), rows);
         return rows.size();
     }
 }

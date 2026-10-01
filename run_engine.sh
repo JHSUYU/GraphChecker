@@ -23,8 +23,9 @@ Usage:
 Commands:
   campaign    Run the complete campaign for one configuration: validate, seed,
               then one iteration of plan/instrument/replay/import/explore
-              (waves of obligations, growing the woven region set inside
-              the wave) and compose/solve/decide/confirm/reproduce/emit.
+              (a streaming pool of obligations, growing the woven region
+              set as replays expose it) and
+              compose/solve/decide/confirm/reproduce/emit.
               With causynth_static_root (an ad-hoc batch): one recording
               for every target of the spec, each target's slice as the
               build made it, then one such iteration per target
@@ -43,7 +44,7 @@ Commands:
   help        Print this help message
 
   --run-obligation
-              Execute ONE obligation of a wave that some campaign planned,
+              Execute ONE obligation that some campaign planned,
               and nothing else.  This is what `campaign_worker_hosts` runs
               over ssh on a peer; the campaign generates the invocation into
               the obligation's own worker directory, so it is not a command
@@ -76,15 +77,14 @@ trim() {
 workflow_config_keys=(
   "campaign_setup_command CAUSYNTH_CAMPAIGN_SETUP_COMMAND krp -"
   "concolic_replay_command CAUSYNTH_CONCOLIC_REPLAY_COMMAND krp -"
-  "concolic_worker_count CAUSYNTH_CONCOLIC_JOBS krp -"
-  # The machines a wave's obligations may run on: a space-separated host
-  # list.  Within a wave the obligations are independent -- each runs its own
-  # solver and its own replay JVM, writes into its own worker directory and
-  # publishes a session under an id it mints itself -- so the only thing a
-  # second machine needs is the shared home every path in this configuration
-  # already names.  Each host gets ${concolic_worker_count} slots, so the
-  # pool is hosts x workers wide; the wave barrier (collect, gate, plan the
-  # next wave) stays on the head.
+  # The machines a campaign's obligations may run on: a space-separated host
+  # list.  The obligations are independent -- each runs its own solver and
+  # its own replay JVM, writes into its own worker directory and stages a
+  # session under an id it mints itself -- so the only thing a second
+  # machine needs is the shared home every path in this configuration
+  # already names.  How many run on one host is that host's memory and cores
+  # (campaign_stream_admit_host); landing, gating and planning stay on the
+  # head.
   #
   # EMPTY -- the default -- runs every worker locally, no ssh anywhere.  A
   # host spelled `localhost` or as this machine's own hostname runs locally
@@ -92,9 +92,9 @@ workflow_config_keys=(
   "campaign_worker_hosts CAUSYNTH_CAMPAIGN_WORKER_HOSTS krp -"
   # The memory, in MB, one obligation takes on the host that runs it: its
   # solver JVM (which loads the session corpus) and its replay JVM together.
-  # A slot starts an obligation only on a host with that much available
-  # beyond what the obligations started there in the last ramp window will
-  # still claim (campaign_await_host_memory), whichever campaign started
+  # The pool starts an obligation only on a host with that much available
+  # beyond what the starts there in the last ramp window will still claim
+  # (campaign_host_try_start), whichever campaign started
   # them -- the hosts are shared, and so is this accounting.  No default: the
   # need is the case's, measured, and a campaign that states none is refused.
   "obligation_memory_mb CAUSYNTH_OBLIGATION_MEMORY_MB krp -"
@@ -118,12 +118,10 @@ workflow_config_keys=(
   "region_path_max_flips_per_path CAUSYNTH_REGION_PATH_MAX_FLIPS_PER_PATH krp -"
   "region_path_max_tasks CAUSYNTH_REGION_PATH_MAX_TASKS krp -"
   "region_path_max_world_depth CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH krp -"
+  # The deepest wave EXPLORE plans: a wave is a generation of worlds, one
+  # past the deepest wave whose obligation published a landed session
+  # (PIPELINE §7.9).
   "region_path_max_waves CAUSYNTH_REGION_PATH_MAX_WAVES krp 12"
-  # 'true': the case asks about its declared occurrence only, and exploring
-  # stops at the first admitted replay that observed the fatal there
-  # (ExploreMain --stop-at-fatal).  Empty -- the default -- explores to the
-  # fixed point.
-  "region_path_stop_at_fatal CAUSYNTH_REGION_PATH_STOP_AT_FATAL krp -"
   "config_file - p -"
   "workflow_path_base GRAPH_CHECKER_PATH_BASE krp -"
   "graphchecker_jar GRAPH_CHECKER_JAR krp -"
@@ -170,7 +168,7 @@ workflow_config_keys=(
   "trace_test CAUSYNTH_TRACE_TEST krp -"
   # The discovery artifacts, derived from causynth_output_dir in
   # initialize_config and printed by `config`: neither a workflow key nor an
-  # override point, so every stage of a run -- and every peer of a wave --
+  # override point, so every stage of a run -- and every peer of it --
   # reads the same file.  The static scope map is read by the workload JVM
   # (guard sites) and by PLAN and EXPLORE (flip sites); the region skeletons
   # by both weaves, so a replay stands on the recording's frame stack.
@@ -185,12 +183,12 @@ workflow_config_keys=(
   # valuation while it composes, so this is the budget of one of those runs.
   "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
   # The wall clock ONE focused replay may take, in seconds.  Without it a
-  # replay JVM that deadlocks never returns, campaign_wait_workers holds its
-  # wave open until an outer timeout kills the campaign, and every verdict
-  # the wave already reached is lost.  A replay that exceeds this is that
-  # obligation's own NOT_ADMITTED row, not the wave's death.  Defaulted
-  # rather than required: an absent bound is exactly the unbounded wait this
-  # exists to end.
+  # replay JVM that deadlocks never returns, its obligation never lands, and
+  # the exploration waits on it until an outer timeout kills the campaign
+  # and every verdict already reached is lost.  A replay that exceeds this
+  # is that obligation's own NOT_ADMITTED row, not the campaign's death.
+  # Defaulted rather than required: an absent bound is exactly the unbounded
+  # wait this exists to end.
   "replay_timeout_s CAUSYNTH_REPLAY_TIMEOUT_S krp 2400"
   # The wall clock the SEED replay may take, as a multiple of how long the
   # recording's workload ran (SEED times it), and never less than one
@@ -385,7 +383,6 @@ initialize_config() {
   custom_jdk_home=${custom_jdk_home:-}
   z3_bin=${z3_bin:-z3}
   workload_work_dir=${workload_work_dir:-${project_module_dir}}
-  concolic_worker_count=${concolic_worker_count:-8}
   # Scheduler, solver and topology bounds have no engine defaults.
   # The production workload states them in its frozen configuration.
 
@@ -455,8 +452,14 @@ run_in_directory() {
 # launcher's 8 GB) -- on a campaign's head charged to its host for as long as
 # a JVM takes to reach its size (campaign_head_charged).
 engine_java() {
-  campaign_head_charged "${engine_memory_mb:-8192}" 120 \
+  campaign_head_charged "$(campaign_head_need_mb)" 120 \
     env "$(config_env_assignment engine_memory_mb)" "${java_bin}" "$@"
+}
+
+# What one of the head's engine JVMs is charged on its host, in MB; the pool
+# keeps that much room on the head's host (campaign_stream_admit_host).
+campaign_head_need_mb() {
+  printf '%s\n' "${engine_memory_mb:-8192}"
 }
 
 run_java_main() {
@@ -526,7 +529,7 @@ validate_config() {
   # does not start.
   local key
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
-      schedule_max_jobs concolic_worker_count region_path_max_waves \
+      schedule_max_jobs region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound \
       obligation_memory_mb record_timeout_s reproduce_runs; do
     require_positive_integer "${key}"
@@ -540,11 +543,6 @@ validate_config() {
     ''|IMPORT) ;;
     *) die "campaign_stop_after must be empty or IMPORT: \
 ${campaign_stop_after}" ;;
-  esac
-  case "${region_path_stop_at_fatal}" in
-    ''|true) ;;
-    *) die "region_path_stop_at_fatal must be empty or true: \
-${region_path_stop_at_fatal}" ;;
   esac
   [[ "${causynth_scope_growth_budget}" =~ ^[0-9]+$ ]] \
     || die "causynth_scope_growth_budget must be a non-negative integer: \
@@ -1001,9 +999,10 @@ campaign_union_static() {
 # `campaign` is the one external entry point for a whole run. It validates the
 # configuration, freezes the generation's provenance, records the stock-JVM
 # seed, and then drives one iteration: plan -> union instrumentation -> one
-# fresh same-JVM seed replay -> strict import -> waves of bounded parallel
-# worker obligations, each wave growing the woven region set by what its
-# replays exposed -> composition, solving, the claim and its publication.
+# fresh same-JVM seed replay -> strict import -> a streaming pool of worker
+# obligations, planned round by round as sessions land and growing the woven
+# region set by what replays exposed -> composition, solving, the claim and
+# its publication.
 #
 # It is an orchestrator, not a second semantic engine. Every artifact it
 # publishes was written by a production owner; the shell only validates
@@ -1329,7 +1328,7 @@ campaign_iteration_manifests_json() {
           and (([.members[].taskId] | length)
             == ([.members[].taskId] | unique | length))
           and ([.members[] | select(.role == "TARGET")] | length == 1))
-      then {iterationId, externalWorkerCount,
+      then {iterationId,
             taskIds: [.members[].taskId],
             obligations: [.members[]
               | {taskId, digests: .obligationDigests}]}
@@ -1343,28 +1342,20 @@ campaign_iteration_manifests_json() {
   '
 }
 
-campaign_wait_workers() {
-  local pid status=0
-  for pid in "$@"; do
-    wait "${pid}" || status=1
-  done
-  return "${status}"
-}
-
 campaign_preflight() {
   validate_config >/dev/null
   [[ -n "${concolic_replay_command}" ]] || die \
     "campaign requires concolic_replay_command: the workload adapter that replays one immutable task plan under the concolic VM"
   require_command_available jq
   require_command_available sha256sum
-  campaign_log "workers=${concolic_worker_count} maxJobs=${schedule_max_jobs} \
-maxWaves=${region_path_max_waves} stopAtFatal=${region_path_stop_at_fatal:-false}"
-  campaign_log "obligation pool: $(campaign_worker_slot_hosts | wc -l) slot(s) \
-across host(s) ${campaign_worker_hosts:-$(hostname) (local only)}"
+  campaign_log "maxJobs=${schedule_max_jobs} maxWaves=${region_path_max_waves}"
+  campaign_log "obligation pool: host(s) \
+${campaign_worker_hosts:-$(hostname) (local only)}, each as many as its \
+memory admits, up to its cores"
   campaign_log "replay scratch: \
 ${campaign_local_scratch_root:-<shared home, as before>}"
   # Every peer is reached once before the seed replay, not for the first time
-  # somewhere inside wave 0 with a hundred obligations already planned.
+  # somewhere inside round 0 with a hundred obligations already planned.
   local worker_host
   for worker_host in ${campaign_worker_hosts}; do
     campaign_host_is_local "${worker_host}" && continue
@@ -1539,8 +1530,8 @@ campaign_remote_watchdog_interval_s=5
 # therefore the sum of the two budgets a worker is allowed to spend -- its
 # solver run and its replay -- plus this margin for JVM start-up and the
 # shared home.  It is not a policy about obligations; an obligation that
-# reaches it has hit something no declared budget describes, and the wave
-# fails naming the host.
+# reaches it has hit something no declared budget describes, and it is
+# answered as unfinished, naming the host (campaign_obligation_unfinished).
 campaign_remote_bound_margin_s=300
 
 campaign_remote_worker_bound_s() {
@@ -1571,7 +1562,7 @@ campaign_remote_visibility_wait_s=120
 # copy, so a peer that resolved the key itself would load whatever is in
 # target/ right now -- on this cluster the shared home means that is a
 # DIFFERENT BUILD the moment anybody runs `mvn package`, and the run
-# manifest's provenance would be a lie about half the wave.  And the
+# manifest's provenance would be a lie about half the campaign.  And the
 # workflow file itself lives on that same shared home and can be edited
 # mid-run; forwarding the values means an edit cannot reach a worker,
 # because every key it could change arrives already decided.
@@ -1704,8 +1695,7 @@ campaign_dispatch_remote_obligation() {
 exited ${status}; ssh's own output is in ${worker}/ssh.log"
     return "${status}"
   fi
-  campaign_await_remote_result "${worker}" "${host}" "${obligation_id}" \
-    "${sessions}"
+  campaign_await_remote_result "${worker}" "${host}" "${obligation_id}"
 }
 
 # The peer's evidence, visible HERE.
@@ -1714,8 +1704,9 @@ exited ${status}; ssh's own output is in ${worker}/ssh.log"
 # directory is re-listed on each turn because it is the directory's cached
 # listing, not the file's contents, that a fresh lookup has to get past.
 campaign_await_remote_result() {
-  local worker=$1 host=$2 obligation_id=$3 sessions=$4
+  local worker=$1 host=$2 obligation_id=$3
   local result="${worker}/obligation_result.jsonl"
+  local staged="${worker}/sessions"
   local waited=0 session_id=""
   while [[ ! -s "${result}" ]]; do
     if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
@@ -1729,34 +1720,33 @@ ${waited}s; the shared home did not deliver what the peer wrote"
     waited=$((waited + 1))
   done
   session_id=$(jq -r '.sessionId // ""' "${result}" 2>/dev/null) || session_id=""
-  # A verdict that names no session published none.  The solver's own
-  # opened none; a replay's opened one that the peer withdrew (killed on its
-  # bound, or decided by a refusal), and a listing cached here may still
-  # hold it, where the wave's gate and the next planner would read it.
+  # A verdict that names no session staged none.  The solver's own opened
+  # none; a replay's opened one that the peer withdrew (killed on its bound,
+  # or decided by a refusal), and a listing cached here may still hold it,
+  # where the head would land it.
   if [[ -z "${session_id}" ]]; then
-    [[ -s "${worker}/focused_task.jsonl" ]] || return 0
     while [[ -n "$(campaign_sessions_naming "${obligation_id}" \
-        "${sessions}")" ]]; do
+        "${staged}")" ]]; do
       if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
         campaign_log "obligation ${obligation_id} on ${host}: its result \
-names no session but a session naming it is still under ${sessions} here \
+names no session but a session naming it is still under ${staged} here \
 after ${waited}s"
         return 1
       fi
-      ls "${sessions}" >/dev/null 2>&1 || true
+      ls "${staged}" >/dev/null 2>&1 || true
       sleep 1
       waited=$((waited + 1))
     done
     return 0
   fi
-  while [[ ! -d "${sessions}/${session_id}" ]]; do
+  while [[ ! -d "${staged}/${session_id}" ]]; do
     if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
       campaign_log "obligation ${obligation_id} on ${host}: its result names \
-session ${session_id} but ${sessions}/${session_id} is still not visible \
+session ${session_id} but ${staged}/${session_id} is still not visible \
 here after ${waited}s"
       return 1
     fi
-    ls "${sessions}" >/dev/null 2>&1 || true
+    ls "${staged}" >/dev/null 2>&1 || true
     sleep 1
     waited=$((waited + 1))
   done
@@ -2219,15 +2209,14 @@ campaign_task_ids() {
   jq -r -s 'map(.taskId) | join(",")' "$1"
 }
 
-# One union instrumentation pass over the whole iteration plan, into the
-# iteration's own class tree.  The tree is the weave of the plan as it
-# stands: GROW appends task rows and runs this again, so the tree is cleared
-# first, and it is only ever rewritten while every wave is settled and no
-# replay reads it.
+# One union instrumentation pass over the whole iteration plan, into a class
+# tree: the iteration's own (INSTRUMENT), or a GROW generation's, which no
+# replay reads before this returns -- a replay started earlier keeps the
+# tree it started on (campaign_stream_grow).
 campaign_instrument() {
   local iteration_dir=$1
+  local classes=${2:-${iteration_dir}/instrumented-classes}
   local plan="${iteration_dir}/execution_task_plan.jsonl"
-  local classes="${iteration_dir}/instrumented-classes"
   local ids
   ids=$(campaign_task_ids "${plan}")
   [[ -n "${ids}" ]] || campaign_fail INSTRUMENT CAMPAIGN "${plan}" \
@@ -2243,7 +2232,7 @@ campaign_instrument() {
   [[ -n "$(find "${classes}" -name '*.class' -print -quit 2>/dev/null)" ]] \
     || campaign_fail INSTRUMENT CAMPAIGN "${classes}" \
       "union instrumentation wrote no class file"
-  campaign_verify_woven_classes "${iteration_dir}"
+  campaign_verify_woven_classes "${classes}"
 }
 
 # The JVM verifier is the authority on whether woven bytecode is executable,
@@ -2254,9 +2243,9 @@ campaign_instrument() {
 # is the replay's own layout -- execute.sh composes ${classes}:${jar}:${cp} --
 # so a class that links here links there.
 campaign_verify_woven_classes() {
-  local iteration_dir=$1
-  local classes="${iteration_dir}/instrumented-classes"
-  local report="${iteration_dir}/woven_class_verification.log"
+  local classes=$1
+  local report
+  report="$(dirname "${classes}")/woven_class_verification.log"
   local status=0
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.causynth.VerifyWovenClasses \
@@ -2546,55 +2535,14 @@ ${blocking} blocking"
     "${blocking} row invariants violated: ${first}"
 }
 
-# The same gate, over the sessions one wave added -- its replays' and GROW's
-# re-runs' -- before the next planner reads one of their rows: a BLOCKING
-# violation fails the campaign at that wave, by name.  The wave keeps its
-# own summary (import_gate.json).
-campaign_import_wave_gate() {
-  local iteration_dir=$1 iteration_id=$2 wave_dir=$3 sessions=$4
-  local before="${wave_dir}/sessions-before.txt" name
-  local -a added=()
-  require_file "wave session roster" "${before}"
-  while IFS= read -r name; do
-    [[ -n "${name}" && -d "${sessions}/${name}" ]] || continue
-    added+=("${sessions}/${name}")
-  done < <(campaign_wave_sessions "${sessions}" "${before}")
-  if [[ "${#added[@]}" -eq 0 ]]; then
-    # Every obligation of the wave failed to replay, which its own result
-    # rows already say; there is no row here to check.
-    campaign_log "import gate: $(basename "${wave_dir}") published no session"
-    return 0
-  fi
-  campaign_log "import gate: $(basename "${wave_dir}") published \
-${#added[@]} session(s)"
-  campaign_import_gate "${iteration_dir}" "${iteration_id}" \
-    "${wave_dir}/import_gate.json" "${added[@]}"
-}
-
-# The session names under ${1} that are not in the roster file ${2}.
-campaign_wave_sessions() {
-  local sessions=$1 before=$2
-  LC_ALL=C comm -13 "${before}" <(campaign_session_roster "${sessions}")
-}
-
-# Every session directory name under ${1}, sorted.
-campaign_session_roster() {
-  local sessions=$1 entry
-  for entry in "${sessions}"/*/; do
-    [[ -d "${entry}" ]] || continue
-    basename "${entry}"
-  done | LC_ALL=C sort
-}
-
 
 # The session directories whose manifest names one obligation, one per line.
 #
 # Found by the manifest, which is the same lookup settled() does -- read the
 # document and match one element of obligationIds exactly -- and never by
-# diffing the session directory, because eight workers write into that one
-# directory at once and every session but this obligation's belongs to
-# somebody else.  A manifest that cannot be read is somebody else's, half
-# written: skipped, not guessed at.
+# diffing a directory: the corpus holds every obligation's sessions, and a
+# manifest that cannot be read is a session half written: skipped, not
+# guessed at.
 campaign_sessions_naming() {
   local obligation_id=$1 sessions=$2 manifest
   # SessionDir.MANIFEST, one directory down: <sessions>/<sessionId>/.
@@ -2609,20 +2557,21 @@ campaign_sessions_naming() {
   done
 }
 
-# The sessions that name one obligation, out of the corpus and under the
-# worker that owned them.
+# The sessions that name one obligation, out of <sessions> -- the worker's
+# staging directory, or the corpus -- and under the worker that owned them.
 #
-# Three callers.  A replay killed on its bound has opened its session --
+# Four callers.  A replay killed on its bound has opened its session --
 # SessionPublisher writes manifest.json at the OPEN -- and will never close
 # it, so its rows state no verdict for the obligation the manifest names;
 # Composer.settled reads exactly that pair as UNSTATED_VALUE/BLOCKING, and
 # one hung JVM would withhold the whole candidate.  A replay a refusal
 # decided ended there and names no session in its verdict (PIPELINE §7.6):
-# what it wrote is a prefix of a run.  A replay that exposed a region ran
-# without that region's hooks, and the re-run's session is the one the
-# corpus keeps.  Each way the directory is MOVED under the worker, never
-# deleted: it is the evidence of why the obligation's verdict is what it is,
-# and the campaign keeps what it saw.
+# what it wrote is a prefix of a run.  A worker that did not finish staged
+# what it staged.  A replay that exposed a region ran without that region's
+# hooks, and the re-run's session is the one the corpus keeps.  Each way the
+# directory is MOVED under the worker, never deleted: it is the evidence of
+# why the obligation's verdict is what it is, and the campaign keeps what it
+# saw.
 campaign_withdraw_sessions() {
   local obligation_id=$1 sessions=$2 quarantine=$3 why=$4
   local session_dir session_id withdrawn=0
@@ -2634,10 +2583,10 @@ campaign_withdraw_sessions() {
       campaign_log "obligation ${obligation_id}: withdrew session \
 ${session_id} from ${sessions} to ${quarantine}/${session_id}: ${why}"
     else
-      # Not the wave's death, and not silent either: the session stays where
-      # COMPOSE will read it, and this line says what it is.
+      # Not the campaign's death, and not silent either: the session stays
+      # where it is, and this line says what it is.
       campaign_log "obligation ${obligation_id}: could not withdraw session \
-${session_id} from ${sessions}: ${why}; COMPOSE will read it"
+${session_id} from ${sessions}: ${why}; it stays there"
     fi
   done < <(campaign_sessions_naming "${obligation_id}" "${sessions}")
   if [[ "${withdrawn}" -eq 0 ]]; then
@@ -2651,17 +2600,18 @@ names it; nothing withdrawn"
 #
 # The obligation names ONE focused occurrence, the decision it flips, the root
 # assignments to apply at the mints and the answers to apply at the attaches
-# (CONTRACT-SPEC §3).  The replay writes its rows into its own session
-# directory, which is the only thing COMPOSE reads; this function's output is
-# the one ObligationResult row that says which verdict it reached.
+# (CONTRACT-SPEC §3).  The solver reads the corpus <sessions>; the replay
+# stages its session in ${worker}/sessions/, which the head lands in the
+# corpus once it has read this function's output, the one ObligationResult
+# row that says which verdict it reached (campaign_stream_land).
 #
 # A single obligation that could not be solved or replayed is that
-# obligation's own result row, never the wave's death.
+# obligation's own result row, never the campaign's death.
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
   local seed_plan=$6
   local outcome status=0
-  # Its slot charged the host obligation_memory_mb: a local slot is a
+  # Its start charged the host obligation_memory_mb: a local one is a
   # subshell of the head, and its JVMs are not the head's.
   local campaign_head_charging=0
   local -a domain_args=()
@@ -2695,7 +2645,7 @@ campaign_obligation_worker() {
   require_nonempty "obligation query" "${worker}/obligation_query.smt2"
   outcome=$(jq -er '.verdict' "${result_row}")
   # The solver owns what a finished obligation is.  UNSAT and NOT_ADMITTED
-  # are recorded terminal verdicts, not process failures, and the next wave
+  # are recorded terminal verdicts, not process failures, and the next round
   # reads them so the obligation is not proposed again.
   case "${outcome}" in
     UNSAT|NOT_ADMITTED) return 0 ;;
@@ -2703,14 +2653,15 @@ campaign_obligation_worker() {
   [[ "${outcome}" == "SAT_MODEL_READY" ]] \
     || die "the obligation verdict is not solver-backed: ${outcome}"
   campaign_obligation_replay "${obligation_id}" "${classes}" "${worker}" \
-    "${sessions}" "${seed_plan}"
+    "${worker}/sessions" "${seed_plan}"
 }
 
 # The replay half of an obligation: the solver's model, run focused, and the
-# verdict the replay states for it.  The worker calls it once the solver has
-# answered SAT_MODEL_READY; GROW calls it again for an obligation whose
-# replay exposed a region, in the same worker directory, under the grown
-# class tree.
+# verdict the replay states for it, its session published under <sessions>.
+# The worker calls it once the solver has answered SAT_MODEL_READY; GROW
+# calls it again for an obligation whose replay exposed a region, in a
+# directory of its own beside the worker, under the grown class tree; CONFIRM
+# for the claim's world.
 #
 # Two files, one shape each.  execution_task_plan.jsonl is the PLAN, whose
 # rows the workload session opener decodes (ConcolicTaskPlan.load ->
@@ -2720,7 +2671,7 @@ campaign_obligation_worker() {
 # solver and read unchanged by a re-run.
 campaign_obligation_replay() {
   local obligation_id=$1 classes=$2 worker=$3 sessions=$4 seed_plan=$5
-  # Charged as a whole by whoever runs it: a slot, GROW, or CONFIRM.
+  # Charged as a whole by whoever starts it: the pool, GROW, or CONFIRM.
   local campaign_head_charging=0
   local plan="${worker}/execution_task_plan.jsonl"
   local focus="${worker}/focused_task.jsonl"
@@ -2734,11 +2685,11 @@ campaign_obligation_replay() {
   [[ -n "${replay_tasks}" ]] \
     || die "the seed plan names no task to replay: ${plan}"
   # Under a wall clock, because a replay JVM that never returns is not a slow
-  # obligation but a stopped wave: campaign_wait_workers would wait on this
-  # worker forever.  On expiry the whole process group goes (the JVM is a
-  # grandchild of this worker) and this obligation records the same terminal
-  # NOT_ADMITTED row a failed solver records -- one obligation's answer, not
-  # the wave's death.
+  # obligation but a stopped exploration: its obligation would never land.
+  # On expiry the whole process group goes (the JVM is a grandchild of this
+  # worker) and this obligation records the same terminal NOT_ADMITTED row a
+  # failed solver records -- one obligation's answer, not the campaign's
+  # death.
   campaign_sessions_dir="${sessions}" \
     campaign_adapter_timeout_s="${replay_timeout_s}" \
     campaign_adapter_timeout_rule="replay_timeout_s=${replay_timeout_s}" \
@@ -2778,7 +2729,7 @@ session"
   # obligation the replay carried, and it ended there (FocusedReplay
   # #refusedAt).  What it wrote before is a prefix of a run, which the replay
   # withdrew itself at its close (RowRuntime#closeSession); one its move left
-  # listed leaves the corpus here, on the host that ran the replay.
+  # listed is withdrawn here, on the host that ran the replay.
   [[ -n "$(jq -r '.sessionId // ""' "${statement}")" ]] \
     || campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
       "${worker}/refused-sessions" "a refusal decided every obligation its \
@@ -2790,76 +2741,24 @@ replay carried and the replay ended there, so its rows are a prefix of a run"
 
 
 # ---------------------------------------------------------------------------
-# THE WAVE'S WORK POOL
+# THE POOL'S HOSTS
 #
-# Within a wave the obligations are independent: each runs its own solver,
-# then its own replay JVM, writes into its own ${wave_dir}/${obligationId}/
-# worker directory, and publishes a session under an id it mints itself.
-# Nothing is merged until COMPOSE, so the only coordination a wave needs is
-# "who takes the next one" and "has everybody finished".
-#
-# A POOL, not a batch barrier (which lets one slow obligation idle every
-# other slot of its batch): one long-lived runner per slot, each pulling the
-# next unclaimed obligation the moment its previous one returns.  A slot that
-# frees takes the next obligation immediately; no slot waits on another.
-#
-# The claim is a `mkdir` on a per-index directory, which is the one atomic
-# "exactly one of us gets this" primitive available to a set of plain
-# background shells with no shared memory (and the one that also holds over
-# NFS, which matters when the slots are on five machines).  Each slot's
-# cursor only ever moves forward, so the whole wave costs at most
-# slots x obligations mkdir attempts and no slot ever rescans behind itself.
+# A campaign's obligations are independent: each runs its own solver, then
+# its own replay JVM, writes into its own worker directory and stages its
+# session there (${worker}/sessions/), from where the head lands it in the
+# corpus.  `campaign_worker_hosts` empty is this machine alone, with no ssh
+# anywhere; a stated list is every machine an obligation may run on.  How
+# many run on one host at once is that host's to say: one more starts while
+# the memory ledger admits it, up to the host's cores
+# (campaign_stream_admit_host).
 # ---------------------------------------------------------------------------
 
-# One slot's cursor into the wave's job list, and the index it last claimed.
-# Every slot runs in its own background subshell, so these are private to it
-# even though they are spelled as globals -- the same arrangement
-# campaign_replay_killed already uses to answer its one caller.
-campaign_claim_cursor=0
-campaign_claimed_index=""
-
-# Claims the next unclaimed obligation index for this slot, or returns 1 when
-# the wave has none left.  The claim is the directory: `mkdir` fails with
-# EEXIST for every slot but the one that created it, and that slot owns the
-# index.
-campaign_claim_next_obligation() {
-  local queue_dir=$1 count=$2
-  local index
-  campaign_claimed_index=""
-  while [[ "${campaign_claim_cursor}" -lt "${count}" ]]; do
-    index=${campaign_claim_cursor}
-    campaign_claim_cursor=$((index + 1))
-    if mkdir "${queue_dir}/$(printf '%06d' "${index}")" 2>/dev/null; then
-      campaign_claimed_index=${index}
-      return 0
-    fi
-  done
-  return 1
-}
-
-# Which host runs each slot, one per line.
-#
-# `campaign_worker_hosts` empty is one host, ${concolic_worker_count} slots,
-# every worker local and no ssh anywhere.  A stated list gives
-# ${concolic_worker_count} slots PER HOST, so the pool is as wide as hosts x
-# workers.
-#
-# The hosts are interleaved rather than blocked, so the wave's opening fill
-# -- which is every slot claiming at once -- lands round-robin across the
-# hosts instead of loading the first host to capacity before the second sees
-# any work.  The list starts at host [offset] (mod its length): a wave
-# rotates it, so a one-obligation wave is not always the first host's.
-campaign_worker_slot_hosts() {
-  local offset=${1:-0}
+# The pool's hosts, one per line: the stated list, or this machine.
+campaign_worker_host_list() {
   local -a hosts=()
-  local slot index
   read -r -a hosts <<<"${campaign_worker_hosts}"
   [[ ${#hosts[@]} -gt 0 ]] || hosts=(localhost)
-  for ((slot = 0; slot < concolic_worker_count; slot++)); do
-    for ((index = 0; index < ${#hosts[@]}; index++)); do
-      printf '%s\n' "${hosts[$(( (offset + index) % ${#hosts[@]} ))]}"
-    done
-  done
+  printf '%s\n' "${hosts[@]}"
 }
 
 # This machine's own names, resolved once.  A host the operator spelled
@@ -2881,7 +2780,7 @@ $(hostname -s 2>/dev/null) "
 #
 # Every lift has 30 GB and every campaign's pool spans every lift, so what
 # decides whether one more JVM fits on a host is the host, not the campaign.
-# So every start asks the HOST first -- an obligation's slot, a campaign
+# So every start asks the HOST first -- an obligation's, a campaign
 # head's engine JVMs and replays, a fanout job (tools/adhoc/fanout.sh) --
 # through a ledger all of them share, on a filesystem every lift mounts
 # (tools/lib/gc-env.sh, CAUSYNTH_HOST_LEDGER), one directory per host:
@@ -2904,8 +2803,8 @@ $(hostname -s 2>/dev/null) "
 # ramp; after it, what it holds is in MemAvailable.  A start whose command
 # returned inside its ramp is released (campaign_host_release), so a head's
 # JVMs, one after another, are never charged twice.  A start that does not
-# fit WAITS -- an obligation is the wave's and is never skipped -- and says
-# so once.
+# fit WAITS -- an obligation goes to another host or later, never skipped --
+# and says so once.
 # ---------------------------------------------------------------------------
 
 # shellcheck source=tools/lib/gc-env.sh
@@ -2926,7 +2825,7 @@ campaign_host_max_used_pct=${CAUSYNTH_HOST_MAX_USED_PCT}
   && (( campaign_host_max_used_pct > 0 && campaign_host_max_used_pct <= 100 )) \
   || die "CAUSYNTH_HOST_MAX_USED_PCT must be a percentage in 1..100: \
 ${campaign_host_max_used_pct}"
-# How often a waiting slot asks again, and how old a MemAvailable reading
+# How often a waiting start asks again, and how old a MemAvailable reading
 # may be before it is read again.
 campaign_host_poll_s=5
 # How long a host may stay unreachable over ssh -- its memory unreadable, a
@@ -2946,11 +2845,10 @@ campaign_host_key() {
   fi
 }
 
-# MemAvailable of one host, in MB.  Local: /proc/meminfo.  Remote: the same
-# file over the same batch-mode ssh every remote obligation uses.
-campaign_host_available_mb() {
-  local host=$1
-  local read_it="awk '/^MemAvailable:/ {print int(\$2 / 1024)}' /proc/meminfo"
+# One command's output on one host.  Local: a plain shell.  Remote: the same
+# batch-mode ssh every remote obligation uses.
+campaign_host_read() {
+  local host=$1 read_it=$2
   if campaign_host_is_local "${host}"; then
     bash -c "${read_it}"
   else
@@ -2959,16 +2857,35 @@ campaign_host_available_mb() {
   fi
 }
 
-# MemTotal of one host, in MB, read like campaign_host_available_mb.
+# MemAvailable of one host, in MB.
+campaign_host_available_mb() {
+  campaign_host_read "$1" \
+    "awk '/^MemAvailable:/ {print int(\$2 / 1024)}' /proc/meminfo"
+}
+
+# MemTotal of one host, in MB.
 campaign_host_total_mb() {
-  local host=$1
-  local read_it="awk '/^MemTotal:/ {print int(\$2 / 1024)}' /proc/meminfo"
-  if campaign_host_is_local "${host}"; then
-    bash -c "${read_it}"
-  else
-    campaign_ssh "${campaign_ssh_options[@]}" -o ConnectTimeout=20 -- \
-      "${host}" "${read_it}"
+  campaign_host_read "$1" \
+    "awk '/^MemTotal:/ {print int(\$2 / 1024)}' /proc/meminfo"
+}
+
+# The cores of one host, from the ledger once read: they never move.
+campaign_host_cores() {
+  local host=$1 dir cores fresh
+  dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
+  mkdir -p "${dir}"
+  if read -r cores 2>/dev/null <"${dir}/cores" \
+      && [[ "${cores}" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s\n' "${cores}"
+    return 0
   fi
+  cores=$(campaign_host_read "${host}" nproc | grep -E '^[0-9]+$' \
+    | tail -n 1) || return 1
+  [[ "${cores}" =~ ^[1-9][0-9]*$ ]] || return 1
+  fresh=$(mktemp "${dir}/cores.XXXXXX") || return 1
+  printf '%s\n' "${cores}" >"${fresh}"
+  mv -f -- "${fresh}" "${dir}/cores"
+  printf '%s\n' "${cores}"
 }
 
 # The host's MemTotal, from the ledger once it has been read: it never moves.
@@ -2999,7 +2916,7 @@ campaign_host_memory_reading() {
   mb=$(campaign_host_available_mb "${host}" | grep -E '^[0-9]+$' | tail -n 1) \
     || return 1
   [[ "${mb}" =~ ^[0-9]+$ ]] || return 1
-  # A name of its own: the campaign's slots are subshells sharing $$, and
+  # A name of its own: the campaign's subshells share $$, and
   # every campaign on every lift writes this ledger.
   fresh=$(mktemp "${dir}/available.XXXXXX") || return 1
   printf '%s %s\n' "${now}" "${mb}" >"${fresh}"
@@ -3096,7 +3013,7 @@ campaign_head_charged() {
   fi
   # Its words go to stderr: the command's stdout is often its artifact
   # (ImportGateMain's summary JSON).
-  campaign_await_host_memory localhost "" 0 "${need}" "${ramp}" >&2 || return
+  campaign_await_host_memory localhost "${need}" "${ramp}" >&2 || return
   id=${campaign_host_charge_id}
   "$@"
   status=$?
@@ -3104,21 +3021,16 @@ campaign_head_charged() {
   return "${status}"
 }
 
-# campaign_await_host_memory <host> [queue] [count] [need_mb] [ramp_s]:
-# blocks until one start fits on the host, then charges it there: 0.  A slot
-# waits BEFORE it claims, so a host without room holds no obligation while
-# another host could run it (a10: one claim sat 30 min on a lift whose
-# planner held 15 GB while eight lifts had 26 GB free).  1 once every
-# obligation of the wave's queue is claimed -- nothing is left to wait for;
-# without a queue (a GROW re-run, a head's own start) never.  2 when the
-# host's memory cannot be read, the waiter's named failure.
+# campaign_await_host_memory <host> [need_mb] [ramp_s]: blocks until one
+# start fits on the host, then charges it there: 0.  2 when the host's
+# memory cannot be read for campaign_ssh_patience_s, the waiter's named
+# failure.  A campaign head's own starts wait here (campaign_head_charged);
+# an obligation's start is the pool's, which never waits on one host while
+# another has room (campaign_stream_admit_host).
 campaign_await_host_memory() {
-  local host=$1 queue_dir=${2:-} count=${3:-0} need=${4:-} ramp=${5:-}
+  local host=$1 need=${2:-} ramp=${3:-}
   local said=false status=0 unread_since=""
   while true; do
-    [[ -z "${queue_dir}" ]] \
-      || (( $(find "${queue_dir}" -mindepth 1 -maxdepth 1 -type d | wc -l) \
-        < count )) || return 1
     run_capturing_status campaign_host_try_start "${host}" "${need}" "${ramp}"
     case "${status}" in
       0) return 0 ;;
@@ -3134,8 +3046,7 @@ ${campaign_ssh_patience_s}s"
         campaign_host_wait_reason="the memory of ${host} could not be read"
         ;;
       3)
-        # Another start is being charged: a moment, not a poll interval --
-        # a wave's opening fill is every slot at once.
+        # Another start is being charged: a moment, not a poll interval.
         sleep 0.$(( (RANDOM % 9) + 1 ))
         continue ;;
       *) unread_since="" ;;
@@ -3149,7 +3060,7 @@ ${campaign_host_wait_reason}"
   done
 }
 
-# One obligation, on the host its slot belongs to.  The local branch is a
+# One obligation, on the host the pool admitted it on.  The local branch is a
 # subshell under `set -euo pipefail`, its stdout and stderr in the worker
 # directory.
 campaign_run_obligation_on_host() {
@@ -3167,57 +3078,21 @@ campaign_run_obligation_on_host() {
   fi
 }
 
-# One slot: room on its host, then a claim, then the run, until the wave is
-# empty.  A start charged just before the last claim went elsewhere is a
-# ramp window of over-count, never a lost obligation.
-#
-# An obligation whose worker did not finish is that obligation's own answer
-# (campaign_obligation_unfinished), and the slot goes on.  The slot fails
-# only when its host's memory cannot be read.
-campaign_wave_slot() {
-  local host=$1 queue_dir=$2 count=$3 jobs_file=$4 wave_dir=$5
-  local obligations=$6 classes=$7 sessions=$8 seed_plan=$9
-  local status=0 gate=0 job worker_dir
-  campaign_claim_cursor=0
-  while true; do
-    gate=0
-    campaign_await_host_memory "${host}" "${queue_dir}" "${count}" \
-      || gate=$?
-    (( gate != 1 )) || { gate=0; break; }
-    (( gate == 0 )) || break
-    campaign_claim_next_obligation "${queue_dir}" "${count}" || break
-    job=$(sed -n "$((campaign_claimed_index + 1))p" "${jobs_file}")
-    [[ -n "${job}" ]] || continue
-    worker_dir="${wave_dir}/${job}"
-    printf '%s\n' "${host}" >"${worker_dir}/host.txt"
-    run_capturing_status campaign_run_obligation_on_host "${host}" \
-      "${job}" "${obligations}" "${classes}" "${worker_dir}" "${sessions}" \
-      "${seed_plan}"
-    [[ "${status}" -eq 0 ]] || campaign_obligation_unfinished "${host}" \
-      "${job}" "${worker_dir}" "${sessions}" "${status}"
-    campaign_log "obligation ${job}: host=${host} verdict=$(jq -r \
-      '.verdict // "?"' "${worker_dir}/obligation_result.jsonl" \
-      2>/dev/null || echo '?')"
-  done
-  return "${gate}"
-}
-
-# A slot's obligation whose worker did not finish (it exited <status>, or
-# the head could not see what it wrote), answered as itself: before, a
-# remote worker that exited nonzero, or whose result named a session the
-# head never saw, failed the wave and the campaign.  Nothing of it may still
-# run -- a peer's replay JVM is in a process group of its own, which the
-# remote wrapper's watchdog does not reach -- so every process whose command
-# line names its worker directory is ended on its host first; then a
-# session naming it leaves the corpus, and one row answers it, naming why.
+# An obligation whose worker did not finish (it exited <status>, or the head
+# could not see what it wrote), answered as itself: one obligation's answer,
+# never the campaign's death.  Nothing of it may still run -- a peer's
+# replay JVM is in a process group of its own, which the remote wrapper's
+# watchdog does not reach -- so every process whose command line names its
+# worker directory is ended on its host first; then the session it staged
+# is withdrawn under the worker, and one row answers it, naming why.
 campaign_obligation_unfinished() {
-  local host=$1 obligation_id=$2 worker=$3 sessions=$4 status=$5 why
+  local host=$1 obligation_id=$2 worker=$3 status=$4 why
   why="its worker on ${host} did not finish (exit ${status}: it failed, or \
 the head could not see what it wrote, as the campaign log says); its logs \
 are in ${worker}"
   campaign_log "obligation ${obligation_id}: ${why}"
   campaign_reap_on_host "${host}" "${worker}"
-  campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
+  campaign_withdraw_sessions "${obligation_id}" "${worker}/sessions" \
     "${worker}/unfinished-sessions" "${why}"
   jq -n -c --arg id "${obligation_id}" --arg detail "${why}" \
     '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
@@ -3225,226 +3100,553 @@ are in ${worker}"
     >"${worker}/obligation_result.jsonl"
 }
 
-# The whole wave, through the pool.
-#
-# Results are collected by the caller once the wave has SETTLED -- this
-# returns only when every slot has returned -- so the frontier the next wave
-# plans against is a complete one.
-campaign_dispatch_wave() {
-  local wave_dir=$1 obligations=$2 classes=$3 sessions=$4 seed_plan=$5
-  shift 5
-  local -a jobs=("$@")
-  local -a pids=() slot_hosts=()
-  local queue_dir="${wave_dir}/work-queue"
-  local jobs_file="${wave_dir}/work-queue.txt"
-  local host slot count=${#jobs[@]} status=0
-  mkdir -p "${queue_dir}"
-  printf '%s\n' "${jobs[@]}" >"${jobs_file}"
-  # The wave's directory, which names its campaign and its wave, picks the
-  # first host.
-  while IFS= read -r host; do
-    slot_hosts+=("${host}")
-  done < <(campaign_worker_slot_hosts \
-    "$(printf '%s' "${wave_dir}" | cksum | cut -d ' ' -f 1)")
-  # A pool wider than the wave starts only the slots that can claim work; the
-  # rest would claim nothing and return immediately anyway, and starting them
-  # would put ${hosts} x ${workers} ssh connections on the wire for a wave of
-  # three.
-  for ((slot = 0; slot < ${#slot_hosts[@]} && slot < count; slot++)); do
-    campaign_wave_slot "${slot_hosts[${slot}]}" "${queue_dir}" "${count}" \
-      "${jobs_file}" "${wave_dir}" "${obligations}" "${classes}" \
-      "${sessions}" "${seed_plan}" &
-    pids+=("$!")
-  done
-  campaign_wait_workers "${pids[@]}" || status=1
-  return "${status}"
-}
 
-# Where each of this wave's obligations ran, in one line.
-campaign_log_wave_hosts() {
-  local wave_dir=$1 wave=$2
-  local distribution
-  distribution=$(cat "${wave_dir}"/*/host.txt 2>/dev/null | LC_ALL=C sort \
-    | uniq -c | awk '{printf "%s=%s ", $2, $1}') || distribution=""
-  campaign_log "wave ${wave} ran on: ${distribution:-(nothing recorded)}"
-}
-
-
-# EXPLORE: waves of focused obligations until the frontier stops moving.
+# ---------------------------------------------------------------------------
+# EXPLORE: ONE STREAMING LOOP (PIPELINE §7.7, §7.9)
 #
-# One JVM plans the wave -- explore.ExploreMain reads every session this
-# iteration has produced and writes the obligations the frontier is owed
-# (obligations.jsonl) and the regions those sessions reached without their
-# hooks (growth.jsonl) -- and one worker per obligation executes it.  A task
-# is ONE focused occurrence (or one state-connected factor); everything else
-# in that replay runs concretely, so there is no member roster to plan
-# against: the sessions are the shared state, and a wave reads every session
-# the waves before it wrote.  Once a wave's replays have settled, GROW takes
-# up what they exposed (PIPELINE §7.8) before the next planner runs.
+# No wave barrier.  The head lands each obligation the moment its worker
+# returns -- the verdict into the ledger, the session into the corpus and
+# through the import gate -- plans a new round over the grown corpus once a
+# session has landed, and starts queued obligations wherever the memory
+# ledger admits one.  What the head does between two returns -- a round,
+# GROW's weave, a gate, a COMPOSE attempt -- it does alone and in order, so
+# the corpus, the ledger and the plan change only in its hands, and an
+# obligation sees the corpus as a landed whole.
 #
-# The fixed point is both files empty: nothing left to ask for and nothing
-# left to weave.  Both forced stops are coverage telemetry, never a campaign
-# failure: a wave that proposes the same obligations, verdicts and exposures
-# as the wave before it has learned nothing, and the wave bound is the
-# budget the case stated.  An unexplored sibling path blocks a closed UNSAT
-# and says nothing about a SAT candidate, so the stop is a gap row and the
-# campaign goes on to publish what it did establish.
+# The loop's state is campaign_explore's locals, which the helpers below read
+# and write through bash's dynamic scope:
+#
+#   stream_queue      "<kind> <round> <id> [<session>]" not started yet:
+#                     OBLIGATION, or RERUN (GROW re-running the replay that
+#                     exposed a region, its exposing session named)
+#   stream_jobs       pid -> "<kind> <round> <id> <host> [<session>]"
+#   stream_flying     obligation id -> its row, queued or running: the
+#                     round's --in-flight, never proposed again
+#   stream_host_jobs  host -> how many of this campaign's run there
+#   stream_swaps      re-runs that returned, whose sessions replace the
+#                     exposing ones once no obligation runs
+#   stream_hold       GROW's re-runs and swaps still owed: no obligation
+#                     starts and no round is planned while any is
+# ---------------------------------------------------------------------------
+
+# EXPLORE.  Rounds of explore.ExploreMain over the corpus, each obligation
+# solved and replayed on whichever host has room, until one of three ends:
+#
+#   WITNESSED   a round names an admitted replay that observed the fatal at
+#               the declared occurrence, and COMPOSE over the corpus as it
+#               stands publishes the claim the final stages accept: the queue
+#               is cancelled and what runs is reaped (campaign_stream_end).
+#   FIXED_POINT nothing proposed, exposed, queued or running.
+#   REGION_PATH_WAVE_BUDGET_REACHED  a round of wave region_path_max_waves
+#               still owes work: it is not dispatched, the queue is
+#               cancelled, and what runs lands.
+#
+# Each end is stated in exploration.json, and a forced one as a DIAGNOSTIC
+# row of campaign_gaps.jsonl; none fails the campaign, which goes on to
+# COMPOSE over the corpus EXPLORE left.
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
   local sessions="${iteration_dir}/sessions"
   local results="${iteration_dir}/obligation_results.jsonl"
-  local classes="${iteration_dir}/instrumented-classes"
-  local seed_plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
-  local wave=0 pending=0 exposed=0 status=0 obligation_id wave_dir job
-  local wave_signature="" previous_signature="" stop_kind="" stop_reason=""
-  local obligations growth exposures
-  local -a bound_args=() domain_args=() anchor_args=() jobs=()
+  local attempts="${iteration_dir}/witness_attempts.jsonl"
+  local stream_classes="${iteration_dir}/instrumented-classes"
+  local stream_plan="${iteration_dir}/generations/g0/execution_task_plan.jsonl"
+  local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
+  local stream_generation=0 stream_next_host=0 stream_ticker=""
+  local stream_waiting="" stream_admitted_host="" stream_stop=""
+  local stream_stop_detail=""
+  local -a stream_queue=() stream_hosts=() stream_swaps=()
+  local -a stream_cancelled=() stream_reaped=() stream_round_args=()
+  local -A stream_jobs=() stream_flying=() stream_host_jobs=()
+  local -A stream_host_cores=() stream_host_unread=() stream_tried=()
+  : >"${results}"
+  : >"${attempts}"
+  mkdir -p "$(dirname "${stream_plan}")"
+  ln -f "${iteration_dir}/execution_task_plan.jsonl" "${stream_plan}"
+  mapfile -t stream_hosts < <(campaign_worker_host_list)
+  campaign_stream_round_args
+  # A head that fails takes nothing it started with it: whatever still runs
+  # is ended first, here and on every peer.  The head sets no other EXIT
+  # trap.
+  trap campaign_stream_reap EXIT
+
+  while true; do
+    if [[ -z "${stream_stop}" ]] && campaign_stream_plan_due; then
+      campaign_stream_round
+    fi
+    if [[ "${stream_stop}" == WITNESSED ]]; then
+      campaign_stream_end
+      break
+    fi
+    [[ -z "${stream_stop}" ]] || campaign_stream_drop cancelled
+    campaign_stream_dispatch
+    if (( ${#stream_jobs[@]} == 0 && ${#stream_queue[@]} == 0 )); then
+      [[ -z "${stream_stop}" ]] || break
+      if ! campaign_stream_plan_due; then
+        stream_stop=FIXED_POINT
+        stream_stop_detail="round $((stream_round - 1)) proposed nothing, \
+exposed nothing, and nothing is queued or running"
+        campaign_log "exploration reached its fixed point: \
+${stream_stop_detail}"
+        break
+      fi
+      continue
+    fi
+    campaign_stream_wait
+  done
+  if [[ -n "${stream_ticker}" ]]; then
+    kill "${stream_ticker}" 2>/dev/null || true
+    wait "${stream_ticker}" 2>/dev/null || true
+  fi
+  trap - EXIT
+  campaign_stream_promote_generation
+  campaign_stream_manifest
+  campaign_log "exploration stopped (${stream_stop}) after ${stream_round} \
+round(s), $(grep -c '' "${results}" || true) obligation verdict(s); ran on: \
+$(cat "${iteration_dir}"/obligations-*/*/host.txt 2>/dev/null \
+  | LC_ALL=C sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
+}
+
+# The planner's arguments that stay the same every round.
+campaign_stream_round_args() {
   local declared
   declared=$(campaign_declared_target_occurrence)
-  [[ -z "${declared}" ]] || anchor_args+=(--target-occurrence "${declared}")
-
-  : >"${results}"
-  [[ -z "${region_path_max_paths_per_region}" ]] \
-    || bound_args+=(--max-paths-per-region "${region_path_max_paths_per_region}")
-  [[ -z "${region_path_max_flips_per_path}" ]] \
-    || bound_args+=(--max-flips-per-path "${region_path_max_flips_per_path}")
+  stream_round_args=(--static-scope-map "${causynth_static_scope_map}"
+    --topology-epoch "${iteration_id}")
+  [[ -z "${declared}" ]] \
+    || stream_round_args+=(--target-occurrence "${declared}")
+  [[ -z "${region_path_max_paths_per_region}" ]] || stream_round_args+=(
+    --max-paths-per-region "${region_path_max_paths_per_region}")
+  [[ -z "${region_path_max_flips_per_path}" ]] || stream_round_args+=(
+    --max-flips-per-path "${region_path_max_flips_per_path}")
   [[ -z "${region_path_max_tasks}" ]] \
-    || bound_args+=(--max-tasks "${region_path_max_tasks}")
-  [[ -z "${region_path_max_world_depth}" ]] \
-    || bound_args+=(--max-world-depth "${region_path_max_world_depth}")
-  [[ -z "${region_path_stop_at_fatal}" ]] || bound_args+=(--stop-at-fatal)
+    || stream_round_args+=(--max-tasks "${region_path_max_tasks}")
+  [[ -z "${region_path_max_world_depth}" ]] || stream_round_args+=(
+    --max-world-depth "${region_path_max_world_depth}")
   # The same declaration COMPOSE reads.  An obligation's handoff answers are
   # constrained by their interaction's family, and a family arm is only as
   # constraining as the roots inside it: without the case's declared domain
   # every arm pins its answer to what the recording delivered, and no
   # rotation the case assumes could ever be explored.
   [[ -z "${causynth_root_domains}" ]] \
-    || domain_args+=(--root-domains "${causynth_root_domains}")
-
-  while true; do
-    wave_dir=$(printf '%s/obligations-%04d' "${iteration_dir}" "${wave}")
-    [[ ! -e "${wave_dir}" ]] || die \
-      "obligation wave directory already exists: ${wave_dir}"
-    mkdir -p "${wave_dir}"
-    obligations="${wave_dir}/obligations.jsonl"
-    growth="${wave_dir}/growth.jsonl"
-    status=0
-    run_java_main edu.uva.liftlab.graphchecker.explore.ExploreMain \
-      --sessions "${sessions}" \
-      --results "${results}" \
-      --static-scope-map "${causynth_static_scope_map}" \
-      --topology-epoch "${iteration_id}" \
-      --wave "${wave}" \
-      --output-dir "${wave_dir}" \
-      "${anchor_args[@]}" \
-      "${domain_args[@]}" \
-      "${bound_args[@]}" \
-      >"${wave_dir}/stdout.log" 2>"${wave_dir}/stderr.log" || status=$?
-    if [[ "${status}" -ne 0 ]]; then
-      campaign_fail EXPLORE ExploreMain "${wave_dir}/stderr.log" \
-        "the wave planner failed with exit ${status}"
-    fi
-    # The planner states both files every wave; an empty obligations file is
-    # the frontier closing, and a growth file with no EXPOSED_REGION row is
-    # a closed region set.
-    require_file "wave growth rows" "${growth}"
-    exposures=$(campaign_exposures "${growth}")
-    exposed=$(printf '%s' "${exposures}" | grep -c '' || true)
-    jobs=()
-    pending=0
-    if [[ -s "${obligations}" ]]; then
-      while IFS= read -r obligation_id; do
-        [[ -n "${obligation_id}" ]] || continue
-        jobs+=("${obligation_id}")
-        pending=$((pending + 1))
-      done < <(jq -r '.obligationId' "${obligations}")
-    fi
-    if [[ "${pending}" -eq 0 && "${exposed}" -eq 0 ]]; then
-      campaign_log "wave ${wave}: no obligation open and no region exposed"
-      break
-    fi
-
-    # Obligation identity is stable across waves, so an unchanged signature
-    # over the ids, the verdicts recorded so far AND the exposures is a fixed
-    # point the counts alone cannot see.
-    wave_signature=$({
-        printf '%s\n' "${jobs[@]}" | LC_ALL=C sort
-        printf -- '--\n'
-        jq -r '.verdict // ""' "${results}" | LC_ALL=C sort | uniq -c
-        printf -- '--\n'
-        printf '%s\n' "${exposures}"
-      } | sha256sum | cut -d' ' -f1) \
-      || campaign_fail EXPLORE CAMPAIGN "${results}" \
-        "failed to summarise obligation wave ${wave}"
-    stop_kind=""
-    if [[ "${wave}" -ge "${region_path_max_waves}" ]]; then
-      stop_kind=REGION_PATH_WAVE_BUDGET_REACHED
-      stop_reason="the exploration loop reached its configured budget of \
-region_path_max_waves=${region_path_max_waves} with ${pending} obligation(s) \
-still open and ${exposed} region exposure(s) not yet woven"
-    elif [[ "${wave_signature}" == "${previous_signature}" ]]; then
-      stop_kind=REGION_PATH_CLOSURE_NO_PROGRESS
-      stop_reason="wave ${wave} proposes the same ${pending} obligation(s) \
-and ${exposed} exposure(s) as the wave before it with no new verdict"
-    fi
-    if [[ -n "${stop_kind}" ]]; then
-      jq -n -c --arg kind "${stop_kind}" --arg detail "${stop_reason}" \
-        --arg epoch "${iteration_id}" \
-        '{schemaVersion: 1, sessionId: "", stage: "EXPLORE",
-          kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
-          subject: $kind, detail: $detail, topologyEpoch: $epoch}' \
-        >>"${iteration_dir}/campaign_gaps.jsonl"
-      campaign_log "exploration stopped: ${stop_kind}: ${stop_reason}"
-      break
-    fi
-    previous_signature=${wave_signature}
-    # Which sessions existed before this wave's replays and re-runs landed,
-    # so the row contract below is checked over the wave's own and no other.
-    campaign_session_roster "${sessions}" >"${wave_dir}/sessions-before.txt"
-    if [[ "${pending}" -gt 0 ]]; then
-      campaign_log "wave ${wave}: ${pending} obligation(s), \
-slots=$(campaign_worker_slot_hosts | wc -l) \
-(workers=${concolic_worker_count} per host, \
-hosts=${campaign_worker_hosts:-local})"
-      for job in "${jobs[@]}"; do
-        mkdir -p "${wave_dir}/${job}"
-      done
-      status=0
-      campaign_dispatch_wave "${wave_dir}" "${obligations}" "${classes}" \
-        "${sessions}" "${seed_plan}" "${jobs[@]}" || status=1
-      campaign_log_wave_hosts "${wave_dir}" "${wave}"
-      if [[ "${status}" -ne 0 ]]; then
-        # A slot whose host's memory could not be read (an obligation that
-        # did not finish is its own answer).  Whatever is still alive on a
-        # peer is this run's to end, before the campaign exits and takes the
-        # head's own process group with it.
-        campaign_reap_remote_workers
-        campaign_fail EXPLORE CAMPAIGN "${wave_dir}" \
-          "obligation wave ${wave} did not finish: a slot could not read \
-its host's memory"
-      fi
-      # Every verdict this wave reached, appended once the wave settled, so
-      # the next wave sees a complete frontier rather than a partial one.
-      find "${wave_dir}" -mindepth 2 -maxdepth 2 \
-        -name obligation_result.jsonl -print0 \
-        | LC_ALL=C sort -z | xargs -0 -r cat >>"${results}"
-    fi
-    if [[ "${exposed}" -gt 0 ]]; then
-      campaign_grow "${iteration_dir}" "${wave_dir}" "${classes}" \
-        "${sessions}" "${seed_plan}" "${results}"
-    fi
-    # The row contract, over every session this wave added to the corpus --
-    # its replays' and GROW's re-runs' -- before the next planner reads one
-    # of their rows.
-    campaign_import_wave_gate "${iteration_dir}" "${iteration_id}" \
-      "${wave_dir}" "${sessions}"
-    wave=$((wave + 1))
-  done
-  campaign_log "exploration stopped after ${wave} wave(s), \
-$(wc -l <"${results}") obligation verdict(s)"
+    || stream_round_args+=(--root-domains "${causynth_root_domains}")
 }
 
-# The EXPOSED_REGION rows of a wave's growth.jsonl, one `obligation region
+# Whether a round is owed now: something answered since the last one, and
+# either a session landed (the corpus grew) or nothing is left to wait for
+# (the last answers may close the frontier).  Never while GROW's re-runs or
+# swaps are owed: the corpus is about to change under the round.
+campaign_stream_plan_due() {
+  (( stream_dirty == 1 && stream_hold == 0 )) || return 1
+  (( stream_landed > 0 )) && return 0
+  (( ${#stream_jobs[@]} == 0 && ${#stream_queue[@]} == 0 ))
+}
+
+# One round: the planner over the corpus as it stands, then -- in this order
+# -- a COMPOSE attempt for witnesses no attempt has judged, the wave budget,
+# and GROW for its exposures, else its obligations into the queue.
+campaign_stream_round() {
+  local round_dir name status=0 exposures exposed proposed wave witness index
+  local row
+  local -a ids=() rows=() fresh=()
+  name=$(printf 'obligations-%04d' "${stream_round}")
+  round_dir="${iteration_dir}/${name}"
+  [[ ! -e "${round_dir}" ]] || die \
+    "obligation round directory already exists: ${round_dir}"
+  mkdir -p "${round_dir}"
+  for row in "${stream_flying[@]}"; do
+    printf '%s\n' "${row}"
+  done >"${round_dir}/in_flight.jsonl"
+  run_java_main edu.uva.liftlab.graphchecker.explore.ExploreMain \
+    --sessions "${sessions}" --results "${results}" \
+    --in-flight "${round_dir}/in_flight.jsonl" \
+    --round "${stream_round}" --output-dir "${round_dir}" \
+    "${stream_round_args[@]}" \
+    >"${round_dir}/stdout.log" 2>"${round_dir}/stderr.log" || status=$?
+  [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExploreMain \
+    "${round_dir}/stderr.log" "round ${stream_round}'s planner failed with \
+exit ${status}"
+  stream_round=$((stream_round + 1))
+  stream_dirty=0
+  stream_landed=0
+  # The planner states both files every round; an empty obligations file is
+  # nothing new to ask, and a growth file with no EXPOSED_REGION row a closed
+  # region set.
+  require_file "round growth rows" "${round_dir}/growth.jsonl"
+  require_file "round obligations" "${round_dir}/obligations.jsonl"
+  exposures=$(campaign_exposures "${round_dir}/growth.jsonl")
+  exposed=$(printf '%s' "${exposures}" | grep -c '' || true)
+  mapfile -t rows < "${round_dir}/obligations.jsonl"
+  mapfile -t ids < <(jq -r '.obligationId' "${round_dir}/obligations.jsonl")
+  proposed=${#ids[@]}
+  wave=$(jq -er '.wave' "${round_dir}/explore_manifest.json") \
+    || campaign_fail EXPLORE ExploreMain "${round_dir}" \
+      "round $((stream_round - 1)) states no wave"
+  campaign_log "round $((stream_round - 1)) (wave ${wave}): ${proposed} \
+obligation(s), ${exposed} exposure(s), ${#stream_flying[@]} in flight, \
+$(jq -r '.branchesStopped' "${round_dir}/explore_manifest.json") branch(es) \
+stopped"
+  while IFS= read -r witness; do
+    [[ -n "${witness}" && -z "${stream_tried[${witness}]+x}" ]] || continue
+    fresh+=("${witness}")
+  done < <(jq -r '.witnesses[]' "${round_dir}/explore_manifest.json")
+  if (( ${#fresh[@]} > 0 )); then
+    campaign_stream_attempt "${name}" "${fresh[@]}"
+    [[ "${stream_stop}" != WITNESSED ]] || return 0
+  fi
+  if (( proposed + exposed > 0 && wave >= region_path_max_waves )); then
+    stream_stop=REGION_PATH_WAVE_BUDGET_REACHED
+    stream_stop_detail="round $((stream_round - 1)) is of wave ${wave}, and \
+the exploration reached its configured budget of \
+region_path_max_waves=${region_path_max_waves} with ${proposed} \
+obligation(s) still open and ${exposed} region exposure(s) not yet woven"
+    campaign_stream_gap "${stream_stop}" "${stream_stop_detail}"
+    return 0
+  fi
+  # A round that exposes regions grows the corpus first: what it proposes is
+  # asked again over the grown one, once GROW's re-runs have swapped in.
+  if (( exposed > 0 )); then
+    campaign_stream_grow "${round_dir}"
+    return 0
+  fi
+  for ((index = 0; index < proposed; index++)); do
+    mkdir -p "${round_dir}/${ids[${index}]}"
+    stream_flying[${ids[${index}]}]=${rows[${index}]}
+    stream_queue+=("OBLIGATION ${name} ${ids[${index}]}")
+  done
+}
+
+# A forced end of the exploration, as the DIAGNOSTIC row EMIT publishes and
+# a log line: coverage telemetry, never a campaign failure.
+campaign_stream_gap() {
+  local kind=$1 detail=$2
+  jq -n -c --arg kind "${kind}" --arg detail "${detail}" \
+    --arg epoch "${iteration_id}" \
+    '{schemaVersion: 1, sessionId: "", stage: "EXPLORE",
+      kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
+      subject: $kind, detail: $detail, topologyEpoch: $epoch}' \
+    >>"${iteration_dir}/campaign_gaps.jsonl"
+  campaign_log "exploration stops: ${kind}: ${detail}"
+}
+
+# One COMPOSE over the corpus as it stands -- the stage's own entry,
+# do_compose, into a scratch directory -- for the witnesses a round names and
+# no attempt judged yet.  An observed fatal is not yet a composable witness:
+# the families COMPOSE joins may need sessions later obligations would add.
+# The exploration ends only when the attempt publishes the claim the final
+# stages accept: SAT_CANDIDATE, its polarity deciding.  Nothing starts while
+# it runs; the head does nothing else.
+campaign_stream_attempt() {
+  local round=$1 dir status=0 claim="" kind="" polarity=false
+  local accepted=false witness
+  shift
+  for witness in "$@"; do stream_tried[${witness}]=1; done
+  dir=$(printf '%s/witness-attempts/%04d' "${iteration_dir}" \
+    "$(grep -c '' "${attempts}" || true)")
+  mkdir -p "${dir}"
+  ( compose_sessions_dir="${sessions}"
+    composed_smt="${dir}/candidate.smt2"
+    composition_manifest="${dir}/candidate_composition_manifest.json"
+    do_compose ) >"${dir}/compose.log" 2>&1 || status=$?
+  if [[ "${status}" -eq 0 ]]; then
+    claim=$(jq -r '.solver.campaignClaim.claim // ""' \
+      "${dir}/candidate_composition_manifest.json" 2>/dev/null) || claim=""
+    kind=$(jq -r '.solver.campaignClaim.findingKind // ""' \
+      "${dir}/candidate_composition_manifest.json" 2>/dev/null) || kind=""
+    polarity=$(jq -r '.solver.campaignClaim.polarityDecides == true' \
+      "${dir}/candidate_composition_manifest.json" 2>/dev/null) \
+      || polarity=false
+  fi
+  [[ "${claim}" == SAT_CANDIDATE && "${polarity}" == true ]] \
+    && accepted=true
+  jq -n -c --arg round "${round}" --arg dir "${dir}" \
+    --argjson witnesses "$(printf '%s\n' "$@" | jq -R . | jq -s -c .)" \
+    --arg claim "${claim}" --arg kind "${kind}" \
+    --argjson polarity "${polarity}" --argjson accepted "${accepted}" \
+    --argjson exit "${status}" \
+    '{round: $round, witnesses: $witnesses, dir: $dir, composeExit: $exit,
+      claim: $claim, findingKind: $kind, polarityDecides: $polarity,
+      accepted: $accepted}' >>"${attempts}"
+  campaign_log "witness $*: COMPOSE over the corpus as it stands \
+(exit ${status}) claims ${claim:-nothing} ${kind} polarityDecides=${polarity}: \
+$([[ "${accepted}" == true ]] && echo "the exploration ends" \
+  || echo "the exploration goes on")"
+  [[ "${accepted}" == true ]] || return 0
+  stream_stop=WITNESSED
+  stream_stop_detail="an admitted replay ($*) observed the fatal at the \
+declared occurrence and COMPOSE over the corpus as it stood published \
+${claim} ${kind} with its polarity deciding (${dir})"
+}
+
+# The queued obligations, out of the queue: their worker directories (made
+# at enqueue, holding nothing yet) gone, none of them in flight any more;
+# GROW's queued re-runs stay.  `cancelled` names each in exploration.json
+# (the exploration ends); `again` leaves them to the next round, which asks
+# again what is still owed (a swap changed the corpus they were cut from).
+campaign_stream_drop() {
+  local why=$1 entry kind round id
+  local -a kept=()
+  for entry in "${stream_queue[@]}"; do
+    read -r kind round id _ <<<"${entry}"
+    if [[ "${kind}" != OBLIGATION ]]; then
+      kept+=("${entry}")
+      continue
+    fi
+    [[ "${why}" != cancelled ]] || stream_cancelled+=("${id}")
+    unset 'stream_flying[$id]'
+    rmdir -- "${iteration_dir}/${round}/${id}"
+  done
+  stream_queue=("${kept[@]}")
+}
+
+# WITNESSED: the queue cancelled, and everything this campaign still runs
+# ended -- its process trees here, its workers on every peer -- and moved
+# out of the iteration with what it staged, so the corpus COMPOSE reads next
+# is exactly the one the accepted attempt read.
+campaign_stream_end() {
+  local pid kind round id host session dir
+  campaign_stream_gap WITNESSED "${stream_stop_detail}; \
+${#stream_queue[@]} queued obligation(s) cancelled and ${#stream_jobs[@]} \
+running one(s) reaped (exploration.json)"
+  campaign_stream_drop cancelled
+  stream_queue=()
+  for pid in "${!stream_jobs[@]}"; do
+    read -r kind round id host session <<<"${stream_jobs[${pid}]}"
+    stream_reaped+=("${id}")
+  done
+  campaign_stream_reap
+  for pid in "${!stream_jobs[@]}"; do
+    read -r kind round id host session <<<"${stream_jobs[${pid}]}"
+    dir="${iteration_dir}/${round}/${id}"
+    [[ "${kind}" == OBLIGATION ]] \
+      || dir=$(campaign_stream_rerun_dir "${round}" "${id}")
+    mkdir -p "${campaign_root}/explore-reaped/${round}"
+    mv -- "${dir}" "${campaign_root}/explore-reaped/${round}/${id}"
+  done
+  stream_jobs=()
+}
+
+# Everything this campaign still runs, ended: each job's process tree here
+# (TERM, the kill grace, KILL), its workers on every peer, and each job
+# waited for.  The EXIT trap of a head that fails mid-exploration, and the
+# witness's end.
+campaign_stream_reap() {
+  local pid
+  local -a tree=()
+  for pid in "${!stream_jobs[@]}" ${stream_ticker}; do
+    mapfile -t -O "${#tree[@]}" tree < <(campaign_process_tree "${pid}")
+  done
+  (( ${#tree[@]} > 0 )) || return 0
+  kill -TERM "${tree[@]}" 2>/dev/null || true
+  sleep "${campaign_adapter_kill_grace_s}"
+  kill -KILL "${tree[@]}" 2>/dev/null || true
+  campaign_reap_remote_workers
+  for pid in "${!stream_jobs[@]}" ${stream_ticker}; do
+    wait "${pid}" 2>/dev/null || true
+  done
+  stream_ticker=""
+}
+
+# <pid> and every process below it, deepest first.
+campaign_process_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    campaign_process_tree "${child}"
+  done
+  printf '%s\n' "$1"
+}
+
+# Starts what the queue holds, first first, while a host admits it.  A
+# re-run runs on the head; an obligation on the next host of the pool,
+# round-robin, whose memory ledger admits one more start and that runs fewer
+# of this campaign's than it has cores (campaign_stream_admit_host).  While
+# GROW owes re-runs or swaps, only re-runs start.
+campaign_stream_dispatch() {
+  local entry
+  while (( ${#stream_queue[@]} > 0 )); do
+    entry=${stream_queue[0]}
+    [[ "${entry}" == RERUN\ * ]] || (( stream_hold == 0 )) || return 0
+    campaign_stream_admit_host "${entry%% *}" || return 0
+    stream_queue=("${stream_queue[@]:1}")
+    campaign_stream_start "${entry}" "${stream_admitted_host}"
+  done
+}
+
+# Picks the host for one start of <kind> and charges it there
+# (stream_admitted_host): the head for a re-run; for an obligation, the pool
+# from the host after the last one chosen.  A host is skipped while it runs
+# as many of this campaign's as it has cores, or while the ledger has no
+# room on it (campaign_host_try_start: no start leaves a host more than
+# CAUSYNTH_HOST_MAX_USED_PCT full).  The head's own host also keeps room for
+# the head's next engine JVM (campaign_head_need_mb): the planner, the gate
+# and COMPOSE run there between two returns, and an obligation that took
+# their room would hold the whole loop.  1 when no host has room now, said
+# once per wait.
+campaign_stream_admit_host() {
+  local kind=$1 host turn count need status=0
+  local -a candidates=()
+  count=${#stream_hosts[@]}
+  if [[ "${kind}" == RERUN ]]; then
+    candidates=(localhost)
+  else
+    for ((turn = 0; turn < count; turn++)); do
+      candidates+=("${stream_hosts[$(( (stream_next_host + turn) % count ))]}")
+    done
+  fi
+  for ((turn = 0; turn < ${#candidates[@]}; turn++)); do
+    host=${candidates[${turn}]}
+    campaign_stream_has_cores "${host}" || continue
+    need=${obligation_memory_mb}
+    if [[ "${kind}" == OBLIGATION ]] && campaign_host_is_local "${host}"; then
+      need=$(( need + $(campaign_head_need_mb) ))
+    fi
+    while true; do
+      run_capturing_status campaign_host_try_start "${host}" "${need}"
+      (( status == 3 )) || break
+      sleep 0.$(( (RANDOM % 9) + 1 ))
+    done
+    case "${status}" in
+      0)
+        stream_admitted_host=${host}
+        unset 'stream_host_unread[$host]'
+        [[ "${kind}" == RERUN ]] \
+          || stream_next_host=$(( (stream_next_host + turn + 1) % count ))
+        stream_waiting=""
+        return 0 ;;
+      2) campaign_stream_unreadable "${host}" ;;
+      *) unset 'stream_host_unread[$host]' ;;
+    esac
+  done
+  if [[ -z "${stream_waiting}" ]]; then
+    campaign_log "waiting for room: no host admits one more start \
+(${campaign_host_wait_reason})"
+    stream_waiting=1
+  fi
+  return 1
+}
+
+# Whether <host> runs fewer of this campaign's starts than it has cores; its
+# core count is read once.  An unreadable count is an unreadable host.
+campaign_stream_has_cores() {
+  local host=$1 cores
+  if [[ -z "${stream_host_cores[${host}]+x}" ]]; then
+    if ! cores=$(campaign_host_cores "${host}"); then
+      campaign_stream_unreadable "${host}"
+      return 1
+    fi
+    stream_host_cores[${host}]=${cores}
+  fi
+  (( ${stream_host_jobs[${host}]:-0} < ${stream_host_cores[${host}]} ))
+}
+
+# A host whose memory or cores could not be read: waited out within the ssh
+# patience (sshd refuses connections under a round's burst of them), then
+# the campaign's named failure, after everything it runs is ended.
+campaign_stream_unreadable() {
+  local host=$1
+  [[ -n "${stream_host_unread[${host}]+x}" ]] \
+    || stream_host_unread[${host}]=${SECONDS}
+  (( SECONDS - stream_host_unread[${host}] < campaign_ssh_patience_s )) \
+    && return 0
+  campaign_fail EXPLORE CAMPAIGN "${host}" "the memory of host ${host} \
+could not be read for ${campaign_ssh_patience_s}s"
+}
+
+# Starts one queue entry on <host>, in the background, on the class tree and
+# plan of the generation current now (a later GROW weaves a new one; this
+# start keeps its own).
+campaign_stream_start() {
+  local entry=$1 host=$2 kind round id session worker
+  read -r kind round id session <<<"${entry}"
+  if [[ "${kind}" == OBLIGATION ]]; then
+    worker="${iteration_dir}/${round}/${id}"
+    printf '%s\n' "${host}" >"${worker}/host.txt"
+    campaign_run_obligation_on_host "${host}" "${id}" \
+      "${iteration_dir}/${round}/obligations.jsonl" "${stream_classes}" \
+      "${worker}" "${sessions}" "${stream_plan}" &
+  else
+    worker=$(campaign_stream_rerun_dir "${round}" "${id}")
+    printf 'localhost\n' >"${worker}/host.txt"
+    (
+      set -euo pipefail
+      campaign_obligation_replay "${id}" "${stream_classes}" "${worker}" \
+        "${worker}/sessions" "${stream_plan}"
+    ) >"${worker}/stdout.log" 2>"${worker}/stderr.log" &
+  fi
+  stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"
+  stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
+}
+
+# Waits for the next return, and lands it; or, while the queue waits for
+# room, for the poll interval at most.
+campaign_stream_wait() {
+  local finished="" status=0
+  if (( ${#stream_queue[@]} > 0 )) && [[ -z "${stream_ticker}" ]]; then
+    sleep "${campaign_host_poll_s}" &
+    stream_ticker=$!
+  fi
+  wait -n -p finished "${!stream_jobs[@]}" ${stream_ticker} || status=$?
+  if [[ -z "${finished}" || "${finished}" == "${stream_ticker}" ]]; then
+    stream_ticker=""
+    return 0
+  fi
+  campaign_stream_land "${finished}" "${status}"
+}
+
+# One return, landed: an obligation's verdict into the ledger and its session
+# into the corpus (campaign_stream_admit); a re-run's into stream_swaps, for
+# once no obligation runs.
+campaign_stream_land() {
+  local pid=$1 status=$2 kind round id host session worker verdict
+  read -r kind round id host session <<<"${stream_jobs[${pid}]}"
+  unset 'stream_jobs[$pid]'
+  stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
+  if [[ "${kind}" == RERUN ]]; then
+    stream_swaps+=("${round} ${id} ${session} ${status}")
+  else
+    unset 'stream_flying[$id]'
+    worker="${iteration_dir}/${round}/${id}"
+    [[ "${status}" -eq 0 ]] || campaign_obligation_unfinished "${host}" \
+      "${id}" "${worker}" "${status}"
+    verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl" \
+      2>/dev/null) || verdict="?"
+    session=$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl" \
+      2>/dev/null) || session=""
+    campaign_log "obligation ${id}: host=${host} verdict=${verdict}"
+    [[ -z "${session}" ]] \
+      || campaign_stream_admit "${worker}" "${worker}/sessions" "${session}"
+    cat -- "${worker}/obligation_result.jsonl" >>"${results}"
+    stream_dirty=1
+  fi
+  ! campaign_stream_swap_due || campaign_stream_swap
+}
+
+# Whether GROW's swaps are due: every re-run it owes has returned, and no
+# obligation runs that started before them.
+campaign_stream_swap_due() {
+  local job
+  (( ${#stream_swaps[@]} > 0 && ${#stream_swaps[@]} == stream_hold )) \
+    || return 1
+  for job in "${stream_jobs[@]}"; do
+    [[ "${job}" != OBLIGATION\ * ]] || return 1
+  done
+}
+
+# A session a worker staged (<staged>/<session>), into the corpus and
+# through the import gate, one session per call (the head is its one
+# caller).  The summary stays with <worker>.
+campaign_stream_admit() {
+  local worker=$1 staged=$2 session=$3
+  [[ -d "${staged}/${session}" ]] || campaign_fail EXPLORE CAMPAIGN \
+    "${staged}" "the verdict names session ${session}, which its worker did \
+not stage"
+  mv -- "${staged}/${session}" "${sessions}/${session}"
+  campaign_import_gate "${iteration_dir}" "${iteration_id}" \
+    "${worker}/import_gate.json" "${sessions}/${session}"
+  stream_landed=$((stream_landed + 1))
+}
+
+# The EXPOSED_REGION rows of a round's growth.jsonl, one `obligation region
 # session` line each, sorted.
 campaign_exposures() {
   jq -r 'select(.kind == "EXPOSED_REGION")
@@ -3454,27 +3656,25 @@ campaign_exposures() {
 
 # GROW (PIPELINE §7.8): a region a replay reached without its hooks is
 # planned, woven in, and the replay that exposed it is run again under the
-# same world, so the next wave's closure sees the region's decisions and
+# same world, so a later round's closure sees the region's decisions and
 # exports.
 #
-# ExploreMain names the exposures on the wave it planned.  Inside that wave,
-# once its replays have settled and before the next planner reads the
-# corpus: ExposedRegionPlanMain synthesises the task rows the exposures need
-# (admissionBasis EXPOSED_BY); the rows are appended to BOTH plans --
-# INSTRUMENT weaves the regions the iteration plan names, and a focused
-# replay runs the seed plan; every worker's plan is a hard link of one of
-# the two, so the rows reach every worker -- the iteration's class tree is
-# woven again, and each exposing obligation's replay is re-run in its own
-# worker directory.  The re-runs are the head's, one after another: a
-# growth step re-runs a few replays, and a pool for them would be a second
-# pool.
-campaign_grow() {
-  local iteration_dir=$1 wave_dir=$2 classes=$3 sessions=$4 seed_plan=$5
-  local results=$6
-  local growth="${wave_dir}/growth.jsonl"
-  local rows="${wave_dir}/exposed_region_plan.jsonl"
-  local plan="${iteration_dir}/execution_task_plan.jsonl"
-  local status=0 obligation_id session
+# One GROW is one GENERATION of the plan and the class tree:
+# ExposedRegionPlanMain synthesises the task rows the exposures need
+# (admissionBasis EXPOSED_BY), the generation's plan is the one before it
+# plus those rows, written as a new file -- the iteration's plan and the seed
+# plan are its links from now on -- and INSTRUMENT weaves it into the
+# generation's own tree.  A start takes the generation current when it
+# starts (campaign_stream_start), so whatever already runs keeps the plan
+# and the classes it started on.  Each exposing obligation's replay is
+# queued first, to re-run on the head in a directory of its own beside its
+# worker; until every re-run has returned and swapped its session in
+# (campaign_stream_swap), no obligation starts and no round is planned.
+campaign_stream_grow() {
+  local round_dir=$1 status=0 generation obligation_id session rerun
+  local growth="${round_dir}/growth.jsonl"
+  local rows="${round_dir}/exposed_region_plan.jsonl"
+  local worker file
   # An exposure names the obligation whose replay is re-run.  One that names
   # none was exposed by the seed replay, and the seed is not re-run: the
   # recording reached that region too, so it is PLAN's to name, not GROW's.
@@ -3488,78 +3688,99 @@ exposure can be grown into"
     --static-scope-map "${causynth_static_scope_map}" \
     --growth "${growth}" \
     --output "${rows}" \
-    >"${wave_dir}/grow-stdout.log" 2>"${wave_dir}/grow-stderr.log"
+    >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
   [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
-    "${wave_dir}/grow-stderr.log" \
+    "${round_dir}/grow-stderr.log" \
     "the exposed-region planner failed with exit ${status}"
   require_nonempty "exposed region plan rows" "${rows}"
-  cat "${rows}" >>"${plan}"
-  campaign_log "$(basename "${wave_dir}"): grown by \
+  stream_generation=$((stream_generation + 1))
+  generation="${iteration_dir}/generations/g${stream_generation}"
+  mkdir -p "${generation}"
+  cat -- "${stream_plan}" "${rows}" >"${generation}/execution_task_plan.jsonl"
+  ln -f "${generation}/execution_task_plan.jsonl" \
+    "${iteration_dir}/execution_task_plan.jsonl"
+  ln -f "${generation}/execution_task_plan.jsonl" \
+    "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
+  campaign_log "$(basename "${round_dir}"): grown by \
 $(jq -r -s 'map(.regionId) | unique | join(",")' "${rows}") \
-($(wc -l <"${rows}") task row(s)); weaving the grown plan"
-  campaign_instrument "${iteration_dir}"
-  # The exposing replays re-run side by side: each withdraws its own session
-  # into its own worker, and the head's memory gate spaces their starts.
-  # Their verdicts join the ledger, one file, once all have settled.
-  local -a pids=() reruns=()
+($(wc -l <"${rows}") task row(s)); weaving generation g${stream_generation}"
+  campaign_instrument "${iteration_dir}" "${generation}/instrumented-classes"
+  stream_plan="${generation}/execution_task_plan.jsonl"
+  stream_classes="${generation}/instrumented-classes"
   while IFS=$'\t' read -r obligation_id session; do
-    campaign_rerun_exposing_obligation "${iteration_dir}" "${wave_dir}" \
-      "${obligation_id}" "${session}" "${classes}" "${sessions}" \
-      "${seed_plan}" &
-    pids+=("$!")
-    reruns+=("${obligation_id}")
+    worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
+      "${obligation_id}") || exit 1
+    rerun="${worker}/grow-$(basename "${round_dir}")/${obligation_id}"
+    mkdir -p "$(dirname "${rerun}")"
+    mkdir "${rerun}" || campaign_fail EXPLORE CAMPAIGN "${rerun}" \
+      "obligation ${obligation_id} was already re-run for this round"
+    # What a replay reads of its worker: the focus row and the schedule cut.
+    for file in focused_task.jsonl schedule_prefix.jsonl \
+        schedule_suffix.jsonl; do
+      [[ ! -e "${worker}/${file}" ]] || ln "${worker}/${file}" "${rerun}/"
+    done
+    stream_queue=("RERUN $(basename "${round_dir}") ${obligation_id} \
+${session}" "${stream_queue[@]}")
+    stream_hold=$((stream_hold + 1))
   done < <(campaign_exposures "${growth}" | cut -f1,3 | LC_ALL=C sort -u)
-  campaign_wait_workers "${pids[@]}" || campaign_fail EXPLORE CAMPAIGN \
-    "${wave_dir}" "a re-run of an exposing obligation did not finish"
-  for obligation_id in "${reruns[@]}"; do
-    campaign_record_rerun "${iteration_dir}" "${obligation_id}" "${results}"
-  done
 }
 
-# One exposing obligation's focused replay, again, under the grown class
-# tree.
-#
-# The worker directory is the obligation's own, from whichever wave proposed
-# it: the focus row and the solver's model are there, and the re-run reads
-# them unchanged.  What the exposing replay wrote -- its log, its verdict row
-# and its session -- moves under the worker as before-<wave>/, kept as the
-# evidence of why the region was grown and out of the corpus, where COMPOSE
-# would otherwise read a session that ran without the region's hooks.  Its
-# verdict joins obligation_results once every re-run of the wave has settled
-# (campaign_record_rerun).
-campaign_rerun_exposing_obligation() {
-  local iteration_dir=$1 wave_dir=$2 obligation_id=$3 session=$4 classes=$5
-  local sessions=$6 seed_plan=$7
-  local worker aside file
+# The directory one exposing obligation's re-run for <round> runs in.
+campaign_stream_rerun_dir() {
+  local round=$1 obligation_id=$2 worker
   worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
     "${obligation_id}") || exit 1
-  aside="${worker}/before-$(basename "${wave_dir}")"
-  mkdir "${aside}" || campaign_fail EXPLORE CAMPAIGN "${aside}" \
-    "obligation ${obligation_id} was already re-run for this wave"
-  campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
-    "${aside}/sessions" "it exposed a region that is woven now, and the \
-re-run's session stands in its place"
-  [[ ! -e "${sessions}/${session}" ]] || campaign_fail EXPLORE CAMPAIGN \
-    "${sessions}/${session}" "the exposing session ${session} does not name \
-obligation ${obligation_id}, so it was not withdrawn from the corpus"
-  for file in replay.log concolic_region_results.jsonl \
-      obligation_result.jsonl replay_verdict.jsonl stdout.log stderr.log; do
-    [[ ! -e "${worker}/${file}" ]] || mv -- "${worker}/${file}" "${aside}/"
-  done
-  printf 'localhost\n' >"${worker}/host.txt"
-  campaign_await_host_memory localhost \
-    || campaign_fail EXPLORE CAMPAIGN "${worker}" \
-      "the re-run of ${obligation_id} found no readable memory on the head"
-  (
-    set -euo pipefail
-    campaign_obligation_replay "${obligation_id}" "${classes}" "${worker}" \
-      "${sessions}" "${seed_plan}"
-  ) >"${worker}/stdout.log" 2>"${worker}/stderr.log" \
-    || campaign_fail EXPLORE CAMPAIGN "${worker}" \
-      "the re-run of ${obligation_id} did not finish"
+  printf '%s/grow-%s/%s\n' "${worker}" "${round}" "${obligation_id}"
 }
 
-# The one worker directory of an obligation, with its focus row.
+# Every re-run that returned, swapped in -- once no obligation runs, since
+# one started before the swap may be cut from the exposing session -- and the
+# queue cancelled, since what it holds may be cut from one too; the next
+# round asks again what is still owed.
+#
+# One swap: the exposing session leaves the corpus for
+# <worker>/before-<round>/ with what its replay wrote, the re-run's files
+# become the worker's, its session is admitted, and its verdict replaces the
+# obligation's row in the ledger.
+campaign_stream_swap() {
+  local swap round id session status worker rerun aside file
+  local queued=${#stream_queue[@]}
+  for swap in "${stream_swaps[@]}"; do
+    read -r round id session status <<<"${swap}"
+    worker=$(campaign_obligation_worker_dir "${iteration_dir}" "${id}") \
+      || exit 1
+    rerun="${worker}/grow-${round}/${id}"
+    [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE CAMPAIGN "${rerun}" \
+      "the re-run of ${id} did not finish (exit ${status})"
+    aside="${worker}/before-${round}"
+    mkdir "${aside}" || campaign_fail EXPLORE CAMPAIGN "${aside}" \
+      "obligation ${id} was already swapped for this round"
+    campaign_withdraw_sessions "${id}" "${sessions}" "${aside}/sessions" \
+      "it exposed a region that is woven now, and the re-run's session \
+stands in its place"
+    [[ ! -e "${sessions}/${session}" ]] || campaign_fail EXPLORE CAMPAIGN \
+      "${sessions}/${session}" "the exposing session ${session} does not \
+name obligation ${id}, so it was not withdrawn from the corpus"
+    for file in replay.log concolic_region_results.jsonl \
+        obligation_result.jsonl replay_verdict.jsonl stdout.log stderr.log \
+        host.txt import_gate.json; do
+      [[ ! -e "${worker}/${file}" ]] || mv -- "${worker}/${file}" "${aside}/"
+      [[ ! -e "${rerun}/${file}" ]] || mv -- "${rerun}/${file}" "${worker}/"
+    done
+    session=$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl")
+    [[ -z "${session}" ]] \
+      || campaign_stream_admit "${worker}" "${rerun}/sessions" "${session}"
+    campaign_record_rerun "${iteration_dir}" "${id}" "${results}"
+  done
+  stream_hold=$((stream_hold - ${#stream_swaps[@]}))
+  stream_swaps=()
+  stream_dirty=1
+  campaign_stream_drop again
+  (( queued == 0 )) || campaign_log "the grown corpus asks again: ${queued} \
+queued obligation(s) left to the next round"
+}
+
+# The obligation worker directory of one obligation, with its focus row.
 campaign_obligation_worker_dir() {
   local iteration_dir=$1 obligation_id=$2 worker
   worker=$(find "${iteration_dir}" -mindepth 2 -maxdepth 2 -type d \
@@ -3585,6 +3806,38 @@ campaign_record_rerun() {
 verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 }
 
+# Once nothing runs: the last generation's tree is the iteration's
+# (CONFIRM and REPRODUCE replay on instrumented-classes), and the trees of
+# the generations before it, which nothing reads any more, are gone.
+campaign_stream_promote_generation() {
+  local generation
+  (( stream_generation > 0 )) || return 0
+  rm -rf -- "${iteration_dir}/instrumented-classes"
+  mv -- "${stream_classes}" "${iteration_dir}/instrumented-classes"
+  for generation in "${iteration_dir}"/generations/g*; do
+    rm -rf -- "${generation}/instrumented-classes"
+  done
+}
+
+# exploration.json: how EXPLORE ended, every COMPOSE attempt at a witness,
+# and every obligation it dropped -- cancelled from the queue or reaped
+# while it ran -- by id.
+campaign_stream_manifest() {
+  jq -n \
+    --arg stop "${stream_stop}" --arg detail "${stream_stop_detail}" \
+    --argjson rounds "${stream_round}" \
+    --argjson generations "${stream_generation}" \
+    --argjson answered "$(grep -c '' "${results}" || true)" \
+    --argjson cancelled "$(printf '%s\n' "${stream_cancelled[@]}" \
+      | jq -R 'select(length > 0)' | jq -s -c .)" \
+    --argjson reaped "$(printf '%s\n' "${stream_reaped[@]}" \
+      | jq -R 'select(length > 0)' | jq -s -c .)" \
+    --slurpfile attempts "${attempts}" \
+    '{schemaVersion: 1, kind: "EXPLORATION", stop: $stop, detail: $detail,
+      rounds: $rounds, generations: $generations, answered: $answered,
+      witnessAttempts: $attempts, cancelled: $cancelled, reaped: $reaped}' \
+    >"${iteration_dir}/exploration.json"
+}
 
 # Gap rows this iteration's stages wrote outside a session live in one file,
 # ${iteration_dir}/campaign_gaps.jsonl, appended by whoever raises them and
@@ -3652,7 +3905,6 @@ campaign_publish_iteration_manifest() {
     --arg obligations "${obligation_results}" \
     --arg obligationsSha "${obligations_sha}" \
     --arg classes "${iteration_dir}/instrumented-classes" \
-    --argjson workers "${concolic_worker_count}" \
     --slurpfile members "${members}" '
     {schemaVersion: 1,
      kind: "CAMPAIGN_ITERATION_MANIFEST",
@@ -3663,7 +3915,6 @@ campaign_publish_iteration_manifest() {
      sessionCensus: {path: $census, sha256: $censusSha},
      obligationResults: {path: $obligations, sha256: $obligationsSha},
      instrumentedClasses: $classes,
-     externalWorkerCount: $workers,
      members: $members}
   ' >"${iteration_dir}/iteration_manifest.json"
   rm -f "${members}"
@@ -3813,7 +4064,7 @@ campaign_confirm() {
     jq -c '.' "${worker}/realized.json" >"${campaign_final}/confirm.json"
   else
     # The replay, exactly as an obligation's.  A campaign_fail inside it
-    # ends a wave; here, in a subshell, it ends the confirmation as "no
+    # ends a campaign; here, in a subshell, it ends the confirmation as "no
     # verdict", which is one more way of not agreeing with the model.
     ( campaign_head_charged "${obligation_memory_mb}" 300 \
         campaign_obligation_replay CONFIRM \
@@ -3995,7 +4246,7 @@ campaign_write_gaps() {
     || { rm -rf -- "${scratch}"; return 1; }
   # Every session's own gap rows, plus the campaign's, each labelled with the
   # stage that raised it: a replay session's rows are REPLAY, an obligation
-  # worker's or a wave's are EXPLORE, and a campaign row states its own stage
+  # worker's or a round's are EXPLORE, and a campaign row states its own stage
   # (IMPORT's gate is the one writer that states none).
   local gapfile gapstage
   : >"${scratch}/session-gaps.jsonl"
@@ -4539,7 +4790,7 @@ campaign_batch_verdict() {
 }
 
 # One target of a batch campaign as its own campaign, in targets/<name>/:
-# its causynth_output_dir (so every stage -- and every peer of its waves,
+# its causynth_output_dir (so every stage -- and every peer of its pool,
 # which derive their paths from it -- reads its slice and its region plan
 # there), its spec that one target's line, its region plan aggregated on its
 # view of the merged skeletons (campaign_target_slice), and its campaign
@@ -4561,9 +4812,10 @@ ${causynth_output_dir}/view_region_skeletons.jsonl.gz"
 
 # A planned target's campaign from EXPLORE on, over its group's seed <group>
 # (campaign_batch_group): its iteration takes the group's union plan (a copy:
-# GROW appends to it), its woven classes and seed session (hard links: GROW
-# re-weaves its own), and its census and import gate (the gate's ledger with
-# them: the seed is gated, and a wave's gate judges the set against it); its
+# GROW writes its own generations), its woven classes and seed session (hard
+# links: GROW weaves its own trees), and its census and import gate (the
+# gate's ledger with them: the seed is gated, and each landed session's gate
+# judges the set against it); its
 # own PLAN is read again (campaign_plan_read).
 campaign_batch_target() {
   local name=$1 group=$2
@@ -4594,12 +4846,12 @@ ${group}"
   campaign_iteration_explore "${iteration_dir}" iteration-0000
 }
 
-# ONE obligation of somebody else's wave, on this machine.
+# ONE obligation of somebody else's campaign, on this machine.
 #
 # The peer loads the same configuration file the campaign loaded, from the
 # same shared home, and every path in it resolves identically -- but two
 # values are NOT in that file and must arrive already decided, or this worker
-# silently does different work from the local workers of the same wave.
+# silently does different work from the local workers of the same campaign.
 #
 #   graphchecker_jar, because FREEZE_TOOL rebinds it to the campaign's
 #     private read-only copy.  Re-derived here it would be whatever is in
@@ -4611,7 +4863,7 @@ ${group}"
 #
 #   the workflow key values, forwarded by campaign_remote_env_assignments as
 #     environment overrides.  They win over the file, so an edit to the file
-#     while the wave is in flight cannot reach a worker.
+#     while the campaign runs cannot reach a worker.
 do_run_obligation() {
   local jar="" jar_sha="" actual_sha
   while [[ $# -gt 0 ]]; do
@@ -4660,7 +4912,7 @@ ${actual_sha}, the campaign says ${jar_sha}"
 }
 
 # One campaign, one iteration.  What a replay learns past the recording's
-# topology is taken up inside EXPLORE's wave loop (GROW), so there is nothing
+# topology is taken up inside EXPLORE's loop (GROW), so there is nothing
 # for a second iteration to re-plan.
 do_campaign() {
   local iteration_id=iteration-0000

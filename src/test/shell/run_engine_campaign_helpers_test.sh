@@ -144,7 +144,7 @@ emit_fixture() {
     >"${emit_iteration}/session_census.jsonl"
   : >"${emit_iteration}/campaign_gaps.jsonl"
   jq -n '{schemaVersion: 1, kind: "CAMPAIGN_ITERATION_MANIFEST",
-    iterationId: "iteration-0000", externalWorkerCount: 1,
+    iterationId: "iteration-0000",
     members: [{role: "TARGET", taskId: "task-target",
                obligationDigests: []}]}' \
     >"${emit_iteration}/iteration_manifest.json"
@@ -528,35 +528,6 @@ jq 'del(.members[].targetReachGoal)' "${index_file}" \
 ( campaign_decode_index_members "${index_file}.old" ) >/dev/null 2>&1 \
   && fail "a schedule index with no target-reach flag was accepted"
 
-# EXPLORE-2: a wave collects every obligation's verdict once the wave has
-# settled, in a deterministic order, so the next wave sees a complete frontier
-# rather than a partial one.  An obligation the solver could not decide is one
-# of those verdicts, not the wave's death.
-wave_root="${test_tmp}/wave"
-mkdir -p "${wave_root}/obligations-0000/OBL.slow" \
-  "${wave_root}/obligations-0000/OBL.fast"
-printf '%s\n' \
-  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OBL.slow","verdict":"NOT_ADMITTED","sessionId":"","detail":"SOLVER_TIMEOUT"}' \
-  >"${wave_root}/obligations-0000/OBL.slow/obligation_result.jsonl"
-printf '%s\n' \
-  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OBL.fast","verdict":"ADMITTED","sessionId":"SESSION.f","detail":""}' \
-  >"${wave_root}/obligations-0000/OBL.fast/obligation_result.jsonl"
-: >"${wave_root}/obligation_results.jsonl"
-find "${wave_root}/obligations-0000" -mindepth 2 -maxdepth 2 \
-  -name obligation_result.jsonl -print0 | LC_ALL=C sort -z \
-  | xargs -0 -r cat >>"${wave_root}/obligation_results.jsonl"
-[[ $(wc -l <"${wave_root}/obligation_results.jsonl") -eq 2 ]] \
-  || fail "the wave did not collect every obligation verdict"
-[[ "$(jq -r -s '[.[].obligationId] | join(",")' \
-      "${wave_root}/obligation_results.jsonl")" == "OBL.fast,OBL.slow" ]] \
-  || fail "the wave collected its verdicts in completion order: \
-$(jq -r -s '[.[].obligationId] | join(",")' \
-    "${wave_root}/obligation_results.jsonl")"
-jq -e -s '[.[] | select(.obligationId == "OBL.slow"
-    and .verdict == "NOT_ADMITTED")] | length == 1' \
-  "${wave_root}/obligation_results.jsonl" >/dev/null \
-  || fail "the undecided obligation's verdict was not recorded"
-
 # EMIT re-hashes frozen inputs before publishing any result.
 emit_fixture
 printf 'schedule_max_jobs=1\n' >>"${emit_config}"
@@ -593,20 +564,20 @@ jq -e '[.gaps[] | select(.code == "TARGET_NOT_REACHED")] as $rows
 $(jq -c '.gaps' "${campaign_final}/gaps.json")"
 
 # EXPLORE-1: a forced stop is coverage telemetry, and it is a gap row like
-# any other -- the wave loop writes it onto the campaign's gap file and goes
-# on to publish what it did establish.  An unexplored sibling path blocks a
+# any other -- the exploration loop writes it onto the campaign's gap file and
+# goes on to publish what it did establish.  An unexplored sibling path blocks a
 # closed UNSAT and says nothing about a SAT candidate.
 emit_fixture
 : >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
 printf '%s\n' \
-  '{"schemaVersion":1,"sessionId":"","kind":"ADMISSION_GAP","cls":"DIAGNOSTIC","subject":"REGION_PATH_CLOSURE_NO_PROGRESS","detail":"wave 3 proposes the same 2 obligation(s) as the wave before it"}' \
+  '{"schemaVersion":1,"sessionId":"","kind":"ADMISSION_GAP","cls":"DIAGNOSTIC","subject":"REGION_PATH_WAVE_BUDGET_REACHED","detail":"round 7 is of wave 12 with 2 obligation(s) still open"}' \
   >"${emit_iteration}/campaign_gaps.jsonl"
 run_emit
 [[ "${emit_status}" -eq 0 ]] \
   || fail "a forced exploration stop withheld the candidate \
 (exit ${emit_status}): $(<"${emit_root}/emit.log")"
 jq -e '.gapCount == 0 and .telemetryCount == 1
-  and .telemetryGaps[0].subject == "REGION_PATH_CLOSURE_NO_PROGRESS"' \
+  and .telemetryGaps[0].subject == "REGION_PATH_WAVE_BUDGET_REACHED"' \
   "${campaign_final}/gaps.json" >/dev/null \
   || fail "the exploration stop is not telemetry in gaps.json: \
 $(jq -c '.telemetryGaps' "${campaign_final}/gaps.json")"
@@ -725,7 +696,10 @@ done
 # long its recording may run.
 # 51: `reproduce_runs` joined it with REPRODUCE: how often a confirmed
 # witness is run natively.
-[[ "$(print_normalized_config | wc -l)" -eq 51 ]] \
+# 49: `concolic_worker_count` and `region_path_stop_at_fatal` left with the
+# wave barrier: how many obligations run on a host is its memory, up to its
+# cores, and every campaign ends at its first accepted witness.
+[[ "$(print_normalized_config | wc -l)" -eq 49 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -911,7 +885,6 @@ stop_after_config() {
   solver_timeout_ms=1000
   replay_timeout_s=2400
   schedule_max_jobs=1
-  concolic_worker_count=1
   region_path_max_waves=1
   compose_max_valuations=1
   obligation_memory_mb=2500
@@ -1114,47 +1087,45 @@ grep -q "artifact=${gate_dir}/campaign_gaps.jsonl" "${gate_dir}/error.log" \
 [[ "$(wc -l <"${gate_dir}/campaign_gaps.jsonl")" -eq 2 ]] \
   || fail "the gate's gap file is not append-only"
 
-# The same gate over the sessions one wave added: EXPLORE calls it after the
-# wave's replays land, and a blocking violation there fails the campaign at
-# that wave.  It names exactly the wave's own sessions -- each session is
-# judged once, and ImportGateMain judges the rules over the set (one seed,
-# the epoch's roots) against the sessions its ledger says were gated before
-# (ContractTest) -- and it reads the iteration itself, every wave's workers
-# included, so no session reads as having no focus row.
-declare -f campaign_explore | grep -q campaign_import_wave_gate \
-  || fail "EXPLORE does not put its wave's sessions to the import gate"
-wave_gate="${test_tmp}/import-gate-wave"
-mkdir -p "${wave_gate}/sessions/seed-result-0" "${wave_gate}/obligations-0000"
-campaign_session_roster "${wave_gate}/sessions" \
-  >"${wave_gate}/obligations-0000/sessions-before.txt"
-# The wave's own replay lands after the roster is taken.
-mkdir -p "${wave_gate}/sessions/focus-a"
-[[ "$(campaign_wave_sessions "${wave_gate}/sessions" \
-        "${wave_gate}/obligations-0000/sessions-before.txt")" == "focus-a" ]] \
-  || fail "the wave gate does not count exactly the sessions the wave added"
+# The same gate over each session EXPLORE lands: campaign_stream_admit moves
+# a worker's staged session into the corpus and gates exactly that one, and a
+# blocking violation there fails the campaign at IMPORT, by name.  Each
+# session is judged once, ImportGateMain judges the rules over the set (one
+# seed, the epoch's roots) against the sessions its ledger says were gated
+# before (ContractTest), and it reads the iteration itself, every round's
+# workers included, so no session reads as having no focus row.
+wave_gate="${test_tmp}/import-gate-stream"
+mkdir -p "${wave_gate}/sessions/seed-result-0" \
+  "${wave_gate}/obligations-0000/OB.a/sessions/focus-a"
 (
+  iteration_dir=${wave_gate}
+  iteration_id=iteration-0000
+  sessions=${wave_gate}/sessions
+  stream_landed=0
   run_java_main() {
     [[ "$*" == *"--sessions ${wave_gate}/sessions --gate focus-a --gated \
 ${wave_gate}/import_gated.txt "* ]] \
-      || fail "the wave gate did not gate exactly its wave's session of the \
+      || fail "the landing gate did not gate exactly its session of the \
 iteration, against the iteration's ledger: $*"
+    [[ -d "${wave_gate}/sessions/focus-a" ]] \
+      || fail "the session was gated before it landed in the corpus"
     printf '%s\n' '{"violations":1,"blocking":1,'\
 '"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
     printf '{"schemaVersion":1,"cls":"BLOCKING"}\n' \
       >>"${wave_gate}/campaign_gaps.jsonl"
   }
-  campaign_import_wave_gate "${wave_gate}" iteration-0000 \
-    "${wave_gate}/obligations-0000" "${wave_gate}/sessions" >/dev/null
+  campaign_stream_admit "${wave_gate}/obligations-0000/OB.a" \
+    "${wave_gate}/obligations-0000/OB.a/sessions" focus-a >/dev/null
 ) 2>"${wave_gate}/error.log" \
-  && fail "a blocking row invariant in a wave's session did not fail the \
+  && fail "a blocking row invariant in a landed session did not fail the \
 campaign"
 grep -q 'stage=IMPORT' "${wave_gate}/error.log" \
-  || fail "the wave gate's failure is not attributed to IMPORT: \
+  || fail "the landing gate's failure is not attributed to IMPORT: \
 $(cat "${wave_gate}/error.log")"
 grep -q 'roots.jsonl seq=3 field=recordedValue' "${wave_gate}/error.log" \
-  || fail "the wave gate's failure does not name the first blocking subject"
-[[ -s "${wave_gate}/obligations-0000/import_gate.json" ]] \
-  || fail "the wave gate wrote no summary of its own"
+  || fail "the landing gate's failure does not name the first blocking subject"
+[[ -s "${wave_gate}/obligations-0000/OB.a/import_gate.json" ]] \
+  || fail "the landing gate wrote no summary beside its worker"
 # A session the gate is handed is a session of the iteration's corpus, or
 # the gate refuses it by name: one outside would be judged against an epoch
 # it is not part of.
@@ -1184,7 +1155,7 @@ mkdir -p "${verify_dir}/instrumented-classes"
 project_classpath="${verify_dir}/classpath-entry"
 (
   run_java_main() { echo "verified 18 woven class(es) under $2"; }
-  campaign_verify_woven_classes "${verify_dir}" >/dev/null
+  campaign_verify_woven_classes "${verify_dir}/instrumented-classes" >/dev/null
 ) || fail "a verifier run that refused nothing failed the campaign"
 grep -q 'verified 18 woven class' \
   "${verify_dir}/woven_class_verification.log" \
@@ -1198,7 +1169,7 @@ org/apache/hadoop/hdfs/server/namenode/FSNamesystem.allowSnapshot(Ljava/lang\
 /String;)V @142: lload_2: Local index 2 is invalid"
     return 1
   }
-  campaign_verify_woven_classes "${verify_dir}" >/dev/null
+  campaign_verify_woven_classes "${verify_dir}/instrumented-classes" >/dev/null
 ) 2>"${verify_dir}/error.log" \
   && fail "a woven class the JVM verifier refused did not fail the campaign"
 grep -q 'stage=INSTRUMENT' "${verify_dir}/error.log" \
@@ -1380,7 +1351,7 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
 # The same terminal NOT_ADMITTED row the worker writes for a solver that
 # failed -- one obligation's own answer, never the wave's death -- naming the
 # bound it exceeded.  The worker must also RETURN, which is the whole point:
-# campaign_wait_workers waited on the hung one forever.
+# the wave barrier waited on the hung one forever.
 worker_dir="${bound_dir}/obligation"
 mkdir -p "${worker_dir}" "${bound_dir}/sessions" "${bound_dir}/classes"
 printf '{"taskId":"TASK.1"}\n' >"${bound_dir}/seed_plan.jsonl"
@@ -1575,9 +1546,10 @@ worker: $(cat "${late_worker}/obligation_result.jsonl")"
 
 # EARLY-END-1: a replay a refusal decided ended there, and its verdict names
 # no session (RowRuntime.closeSession): the session it opened is a prefix of
-# a run and leaves the corpus on the host that ran it, under the worker; the
+# a run and is withdrawn on the host that ran it, under the worker; the
 # verdict row stays the replay's own.  The head, reading a peer's result,
-# waits until its own listing holds no session naming the obligation.
+# waits until its own listing of the worker's staged sessions holds none
+# naming the obligation, where it would land it.
 refused_dir="${bound_dir}/refused"
 refused_worker="${refused_dir}/obligation"
 mkdir -p "${refused_worker}" "${refused_dir}/sessions"
@@ -1610,16 +1582,16 @@ not withdrawn under its worker: $(find "${refused_dir}" | LC_ALL=C sort)"
 [[ "$(jq -r '.detail' "${refused_worker}/obligation_result.jsonl")" \
     == "wrong decision; ended" ]] \
   || fail "EARLY-END-1: the withdrawal changed the replay's verdict row"
-mkdir -p "${refused_dir}/sessions/SESSION.stale"
+mkdir -p "${refused_worker}/sessions/SESSION.stale"
 cp "${refused_worker}/refused-sessions/SESSION.cut/manifest.json" \
-  "${refused_dir}/sessions/SESSION.stale/"
-( sleep 2; rm -rf "${refused_dir}/sessions/SESSION.stale" ) &
+  "${refused_worker}/sessions/SESSION.stale/"
+( sleep 2; rm -rf "${refused_worker}/sessions/SESSION.stale" ) &
 campaign_remote_visibility_wait_s=30 campaign_await_remote_result \
-  "${refused_worker}" peer OB.R "${refused_dir}/sessions" \
+  "${refused_worker}" peer OB.R \
   >"${refused_worker}/await.log" 2>&1 \
   || fail "EARLY-END-1: the head did not wait out a listing that still held \
 the withdrawn session: $(cat "${refused_worker}/await.log")"
-[[ ! -e "${refused_dir}/sessions/SESSION.stale" ]] \
+[[ ! -e "${refused_worker}/sessions/SESSION.stale" ]] \
   || fail "EARLY-END-1: the head returned while its listing held the session"
 wait
 reset_config
@@ -1672,116 +1644,283 @@ printf 'untracked, differently\n' >"${checkout_repo}/loose.txt"
 [[ "$(campaign_checkout_state "${checkout_repo}" | jq -r '.worktreeDigest')" \
     != "$(printf '%s' "${dirty_state}" | jq -r '.worktreeDigest')" ]] \
   || fail "CHECKOUT-STATE-1: the content of a stated entry is not digested"
-# POOL-1: a slot that frees takes the next obligation IMMEDIATELY.
+# STREAM: EXPLORE is one streaming loop (PIPELINE §7.7, §7.9).  The planner,
+# the worker, the gate and COMPOSE are stubbed -- each stands where its JVM
+# stands -- and everything between them is the production loop: the queue,
+# the ledger's admission, landing, rounds and their in-flight rows, the
+# stops.
 #
-# What this replaces was a batch barrier: fill ${concolic_worker_count}
-# background pids, wait for ALL of them, start the next array.  One slow
-# obligation then idled every other slot for its whole duration -- and on
-# 11741 every wave has one, because a replay that reaches its target runs a
-# MiniDFSCluster and one that refuses at the solver does not.
-#
-# One long job and five short ones over two slots.  The barrier pairs the
-# long one with a short one and nothing else may start until the long one
-# ends; the pool runs all five short ones on the other slot WHILE the long
-# one is still going.  Both claims are checked, because either alone is weak:
-# the wall clock alone is a race on a loaded machine, and the start times
-# alone do not say the wave was actually faster.
-pool_dir="${test_tmp}/pool"
-mkdir -p "${pool_dir}/wave"
-reset_config
-concolic_worker_count=2
-campaign_worker_hosts=""
-obligation_memory_mb=1
-pool_jobs=(LONG F1 F2 F3 F4 F5)
-for pool_job in "${pool_jobs[@]}"; do
-  mkdir -p "${pool_dir}/wave/${pool_job}"
-done
-# The stub stands where campaign_obligation_worker stands, so everything
-# between the pool and it -- the claim, the slot, the local branch of
-# campaign_run_obligation_on_host, the log redirection -- is the real thing.
-campaign_obligation_worker() {
-  local id=$1 worker=$4
-  date +%s.%N >"${worker}/started-at"
-  if [[ "${id}" == LONG ]]; then sleep 4; else sleep 0.3; fi
-  date +%s.%N >"${worker}/ended-at"
-  jq -n -c --arg id "${id}" '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
-    obligationId: $id, verdict: "UNSAT", sessionId: "", detail: ""}' \
+# stream_fixture <name>: an iteration and a configuration of its own; a case
+# then says what each round proposes (stream_round_plan <round> <out>: rows
+# into <out>/obligations.jsonl, and stream_witnesses / stream_wave) and what
+# each obligation does (campaign_obligation_worker).
+stream_fixture() {
+  stream_dir="${test_tmp}/$1/iteration-0000"
+  mkdir -p "${stream_dir}/sessions" "${stream_dir}/seed-replay"
+  printf '{"taskId":"TASK.seed"}\n' >"${stream_dir}/execution_task_plan.jsonl"
+  ln -f "${stream_dir}/execution_task_plan.jsonl" \
+    "${stream_dir}/seed-replay/execution_task_plan.jsonl"
+  reset_config
+  campaign_root="${test_tmp}/$1"
+  campaign_host_gate_root="${test_tmp}/$1/hosts"
+  campaign_worker_hosts=""
+  obligation_memory_mb=1
+  engine_memory_mb=1
+  causynth_static_scope_map=""
+  causynth_root_domains=""
+  declared_target_occurrence=""
+  campaign_host_poll_s=1
+  campaign_adapter_kill_grace_s=1
+}
+# Where explore.ExploreMain stands: the files it states every round.
+stream_planner() {
+  local round="" out="" flying=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --round) round=$2; shift 2 ;;
+      --output-dir) out=$2; shift 2 ;;
+      --in-flight) flying=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  jq -r '.obligationId' "${flying}" | LC_ALL=C sort | paste -sd ' ' - \
+    >"${out}/in-flight.txt"
+  : >"${out}/obligations.jsonl"
+  printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
+  stream_witnesses='[]'
+  stream_wave=0
+  stream_round_plan "${round}" "${out}"
+  jq -n --argjson witnesses "${stream_witnesses}" \
+    --argjson wave "${stream_wave}" \
+    '{wave: $wave, witnesses: $witnesses, branchesStopped: 0}' \
+    >"${out}/explore_manifest.json"
+}
+# One obligation row per id, as a round proposes it.
+stream_propose() {
+  local out=$1 id
+  shift
+  for id in "$@"; do
+    printf '{"obligationId":"%s"}\n' "${id}" >>"${out}/obligations.jsonl"
+  done
+}
+# What a worker leaves: its answer, and the session it staged when it names
+# one.
+stream_answer() {
+  local worker=$1 id=$2 verdict=$3 session=${4:-}
+  if [[ -n "${session}" ]]; then
+    mkdir -p "${worker}/sessions/${session}"
+    jq -n -c --arg session "${session}" --arg id "${id}" \
+      '{schemaVersion: 1, kind: "SESSION_MANIFEST", sessionId: $session,
+        role: "FOCUSED", obligationIds: [$id]}' \
+      >"${worker}/sessions/${session}/manifest.json"
+  fi
+  jq -n -c --arg id "${id}" --arg verdict "${verdict}" \
+    --arg session "${session}" \
+    '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
+      verdict: $verdict, sessionId: $session, detail: ""}' \
     >"${worker}/obligation_result.jsonl"
 }
-pool_started=$(date +%s.%N)
-campaign_dispatch_wave "${pool_dir}/wave" /dev/null /dev/null /dev/null \
-  /dev/null "${pool_jobs[@]}" >"${pool_dir}/dispatch.log" 2>&1 \
-  || fail "the pool did not finish a wave of six: $(cat "${pool_dir}/dispatch.log")"
-pool_elapsed=$(awk -v a="$(date +%s.%N)" -v b="${pool_started}" \
-  'BEGIN{printf "%.2f", a - b}')
-for pool_job in "${pool_jobs[@]}"; do
-  [[ -s "${pool_dir}/wave/${pool_job}/obligation_result.jsonl" ]] \
-    || fail "the pool did not run ${pool_job}"
-done
-# NOT THE SUM.  Six jobs end to end is 5.5s; the barrier is 4.6s; the pool is
-# the long job plus change.  5 is below the sum with room to spare and the
-# claim the brief makes.
-awk -v e="${pool_elapsed}" 'BEGIN{exit !(e < 5)}' \
-  || fail "the pool took ${pool_elapsed}s for one 4s job and five 0.3s ones: \
-that is the sum of the work, not the length of its longest piece"
-# NOT THE BARRIER.  Every short job started before the long one finished,
-# which is exactly what a barrier cannot do: under it, four of the five would
-# start only once the long job's batch had been waited on.
-pool_long_end=$(cat "${pool_dir}/wave/LONG/ended-at")
-for pool_job in F1 F2 F3 F4 F5; do
-  pool_start=$(cat "${pool_dir}/wave/${pool_job}/started-at")
-  awk -v s="${pool_start}" -v e="${pool_long_end}" 'BEGIN{exit !(s < e)}' \
-    || fail "${pool_job} did not start until the long obligation had \
-finished: the slot was idle behind a barrier, not pulling work"
-done
-# And the pool laid the work out over both slots rather than serialising it.
-[[ "$(wc -l <"${pool_dir}/wave/work-queue.txt")" -eq 6 ]] \
-  || fail "the wave's job list is not the six obligations it was given"
-[[ "$(find "${pool_dir}/wave/work-queue" -mindepth 1 -maxdepth 1 -type d \
-    | wc -l)" -eq 6 ]] \
-  || fail "the work queue does not hold one claim per obligation"
-unset -f campaign_obligation_worker
+# The stubs every STREAM case shares: a host with room, a gate that records
+# what it gated.
+stream_stubs() {
+  campaign_host_available_mb() { echo 30000; }
+  campaign_host_total_mb() { echo 30000; }
+  run_java_main() { stream_planner "$@"; }
+  campaign_import_gate() { basename "$4" >>"${stream_dir}/gated.txt"; }
+}
 
-# POOL-2: an obligation whose worker did not finish is that obligation's own
-# answer, never the wave's death (a remote worker exiting nonzero failed the
-# campaign), and the rest of the wave runs.  A pool that stopped its slot on
-# the first failure would discard verdicts the wave had already paid for --
-# the same loss REPLAY-BOUND-1 exists to prevent.
-pool_fail_dir="${test_tmp}/pool-fail"
-mkdir -p "${pool_fail_dir}/wave"
-for pool_job in A B C D; do mkdir -p "${pool_fail_dir}/wave/${pool_job}"; done
-campaign_obligation_worker() {
-  local id=$1 worker=$4
-  : >"${worker}/ran"
-  [[ "${id}" != B ]] || return 7
-  jq -n -c --arg id "${id}" '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
-    obligationId: $id, verdict: "UNSAT", sessionId: "", detail: ""}' \
-    >"${worker}/obligation_result.jsonl"
-}
-concolic_worker_count=2
-mkdir -p "${pool_fail_dir}/sessions/SESSION.B"
-jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST", sessionId: "SESSION.B",
-  role: "FOCUSED", obligationIds: ["B"]}' \
-  >"${pool_fail_dir}/sessions/SESSION.B/manifest.json"
-campaign_dispatch_wave "${pool_fail_dir}/wave" /dev/null /dev/null \
-  "${pool_fail_dir}/sessions" /dev/null A B C D \
-  >"${pool_fail_dir}/dispatch.log" 2>&1 \
-  || fail "one unfinished obligation failed the wave: \
-$(cat "${pool_fail_dir}/dispatch.log")"
-for pool_job in A B C D; do
-  [[ -f "${pool_fail_dir}/wave/${pool_job}/ran" ]] \
-    || fail "obligation ${pool_job} never ran: one failure stopped its slot"
-done
-[[ "$(jq -r '.verdict + "|" + .sessionId + "|" + .detail' \
-    "${pool_fail_dir}/wave/B/obligation_result.jsonl")" \
-    == "NOT_ADMITTED||its worker on "*" did not finish (exit 7: "*"); its \
-logs are in ${pool_fail_dir}/wave/B" ]] \
-  || fail "the unfinished obligation is not answered as itself: \
-$(cat "${pool_fail_dir}/wave/B/obligation_result.jsonl" 2>&1)"
-[[ ! -e "${pool_fail_dir}/sessions/SESSION.B" \
-    && -f "${pool_fail_dir}/wave/B/unfinished-sessions/SESSION.B/manifest.json" ]] \
-  || fail "the unfinished obligation's session is still in the corpus"
-unset -f campaign_obligation_worker
+# STREAM-1: NO BARRIER.  A round is planned as soon as a session lands, while
+# what else runs goes on, and what it proposes starts at once: NEXT, proposed
+# once SHORT's session landed, starts while LONG -- proposed with SHORT in
+# round 0 -- still runs, and that round is handed LONG as in flight.  An
+# obligation whose worker did not finish is its own answer, and what it staged
+# is withdrawn under it.  When nothing is queued or running, a last round over
+# every answer proposes nothing: the fixed point.  An empty host list is this
+# machine, with no ssh.
+stream_fixture stream-1
+(
+  stream_stubs
+  ssh() { printf '%s\n' "$*" >>"${stream_dir}/ssh-calls.txt"; return 99; }
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" LONG SHORT BROKEN ;;
+      1) stream_propose "$2" NEXT ;;
+    esac
+  }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    date +%s.%N >"${worker}/started-at"
+    case "${id}" in
+      LONG) sleep 3; stream_answer "${worker}" "${id}" UNSAT ;;
+      SHORT) stream_answer "${worker}" "${id}" ADMITTED SESSION.SHORT ;;
+      BROKEN)
+        mkdir -p "${worker}/sessions/SESSION.BROKEN"
+        jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+          sessionId: "SESSION.BROKEN", role: "FOCUSED",
+          obligationIds: ["BROKEN"]}' \
+          >"${worker}/sessions/SESSION.BROKEN/manifest.json"
+        return 7 ;;
+      NEXT) stream_answer "${worker}" "${id}" UNSAT ;;
+    esac
+    date +%s.%N >"${worker}/ended-at"
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the streaming loop did not finish: $(cat "${stream_dir}/explore.log")"
+[[ -d "${stream_dir}/obligations-0002" && ! -e "${stream_dir}/obligations-0003" ]] \
+  || fail "the loop did not end at its first round with nothing to ask: \
+$(ls "${stream_dir}")"
+[[ "$(cat "${stream_dir}/obligations-0001/in-flight.txt")" == *LONG* ]] \
+  || fail "the round planned while LONG ran was not handed it as in flight: \
+$(cat "${stream_dir}/obligations-0001/in-flight.txt")"
+awk -v s="$(cat "${stream_dir}/obligations-0001/NEXT/started-at")" \
+    -v e="$(cat "${stream_dir}/obligations-0000/LONG/ended-at")" \
+    'BEGIN{exit !(s < e)}' \
+  || fail "NEXT did not start until LONG ended: a barrier, not a stream"
+[[ -z "$(cat "${stream_dir}/obligations-0002/in-flight.txt")" ]] \
+  || fail "the last round was planned with work still in flight"
+jq -e -s 'map(.obligationId) | sort == ["BROKEN","LONG","NEXT","SHORT"]' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  || fail "the ledger is not every obligation's answer, once: \
+$(cat "${stream_dir}/obligation_results.jsonl")"
+jq -e -s '.[] | select(.obligationId == "BROKEN")
+  | .verdict == "NOT_ADMITTED" and (.detail | test("exit 7"))' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  || fail "the unfinished obligation is not answered as itself"
+[[ -f "${stream_dir}/obligations-0000/BROKEN/unfinished-sessions/SESSION.BROKEN/manifest.json" \
+    && ! -e "${stream_dir}/sessions/SESSION.BROKEN" ]] \
+  || fail "what the unfinished obligation staged was not withdrawn under it"
+[[ -f "${stream_dir}/sessions/SESSION.SHORT/manifest.json" \
+    && ! -e "${stream_dir}/obligations-0000/SHORT/sessions/SESSION.SHORT" ]] \
+  || fail "the staged session did not land in the corpus"
+[[ "$(cat "${stream_dir}/gated.txt")" == SESSION.SHORT ]] \
+  || fail "the gate did not judge exactly the landed session: \
+$(cat "${stream_dir}/gated.txt")"
+jq -e '.stop == "FIXED_POINT" and .rounds == 3 and .answered == 4
+  and .cancelled == [] and .reaped == []' "${stream_dir}/exploration.json" \
+  >/dev/null || fail "exploration.json does not state the fixed point: \
+$(cat "${stream_dir}/exploration.json")"
+[[ ! -e "${stream_dir}/campaign_gaps.jsonl" ]] \
+  || fail "a loop that reached its fixed point wrote a stop row"
+[[ ! -e "${stream_dir}/ssh-calls.txt" ]] \
+  || fail "an empty campaign_worker_hosts invoked ssh"
+[[ "$(cat "${stream_dir}"/obligations-*/*/host.txt | LC_ALL=C sort -u)" \
+    == localhost ]] || fail "a local obligation did not record its host"
+
+# STREAM-2: THE END AT A WITNESS (PIPELINE §7.9).  A round that names an
+# admitted fatal at the declared occurrence stops the pool for one COMPOSE
+# over the corpus as it stands.  One that does not accept the claim lets the
+# exploration go on; one that publishes SAT_CANDIDATE with its polarity
+# deciding ends it at once: the queue cancelled, what runs reaped and moved
+# out of the iteration, each named in exploration.json, and the end a
+# DIAGNOSTIC row.  The host's cores cap the pool: two here.
+stream_fixture stream-2
+mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+printf '2\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+(
+  stream_stubs
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" A B LONG1 LONG2 ;;
+      1) stream_witnesses='["SESSION.A"]' ;;
+      *) stream_witnesses='["SESSION.A","SESSION.B"]' ;;
+    esac
+  }
+  # Where ComposeMain stands: the claim is accepted once B's session is in.
+  do_compose() {
+    local claim=UNSAT_CLOSED
+    [[ ! -d "${compose_sessions_dir}/SESSION.B" ]] || claim=SAT_CANDIDATE
+    jq -n --arg claim "${claim}" '{solver: {campaignClaim: {claim: $claim,
+      findingKind: "CLOCK_SKEW", polarityDecides: true}}}' \
+      >"${composition_manifest}"
+  }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    case "${id}" in
+      A) stream_answer "${worker}" A ADMITTED SESSION.A ;;
+      B) sleep 2; stream_answer "${worker}" B ADMITTED SESSION.B ;;
+      *) sleep 60 & printf '%s\n' "$!" >"${worker}/sleep.pid"; wait ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the witnessed loop did not finish: $(cat "${stream_dir}/explore.log")"
+jq -e '.stop == "WITNESSED" and .cancelled == ["LONG2"]
+  and .reaped == ["LONG1"]
+  and ([.witnessAttempts[].accepted] == [false, true])
+  and ([.witnessAttempts[].witnesses] == [["SESSION.A"], ["SESSION.B"]])' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "exploration.json does not name the end, the cancelled and the \
+reaped: $(cat "${stream_dir}/exploration.json")"
+stream_reaped="${campaign_root}/explore-reaped/obligations-0000/LONG1"
+[[ -s "${stream_reaped}/sleep.pid" \
+    && ! -e "${stream_dir}/obligations-0000/LONG1" \
+    && ! -e "${stream_dir}/obligations-0000/LONG2" ]] \
+  || fail "the reaped and the cancelled obligations are still in the \
+iteration: $(ls "${stream_dir}/obligations-0000")"
+! kill -0 "$(cat "${stream_reaped}/sleep.pid")" 2>/dev/null \
+  || fail "the running obligation was not reaped"
+jq -e -s 'map(.obligationId) | sort == ["A","B"]' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  || fail "the ledger holds more than what landed before the end"
+jq -e 'select(.subject == "WITNESSED" and .cls == "DIAGNOSTIC")' \
+  "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  || fail "the end at a witness is not a DIAGNOSTIC row"
+[[ "$(jq -r '.solver.campaignClaim.claim' "${stream_dir}/witness-attempts/\
+0001/candidate_composition_manifest.json")" == SAT_CANDIDATE ]] \
+  || fail "the accepted attempt's composition is not kept"
+
+# STREAM-3: THE WAVE BUDGET.  A wave deepens only as sessions land: round 1,
+# planned once A's session landed, is of wave 1.  A round of wave
+# region_path_max_waves that still owes work is not dispatched, the queue is
+# cancelled, what runs lands, and the stop is a DIAGNOSTIC row.
+stream_fixture stream-3
+region_path_max_waves=1
+(
+  stream_stubs
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" A SLOW ;;
+      *) stream_wave=1; stream_propose "$2" NEVER ;;
+    esac
+  }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    case "${id}" in
+      A) stream_answer "${worker}" A ADMITTED SESSION.A ;;
+      SLOW) sleep 2; stream_answer "${worker}" SLOW UNSAT ;;
+      *) fail "an obligation past the wave budget started" ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the bounded loop did not finish: $(cat "${stream_dir}/explore.log")"
+jq -e 'select(.subject == "REGION_PATH_WAVE_BUDGET_REACHED")
+  | .detail | test("region_path_max_waves=1") and test("1 obligation")' \
+  "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  || fail "the wave budget is not stated as a gap row: \
+$(cat "${stream_dir}/campaign_gaps.jsonl")"
+jq -e -s 'map(.obligationId) | sort == ["A","SLOW"]' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  || fail "what ran when the budget stopped the exploration did not land"
+jq -e '.stop == "REGION_PATH_WAVE_BUDGET_REACHED" and .rounds == 2' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "exploration.json does not state the budget stop"
+[[ ! -e "${stream_dir}/obligations-0001/NEVER" ]] \
+  || fail "a round past the budget was dispatched"
+
+# STREAM-4: a planner that states no growth file did not run to completion:
+# refused by name, never read as "nothing exposed".
+stream_fixture stream-4
+(
+  stream_stubs
+  run_java_main() { :; }
+  campaign_explore "${stream_dir}" iteration-0000
+) >/dev/null 2>"${stream_dir}/explore.err" \
+  && fail "a round with no growth.jsonl was read as nothing exposed"
+grep -q 'round growth rows' "${stream_dir}/explore.err" \
+  || fail "the missing growth file is not named: \
+$(cat "${stream_dir}/explore.err")"
 reset_config
 
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
@@ -1836,24 +1975,14 @@ $(cat "${hosts_dir}/validate.err")"
 [[ "${status}" -eq 0 ]] || fail "validate refused a plain host list"
 reset_config
 
-# HOSTS-2: the slot layout.  Empty is one host's worth of slots; a list is
-# ${concolic_worker_count} slots PER HOST, laid out so the wave's opening
-# fill -- every slot claiming at once -- lands round-robin across the hosts
-# instead of filling the first host before the second sees any work.
-concolic_worker_count=3
-campaign_worker_hosts=""
-[[ "$(campaign_worker_slot_hosts | tr '\n' ' ')" \
-    == "localhost localhost localhost " ]] \
-  || fail "an empty host list is not this machine's slots: \
-$(campaign_worker_slot_hosts | tr '\n' ' ')"
-campaign_worker_hosts="lift12 lift13"
-[[ "$(campaign_worker_slot_hosts | tr '\n' ' ')" \
-    == "lift12 lift13 lift12 lift13 lift12 lift13 " ]] \
-  || fail "two hosts do not round-robin: \
-$(campaign_worker_slot_hosts | tr '\n' ' ')"
-[[ "$(campaign_worker_slot_hosts | wc -l)" -eq 6 ]] \
-  || fail "the pool is not hosts x concolic_worker_count wide"
+# HOSTS-2: the pool's hosts.  Empty is this machine; a list is its hosts.
 # localhost, and this machine's own name, are local: no ssh for either.
+campaign_worker_hosts=""
+[[ "$(campaign_worker_host_list)" == localhost ]] \
+  || fail "an empty host list is not this machine: $(campaign_worker_host_list)"
+campaign_worker_hosts="lift12 lift13"
+[[ "$(campaign_worker_host_list | tr '\n' ' ')" == "lift12 lift13 " ]] \
+  || fail "a host list is not its hosts: $(campaign_worker_host_list)"
 campaign_local_host_names=""
 campaign_host_is_local localhost || fail "localhost is not local"
 campaign_host_is_local "$(hostname)" \
@@ -1865,147 +1994,94 @@ campaign_host_is_local "" || fail "the empty host is not local"
   || fail "another machine reads as local"
 reset_config
 
-# HOSTS-3: EMPTY MEANS NO SSH.  The default is not "ssh to localhost", it is
-# the plain background subshell this shell always used -- so a run that
-# states no hosts cannot fail for a reason ssh invented.
-nossh_dir="${test_tmp}/no-ssh"
-mkdir -p "${nossh_dir}/wave"
-for pool_job in A B C; do mkdir -p "${nossh_dir}/wave/${pool_job}"; done
-ssh() { printf '%s\n' "$*" >>"${nossh_dir}/ssh-calls.txt"; return 99; }
-campaign_obligation_worker() {
-  local id=$1 worker=$4
-  jq -n -c --arg id "${id}" '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
-    obligationId: $id, verdict: "UNSAT", sessionId: "", detail: ""}' \
-    >"${worker}/obligation_result.jsonl"
-}
-concolic_worker_count=2
-campaign_worker_hosts=""
-obligation_memory_mb=1
-campaign_dispatch_wave "${nossh_dir}/wave" /dev/null /dev/null /dev/null \
-  /dev/null A B C >"${nossh_dir}/dispatch.log" 2>&1 \
-  || fail "the local default did not finish its wave: \
-$(cat "${nossh_dir}/dispatch.log")"
-[[ ! -e "${nossh_dir}/ssh-calls.txt" ]] \
-  || fail "an empty campaign_worker_hosts still invoked ssh $(wc -l \
-<"${nossh_dir}/ssh-calls.txt") time(s): $(cat "${nossh_dir}/ssh-calls.txt")"
-for pool_job in A B C; do
-  [[ "$(cat "${nossh_dir}/wave/${pool_job}/host.txt")" == localhost ]] \
-    || fail "${pool_job} did not record the local host"
-  [[ -s "${nossh_dir}/wave/${pool_job}/obligation_result.jsonl" ]] \
-    || fail "${pool_job} produced no result locally"
-done
-
-# HOSTS-4: two hosts round-robin, and BOTH hosts' results are collected.
+# HOSTS-4: the pool over two peers.  Starts go round-robin from the host
+# after the last one chosen, a peer's results and staged session come back
+# and land, and a host whose ledger has no room is given nothing while the
+# other runs everything (a10: one claim sat 30 min on a lift a planner had
+# filled while eight lifts had room).
 #
-# The stub stands where the network stands and nowhere else: the wave, the
-# pool, the slot, the host decision, the generated remote script and the
-# bounded wait for what the peer wrote are all the production code.  What the
-# stub does is what a peer does -- run the script it was handed -- except
-# that it runs the payload's job directly, because the payload is a second
-# JVM-bearing campaign process and this is a shell test.
-twohost_dir="${test_tmp}/two-hosts"
-mkdir -p "${twohost_dir}/wave" "${twohost_dir}/sessions"
-for pool_job in A B C D; do mkdir -p "${twohost_dir}/wave/${pool_job}"; done
-campaign_root="${twohost_dir}"
-graphchecker_jar=${default_graphchecker_jar}
-replay_timeout_s=2400
-solver_timeout_ms=1800000
-campaign_init_local_scratch_root
-ssh() {
-  local host="" script=""
-  # The production call is `ssh <options> -- <host> <command>`, so `--` is
-  # where the options stop, exactly as it is for the real client.
-  while [[ $# -gt 0 ]]; do
-    [[ "$1" == "--" ]] && { shift; break; }
-    shift
+# The stub stands where the network stands and nowhere else: the pool, the
+# host decision, the generated remote script and the bounded wait for what
+# the peer wrote are the production code.  What the stub does is what a peer
+# does -- run the script it was handed -- except that it publishes the
+# payload's answer directly, because the payload is a second JVM-bearing
+# campaign process and this is a shell test.
+stream_two_hosts() {
+  local name=$1
+  stream_fixture "${name}"
+  campaign_worker_hosts="lift12 lift13"
+  campaign_local_host_names=" localhost this-machine "
+  graphchecker_jar=${default_graphchecker_jar}
+  replay_timeout_s=2400
+  solver_timeout_ms=1800000
+  campaign_init_local_scratch_root
+  local host
+  for host in lift12 lift13; do
+    mkdir -p "${campaign_host_gate_root}/${host}"
+    printf '48\n' >"${campaign_host_gate_root}/${host}/cores"
   done
-  host=${1:-}
-  script=${2:-}
-  script=${script#exec /bin/bash }
-  script=${script%\'}
-  script=${script#\'}
-  printf '%s\t%s\n' "${host}" "${script}" >>"${twohost_dir}/ssh-calls.txt"
-  # The generated script is what a peer is asked to run, so it had better be
-  # a script a peer can run.
-  [[ -s "${script}" ]] || return 91
-  bash -n "${script}" || return 92
-  grep -q -- '--run-obligation' "${script}" || return 93
-  grep -q -- "--graphchecker-jar-sha256 $(sha256sum "${graphchecker_jar}" \
-    | awk '{print $1}')" "${script}" || return 94
-  grep -q "CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root}" \
-    "${script}" || return 95
-  # What the peer's payload would have published, published.
-  local worker
-  worker=$(awk '$1 == "--" {print $5; exit}' "${script}")
-  jq -n -c --arg id "$(basename "${worker}")" --arg host "${host}" \
-    '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
-      verdict: "ADMITTED", sessionId: ("SESSION." + $id), detail: $host}' \
-    >"${worker}/obligation_result.jsonl"
-  mkdir -p "${twohost_dir}/sessions/SESSION.$(basename "${worker}")"
-  return 0
+  (
+    stream_stubs
+    campaign_host_available_mb() {
+      [[ "$1" == lift13 && "${name}" == stream-room ]] && echo 0 || echo 30000
+    }
+    stream_round_plan() {
+      [[ "$1" != 0 ]] || stream_propose "$2" A B C D
+    }
+    ssh() {
+      local host="" script="" worker id
+      # The production call is `ssh <options> -- <host> <command>`.
+      while [[ $# -gt 0 ]]; do
+        [[ "$1" == "--" ]] && { shift; break; }
+        shift
+      done
+      host=${1:-}
+      script=${2:-}
+      script=${script#exec /bin/bash }
+      script=${script%\'}
+      script=${script#\'}
+      printf '%s\t%s\n' "${host}" "${script}" >>"${stream_dir}/ssh-calls.txt"
+      # The generated script is what a peer is asked to run, so it had
+      # better be a script a peer can run.
+      [[ -s "${script}" ]] || return 91
+      bash -n "${script}" || return 92
+      grep -q -- '--run-obligation' "${script}" || return 93
+      grep -q -- "--graphchecker-jar-sha256 $(sha256sum "${graphchecker_jar}" \
+        | awk '{print $1}')" "${script}" || return 94
+      grep -q "CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root}" \
+        "${script}" || return 95
+      worker=$(awk '$1 == "--" {print $5; exit}' "${script}")
+      id=$(basename "${worker}")
+      stream_answer "${worker}" "${id}" ADMITTED "SESSION.${id}"
+    }
+    campaign_explore "${stream_dir}" iteration-0000
+  ) >"${stream_dir}/explore.log" 2>&1 \
+    || fail "a two-host exploration did not finish: \
+$(cat "${stream_dir}/explore.log")"
 }
-concolic_worker_count=2
-campaign_worker_hosts="lift12 lift13"
-campaign_local_host_names=" localhost this-machine "
-obligation_memory_mb=1
-campaign_host_available_mb() { echo 30000; }
-campaign_host_total_mb() { echo 30000; }
-campaign_dispatch_wave "${twohost_dir}/wave" "${twohost_dir}/obligations.jsonl" \
-  "${twohost_dir}/classes" "${twohost_dir}/sessions" \
-  "${twohost_dir}/seed.jsonl" A B C D \
-  >"${twohost_dir}/dispatch.log" 2>&1 \
-  || fail "a two-host wave did not finish: $(cat "${twohost_dir}/dispatch.log")"
-[[ "$(wc -l <"${twohost_dir}/ssh-calls.txt")" -eq 4 ]] \
+stream_two_hosts stream-two
+[[ "$(wc -l <"${stream_dir}/ssh-calls.txt")" -eq 4 ]] \
   || fail "four obligations did not become four remote invocations: \
-$(cat "${twohost_dir}/ssh-calls.txt")"
-for twohost_host in lift12 lift13; do
-  [[ "$(cut -f1 <"${twohost_dir}/ssh-calls.txt" | grep -c "^${twohost_host}$")" \
-      -ge 1 ]] \
-    || fail "${twohost_host} was given no work: the pool did not round-robin: \
-$(cut -f1 <"${twohost_dir}/ssh-calls.txt" | LC_ALL=C sort | uniq -c)"
-done
-# Both hosts' results are here, and they are the peers' own rows.
-for pool_job in A B C D; do
-  [[ -s "${twohost_dir}/wave/${pool_job}/obligation_result.jsonl" ]] \
-    || fail "${pool_job}'s remote result was not collected"
-  [[ "$(jq -r '.verdict' \
-      "${twohost_dir}/wave/${pool_job}/obligation_result.jsonl")" \
-      == ADMITTED ]] \
-    || fail "${pool_job}'s collected row is not the peer's verdict"
-  case "$(cat "${twohost_dir}/wave/${pool_job}/host.txt")" in
+$(cat "${stream_dir}/ssh-calls.txt")"
+[[ "$(cut -f1 "${stream_dir}/ssh-calls.txt" | LC_ALL=C sort | uniq -c \
+    | awk '{print $2 "=" $1}' | paste -sd ' ' -)" == "lift12=2 lift13=2" ]] \
+  || fail "the pool did not round-robin: \
+$(cut -f1 "${stream_dir}/ssh-calls.txt" | paste -sd ' ' -)"
+for stream_id in A B C D; do
+  [[ -f "${stream_dir}/sessions/SESSION.${stream_id}/manifest.json" ]] \
+    || fail "${stream_id}'s staged session did not land from its peer"
+  case "$(cat "${stream_dir}/obligations-0000/${stream_id}/host.txt")" in
     lift12|lift13) ;;
-    *) fail "${pool_job} did not record which host ran it: \
-$(cat "${twohost_dir}/wave/${pool_job}/host.txt")" ;;
+    *) fail "${stream_id} did not record which host ran it" ;;
   esac
 done
-[[ "$(cat "${twohost_dir}/wave"/*/host.txt | LC_ALL=C sort -u | wc -l)" \
-    -eq 2 ]] \
-  || fail "the wave's obligations all landed on one host"
-campaign_log_wave_hosts "${twohost_dir}/wave" 0 \
-  >"${twohost_dir}/hosts.log" 2>&1
-grep -q 'lift12=' "${twohost_dir}/hosts.log" \
-  || fail "the wave summary does not say how many ran on lift12: \
-$(cat "${twohost_dir}/hosts.log")"
-grep -q 'lift13=' "${twohost_dir}/hosts.log" \
-  || fail "the wave summary does not say how many ran on lift13"
-# POOL-ROOM: a slot waits for room BEFORE it claims, so a host that has none
-# holds no obligation while the other runs them all, and its slots end with
-# the wave (a10: one claim waited 30 min on a lift a planner had filled).
-room_wave="${twohost_dir}/wave-room"
-for pool_job in E F G; do mkdir -p "${room_wave}/${pool_job}"; done
-campaign_host_poll_s=0
-campaign_host_available_mb() { [[ "$1" == lift13 ]] && echo 0 || echo 30000; }
-campaign_host_total_mb() { echo 30000; }
-campaign_dispatch_wave "${room_wave}" "${twohost_dir}/obligations.jsonl" \
-  "${twohost_dir}/classes" "${twohost_dir}/sessions" \
-  "${twohost_dir}/seed.jsonl" E F G \
-  >"${twohost_dir}/dispatch-room.log" 2>&1 \
-  || fail "a wave with one full host did not finish: \
-$(cat "${twohost_dir}/dispatch-room.log")"
-[[ "$(cat "${room_wave}"/*/host.txt | LC_ALL=C sort -u)" == lift12 ]] \
-  || fail "a host without room held work: $(cat "${room_wave}"/*/host.txt)"
-unset -f ssh
-unset -f campaign_obligation_worker
+jq -e -s 'length == 4 and all(.[]; .verdict == "ADMITTED")' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  || fail "the peers' verdicts were not collected"
+stream_two_hosts stream-room
+[[ "$(cut -f1 "${stream_dir}/ssh-calls.txt" | LC_ALL=C sort -u)" == lift12 ]] \
+  || fail "a host without room was given work: \
+$(cut -f1 "${stream_dir}/ssh-calls.txt")"
 reset_config
 
 # HOSTS-5: a remote worker whose head is gone kills its own process group.
@@ -2120,7 +2196,6 @@ $(cat "${frozen_dir}/nojar.log")"
 # And every workflow key travels as its own environment override, so the
 # peer's configuration is the head's rather than a second derivation of it.
 reset_config
-concolic_worker_count=8
 campaign_worker_hosts="lift12"
 replay_timeout_s=1234
 [[ "$(campaign_remote_env_assignments | grep -c '^CAUSYNTH_REPLAY_TIMEOUT_S=1234$')" \
@@ -2198,61 +2273,20 @@ grep -q 'CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root:+' \
 grep -q 'CAUSYNTH_LOCAL_SCRATCH=%q' "${repo}/run_engine.sh" \
   || fail "the peers are not handed the run's local scratch root"
 
-# GROW-1: the growth step (PIPELINE §7.8).  ExploreMain named a region an
-# obligation's replay reached without its hooks; the step plans it, weaves
-# it and re-runs that obligation's replay in its own worker directory, and
-# the corpus ends up holding the re-run's session in place of the exposing
-# one.  The planner JVM and the weave are stubbed (run_java_main and
-# campaign_instrument); the replay is a script that publishes a session, so
-# everything between -- the plan appends reaching the workers through their
-# hard links, the withdrawal, the re-run and the verdict rewrite -- is the
-# production code.
-grow_dir="${test_tmp}/grow/iteration-0000"
-grow_wave0="${grow_dir}/obligations-0000"
-grow_wave1="${grow_dir}/obligations-0001"
-grow_sessions="${grow_dir}/sessions"
-grow_plan="${grow_dir}/execution_task_plan.jsonl"
-grow_seed_plan="${grow_dir}/seed-replay/execution_task_plan.jsonl"
-grow_results="${grow_dir}/obligation_results.jsonl"
-mkdir -p "${grow_wave0}/OB.x" "${grow_wave1}" "${grow_dir}/seed-replay" \
-  "${grow_dir}/workers/task-a" "${grow_sessions}/SESSION.exposing" \
-  "${grow_sessions}/SESSION.other"
-printf '{"taskId":"TASK.1","regionId":"REGION.a"}\n' >"${grow_plan}"
-ln -f "${grow_plan}" "${grow_seed_plan}"
-# The links PLAN and the obligation worker make: a member's plan is the
-# iteration plan, an obligation worker's is the seed plan.
-ln -f "${grow_plan}" "${grow_dir}/workers/task-a/execution_task_plan.jsonl"
-ln -f "${grow_seed_plan}" "${grow_wave0}/OB.x/execution_task_plan.jsonl"
-# What the exposing replay left in its worker and in the corpus.
-printf '{"taskId":"TASK.1"}\n' >"${grow_wave0}/OB.x/focused_task.jsonl"
-printf 'the exposing replay\n' >"${grow_wave0}/OB.x/replay.log"
-printf 'lift12\n' >"${grow_wave0}/OB.x/host.txt"
-jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
-  verdict: "ADMITTED", sessionId: "SESSION.exposing", detail: ""}' \
-  >"${grow_wave0}/OB.x/obligation_result.jsonl"
-jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
-  sessionId: "SESSION.exposing", role: "FOCUSED", obligationIds: ["OB.x"]}' \
-  >"${grow_sessions}/SESSION.exposing/manifest.json"
-jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
-  sessionId: "SESSION.other", role: "FOCUSED", obligationIds: ["OB.y"]}' \
-  >"${grow_sessions}/SESSION.other/manifest.json"
-printf '%s\n' \
-  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OB.y","verdict":"ADMITTED","sessionId":"SESSION.other","detail":""}' \
-  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OB.x","verdict":"ADMITTED","sessionId":"SESSION.exposing","detail":""}' \
-  >"${grow_results}"
-# The wave planner's statement: one exposure, and the frontier summary that
-# is always there.
-printf '%s\n' \
-  '{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
-  '{"kind":"FRONTIER","open":0}' \
-  >"${grow_wave1}/growth.jsonl"
-[[ "$(campaign_exposures "${grow_wave1}/growth.jsonl")" \
-    == "OB.x	REGION.grown	SESSION.exposing" ]] \
-  || fail "the exposures are not read off growth.jsonl: \
-$(campaign_exposures "${grow_wave1}/growth.jsonl")"
-# The re-run: it must be handed the grown plan and task, and it publishes a
-# session naming OB.x and the verdict row RowRuntime writes.
-cat >"${grow_dir}/replay.sh" <<'EOF'
+# GROW-1: the growth step (PIPELINE §7.8), inside the stream.  Round 1 names
+# a region OB.x's replay reached without its hooks; GROW plans it into a new
+# generation of the plan -- the iteration's plan and the seed plan its links
+# from then on, the generation before it untouched for whatever runs on it --
+# weaves the generation's own tree, and re-runs OB.x's replay first, on the
+# head, in a directory beside its worker; once it returns and no obligation
+# runs, its session takes the exposing one's place in the corpus, its files
+# the worker's and its verdict the ledger's.  The planner, the
+# exposed-region planner and the weave are stubbed; the re-run is the
+# production replay of a script that publishes a session, so everything
+# between is the production code.
+stream_fixture grow
+stream_seed_plan_inode=$(stat -c %i "${stream_dir}/execution_task_plan.jsonl")
+cat >"${stream_dir}/replay.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 grep -q '"REGION.grown"' "${CAUSYNTH_CONCOLIC_TASK_PLAN}" \
@@ -2270,222 +2304,106 @@ jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
   detail: "the grown region refused the flip"}' \
   >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
 EOF
-chmod +x "${grow_dir}/replay.sh"
-reset_config
-concolic_replay_command="${grow_dir}/replay.sh"
-obligation_memory_mb=1
+chmod +x "${stream_dir}/replay.sh"
+concolic_replay_command="${stream_dir}/replay.sh"
 replay_timeout_s=60
 schedule_max_jobs=1
 trace_test=T
-causynth_static_scope_map=""
 custom_jdk_home=""
-workload_work_dir="${grow_dir}"
+workload_work_dir="${stream_dir}"
 (
+  stream_stubs
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" OB.x ;;
+      1) printf '%s\n' \
+'{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
+           >>"$2/growth.jsonl" ;;
+    esac
+  }
   run_java_main() {
-    [[ "$1" == edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain ]] \
-      || fail "GROW ran a JVM other than the exposed-region planner: $*"
-    local args=" $* " output
-    [[ "${args}" == *" --iteration ${grow_dir} "* \
-        && "${args}" == *" --growth ${grow_wave1}/growth.jsonl "* ]] \
-      || fail "the exposed-region planner was not handed the iteration and \
-the wave's growth rows: $*"
-    output=${args##* --output }
-    output=${output%% *}
-    printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n' \
-      >"${output}"
+    if [[ "$1" == edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain ]]
+    then
+      local args=" $* " output
+      [[ "${args}" == *" --iteration ${stream_dir} "* \
+          && "${args}" == *" --growth ${stream_dir}/obligations-0001/growth.jsonl "* ]] \
+        || fail "the exposed-region planner was not handed the iteration and \
+the round's growth rows: $*"
+      output=${args##* --output }
+      output=${output%% *}
+      printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n' \
+        >"${output}"
+      return 0
+    fi
+    stream_planner "$@"
   }
   campaign_instrument() {
-    [[ "$1" == "${grow_dir}" ]] || fail "the weave was given $1"
-    grep -q TASK.grown "${grow_plan}" \
+    [[ "$1" == "${stream_dir}" \
+        && "$2" == "${stream_dir}/generations/g1/instrumented-classes" ]] \
+      || fail "the weave was given $*"
+    grep -q TASK.grown "${stream_dir}/execution_task_plan.jsonl" \
       || fail "the weave ran before the grown rows reached the iteration plan"
-    mkdir -p "${grow_dir}/instrumented-classes"
-    : >"${grow_dir}/instrumented-classes/woven"
+    mkdir -p "$2"
+    : >"$2/woven"
   }
-  campaign_grow "${grow_dir}" "${grow_wave1}" \
-    "${grow_dir}/instrumented-classes" "${grow_sessions}" "${grow_seed_plan}" \
-    "${grow_results}"
-) >"${grow_dir}/grow.log" 2>&1 \
-  || fail "the growth step did not finish: $(cat "${grow_dir}/grow.log")"
-# Both plans carry the row, and so does every worker's link of them.
-grep -q TASK.grown "${grow_dir}/workers/task-a/execution_task_plan.jsonl" \
-  || fail "the member worker's plan did not see the grown row"
-grep -q TASK.grown "${grow_wave0}/OB.x/execution_task_plan.jsonl" \
-  || fail "the obligation worker's plan did not see the grown row"
-[[ -s "${grow_wave1}/exposed_region_plan.jsonl" ]] \
-  || fail "the grown rows are not kept beside the wave that grew them"
-# The exposing session left the corpus and is kept under its worker; the
-# re-run's session is in the corpus; another obligation's session is where
-# it was.
-[[ ! -e "${grow_sessions}/SESSION.exposing" ]] \
-  || fail "the exposing session is still in the corpus"
-[[ -f "${grow_wave0}/OB.x/before-obligations-0001/sessions/SESSION.exposing/manifest.json" ]] \
-  || fail "the exposing session is not kept under the worker: \
-$(find "${grow_wave0}" | LC_ALL=C sort)"
-[[ -f "${grow_sessions}/SESSION.regrown/manifest.json" ]] \
+  campaign_obligation_worker() {
+    local worker=$4
+    printf '{"taskId":"TASK.seed"}\n' >"${worker}/focused_task.jsonl"
+    printf 'the exposing replay\n' >"${worker}/replay.log"
+    stream_answer "${worker}" OB.x ADMITTED SESSION.exposing
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the growing exploration did not finish: \
+$(cat "${stream_dir}/explore.log")"
+stream_worker="${stream_dir}/obligations-0000/OB.x"
+grep -q TASK.grown "${stream_dir}/seed-replay/execution_task_plan.jsonl" \
+  || fail "the seed plan is not the grown generation's"
+[[ "$(stat -c %i "${stream_dir}/generations/g0/execution_task_plan.jsonl")" \
+    == "${stream_seed_plan_inode}" ]] \
+  && ! grep -q TASK.grown "${stream_dir}/generations/g0/execution_task_plan.jsonl" \
+  || fail "the generation before the growth was rewritten under what runs on it"
+[[ -s "${stream_dir}/obligations-0001/exposed_region_plan.jsonl" ]] \
+  || fail "the grown rows are not kept beside the round that grew them"
+[[ ! -e "${stream_dir}/sessions/SESSION.exposing" \
+    && -f "${stream_worker}/before-obligations-0001/sessions/SESSION.exposing/manifest.json" ]] \
+  || fail "the exposing session is not out of the corpus and under its worker"
+[[ -f "${stream_dir}/sessions/SESSION.regrown/manifest.json" ]] \
   || fail "the re-run's session did not reach the corpus"
-[[ -f "${grow_sessions}/SESSION.other/manifest.json" ]] \
-  || fail "another obligation's session was withdrawn with the exposing one"
-# The exposing replay's log and verdict are aside; the re-run's are the
-# worker's, and the re-run ran on the head.
-[[ "$(cat "${grow_wave0}/OB.x/before-obligations-0001/replay.log")" \
+[[ "$(cat "${stream_worker}/before-obligations-0001/replay.log")" \
     == "the exposing replay" ]] \
   || fail "the exposing replay's log was not kept aside"
-[[ "$(jq -r '.verdict' "${grow_wave0}/OB.x/obligation_result.jsonl")" \
-    == NOT_ADMITTED ]] \
-  || fail "the worker's verdict row is not the re-run's: \
-$(cat "${grow_wave0}/OB.x/obligation_result.jsonl")"
-[[ "$(cat "${grow_wave0}/OB.x/host.txt")" == localhost ]] \
-  || fail "the re-run did not record that it ran on the head"
-# The results file: OB.y untouched, OB.x replaced, each once.
-jq -e -s 'length == 2
-  and ([.[] | select(.obligationId == "OB.x")] | length == 1
-       and .[0].verdict == "NOT_ADMITTED"
-       and .[0].sessionId == "SESSION.regrown")
-  and ([.[] | select(.obligationId == "OB.y")] | length == 1)' \
-  "${grow_results}" >/dev/null \
+[[ "$(jq -r '.verdict' "${stream_worker}/obligation_result.jsonl")" \
+    == NOT_ADMITTED && "$(cat "${stream_worker}/host.txt")" == localhost ]] \
+  || fail "the worker's answer is not the re-run's, on the head"
+jq -e -s 'length == 1 and .[0].obligationId == "OB.x"
+  and .[0].verdict == "NOT_ADMITTED" and .[0].sessionId == "SESSION.regrown"' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
   || fail "the re-run's verdict did not replace the exposing one, once: \
-$(cat "${grow_results}")"
-grep -q 'grown by REGION.grown' "${grow_dir}/grow.log" \
-  || fail "the step did not say what grew: $(cat "${grow_dir}/grow.log")"
-grep -q 'OB.x: re-run under the grown tree, verdict=NOT_ADMITTED' \
-    "${grow_dir}/grow.log" \
-  || fail "the step did not say what the re-run decided"
+$(cat "${stream_dir}/obligation_results.jsonl")"
+[[ -f "${stream_dir}/instrumented-classes/woven" \
+    && ! -e "${stream_dir}/generations/g1/instrumented-classes" ]] \
+  || fail "the last generation's tree is not the iteration's once nothing runs"
+grep -q 'grown by REGION.grown' "${stream_dir}/explore.log" \
+  && grep -q 'OB.x: re-run under the grown tree, verdict=NOT_ADMITTED' \
+    "${stream_dir}/explore.log" \
+  || fail "the step did not say what grew and what the re-run decided"
+jq -e '.generations == 1 and .stop == "FIXED_POINT"' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "exploration.json does not count the generation"
 # An exposure that names no obligation is the seed's, and the seed is not
 # re-run: refused by name before any plan is touched.
 printf '%s\n' \
   '{"kind":"EXPOSED_REGION","regionId":"REGION.seed","node":"nn0","occurrence":"REGION.seed#1","sessionId":"SESSION.seed","obligationId":""}' \
-  >"${grow_wave1}/growth.jsonl"
+  >"${stream_dir}/obligations-0001/growth.jsonl"
 (
+  iteration_dir=${stream_dir}
   run_java_main() { fail "the planner ran on an exposure GROW must refuse"; }
-  campaign_grow "${grow_dir}" "${grow_wave1}" \
-    "${grow_dir}/instrumented-classes" "${grow_sessions}" "${grow_seed_plan}" \
-    "${grow_results}"
-) >/dev/null 2>"${grow_dir}/refuse.log" \
+  campaign_stream_grow "${stream_dir}/obligations-0001"
+) >/dev/null 2>"${stream_dir}/refuse.log" \
   && fail "an exposure with no obligation was grown into"
-grep -q 'names no obligation' "${grow_dir}/refuse.log" \
-  || fail "the refusal does not say why: $(cat "${grow_dir}/refuse.log")"
-reset_config
-
-# EXPLORE-3: the wave loop around the step.  The planner is stubbed to say
-# what each wave proposes and exposes, the pool to answer each obligation,
-# and the step and the gate to record that they ran; the loop's own order
-# and its fixed point are the production code.  Wave 0 proposes one
-# obligation and exposes nothing; wave 1 proposes nothing and exposes one
-# region; wave 2 proposes and exposes nothing, which is the fixed point.
-loop_dir="${test_tmp}/explore-loop/iteration-0000"
-mkdir -p "${loop_dir}/sessions" "${loop_dir}/seed-replay"
-: >"${loop_dir}/seed-replay/execution_task_plan.jsonl"
-explore_loop_planner() {
-  local wave="" out=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --wave) wave=$2; shift 2 ;;
-      --output-dir) out=$2; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  : >"${out}/obligations.jsonl"
-  printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
-  case "${wave}" in
-    0) printf '{"obligationId":"OB.a"}\n' >"${out}/obligations.jsonl" ;;
-    1) printf '%s\n' \
-        '{"kind":"EXPOSED_REGION","regionId":"REGION.g","node":"nn0","occurrence":"REGION.g#1","sessionId":"SESSION.a","obligationId":"OB.a"}' \
-        >>"${out}/growth.jsonl" ;;
-  esac
-}
-reset_config
-concolic_worker_count=1
-region_path_max_waves=12
-causynth_static_scope_map=""
-causynth_root_domains=""
-declared_target_occurrence=""
-(
-  run_java_main() { explore_loop_planner "$@"; }
-  campaign_dispatch_wave() {
-    local wave_dir=$1
-    shift 5
-    printf '%s\n' "$*" >>"${loop_dir}/dispatched.txt"
-    local job
-    for job in "$@"; do
-      jq -n -c --arg id "${job}" '{schemaVersion: 1,
-        kind: "OBLIGATION_RESULT", obligationId: $id, verdict: "ADMITTED",
-        sessionId: "SESSION.a", detail: ""}' \
-        >"${wave_dir}/${job}/obligation_result.jsonl"
-    done
-  }
-  campaign_grow() { printf '%s\n' "$(basename "$2")" >>"${loop_dir}/grown.txt"; }
-  campaign_import_wave_gate() {
-    printf '%s\n' "$(basename "$3")" >>"${loop_dir}/gated.txt"
-  }
-  campaign_explore "${loop_dir}" iteration-0000
-) >"${loop_dir}/explore.log" 2>&1 \
-  || fail "the wave loop did not finish: $(cat "${loop_dir}/explore.log")"
-[[ "$(cat "${loop_dir}/dispatched.txt")" == "OB.a" ]] \
-  || fail "the pool did not run exactly wave 0's obligation: \
-$(cat "${loop_dir}/dispatched.txt")"
-[[ "$(cat "${loop_dir}/grown.txt")" == "obligations-0001" ]] \
-  || fail "the growth step did not run exactly once, on wave 1: \
-$(cat "${loop_dir}/grown.txt")"
-[[ "$(tr '\n' ' ' <"${loop_dir}/gated.txt")" \
-    == "obligations-0000 obligations-0001 " ]] \
-  || fail "the gate did not run once per wave that did work: \
-$(tr '\n' ' ' <"${loop_dir}/gated.txt")"
-[[ -d "${loop_dir}/obligations-0002" && ! -e "${loop_dir}/obligations-0003" ]] \
-  || fail "the loop did not stop at the first wave with nothing open and \
-nothing exposed"
-grep -q 'wave 2: no obligation open and no region exposed' \
-    "${loop_dir}/explore.log" \
-  || fail "the fixed point is not stated: $(cat "${loop_dir}/explore.log")"
-[[ "$(jq -r '.obligationId' "${loop_dir}/obligation_results.jsonl")" == OB.a ]] \
-  || fail "the wave's verdict was not collected"
-[[ ! -e "${loop_dir}/campaign_gaps.jsonl" ]] \
-  || fail "a loop that reached its fixed point wrote a stop row"
-# The wave bound: an exposure still owed when region_path_max_waves is
-# reached is stated, as a gap row and in the log, and the loop stops.
-bound_loop="${test_tmp}/explore-bound/iteration-0000"
-mkdir -p "${bound_loop}/sessions" "${bound_loop}/seed-replay"
-: >"${bound_loop}/seed-replay/execution_task_plan.jsonl"
-region_path_max_waves=1
-(
-  run_java_main() { explore_loop_planner "$@"; }
-  campaign_dispatch_wave() {
-    local wave_dir=$1
-    shift 5
-    local job
-    for job in "$@"; do
-      jq -n -c --arg id "${job}" '{schemaVersion: 1,
-        kind: "OBLIGATION_RESULT", obligationId: $id, verdict: "ADMITTED",
-        sessionId: "SESSION.a", detail: ""}' \
-        >"${wave_dir}/${job}/obligation_result.jsonl"
-    done
-  }
-  campaign_grow() { fail "the growth step ran past the wave bound"; }
-  campaign_import_wave_gate() { :; }
-  campaign_explore "${bound_loop}" iteration-0000
-) >"${bound_loop}/explore.log" 2>&1 \
-  || fail "the bounded wave loop did not finish: \
-$(cat "${bound_loop}/explore.log")"
-jq -e 'select(.subject == "REGION_PATH_WAVE_BUDGET_REACHED")
-  | .detail | test("region_path_max_waves=1") and test("1 region exposure")' \
-  "${bound_loop}/campaign_gaps.jsonl" >/dev/null \
-  || fail "the wave bound is not stated as a gap row naming the exposure: \
-$(cat "${bound_loop}/campaign_gaps.jsonl")"
-grep -q 'region_path_max_waves=1' "${bound_loop}/explore.log" \
-  || fail "the wave bound is not stated in the campaign log"
-# And a planner that states no growth file is a planner that did not run
-# to completion: refused by name, never read as "nothing exposed".
-nogrowth_loop="${test_tmp}/explore-nogrowth/iteration-0000"
-mkdir -p "${nogrowth_loop}/sessions" "${nogrowth_loop}/seed-replay"
-: >"${nogrowth_loop}/seed-replay/execution_task_plan.jsonl"
-region_path_max_waves=12
-(
-  run_java_main() { :; }
-  campaign_explore "${nogrowth_loop}" iteration-0000
-) >/dev/null 2>"${nogrowth_loop}/explore.err" \
-  && fail "a wave with no growth.jsonl was read as nothing exposed"
-grep -q 'wave growth rows' "${nogrowth_loop}/explore.err" \
-  || fail "the missing growth file is not named: \
-$(cat "${nogrowth_loop}/explore.err")"
+grep -q 'names no obligation' "${stream_dir}/refuse.log" \
+  || fail "the refusal does not say why: $(cat "${stream_dir}/refuse.log")"
 reset_config
 
 
@@ -2778,24 +2696,18 @@ run_capturing_status campaign_host_try_start lift15
   || fail "a lock a dead campaign left was not broken"
 campaign_host_try_start lift15 || fail "the host stayed locked"
 # A host whose memory stays unreadable past the ssh patience is the
-# obligation's named failure; within it the slot waits (sshd refuses
+# waiter's named failure; within it the start waits (sshd refuses
 # connections under a round's burst).
 campaign_host_available_mb() { return 1; }
 campaign_log() { printf '%s\n' "$*" >>"${memory_dir}/gate.log"; }
 campaign_host_poll_s=0
 campaign_ssh_patience_s=1
-mkdir -p "${memory_dir}/queue"
-run_capturing_status campaign_await_host_memory lift13 "${memory_dir}/queue" 1
+run_capturing_status campaign_await_host_memory lift13
 [[ "${status}" -eq 2 ]] \
   || fail "an unreadable host admitted an obligation"
 grep -q 'the memory of host lift13 could not be read for 1s' \
     "${memory_dir}/gate.log" \
   || fail "the unreadable host is not named: $(cat "${memory_dir}/gate.log")"
-# Once every obligation of the wave is claimed there is nothing to wait for.
-mkdir "${memory_dir}/queue/000000"
-run_capturing_status campaign_await_host_memory lift13 "${memory_dir}/queue" 1
-[[ "${status}" -eq 1 ]] \
-  || fail "a slot kept waiting for room after the wave was all claimed"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb campaign_log
 reset_config
 
@@ -2856,26 +2768,6 @@ campaign_head_charging=0
 campaign_head_charged 999999 120 true \
   || fail "a start outside a head waited for the ledger"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb
-reset_config
-
-# HOSTS-7: a wave rotates the slot list, so the one-obligation waves of a
-# campaign do not all start on the first host.
-concolic_worker_count=2
-campaign_worker_hosts="lift06 lift07 lift08"
-[[ "$(campaign_worker_slot_hosts 4 | tr '\n' ' ')" \
-    == "lift07 lift08 lift06 lift07 lift08 lift06 " ]] \
-  || fail "the slot list does not start at its offset: \
-$(campaign_worker_slot_hosts 4 | tr '\n' ' ')"
-campaign_wave_slot() { printf '%s\n' "$1" >>"${memory_dir}/first-hosts"; }
-campaign_wait_workers() { wait; }
-for wave in 0 1 2 3 4 5; do
-  campaign_dispatch_wave "${memory_dir}/campaign/obligations-000${wave}" \
-    /dev/null /dev/null /dev/null /dev/null A
-done
-[[ "$(LC_ALL=C sort -u "${memory_dir}/first-hosts" | wc -l)" -ge 2 ]] \
-  || fail "six one-obligation waves all started on one host: \
-$(cat "${memory_dir}/first-hosts")"
-unset -f campaign_wave_slot campaign_wait_workers
 reset_config
 
 # FANOUT-1: fanout.sh charges each job to the same ledger with the need its

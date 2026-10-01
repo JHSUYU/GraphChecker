@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
@@ -30,18 +31,20 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * EXPLORE, one wave: plan the closure, propose the flips still open.
+ * EXPLORE, one planner round: plan the closure, propose the flips still open.
  *
  * <pre>
  *   --sessions &lt;dir&gt;           the corpus; its parent is the iteration
  *   --target-occurrence &lt;sel&gt;  the case's declared anchor (v1 selector),
  *                              the ONE root of the closure
- *   --results &lt;file&gt;           earlier waves' ObligationResults; an
+ *   --results &lt;file&gt;           earlier rounds' ObligationResults; an
  *                              answered query is never proposed again
+ *   --in-flight &lt;file&gt;         the obligation rows the campaign has queued
+ *                              or running; none is proposed again
  *   --static-scope-map &lt;file&gt;  the epoch's write/export sites and guards
  *                              (SYMBOL-SCOPE §3)
  *   --root-domains &lt;file&gt;      what the CASE says each root may be
- *   --wave &lt;n&gt;                 which wave this is
+ *   --round &lt;n&gt;                which round this is
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
  *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl, gaps.jsonl,
  *                              graph.jsonl, growth.jsonl,
@@ -50,13 +53,14 @@ import java.util.Set;
  *   --max-world-depth
  * </pre>
  *
- * <p>ONE invocation is ONE wave; the campaign owns the loop and the workers.
- * This rebuilds the frontier from every session and recorded verdict and writes
- * the unanswered flips. It never solves ({@link ObligationSolverMain} does, one
- * worker per obligation).</p>
+ * <p>ONE invocation is ONE round; the campaign owns the loop, the workers and
+ * every stop (PIPELINE §7.9).  This rebuilds the frontier from every session,
+ * recorded verdict and arm in flight, writes the unanswered flips, and states
+ * the round's wave and the witnesses the corpus holds.  It never solves
+ * ({@link ObligationSolverMain} does, one worker per obligation).</p>
  */
 public final class ExploreMain {
-    /** One wave's manifest: its anchors, tasks and verdict counts. */
+    /** One round's manifest: its anchors, tasks and verdict counts. */
     static final String MANIFEST_FILE = "explore_manifest.json";
 
     private ExploreMain() {
@@ -93,8 +97,8 @@ public final class ExploreMain {
         }
         JsonObject manifest = plan(iteration, declaredAnchor,
                 options.path("root-domains"), options.path("results"),
-                scopeMap, out,
-                (int) options.number("wave", 0),
+                options.path("in-flight"), scopeMap, out,
+                (int) options.number("round", 0),
                 options.value("topology-epoch", ""),
                 (int) options.number("max-tasks",
                         ClosurePlanner.DEFAULT_MAX_TASKS),
@@ -104,35 +108,33 @@ public final class ExploreMain {
                         (int) options.number("max-flips-per-path",
                                 ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH),
                         (int) options.number("max-world-depth",
-                                ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)),
-                "true".equals(options.value("stop-at-fatal", "false")));
+                                ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)));
         System.out.println(pretty(manifest));
     }
 
     /**
-     * Plans one wave.
+     * Plans one round.
      *
      * @param declaredAnchor the case's v1 declaration,
      *                       the closure's only root (PIPELINE §7.1); resolved
      *                       against the seed here, so nothing downstream sees a
      *                       selector
-     * @param stopAtFatal    the case asks about its declared occurrence only:
-     *                       once an admitted replay observed the fatal there,
-     *                       nothing more is asked ({@link #witness})
+     * @param inFlight       the obligation rows queued or running, or null
+     *                       for none
      */
     public static JsonObject plan(Path iteration, String declaredAnchor,
                                   Path rootDomains, Path results,
-                                  Path scopeMap, Path out,
-                                  int wave, String topologyEpoch,
+                                  Path inFlight, Path scopeMap, Path out,
+                                  int round, String topologyEpoch,
                                   int maxTasks,
-                                  ObligationFactory.Bounds bounds,
-                                  boolean stopAtFatal)
+                                  ObligationFactory.Bounds bounds)
             throws IOException {
         Corpus corpus = Corpus.read(iteration, rootDomains);
         StaticScopeMap scope = StaticScopeMap.read(scopeMap);
         List<GapRow> gaps = new ArrayList<GapRow>();
         gaps.addAll(unstableAddresses(corpus));
         List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, gaps);
+        Branches branches = Branches.of(corpus, roots, gaps);
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
         Map<String, Set<String>> flipSites =
@@ -142,17 +144,18 @@ public final class ExploreMain {
                 new LinkedHashMap<OccurrenceAddress, String>();
         Set<OccurrenceAddress> waiting =
                 new LinkedHashSet<OccurrenceAddress>();
-        String witness = stopAtFatal ? witness(corpus, roots) : "";
+        List<String> witnesses = witnesses(corpus, roots);
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
-                    maxTasks, scope);
+                    maxTasks, scope, branches);
             gaps.addAll(plan.gaps);
             if (!plan.truncated.isEmpty()) {
                 // A truncated closure misses arms: unsound for a claim over
-                // it, so BLOCKING -- unless the case stopped at its witness,
-                // which asks nothing of the closure past that point.
+                // it, so BLOCKING -- unless an admitted replay already
+                // witnessed the declared occurrence, where the campaign ends
+                // (PIPELINE §7.9) and nothing past that point is asked.
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
-                        GapKind.ADMISSION_GAP, witness.isEmpty()
+                        GapKind.ADMISSION_GAP, witnesses.isEmpty()
                                 ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
                         root.render(), "closure truncated at " + maxTasks
                                 + " tasks; " + plan.truncated.size()
@@ -178,7 +181,7 @@ public final class ExploreMain {
         // never empties the wave (PIPELINE §7.1).
         SlotTable slots = SlotTable.read(iteration);
         SlotTable.Reconciliation skeleton = slots.reconcile(corpus, closure,
-                wave);
+                round);
         gaps.addAll(skeleton.gaps);
         slots.write(iteration);
 
@@ -186,30 +189,24 @@ public final class ExploreMain {
         Frontier frontier = new Frontier(corpus, tasks, flipSites);
         frontier.consume(RowCodec.readAll(results,
                 RowCodec::readObligationResult));
+        if (inFlight != null) {
+            frontier.inFlight(RowCodec.readAll(inFlight,
+                    ExploreCodec::readObligation));
+        }
         List<ObligationFactory.Candidate> candidates =
                 new ArrayList<ObligationFactory.Candidate>();
         for (Task task : tasks) {
             candidates.addAll(ObligationFactory.candidates(corpus, task,
-                    flipSites.get(task.taskId()), bounds, frontier, gaps));
+                    flipSites.get(task.taskId()), bounds, branches, frontier,
+                    gaps));
         }
-        if (!witness.isEmpty()) {
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
-                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, witness,
-                    "an admitted replay observed the fatal at the declared "
-                            + "occurrence, and this case stops exploring at "
-                            + "its first witness: " + candidates.size()
-                            + " flip(s) and " + grown.size()
-                            + " exposure(s) this wave would have asked are "
-                            + "not asked"));
-            candidates.clear();
-            grown.clear();
-        }
-        Frontier.Wave open = frontier.open(wave, candidates);
+        Frontier.Round open = frontier.open(round, candidates);
 
         Files.createDirectories(out);
         // G_k and growth (PIPELINE §7.1); empty growth.jsonl +
-        // obligations.jsonl is the driver's fixed point (§7.9).
-        WaveGraph.of(corpus).write(out, wave);
+        // obligations.jsonl with nothing in flight is the driver's fixed
+        // point (§7.9).
+        WaveGraph.of(corpus).write(out, round);
         // An address is grown once: a planned occurrence no replay ran again
         // since depends on timing the replays do not reproduce (hdfs-17897
         // v83: the NameNode converts a key command only on the heartbeat that
@@ -231,9 +228,10 @@ public final class ExploreMain {
         }
         int exposed = WaveGraph.writeGrowth(corpus, grown, out);
         // What only the seed replay ran waits for a focused replay to expose
-        // it -- unless this wave is the fixpoint: then none ever will, and
+        // it -- unless this round is the fixpoint: then none ever will, and
         // the closure is incomplete.
-        boolean fixpoint = open.empty() && exposed == 0 && witness.isEmpty();
+        boolean fixpoint = open.empty() && exposed == 0
+                && frontier.inFlightCount() == 0 && witnesses.isEmpty();
         for (OccurrenceAddress unexposed : waiting) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, fixpoint ? GapClass.BLOCKING
@@ -253,7 +251,8 @@ public final class ExploreMain {
         RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
-                topologyEpoch, gaps, slots, skeleton, exposed, witness);
+                topologyEpoch, gaps, slots, skeleton, exposed, witnesses,
+                wave(iteration, corpus), branches);
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
@@ -261,24 +260,55 @@ public final class ExploreMain {
     }
 
     /**
-     * The first admitted focused replay (in reading order) whose target row
-     * at a declared root observed the fatal, as "session at occurrence", or
-     * "".  For a case whose question is that one (r,c,i) occurrence, what the
-     * run did after the fatal is not the bug's (owner 2026-09-28: hdfs-11741,
-     * hdfs-17899-bug2 kept exploring for waves after it).
+     * THE WITNESSES: every admitted focused replay (in reading order) whose
+     * target row at a declared root observed the fatal.  The question is
+     * that one (r,c,i) occurrence, so what a run did after its fatal is not
+     * the bug's (owner 2026-09-28: hdfs-11741, hdfs-17899-bug2 kept
+     * exploring for waves after it); the campaign tries to end at each new
+     * one (PIPELINE §7.9).
      */
-    private static String witness(Corpus corpus,
-                                  List<OccurrenceAddress> roots) {
+    private static List<String> witnesses(Corpus corpus,
+                                          List<OccurrenceAddress> roots) {
+        Set<String> witnessed = new LinkedHashSet<String>();
         for (OccurrenceAddress root : roots) {
             for (TargetRow row : corpus.targetsOn(root)) {
                 SessionReader session = corpus.session(row.sessionId());
                 if (row.observedFatal() && session != null
                         && !session.seed() && session.admitted()) {
-                    return row.sessionId() + " at " + root.render();
+                    witnessed.add(row.sessionId());
                 }
             }
         }
-        return "";
+        return new ArrayList<String>(witnessed);
+    }
+
+    /**
+     * THE WAVE this round plans, a generation of worlds: one past the
+     * deepest wave whose obligation published a session of this corpus, 0
+     * over the seed alone (a round's wave is its manifest's; one that states
+     * none planned from the seed).  It deepens only as sessions land, never
+     * with the rounds a streaming campaign plans between them, and
+     * {@code region_path_max_waves} bounds it (PIPELINE §7.9).
+     */
+    private static int wave(Path iteration, Corpus corpus)
+            throws IOException {
+        Map<Path, Integer> waves = new LinkedHashMap<Path, Integer>();
+        int deepest = 0;
+        for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
+            if (corpus.session(worker.sessionId()) == null) continue;
+            Path round = worker.dir().getParent();
+            Integer of = waves.get(round);
+            if (of == null) {
+                Path manifest = round.resolve(MANIFEST_FILE);
+                JsonObject stated = Files.isRegularFile(manifest)
+                        ? ExploreCodec.readObject(manifest) : null;
+                of = stated != null && stated.has("wave")
+                        ? stated.get("wave").getAsInt() : 0;
+                waves.put(round, of);
+            }
+            deepest = Math.max(deepest, of + 1);
+        }
+        return deepest;
     }
 
     /** Planned tasks answered at more than ONE address across replays. The
@@ -453,19 +483,28 @@ public final class ExploreMain {
                                        List<Task> tasks,
                                        Map<String, String> why,
                                        Frontier frontier,
-                                       Frontier.Wave open,
+                                       Frontier.Round open,
                                        String topologyEpoch,
                                        List<GapRow> gaps, SlotTable slots,
                                        SlotTable.Reconciliation skeleton,
-                                       int exposed, String witness) {
+                                       int exposed, List<String> witnesses,
+                                       int wave, Branches branches) {
         JsonObject manifest = new JsonObject();
         JsonArray anchors = new JsonArray();
         for (OccurrenceAddress root : roots) anchors.add(root.render());
         manifest.add("anchors", anchors);
         manifest.addProperty("topologyEpoch", topologyEpoch);
-        manifest.addProperty("wave", open.index);
-        manifest.addProperty("state", !witness.isEmpty() ? "WITNESSED"
-                : open.empty() ? "FIXED_POINT" : "OBLIGATIONS_PROPOSED");
+        manifest.addProperty("round", open.index);
+        manifest.addProperty("wave", wave);
+        // FIXED_POINT: nothing proposed, exposed or in flight; AWAITING:
+        // nothing new while arms are still in flight.
+        manifest.addProperty("state", !open.empty() || exposed > 0
+                ? "OBLIGATIONS_PROPOSED" : frontier.inFlightCount() > 0
+                ? "AWAITING" : "FIXED_POINT");
+        manifest.add("witnesses", ExploreCodec.list(witnesses));
+        manifest.addProperty("inFlight", frontier.inFlightCount());
+        manifest.addProperty("heldInFlight", open.heldInFlight);
+        manifest.addProperty("branchesStopped", branches.stopped());
         manifest.addProperty("exposedRegions", exposed);
         JsonObject skeletonRow = new JsonObject();
         skeletonRow.addProperty("slots", slots.size());
