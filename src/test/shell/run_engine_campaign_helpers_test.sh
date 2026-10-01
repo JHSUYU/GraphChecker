@@ -1831,7 +1831,8 @@ printf '2\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "the witnessed loop did not finish: $(cat "${stream_dir}/explore.log")"
 jq -e '.stop == "WITNESSED" and .cancelled == ["LONG2"]
-  and .reaped == ["LONG1"]
+  and .reaped == ["LONG1"] and .rounds == 2
+  and ([.witnessAttempts[].step] == ["0001", "0002"])
   and ([.witnessAttempts[].accepted] == [false, true])
   and ([.witnessAttempts[].witnesses] == [["SESSION.A"], ["SESSION.B"]])' \
   "${stream_dir}/exploration.json" >/dev/null \

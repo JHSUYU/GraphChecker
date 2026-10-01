@@ -3452,6 +3452,8 @@ campaign_stream_step_done() {
   if [[ -s "${dir}/witnessed" ]]; then
     stream_stop=WITNESSED
     stream_stop_detail=$(cat "${dir}/witnessed")
+    # The round this step owed was never planned.
+    [[ ! -s "${dir}/round" ]] || stream_round=$((stream_round - 1))
   elif [[ -s "${dir}/round" ]]; then
     campaign_stream_take_round "${iteration_dir}/$(cat "${dir}/round")"
   fi
