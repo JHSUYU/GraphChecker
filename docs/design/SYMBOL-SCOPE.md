@@ -251,18 +251,31 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 | `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
 | `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
 
-No anchor is a tree's own hook (`CausynthMessagePropagation`, `CausynthHttp`, `causynthWrote`); each
-lies after the tree's outbound message hook and before its inbound one, so a door keeps its
-pairing. There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
+A door keeps the pairing its call made: a request door lies after the tree's outbound message hook
+(or before anything is sent: the SASL magic number), a response door after its inbound hook, a
+store door after the store hook. Where a system's own hook follows the library's call, the
+library anchor cannot be there, and the system declares the door itself:
+`experiments/<system>/doors.jsonl` (rows of the catalog's shape; `run.sh` passes it as
+`-Dcausynth.system.doors`, `LibraryCatalog#doors`) replaces the catalog's rows of each transport and
+direction it states. Solr's: `ZOOKEEPER` `WRITE` in `SolrZkClient#setData` and `#create` after
+`causynthWrote` (the store hook `MessageDoors.stored`; the catalog's door inside
+`ZooKeeper#setData` would throw before it, and `SolrZkClient`'s `delete` and `multi` get no door),
+`SOLR_HTTP` `RESPONSE` in `HttpSolrClient#executeMethod` and `SOLR_HTTP2` `RESPONSE` in
+`Http2SolrClient#processErrorsAndResponse`, each after `CausynthHttp#response`. HDFS's:
+`HADOOP_IPC` `RESPONSE` in `Client#getRpcResponse` after `installCausynthResponse`, the response's
+inbound hook, which the trunk line calls after `CompletableFuture#get` (the 3.4 line's row is the
+catalog's, already after it). There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
 `getChildren`): every packet and cluster-state read would be one, and ROOT_READ admission (§4.4)
 admits every occurrence that runs a marker.
 
 A door applies where its class family (the method's outermost class with its nested classes) is
-analysed. `plan/ScopeGrowth --doors`, before the first static pass and outside the growth budget
-(§2.4), copies into `scope-classes/` the family of every door that a class of the lineage roots
-outside the family calls, from the first of the roots and the workload classpath holding it (the
-system's own classes or a library jar), unless the case scope holds it; its `GROWN` lines have kind
-`DOOR`. A library merely on the classpath (Solr's Hadoop jars) is never called and gets no door.
+analysed. `plan/ScopeGrowth --doors`, before the first static pass and again after every growth,
+outside the growth budget (§2.4, `run_engine.sh campaign_scope_doors`), copies into
+`scope-classes/` the family of every door that a class of the analysis scope (the case's scope and
+what it grew) outside the family calls, from the first of the roots and the workload classpath
+holding it (the system's own classes or a library jar), unless the scope holds it; its `GROWN`
+lines have kind `DOOR`. A class of the roots the scope never reached brings no door (hadoop-common's
+`ActiveStandbyElector` calls ZooKeeper, which no HDFS case's slice reaches).
 
 At the first call of `after` (or before the first call of `before`) in `method`, the weave inserts,
 per fault kind in row order, `if (Debug.makeSymbolicBoolean(name)) throw new Kind("symbolic

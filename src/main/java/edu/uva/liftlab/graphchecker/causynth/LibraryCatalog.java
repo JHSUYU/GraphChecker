@@ -10,6 +10,9 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -47,6 +50,9 @@ import java.util.regex.Pattern;
 public final class LibraryCatalog {
     static final String RESOURCE =
             "/edu/uva/liftlab/graphchecker/library-catalog.jsonl";
+    /** The system property naming a system's own DOOR rows (its {@code
+     *  experiments/<system>/doors.jsonl}), which override the catalog's. */
+    public static final String SYSTEM_DOORS = "causynth.system.doors";
     static final int SCHEMA_VERSION = 1;
     static final String DOOR = "DOOR";
     static final String CONFIG_SOURCE = "CONFIG_SOURCE";
@@ -116,7 +122,11 @@ public final class LibraryCatalog {
         }
     }
 
-    /** Every DOOR row of the engine's catalog, in file order. */
+    /**
+     * Every DOOR this run weaves, in file order: the engine's catalog, where
+     * the system's own doors ({@value #SYSTEM_DOORS}) replace the catalog's
+     * rows of their transport and direction.
+     */
     public static List<Door> doors() {
         List<Door> known = doors;
         if (known == null) {
@@ -133,9 +143,39 @@ public final class LibraryCatalog {
             } catch (IOException unreadable) {
                 throw new UncheckedIOException(unreadable);
             }
+            String system = System.getProperty(SYSTEM_DOORS, "").trim();
+            if (!system.isEmpty()) {
+                Path file = Paths.get(system);
+                try (BufferedReader reader = Files.newBufferedReader(file,
+                        StandardCharsets.UTF_8)) {
+                    known = overridden(known, doors(rows(reader,
+                            file.getFileName().toString())));
+                } catch (IOException unreadable) {
+                    throw new UncheckedIOException(unreadable);
+                }
+            }
             doors = known;
         }
         return known;
+    }
+
+    /**
+     * The catalog's doors with the system's in place of every catalog row
+     * of a transport and direction the system states: a system whose own
+     * message or store hook follows the library's call (Solr's
+     * {@code SolrZkClient#causynthWrote}, {@code CausynthHttp#response})
+     * places the door after that hook, so the fault keeps the pairing the
+     * hook files.
+     */
+    static List<Door> overridden(List<Door> catalog, List<Door> system) {
+        Set<String> replaced = new LinkedHashSet<>();
+        for (Door door : system) replaced.add(door.name());
+        List<Door> doors = new ArrayList<>();
+        for (Door door : catalog) {
+            if (!replaced.contains(door.name())) doors.add(door);
+        }
+        doors.addAll(system);
+        return Collections.unmodifiableList(doors);
     }
 
     /** The door transports: a {@code FAULT:<TRANSPORT>:...} marker is a

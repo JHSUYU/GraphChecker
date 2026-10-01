@@ -215,9 +215,12 @@ ab_stage_seed_static() {
   printf '%s\n' "${sha}" >"${dir}/classes.sha256"
   mkdir -p "${out}" "${grown}"
   # campaign_analyze_grown_scope's door step, outside the budget: the class
-  # families of the library catalog's doors the system calls join the scope
+  # families of the library doors the analysis scope calls join it
   # (doors/stdout.txt names them).  A jar that ships no catalog has no doors.
   IFS=: read -r -a roots <<<"$(ab_cfg causynth_lineage_roots)"
+  # The system's own doors replace the catalog's, in the door step as in
+  # the static pass (run_engine.sh run_java_main, do_analyze).
+  ab_props=("-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)")
   if (( ${#roots[@]} > 0 )) && unzip -Z1 "${ab_jar}" \
       edu/uva/liftlab/graphchecker/library-catalog.jsonl >/dev/null 2>&1; then
     mkdir -p "${dir}/doors"
@@ -227,7 +230,7 @@ ab_stage_seed_static() {
       || ab_skip "${dir}" "the door scope failed (doors/stderr.log)" || return
     cp "${dir}/doors/stdout.log" "${dir}/doors/stdout.txt"
   fi
-  ab_props=(
+  ab_props+=(
     "-Dcausynth.output.dir=${out}"
     "-Dcausynth.target.spec=$(ab_cfg causynth_target_spec)"
     "-Dcausynth.loop.bounds=$(ab_cfg causynth_loop_bounds)"

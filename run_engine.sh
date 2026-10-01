@@ -144,6 +144,9 @@ workflow_config_keys=(
   # No default here: a campaign that states none is refused by name.
   "causynth_loop_default_bound CAUSYNTH_LOOP_DEFAULT_BOUND krp -"
   "causynth_lineage_roots CAUSYNTH_LINEAGE_ROOTS krp -"
+  # The system's own DOOR rows, which replace the engine catalog's of their
+  # transport and direction (causynth.LibraryCatalog, SYMBOL-SCOPE §4.2).
+  "causynth_system_doors CAUSYNTH_SYSTEM_DOORS krp -"
   # How many classes of the lineage roots SEED may add to the case's scope
   # where the slice stops at it (plan.ScopeGrowth, SYMBOL-SCOPE §2.4),
   # nearest the throw first; 0 keeps the declared scope as it is.
@@ -409,6 +412,9 @@ initialize_config() {
   if [[ -n "${causynth_communication_mappings}" ]]; then
     causynth_communication_mappings=$(resolve_path "${causynth_communication_mappings}")
   fi
+  if [[ -n "${causynth_system_doors}" ]]; then
+    causynth_system_doors=$(resolve_path "${causynth_system_doors}")
+  fi
   if [[ -n "${causynth_loop_bounds}" ]]; then
     causynth_loop_bounds=$(resolve_path "${causynth_loop_bounds}")
   fi
@@ -473,6 +479,7 @@ run_java_main() {
   fi
   run_in_directory "${graphchecker_work_dir}" engine_java \
     "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
+    "-Dcausynth.system.doors=${causynth_system_doors}" \
     -cp "${runtime_classpath}" "${main_class}" "$@"
 }
 
@@ -622,6 +629,7 @@ do_analyze() {
   if [[ -n "${causynth_lineage_roots}" ]]; then
     system_properties+=("-Dcausynth.lineage.roots=${causynth_lineage_roots}")
   fi
+  system_properties+=("-Dcausynth.system.doors=${causynth_system_doors}")
   if [[ -n "${causynth_communication_mappings}" ]]; then
     require_file "communication mapping" "${causynth_communication_mappings}"
     system_properties+=(
@@ -710,9 +718,9 @@ campaign_grown_scope() {
 }
 
 # The static pass, with the scope grown where the slice stops at it until
-# nothing is added or the budget is spent (SYMBOL-SCOPE §2.4).  First,
-# outside the budget, the classes of the library doors the system calls
-# (ScopeGrowth --doors, SYMBOL-SCOPE §4.2).
+# nothing is added or the budget is spent (SYMBOL-SCOPE §2.4).  First, and
+# after every growth, outside the budget, the classes of the library doors
+# the analysis scope calls (campaign_scope_doors).
 campaign_analyze_grown_scope() {
   local grown changes summary
   grown=$(campaign_grown_scope)
@@ -720,13 +728,7 @@ campaign_analyze_grown_scope() {
   rm -rf -- "${grown}"
   mkdir -p "${grown}"
   IFS=: read -r -a roots <<<"${causynth_lineage_roots}"
-  if (( ${#roots[@]} > 0 )); then
-    summary=$(run_java_main edu.uva.liftlab.graphchecker.plan.ScopeGrowth \
-      --doors "${grown}" "${project_classes_dir}" "${project_classpath}" \
-      "${roots[@]}") \
-      || campaign_fail SEED ScopeGrowth "${grown}" "door scope failed"
-    campaign_log "scope growth: ${summary}"
-  fi
+  (( ${#roots[@]} == 0 )) || campaign_scope_doors "${grown}" "${roots[@]}"
   while :; do
     do_analyze
     (( causynth_scope_growth_budget > 0 && ${#roots[@]} > 0 )) || return 0
@@ -739,7 +741,21 @@ campaign_analyze_grown_scope() {
       || campaign_fail SEED ScopeGrowth "${grown}" "scope growth failed"
     campaign_log "scope growth: ${summary}"
     [[ "${changes}" != 0 ]] || return 0
+    # What the scope grew may call a door the scope did not.
+    campaign_scope_doors "${grown}" "${roots[@]}"
   done
+}
+
+# The door step (ScopeGrowth --doors, SYMBOL-SCOPE §4.2): the class families
+# of the library doors a class of the analysis scope calls join it.
+campaign_scope_doors() {
+  local grown=$1 summary
+  shift
+  summary=$(run_java_main edu.uva.liftlab.graphchecker.plan.ScopeGrowth \
+    --doors "${grown}" "${project_classes_dir}" "${project_classpath}" \
+    "$@") \
+    || campaign_fail SEED ScopeGrowth "${grown}" "door scope failed"
+  campaign_log "scope growth: ${summary}"
 }
 
 # slice: SEED's static half alone -- the case's scope copied in by the setup

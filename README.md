@@ -464,8 +464,8 @@ A case is one check on one workload (`<check>.<workload>`), or a batch of checks
 experiments are `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds
 `checks.tsv`, `batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A
 check's slice starts from the classes its experiment's communication mappings name (`system.sh`'s
-`system_mapping_scope`) and its own class; SEED adds the library doors' classes the system calls
-and grows the scope from there. A sweep runs batches:
+`system_mapping_scope`) and its own class, and grows the scope from there; the library doors'
+classes join it once a class of that scope calls them. A sweep runs batches:
 given `causynth_static_root` (`sweep.sh`'s `STATIC_ROOT`), a batch campaign takes each check's
 slice from the build, records its workload once for all its checks, plans each check, replays
 one seed per group of checks whose plans agree, and runs each check's campaign from EXPLORE on,

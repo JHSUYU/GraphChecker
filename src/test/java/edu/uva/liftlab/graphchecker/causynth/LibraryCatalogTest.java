@@ -50,6 +50,44 @@ public class LibraryCatalogTest {
                 new ArrayList<>(response));
     }
 
+    /**
+     * A system's own doors replace the catalog's of their transport and
+     * direction, and only those: each system file names catalog doors, and
+     * parses as the catalog does.
+     */
+    @Test
+    public void aSystemsDoorsReplaceTheCatalogsOfTheirTransport()
+            throws Exception {
+        List<LibraryCatalog.Door> catalog = LibraryCatalog.doors();
+        for (String system : new String[]{"hadoop", "solr"}) {
+            java.nio.file.Path file = java.nio.file.Paths.get("experiments",
+                    system, "doors.jsonl");
+            List<LibraryCatalog.Door> own;
+            try (BufferedReader reader = java.nio.file.Files
+                    .newBufferedReader(file)) {
+                own = LibraryCatalog.doors(LibraryCatalog.rows(reader,
+                        "doors.jsonl"));
+            }
+            LinkedHashSet<String> named = new LinkedHashSet<>();
+            for (LibraryCatalog.Door door : own) named.add(door.name());
+            List<LibraryCatalog.Door> woven =
+                    LibraryCatalog.overridden(catalog, own);
+            for (LibraryCatalog.Door door : catalog) {
+                assertEquals(system + " " + door.method,
+                        !named.contains(door.name()), woven.contains(door));
+            }
+            for (String name : named) {
+                boolean known = false;
+                for (LibraryCatalog.Door door : catalog) {
+                    known |= door.name().equals(name);
+                }
+                assertTrue(system + " overrides no catalog door " + name,
+                        known);
+            }
+            assertTrue(woven.containsAll(own));
+        }
+    }
+
     @Test
     public void aMalformedRowIsRefusedByName() {
         String[][] refused = {

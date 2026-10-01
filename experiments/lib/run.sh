@@ -17,6 +17,11 @@ export CAUSYNTH_REPO=${repo}
 export CAUSYNTH_MODULE_DIR=${module}
 export CAUSYNTH_CLASSES_DIR=${analysis}
 export CAUSYNTH_LINEAGE_ROOTS=${lineage_roots}
+# A system's own doors (experiments/<system>/doors.jsonl), which replace the
+# engine catalog's of their transport and direction (SYMBOL-SCOPE §4.2).
+export CAUSYNTH_SYSTEM_DOORS=
+[[ ! -f "${system_dir}/doors.jsonl" ]] \
+  || CAUSYNTH_SYSTEM_DOORS=${system_dir}/doors.jsonl
 export CAUSYNTH_TEST_CLASSES_DIR=${test_classes}
 export CAUSYNTH_CLASSPATH
 # A reader of a recorded run (tools/regress/offline-ab.sh `config`) states the

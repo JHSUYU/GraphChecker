@@ -143,9 +143,10 @@ public class ScopeGrowthTest {
         }
     }
 
-    /** SYMBOL-SCOPE §4.2: a door's family joins the scope when a class
-     *  outside it calls it, copied from the first entry holding it, a
-     *  directory or a jar. */
+    /** SYMBOL-SCOPE §4.2: a door's family joins the scope when a class of
+     *  the scope outside it calls it (here the scope is the fixtures'
+     *  root), copied from the first entry holding it, a directory or a
+     *  jar. */
     @Test
     public void aCalledDoorFamilyIsCopiedFromItsEntry() throws Exception {
         Path root = fixtures();

@@ -50,14 +50,15 @@ import java.util.zip.ZipFile;
  * is copied into the grown directory and listed in its {@value #MANIFEST}
  * with the row that took it.
  *
- * <p>Before the first pass, outside the budget, {@value #DOORS} takes the
- * class family (the class and its nested classes) of every library catalog
- * door ({@link LibraryCatalog}) the system calls: a class of the
- * roots outside the family invokes a method of it.  It is copied from the
- * first of the roots and the classpath holding it -- a library jar
- * (ZooKeeper) as well as the system's own classes -- unless the scope holds
- * it.  A library merely on the classpath (Solr's Hadoop jars) is not
- * called, and gets no door.</p>
+ * <p>Before the first pass and after every growth, outside the budget,
+ * {@value #DOORS} takes the class family (the class and its nested classes)
+ * of every library catalog door ({@link LibraryCatalog}) the analysis scope
+ * calls: a class of the scope or of what it grew, outside the family,
+ * invokes a method of it.  A class of the roots the scope never reached
+ * (hadoop-common's ZooKeeper elector in every HDFS case) brings no door.  The
+ * family is copied from the first of the roots and the classpath holding it
+ * -- a library jar (ZooKeeper) as well as the system's own classes -- unless
+ * the scope holds it.</p>
  *
  * <p>Usage: {@code ScopeGrowth <grown-dir> <frontier.jsonl> <budget>
  * <scope-dir> <class-root>...}, or {@code ScopeGrowth --doors <grown-dir>
@@ -141,10 +142,12 @@ public final class ScopeGrowth {
                     + " <grown-dir> <scope-dir> <classpath> <class-root>...");
         }
         Path grown = Paths.get(args[1]);
+        // The callers asked about are the analysis scope's classes.
         ScopeGrowth index = new ScopeGrowth();
+        index.scan(Paths.get(args[2]));
+        index.scan(grown);
         List<Path> search = new ArrayList<>();
         for (int at = 4; at < args.length; at++) {
-            index.scan(Paths.get(args[at]));
             search.add(Paths.get(args[at]));
         }
         search.addAll(classpath(args[3]));
@@ -170,7 +173,7 @@ public final class ScopeGrowth {
                 + (taken.size() == 1 ? "y" : "ies") + " added: " + taken);
     }
 
-    /** Whether a class of the roots outside {@code family} calls into it. */
+    /** Whether a class scanned outside {@code family} calls into it. */
     boolean called(String family) {
         String nested = family + "$";
         for (ClassFacts caller : classes.values()) {
