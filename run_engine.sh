@@ -2568,13 +2568,19 @@ replay_timeout_s=${replay_timeout_s}"
 
 # The memory, in MB, the seed and the CONFIRM replay are charged: the
 # recording's own measured peak (workload_rss_mb, what a native run of it is
-# charged, REPRODUCE) when it is above one obligation's replay
-# (obligation_memory_mb), else that.  A replay that outgrows its charge grows
-# it while its host has room (campaign_watch_workload).
+# charged, REPRODUCE) times campaign_replay_memory_factor when that is above
+# one obligation's replay (obligation_memory_mb), else that.  A concolic
+# replay outgrows its native recording: round x1's eleven seed replays
+# peaked at 0.65 to 6.94 times it (hdfs-17960 4.89, solr-18413 3.65,
+# solr-18406 6.94; the block-key cases under 1.2).  One that outgrows its
+# charge still grows it while its host has real room
+# (campaign_watch_workload).
+campaign_replay_memory_factor=7
 campaign_replay_need_mb() {
   local rss=${campaign_recorded_workload_rss_mb}
-  if [[ "${rss}" =~ ^[0-9]+$ ]] && (( rss > obligation_memory_mb )); then
-    printf '%s\n' "${rss}"
+  if [[ "${rss}" =~ ^[0-9]+$ ]] \
+      && (( rss * campaign_replay_memory_factor > obligation_memory_mb )); then
+    printf '%s\n' "$(( rss * campaign_replay_memory_factor ))"
   else
     printf '%s\n' "${obligation_memory_mb}"
   fi
@@ -3422,10 +3428,51 @@ a head; one needs ${need} MB and ${reserve} MB stay free (at most \
 ${campaign_host_max_used_pct}% of ${total} MB in use)"
     return 1
   fi
+  campaign_host_charge_row "${dir}" "${kept}" "${now}" "${need}" "${ramp}"
+  return 0
+}
+
+# Writes <dir>/starts as <kept> plus one row charging <need_mb> for <ramp_s>
+# from <now>, named in campaign_host_charge_id, and gives the ledger's lock
+# back.
+campaign_host_charge_row() {
+  local dir=$1 kept=$2 now=$3 need=$4 ramp=$5
   campaign_host_charge_id="$(hostname -s).${BASHPID}.${now}.${RANDOM}"
   printf '%s%s %s %s %s\n' "${kept}" "${now}" "${need}" "${ramp}" \
     "${campaign_host_charge_id}" >"${dir}/starts"
   rmdir "${dir}/lock"
+}
+
+# campaign_host_try_grow <host> <mb>: a RUNNING JVM grows by <mb>.  What the
+# ledger promises future starts -- their ramps, a head's room -- is no
+# reason to end a JVM already running: the growth is refused (1, the reason
+# in campaign_host_wait_reason) only when the host's real use, MemTotal less
+# MemAvailable, would pass CAUSYNTH_HOST_MAX_USED_PCT with it.  Granted, it
+# is charged on the ledger as a start (0, its row in
+# campaign_host_charge_id), so the starts after it wait for it.  2 when the
+# host's memory cannot be read, 3 while another holds the ledger's lock.
+campaign_host_try_grow() {
+  local host=$1 mb=$2 key dir now total available kept
+  key=$(campaign_host_key "${host}")
+  dir="${campaign_host_gate_root}/${key}"
+  mkdir -p "${dir}"
+  now=$(date +%s)
+  total=$(campaign_host_memory_total "${host}" "${dir}") || return 2
+  available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
+    || return 2
+  campaign_host_lock "${dir}" "${now}" || return 3
+  if (( total - available + mb > total * campaign_host_max_used_pct / 100 ))
+  then
+    rmdir "${dir}/lock"
+    campaign_host_wait_reason="${key} has ${available} MB available of \
+${total} MB, and ${mb} MB more would put over \
+${campaign_host_max_used_pct}% of it in use"
+    return 1
+  fi
+  kept=$(campaign_host_in_ramp "${dir}" "${now}")
+  [[ -z "${kept}" ]] || kept+=$'\n'
+  campaign_host_charge_row "${dir}" "${kept}" "${now}" "${mb}" \
+    "${campaign_host_ramp_s}"
   return 0
 }
 
@@ -3527,8 +3574,15 @@ campaign_host_release() {
 # holds it for the instant it takes to be charged: its answer, 0, 1 or 2, in
 # the caller's `status`.
 campaign_host_try_charge() {
+  campaign_host_unlocked campaign_host_try_start "$@"
+}
+
+# <try> <args...> (campaign_host_try_start or campaign_host_try_grow), its
+# answer 3 -- the ledger's lock held for the instant a charge takes --
+# waited out: its other answer in the caller's `status`.
+campaign_host_unlocked() {
   while true; do
-    run_capturing_status campaign_host_try_start "$@"
+    run_capturing_status "$@"
     (( status != 3 )) && return 0
     sleep 0.$(( (RANDOM % 9) + 1 ))
   done
@@ -3548,13 +3602,16 @@ campaign_watch_interval_s=2
 # native run of it is charged (REPRODUCE); for a JVM its host was charged
 # <charged_mb> for (0: none, a recording) it is said at its end beside that
 # charge, the evidence a case's obligation_memory_mb is set from.  Such a
-# JVM that grows past what its host holds for it asks the host's ledger for
-# the excess, as one more start (campaign_host_try_start: no host past
-# CAUSYNTH_HOST_MAX_USED_PCT), and holds what it was granted; one the host
-# cannot take is ended there, and says so.  A replay whose native symbolic
+# JVM that grows past what its host holds for it asks the host for the
+# excess (campaign_host_try_grow: refused only when the host's real use
+# would pass CAUSYNTH_HOST_MAX_USED_PCT, never for what the ledger promised
+# future starts) and holds what it was granted; one the host cannot take is
+# ended there, and says so.  A replay whose native symbolic
 # state ran away reached 27 GB and the kernel killed what it chose on the
 # host (hdfs-17960 v96); one ended for 41 MB over its 2500 MB on a host with
-# 28 GB free failed its case for nothing (accept-e1b-17960's seed replay).
+# 28 GB free failed its case for nothing (accept-e1b-17960's seed replay),
+# and one refused 6 MB on a host with 16 GB free, all of it promised to
+# ramps and heads (accept-x1-17960's).
 # What it was granted is released when it ends.
 campaign_watch_workload() {
   local pid=$1 charged=$2 trace=${3:-} peak=0 held=$2 mb id
@@ -3568,8 +3625,8 @@ campaign_watch_workload() {
         || printf '%s\n' "${peak}" >"${trace}/workload_rss_mb"
     fi
     if (( charged > 0 && peak > held )); then
-      campaign_host_try_charge localhost "$(( peak - held ))" \
-        "${campaign_host_ramp_s}"
+      campaign_host_unlocked campaign_host_try_grow localhost \
+        "$(( peak - held ))"
       if (( status != 0 )); then
         refused="the host cannot take the $(( peak - held )) MB more \
 (${campaign_host_wait_reason})"

@@ -1394,8 +1394,9 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
   || fail "validate accepted seed_replay_time_factor=0"
 
 # REPLAY-NEED: the seed replay (and CONFIRM's) is charged the recording's
-# measured peak when it is above one obligation's replay, else that
-# (campaign_replay_need_mb), and its replay JVM is handed that charge
+# measured peak times campaign_replay_memory_factor (7) when that is above
+# one obligation's replay, else that (campaign_replay_need_mb), and its
+# replay JVM is handed that charge
 # (CAUSYNTH_CHARGED_MB, which execute.sh sizes and holds the JVM by).  Per
 # row: obligation_memory_mb, the recording's peak (- none), the need.
 while read -r need_obligation need_rss need_expected; do
@@ -1414,8 +1415,8 @@ while read -r need_obligation need_rss need_expected; do
     || fail "a seed replay with ${need_obligation} MB per obligation and a \
 '${need_rss}' MB recording is ${need_said}, not ${need_expected} MB"
 done <<'EOF'
-2500 442 2500
-2500 3000 3000
+2500 300 2500
+2500 442 3094
 2500 - 2500
 EOF
 need_dir="${bound_dir}/need"
@@ -1430,21 +1431,30 @@ grep -qx 'CAUSYNTH_CHARGED_MB=3000' "${need_dir}/adapter.args" \
   || fail "the replay JVM is not handed what its host was charged: \
 $(cat "${need_dir}/adapter.args")"
 
-# WATCH-1: a workload JVM that grows past its charge asks its host's ledger
-# for the excess -- the rule every start answers to, 3000 MB of a 10000 MB
-# host kept free -- and holds what it was granted; it is ended only when
-# the host cannot take it, and what it was granted is released when it
-# ends.  A recording (charged nothing) is only measured: its peak is the
-# trace's workload_rss_mb.  Per row: the host's MemAvailable, the charge,
-# the JVM's resident memory at each read, whether it was ended, the most
-# rows the ledger held for it, and what it says last.
+# WATCH-1: a workload JVM that grows past its charge asks its host for the
+# excess and holds what it was granted, charged on the ledger; it is ended
+# only when the host's real use -- MemTotal less MemAvailable, 10000 MB and
+# a 70% ceiling -- would pass the ceiling with it, never for what the
+# ledger promised other starts (a foreign start still in its ramp), and
+# what it was granted is released when it ends.  A recording (charged
+# nothing) is only measured: its peak is the trace's workload_rss_mb.  Per
+# row: the host's MemAvailable, the MB a foreign start in its ramp holds on
+# the ledger (0: none), the charge, the JVM's resident memory at each read,
+# whether it was ended, the most rows the ledger held for it, and what it
+# says last.
 watch_dir="${test_tmp}/watch"
-while IFS='|' read -r watch_available watch_charged watch_rss watch_ended \
-    watch_rows watch_said; do
+while IFS='|' read -r watch_available watch_foreign watch_charged watch_rss \
+    watch_ended watch_rows watch_said; do
   rm -rf -- "${watch_dir}"
-  mkdir -p "${watch_dir}/trace"
+  mkdir -p "${watch_dir}/trace" "${watch_dir}/hosts/gate-head"
   printf '%s\n' ${watch_rss//,/ } >"${watch_dir}/rss"
   : >"${watch_dir}/rows"
+  watch_foreign_row=""
+  if (( watch_foreign > 0 )); then
+    watch_foreign_row="$(date +%s) ${watch_foreign} 3600 foreign"
+    printf '%s\n' "${watch_foreign_row}" \
+      >"${watch_dir}/hosts/gate-head/starts"
+  fi
   (
     campaign_host_gate_root="${watch_dir}/hosts"
     campaign_local_host_names=" localhost gate-head "
@@ -1459,7 +1469,7 @@ while IFS='|' read -r watch_available watch_charged watch_rss watch_ended \
       local mb
       mb=$(head -n 1 "${watch_dir}/rss")
       cat "${campaign_host_gate_root}/gate-head/starts" 2>/dev/null \
-        | grep -c . >>"${watch_dir}/rows"
+        | grep -vc ' foreign$' >>"${watch_dir}/rows"
       [[ -n "${mb}" ]] || { kill "$1"; return 1; }
       sed -i 1d "${watch_dir}/rss"
       echo "${mb}"
@@ -1482,8 +1492,10 @@ $(cat "${watch_dir}/exit")): $(cat "${watch_dir}/said")"
   [[ "$(sort -n "${watch_dir}/rows" | tail -n 1)" == "${watch_rows}" ]] \
     || fail "the ledger held $(sort -n "${watch_dir}/rows" | tail -n 1) \
 rows for a JVM at ${watch_rss} MB, not ${watch_rows}"
-  [[ -z "$(cat "${watch_dir}/hosts/gate-head/starts" 2>/dev/null)" ]] \
-    || fail "what a JVM was granted outlived it"
+  [[ "$(cat "${watch_dir}/hosts/gate-head/starts" 2>/dev/null)" \
+      == "${watch_foreign_row}" ]] \
+    || fail "what a JVM was granted outlived it, or a foreign start's row \
+went with it"
   [[ "$(cat "${watch_dir}/trace/workload_rss_mb")" \
       == "$(tr ',' '\n' <<<"${watch_rss}" | sort -n | tail -n 1)" ]] \
     || fail "the trace does not state the JVM's peak"
@@ -1494,10 +1506,12 @@ rows for a JVM at ${watch_rss} MB, not ${watch_rows}"
       "${watch_dir}/said" \
     || fail "an ended JVM does not say why: $(cat "${watch_dir}/said")"
 done <<'EOF'
-28000|2500|1000,2541,2600|ran|2|causynth: the workload JVM's resident memory peaked at 2600 MB; its host was charged 2500 MB for it and took 2600 MB as it grew
-5000|2500|2541,6000|ended|1|causynth: the workload JVM's resident memory peaked at 6000 MB; its host was charged 2500 MB for it and took 2541 MB as it grew
-3000|2500|2400|ran|0|causynth: the workload JVM's resident memory peaked at 2400 MB; its host was charged 2500 MB for it
-28000|0|400,486|ran|0|
+28000|0|2500|1000,2541,2600|ran|2|causynth: the workload JVM's resident memory peaked at 2600 MB; its host was charged 2500 MB for it and took 2600 MB as it grew
+5000|0|2500|2541,6000|ended|1|causynth: the workload JVM's resident memory peaked at 6000 MB; its host was charged 2500 MB for it and took 2541 MB as it grew
+6000|5000|2500|2541,2600|ran|2|causynth: the workload JVM's resident memory peaked at 2600 MB; its host was charged 2500 MB for it and took 2600 MB as it grew
+3000|0|2500|2541|ended|0|causynth: the workload JVM's resident memory peaked at 2541 MB; its host was charged 2500 MB for it
+3000|0|2500|2400|ran|0|causynth: the workload JVM's resident memory peaked at 2400 MB; its host was charged 2500 MB for it
+28000|0|0|400,486|ran|0|
 EOF
 
 # SOLVER-SERVICE: an obligation's question goes to ONE solver JVM of its host
@@ -2988,14 +3002,15 @@ run_confirm INCONCLUSIVE_PARTIAL
 grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
   || fail "the stage did not say why it ran nothing"
 # The rule, both conditions holding.  The replay is charged as the seed's:
-# the recording's measured peak, above one obligation's replay here.
+# the recording's measured peak times the replay factor, above one
+# obligation's replay here.
 confirm_recorded_rss=3000
 run_confirm SAT_CANDIDATE
 confirm_says true "the claim's anchor observed the fatal" \
   "a clean replay was not confirmed"
-[[ "$(cat "${confirm_root}/replay-ran")" == 3000 ]] \
+[[ "$(cat "${confirm_root}/replay-ran")" == 21000 ]] \
   || fail "the CONFIRM replay was charged $(cat "${confirm_root}/replay-ran") \
-MB, not the recording's 3000 MB peak"
+MB, not seven times the recording's 3000 MB peak"
 confirm_recorded_rss=""
 [[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == CONFIRM-1 ]] \
   || fail "the confirmation does not name the session that answered"

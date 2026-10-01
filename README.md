@@ -402,13 +402,14 @@ host is charged to the ledger first, at its measured need, for its ramp: an obli
 which is its replay (`obligation_memory_mb`, for 60 s), a host's solver of the exploration (its
 heap, for 120 s; PIPELINE §7.5), a campaign head's engine JVM (its main's measured need, else
 `engine_memory_mb`, for 120 s, and once more at `engine_memory_mb` if it runs out; PIPELINE §7.7),
-its seed and CONFIRM replays (the recording's measured peak when above `obligation_memory_mb`,
-else that, for 300 s), REPRODUCE's runs (the recording's peak, for 60 s), and a `fanout.sh` job
+its seed and CONFIRM replays (seven times the recording's measured peak when above
+`obligation_memory_mb`, else that, for 300 s), REPRODUCE's runs (the recording's peak, for 60 s), and a `fanout.sh` job
 (its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, every start
 still in its ramp there and a reserve that keeps the host at most `CAUSYNTH_HOST_MAX_USED_PCT`
-(70) percent full, and is released the moment it returns. A workload JVM that outgrows its charge
-asks its host for the excess by the same rule and is ended only when the host cannot take it
-(`campaign_watch_workload`). A head's "waiting for memory for a head step" line goes to stderr
+(70) percent full, and is released the moment it returns. A running workload JVM that outgrows its
+charge is granted the excess, charged on the ledger, unless the host's real use (`MemTotal` less
+`MemAvailable`) would pass that ceiling with it; only then is it ended (`campaign_watch_workload`,
+`campaign_host_try_grow`): what the ledger promised other starts is no reason to end it. A head's "waiting for memory for a head step" line goes to stderr
 (its stdout is often an artifact).
 
 ## Run an ad-hoc sweep

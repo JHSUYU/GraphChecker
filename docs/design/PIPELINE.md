@@ -740,8 +740,11 @@ import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with non
 `-XX:+ExitOnOutOfMemoryError`) runs once more at `engine_memory_mb`, charged so, saying so, and
 later starts of that main begin there (a head step's discovery is the head's, §7.9) -- the seed
 and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged for 300 s
-the recording's measured peak (`workload_rss_mb`) when above `obligation_memory_mb`, else that
-(`campaign_replay_need_mb`), and REPRODUCE's native runs (§10b). They read and write only the run's
+seven times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its
+native recording, up to 6.94 times in round x1) when above `obligation_memory_mb`, else that
+(`campaign_replay_need_mb`), and REPRODUCE's native runs (§10b). A running JVM that outgrows its
+charge is ended only when the host's real use would pass the ceiling with it
+(`campaign_host_try_grow`). They read and write only the run's
 shared directories -- the case's scope copy among them (§1) -- so each runs alike on any host. What
 a head runs uncharged stays on its host: the setup adapter's copy and the recording, whose need is
 what it measures. HEAD ROOM: a head
