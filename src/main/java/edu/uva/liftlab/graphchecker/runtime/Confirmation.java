@@ -187,11 +187,13 @@ public final class Confirmation {
             if (mintVersion != ReadRow.UNKNOWN_VERSION) {
                 MINTED.add(key(location, observedVersion));
             }
-            String turns = anyTurn(reader);
-            if (TURNED.contains(turns)) {
-                READ_TURNS.computeIfAbsent(turns,
-                        key -> new LinkedHashSet<String>())
-                        .add(key(location, observedVersion));
+            if (!TURNED.isEmpty()) {
+                String turns = anyTurn(reader);
+                if (TURNED.contains(turns)) {
+                    READ_TURNS.computeIfAbsent(turns,
+                            key -> new LinkedHashSet<String>())
+                            .add(key(location, observedVersion));
+                }
             }
             if (!STATE.containsKey(id(reader))) return;
             READ.put(id(reader), key(location, observedVersion));
