@@ -1518,8 +1518,9 @@ EOF
 # and corpus (ObligationSolverMain --serve), started by the first question
 # and charged at the host's ledger what it holds as it grows; a question it
 # could not answer is its worker's failure, by name; and it ends once idle,
-# naming no solver, its charges given back as its JVM returns and its peak
-# left for the next solver of its directory to start at.
+# naming no solver, its charges given back as its JVM returns.  A host with
+# no room to start one now answers 3 at once, starting nothing and holding
+# no question behind a start that waits for memory.
 # Two questions at once, over a corpus whose round holds neither obligation.
 solver_test=${test_tmp}/solver-service
 solver_wave=${solver_test}/iteration/obligations-0000
@@ -1575,8 +1576,17 @@ $(cat "${solver_test}/${question}.err")"
   [[ -z "$(cat "${solver_test}/hosts/"*/starts)" ]] \
     || fail "an ended solver is still charged: \
 $(cat "${solver_test}/hosts/"*/starts)"
-  [[ "$(cat "${solver_home}/workload_rss_mb" 2>/dev/null)" =~ ^[0-9]+$ ]] \
-    || fail "an ended solver left no peak for the next one to start at"
+  # No room: 3 at once, no solver named, the question withdrawn.
+  campaign_host_max_used_pct=1
+  started=${SECONDS}
+  status=0
+  campaign_solve_obligation OB.c "${solver_wave}/obligations.jsonl" \
+    "${solver_test}/iteration/sessions" "${solver_test}/c" \
+    >/dev/null 2>&1 || status=$?
+  [[ "${status}" -eq 3 && $(( SECONDS - started )) -lt 10 \
+     && ! -e "${solver_home}/server" \
+     && -z "$(ls "${solver_home}/requests")" ]] \
+    || fail "a host with no room for a solver held its question (${status})"
 )
 
 # A question its host's solver could not answer (out of heap, died) is no
@@ -1584,18 +1594,23 @@ $(cat "${solver_test}/hosts/"*/starts)"
 # fails the worker -- an unfinished obligation (campaign_obligation_unfinished)
 # -- never a bare NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations
 # "answered" by an OutOfMemoryError).  Neither settles its question.
+# A question whose host had no room for its solver (3) is answered at once in
+# a solver JVM of its own, under the obligation's charge (`now`).
 retry_test=${test_tmp}/solver-retry
-for alone in answers fails; do
+for alone in answers fails noroom; do
   mkdir -p "${retry_test}/${alone}"
   retry_status=0
   (
     campaign_solve_obligation() {
+      [[ "${alone}" != noroom ]] || return 3
       : >"$4/question.asked"
       echo "ObligationSolverMain: java.lang.OutOfMemoryError: Java heap space" >&2
       return 1
     }
     campaign_solve_obligation_alone() {
-      [[ "${alone}" == answers ]] || { echo "the second one died" >&2; return 1; }
+      [[ "${alone}" != noroom || "${5:-}" == now ]] \
+        || { echo "not asked at once" >&2; return 1; }
+      [[ "${alone}" != fails ]] || { echo "the second one died" >&2; return 1; }
       printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
         >"$4/obligation_result.jsonl"
       printf '(assert false)\n' >"$4/obligation_query.smt2"
@@ -1606,9 +1621,9 @@ for alone in answers fails; do
     || retry_status=$?
   [[ ! -e "${retry_test}/${alone}/question.asked" ]] \
     || fail "a solver that failed settled a question"
-  if [[ "${alone}" == answers ]]; then
+  if [[ "${alone}" != fails ]]; then
     [[ "${retry_status}" -eq 0 && "$(jq -r .verdict \
-        "${retry_test}/answers/obligation_result.jsonl")" == UNSAT ]] \
+        "${retry_test}/${alone}/obligation_result.jsonl")" == UNSAT ]] \
       || fail "the second solver's answer is not the obligation's"
   else
     [[ "${retry_status}" -ne 0 && ! -e \
@@ -2422,10 +2437,12 @@ campaign_host_is_local "" || fail "the empty host is not local"
 reset_config
 
 # HOSTS-4: the pool over two peers.  Starts go round-robin from the host
-# after the last one chosen, a peer's results and staged session come back
-# and land, and a host whose ledger has no room is given nothing while the
-# other runs everything (a10: one claim sat 30 min on a lift a planner had
-# filled while eight lifts had room).
+# after the last one chosen, an obligation first to a host where its
+# campaign's solver still serves (so the four go where the first went), a
+# peer's results and staged session come back and land, and a host whose
+# ledger has no room is given nothing while the other runs everything (a10:
+# one claim sat 30 min on a lift a planner had filled while eight lifts had
+# room).
 #
 # The stub stands where the network stands and nowhere else: the pool, the
 # host decision, the generated remote script and the bounded wait for what
@@ -2491,8 +2508,8 @@ stream_two_hosts stream-two
   || fail "four obligations did not become four remote invocations: \
 $(cat "${stream_dir}/ssh-calls.txt")"
 [[ "$(cut -f1 "${stream_dir}/ssh-calls.txt" | LC_ALL=C sort | uniq -c \
-    | awk '{print $2 "=" $1}' | paste -sd ' ' -)" == "lift12=2 lift13=2" ]] \
-  || fail "the pool did not round-robin: \
+    | awk '{print $2 "=" $1}' | paste -sd ' ' -)" == "lift12=4" ]] \
+  || fail "the obligations did not go where their solver serves: \
 $(cut -f1 "${stream_dir}/ssh-calls.txt" | paste -sd ' ' -)"
 for stream_id in A B C D; do
   [[ -f "${stream_dir}/sessions/SESSION.${stream_id}/manifest.json" ]] \
@@ -2510,6 +2527,35 @@ stream_two_hosts stream-room
   || fail "a host without room was given work: \
 $(cut -f1 "${stream_dir}/ssh-calls.txt")"
 reset_config
+
+# The pool's choice over three hosts that all admit: a re-run goes
+# round-robin; an obligation goes to a host where its campaign's solver
+# still serves (one started there within the solver's idle time), else
+# round-robin.  {kind, the host warm (- none), the hosts chosen in turn}.
+while IFS='|' read -r admit_kind admit_warm admit_want; do
+  (
+    stream_hosts=(a b c)
+    stream_next_host=0
+    stream_waiting=""
+    declare -A stream_solver_seen=() stream_host_unread=()
+    [[ "${admit_warm}" == - ]] \
+      || stream_solver_seen[${admit_warm}]=$(date +%s)
+    campaign_stream_has_cores() { return 0; }
+    campaign_host_try_charge() { status=0; campaign_host_charge_id=x; }
+    chosen=()
+    for _ in 1 2 3; do
+      campaign_stream_admit_host "${admit_kind}" || exit 1
+      chosen+=("${stream_admitted_host}")
+    done
+    [[ "${chosen[*]}" == "${admit_want}" ]] \
+      || fail "${admit_kind} with ${admit_warm} warm chose ${chosen[*]}, \
+not ${admit_want}"
+  ) || fail "the pool admitted nothing for ${admit_kind}"
+done <<'EOF'
+RERUN|b|a b c
+OBLIGATION|-|a b c
+OBLIGATION|b|b b b
+EOF
 
 # POOL-JOB: a start of the pool runs on the host that admitted it -- an
 # obligation's worker, or a GROW re-run's replay, which a peer runs as a

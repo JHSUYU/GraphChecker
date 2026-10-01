@@ -2833,12 +2833,16 @@ names it; nothing withdrawn"
 # beside the corpus.
 #
 # The service is charged to the host ledger what it holds: a start's worth
-# at its start (campaign_solver_start_mb, or what the last solver of its
-# directory grew to), and as its resident memory grows past that, the
-# growth, as a replay JVM is (campaign_watch_workload); a host that cannot
-# take the growth ends it, and its question is asked again of a solver of
-# its own.  An obligation's own charge (obligation_memory_mb)
-# is then its replay's alone.
+# at its start (campaign_solver_start_mb), and as its resident memory grows
+# past that, the growth, as a running JVM's (campaign_watch_workload: refused
+# only when the host's real use would pass the ceiling, and then the JVM is
+# ended and its question asked again of a solver of its own).  Its start
+# never waits: a host with no room for one now answers the question in the
+# question's own JVM, under the obligation's charge (campaign_obligation_worker),
+# so no question waits behind a start that waits for memory (round x1: 11
+# cases' solvers, each charged its 8 GB heap at its start, held their hosts'
+# questions 50-75 minutes behind "starting" solvers).  An obligation's own
+# charge (obligation_memory_mb) is then its replay's.
 # ---------------------------------------------------------------------------
 
 # How long a host's solver waits for another question before it ends: about
@@ -2854,7 +2858,7 @@ campaign_solver_idle_s=300
 campaign_solver_heap_mb=8192
 
 # What a solver is charged at its start, in MB; the rest of what it holds is
-# charged as it grows (campaign_start_solver).  Its heap is the corpus it
+# charged as it grows (campaign_solver_jvm).  Its heap is the corpus it
 # reads and the query it lowers: 0.2 GB over hdfs-17897's three sessions,
 # 5 GB over hdfs-11741 i1's 175.  Charged its 8 GB heap at its start,
 # a solver waited minutes for room it did not use, and every question of its
@@ -2872,15 +2876,19 @@ campaign_solver_dir() {
 # campaign_solve_obligation <obligation_id> <obligations> <sessions> <worker>:
 # the obligation's question, answered by its host's solver into <worker>:
 # 0 with the solver's files there, 1 with why it was not answered on stderr
-# (a failure that is the obligation's answer, as a solver JVM's exit was).
+# (a failure that is the obligation's answer, as a solver JVM's exit was), 3
+# when the host had no room to start its solver now (the question is then
+# its own JVM's, campaign_obligation_worker).
 #
 # A question no living solver will answer starts one: none runs, or the one
 # named ended while the question still waited.  A question a solver took and
 # ended on is not asked again, and a worker starts at most one solver, so a
-# corpus no solver can read fails each obligation once, by name.
+# corpus no solver can read fails each obligation once, by name.  A question
+# that waits for its solver says so (campaign_solver_wait_said).
 campaign_solve_obligation() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4
   local dir name question answer server pid started=0 file
+  local waited=${SECONDS} said=0
   dir=$(campaign_solver_dir "${sessions}")
   name="$(date +%s%N).${BASHPID}.${obligation_id}"
   question="${dir}/requests/${name}"
@@ -2899,6 +2907,8 @@ campaign_solve_obligation() {
     pid=${server##* }
     if [[ -n "${pid}" && -d "/proc/${pid}" || -e "${answer}" ]]; then
       rmdir "${dir}/lock"
+      campaign_solver_wait_said "${obligation_id}" "${dir}" "${pid}" \
+        "${waited}"
       sleep 0.2
       continue
     fi
@@ -2918,13 +2928,16 @@ campaign_solve_obligation() {
     rmdir "${dir}/lock"
     started=1
     campaign_start_solver "${dir}" "${sessions}" && continue
-    # This host's memory could not be read: no solver, and this question's
-    # answer is that.
-    rm -f -- "${question}.json" "${dir}/server"
-    printf 'ObligationSolverMain: the memory of %s could not be read ' \
-      "$(hostname -s)" >&2
-    printf 'to start its solver\n' >&2
-    return 1
+    # No room for a solver on this host now: the question leaves the queue,
+    # and the next question finds no solver starting.
+    rm -f -- "${question}.json"
+    until campaign_host_lock "${dir}" "$(date +%s)"; do
+      sleep 0.0$(( (RANDOM % 9) + 1 ))
+    done
+    [[ "$(cat "${dir}/server" 2>/dev/null)" != "starting ${BASHPID}" ]] \
+      || rm -f -- "${dir}/server"
+    rmdir "${dir}/lock"
+    return 3
   done
   for file in "${dir}/out/${name}"/*; do
     [[ -e "${file}" ]] || continue
@@ -2939,78 +2952,109 @@ campaign_solve_obligation() {
   rm -f -- "${answer}"
 }
 
+# How long a question waits for its host's solver before it says so, and how
+# often it says so again, in seconds: a wait is never silent.
+campaign_solver_wait_said_s=60
+campaign_solver_wait_again_s=600
+
+# campaign_solver_wait_said <obligation> <dir> <pid> <since>: says, once the
+# question has waited campaign_solver_wait_said_s since <since> and every
+# campaign_solver_wait_again_s after, what it waits for: the solver <pid> of
+# this host and how many questions it has ahead of this one (the caller's
+# `said` counts what was said).
+campaign_solver_wait_said() {
+  local obligation_id=$1 dir=$2 pid=$3 since=$4 waited ahead
+  waited=$(( SECONDS - since ))
+  (( waited >= campaign_solver_wait_said_s \
+     + said * campaign_solver_wait_again_s )) || return 0
+  said=$(( said + 1 ))
+  ahead=$(find "${dir}/requests" -maxdepth 1 -name '*.json' 2>/dev/null \
+    | wc -l)
+  campaign_log "obligation ${obligation_id}: waited ${waited}s for the solver \
+of $(hostname -s) (pid ${pid}), ${ahead} question(s) waiting"
+}
+
 # The log of the solvers that answer from the corpus ${1}, on this host.
 campaign_solver_log() {
   printf '%s/solver-%s.log\n' "$(dirname "$1")" "$(hostname -s)"
 }
 
-# Starts the host's solver of the corpus <sessions> in <dir> once the host
-# has room for its start -- campaign_solver_start_mb, or the peak an earlier
-# solver of <dir> reached when larger (<dir>/workload_rss_mb), so one ended
-# for room it could not have waits for that room the next time -- and names
-# it in <dir>/server: the pid of the shell that runs the JVM, which ends
-# with it.  The JVM is watched until it ends (campaign_watch_workload): what
-# it grows past its start is charged as it grows, its peak goes to
-# <dir>/workload_rss_mb, and every charge is released as it returns.
-# Returns without waiting for it; 1 when the host's memory could not be
-# read.  The root domains are the declaration EXPLORE and COMPOSE read: an
-# answer is only as free as the root domains behind the arm that produces
-# it.
+# Starts the host's solver of the corpus <sessions> in <dir> if the host has
+# room for its start (campaign_solver_start_mb) now, and names it in
+# <dir>/server: the pid of the shell that runs the JVM, which ends with it.
+# Returns without waiting for it; 1, starting nothing, when the host has no
+# room now or its memory cannot be read: a start that waited for memory held
+# every question of its corpus behind it.  The root domains are the
+# declaration EXPLORE and COMPOSE read: an answer is only as free as the
+# root domains behind the arm that produces it.
 campaign_start_solver() {
-  local dir=$1 sessions=$2 charge jvm log start peak
-  start=${campaign_solver_start_mb}
-  peak=$(cat "${dir}/workload_rss_mb" 2>/dev/null) || peak=""
-  [[ ! "${peak}" =~ ^[0-9]+$ ]] || (( peak <= start )) || start=${peak}
-  campaign_await_host_memory localhost "${start}" 120 || return 1
+  local dir=$1 sessions=$2 charge status=0
+  campaign_host_try_charge localhost "${campaign_solver_start_mb}" 120
+  (( status == 0 )) || return 1
   charge=${campaign_host_charge_id}
-  log=$(campaign_solver_log "${sessions}")
   {
-    # run_java_main's JVM, started here so its pid is the JVM's own
-    # (java_bin execs java): the one the watch reads.
-    (cd "${graphchecker_work_dir}" \
-      && exec env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${campaign_solver_heap_mb}" \
-        "${java_bin}" \
-        "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
-        "-Dcausynth.system.doors=${causynth_system_doors}" \
-        -cp "${graphchecker_jar}" \
-        edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
-        --serve "${dir}" \
-        --sessions "${sessions}" \
-        --z3 "${z3_bin}" \
-        --solver-timeout-ms "${solver_timeout_ms}" \
-        --idle-seconds "${campaign_solver_idle_s}" \
-        ${causynth_root_domains:+--root-domains "${causynth_root_domains}"}) \
-      </dev/null >>"${log}" 2>&1 &
-    jvm=$!
-    campaign_watch_workload "${jvm}" "${start}" "${dir}" 2>>"${log}"
-    wait "${jvm}" || true
+    campaign_solver_jvm "${campaign_solver_heap_mb}" \
+      "${campaign_solver_start_mb}" --serve "${dir}" \
+      --sessions "${sessions}" \
+      --idle-seconds "${campaign_solver_idle_s}" \
+      </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1 || true
     campaign_host_release localhost "${charge}"
   } &
   printf '%s\n' "$!" >"${dir}/server.part"
   mv -f -- "${dir}/server.part" "${dir}/server"
 }
 
+# campaign_solver_jvm <heap_mb> <charged_mb> <ObligationSolverMain args...>:
+# one solver JVM at <heap_mb> (run_java_main's, started here so its pid is
+# the JVM's own: java_bin execs java), watched until it ends
+# (campaign_watch_workload): what it grows past the <charged_mb> its host
+# holds for it is asked of the host as it grows, and a host whose real use
+# cannot take it ends it.  Its status.
+campaign_solver_jvm() {
+  local heap=$1 charged=$2 jvm status=0
+  shift 2
+  require_file "GraphChecker jar" "${graphchecker_jar}"
+  (cd "${graphchecker_work_dir}" \
+    && exec env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
+      "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
+      "-Dcausynth.system.doors=${causynth_system_doors}" \
+      -cp "${graphchecker_jar}" \
+      edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
+      --z3 "${z3_bin}" \
+      --solver-timeout-ms "${solver_timeout_ms}" \
+      ${causynth_root_domains:+--root-domains "${causynth_root_domains}"} \
+      "$@") &
+  jvm=$!
+  campaign_watch_workload "${jvm}" "${charged}"
+  wait "${jvm}" || status=$?
+  return "${status}"
+}
+
 # campaign_solve_obligation_alone <obligation_id> <obligations> <sessions>
-# <worker>: the question once more, of a solver JVM of its own at the case's
-# engine heap, charged that heap while it runs; its files go straight into
-# <worker>, and its status is the JVM's.  For a question the host's solver
-# could not answer: a JVM that ran out of heap or died is the solver's
-# failure, never the obligation's answer.
+# <worker> [now]: the question in a solver JVM of its own at the case's
+# engine heap, its files straight into <worker>, its status the JVM's.
+# `now`: at once, under the obligation's own charge (its replay's, which
+# comes after), for a question whose host had no room for its solver --
+# what the JVM grows past that charge is asked of the host as it grows.
+# Otherwise once the host has room for the engine heap, charged that while it
+# runs: for a question the host's solver, or a JVM of its own, could not
+# answer (it ran out of heap or died), never the obligation's answer.
 campaign_solve_obligation_alone() {
-  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4
-  local heap=${engine_memory_mb:-8192} charge status=0
-  campaign_await_host_memory localhost "${heap}" 120 || return 1
-  charge=${campaign_host_charge_id}
-  engine_memory_mb=${heap} run_capturing_status run_java_main \
-    edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 when=${5:-}
+  local heap=${engine_memory_mb:-8192} charge="" charged status=0
+  if [[ "${when}" == now ]]; then
+    charged=${obligation_memory_mb}
+  else
+    campaign_await_host_memory localhost "${heap}" 120 || return 1
+    charge=${campaign_host_charge_id}
+    charged=${heap}
+  fi
+  run_capturing_status campaign_solver_jvm "${heap}" "${charged}" \
     --obligations "${obligations}" \
     --obligation-id "${obligation_id}" \
     --sessions "${sessions}" \
-    --output-dir "${worker}" \
-    --z3 "${z3_bin}" \
-    --solver-timeout-ms "${solver_timeout_ms}" \
-    ${causynth_root_domains:+--root-domains "${causynth_root_domains}"}
-  campaign_host_release localhost "${charge}"
+    --output-dir "${worker}"
+  [[ -z "${charge}" ]] || campaign_host_release localhost "${charge}"
   return "${status}"
 }
 
@@ -3036,6 +3080,14 @@ campaign_obligation_worker() {
   local result_row="${worker}/obligation_result.jsonl"
   run_capturing_status campaign_solve_obligation "${obligation_id}" \
     "${obligations}" "${sessions}" "${worker}"
+  if [[ "${status}" -eq 3 ]]; then
+    # No room for its host's solver now: answered in its own JVM at once,
+    # not after a start that waits for memory.
+    campaign_log "obligation ${obligation_id}: no room on $(hostname -s) \
+to start its solver now; answered in a solver JVM of its own"
+    run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
+      "${obligations}" "${sessions}" "${worker}" now
+  fi
   if [[ "${status}" -ne 0 ]]; then
     # A solver that ran out of heap or died answered nothing about the
     # obligation, and settles no question, whatever it left: asked once
@@ -3772,11 +3824,14 @@ campaign_run_placed() {
 # has room.
 campaign_await_host_memory() {
   local host=$1 need=$2 ramp=$3
-  local said=false status=0 unread_since=""
+  local said=false status=0 unread_since="" since=${SECONDS}
   while true; do
     campaign_host_try_charge "${host}" "${need}" "${ramp}"
     case "${status}" in
-      0) return 0 ;;
+      0)
+        [[ "${said}" == false ]] || campaign_log "room for ${need} MB on \
+${host} after $(( SECONDS - since ))s"
+        return 0 ;;
       2)
         # Unreadable is not "no room": sshd refuses some connections while a
         # round opens hundreds.  Waited out, stated, within the patience.
@@ -3945,6 +4000,7 @@ campaign_explore() {
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
   local -A stream_jobs=() stream_flying=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
+  local -A stream_solver_seen=()
   : >"${results}"
   : >"${attempts}"
   mkdir -p "$(dirname "${stream_plan}")"
@@ -4366,43 +4422,71 @@ campaign_stream_dispatch() {
   while (( ${#stream_queue[@]} > 0 )); do
     entry=${stream_queue[0]}
     [[ "${entry}" == RERUN\ * ]] || (( stream_hold == 0 )) || return 0
-    campaign_stream_admit_host || return 0
+    campaign_stream_admit_host "${entry%% *}" || return 0
     stream_queue=("${stream_queue[@]:1}")
     campaign_stream_start "${entry}" "${stream_admitted_host}"
   done
 }
 
-# Picks the host for one start and charges it there (stream_admitted_host):
-# the pool from the host after the last one chosen, each start charged its
-# replay's need, obligation_memory_mb, for an obligation's ramp.  A host is
-# skipped while it runs as many of this campaign's as it has cores, or while
-# the ledger has no room on it (campaign_host_try_start: no start leaves a
-# host more than CAUSYNTH_HOST_MAX_USED_PCT full, and none takes a head's
-# room).  1 when no host has room now, said once per wait.
+# Picks the host for one start of <kind> (OBLIGATION or RERUN) and charges it
+# there (stream_admitted_host): the pool from the host after the last one
+# chosen, each start charged its replay's need, obligation_memory_mb, for an
+# obligation's ramp; an OBLIGATION goes first to a host where this
+# campaign's solver still serves (campaign_stream_warm: one started there
+# within the solver's idle time), whose question is then answered without a
+# solver of its own to start and its corpus to read.  A host is skipped
+# while it runs as many of this campaign's as it has cores, or while the
+# ledger has no room on it (campaign_host_try_start: no start leaves a host
+# more than CAUSYNTH_HOST_MAX_USED_PCT full, and none takes a head's room).
+# 1 when no host has room now, said once per wait.
 campaign_stream_admit_host() {
-  local host turn count status=0
+  local kind=$1 host turn count pass is status=0
   count=${#stream_hosts[@]}
-  for ((turn = 0; turn < count; turn++)); do
-    host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
-    campaign_stream_has_cores "${host}" || continue
-    campaign_host_try_charge "${host}" "${obligation_memory_mb}" \
-      "${campaign_host_ramp_s}"
-    case "${status}" in
-      0)
-        stream_admitted_host=${host}
-        unset 'stream_host_unread[$host]'
-        stream_next_host=$(( (stream_next_host + turn + 1) % count ))
-        stream_waiting=""
-        return 0 ;;
-      2) campaign_stream_unreadable "${host}" ;;
-      *) unset 'stream_host_unread[$host]' ;;
-    esac
+  for pass in warm cold; do
+    [[ "${pass}" == cold || "${kind}" == OBLIGATION ]] || continue
+    for ((turn = 0; turn < count; turn++)); do
+      host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
+      # An obligation tries each host once, in the pass of its warmth.
+      is=cold
+      [[ "${kind}" != OBLIGATION ]] || ! campaign_stream_warm "${host}" \
+        || is=warm
+      [[ "${is}" == "${pass}" ]] || continue
+      campaign_stream_try_host "${host}" "${turn}" && return 0
+    done
   done
   if [[ -z "${stream_waiting}" ]]; then
     campaign_log "waiting for room: no host admits one more start \
 (${campaign_host_wait_reason})"
     stream_waiting=1
   fi
+  return 1
+}
+
+# Whether this campaign started an obligation on <host> within its solver's
+# idle time (campaign_solver_idle_s), so the host's solver of its corpus
+# likely still serves.
+campaign_stream_warm() {
+  local seen=${stream_solver_seen[$1]:-}
+  [[ -n "${seen}" ]] && (( $(date +%s) - seen < campaign_solver_idle_s ))
+}
+
+# One host's admission for campaign_stream_admit_host, <turn> places after
+# the host after the last one chosen: 0 with it charged and chosen.
+campaign_stream_try_host() {
+  local host=$1 turn=$2 count=${#stream_hosts[@]} status=0
+  campaign_stream_has_cores "${host}" || return 1
+  campaign_host_try_charge "${host}" "${obligation_memory_mb}" \
+    "${campaign_host_ramp_s}"
+  case "${status}" in
+    0)
+      stream_admitted_host=${host}
+      unset 'stream_host_unread[$host]'
+      stream_next_host=$(( (stream_next_host + turn + 1) % count ))
+      stream_waiting=""
+      return 0 ;;
+    2) campaign_stream_unreadable "${host}" ;;
+    *) unset 'stream_host_unread[$host]' ;;
+  esac
   return 1
 }
 
@@ -4451,6 +4535,7 @@ campaign_stream_start() {
       "${stream_plan}" "${obligation_memory_mb}")
   fi
   printf '%s\n' "${host}" >"${worker}/host.txt"
+  [[ "${kind}" != OBLIGATION ]] || stream_solver_seen[${host}]=$(date +%s)
   campaign_stream_job "${kind}" "${host}" "${campaign_host_charge_id}" \
     "${id}" "${worker}" "${work[@]}" &
   stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"

@@ -532,27 +532,32 @@ question.
 
 The obligations of an exploration that run on one host are answered by ONE solver JVM there
 (`campaign_solve_obligation`; `ObligationSolverMain --serve`, `explore.SolverService`): the first
-question starts it (`campaign_start_solver`: charged at the host ledger a start's worth for 120 s,
-`campaign_solver_start_mb` (1 GB) or the peak an earlier solver of its directory reached when
-larger, and what its resident memory grows past that as it grows, `campaign_watch_workload`, a host
-that cannot take the growth ending it; its heap is capped
-at `campaign_solver_heap_mb`, 8 GB: charged that at its start, a solver waited minutes for room it
-did not use, and its host's questions waited behind it), and it answers the questions in the order
-they came, each from the corpus as it stands when the question is taken: read again whenever a
-session landed in it or left it since (its session listing, `ObligationSolverMain#listing`; the
-head lands sessions as the exploration streams), each session the read before already holds taken
-from it unread (`Corpus#read(Path, Path, Corpus)`: a landed session's rows never change, and
-reading them is the read's whole cost, 45 s over hdfs-11741 i1's 175 sessions), else the corpus as
-read (`Corpus#freshLowerings`) -- so each obligation's files are the ones a JVM of its own, reading
-the corpus then, writes -- into a directory on the host's disk, named by the corpus, that the
-asking worker moves into its worker directory; it ends once none has come for
-`campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the corpus. A question still
-waiting when its solver ended starts the next one. A question the host's solver could not answer
-(it ran out of heap on it, or ended while answering it) is no answer: it is asked once more of a
-solver JVM of its own at `engine_memory_mb` (`campaign_solve_obligation_alone`,
-`ObligationSolverMain --obligation-id`, the offline gate's entry too); either one settles no
-question (`question.txt`/`question.asked` are removed), and a second failure fails the worker: an
-unfinished obligation (§7.7).
+question starts it if its host has room for a start's worth now (`campaign_start_solver`:
+`campaign_solve_obligation` never waits for memory to start one), charged at the host ledger
+`campaign_solver_start_mb` (1 GB) for 120 s and what its resident memory grows past that as it
+grows, by a running JVM's rule (`campaign_watch_workload`: refused only when the host's real use
+would pass the ceiling, and then the JVM is ended); its heap is capped at `campaign_solver_heap_mb`,
+8 GB. Charged that at its start, a solver waited for room it did not use, and every question of
+its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
+questions in the order they came, each from the corpus as it stands when the question is taken:
+read again whenever a session landed in it or left it since (its session listing,
+`ObligationSolverMain#listing`; the head lands sessions as the exploration streams), each session
+the read before already holds taken from it unread (`Corpus#read(Path, Path, Corpus)`: a landed
+session's rows never change, and reading them is the read's whole cost, 45 s over hdfs-11741 i1's
+175 sessions), else the corpus as read (`Corpus#freshLowerings`) -- so each obligation's files are
+the ones a JVM of its own, reading the corpus then, writes -- into a directory on the host's disk,
+named by the corpus, that the asking worker moves into its worker directory; it ends once none has
+come for `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the corpus. A
+question still waiting when its solver ended starts the next one. A question that waits for its
+solver says so after a minute and every ten minutes after (`campaign_solver_wait_said`). A host
+with no room to start a solver now answers the question in a solver JVM of its own at once
+(`campaign_solve_obligation_alone ... now`, `ObligationSolverMain --obligation-id`), under the
+obligation's own charge (its replay comes after it), what it grows past that asked of the host as
+it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it, or
+ended while answering it) is no answer: it is asked once more of a solver JVM of its own at
+`engine_memory_mb`, once the host has room for it (`campaign_solve_obligation_alone`, the offline
+gate's entry too); neither settles a question (`question.txt`/`question.asked` are removed), and
+a second failure fails the worker: an unfinished obligation (§7.7).
 
 `ObligationFactory.locate` finds the published obligation's path in the corpus under its round's id
 (a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
@@ -698,7 +703,10 @@ CONFIRM it is a confirmation that did not confirm.
 
 One pool for the whole exploration, no slots. The head starts each queued obligation, and each
 GROW re-run (§7.8), first first, on the next host of `campaign_worker_hosts` (empty: this machine, no
-ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`): a host is
+ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), an
+obligation first on a host where it started one within the solver's idle time
+(`campaign_stream_warm`: that host's solver of its corpus likely still serves, so the question needs
+no solver started and no corpus read): a host is
 taken while it runs fewer of the campaign's starts than it has cores (read once,
 `campaign_host_cores`) and its memory ledger admits one more start; none admitting, the head waits
 for a return, its step's end or the poll interval (`campaign_host_poll_s`). A start runs locally in
