@@ -77,10 +77,14 @@ public final class Identity {
          */
         private final Deque<Integer> starts = new ArrayDeque<Integer>();
         /**
-         * The depth at which this thread claimed an UNNAMED start ({@link
-         * #startWork} under a {@code Lost} context), or -1: it lasts as a
-         * claimed start does, until the next claim takes its place or a
-         * level below it exits.
+         * Whether this thread's own start was UNNAMED ({@link #startWork}
+         * where no hop names the starter): for the thread's life.
+         */
+        private boolean unnamedThread;
+        /**
+         * The depth at which this thread claimed a task's UNNAMED start, or
+         * -1: until the next claim finds that work over, or a level below
+         * it exits ({@link #endUnnamedWork}, {@link Identity#exitFrame}).
          */
         private int unnamedAt = -1;
         /** The region activations open on this thread, innermost last. */
@@ -170,7 +174,6 @@ public final class Identity {
                 while (depth() > held) levels.remove(depth());
                 closeStartsFrom(held);
             }
-            if (unnamedAt >= depth()) unnamedAt = -1;
             starts.push(depth());
             // The frames belong to the window the start was counted in.
             for (Frame frame : inherited
@@ -194,12 +197,30 @@ public final class Identity {
             return starts.isEmpty() ? -1 : starts.peek();
         }
 
+        /** Claims an UNNAMED start: the thread's own, or a task's here. */
+        private void claimUnnamed(boolean thread) {
+            if (thread) {
+                unnamedThread = true;
+            } else {
+                unnamedAt = depth();
+            }
+        }
+
+        /**
+         * Ends a task's unnamed claim whose work is over -- no entered frame
+         * stands at its depth or above -- before the next claim on this
+         * thread: a pool's thread takes its next task.
+         */
+        private void endUnnamedWork() {
+            if (unnamedAt >= 0 && onlyStartsFrom(unnamedAt)) unnamedAt = -1;
+        }
+
         /**
          * Whether this thread runs unnamed work that no hop names yet: what
          * it enters is no occurrence ({@link Identity#occurrence}).
          */
         private boolean unnamed() {
-            return unnamedAt >= 0 && !Lineage.named();
+            return (unnamedThread || unnamedAt >= 0) && !Lineage.named();
         }
 
         /**
@@ -398,8 +419,8 @@ public final class Identity {
     /**
      * One filed start: its frames and its starter.  A thread whose frames
      * name no component belongs to the one that started it.  An UNNAMED
-     * start ({@link #startWork} under a {@code Lost} context) has neither:
-     * it states only that the work has no identity of its own.
+     * start ({@link #startWork} where no hop names the starter) has
+     * neither: it states only that the work has no identity of its own.
      */
     private static final class Start {
         private static final Start UNNAMED = new Start(
@@ -476,13 +497,14 @@ public final class Identity {
         if (start == null) return;
         // The thread a start created claims it itself, standing on the
         // frames it inherited; a task is claimed on a pool's thread.
+        boolean inherited = carrier == Thread.currentThread();
         if (start == Start.UNNAMED) {
-            // Work no context started: nothing to open, nothing carried, no
+            // Work no hop started: nothing to open, nothing carried, no
             // CLAIM (its START was never an event).
-            state.unnamedAt = state.depth();
+            state.claimUnnamed(inherited);
             return;
         }
-        state.openStart(start, carrier == Thread.currentThread());
+        state.openStart(start, inherited);
         state.starter = start.starter;
         state.adopted = true;
         // The starter's scope comes with the work; it closes when the start
@@ -507,18 +529,18 @@ public final class Identity {
      * cannot separate share an endpoint id and are refused at the mint,
      * never renumbered here.</p>
      *
-     * <p>A thread with no identity files no frame: under no root hop (a
-     * connection acceptor) its k would count arrivals, which nothing
-     * schedules ({@code ScheduleLog.pending} refuses such events likewise).
-     * It files an UNNAMED start instead: siblings started so differ by
-     * nothing an address names, so the work opens no occurrence until a
-     * hop names it ({@link #occurrence}).</p>
+     * <p>A starter no hop names files no frame: under no hop (a connection
+     * acceptor) its k would count arrivals, which nothing schedules ({@code
+     * ScheduleLog.pending} refuses such events likewise).  It files an
+     * UNNAMED start instead: siblings started so differ by nothing an
+     * address names, so the work opens no occurrence until a hop names it
+     * ({@link #occurrence}).  One test decides both: {@link Lineage#named}.</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
         String site = JvmNames.stable(Text.safe(startSiteId));
         if (site.isEmpty() || carrier == null) return;
         sweep();
-        if (contextHere().isLost()) {
+        if (!Lineage.named()) {
             // Never in place of a named start of the same carrier.
             STARTS.putIfAbsent(new Carrier(carrier, COLLECTED), Start.UNNAMED);
             return;
@@ -578,6 +600,8 @@ public final class Identity {
         if (carrier == null) return;
         State state = state();
         state.work = carrier;
+        // A task claimed here takes the place of a finished unnamed one.
+        state.endUnnamedWork();
         if (!STARTS.isEmpty()) adopt(state, carrier);
     }
 
@@ -934,6 +958,7 @@ public final class Identity {
                 Region marker = new Region(state.regionBase());
                 marker.unnamed = true;
                 state.regions.add(marker);
+                RowRuntime.unnamedEntry(node, region);
                 return null;
             }
         }

@@ -240,6 +240,50 @@ public class RowRuntimeTest {
     }
 
     /**
+     * Unnamed work opens no occurrence (IDENTITY §1), and is never silent:
+     * each region a node's unnamed work entered is one LINEAGE_LOST row, and
+     * the manifest counts every entry at the run's end.
+     */
+    @Test
+    public void unnamedEntriesAreNamedOnceAndCountedInTheManifest()
+            throws Exception {
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        try {
+            Object connection = new Object();
+            Identity.startWork("<a.Acceptor: void run()>#u5", connection);
+            List<OccurrenceAddress> opened = new ArrayList<>();
+            Thread handler = new Thread(() -> {
+                Identity.claimStart(connection);
+                for (String region : new String[]{"REGION.handshake",
+                        "REGION.handshake", "REGION.wrap"}) {
+                    opened.add(Identity.occurrence(NN.key(), region, true));
+                    Identity.regionExit();
+                }
+            });
+            handler.start();
+            handler.join();
+            assertEquals(Arrays.asList(null, null, null), opened);
+            RowRuntime.closeSession();
+        } finally {
+            RecordingWindow.reset();
+        }
+        List<String> named = new ArrayList<>();
+        for (GapRow gap : RowCodec.readAll(session().gaps(),
+                RowCodec::readGap)) {
+            if (gap.kind() == GapKind.LINEAGE_LOST) named.add(gap.subject());
+        }
+        String node = NN.key() + "/region/";
+        assertEquals(Arrays.asList(node + "REGION.handshake",
+                node + "REGION.wrap"), named);
+        Map<String, Integer> counted = new HashMap<>();
+        counted.put(node + "REGION.handshake", 2);
+        counted.put(node + "REGION.wrap", 1);
+        assertEquals(counted, new HashMap<>(RowCodec.readManifest(
+                session().manifest()).unnamedEntries()));
+    }
+
+    /**
      * A response's endpoint is its request's: the request's scope and the
      * response site -- not the region a pool handler opened before the
      * request came (the NameNode's {@code doAs}, whose index counts that

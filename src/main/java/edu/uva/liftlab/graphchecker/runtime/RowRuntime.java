@@ -43,6 +43,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
@@ -562,6 +563,41 @@ public final class RowRuntime {
         session.gap(GapRow.of(sessionId(), kind, cls, named, says));
     }
 
+    /**
+     * Unnamed work's region entries, by {@code <node>/region/<regionId>}
+     * ({@link Identity#occurrence}): none opened an occurrence.
+     */
+    private static final Map<String, AtomicInteger> UNNAMED =
+            new ConcurrentHashMap<String, AtomicInteger>();
+
+    /**
+     * One region entry unnamed work made, which opened no occurrence.
+     * Never silent: each region and node is named once, in either pass, by
+     * a LINEAGE_LOST row, and the session's manifest counts every entry at
+     * the run's end ({@link #closeSession}).
+     */
+    static void unnamedEntry(String nodeKey, String regionId) {
+        // Neither the trace nor the schedule states what ran before the
+        // window opened.
+        if (!RecordingWindow.opened()) return;
+        String subject = Text.safe(nodeKey) + "/region/"
+                + Text.safe(regionId);
+        if (UNNAMED.computeIfAbsent(subject, key -> new AtomicInteger())
+                .getAndIncrement() > 0) {
+            return;
+        }
+        gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, subject,
+                "work started where no hop named its starter (a connection"
+                        + " acceptor's, a daemon's started under no root)"
+                        + " entered this region before a hop named it, so"
+                        + " the entry opened no occurrence (IDENTITY §1,"
+                        + " unnamed work): no decision, root or write of it"
+                        + " is recorded, its events are its role's, and a"
+                        + " closure reaching them stops there; the session"
+                        + " manifest counts every such entry"
+                        + " (unnamedEntries)");
+    }
+
     /** The labels this session's declared mints asked the VM for. */
     private static final Set<String> MINT_LABELS =
             ConcurrentHashMap.<String>newKeySet();
@@ -896,6 +932,11 @@ public final class RowRuntime {
     public static void closeSession() {
         SessionPublisher session = publisher;
         if (session == null) return;
+        Map<String, Integer> unnamed = new LinkedHashMap<String, Integer>();
+        for (Map.Entry<String, AtomicInteger> entry : UNNAMED.entrySet()) {
+            unnamed.put(entry.getKey(), entry.getValue().get());
+        }
+        session.unnamedEntries(unnamed);
         // A root the obligation assigns that no mint planted: this run did
         // not run what was asked.
         for (Map.Entry<String, String> unplanted
@@ -972,6 +1013,7 @@ public final class RowRuntime {
             CLAIMED_EVENTS.clear();
             ENDPOINTS.clear();
             MINT_LABELS.clear();
+            UNNAMED.clear();
             expressions = new ExpressionRefs();
             Identity.resetForTests();
             CLOCK_CELLS.clear();

@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Role;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -94,6 +95,37 @@ public class AStartWithNoIdentityFilesNoFrameTest {
             Identity.regionExit();
             return first;
         }));
+    }
+
+    /**
+     * One test names a start and its work: the starter's lineage.  A
+     * starter under a hop whose context still renders Lost files its frame;
+     * on a pool's thread an unnamed task ends at the next claim there once
+     * its work is over, so the next task's entry opens an occurrence.
+     */
+    @Test
+    public void aStartIsNamedByTheStartersLineageAndEndsAtTheNextClaim()
+            throws Exception {
+        long hop = Lineage.push(DN.key(), Role.UNKNOWN, "accept");
+        assertTrue(Identity.contextHere().isLost());
+        Object filed = new Object();
+        Identity.startWork(ACCEPT, filed);
+        Lineage.pop(hop);
+        assertEquals(ACCEPT, claimed(filed,
+                carrier -> Identity.innermostFrame()));
+
+        Object unnamed = new Object();
+        Identity.startWork(ACCEPT, unnamed);
+        String[] tasks = claimed(unnamed, carrier -> {
+            String first = opened("REGION.task");
+            Identity.regionExit();
+            Identity.claimStart(new Object());
+            String next = opened("REGION.task");
+            Identity.regionExit();
+            return new String[]{first, next};
+        });
+        assertEquals("none", tasks[0]);
+        assertEquals("Lost:UNKNOWN", tasks[1]);
     }
 
     /** What one region entry opened: its context, or "none". */

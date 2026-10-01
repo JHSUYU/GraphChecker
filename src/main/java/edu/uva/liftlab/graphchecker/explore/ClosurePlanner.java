@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -38,6 +39,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * The target's closure: what its failure can depend on, and the branches
@@ -167,7 +169,7 @@ public final class ClosurePlanner {
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
-                uncaptured(corpus, demand.occurrence, exposed, waiting,
+                uncaptured(corpus, demand, scope, exposed, waiting,
                         walk.gaps);
                 continue;
             }
@@ -209,20 +211,22 @@ public final class ClosurePlanner {
      * waited for -- only a replay slower than the recording ran it, so
      * nothing the recording decided rests on it.</p>
      */
-    private static void uncaptured(Corpus corpus,
-                                   OccurrenceAddress occurrence,
+    private static void uncaptured(Corpus corpus, Demand demand,
+                                   StaticScopeMap scope,
                                    Map<OccurrenceAddress, String> exposed,
                                    Set<OccurrenceAddress> waiting,
                                    Set<GapRow> gaps) {
+        OccurrenceAddress occurrence = demand.occurrence;
         if (occurrence.role()) {
             if (occurrence.lineageLost()) {
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                         occurrence.render(), "the closure reached a scope "
-                                + "the recording lost: " + occurrence
-                                .regionId() + " is a role, not a region of "
-                                + "the static graph, so nothing can weave "
-                                + "it"));
+                                + "the recording lost (" + demand.why
+                                + "): " + occurrence.regionId() + " is a "
+                                + "role, not a region of the static graph, "
+                                + "so nothing can weave it" + unrecorded(
+                                demand, scope)));
             }
             return;
         }
@@ -262,6 +266,29 @@ public final class ClosurePlanner {
                 GapClass.BLOCKING, occurrence.render(),
                 "no session of this corpus ran this occurrence, so no replay "
                         + "can be focused on it and it is not a task"));
+    }
+
+    /**
+     * What a lost scope ran that no row states: the roots the scope map
+     * declares in the methods its index stands on, and the decisions the
+     * closure would have flipped there.  Unnamed work's regions open no
+     * occurrence (IDENTITY §1), so these are what the closure loses.
+     */
+    private static String unrecorded(Demand demand, StaticScopeMap scope) {
+        Set<String> methods = new LinkedHashSet<String>();
+        for (Frame frame : demand.occurrence.index().frames()) {
+            String method = SiteId.methodOf(frame.callSite());
+            methods.add(method.isEmpty() ? frame.callSite() : method);
+        }
+        Set<String> roots = new TreeSet<String>();
+        for (StaticScopeMap.Site site : scope.declaredSites()) {
+            if (methods.contains(SiteId.methodOf(site.siteId))) {
+                roots.add(site.siteId + (site.declared == null ? ""
+                        : " " + site.declared.inputKind));
+            }
+        }
+        return "; unrecorded there: roots " + roots + ", decisions "
+                + new TreeSet<String>(demand.flipSites);
     }
 
     /** One task's id: the occurrence it focuses and nothing else. */

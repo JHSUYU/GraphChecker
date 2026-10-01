@@ -51,7 +51,7 @@ and `manifest.json` when the session opens, and appends and flushes each row as 
 | `obligations.jsonl` | the replay's `ObligationResult` per obligation it ran, written at close (`RowRuntime.closeSession`); the authority on its verdict; a SEED has none |
 | `schedule.jsonl` | the run's `ScheduleEvent`s in order, with `{mark, at}` rows; not a row kind, no invariant is stated over it |
 | `expressions.jsonl` | the session's expression log (§2.3) |
-| `manifest.json` | `SessionManifest`: `{schemaVersion 1, kind SESSION_MANIFEST, sessionId, role SEED\|FOCUSED, obligationIds}` — FOCUSED when the replay was handed a focus row, its obligation ids from it. The only answer to "which session is the recording"; an absent or unknown role is refused |
+| `manifest.json` | `SessionManifest`: `{schemaVersion 1, kind SESSION_MANIFEST, sessionId, role SEED\|FOCUSED, obligationIds, unnamedEntries}` — FOCUSED when the replay was handed a focus row, its obligation ids from it. The only answer to "which session is the recording"; an absent or unknown role is refused. `unnamedEntries` (`{"<node>/region/<regionId>": n}`, restated at the run's end) counts the region entries unnamed work made, which opened no occurrence (IDENTITY §1) |
 
 IMPORT requires the ten files `activations` … `gaps` and `schedule` to exist and `expressions.jsonl`
 to be non-empty (`campaign_import_session`). The publisher writes a root once per (occurrence, root
