@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.Rule;
@@ -224,7 +225,7 @@ public class RegionFoldPlanTest {
         return RuntimeSelectedRegionFinalizer.finalizeRegions(cutGraph(),
                 cutSkeletons(), "test", Arrays.asList(HANDLER, LEAF),
                 activations.runtimeInstances, cutObservations(),
-                cutScopeMap());
+                cutScopeMap(), Collections.<ScheduleEvent>emptyList());
     }
 
     /**

@@ -261,7 +261,9 @@ The library catalog's doors and the woven markers are SYMBOL-SCOPE.md §4.2. A m
 the occurrence that runs the door; `explore/ClosurePlanner#controlProducer` adds the sender and the
 receiver of the message a demanded occurrence served (found through its `Anchor`,
 `explore/Corpus#senderOf`, `#receiverOf`) as control producers, so their door faults are proposed
-as flips.
+as flips. PLAN plans the door occurrences that read a fault marker on the same relation, over the
+recording's schedule (`causynth/RootRelevance#doorsOf`, SYMBOL-SCOPE.md §4.4), so the faults EXPLORE
+proposes are minted.
 
 ### 7.4 Captures bound to exchanges
 

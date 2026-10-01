@@ -13,6 +13,8 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -1363,6 +1365,8 @@ public final class CausynthTraceRecorder {
                     "streaming_trace_manifest.json"));
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test);
+            trace.schedule.addAll(SessionReader.readSchedule(new File(
+                    directory, SessionDir.SCHEDULE).toPath()));
             trace.sort();
             // No offline reattribution: runtime.Attribution stamped every
             // METHOD_ENTER live, as the replay does.
@@ -1461,7 +1465,7 @@ public final class CausynthTraceRecorder {
                         String.valueOf(selectedSkeletons),
                         observedMethods, activationGraph.runtimeInstances,
                         runtimeObservations(trace.execution, trace.methods),
-                        scopeMap);
+                        scopeMap, trace.schedule);
         // Plan gaps = this pass's plus those the recording stated.
         List<Map<String, Object>> planGaps = new ArrayList<>(closure.gaps);
         planGaps.addAll(trace.lineageGaps);
@@ -2271,6 +2275,9 @@ public final class CausynthTraceRecorder {
         final List<RuntimeRegionPlanner.ProtocolEvent> protocol =
                 new ArrayList<>();
         final List<SourceTraceEvent> sources = new ArrayList<>();
+        /** The recording's schedule ({@code schedule.jsonl} beside the
+         *  trace): where each message was sent and taken in. */
+        final List<ScheduleEvent> schedule = new ArrayList<>();
         /** Lineage gaps the recording stated, as plan-gap rows. */
         final List<Map<String, Object>> lineageGaps = new ArrayList<>();
 
