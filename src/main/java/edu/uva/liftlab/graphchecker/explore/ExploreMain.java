@@ -4,12 +4,14 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -29,6 +31,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * EXPLORE, one planner round: plan the closure, propose the flips still open.
@@ -146,10 +149,14 @@ public final class ExploreMain {
                 new LinkedHashSet<OccurrenceAddress>();
         List<String> witnesses = witnesses(corpus, roots);
         int truncated = 0;
+        Map<OccurrenceAddress, ClosurePlanner.Concrete> concrete =
+                new LinkedHashMap<OccurrenceAddress,
+                        ClosurePlanner.Concrete>();
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks, scope, branches);
             gaps.addAll(plan.gaps);
+            if (plan.concrete != null) concrete.put(root, plan.concrete);
             if (!plan.truncated.isEmpty()) {
                 // A truncated closure misses arms, but whether that blocks a
                 // claim is the exploration's end's to say: none once an
@@ -245,6 +252,10 @@ public final class ExploreMain {
                             : "the first admitted focused replay that runs "
                             + "it exposes it")));
         }
+        for (Map.Entry<OccurrenceAddress, ClosurePlanner.Concrete> anchor
+                : concrete.entrySet()) {
+            gaps.add(noRoot(anchor.getKey(), anchor.getValue(), fixpoint));
+        }
         RowCodec.writeAll(out.resolve("tasks.jsonl"), tasks,
                 ExploreCodec::writeTask);
         // An empty file IS the frontier closing.
@@ -259,6 +270,44 @@ public final class ExploreMain {
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
         return manifest;
+    }
+
+    /**
+     * NO ROOT REACHES THE ANCHOR (R1-ROOTS D0): every admitted path decided
+     * it on no symbol, so its closure starts from what it read before it
+     * decided ({@link ClosurePlanner.Concrete}).  DIAGNOSTIC while the
+     * exploration still has work; BLOCKING at the fixed point, where no flip
+     * of what wrote those reads moved the predicate onto a root and none
+     * will.  The detail says which of three ends it is: no admitted path
+     * decided a site on the way to the throw, the anchor read no shared
+     * state before it decided, or the reads its closure demands.
+     */
+    private static GapRow noRoot(OccurrenceAddress anchor,
+                                 ClosurePlanner.Concrete concrete,
+                                 boolean fixpoint) {
+        Set<String> locations = new TreeSet<String>();
+        for (ReadRow read : concrete.reads) {
+            locations.add(SmtLowering.locationKey(read.location()));
+        }
+        List<String> named = new ArrayList<String>(locations);
+        String why = concrete.decided == 0
+                ? "none of its " + concrete.paths + " admitted paths decided "
+                        + "a site on its way to the throw"
+                : concrete.reads.isEmpty()
+                ? "it read no shared state before it decided"
+                : "its closure demands the " + concrete.reads.size()
+                        + " shared-state reads it made before it decided, of "
+                        + locations.size() + " locations ("
+                        + String.join(", ", named.subList(0,
+                                Math.min(4, named.size())))
+                        + (named.size() > 4 ? ", ..." : "") + ")";
+        return GapRow.of(ExploreCodec.EXPLORATION,
+                GapKind.NO_ROOT_REACHES_ANCHOR, fixpoint ? GapClass.BLOCKING
+                        : GapClass.DIAGNOSTIC, anchor.render(),
+                why + "; every admitted path decided this anchor on no symbol "
+                        + "and none observed the fatal, "
+                        + (fixpoint ? "and the exploration ends here"
+                        : "and the exploration goes on"));
     }
 
     /**

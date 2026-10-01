@@ -474,8 +474,8 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
     restartable. A batch records once, plans each check, and seed-replays each group of checks
     whose plans agree once (`out/<batch>/schedule/groups/`); each check explores on its own.
 13. `triage.py <round> [gc-out]`: outcome class per case, and per check of a batch case
-    (`<case>/<check>`): CONFIRMED, REFUTED, NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING; `gc-out`
-    defaults to `gc-env.sh`'s `GC_OUT`.
+    (`<case>/<check>`): CONFIRMED, REFUTED, NO_ROOT, NO_WITNESS, STOPPED, DEAD, RUNNING,
+    PENDING; `gc-out` defaults to `gc-env.sh`'s `GC_OUT`.
 14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
     one row per mechanism among the confirmed witnesses (`findings.tsv`), weighted by kind,
     mediation and (1 + the rate at which REPRODUCE reproduced it natively at its anchor); the

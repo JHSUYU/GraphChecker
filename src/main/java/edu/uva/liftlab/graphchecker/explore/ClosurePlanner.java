@@ -46,8 +46,10 @@ import java.util.TreeSet;
  * exploration may flip in it (PIPELINE §7.2).
  *
  * <p>Demand starts at the ANNOTATED TARGET: the fatal predicate's operands and
- * the target's guard set ({@link StaticScopeMap}). Deliveries no demanded value
- * rests on are not followed. Each boundary variable grows it:</p>
+ * the target's guard set ({@link StaticScopeMap}), or, where every admitted
+ * path decided it on no symbol, the shared state it read before it decided
+ * ({@link #concrete}). Deliveries no demanded value rests on are not
+ * followed. Each boundary variable grows it:</p>
  * <ul>
  *   <li>by ROWS: the paired producer, the writers a read could have
  * observed;</li>
@@ -100,12 +102,18 @@ public final class ClosurePlanner {
         /** Demanded past the task bound, so not planned: the closure is
          *  incomplete, which only {@link ExploreMain} can weigh. */
         public final Set<String> truncated;
+        /** What every admitted path decided the anchor on, when that is no
+         *  symbol ({@link ClosurePlanner#concrete}): no root reaches it yet,
+         *  which only {@link ExploreMain} can weigh.  Null for any other
+         *  anchor. */
+        public final Concrete concrete;
 
         private Plan(List<Task> tasks, List<GapRow> gaps,
                      Map<String, String> why,
                      Map<String, Set<String>> flipSites,
                      Map<OccurrenceAddress, String> exposed,
-                     Set<OccurrenceAddress> waiting, Set<String> truncated) {
+                     Set<OccurrenceAddress> waiting, Set<String> truncated,
+                     Concrete concrete) {
             this.tasks = Collections.unmodifiableList(tasks);
             this.gaps = Collections.unmodifiableList(gaps);
             this.why = Collections.unmodifiableMap(why);
@@ -113,6 +121,26 @@ public final class ClosurePlanner {
             this.exposed = Collections.unmodifiableMap(exposed);
             this.waiting = Collections.unmodifiableSet(waiting);
             this.truncated = Collections.unmodifiableSet(truncated);
+            this.concrete = concrete;
+        }
+    }
+
+    /** A concrete anchor ({@link ClosurePlanner#concrete}): its admitted
+     *  paths, how many of them decided it, and what it read before they
+     *  did. */
+    public static final class Concrete {
+        /** The admitted paths at the anchor. */
+        public final int paths;
+        /** Of them, those that decided it: reached it, or left the way to
+         *  the throw at a flip site. */
+        public final int decided;
+        /** Its predicate reads, in corpus order: the closure demands them. */
+        public final List<ReadRow> reads;
+
+        private Concrete(int paths, int decided, List<ReadRow> reads) {
+            this.paths = paths;
+            this.decided = decided;
+            this.reads = Collections.unmodifiableList(reads);
         }
     }
 
@@ -137,6 +165,14 @@ public final class ClosurePlanner {
         for (StaticScopeMap.Site target : scope.targetSites()) {
             start.flipSites.addAll(reached ? target.guards
                     : target.pathSites());
+        }
+        Concrete concrete = concrete(corpus, anchor, start.flipSites);
+        if (concrete != null) {
+            for (ReadRow read : concrete.reads) {
+                if (!read.symbol().isEmpty()) {
+                    start.predicate.add(read.symbol());
+                }
+            }
         }
         demands.put(anchor.id(), start);
         pending.add(anchor.id());
@@ -187,7 +223,80 @@ public final class ClosurePlanner {
             flips.put(taskId, sites);
         }
         return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
-                exposed, waiting, truncated);
+                exposed, waiting, truncated, concrete);
+    }
+
+    /**
+     * D0 -- A CONCRETE ANCHOR DEMANDS WHAT IT READ BEFORE IT DECIDED
+     * (R1-ROOTS §2.3, PIPELINE §7.2).
+     *
+     * <p>An admitted path (the seed, or a focused session admitted whole)
+     * DECIDED the anchor where it took its arm: a reached anchor at its
+     * target row, on its phi; an unreached one on its decisions at the flip
+     * sites, the way to the throw, the last of them where it left it (none:
+     * it decided nothing on that way).  The anchor is CONCRETE when some
+     * admitted path is at it, none observed the fatal, and none decided it
+     * on a recorded symbol: every path COMPOSE takes is refused ("decided
+     * concretely on its healthy arm", or never reached), and nothing the
+     * anchor's demand starts from names a value a flip could move -- the
+     * closure was the anchor and its doors alone, and 195 of 260 finished
+     * ad-hoc verdicts (h4, q12, q13) ended there with no gap saying why.  An
+     * unreached path with a symbolic decision on the way is not concrete:
+     * flipping it is how a replay reaches the throw (SOLR-18413's leader
+     * leaves at a concrete test of the boolean a clock-decided {@code
+     * isExpired} returned).</p>
+     *
+     * <p>Its PREDICATE READS are then the shared-state reads the anchor made
+     * before it decided, in each admitted path: a read the occurrence made
+     * later cannot reach the decision it had already taken, and every
+     * earlier one may, through a value the VM kept no expression under (a
+     * String, a container, a native) or through a branch it decided.  The
+     * closure demands them as it demands the reads a symbolic predicate
+     * names: their writers become tasks, flipped at their own guards and
+     * fault sites, so a clock or a fault that chose what the anchor read is
+     * asked; a replay that moves it runs the anchor again, and its own rows
+     * say whether the predicate turned symbolic or the fatal was observed.
+     * These are what the rows state: the static predicate cone (R1-ROOTS
+     * WP-F1) tracks more of the cells the deciding guards depend on, which
+     * then arrive here as rows, and may narrow the reads to its marked
+     * sites.</p>
+     *
+     * @return null when the anchor is not concrete
+     */
+    private static Concrete concrete(Corpus corpus, OccurrenceAddress anchor,
+                                     Set<String> flipSites) {
+        List<ReadRow> reads = new ArrayList<ReadRow>();
+        int paths = 0;
+        int decided = 0;
+        for (TargetRow row : corpus.targetsOn(anchor)) {
+            String sessionId = row.sessionId();
+            SessionReader session = corpus.session(sessionId);
+            if (session == null || !session.admitted()) continue;
+            if (row.observedFatal()) return null;
+            long at = 0L;
+            if (row.reachedAnchor()) {
+                if (!corpus.termSymbols(sessionId, row.phiTerm()).isEmpty()) {
+                    return null;
+                }
+                at = row.seq();
+            } else {
+                for (DecisionRow decision
+                        : corpus.decisionsOf(sessionId, anchor)) {
+                    if (!flipSites.contains(decision.siteId())) continue;
+                    if (!corpus.termSymbols(sessionId, decision.term())
+                            .isEmpty()) {
+                        return null;
+                    }
+                    at = Math.max(at, decision.seq());
+                }
+            }
+            paths++;
+            if (at > 0L) decided++;
+            for (ReadRow read : corpus.readsOn(sessionId, anchor)) {
+                if (read.seq() < at) reads.add(read);
+            }
+        }
+        return paths == 0 ? null : new Concrete(paths, decided, reads);
     }
 
     /**
@@ -338,6 +447,9 @@ public final class ClosurePlanner {
         /** session|expressionRef of values this occurrence contributed. */
         private final Set<String> contributed = new LinkedHashSet<String>();
         private final Set<String> flipSites = new LinkedHashSet<String>();
+        /** The symbols of a concrete anchor's predicate reads ({@link
+         *  #concrete}); none on any other demand. */
+        private final Set<String> predicate = new LinkedHashSet<String>();
         private final boolean anchor;
         private String why;
         private boolean dirty;
@@ -575,7 +687,8 @@ public final class ClosurePlanner {
     }
 
     /** The symbols one occurrence's demanded values name: the anchor's fatal
-     *  predicate, its decisions at its guard-set sites, and its contributed
+     *  predicate (a concrete one's predicate reads, {@link #concrete}),
+     *  its decisions at its guard-set sites, and its contributed
      *  expressions -- then the fixed point over its group's reads and the
      *  writes they could observe. A factor member deciding the same site
      *  decides it on its own objects, and demands nothing here. Terms are
@@ -600,6 +713,7 @@ public final class ClosurePlanner {
                 reads.under(corpus, target.sessionId(), target.phiTerm(),
                         named);
             }
+            named.addAll(demand.predicate);
         }
         for (String contributed : demand.contributed) {
             int split = contributed.indexOf('|');
