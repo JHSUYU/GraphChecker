@@ -1,6 +1,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/fieldTraverser.hpp"
+#include "classfile/javaClasses.hpp"
 #include "concolic/sharedFieldVersions.hpp"
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
@@ -170,23 +171,7 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
       // Recursive whole-object symbolization remains unchanged: it cannot
       // traverse a missing child and does not invent one.
       if (!_selected_field.empty()) {
-        sym_inst = this->_ctx.find_sym_inst(obj);
-        if (sym_inst != NULL) {
-          assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
-                 "should be equal");
-          // Invariant: a field that already carries a symbolic expression is
-          // never overwritten by a fresh symbol, and no equation is recorded.
-          if (sym_inst->has_sym_exp(fd->offset())) return false;
-          Expression *symbol = new FieldSymbolExp(
-              sym_inst->get_sym_rid(), symbolic_name, T_OBJECT);
-          sym_inst->set_sym_exp(fd->offset(), symbol);
-          _ctx.record_path_condition(new OpSymExpression(
-              new FieldAccessExpression(
-                  sym_inst->get_or_create_ref_exp(obj),
-                  obj->klass()->name()->as_C_string(), fd->offset(),
-                  T_OBJECT),
-              symbol, op_eq, true));
-        }
+        mint_reference(obj, fd, symbolic_name);
       }
       return false;
     }
@@ -215,6 +200,38 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
               obj->klass()->name()->as_C_string(), fd->offset(), T_OBJECT,
               "Ljava/lang/String;"),
           symbol, op_eq, true));
+      return false;
+    }
+    const BasicType boxed = java_lang_boxing_object::basic_type(fld_oop);
+    if (boxed != T_ILLEGAL) {
+      // A box's value rides the field that holds it, whatever the box's
+      // identity: minted on the field like a primitive of the box's sort,
+      // which is what an unboxing of the field reads, and under the same
+      // replace rule.  The box stays clean -- a JVM-wide one must, and a
+      // fresh one then states its value the one way a shared one does.
+      sym_inst = this->_ctx.find_sym_inst(obj);
+      if (sym_inst == NULL) {
+        tty->print_cr("Warning: boxed field owner has no symbolic shadow");
+        return false;
+      }
+      if (_selected_holder.empty() && sym_inst->has_sym_exp(fd->offset())) {
+        return false;
+      }
+      mint_slot(sym_inst, obj, fd, symbolic_name, boxed,
+                SharedFieldVersions::Cell(
+                    obj, T_OBJECT,
+                    SharedFieldVersions::wrapper_value_type(fd->signature())
+                        != T_ILLEGAL));
+      return false;
+    }
+    if (jvm_shared_object(fld_oop)) {
+      // Any other JVM-wide referent (an enum constant, a box cache's array)
+      // never carries a shadow: every holder in the JVM would read it.  A
+      // selected field keeps its reference symbol on the field, as a null
+      // one does; a walk does not enter it.
+      if (!_selected_field.empty()) {
+        mint_reference(obj, fd, symbolic_name);
+      }
       return false;
     }
     if (!_selected_field.empty()) {
@@ -249,7 +266,7 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
   }
   case T_ARRAY: {
     arrayOop array_obj = (arrayOop)(obj->obj_field(fd->offset()));
-    if (array_obj != NULL) {
+    if (array_obj != NULL && !jvm_shared_object(array_obj)) {
       sym_arr = this->_ctx.get_or_alloc_sym_array(array_obj);
       // Symbolized: its contents are an input now, whoever named it first.
       if (sym_arr != NULL) sym_arr->set_named(false);
@@ -282,49 +299,73 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     // mint has to be the writer that read observes.
     const bool exact = !_selected_holder.empty();
     if (!exact && sym_inst->has_sym_exp(fd->offset())) return false;
-    Expression *symbol = new FieldSymbolExp(
-        sym_inst->get_sym_rid(), symbolic_name, type);
-    sym_inst->set_sym_exp(fd->offset(), symbol);
-    // Publish before the equation is built, so the equation can name the
-    // version it defines.  The mint is a write: the version published here
-    // *is* this symbol, and the projection on the left of the equation is a
-    // view of exactly that version.  Ordering is free -- publish reads
-    // path_guard(), the region's branch conjunction, while
-    // record_path_condition appends to the frame's auxiliary conditions, and
-    // neither reads the other.
-    // A mint is a symbolic write, whichever symbolizer performed it: it is
-    // kept by value and starts this field's log when it is the first symbolic
-    // value to reach it.  This used to run only for the exact
-    // (holder+name+descriptor) form, which left the by-name and whole-object
-    // symbolizers minting values no version named -- so a projection of one
-    // of those fields could say nothing about which write it read, which is
-    // the whole point of the member below.  laneVM4 showed the shape of that
-    // hole: ten FIELD[Long@24] / FIELD[Boolean@24] views of boxed region
-    // inputs, every one of them unstamped.
-    SharedFieldVersions::Location location(
-        sym_inst->get_sym_rid(), fd->offset(),
-        SharedFieldVersions::LOC_INSTANCE_FIELD);
-    // Folded outside every engine lock, as the store's concurrency contract
-    // requires; the same guard a putfield would publish.
-    Expression *guard = _ctx.path_guard();
-    // The symbol stands for the word the field holds, which is the word a
-    // later read of it must find there: read under the location's stripe.
-    jlong minted_version = SharedFieldVersions::publish_held(
-        location, SharedFieldVersions::Cell(obj, type), symbol, guard,
-        SharedFieldVersions::VERSION_WRITE);
-    std::string minted_version_kind;
-    if (minted_version > 0) {
-      minted_version_kind = SharedFieldVersions::version_kind_name(
-          SharedFieldVersions::VERSION_WRITE);
-    }
-    _ctx.record_path_condition(new OpSymExpression(
-        new FieldAccessExpression(
-            sym_inst->get_or_create_ref_exp(obj),
-            obj->klass()->name()->as_C_string(), fd->offset(), type,
-            std::string(), NULL, NULL, minted_version, minted_version_kind),
-        symbol, op_eq, true));
+    mint_slot(sym_inst, obj, fd, symbolic_name, type,
+              SharedFieldVersions::Cell(obj, type));
     return false;
   }
+}
+
+void FieldSymbolizer::mint_slot(SymInstance *sym_inst, oop obj,
+                                fieldDescriptor *fd, const std::string &name,
+                                BasicType type,
+                                const SharedFieldVersions::Cell &cell) {
+  Expression *symbol = new FieldSymbolExp(sym_inst->get_sym_rid(), name, type);
+  sym_inst->set_sym_exp(fd->offset(), symbol);
+  // Publish before the equation is built, so the equation can name the
+  // version it defines.  The mint is a write: the version published here
+  // *is* this symbol, and the projection on the left of the equation is a
+  // view of exactly that version.  Ordering is free -- publish reads
+  // path_guard(), the region's branch conjunction, while
+  // record_path_condition appends to the frame's auxiliary conditions, and
+  // neither reads the other.
+  // A mint is a symbolic write, whichever symbolizer performed it: it is
+  // kept by value and starts this field's log when it is the first symbolic
+  // value to reach it.  This used to run only for the exact
+  // (holder+name+descriptor) form, which left the by-name and whole-object
+  // symbolizers minting values no version named -- so a projection of one
+  // of those fields could say nothing about which write it read, which is
+  // the whole point of the member below.  laneVM4 showed the shape of that
+  // hole: ten FIELD[Long@24] / FIELD[Boolean@24] views of boxed region
+  // inputs, every one of them unstamped.
+  SharedFieldVersions::Location location(
+      sym_inst->get_sym_rid(), fd->offset(),
+      SharedFieldVersions::LOC_INSTANCE_FIELD);
+  // Folded outside every engine lock, as the store's concurrency contract
+  // requires; the same guard a putfield would publish.
+  Expression *guard = _ctx.path_guard();
+  // The symbol stands for the word the field holds, which is the word a
+  // later read of it must find there: read under the location's stripe.
+  jlong minted_version = SharedFieldVersions::publish_held(
+      location, cell, symbol, guard, SharedFieldVersions::VERSION_WRITE);
+  std::string minted_version_kind;
+  if (minted_version > 0) {
+    minted_version_kind = SharedFieldVersions::version_kind_name(
+        SharedFieldVersions::VERSION_WRITE);
+  }
+  ResourceMark rm;
+  _ctx.record_path_condition(new OpSymExpression(
+      new FieldAccessExpression(
+          sym_inst->get_or_create_ref_exp(obj),
+          obj->klass()->name()->as_C_string(), fd->offset(), type,
+          std::string(), NULL, NULL, minted_version, minted_version_kind),
+      symbol, op_eq, true));
+}
+
+void FieldSymbolizer::mint_reference(oop obj, fieldDescriptor *fd,
+                                     const std::string &name) {
+  SymInstance *sym_inst = this->_ctx.find_sym_inst(obj);
+  // Invariant: a field that already carries a symbolic expression is never
+  // overwritten by a fresh symbol, and no equation is recorded.
+  if (sym_inst == NULL || sym_inst->has_sym_exp(fd->offset())) return;
+  Expression *symbol = new FieldSymbolExp(sym_inst->get_sym_rid(), name,
+                                          T_OBJECT);
+  sym_inst->set_sym_exp(fd->offset(), symbol);
+  ResourceMark rm;
+  _ctx.record_path_condition(new OpSymExpression(
+      new FieldAccessExpression(
+          sym_inst->get_or_create_ref_exp(obj),
+          obj->klass()->name()->as_C_string(), fd->offset(), T_OBJECT),
+      symbol, op_eq, true));
 }
 
 void FieldSymbolizer::after_field_helper(unsigned offset, oop parent_obj) {
@@ -333,6 +374,9 @@ void FieldSymbolizer::after_field_helper(unsigned offset, oop parent_obj) {
 }
 
 bool FieldSymbolizer::before_instance_helper() {
+  // An object the walk reaches that is JVM-wide (a shared box in an object
+  // array) gets no shadow: the array's own expression states its elements.
+  if (jvm_shared_object(this->_obj)) return false;
   if (this->_obj->is_symbolic()) {
     // Selective materialization is intentionally incremental: a region may
     // first symbolize identifier.expiryDate and then identifier.keyId on the
@@ -416,6 +460,7 @@ void FieldSymbolizer::after_element_helper(int index, oop parent_obj) {
 }
 
 bool FieldSymbolizer::before_array_helper() {
+  if (jvm_shared_object(this->_obj)) return false;
   if (this->_obj->is_symbolic()) {
     SymArr *named = this->_ctx.find_sym_array((arrayOop)this->_obj);
     if (named != NULL) named->set_named(false);

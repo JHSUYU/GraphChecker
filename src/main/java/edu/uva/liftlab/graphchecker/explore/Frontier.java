@@ -37,9 +37,9 @@ import java.util.Set;
  * </ul>
  *
  * <p>An arm queued or running ({@link #inFlight}) is not settled and not
- * proposed again: by its id, and by the question its row asks (task, path,
- * site, ordinal, flipped outcome), whose id may move while it is in flight
- * because sessions landing since its round grow the dependence.</p>
+ * proposed again: by its id, and by the flip its row asks ({@link
+ * ObligationFactory#flip}), since its id may move while it is in flight:
+ * sessions landing since its round grow the dependence.</p>
  *
  * <p>Trap: keying by session ({@code pathId}) re-proposes every answered arm
  * from every replay it produced. New obligations arise only from new planned
@@ -80,9 +80,9 @@ public final class Frontier {
     /** arm key -> proposing task, this round. */
     private final Map<String, String> proposedBy =
             new LinkedHashMap<String, String>();
-    /** The ids and the questions of the arms queued or running. */
-    private final Set<String> inFlight = new LinkedHashSet<String>();
-    private int inFlightCount;
+    /** The ids, and the flips, of the arms queued or running. */
+    private final Set<String> inFlightIds = new LinkedHashSet<String>();
+    private final Set<String> inFlightFlips = new LinkedHashSet<String>();
 
     /** Indexes every arm the corpus recorded for these tasks, over all paths:
      *  {@code maxPathsPerTask} bounds what a flip is cut from, not what
@@ -140,30 +140,21 @@ public final class Frontier {
      *  answered: none is proposed again while it is. */
     public void inFlight(Collection<Obligation> flying) {
         for (Obligation obligation : flying) {
-            inFlight.add(obligation.obligationId());
-            inFlight.add(question(obligation.taskId(), obligation.pathId(),
-                    obligation.siteId(), obligation.ordinal(),
-                    obligation.flippedOutcome()));
+            inFlightIds.add(obligation.obligationId());
+            inFlightFlips.add(ObligationFactory.flip(obligation.taskId(),
+                    obligation.pathId(), obligation.siteId(),
+                    obligation.ordinal(), obligation.flippedOutcome()));
         }
-        inFlightCount += flying.size();
     }
 
     /** How many arms are queued or running. */
     public int inFlightCount() {
-        return inFlightCount;
+        return inFlightIds.size();
     }
 
     /** The first reason this arm is settled, or {@code ""} while it is owed. */
     public String settled(String obligationId) {
         return settled.getOrDefault(obligationId, "");
-    }
-
-    /** The question an obligation row asks, apart from its id. */
-    private static String question(String taskId, String pathId,
-                                   String siteId, int ordinal,
-                                   boolean flippedOutcome) {
-        return "question|" + taskId + "|" + pathId + "|" + siteId + "#"
-                + ordinal + "=" + flippedOutcome;
     }
 
     private void settle(String obligationId, String reason) {
@@ -179,11 +170,9 @@ public final class Frontier {
         int held = 0;
         for (ObligationFactory.Candidate candidate : candidates) {
             if (settled.containsKey(candidate.obligationId)) continue;
-            if (inFlight.contains(candidate.obligationId)
-                    || inFlight.contains(question(candidate.task.taskId(),
-                    candidate.path.pathId, candidate.decision.siteId(),
-                    candidate.decision.ordinal(),
-                    !candidate.decision.outcome()))) {
+            if (inFlightIds.contains(candidate.obligationId)
+                    || inFlightFlips.contains(
+                    ObligationFactory.flip(candidate))) {
                 held++;
                 continue;
             }
@@ -217,4 +206,5 @@ public final class Frontier {
     public int answeredCount() {
         return answered.size();
     }
+
 }

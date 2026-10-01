@@ -1238,10 +1238,11 @@ done
 mkdir -p "${bound_dir}/work"
 workload_work_dir="${bound_dir}/work"
 custom_jdk_home=""
-# Five seconds, not one: the adapter is a LOGIN shell, and the lifts' login
-# profile runs a quota check on NFS that alone takes up to a second, so a
-# one-second bound sometimes fired before the payload wrote its pid.
-campaign_adapter_timeout_s=5
+# Ten seconds, not one: the adapter is a LOGIN shell, and the lifts' login
+# profile runs a quota check on NFS, which right after `mvn package` took
+# over five seconds, so a shorter bound sometimes fired before the payload
+# wrote its pid.
+campaign_adapter_timeout_s=10
 run_capturing_status campaign_run_adapter "replay(test)" \
   "sleep 120 & echo \$! >'${bound_dir}/grandchild.pid'; wait" \
   >"${bound_dir}/adapter.log" 2>&1
@@ -1496,6 +1497,7 @@ chmod +x "${late_dir}/replay.sh"
 replay_timeout_s=4
 concolic_replay_command="${late_dir}/replay.sh"
 printf '{"taskId":"TASK.1"}\n' >"${late_worker}/focused_task.jsonl"
+printf 'F:Q\n' >"${late_worker}/question.asked"
 (
   campaign_adapter_kill_grace_s=10
   campaign_obligation_replay OB.L "${withdraw_dir}/classes" \
@@ -1507,6 +1509,8 @@ printf '{"taskId":"TASK.1"}\n' >"${late_worker}/focused_task.jsonl"
     == "NOT_ADMITTED replay exceeded replay_timeout_s=4" ]] \
   || fail "REPLAY-BOUND-5: a member of the replay's group wrote after the \
 worker: $(cat "${late_worker}/obligation_result.jsonl")"
+[[ ! -e "${late_worker}/question.asked" && ! -e "${late_worker}/question.txt" ]] \
+  || fail "REPLAY-BOUND-5: a killed replay's question stands settled"
 
 # EARLY-END-1: a replay a refusal decided ended there, and its verdict names
 # no session (RowRuntime.closeSession): the session it opened is a prefix of
@@ -1532,6 +1536,7 @@ chmod +x "${refused_dir}/replay.sh"
 replay_timeout_s=60
 concolic_replay_command="${refused_dir}/replay.sh"
 printf '{"taskId":"TASK.1"}\n' >"${refused_worker}/focused_task.jsonl"
+printf 'F:Q\n' >"${refused_worker}/question.asked"
 (
   campaign_obligation_replay OB.R "${withdraw_dir}/classes" \
     "${refused_worker}" "${refused_dir}/sessions" \
@@ -1546,6 +1551,9 @@ not withdrawn under its worker: $(find "${refused_dir}" | LC_ALL=C sort)"
 [[ "$(jq -r '.detail' "${refused_worker}/obligation_result.jsonl")" \
     == "wrong decision; ended" ]] \
   || fail "EARLY-END-1: the withdrawal changed the replay's verdict row"
+[[ "$(cat "${refused_worker}/question.txt" 2>/dev/null)" == F:Q \
+    && ! -e "${refused_worker}/question.asked" ]] \
+  || fail "EARLY-END-1: the question a replay decided is not settled"
 mkdir -p "${refused_worker}/sessions/SESSION.stale"
 cp "${refused_worker}/refused-sessions/SESSION.cut/manifest.json" \
   "${refused_worker}/sessions/SESSION.stale/"
@@ -1773,8 +1781,12 @@ jq -e '.stop == "FIXED_POINT" and .rounds == 3 and .answered == 4
   and .cancelled == [] and .reaped == []' "${stream_dir}/exploration.json" \
   >/dev/null || fail "exploration.json does not state the fixed point: \
 $(cat "${stream_dir}/exploration.json")"
-[[ ! -e "${stream_dir}/campaign_gaps.jsonl" ]] \
-  || fail "a loop that reached its fixed point wrote a stop row"
+[[ "$(jq -r '.subject' "${stream_dir}/campaign_gaps.jsonl")" \
+    == OBLIGATION_UNFINISHED \
+    && "$(campaign_unfinished_count "${stream_dir}")" -eq 1 ]] \
+  || fail "the unfinished obligation is not its own counted gap row, or a \
+loop that reached its fixed point wrote a stop row: \
+$(cat "${stream_dir}/campaign_gaps.jsonl" 2>&1)"
 [[ ! -e "${stream_dir}/ssh-calls.txt" ]] \
   || fail "an empty campaign_worker_hosts invoked ssh"
 [[ "$(cat "${stream_dir}"/obligations-*/*/host.txt | LC_ALL=C sort -u)" \

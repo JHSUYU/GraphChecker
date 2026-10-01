@@ -106,12 +106,15 @@ final class FlipQuery {
         /** The same for the flipped path's clocks, apart because a clock's
          *  model is read back as a SKEW the replay adds to its own reading. */
         final Map<String, String> clockVariables;
+        /** The writer-choice selectors ({@code wchoice_*}) that pick the
+         *  writer each read observed in the recording. */
+        final List<String> recordedChoices;
         final List<GapRow> gaps;
 
         private Built(String smt2, List<String> modelSymbols, String refusal,
                       List<Control> controls, Map<String, String> rootVariables,
                       Map<String, String> clockVariables,
-                      List<GapRow> gaps) {
+                      List<String> recordedChoices, List<GapRow> gaps) {
             this.smt2 = smt2;
             this.modelSymbols =
                     Collections.unmodifiableList(modelSymbols);
@@ -121,6 +124,8 @@ final class FlipQuery {
                     Collections.unmodifiableMap(rootVariables);
             this.clockVariables =
                     Collections.unmodifiableMap(clockVariables);
+            this.recordedChoices =
+                    Collections.unmodifiableList(recordedChoices);
             this.gaps = Collections.unmodifiableList(gaps);
         }
 
@@ -241,6 +246,9 @@ final class FlipQuery {
         /** reader occurrence + location -> its one choice of writer. */
         private final Map<String, List<Choice>> choicesByReader =
                 new LinkedHashMap<String, List<Choice>>();
+        /** The selectors of the writers the recording's reads observed. */
+        private final Set<String> recordedChoices =
+                new LinkedHashSet<String>();
         private final Map<String, String> rootVariables =
                 new LinkedHashMap<String, String>();
         private final Map<String, String> clockVariables =
@@ -391,7 +399,8 @@ final class FlipQuery {
                     new ArrayList<String>(sorts.keySet()), "",
                     new ArrayList<Control>(controls.values()),
                     reached(rootVariables, reached),
-                    reached(clockVariables, reached), gaps);
+                    reached(clockVariables, reached),
+                    new ArrayList<String>(recordedChoices), gaps);
         }
 
         /**
@@ -948,6 +957,11 @@ final class FlipQuery {
                             + row.location() + " from slot "
                             + alternative.slotId());
                     choices.add(new Choice(selector, alternative));
+                    if (alternative.write() != null
+                            && alternative.write().version()
+                            == row.observedVersion()) {
+                        recordedChoices.add(selector);
+                    }
                 }
                 choicesByReader.put(choiceKey, choices);
                 assertions.add(exactlyOne(choices));
@@ -1207,7 +1221,8 @@ final class FlipQuery {
         private Built refused(String reason, DecisionRow flipped) {
             return new Built("", Collections.<String>emptyList(), reason,
                     new ArrayList<Control>(controls.values()),
-                    rootVariables, clockVariables, gaps);
+                    rootVariables, clockVariables,
+                    Collections.<String>emptyList(), gaps);
         }
 
         /** Every text this query ASSERTS (assertions, root facts, stated

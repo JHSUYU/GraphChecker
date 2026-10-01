@@ -113,6 +113,30 @@ ConStringSymbolExp::ConStringSymbolExp(const std::string &str) {
   this->finalize(buf, ss.size());
 }
 
+// The head set_head writes for a constant String, before its content.
+static const char CONSTANT_STRING_HEAD[] = "Y_L'String'_";
+static const size_t CONSTANT_STRING_HEAD_LENGTH =
+    sizeof(CONSTANT_STRING_HEAD) - 1;
+
+bool ConStringSymbolExp::fits(const std::string &text) {
+  // The rendering buffer keeps BUF_SIZE - 1 characters.
+  return CONSTANT_STRING_HEAD_LENGTH + text.size()
+      < (size_t) SymbolExpression::BUF_SIZE - 1;
+}
+
+bool ConStringSymbolExp::concrete_string_value(std::string *value) {
+  if (value == NULL || _str.size() < CONSTANT_STRING_HEAD_LENGTH
+      || _str.compare(0, CONSTANT_STRING_HEAD_LENGTH, CONSTANT_STRING_HEAD)
+             != 0) {
+    return false;
+  }
+  std::string content = _str.substr(CONSTANT_STRING_HEAD_LENGTH);
+  // A rendering that filled the buffer may have been cut.
+  if (!fits(content)) return false;
+  *value = content;
+  return true;
+}
+
 void ConStringSymbolExp::serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer) {
   writer.Key("_type");
   writer.String("ConStringSymbolExp");

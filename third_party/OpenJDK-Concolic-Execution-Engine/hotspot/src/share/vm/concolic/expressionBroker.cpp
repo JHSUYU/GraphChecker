@@ -189,19 +189,10 @@ jlong ConcolicMngr::exportExpression(
   // has to be able to name its own event, or its interaction row cannot say
   // which export it published and the Composer is left counting ports.
   if (export_event_out != NULL) *export_event_out = 0;
-  int session_members = 0;
-  bool workload_open = false;
-  SessionState session_state = SESSION_CLOSED;
-  jlong session_id = 0;
-  session_snapshot(&session_members, &workload_open, &session_state,
-                   &session_id);
-  const bool local_context = has_active_context();
   // A selected sender records its local PC as before.  A non-selected sender
   // may only forward a value that already lives in the workload-owned session
   // heap; it gains no ThreadContext, stack shadow or path condition of its own.
-  if ((!local_context && (!workload_open || session_state != SESSION_OPEN))
-      || !GlobalSymbolicSession::is_open()
-      || !ExpressionBroker::is_open()) {
+  if (!may_use_session_heap() || !ExpressionBroker::is_open()) {
     return ExpressionBroker::HANDOFF_NO_ACTIVE_REGION;
   }
   if (owner.is_null() || is_blank(declaring_class) || is_blank(field_name)
