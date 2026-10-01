@@ -726,7 +726,12 @@ EXPLORE.
 obligations wherever a host admits one (§7.7) and collects each as it returns
 (`campaign_stream_wait`). Its own JVM work is one STEP at a time, in the background
 (`campaign_stream_step`, in `steps/NNNN/`), so the pool goes on starting and collecting while a step
-waits for memory or runs. Between two steps, in the head's hands (`campaign_stream_step_start`),
+waits for memory or runs. A step's JVMs -- the gate, the planner, an attempt's composer -- and GROW's
+planner read and write only the shared campaign directory, so each goes wherever there is room: the
+head's own host when it fits there (its own room is not held against it), else the pool's host with
+the most room under the ceiling (`campaign_head_place`, `campaign_host_room`), charged there while
+it runs and run there through the remote worker script (`run_engine.sh --run-placed`,
+`campaign_run_placed`) in the head's working directory, its output passed back as its own. Between two steps, in the head's hands (`campaign_stream_step_start`),
 everything that returned meanwhile lands: each verdict is appended to `obligation_results.jsonl`
 (`campaign_stream_land`), GROW's re-runs swap in once due (§7.8), and the sessions the workers
 staged move into the corpus (`campaign_stream_move`). The next step then takes them in: ONE IMPORT

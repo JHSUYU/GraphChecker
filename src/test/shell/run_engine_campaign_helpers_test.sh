@@ -2435,6 +2435,21 @@ run_capturing_status "${repo}/run_engine.sh" \
 grep -q 'requires --graphchecker-jar' "${frozen_dir}/nojar.log" \
   || fail "the refusal does not name the missing jar argument: \
 $(cat "${frozen_dir}/nojar.log")"
+# A placed head JVM (--run-placed) runs on the peer in the head's working
+# directory, its standard output the command's alone: the peer's own words
+# (campaign_peer_enter's, which checks the jar as above) go to stderr, since
+# that output is often the JVM's artifact.
+(
+  campaign_peer_enter() {
+    campaign_log "peer entered"
+    campaign_peer_args=("$@")
+  }
+  do_run_placed "${frozen_dir}" bash -c 'printf "%s" "${PWD##*/}"'
+) >"${frozen_dir}/placed.out" 2>"${frozen_dir}/placed.err"
+[[ "$(cat "${frozen_dir}/placed.out")" == frozen-jar ]] \
+  && grep -q 'peer entered' "${frozen_dir}/placed.err" \
+  || fail "--run-placed did not run its command alone in the head's \
+directory: $(cat "${frozen_dir}/placed.out" "${frozen_dir}/placed.err")"
 # And every workflow key travels as its own environment override, so the
 # peer's configuration is the head's rather than a second derivation of it.
 reset_config
@@ -3056,6 +3071,60 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
 [[ -z "$(ls "${campaign_host_gate_root}/gate-head/heads/")" ]] \
   || fail "the head kept its room after it exited"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb
+
+# HEAD-PLACE: an engine JVM of an EXPLORE step goes wherever there is room:
+# the head's own host when it fits, else the pool's host with the most room
+# under the ceiling (lift15 here; lift14 has too little), charged there
+# while it runs and released after, run there (--run-placed, in the head's
+# working directory) with its standard output passed on as its own.
+place_dir="${memory_dir}/place"
+mkdir -p "${place_dir}"
+(
+  campaign_host_gate_root="${place_dir}/hosts"
+  campaign_root="${place_dir}"
+  campaign_local_host_names=" localhost gate-head "
+  hostname() { echo gate-head; }
+  campaign_worker_hosts="gate-head lift14 lift15"
+  campaign_host_total_mb() { echo 10000; }
+  campaign_host_available_mb() {
+    case "$1" in
+      lift14) echo 7000 ;;
+      lift15) echo 9000 ;;
+      *) cat "${place_dir}/own-available" ;;
+    esac
+  }
+  echo 4000 >"${place_dir}/own-available"
+  campaign_host_max_used_pct=70
+  campaign_host_poll_s=0
+  campaign_head_charging=1
+  campaign_head_placing=1
+  campaign_dispatch_remote() {
+    local host=$1 dir=$2 workdir
+    shift 3
+    [[ "$1" == --run-placed ]] || fail "a head JVM was placed as $1"
+    workdir=$2
+    shift 2
+    printf '%s\n' "${host}" >>"${place_dir}/placed-on"
+    grep -c ' 5000 120 ' "${campaign_host_gate_root}/${host}/starts" \
+      >"${place_dir}/charged"
+    (cd "${workdir}" && "$@") >"${dir}/stdout.log" 2>"${dir}/stderr.log"
+  }
+  cd "${place_dir}"
+  [[ "$(campaign_head_charged 5000 120 bash -c 'printf "%s" "${PWD##*/}"')" \
+      == place ]] \
+    || fail "a placed JVM's output did not reach its reader, from the head's \
+working directory"
+  [[ "$(cat "${place_dir}/placed-on")" == lift15 \
+      && "$(cat "${place_dir}/charged")" == 1 ]] \
+    || fail "a head JVM was not placed on the host with the most room and \
+charged there: $(cat "${place_dir}/placed-on" "${place_dir}/charged")"
+  [[ -z "$(cat "${campaign_host_gate_root}/lift15/starts")" ]] \
+    || fail "a placed JVM's charge outlived it"
+  echo 20000 >"${place_dir}/own-available"
+  [[ "$(campaign_head_charged 5000 120 printf here)" == here \
+      && "$(wc -l <"${place_dir}/placed-on")" -eq 1 ]] \
+    || fail "a head JVM that fits on the head's host went elsewhere"
+) || exit 1
 
 # ENGINE-HEAP: an engine JVM starts at what its main measurably needs, charged
 # that, and only a run that outgrows it -- the JVM's exit 3 under

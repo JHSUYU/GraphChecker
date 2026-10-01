@@ -54,6 +54,10 @@ Commands:
               Execute ONE native run of a campaign's REPRODUCE on a peer,
               generated as --run-obligation is; the four positional
               arguments are exactly what campaign_reproduce_run takes.
+  --run-placed
+              Execute ONE engine JVM of a campaign head's EXPLORE step on a
+              peer with room (campaign_run_placed): a working directory,
+              then the command.
 
 Environment variables matching normalized workflow keys may override values
 loaded from FILE.
@@ -1721,7 +1725,8 @@ campaign_remote_env_assignments() {
 }
 
 # The script one peer runs for one piece of a campaign's work: run_engine.sh
-# in a peer mode, <mode> <args...> (--run-obligation, --run-reproduction),
+# in a peer mode, <mode> <args...> (--run-obligation, --run-reproduction,
+# --run-placed),
 # under <bound_s>, its stdout.log and stderr.log in <dir>.
 #
 # Written into the worker directory on the shared home rather than squeezed
@@ -3322,7 +3327,7 @@ campaign_host_charge_id=""
 campaign_host_try_start() {
   local host=$1 need=${2:-${obligation_memory_mb}}
   local ramp=${3:-${campaign_host_ramp_s}} key dir now available total
-  local reserve charged=0 at mb row_ramp id kept="" held=0
+  local reserve charged kept held=0
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
@@ -3334,15 +3339,9 @@ campaign_host_try_start() {
   [[ "${campaign_host_head_start}" == 1 ]] \
     || held=$(campaign_host_head_room "${dir}" "${now}")
   campaign_host_lock "${dir}" "${now}" || return 3
-  if [[ -f "${dir}/starts" ]]; then
-    while read -r at mb row_ramp id; do
-      [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ \
-        && "${row_ramp}" =~ ^[0-9]+$ ]] || continue
-      (( now - at < row_ramp )) || continue
-      charged=$((charged + mb))
-      kept+="${at} ${mb} ${row_ramp} ${id}"$'\n'
-    done <"${dir}/starts"
-  fi
+  kept=$(campaign_host_in_ramp "${dir}" "${now}")
+  charged=$(awk '{ mb += $2 } END { print mb + 0 }' <<<"${kept}")
+  [[ -z "${kept}" ]] || kept+=$'\n'
   if (( available - charged - held < need + reserve )); then
     printf '%s' "${kept}" >"${dir}/starts"
     rmdir "${dir}/lock"
@@ -3405,6 +3404,38 @@ campaign_head_unreserve() {
   campaign_head_reservation=""
 }
 
+# The rows of <dir>/starts still inside their own ramp at <now>, as they
+# stand there, one per line.
+campaign_host_in_ramp() {
+  local dir=$1 now=$2 at mb row_ramp id
+  [[ -f "${dir}/starts" ]] || return 0
+  while read -r at mb row_ramp id; do
+    [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ \
+      && "${row_ramp}" =~ ^[0-9]+$ ]] || continue
+    (( now - at < row_ramp )) || continue
+    printf '%s %s %s %s\n' "${at}" "${mb}" "${row_ramp}" "${id}"
+  done <"${dir}/starts"
+}
+
+# The room, in MB, one more start that is no head's own may take on <host>
+# now, read without charging it (campaign_host_try_start decides, under the
+# host's lock): MemAvailable less what the starts in their ramp will still
+# claim, the room a head holds there, and the reserve.  2 when unreadable.
+campaign_host_room() {
+  local host=$1 dir now total available charged
+  dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
+  mkdir -p "${dir}"
+  now=$(date +%s)
+  total=$(campaign_host_memory_total "${host}" "${dir}") || return 2
+  available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
+    || return 2
+  charged=$(campaign_host_in_ramp "${dir}" "${now}" \
+    | awk '{ mb += $2 } END { print mb + 0 }')
+  printf '%s\n' "$(( available - charged \
+    - $(campaign_host_head_room "${dir}" "${now}") \
+    - total * (100 - campaign_host_max_used_pct) / 100 ))"
+}
+
 # Drops one start's row: what it ran has returned, and whatever it held is
 # back in MemAvailable.
 campaign_host_release() {
@@ -3424,11 +3455,16 @@ campaign_host_release() {
 # campaign_head_charged <need_mb> <ramp_s> <command...>: a campaign head's
 # own heavy start -- an engine JVM, the seed or the CONFIRM replay -- waits
 # for room on the head's host, is charged there, and is released when it
-# returns.  Outside a head it runs the command alone.  The command runs as a
-# plain command, so errexit means inside it what it meant before: a failure
-# that ends the shell leaves the charge to lapse with its ramp.
+# returns.  An engine JVM of an EXPLORE step (campaign_head_placing: a gate,
+# a round's planner, a witness's composer, GROW's planner) reads and writes
+# only the shared campaign directory, so it goes wherever there is room
+# (campaign_head_place) and runs there (campaign_run_placed).  Outside a
+# head it runs the command alone.  The command runs as a plain command, so
+# errexit means inside it what it meant before: a failure that ends the
+# shell leaves the charge to lapse with its ramp.
+campaign_head_placing=0
 campaign_head_charged() {
-  local need=$1 ramp=$2 id status busy=""
+  local need=$1 ramp=$2 id status busy="" host=localhost
   shift 2
   if [[ "${campaign_head_charging}" != 1 ]]; then
     "$@"
@@ -3437,18 +3473,96 @@ campaign_head_charged() {
   # Its words go to stderr: the command's stdout is often its artifact
   # (ImportGateMain's summary JSON).  Its own room is not held against it.
   campaign_head_heartbeat
-  campaign_host_head_start=1 campaign_await_host_memory localhost "${need}" \
-    "${ramp}" >&2 || return
-  id=${campaign_host_charge_id}
-  if [[ -n "${campaign_head_reservation}" ]]; then
-    busy="${campaign_head_reservation}.busy.${BASHPID}"
-    : >"${busy}"
+  if [[ "${campaign_head_placing}" == 1 ]]; then
+    campaign_head_place "${need}" "${ramp}" >&2 || return
+    host=${campaign_placed_host}
+  else
+    campaign_host_head_start=1 campaign_await_host_memory localhost \
+      "${need}" "${ramp}" >&2 || return
   fi
-  "$@"
-  status=$?
+  id=${campaign_host_charge_id}
+  if campaign_host_is_local "${host}"; then
+    if [[ -n "${campaign_head_reservation}" ]]; then
+      busy="${campaign_head_reservation}.busy.${BASHPID}"
+      : >"${busy}"
+    fi
+    "$@"
+    status=$?
+  else
+    campaign_run_placed "${host}" "$@"
+    status=$?
+  fi
   [[ -z "${busy}" ]] || rm -f -- "${busy}"
   campaign_head_heartbeat
-  campaign_host_release localhost "${id}"
+  campaign_host_release "${host}" "${id}"
+  return "${status}"
+}
+
+# Room for a head JVM of <need_mb> for <ramp_s>, charged: on the head's own
+# host when it fits there (its own room is not held against it), else on
+# the host of the pool with the most room under the ceiling
+# (campaign_host_room), as the pool would place one more start; waited for
+# when no host has it, said once.  The host is campaign_placed_host.
+campaign_placed_host=""
+campaign_head_place() {
+  local need=$1 ramp=$2 host room best best_room said=false status=0
+  while true; do
+    campaign_host_head_start=1 run_capturing_status campaign_host_try_start \
+      localhost "${need}" "${ramp}"
+    if (( status == 0 )); then
+      campaign_placed_host=localhost
+      return 0
+    fi
+    best=""
+    best_room=-1
+    while IFS= read -r host; do
+      ! campaign_host_is_local "${host}" || continue
+      room=$(campaign_host_room "${host}") || continue
+      (( room >= need && room > best_room )) || continue
+      best=${host}
+      best_room=${room}
+    done < <(campaign_worker_host_list)
+    if [[ -n "${best}" ]]; then
+      run_capturing_status campaign_host_try_start "${best}" "${need}" \
+        "${ramp}"
+      if (( status == 0 )); then
+        campaign_placed_host=${best}
+        return 0
+      fi
+    fi
+    if [[ "${said}" == false ]]; then
+      campaign_log "waiting for memory for a head JVM of ${need} MB on any \
+host: ${campaign_host_wait_reason}"
+      said=true
+    fi
+    campaign_head_heartbeat
+    sleep "${campaign_host_poll_s}"
+  done
+}
+
+# How long a head JVM placed on a peer may run there: the case's whole
+# budget (experiments/accept/accept.sh), past which nothing of it is read.
+campaign_placed_bound_s=21600
+
+# <command...> of the head, run on <host> in the head's working directory
+# (run_engine.sh --run-placed, through the remote worker script, so it ends
+# with the head) with the CAUSYNTH_ and GRAPH_CHECKER_ variables the head
+# exports; its standard output and error are passed on as its own, and its
+# status is the command's.
+campaign_run_placed() {
+  local host=$1 dir name status=0
+  local -a exported=()
+  shift
+  dir=$(mktemp -d "${campaign_root}/placed.XXXXXX") || return
+  for name in $(compgen -e); do
+    [[ "${name}" == CAUSYNTH_* || "${name}" == GRAPH_CHECKER_* ]] \
+      && exported+=("${name}=${!name}")
+  done
+  campaign_dispatch_remote "${host}" "${dir}" "${campaign_placed_bound_s}" \
+    --run-placed "${PWD}" env "${exported[@]}" "$@" || status=$?
+  cat -- "${dir}/stdout.log" 2>/dev/null
+  cat -- "${dir}/stderr.log" "${dir}/ssh.log" >&2 2>/dev/null
+  rm -rf -- "${dir}"
   return "${status}"
 }
 
@@ -3765,6 +3879,8 @@ campaign_stream_step_dir() {
 campaign_stream_step() {
   local dir=$1 round_dir status=0
   local -a gate=() witnesses=()
+  # Its JVMs go wherever there is room (campaign_head_charged).
+  campaign_head_placing=1
   if [[ -s "${dir}/witnesses" ]]; then
     mapfile -t witnesses <"${dir}/witnesses"
     campaign_stream_attempt "${dir}" "${witnesses[@]}"
@@ -4275,7 +4391,7 @@ campaign_stream_grow() {
     || campaign_fail EXPLORE ExploreMain "${growth}" \
       "an EXPOSED_REGION row names no obligation; only a focused replay's \
 exposure can be grown into"
-  run_capturing_status run_java_main \
+  campaign_head_placing=1 run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
     --iteration "${iteration_dir}" \
     --static-scope-map "${causynth_static_scope_map}" \
@@ -4704,7 +4820,7 @@ ${confirm_dir}/confirm.log" "" >"${campaign_final}/confirm.json"
 # markers the confirmation's world plants and watching the target's guards
 # for their fatal arm at the claim's anchor (explore.ConfirmMain --plant, the
 # code that wrote CONFIRM's world; runtime.RecordingPlant).  reproduce_runs
-# runs, all at once over the worker pool (campaign_reproduce_slot), each
+# runs, all at once, the pool's hosts in turn (campaign_reproduce_one), each
 # charged on its host the recording's measured peak resident memory and
 # bounded by reproduce_time_factor times the recording's own workload; a run
 # ends as soon as the planted world takes the fatal arm at the anchor, its
@@ -5515,8 +5631,8 @@ ${group}"
   campaign_iteration_explore "${iteration_dir}" iteration-0000
 }
 
-# What every peer entry (--run-obligation, --run-reproduction) checks
-# before its work, on this machine.
+# What every peer entry (--run-obligation, --run-reproduction,
+# --run-placed) checks before its work, on this machine.
 #
 # The peer loads the same configuration file the campaign loaded, from the
 # same shared home, and every path in it resolves identically -- but two
@@ -5580,7 +5696,20 @@ scratch ${campaign_local_scratch_root:-<shared home>}"
   campaign_peer_args=("$@")
 }
 
-# ONE obligation of somebody else's wave, on this machine.
+# ONE head JVM of somebody else's campaign, on this machine
+# (campaign_run_placed): <workdir> <command...>, its standard output the
+# command's alone.
+do_run_placed() {
+  campaign_peer_enter "$@" >&2
+  set -- "${campaign_peer_args[@]}"
+  [[ $# -ge 2 ]] || die "--run-placed takes a working directory and a \
+command, got $#"
+  cd -- "$1" || die "--run-placed: no working directory $1"
+  shift
+  exec "$@"
+}
+
+# ONE obligation of somebody else's campaign, on this machine.
 do_run_obligation() {
   campaign_peer_enter "$@"
   set -- "${campaign_peer_args[@]}"
@@ -5590,7 +5719,7 @@ do_run_obligation() {
 }
 
 # ONE native run of somebody else's REPRODUCE, on this machine
-# (campaign_reproduce_slot).
+# (campaign_reproduce_one).
 do_run_reproduction() {
   campaign_peer_enter "$@"
   set -- "${campaign_peer_args[@]}"
@@ -5712,7 +5841,8 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|slice|record|config|validate|--run-obligation|--run-reproduction)
+  campaign|slice|record|config|validate|--run-obligation|--run-reproduction\
+  |--run-placed)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
@@ -5724,6 +5854,7 @@ case "${command_name}" in
       validate) validate_config ;;
       --run-obligation) do_run_obligation "$@" ;;
       --run-reproduction) do_run_reproduction "$@" ;;
+      --run-placed) do_run_placed "$@" ;;
     esac
     ;;
   *)
