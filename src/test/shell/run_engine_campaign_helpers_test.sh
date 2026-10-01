@@ -1087,35 +1087,39 @@ grep -q "artifact=${gate_dir}/campaign_gaps.jsonl" "${gate_dir}/error.log" \
 [[ "$(wc -l <"${gate_dir}/campaign_gaps.jsonl")" -eq 2 ]] \
   || fail "the gate's gap file is not append-only"
 
-# The same gate over each session EXPLORE lands: campaign_stream_admit moves
-# a worker's staged session into the corpus and gates exactly that one, and a
-# blocking violation there fails the campaign at IMPORT, by name.  Each
-# session is judged once, ImportGateMain judges the rules over the set (one
-# seed, the epoch's roots) against the sessions its ledger says were gated
-# before (ContractTest), and it reads the iteration itself, every round's
-# workers included, so no session reads as having no focus row.
+# The same gate over the sessions EXPLORE lands: campaign_stream_admit moves
+# the workers' staged sessions into the corpus and gates exactly those, in
+# one call, and a blocking violation there fails the campaign at IMPORT, by
+# name.  Each session is judged once, ImportGateMain judges the rules over
+# the set (one seed, the epoch's roots) against the sessions its ledger says
+# were gated before (ContractTest), and it reads the iteration itself, every
+# round's workers included, so no session reads as having no focus row.
 wave_gate="${test_tmp}/import-gate-stream"
 mkdir -p "${wave_gate}/sessions/seed-result-0" \
-  "${wave_gate}/obligations-0000/OB.a/sessions/focus-a"
+  "${wave_gate}/obligations-0000/OB.a/sessions/focus-a" \
+  "${wave_gate}/obligations-0000/OB.b/sessions/focus-b"
 (
   iteration_dir=${wave_gate}
   iteration_id=iteration-0000
   sessions=${wave_gate}/sessions
   stream_landed=0
+  stream_landings=0
   run_java_main() {
-    [[ "$*" == *"--sessions ${wave_gate}/sessions --gate focus-a --gated \
-${wave_gate}/import_gated.txt "* ]] \
-      || fail "the landing gate did not gate exactly its session of the \
+    [[ "$*" == *"--sessions ${wave_gate}/sessions --gate focus-a --gate \
+focus-b --gated ${wave_gate}/import_gated.txt "* ]] \
+      || fail "the landing gate did not gate exactly its sessions of the \
 iteration, against the iteration's ledger: $*"
-    [[ -d "${wave_gate}/sessions/focus-a" ]] \
-      || fail "the session was gated before it landed in the corpus"
+    [[ -d "${wave_gate}/sessions/focus-a" && -d "${wave_gate}/sessions/focus-b" ]] \
+      || fail "a session was gated before it landed in the corpus"
     printf '%s\n' '{"violations":1,"blocking":1,'\
 '"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
     printf '{"schemaVersion":1,"cls":"BLOCKING"}\n' \
       >>"${wave_gate}/campaign_gaps.jsonl"
   }
-  campaign_stream_admit "${wave_gate}/obligations-0000/OB.a" \
-    "${wave_gate}/obligations-0000/OB.a/sessions" focus-a >/dev/null
+  campaign_stream_admit \
+    "${wave_gate}/obligations-0000/OB.a ${wave_gate}/obligations-0000/OB.a/sessions focus-a" \
+    "${wave_gate}/obligations-0000/OB.b ${wave_gate}/obligations-0000/OB.b/sessions focus-b" \
+    >/dev/null
 ) 2>"${wave_gate}/error.log" \
   && fail "a blocking row invariant in a landed session did not fail the \
 campaign"
@@ -1124,8 +1128,9 @@ grep -q 'stage=IMPORT' "${wave_gate}/error.log" \
 $(cat "${wave_gate}/error.log")"
 grep -q 'roots.jsonl seq=3 field=recordedValue' "${wave_gate}/error.log" \
   || fail "the landing gate's failure does not name the first blocking subject"
-[[ -s "${wave_gate}/obligations-0000/OB.a/import_gate.json" ]] \
-  || fail "the landing gate wrote no summary beside its worker"
+[[ -s "${wave_gate}/landings/0000.json" \
+    && "$(cat "${wave_gate}/landings/0000.sessions")" == $'focus-a\nfocus-b' ]] \
+  || fail "the landing gate wrote no summary beside the list it gated"
 # A session the gate is handed is a session of the iteration's corpus, or
 # the gate refuses it by name: one outside would be judged against an epoch
 # it is not part of.
@@ -1729,7 +1734,11 @@ stream_stubs() {
   campaign_host_available_mb() { echo 30000; }
   campaign_host_total_mb() { echo 30000; }
   run_java_main() { stream_planner "$@"; }
-  campaign_import_gate() { basename "$4" >>"${stream_dir}/gated.txt"; }
+  campaign_import_gate() {
+    shift 3
+    local gated
+    for gated in "$@"; do basename "${gated}"; done >>"${stream_dir}/gated.txt"
+  }
 }
 
 # STREAM-1: NO BARRIER.  A round is planned as soon as a session lands, while

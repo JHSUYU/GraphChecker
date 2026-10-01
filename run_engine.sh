@@ -3209,6 +3209,8 @@ are in ${worker}"
 #   stream_host_jobs  host -> how many of this campaign's run there
 #   stream_swaps      re-runs that returned, whose sessions replace the
 #                     exposing ones once no obligation runs
+#   stream_landed     sessions landed since the last round; stream_landings
+#                     how many gates landed sessions so far
 #   stream_hold       GROW's re-runs and swaps still owed: no obligation
 #                     starts and no round is planned while any is
 # ---------------------------------------------------------------------------
@@ -3236,6 +3238,7 @@ campaign_explore() {
   local stream_classes="${iteration_dir}/instrumented-classes"
   local stream_plan="${iteration_dir}/generations/g0/execution_task_plan.jsonl"
   local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
+  local stream_landings=0
   local stream_generation=0 stream_next_host=0 stream_ticker=""
   local stream_waiting="" stream_admitted_host="" stream_stop=""
   local stream_stop_detail="" stream_anchors="[]"
@@ -3649,34 +3652,51 @@ campaign_stream_start() {
   stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
 }
 
-# Waits for the next return, and lands it, or for the poll interval at most:
-# the queue may wait for room, and the head's room stays fresh.
+# Waits for the next return, or for the poll interval at most (the queue may
+# wait for room, and the head's room stays fresh), and lands it with every
+# other return since: the head gates and plans once for all of them, so the
+# busier it is, the more each of its JVMs takes in.
 campaign_stream_wait() {
-  local finished="" status=0
+  local finished="" status=0 pid
+  local -a returned=()
   campaign_head_heartbeat
   if [[ -z "${stream_ticker}" ]]; then
     sleep "${campaign_host_poll_s}" &
     stream_ticker=$!
   fi
-  wait -n -p finished "${!stream_jobs[@]}" ${stream_ticker} || status=$?
-  if [[ -z "${finished}" || "${finished}" == "${stream_ticker}" ]]; then
+  wait -n -p finished "${!stream_jobs[@]}" "${stream_ticker}" || status=$?
+  if [[ "${finished}" == "${stream_ticker}" ]]; then
     stream_ticker=""
-    return 0
+  else
+    returned+=("${finished} ${status}")
   fi
-  campaign_stream_land "${finished}" "${status}"
+  # A job bash has reaped is gone from the process table, its status kept.
+  for pid in "${!stream_jobs[@]}"; do
+    [[ "${pid}" != "${finished}" ]] && ! kill -0 "${pid}" 2>/dev/null \
+      || continue
+    status=0
+    wait "${pid}" || status=$?
+    returned+=("${pid} ${status}")
+  done
+  (( ${#returned[@]} == 0 )) || campaign_stream_land "${returned[@]}"
 }
 
-# One return, landed: an obligation's verdict into the ledger and its session
-# into the corpus (campaign_stream_admit); a re-run's into stream_swaps, for
-# once no obligation runs.
+# Returns ("<pid> <status>"), landed: each obligation's verdict into the
+# ledger and its session into the corpus, all through one gate
+# (campaign_stream_admit); each re-run's into stream_swaps, for once no
+# obligation runs.
 campaign_stream_land() {
-  local pid=$1 status=$2 kind round id host session worker verdict
-  read -r kind round id host session <<<"${stream_jobs[${pid}]}"
-  unset 'stream_jobs[$pid]'
-  stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
-  if [[ "${kind}" == RERUN ]]; then
-    stream_swaps+=("${round} ${id} ${session} ${status}")
-  else
+  local returned pid status kind round id host session worker verdict
+  local -a staged=()
+  for returned in "$@"; do
+    read -r pid status <<<"${returned}"
+    read -r kind round id host session <<<"${stream_jobs[${pid}]}"
+    unset 'stream_jobs[$pid]'
+    stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
+    if [[ "${kind}" == RERUN ]]; then
+      stream_swaps+=("${round} ${id} ${session} ${status}")
+      continue
+    fi
     unset 'stream_flying[$id]'
     worker="${iteration_dir}/${round}/${id}"
     [[ "${status}" -eq 0 ]] || campaign_obligation_unfinished "${host}" \
@@ -3686,12 +3706,14 @@ campaign_stream_land() {
     session=$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl" \
       2>/dev/null) || session=""
     campaign_log "obligation ${id}: host=${host} verdict=${verdict}"
-    [[ -z "${session}" ]] \
-      || campaign_stream_admit "${worker}" "${worker}/sessions" "${session}"
+    [[ -z "${session}" ]] || staged+=("${worker} ${worker}/sessions ${session}")
     cat -- "${worker}/obligation_result.jsonl" >>"${results}"
     stream_dirty=1
+  done
+  (( ${#staged[@]} == 0 )) || campaign_stream_admit "${staged[@]}"
+  if [[ -z "${stream_stop}" ]] && campaign_stream_swap_due; then
+    campaign_stream_swap
   fi
-  ! campaign_stream_swap_due || campaign_stream_swap
 }
 
 # Whether GROW's swaps are due: every re-run it owes has returned, and no
@@ -3705,28 +3727,43 @@ campaign_stream_swap_due() {
   done
 }
 
-# A session a worker staged (<staged>/<session>), into the corpus and
-# through the import gate, one session per call (the head is its one
-# caller), the summary with <worker>.  A WITNESS -- its replay ADMITTED, and
-# its target row at the declared occurrence observed the fatal
-# (ExploreMain#witnesses, the round's anchorOccurrences) -- is put to COMPOSE
-# at once (campaign_stream_attempt).
+# Sessions workers staged ("<worker> <staged dir> <session>"), into the
+# corpus and through ONE import gate (the head is its one caller), its
+# summary landings/NNNN.json beside the list it gated.  The WITNESSES among
+# them -- the replay ADMITTED, and its target row at the declared occurrence
+# observed the fatal (ExploreMain#witnesses, the round's
+# anchorOccurrences) -- go to COMPOSE at once (campaign_stream_attempt).
 campaign_stream_admit() {
-  local worker=$1 staged=$2 session=$3
-  [[ -d "${staged}/${session}" ]] || campaign_fail EXPLORE CAMPAIGN \
-    "${staged}" "the verdict names session ${session}, which its worker did \
-not stage"
-  mv -- "${staged}/${session}" "${sessions}/${session}"
+  local entry worker staged session landing round=""
+  local -a landed=() witnesses=()
+  for entry in "$@"; do
+    read -r worker staged session <<<"${entry}"
+    [[ -d "${staged}/${session}" ]] || campaign_fail EXPLORE CAMPAIGN \
+      "${staged}" "the verdict names session ${session}, which its worker \
+did not stage"
+    mv -- "${staged}/${session}" "${sessions}/${session}"
+    landed+=("${sessions}/${session}")
+  done
+  mkdir -p "${iteration_dir}/landings"
+  landing=$(printf '%s/landings/%04d' "${iteration_dir}" "${stream_landings}")
+  stream_landings=$((stream_landings + 1))
+  printf '%s\n' "${landed[@]##*/}" >"${landing}.sessions"
   campaign_import_gate "${iteration_dir}" "${iteration_id}" \
-    "${worker}/import_gate.json" "${sessions}/${session}"
-  stream_landed=$((stream_landed + 1))
-  [[ "$(jq -r '.verdict // ""' "${worker}/obligation_result.jsonl")" \
-      == ADMITTED ]] || return 0
-  jq -e --argjson anchors "${stream_anchors}" \
-    'select(.observedFatal == true
-            and (.occurrence as $at | any($anchors[]; . == $at)))' \
-    "${sessions}/${session}/targets.jsonl" >/dev/null 2>&1 || return 0
-  campaign_stream_attempt "$(basename "$(dirname "${worker}")")" "${session}"
+    "${landing}.json" "${landed[@]}"
+  stream_landed=$((stream_landed + ${#landed[@]}))
+  for entry in "$@"; do
+    read -r worker staged session <<<"${entry}"
+    [[ "$(jq -r '.verdict // ""' "${worker}/obligation_result.jsonl")" \
+        == ADMITTED ]] || continue
+    jq -e --argjson anchors "${stream_anchors}" \
+      'select(.observedFatal == true
+              and (.occurrence as $at | any($anchors[]; . == $at)))' \
+      "${sessions}/${session}/targets.jsonl" >/dev/null 2>&1 || continue
+    witnesses+=("${session}")
+    [[ -n "${round}" ]] || round=$(basename "$(dirname "${worker}")")
+  done
+  (( ${#witnesses[@]} == 0 )) || campaign_stream_attempt "${round}" \
+    "${witnesses[@]}"
 }
 
 # The EXPOSED_REGION rows of a round's growth.jsonl, one `obligation region
@@ -3828,6 +3865,7 @@ campaign_stream_rerun_dir() {
 campaign_stream_swap() {
   local swap round id session status worker rerun aside file
   local queued=${#stream_queue[@]}
+  local -a staged=()
   for swap in "${stream_swaps[@]}"; do
     read -r round id session status <<<"${swap}"
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" "${id}") \
@@ -3846,15 +3884,15 @@ stands in its place"
 name obligation ${id}, so it was not withdrawn from the corpus"
     for file in replay.log concolic_region_results.jsonl \
         obligation_result.jsonl replay_verdict.jsonl stdout.log stderr.log \
-        host.txt import_gate.json; do
+        host.txt; do
       [[ ! -e "${worker}/${file}" ]] || mv -- "${worker}/${file}" "${aside}/"
       [[ ! -e "${rerun}/${file}" ]] || mv -- "${rerun}/${file}" "${worker}/"
     done
     session=$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl")
-    [[ -z "${session}" ]] \
-      || campaign_stream_admit "${worker}" "${rerun}/sessions" "${session}"
+    [[ -z "${session}" ]] || staged+=("${worker} ${rerun}/sessions ${session}")
     campaign_record_rerun "${iteration_dir}" "${id}" "${results}"
   done
+  (( ${#staged[@]} == 0 )) || campaign_stream_admit "${staged[@]}"
   stream_hold=$((stream_hold - ${#stream_swaps[@]}))
   stream_swaps=()
   stream_dirty=1

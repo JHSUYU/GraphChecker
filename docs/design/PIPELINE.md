@@ -635,12 +635,14 @@ EXPLORE.
 ### 7.9 The loop
 
 `campaign_explore` is one streaming loop on the head, with no wave barrier. It lands each obligation
-the moment its worker returns (`campaign_stream_land`): the verdict is appended to
-`obligation_results.jsonl`, and the session the worker staged moves into the corpus and through the
-IMPORT gate (§6), that one session, its summary in the worker's `import_gate.json`; one BLOCKING
-violation fails the campaign at IMPORT. A round is planned (`campaign_stream_round`, §7.1) once a
-session has landed, or once nothing is queued or running and an answer came since the last round,
-while other obligations run on; what it proposes is queued and starts at once (§7.7). Everything
+the moment its worker returns, with every other return since (`campaign_stream_wait`,
+`campaign_stream_land`): each verdict is appended to `obligation_results.jsonl`, and the sessions
+the workers staged move into the corpus and through ONE IMPORT gate (§6) over exactly them
+(`campaign_stream_admit`, its summary `landings/NNNN.json` beside the list `NNNN.sessions`); one
+BLOCKING violation fails the campaign at IMPORT. A round is planned (`campaign_stream_round`, §7.1)
+once a session has landed, or once nothing is queued or running and an answer came since the last
+round, while other obligations run on; what it proposes is queued and starts at once (§7.7). The
+busier the head, the more returns one gate and one round take in. Everything
 the head does between two returns -- a round, GROW's weave, a gate, a COMPOSE attempt -- it does
 alone and in order, so the corpus, the ledger and the plan change only in its hands and an
 obligation's solver reads the corpus as a landed whole. The exploration has three ends, each stated

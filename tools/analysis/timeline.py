@@ -11,9 +11,9 @@ the sources are the files the campaign wrote:
                      the weave's "GraphChecker started/ran for" log lines
   EXPLORE per round  obligations-NNNN/: in_flight.jsonl (written as the planner
                      starts) to explore_manifest.json; the dispatch to
-                     its last obligation's end (a GROW re-run's included); the
-                     gates of the sessions its obligations landed, each from
-                     its worker's end to the worker's import_gate.json
+                     its last obligation's end (a GROW re-run's included)
+  EXPLORE gates      landings/NNNN: the list of sessions one gate landed (written
+                     as it starts) to its summary NNNN.json
   witness attempts   witness-attempts/NNNN/: the directory's creation to its
                      compose.log, and witness_attempts.jsonl's claims
   one obligation     host.txt (claimed) -> the solver's files -> replay.log
@@ -180,16 +180,24 @@ def round_rows(iteration):
                 "replay": (replay_end - solve_end) if replayed and replay_end and solve_end else None,
                 "wall": (end - start) if start and end else None,
                 "rerun": bool(glob.glob(os.path.join(worker, "before-*"))),
-                "gate": (mtime(os.path.join(worker, "import_gate.json")) - end)
-                if end and mtime(os.path.join(worker, "import_gate.json")) else None,
             })
         ends = [t for t in (worker_times(os.path.join(wave, o["id"]))[3] for o in obligations) if t]
         dispatch_end = max(ends) if ends else plan_end
         rows.append({"wave": name[-4:], "plan": (plan_end - plan_start) if plan_start and plan_end else None,
                      "dispatch": (dispatch_end - plan_end) if plan_end and dispatch_end else None,
-                     "gate": sum(o["gate"] or 0 for o in obligations),
                      "obligations": obligations})
         previous_end = plan_end
+    return rows
+
+
+def landing_rows(iteration):
+    """(seconds, sessions) of each gate that landed sessions."""
+    rows = []
+    for listed in sorted(glob.glob(os.path.join(iteration, "landings", "*.sessions"))):
+        started = mtime(listed)
+        ended = mtime(listed[:-len(".sessions")] + ".json")
+        count = len([l for l in open(listed).read().splitlines() if l.strip()])
+        rows.append(((ended - started) if started and ended else None, count))
     return rows
 
 
@@ -266,14 +274,14 @@ def report(root, label):
     waves = round_rows(iteration) if os.path.isdir(iteration) else []
     replays = [o for w in waves for o in w["obligations"] if o["replayed"]]
     if waves:
-        print("   round plan     dispatch  gates   oblig  UNSAT  NOT_ADM  solver-err  replays  replay min/med/max     refused/flipped/error  longest")
+        print("   round plan     dispatch  oblig  UNSAT  NOT_ADM  solver-err  replays  replay min/med/max     refused/flipped/error  longest")
         for w in waves:
             obl = w["obligations"]
             rep = [o for o in obl if o["replayed"]]
             count = lambda key: sum(1 for o in rep if o["outcome"] == key)
             longest = max((o["wall"] or 0 for o in obl), default=0)
-            print("   %-5s %-8s %-9s %-7s %-6d %-6d %-8d %-11d %-8d %-22s %-22s %s" % (
-                w["wave"], dur(w["plan"]), dur(w["dispatch"]), dur(w["gate"]), len(obl),
+            print("   %-5s %-8s %-9s %-6d %-6d %-8d %-11d %-8d %-22s %-22s %s" % (
+                w["wave"], dur(w["plan"]), dur(w["dispatch"]), len(obl),
                 sum(1 for o in obl if o["verdict"] == "UNSAT" and not o["replayed"]),
                 sum(1 for o in obl if o["verdict"] == "NOT_ADMITTED" and not o["replayed"]
                     and not o["solver_failed"]),
@@ -304,8 +312,12 @@ def report(root, label):
         if attempts:
             print("   witness attempts: " + "; ".join("%s %s%s" % (dur(t), claim, " (ended EXPLORE)" if accepted else "")
                                                    for t, claim, accepted in attempts))
+        landings = landing_rows(iteration)
+        if landings:
+            print("   landings: %d gate(s) over %d session(s), %s each" % (
+                len(landings), sum(n for _, n in landings), spread(t for t, _ in landings)))
         head = [("EXPLORE planning (%d rounds)" % len(waves), sum(w["plan"] or 0 for w in waves)),
-                ("EXPLORE import gates", sum(w["gate"] or 0 for w in waves)),
+                ("EXPLORE import gates", sum(t or 0 for t, _ in landings)),
                 ("EXPLORE witness attempts", sum(t or 0 for t, _, _ in attempts))]
         explore = dict(stages).get("EXPLORE")
         if explore is not None:
