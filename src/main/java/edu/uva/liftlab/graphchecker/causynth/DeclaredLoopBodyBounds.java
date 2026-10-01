@@ -36,8 +36,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
  *
  * <p>{@code loopSiteId} is one entry of {@link
  * LoopBoundPolicy#LOOP_CONTROL_SITE_IDS}.  A key is not a hint: an unknown
- * field, a duplicate site, a site no retained loop claims ({@link
- * #refuseUnclaimed()}) and a value outside {@code 1..}{@link
+ * field, a duplicate site, a site of an analysed method no retained loop
+ * claims ({@link #refuseUnclaimed(Set)}) and a value outside {@code 1..}{@link
  * LoopBoundPolicy#MAX_DECLARED_LOOP_BODY_ITERATIONS} are all refused, since a
  * stale unit index would otherwise silently inherit {@link
  * LoopBoundPolicy#declaredDefault()}.</p>
@@ -217,11 +217,21 @@ final class DeclaredLoopBodyBounds {
         return bound;
     }
 
-    /** Refuses every declaration no retained loop claimed. */
-    void refuseUnclaimed() {
+    /**
+     * Refuses every declaration of a loop in {@code analysed} that no retained
+     * loop claimed: a stale or misspelled key of a method the slice holds.  A
+     * declaration of a method the slice never reached is a system-wide row
+     * this campaign has no loop for (one experiment's declarations serve
+     * every check of it), and binds nothing here.
+     */
+    void refuseUnclaimed(Set<String> analysed) {
         List<String> unclaimed = new ArrayList<String>();
         for (Declaration declaration : bySite.values()) {
-            if (!claimed.contains(declaration.site)) {
+            int unit = declaration.site.lastIndexOf('#');
+            String method = unit < 0 ? declaration.site
+                    : declaration.site.substring(0, unit);
+            if (analysed.contains(method)
+                    && !claimed.contains(declaration.site)) {
                 unclaimed.add(declaration.key() + " (" + declaration.origin
                         + ")");
             }

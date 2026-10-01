@@ -287,7 +287,7 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         // Checked over the final plan only.
-        loopBodyBounds.refuseUnclaimed();
+        loopBodyBounds.refuseUnclaimed(selectedMethods);
         return result;
     }
 
