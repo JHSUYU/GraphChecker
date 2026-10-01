@@ -732,6 +732,22 @@ public final class Corpus implements Arms.Rows {
         return loweringById.get(sessionId);
     }
 
+    /**
+     * Every session's lowering as {@link #read} built it.  A lowering keeps
+     * what it lowered -- its memo, the names it minted, the count its refused
+     * constructs are named by -- so a query built after another would name
+     * them differently.  A question asked of a corpus read once for many
+     * ({@code ObligationSolverMain --serve}) starts from here: what a JVM of
+     * its own would have had.  Every other memo of a corpus is a function of
+     * its rows alone.
+     */
+    void freshLowerings() {
+        for (SessionReader session : sessions) {
+            loweringById.put(session.sessionId(), SmtLowering.forSession(
+                    session, joinById.get(session.sessionId())));
+        }
+    }
+
     /** One session's state join; a session this corpus lacks joins nothing. */
     public SmtLowering.SessionJoin join(String sessionId) {
         return joinById.getOrDefault(sessionId, SmtLowering.NO_JOIN);

@@ -90,20 +90,23 @@ workflow_config_keys=(
   # host spelled `localhost` or as this machine's own hostname runs locally
   # too.
   "campaign_worker_hosts CAUSYNTH_CAMPAIGN_WORKER_HOSTS krp -"
-  # The memory, in MB, one obligation takes on the host that runs it: its
-  # solver JVM (which loads the session corpus) and its replay JVM together.
-  # A slot starts an obligation only on a host with that much available
-  # beyond what the obligations started there in the last ramp window will
-  # still claim (campaign_await_host_memory), whichever campaign started
-  # them -- the hosts are shared, and so is this accounting.  No default: the
-  # need is the case's, measured, and a campaign that states none is refused.
+  # The memory, in MB, one replay takes on the host that runs it (an
+  # obligation's, the seed's, CONFIRM's): half its heap, half the VM's native
+  # symbolic state, and the bound execute.sh holds it to.  A slot starts an
+  # obligation only on a host with that much available beyond what the starts
+  # there in the last ramp window will still claim
+  # (campaign_await_host_memory), whichever campaign started them -- the
+  # hosts are shared, and so is this accounting; the host's solver is charged
+  # at its own start (campaign_start_solver).  No default: the need is the
+  # case's, measured (each replay states its peak), and a campaign that
+  # states none is refused.
   "obligation_memory_mb CAUSYNTH_OBLIGATION_MEMORY_MB krp -"
   # The heap, in MB, of the head's own engine JVMs -- analysis, planner,
-  # import gate, composer, decision -- each of which holds the whole corpus.
-  # Empty: the launcher's default.  A case whose corpus outgrows it states
-  # its own (hdfs-11741: 202 sessions by wave 4 ran the planner out of 8 GB);
-  # an obligation's solver keeps the default, since obligation_memory_mb
-  # already accounts for it.
+  # composer, decision -- the largest of which hold the whole corpus, and the
+  # most a host's solver is given.  Empty: the launcher's default.  A case
+  # whose corpus outgrows it states its own (hdfs-11741: 202 sessions by wave
+  # 4 ran the planner out of 8 GB).  The import gate holds one session and
+  # takes its own (campaign_import_gate_heap_mb).
   "engine_memory_mb GRAPH_CHECKER_ENGINE_MEMORY_MB krp -"
   # The stage a measurement run stops after, once its measurement is
   # complete.  `IMPORT` returns successfully right after the IMPORT stage:
@@ -2673,6 +2676,158 @@ names it; nothing withdrawn"
 }
 
 
+# ---------------------------------------------------------------------------
+# ONE SOLVER PER HOST PER WAVE
+#
+# An obligation's query is built over the whole corpus (explore.Corpus), and a
+# solver JVM per obligation read all of it each time: hdfs-11741 i1, 22 of an
+# obligation's 26 s was that read, and solvers took 5h18m of slot time at a
+# median of 28 s each, each JVM 3.7-4.4 GB of an 8 GB heap no ledger row
+# counted.  So the obligations of one wave that run on one host are answered
+# by ONE solver JVM there (ObligationSolverMain --serve), which reads the
+# corpus once, when the first of them asks, answers each question from the
+# corpus as read (Corpus#freshLowerings: each question's files are the ones a
+# JVM of its own would write), and ends once none has come for
+# campaign_solver_idle_s.  Its directory is on the host's own disk, named by
+# the wave's obligations file (explore.SolverService states the layout); its
+# log, solver-<host>.log, is beside the obligations file.
+#
+# The service is charged to the host ledger at its start: its heap, which is
+# its -Xmx (campaign_solver_heap_mb), for the time it takes to read the
+# corpus.  An obligation's own charge (obligation_memory_mb) is then its
+# replay's alone.
+# ---------------------------------------------------------------------------
+
+# How long a host's solver waits for another question before it ends: about
+# a focused replay's length, so the slots of a host that come back from their
+# replays find it still there, and an ended wave's solver gives its memory
+# back within minutes.
+campaign_solver_idle_s=300
+
+# The solver's heap, in MB, for the corpus under ${1}: 1 GB plus twice the
+# corpus's size on disk, and never more than the case's engine heap
+# (engine_memory_mb, else 8192), which its planner holds the same corpus in.
+# Measured over the i1 rounds' final corpora, one obligation each: 17897
+# (162 MB on disk), 17899-bug2 (386 MB) and SOLR-18406 (144 MB) solve in
+# 1 GB; hdfs-11741 (3231 MB, 175 sessions) runs out of 2 GB and solves in 3
+# GB (104 s) and 4 GB (83 s).
+campaign_solver_heap_mb() {
+  local size heap
+  size=$(du -s -m -L -- "$1/" 2>/dev/null) || size=0
+  heap=$(( 1024 + 2 * ${size%%[[:space:]]*} ))
+  printf '%s\n' "$(( heap < ${engine_memory_mb:-8192} ? heap \
+    : ${engine_memory_mb:-8192} ))"
+}
+
+# The solver directory of the wave whose obligations file is ${1}, on this
+# host: named by the host too, since a pid means something on one host only.
+campaign_solver_dir() {
+  printf '%s/graphchecker-solvers-%s/%s.%s\n' "${TMPDIR:-/tmp}" "$(id -un)" \
+    "$(hostname -s)" "$(printf '%s' "$1" | sha256sum | cut -c1-16)"
+}
+
+# campaign_solve_obligation <obligation_id> <obligations> <sessions> <worker>:
+# the obligation's question, answered by its host's solver into <worker>:
+# 0 with the solver's files there, 1 with why it was not answered on stderr
+# (a failure that is the obligation's answer, as a solver JVM's exit was).
+#
+# A question no living solver will answer starts one: none runs, or the one
+# named ended while the question still waited.  A question a solver took and
+# ended on is not asked again, and a worker starts at most one solver, so a
+# corpus no solver can read fails each obligation once, by name.
+campaign_solve_obligation() {
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4
+  local dir name question answer server pid started=0 file
+  dir=$(campaign_solver_dir "${obligations}")
+  name="$(date +%s%N).${BASHPID}.${obligation_id}"
+  question="${dir}/requests/${name}"
+  answer="${dir}/answers/${name}.json"
+  mkdir -p "${dir}/requests" "${dir}/answers" "${dir}/out"
+  jq -n -c --arg obligations "${obligations}" --arg id "${obligation_id}" \
+    --arg waiter "${BASHPID}" \
+    '{obligations: $obligations, obligationId: $id, waiter: $waiter}' \
+    >"${question}.part"
+  mv -- "${question}.part" "${question}.json"
+  while [[ ! -e "${answer}" ]]; do
+    until campaign_host_lock "${dir}" "$(date +%s)"; do
+      sleep 0.0$(( (RANDOM % 9) + 1 ))
+    done
+    server=$(cat "${dir}/server" 2>/dev/null) || server=""
+    pid=${server##* }
+    if [[ -n "${pid}" && -d "/proc/${pid}" || -e "${answer}" ]]; then
+      rmdir "${dir}/lock"
+      sleep 0.2
+      continue
+    fi
+    # No solver answers here any more.
+    if [[ -e "${question}.taken" || "${started}" -ge 1 ]]; then
+      rm -f -- "${question}.taken" "${question}.json"
+      rmdir "${dir}/lock"
+      file=$(campaign_solver_log "${obligations}")
+      printf 'ObligationSolverMain: the solver of %s ended before it ' \
+        "$(hostname -s)" >&2
+      printf 'answered %s; its log is %s: %s\n' "${obligation_id}" "${file}" \
+        "$(grep -v -E '^[[:space:]]+at ' "${file}" 2>/dev/null \
+          | tail -n 1)" >&2
+      return 1
+    fi
+    printf 'starting %s\n' "${BASHPID}" >"${dir}/server"
+    rmdir "${dir}/lock"
+    started=1
+    campaign_start_solver "${dir}" "${obligations}" "${sessions}" && continue
+    # This host's memory could not be read: no solver, and this question's
+    # answer is that.
+    rm -f -- "${question}.json" "${dir}/server"
+    printf 'ObligationSolverMain: the memory of %s could not be read ' \
+      "$(hostname -s)" >&2
+    printf 'to start its solver\n' >&2
+    return 1
+  done
+  for file in "${dir}/out/${name}"/*; do
+    [[ -e "${file}" ]] || continue
+    mv -f -- "${file}" "${worker}/"
+  done
+  rmdir -- "${dir}/out/${name}" 2>/dev/null || true
+  if [[ "$(jq -r '.exit' "${answer}")" != 0 ]]; then
+    printf 'ObligationSolverMain: %s\n' "$(jq -r '.error' "${answer}")" >&2
+    rm -f -- "${answer}"
+    return 1
+  fi
+  rm -f -- "${answer}"
+}
+
+# The log of the solvers that answer the wave whose obligations file is ${1},
+# on this host.
+campaign_solver_log() {
+  printf '%s/solver-%s.log\n' "$(dirname "$1")" "$(hostname -s)"
+}
+
+# Starts the host's solver for the wave in <dir> once the host has room for
+# its heap, and names it in <dir>/server: the pid of the shell that runs the
+# JVM, which ends with it.  Returns without waiting for it; 1 when the host's
+# memory could not be read.
+campaign_start_solver() {
+  local dir=$1 obligations=$2 sessions=$3 heap
+  local -a domain_args=()
+  # The same declaration EXPLORE and COMPOSE read: an answer is only as free
+  # as the root domains behind the arm that produces it.
+  [[ -z "${causynth_root_domains}" ]] \
+    || domain_args+=(--root-domains "${causynth_root_domains}")
+  heap=$(campaign_solver_heap_mb "${sessions}")
+  campaign_await_host_memory localhost "" 0 "${heap}" 120 || return 1
+  engine_memory_mb=${heap} run_java_main \
+    edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
+    --serve "${dir}" \
+    --sessions "${sessions}" \
+    --z3 "${z3_bin}" \
+    --solver-timeout-ms "${solver_timeout_ms}" \
+    --idle-seconds "${campaign_solver_idle_s}" \
+    "${domain_args[@]}" </dev/null >>"$(campaign_solver_log \
+      "${obligations}")" 2>&1 &
+  printf '%s\n' "$!" >"${dir}/server.part"
+  mv -f -- "${dir}/server.part" "${dir}/server"
+}
+
 # One obligation: solve it, replay it focused, record its verdict.
 #
 # The obligation names ONE focused occurrence, the decision it flips, the root
@@ -2687,25 +2842,13 @@ campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
   local seed_plan=$6
   local outcome status=0
-  # Its slot charged the host obligation_memory_mb: a local slot is a
-  # subshell of the head, and its JVMs are not the head's.
+  # Its slot charged the host obligation_memory_mb, its replay's: a local
+  # slot is a subshell of the head, and its JVMs are not the head's; the
+  # host's solver charges its own.
   local campaign_head_charging=0
-  local -a domain_args=()
-  # The same declaration EXPLORE and COMPOSE read: an answer is only as free
-  # as the root domains behind the arm that produces it.
-  [[ -z "${causynth_root_domains}" ]] \
-    || domain_args+=(--root-domains "${causynth_root_domains}")
   local result_row="${worker}/obligation_result.jsonl"
-  # obligation_memory_mb budgets this JVM: it keeps the launcher's heap.
-  engine_memory_mb="" run_capturing_status run_java_main \
-    edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
-    --obligations "${obligations}" \
-    --obligation-id "${obligation_id}" \
-    --sessions "${sessions}" \
-    --output-dir "${worker}" \
-    --z3 "${z3_bin}" \
-    --solver-timeout-ms "${solver_timeout_ms}" \
-    "${domain_args[@]}"
+  run_capturing_status campaign_solve_obligation "${obligation_id}" \
+    "${obligations}" "${sessions}" "${worker}"
   if [[ "${status}" -ne 0 ]]; then
     campaign_log "obligation solver failed on ${obligation_id} \
 (exit ${status}): $(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" \
@@ -2818,8 +2961,8 @@ replay carried and the replay ended there, so its rows are a prefix of a run"
 # ---------------------------------------------------------------------------
 # THE WAVE'S WORK POOL
 #
-# Within a wave the obligations are independent: each runs its own solver,
-# then its own replay JVM, writes into its own ${wave_dir}/${obligationId}/
+# Within a wave the obligations are independent: each asks its host's solver,
+# then runs its own replay JVM, writes into its own ${wave_dir}/${obligationId}/
 # worker directory, and publishes a session under an id it mints itself.
 # Nothing is merged until COMPOSE, so the only coordination a wave needs is
 # "who takes the next one" and "has everybody finished".
@@ -2937,11 +3080,12 @@ $(hostname -s 2>/dev/null) "
 # shellcheck source=tools/lib/gc-env.sh
 source "${graphchecker_dir}/tools/lib/gc-env.sh"
 campaign_host_gate_root=${CAUSYNTH_HOST_LEDGER}
-# How long an obligation's start is charged in full: the time a solver JVM
-# takes to load its corpus (about half a minute to 5 GB RSS).
+# How long an obligation's start is charged in full: the time its replay JVM
+# takes to stand its cluster up (the host's solver is charged at its own
+# start, campaign_start_solver).
 campaign_host_ramp_s=60
 # Whether this shell is a campaign's head, whose engine JVMs and replays are
-# charged to its own host (do_campaign); an obligation's work is inside the
+# charged to its own host (do_campaign); an obligation's replay is inside the
 # obligation's charge.
 campaign_head_charging=0
 # The most of a host's memory a start may leave in use, in percent: what
@@ -3194,8 +3338,8 @@ campaign_run_obligation_on_host() {
 }
 
 # One slot: room on its host, then a claim, then the run, until the wave is
-# empty.  A start charged just before the last claim went elsewhere is a
-# ramp window of over-count, never a lost obligation.
+# empty.  Each start is released when its obligation returns, or at once
+# when the last claim went elsewhere.
 #
 # An obligation whose worker did not finish is that obligation's own answer
 # (campaign_obligation_unfinished), and the slot goes on.  The slot fails
@@ -3203,7 +3347,7 @@ campaign_run_obligation_on_host() {
 campaign_wave_slot() {
   local host=$1 queue_dir=$2 count=$3 jobs_file=$4 wave_dir=$5
   local obligations=$6 classes=$7 sessions=$8 seed_plan=$9
-  local status=0 gate=0 job worker_dir
+  local status=0 gate=0 job worker_dir charge
   campaign_claim_cursor=0
   while true; do
     gate=0
@@ -3211,19 +3355,29 @@ campaign_wave_slot() {
       || gate=$?
     (( gate != 1 )) || { gate=0; break; }
     (( gate == 0 )) || break
-    campaign_claim_next_obligation "${queue_dir}" "${count}" || break
+    charge=${campaign_host_charge_id}
+    if ! campaign_claim_next_obligation "${queue_dir}" "${count}"; then
+      campaign_host_release "${host}" "${charge}"
+      break
+    fi
     job=$(sed -n "$((campaign_claimed_index + 1))p" "${jobs_file}")
-    [[ -n "${job}" ]] || continue
-    worker_dir="${wave_dir}/${job}"
-    printf '%s\n' "${host}" >"${worker_dir}/host.txt"
-    run_capturing_status campaign_run_obligation_on_host "${host}" \
-      "${job}" "${obligations}" "${classes}" "${worker_dir}" "${sessions}" \
-      "${seed_plan}"
-    [[ "${status}" -eq 0 ]] || campaign_obligation_unfinished "${host}" \
-      "${job}" "${worker_dir}" "${sessions}" "${status}"
-    campaign_log "obligation ${job}: host=${host} verdict=$(jq -r \
-      '.verdict // "?"' "${worker_dir}/obligation_result.jsonl" \
-      2>/dev/null || echo '?')"
+    if [[ -n "${job}" ]]; then
+      worker_dir="${wave_dir}/${job}"
+      printf '%s\n' "${host}" >"${worker_dir}/host.txt"
+      run_capturing_status campaign_run_obligation_on_host "${host}" \
+        "${job}" "${obligations}" "${classes}" "${worker_dir}" \
+        "${sessions}" "${seed_plan}"
+      [[ "${status}" -eq 0 ]] || campaign_obligation_unfinished "${host}" \
+        "${job}" "${worker_dir}" "${sessions}" "${status}"
+      campaign_log "obligation ${job}: host=${host} verdict=$(jq -r \
+        '.verdict // "?"' "${worker_dir}/obligation_result.jsonl" \
+        2>/dev/null || echo '?')"
+    fi
+    # Nothing of it runs any more (an unfinished one's processes are
+    # ended): what it held is back in MemAvailable, so its charge goes now,
+    # not at the end of its ramp -- an obligation its solver answered
+    # UNSAT in seconds held 60 s of its replay's charge.
+    campaign_host_release "${host}" "${charge}"
   done
   return "${gate}"
 }
@@ -3576,13 +3730,16 @@ obligation ${obligation_id}, so it was not withdrawn from the corpus"
   campaign_await_host_memory localhost \
     || campaign_fail EXPLORE CAMPAIGN "${worker}" \
       "the re-run of ${obligation_id} found no readable memory on the head"
+  local charge=${campaign_host_charge_id} status=0
   (
     set -euo pipefail
     campaign_obligation_replay "${obligation_id}" "${classes}" "${worker}" \
       "${sessions}" "${seed_plan}"
-  ) >"${worker}/stdout.log" 2>"${worker}/stderr.log" \
-    || campaign_fail EXPLORE CAMPAIGN "${worker}" \
-      "the re-run of ${obligation_id} did not finish"
+  ) >"${worker}/stdout.log" 2>"${worker}/stderr.log" || status=$?
+  # Returned: its charge goes now, as a slot's does.
+  campaign_host_release localhost "${charge}"
+  [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE CAMPAIGN "${worker}" \
+    "the re-run of ${obligation_id} did not finish"
 }
 
 # The one worker directory of an obligation, with its focus row.

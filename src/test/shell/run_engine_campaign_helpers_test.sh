@@ -830,6 +830,8 @@ mkdir -p "${plan2_dir}/out"
 : >"${plan2_dir}/candidate.jsonl.gz"
 : >"${plan2_dir}/static_scope_map.jsonl"
 scheduler_args=""
+# The stub stands in for this test only: the real one is put back after.
+real_run_java_main=$(declare -f run_java_main)
 run_java_main() { scheduler_args="$*"; }
 runtime_region_plan="${plan2_dir}/region_plan.jsonl"
 candidate_graph="${plan2_dir}/candidate.jsonl.gz"
@@ -838,7 +840,7 @@ schedule_output_dir="${plan2_dir}/out"
 schedule_max_jobs=8
 declared_target_occurrence=""
 do_schedule
-unset -f run_java_main
+eval "${real_run_java_main}"
 for retired_option in --retain-regions --summaries --refined-graph --closure-mode; do
   [[ "${scheduler_args}" != *"${retired_option}"* ]] \
     || fail "PLAN still passes ${retired_option}: ${scheduler_args}"
@@ -1381,6 +1383,55 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
   "${bound_dir}/validate.err" \
   || fail "validate accepted seed_replay_time_factor=0"
 
+# SOLVER-SERVICE: an obligation's question goes to ONE solver JVM of its host
+# and wave (ObligationSolverMain --serve), started by the first question and
+# charged its heap at the host's ledger; a question it could not answer is
+# its worker's failure, by name; and it ends once idle, naming no solver.
+# Two questions at once, over a corpus whose wave holds neither obligation.
+solver_test=${test_tmp}/solver-service
+solver_wave=${solver_test}/iteration/obligations-0000
+mkdir -p "${solver_test}/iteration/sessions" "${solver_wave}" \
+  "${solver_test}/a" "${solver_test}/b"
+: >"${solver_wave}/obligations.jsonl"
+(
+  java_bin=${test_java}
+  graphchecker_jar=${default_graphchecker_jar}
+  graphchecker_work_dir=${solver_test}
+  causynth_loop_default_bound=1
+  causynth_root_domains=""
+  z3_bin=z3
+  solver_timeout_ms=1000
+  campaign_solver_idle_s=1
+  # The test's host has room whatever else runs on it.
+  campaign_host_max_used_pct=100
+  export TMPDIR=${solver_test}
+  pids=()
+  for question in a b; do
+    campaign_solve_obligation "OB.${question}" "${solver_wave}/obligations.jsonl" \
+      "${solver_test}/iteration/sessions" "${solver_test}/${question}" \
+      >/dev/null 2>"${solver_test}/${question}.err" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "${pid}" && fail "a question its solver could not answer passed"
+  done
+  for question in a b; do
+    grep -q "ObligationSolverMain: java.io.IOException: the wave has no \
+obligation OB.${question}" "${solver_test}/${question}.err" \
+      || fail "the worker does not say why its question was not answered: \
+$(cat "${solver_test}/${question}.err")"
+  done
+  [[ "$(cat "${campaign_host_gate_root}"/*/starts | wc -l)" -eq 1 ]] \
+    || fail "the host's two questions did not go to one solver"
+  solver_home=$(campaign_solver_dir "${solver_wave}/obligations.jsonl")
+  for ((waited = 0; waited < 30; waited++)); do
+    [[ -e "${solver_home}/server" ]] || break
+    sleep 1
+  done
+  [[ ! -e "${solver_home}/server" ]] \
+    || fail "an idle solver did not end: $(cat "${solver_home}/server")"
+)
+
 # REPLAY-BOUND-3: what one obligation whose replay never returns records.
 # The same terminal NOT_ADMITTED row the worker writes for a solver that
 # failed -- one obligation's own answer, never the wave's death -- naming the
@@ -1400,7 +1451,7 @@ schedule_max_jobs=1
 trace_test=T
 (
   # The solver settled it: a model is ready and the replay is what decides.
-  run_java_main() {
+  campaign_solve_obligation() {
     jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
       obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
       detail: ""}' >"${worker_dir}/obligation_result.jsonl"
@@ -1440,7 +1491,7 @@ mkdir -p "${worker_dir}"
 replay_timeout_s=60
 concolic_replay_command='kill -KILL $$'
 (
-  run_java_main() {
+  campaign_solve_obligation() {
     jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
       obligationId: "OB.2", verdict: "SAT_MODEL_READY", sessionId: "",
       detail: ""}' >"${worker_dir}/obligation_result.jsonl"
@@ -1499,7 +1550,7 @@ chmod +x "${withdraw_dir}/replay.sh"
 replay_timeout_s=5
 concolic_replay_command="${withdraw_dir}/replay.sh"
 (
-  run_java_main() {
+  campaign_solve_obligation() {
     jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
       obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
       detail: ""}' >"${withdraw_worker}/obligation_result.jsonl"
@@ -2786,6 +2837,7 @@ campaign_host_try_start lift15 || fail "the host stayed locked"
 # obligation's named failure; within it the slot waits (sshd refuses
 # connections under a round's burst).
 campaign_host_available_mb() { return 1; }
+real_campaign_log=$(declare -f campaign_log)
 campaign_log() { printf '%s\n' "$*" >>"${memory_dir}/gate.log"; }
 campaign_host_poll_s=0
 campaign_ssh_patience_s=1
@@ -2801,7 +2853,8 @@ mkdir "${memory_dir}/queue/000000"
 run_capturing_status campaign_await_host_memory lift13 "${memory_dir}/queue" 1
 [[ "${status}" -eq 1 ]] \
   || fail "a slot kept waiting for room after the wave was all claimed"
-unset -f hostname campaign_host_available_mb campaign_host_total_mb campaign_log
+unset -f hostname campaign_host_available_mb campaign_host_total_mb
+eval "${real_campaign_log}"
 reset_config
 
 # MEMORY-3: a start states its need and its own ramp, and counts while that
@@ -2857,6 +2910,27 @@ campaign_host_poll_s=0
 [[ "$(campaign_head_charged 7000 120 printf artifact 2>/dev/null)" \
     == artifact ]] || fail "a head's wait for memory reached its stdout"
 eval "${real_try_start}"
+# A slot's start is released when its obligation returns inside its ramp,
+# as a head's is: an obligation answered in seconds held its 60 s charge, and
+# hosts sat idle while slots waited for memory (rounds i2/m1).
+slot_test="${memory_dir}/slot"
+mkdir -p "${slot_test}/wave/OB.1" "${slot_test}/queue"
+printf 'OB.1\n' >"${slot_test}/jobs"
+obligation_memory_mb=6000
+campaign_run_obligation_on_host() {
+  grep -c ' 6000 60 ' "${campaign_host_gate_root}/lift15/starts" \
+    >"${slot_test}/during"
+  printf '{"verdict":"UNSAT"}\n' >"$5/obligation_result.jsonl"
+}
+campaign_wave_slot lift15 "${slot_test}/queue" 1 "${slot_test}/jobs" \
+  "${slot_test}/wave" obligations classes sessions plan >/dev/null \
+  || fail "a slot whose one obligation returned failed"
+[[ "$(cat "${slot_test}/during")" -eq 1 ]] \
+  || fail "a slot's obligation was not charged while it ran"
+! grep -q ' 6000 60 ' "${campaign_host_gate_root}/lift15/starts" \
+  || fail "a start that returned inside its ramp still holds its charge: \
+$(cat "${campaign_host_gate_root}/lift15/starts")"
+unset -f campaign_run_obligation_on_host
 campaign_head_charging=0
 campaign_head_charged 999999 120 true \
   || fail "a start outside a head waited for the ledger"

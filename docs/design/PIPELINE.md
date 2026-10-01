@@ -81,7 +81,7 @@ marked * below.
 | `seed_replay_time_factor`* (40) | the seed replay's wall clock, as a multiple of the recorded workload's (§5) |
 | `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth`, `region_path_stop_at_fatal` | EXPLORE's bounds (§7.4, §7.9) and the witness stop (§7.1) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
-| `concolic_worker_count`* (8), `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | slots per host, the hosts, one obligation's memory at the host gate, the head JVMs' heap |
+| `concolic_worker_count`* (8), `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | slots per host, the hosts, one replay's memory at the host gate (§7.7), the head JVMs' heap and the most a host's solver is given |
 | `campaign_stop_after` | empty, or `IMPORT` |
 | `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording and of each native reproduction run; how many of those (§10b) |
 
@@ -437,6 +437,18 @@ a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too.
 
 ### 7.5 One obligation: `explore.ObligationSolverMain`
 
+The obligations of one wave that run on one host are answered by ONE solver JVM there
+(`campaign_solve_obligation`; `ObligationSolverMain --serve`, `explore.SolverService`): the first
+question starts it (`campaign_start_solver`, charged at the host ledger its heap, `1024 + 2 ×` the
+corpus's size on disk in MB and at most `engine_memory_mb`, for 120 s), it reads the corpus once,
+answers the questions in the order they came, each from the corpus as read
+(`Corpus#freshLowerings`, so each obligation's files are the ones a JVM of its own writes), into a
+directory on the host's disk that the asking worker moves into its worker directory, and ends once
+none has come for `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the wave's
+`obligations.jsonl`. A question a solver took and ended on, or a second solver that ended before
+answering, is that obligation's `NOT_ADMITTED`; one still waiting starts the next solver.
+`ObligationSolverMain --obligation-id` answers one obligation in a JVM of its own (the offline gate).
+
 `ObligationFactory.locate` finds the published obligation's path in the corpus under the wave's id
 (a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
 it up to the flipped decision, the flipped decision negated, and every inherited flip's prefix through
@@ -556,8 +568,8 @@ listing holds no session naming the obligation (`campaign_await_remote_result`),
 wave's gate nor the next planner reads one a cached listing kept.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
-answer is `NOT_ADMITTED` naming the bound. A solver JVM that exits nonzero records `NOT_ADMITTED`
-with its last stderr line. A replay that states no verdict fails EXPLORE.
+answer is `NOT_ADMITTED` naming the bound. A question its solver could not answer (§7.5) records `NOT_ADMITTED`
+with why. A replay that states no verdict fails EXPLORE.
 
 ### 7.7 The work pool
 
@@ -571,13 +583,15 @@ shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER
 (`tools/lib/gc-env.sh`): each row is `<epoch> <mb> <ramp_s> <id>`, and a start is allowed when
 `MemAvailable − (rows still inside their own ramp) ≥ need + MemTotal × (100 − p) / 100`, where
 `p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no start leaves a host more than 70 % full. An obligation needs
-`obligation_memory_mb` for 60 s. A replay JVM holds no more than it is charged: its heap is half of
+`obligation_memory_mb` for 60 s: its replay's, since its question goes to its host's solver (§7.5),
+charged at its own start; the slot releases the row when the obligation returns, as a GROW re-run
+does. A replay JVM holds no more than it is charged: its heap is half of
 `obligation_memory_mb` (2 GB at least), and `experiments/lib/execute.sh` ends one whose resident
 memory passes `obligation_memory_mb` and states each one's peak at its end. The head (`do_campaign`, `campaign_head_charged`) charges each of
 its engine JVMs `engine_memory_mb` (else 8192) for 120 s -- the import gate, which holds one
 session at a time, its own heap (§6) -- and its seed and CONFIRM replays
 `obligation_memory_mb` for 300 s, and releases the row when the command returns
-(`campaign_host_release`); an obligation's own JVMs are inside its slot's charge. An obligation
+(`campaign_host_release`); an obligation's replay is inside its slot's charge. An obligation
 whose worker does not finish (a nonzero exit, local or remote, or a result the head cannot see) is
 its own answer and the slot goes on (`campaign_obligation_unfinished`): every process on its host
 whose command line names its worker directory is ended (a peer's replay JVM is in a process group
