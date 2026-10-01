@@ -2149,6 +2149,84 @@ public class ComposerTest {
         assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
     }
 
+    /**
+     * AN ARM NOT CHOSEN IMPOSES NOTHING (hdfs-11741 m1): s1's delivery rests
+     * on what upstream handed it in s1's world, the marker set, and that
+     * nested family holds under s1's arm alone.  Under the path selector it
+     * held on the seed's path too, whose anchor decided on the marker unset,
+     * and no world of that path was left.  {path's session, assertion,
+     * answer}; "nested" is the nested family's arm on the seed's path.
+     */
+    @Test
+    public void aNestedFamilyHoldsOnlyUnderTheArmThatNeedsIt()
+            throws Exception {
+        Path iteration = folder.newFolder("nested-under-arm").toPath();
+        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.count",
+                at("export#0", 0), 0);
+        Endpoint handed = Endpoint.of(PRODUCER, "PORT.count",
+                at("attach#0", 0), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        for (String each : new String[]{"s0", "s1"}) {
+            boolean flip = "s1".equals(each);
+            Session session = new Session(iteration, each, flip);
+            session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                    flip, true);
+            session.marker(String.valueOf(flip));
+            if (flip) {
+                session.activation(UPSTREAM, "thread#"
+                        + UPSTREAM.regionId(), true, true);
+                session.expression("EXPR.0000000000000f01",
+                        integer("I", 2L));
+                session.export(upstream, "EXPR.0000000000000f01", "I", 1L,
+                        "2");
+                session.attach(handed, "vu", "I", "2", upstream);
+                session.expression("EXPR.0000000000000f02", binary(">",
+                        symbol("vu", "I"), integer("I", 1L)));
+                session.decision(PRODUCER, "nn#u1", true,
+                        "EXPR.0000000000000f02");
+            }
+            session.expression("EXPR.0000000000000f03", constant("true"));
+            session.export(producer, "EXPR.0000000000000f03", 2L, "true");
+            session.attach(consumer, "vh", "true", producer);
+            session.expression("EXPR.0000000000000f04", symbol(MARKER, "Z"));
+            session.decision(ANCHOR, "dn#u1", flip, "EXPR.0000000000000f04");
+            session.target("vh", true, true);
+            session.write();
+        }
+        Composer.Composition composition = compose(iteration, 8);
+        Map<String, String> selectorOf = new LinkedHashMap<String, String>();
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            selectorOf.put(disjunct.path().sessionId, disjunct.selector());
+        }
+        String nested = null;
+        for (String arm : composition.armSelectors()) {
+            if (ordinal(arm).equals(ordinal(selectorOf.get("s0")))
+                    && composition.arm(arm).attachEndpointIds()
+                    .contains(handed.id())) {
+                nested = arm;
+            }
+        }
+        assertNotNull("s1's arm on the seed's path has its nested family: "
+                + composition.armSelectors(), nested);
+        String[][] rows = {
+                {"s0", null, "sat"},
+                {"s0", "(not (= vu 2))", "sat"},
+                {"s0", nested, "unsat"},
+                {"s1", null, "sat"},
+                {"s1", "(not (= vu 2))", "unsat"}};
+        for (String[] row : rows) {
+            String answer = solver().ask(composition.pathQuery(
+                    selectorOf.get(row[0]), row[1] == null
+                            ? Collections.<String>emptyList()
+                            : Collections.singletonList("(assert "
+                            + row[1] + ")")), null, false).status();
+            assertEquals(Arrays.toString(row), row[2], answer);
+        }
+    }
+
     // ------------------------------------------------------------------
     // 11. Which writer the read could have seen (IDENTITY §4).
     // ------------------------------------------------------------------

@@ -2857,7 +2857,7 @@ public final class SmtLowering {
         assertions.add(new Stated(formula, name));
     }
 
-    /** Takes back the named assertions of a refused path. */
+    /** Takes back the named assertions of a refused path or arm. */
     public void retract(List<String> names) {
         if (names.isEmpty()) return;
         Set<String> taken = new LinkedHashSet<String>(names);

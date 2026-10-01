@@ -867,9 +867,19 @@ exactly one, each arm closed like a path in its own session (producer prefix bef
 P3 closure, nested families to depth 16). The nested families bind every handoff the arm's conjunction
 names, its delivery's and those its closure's conditions and joins read
 (`ComposedFamilies#handedOn`); one its session minted no attach for, or one paired with no producer,
-refuses the arm, so no arm lowers a handoff as a free constant. A path closes each message once, under
-its selector, its writer arms' nested messages included (one family name, one assertion). A message no session can send drops
-the path. **A codec's
+refuses the arm, so no arm lowers a handoff as a free constant. A path closes each message once (one family,
+one name), under what rests on it: the path's own messages under the path selector; a message a
+delivery was itself handed under every arm (message or writer) whose conjunction names its
+handoffs, asserted once the path's arms are all known as `(=> <path> (=> (or <those arms>) F))`
+(`ComposedFamilies.Closed`, `#commit`), so an arm not chosen imposes nothing and a chosen one's
+nested message holds as it was closed (hdfs-11741 m1: another run's six-key export, nested under
+the path, contradicted the five-key export of the path's own run in 234 of 235 paths). Its arms
+are chosen only with one of those (`(=> (or <its arms>) (or <those arms>))`), so the model's true
+arm selectors are the chain its path took. A level's messages are closed before any of their arms
+closes its own; an arm resting on a message the path closed already is one more thing resting on
+it. A copy per arm instead is a family per arm per level: hdfs-11741 i1's body ran an 8 GB heap
+out. A refused arm, or one whose body equals an earlier arm's (it rests on the same messages),
+takes back what it stated (`ComposedFamilies#rollback`). A message no session can send drops the path. **A codec's
 hole** (WIRE-CODEC §6.1, §6.3) is bound by `VmTermLowering#holeArm`, never by plain equality: its
 symbol is declared at the DECODED leaf's sort (the attach's `javaType`, also in
 `Composer#attestedArrival`), and the arm is the operand the producer's export cut out of its leaf
