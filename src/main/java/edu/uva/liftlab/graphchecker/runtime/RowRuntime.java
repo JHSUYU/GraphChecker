@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.ExpressionRefs;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
@@ -329,6 +330,52 @@ public final class RowRuntime {
         return endpoint;
     }
 
+
+    /**
+     * One hole a codec's encode exported, published when a message carries
+     * it (WIRE-CODEC §4.6): its operand is {@code e_p}, keyed by the message
+     * its consumers name as their correlation id.
+     */
+    static void exportedHole(CodecMessages.Entry entry, String messageKey) {
+        SessionPublisher session = publisher;
+        if (session == null) return;
+        String ref = expressionRef(entry.operand);
+        if (ref.isEmpty() || Text.safe(entry.javaType).isEmpty()) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    entry.producer.id(), "the hole " + entry.contractHole()
+                            + " a message carried states no operand or sort,"
+                            + " so no arm is keyed by its producer");
+            return;
+        }
+        session.export(ExportRow.of(sessionId(), sequence(entry.exportSeq),
+                entry.producer, ref, entry.javaType, 0L, entry.text,
+                entry.contractHole(), messageKey));
+    }
+
+    /**
+     * One hole a decode minted: paired by the envelope that carried its
+     * producer ({@link AttachRow#ENVELOPE}), its correlation id the
+     * message's key.
+     */
+    static void attachedHole(Endpoint endpoint, long seq, Endpoint producer,
+                             String messageKey, Hole hole, String symbol,
+                             String javaType, String arrival,
+                             boolean answered, String answeredValue) {
+        // CONFIRM (b): compared with the model's producer, message and
+        // value, never enforced.
+        String mismatch = Confirmation.attached(endpoint, producer,
+                messageKey, arrival);
+        if (!mismatch.isEmpty()) {
+            gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, endpoint.id(),
+                    mismatch);
+        }
+        SessionPublisher session = publisher;
+        if (session == null) return;
+        session.attach(AttachRow.of(sessionId(), sequence(seq), endpoint,
+                symbol, javaType, arrival, answered,
+                answered ? answeredValue : null, producer, messageKey,
+                AttachRow.ENVELOPE, hole));
+    }
 
     /**
      * The occurrence an event on this thread belongs to, through
@@ -925,6 +972,17 @@ public final class RowRuntime {
             session.obligationResult(result);
         }
         String worker = FocusedReplay.workerDir();
+        if (FocusedReplay.unsettled() && !worker.isEmpty()) {
+            // A session missing a publication's rows settles no question:
+            // the next ask of it replays again.
+            try {
+                Files.deleteIfExists(Paths.get(worker,
+                        ObligationDir.QUESTION_ASKED));
+            } catch (IOException undeleted) {
+                System.err.println("Causynth could not withdraw the question"
+                        + " this unsettled replay asked: " + undeleted);
+            }
+        }
         if (FocusedReplay.refusedAt().isEmpty() || worker.isEmpty()) {
             session.close();
             writeWorkerVerdicts(worker, results);

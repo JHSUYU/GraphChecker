@@ -1346,10 +1346,11 @@ done
 mkdir -p "${bound_dir}/work"
 workload_work_dir="${bound_dir}/work"
 custom_jdk_home=""
-# Five seconds, not one: the adapter is a LOGIN shell, and the lifts' login
-# profile runs a quota check on NFS that alone takes up to a second, so a
-# one-second bound sometimes fired before the payload wrote its pid.
-campaign_adapter_timeout_s=5
+# Ten seconds, not one: the adapter is a LOGIN shell, and the lifts' login
+# profile runs a quota check on NFS, which right after `mvn package` took
+# over five seconds, so a shorter bound sometimes fired before the payload
+# wrote its pid.
+campaign_adapter_timeout_s=10
 run_capturing_status campaign_run_adapter "replay(test)" \
   "sleep 120 & echo \$! >'${bound_dir}/grandchild.pid'; wait" \
   >"${bound_dir}/adapter.log" 2>&1
@@ -1604,6 +1605,7 @@ chmod +x "${late_dir}/replay.sh"
 replay_timeout_s=4
 concolic_replay_command="${late_dir}/replay.sh"
 printf '{"taskId":"TASK.1"}\n' >"${late_worker}/focused_task.jsonl"
+printf 'F:Q\n' >"${late_worker}/question.asked"
 (
   campaign_adapter_kill_grace_s=10
   campaign_obligation_replay OB.L "${withdraw_dir}/classes" \
@@ -1615,6 +1617,8 @@ printf '{"taskId":"TASK.1"}\n' >"${late_worker}/focused_task.jsonl"
     == "NOT_ADMITTED replay exceeded replay_timeout_s=4" ]] \
   || fail "REPLAY-BOUND-5: a member of the replay's group wrote after the \
 worker: $(cat "${late_worker}/obligation_result.jsonl")"
+[[ ! -e "${late_worker}/question.asked" && ! -e "${late_worker}/question.txt" ]] \
+  || fail "REPLAY-BOUND-5: a killed replay's question stands settled"
 
 # EARLY-END-1: a replay a refusal decided ended there, and its verdict names
 # no session (RowRuntime.closeSession): the session it opened is a prefix of
@@ -1639,6 +1643,7 @@ chmod +x "${refused_dir}/replay.sh"
 replay_timeout_s=60
 concolic_replay_command="${refused_dir}/replay.sh"
 printf '{"taskId":"TASK.1"}\n' >"${refused_worker}/focused_task.jsonl"
+printf 'F:Q\n' >"${refused_worker}/question.asked"
 (
   campaign_obligation_replay OB.R "${withdraw_dir}/classes" \
     "${refused_worker}" "${refused_dir}/sessions" \
@@ -1653,6 +1658,9 @@ not withdrawn under its worker: $(find "${refused_dir}" | LC_ALL=C sort)"
 [[ "$(jq -r '.detail' "${refused_worker}/obligation_result.jsonl")" \
     == "wrong decision; ended" ]] \
   || fail "EARLY-END-1: the withdrawal changed the replay's verdict row"
+[[ "$(cat "${refused_worker}/question.txt" 2>/dev/null)" == F:Q \
+    && ! -e "${refused_worker}/question.asked" ]] \
+  || fail "EARLY-END-1: the question a replay decided is not settled"
 mkdir -p "${refused_dir}/sessions/SESSION.stale"
 cp "${refused_worker}/refused-sessions/SESSION.cut/manifest.json" \
   "${refused_dir}/sessions/SESSION.stale/"
@@ -1824,6 +1832,12 @@ $(cat "${pool_fail_dir}/wave/B/obligation_result.jsonl" 2>&1)"
 [[ ! -e "${pool_fail_dir}/sessions/SESSION.B" \
     && -f "${pool_fail_dir}/wave/B/unfinished-sessions/SESSION.B/manifest.json" ]] \
   || fail "the unfinished obligation's session is still in the corpus"
+[[ "$(jq -r 'select(.subject == "OBLIGATION_UNFINISHED") | .detail' \
+    "${pool_fail_dir}/campaign_gaps.jsonl")" == "B: its worker on "* ]] \
+  || fail "the unfinished obligation has no gap row of its own: \
+$(cat "${pool_fail_dir}/campaign_gaps.jsonl" 2>&1)"
+[[ "$(campaign_unfinished_count "${pool_fail_dir}")" -eq 1 ]] \
+  || fail "the iteration does not count its unfinished obligation"
 unset -f campaign_obligation_worker
 reset_config
 
@@ -2428,9 +2442,12 @@ explore_loop_planner() {
     esac
   done
   : >"${out}/obligations.jsonl"
+  : >"${out}/flips.tsv"
+  printf '{"answeredQuestions":%s}\n' "${wave}" >"${out}/explore_manifest.json"
   printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
   case "${wave}" in
-    0) printf '{"obligationId":"OB.a"}\n' >"${out}/obligations.jsonl" ;;
+    0) printf '{"obligationId":"OB.a"}\n' >"${out}/obligations.jsonl"
+       printf 'OB.a\tQ.a\n' >"${out}/flips.tsv" ;;
     1) printf '%s\n' \
         '{"kind":"EXPOSED_REGION","regionId":"REGION.g","node":"nn0","occurrence":"REGION.g#1","sessionId":"SESSION.a","obligationId":"OB.a"}' \
         >>"${out}/growth.jsonl" ;;
@@ -2515,6 +2532,55 @@ jq -e 'select(.subject == "REGION_PATH_WAVE_BUDGET_REACHED")
 $(cat "${bound_loop}/campaign_gaps.jsonl")"
 grep -q 'region_path_max_waves=1' "${bound_loop}/explore.log" \
   || fail "the wave bound is not stated in the campaign log"
+# EXPLORE-4: NO PROGRESS, by flip.  Each wave asks the one flip Q under an
+# id of its own (an id drifts as sessions land); wave 1 settles no question
+# wave 0 had not (the planner's answeredQuestions stays 1), so wave 2 is the
+# fixed point the ids alone never showed (SOLR-18413 r5: 185 questions
+# asked 717 times).
+drift_loop="${test_tmp}/explore-drift/iteration-0000"
+mkdir -p "${drift_loop}/sessions" "${drift_loop}/seed-replay"
+: >"${drift_loop}/seed-replay/execution_task_plan.jsonl"
+region_path_max_waves=12
+(
+  run_java_main() {
+    local wave="" out=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --wave) wave=$2; shift 2 ;;
+        --output-dir) out=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf '{"obligationId":"OB.%s"}\n' "${wave}" >"${out}/obligations.jsonl"
+    printf 'OB.%s\tQ\n' "${wave}" >"${out}/flips.tsv"
+    printf '{"answeredQuestions":%s}\n' "$(( wave > 0 ? 1 : 0 ))" \
+      >"${out}/explore_manifest.json"
+    printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
+  }
+  campaign_dispatch_wave() {
+    local wave_dir=$1
+    shift 5
+    local job
+    for job in "$@"; do
+      jq -n -c --arg id "${job}" '{schemaVersion: 1,
+        kind: "OBLIGATION_RESULT", obligationId: $id,
+        verdict: "NOT_ADMITTED", sessionId: "", detail: ""}' \
+        >"${wave_dir}/${job}/obligation_result.jsonl"
+    done
+  }
+  campaign_import_wave_gate() { :; }
+  campaign_explore "${drift_loop}" iteration-0000
+) >"${drift_loop}/explore.log" 2>&1 \
+  || fail "EXPLORE-4: the drifting loop did not finish: \
+$(cat "${drift_loop}/explore.log")"
+[[ -d "${drift_loop}/obligations-0002" && ! -e "${drift_loop}/obligations-0003" ]] \
+  || fail "EXPLORE-4: the loop did not stop at the wave that asked what the \
+wave before asked: $(ls "${drift_loop}")"
+jq -e 'select(.subject == "REGION_PATH_CLOSURE_NO_PROGRESS")
+  | .detail | test("asks the same 1 flip")' \
+  "${drift_loop}/campaign_gaps.jsonl" >/dev/null \
+  || fail "EXPLORE-4: the stop is not stated by question: \
+$(cat "${drift_loop}/campaign_gaps.jsonl" 2>&1)"
 # And a planner that states no growth file is a planner that did not run
 # to completion: refused by name, never read as "nothing exposed".
 nogrowth_loop="${test_tmp}/explore-nogrowth/iteration-0000"

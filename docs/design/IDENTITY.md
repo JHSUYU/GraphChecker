@@ -125,7 +125,8 @@ producer. Two messages carrying one producer endpoint are named as a `LINEAGE_LO
 `sent` files a message's producer by (transport, correlation, half) and by endpoint id; a receiver's
 anchor is looked up there. `exported` files a staged value's producer by VM handle and by
 (correlation, port); `pairing` answers an attach by `HANDLE`, else `CORRELATION_PORT`, else
-unpaired. The wire header does not carry the producer endpoint.
+unpaired. The `WIRE_FLOW` header does not carry the producer endpoint; a codec hole's envelope does,
+and its attach is paired by `ENVELOPE` (§7.5).
 
 **Interactions** (`contract/Interaction`): (kind, producer endpoint, consumer endpoint), `id =
 sha16(kind + producer.id + consumer.id)`, kind `WIRE` (export to attach, `AttachRow#interaction`)
@@ -198,12 +199,19 @@ it.
 
 `runtime/MessageDoors` is the transport-neutral API every system's transports call:
 
-- `outbound(transport, correlationId, attemptId, half, localOwner, scope)`: the sender's trace
-  header plus its staged symbolic values. The header is `1|span|epoch|kind|role|id|requestKey|
-  requestApi` (`RuntimeTraceContext#header`); a send with no source or request flow goes without
-  one and is named as a `MESSAGE_CONTEXT_REFUSED` DIAGNOSTIC row.
+- `outbound(transport, correlationId, attemptId, half, localOwner, scope[, payload])`: the
+  sender's trace header plus its symbolic header. The trace header is `1|span|epoch|kind|role|id|
+  requestKey|requestApi` (`RuntimeTraceContext#header`); a send with no source or request flow goes
+  without one and is named as a `MESSAGE_CONTEXT_REFUSED` DIAGNOSTIC row. The symbolic header holds
+  one space-separated segment per scheme: `CSE5` (the `WIRE_FLOW` values the thread staged) and
+  `CSE6` (the codec holes of §7.5: the payload the door holds, walked with its transport's codec,
+  and what the thread's open bracket of this transport staged).
+- `beginExchange(transport)` / `endExchange(token)`: a bracket on the thread (a declared `EXCHANGE`
+  method, woven; the SASL handshake, `beginSasl`/`endSasl` in the shim) whose EXCHANGE-bound
+  encodes the next outbound message of that transport carries.
 - `inbound(trace, symbolic, ...)`: ends the exchange the thread served and installs this one until
-  the next message or `endInbound`; `keepSymbolic` keeps a multi-message exchange's values.
+  the next message or `endInbound`, with the codec holes its envelope carried for the decodes the
+  thread runs; `keepSymbolic` keeps a multi-message exchange's values of both schemes.
 - `setAside` / `restore`: a serving thread that runs an exchange of its own as a client.
 - `beginTick` / `vacant` / `endTick`: a daemon turn as a root; a vacant turn is one the recording
   never made, which a replay held and let go only because the run could go no further.
@@ -218,12 +226,14 @@ it from IPC `Client`/`Server` and the SASL data-transfer classes; the Solr trees
 
 For a store the nodes share (ZooKeeper in a one-JVM cluster):
 
-- `stored(transport, key, owner)`: a write of `path@version` is a SEND; its staged values are kept
-  with the version.
+- `stored(transport, key, owner[, data])`: a write of `path@version` is a SEND; its staged values
+  are kept with the version, and so are the codec holes an encode bound to `data` (§7.5).
 - `notified(kind, callback)` + `fetched(transport, key, owner)`: inside a watch callback, the first
   read of a stored version installs the writer's context, with `via` = the watcher kind (and
   `.<n>` from a node's second delivery of that version on). Such receipts are unawaited: the work
   they anchor takes no place in the schedule. A read outside a callback is data, not a cause.
+  `fetched(transport, key, owner, data)` binds `data` to the version's codec holes on every read,
+  inside a callback or not: a value is data, a notification a cause.
 - `consumed(transport, key)`: a queue item's staged values arrive with it; the consumer keeps its
   own context.
 
@@ -240,6 +250,53 @@ as flips.
 PLAN binds each wire capture of an activation to the exchange it ran in
 (`RuntimeRegionPlanner#bindObservedCommunicationCaptures`): an OUT capture to the next SEND on its
 lane, an IN capture to the latest RECEIVE, rewound to that exchange's first frame.
+
+### 7.5 Codec holes
+
+A value a serialization format carries crosses as holes (WIRE-CODEC; declarations in
+[CONTRACT-SPEC.md §6](CONTRACT-SPEC.md)). `causynth/CodecWeave` hooks each declared encoder's
+returns, each decoder's returns (or entry, for a graph argument) and each `call` pattern's call
+sites, entering its codec on entry and leaving it on every exit so a declared method inside another
+of the same codec is transparent; and brackets each declared `EXCHANGE` method.
+
+- **Encode** (`runtime/CodecRuntime#encoded`): `runtime/CodecWalker` walks the graph through the
+  codec's views (a TREE's maps, ordered collections, arrays and `CODEC_VIEW` objects; a PROTOBUF
+  message's `*_` fields; a LEAF graph whole) to every leaf whose port (`codecPortId(space, key)`) is
+  demanded (`runtime/DemandedPorts`: the `CODEC_PORT` rows the file `causynth.codec.ports` names).
+  `runtime/CodecExport` reads each leaf's expression from the VM (`exportLeaf`, by its slot) and
+  cuts it into a template of literals and holes; each hole's producer endpoint is minted now.
+- **Binding** (`runtime/CodecMessages`), never the thread: an encode bound to its encoded object
+  waits for the store door that writes that object; an EXCHANGE-bound encode stages into the
+  innermost open bracket; a door's own payload is walked at the door. An encode no message carries
+  is counted (`CODEC_MISMATCH` `UNSENT`, one row per codec at the run's close).
+- **Envelope** (`runtime/CodecEnvelope`, `CSE6`): per hole its codec, encode ordinal, key path,
+  hole index, the leaf's template, the producer endpoint, the export event and the recorded texts;
+  at most 256 per message, and the whole symbolic header (`CSE5` first) within its transport's
+  `envelopeBytes` (4096 unless declared), each cut named `BOUND_INSUFFICIENT`. A header segment of
+  no scheme is refused by name (`MESSAGE_CONTEXT_REFUSED`). Each hole a message carries publishes
+  its `ExportRow` then, keyed by the message (`<transport> <path>@<version>` or the correlation id).
+- **Decode** (`CodecRuntime#decoded`): the message bound to the encoded argument (a stored
+  version's read), else the thread's inbound exchange's, else none; the first encode of the codec
+  whose paths all resolve in the graph. `HandoffMint#mintHoles` reads each leaf against its
+  template (`CodecExport.Reading`): only the value the producer recorded is minted, as the template
+  or, when the producer's template was one whole-leaf hole, as one hole of the leaf's own sort;
+  anything else is a `CODEC_MISMATCH` and the leaf stays concrete, paired with nothing (local data
+  of the same message type meets an exchange's entries this way; WIRE-CODEC designer decision 14,
+  over §4.3's one STR hole). It plants a wave's answer, stores a fresh copy of a
+  String leaf wherever its holder can hold one, and mints the holes (`mintLeaf`: a String's template
+  on its own object, so any read that returns it hands a parse or split the template itself; a
+  primitive or a box at its slot; the VM never puts an expression on a JVM-wide object and never
+  replaces one: a refusal of the leaf object (`landsOn: OBJECT`, `SHARED` or `SHADOWED`) is
+  re-homed by a fresh equal object stored through its holder, or named `LEAF_SHARED` /
+  `LEAF_SHADOWED` when the holder cannot take one; a slot's refusal stands, named by its status)
+  and publishes one `AttachRow` per hole, paired by `ENVELOPE`. Entries are never consumed: N readers of one version, and one decode twice, each mint
+  their own.
+- **Endpoints**: a hole's endpoint site is the port; its event frame is
+  `port@<storeKey><keyPath>#<hole>` (`Identity#endpointAt` with a frame site; the store key is
+  empty for an exchange and at the encode), with `/`, `@` and `%` escaped, so two queue items one
+  occurrence decodes stay apart. The consumer is the innermost live region, else the occurrence
+  running here (an ambient mint, which records no path). A hole's symbol is named by
+  `(port, consumer occurrence, k, keyPath#hole)`, as a `WIRE_FLOW` attach's is.
 
 ## 8. The schedule
 
@@ -269,28 +326,50 @@ order:
   the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
   slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
   scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
-  wait is missed). The watchdog lets held waits go when the run idles; a released timed wait still
-  waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an order whose
-  run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
+  wait is missed). The watchdog lets held waits go when the order stalls; a released timed wait
+  still waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an
+  order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
   order's end, not its cut, until every non-`WAKE` slot is settled (`ScheduleLog#line`; CONFIRM's
   unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
   follows a cause the order holds, and runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
-  not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog
-  acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled and no
-  workload thread computing, or after eight timeouts (`CEILING`) whatever they do. Every
-  non-waiting thread counts except the engine's own (`causynth-*`: the result publication, the
-  trace parse), since which thread owes a slot cannot be seen between two of its events
-  (`ScheduleLog#computingLocked`). The watchdog first lets the waits held without a slot go; a
-  grace (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter
-  that waits for a slot. A poll held past its count stands at a due slot and waits for no slot's
-  event, so it bounds no give-up; when only such polls wait, they are let go again, a grace
-  apart. A let-go does not restart the stall's clock: a wait for a slot is held at most
-  `CEILING` timeouts and a grace, and an event that never comes, with nothing computing, costs a
-  timeout and a grace. After two give-ups past the cut the rest is released. Each let-go and
-  give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row;
+  not do; a waiter gives up what its own occurrence did not make before its slot. The watchdog
+  watches the order's frontier (`ScheduleLog#firstBlocking`: the first open slot that is no
+  `WAKE`), which every wait for a slot or for the line waits on. It acts once the frontier has
+  stood `causynth.schedule.timeout.ms` (default 15 s) with no thread computing toward it, or eight
+  timeouts (`CEILING`) whatever threads do, both counted from the frontier's last move or its
+  earliest current waiter's arrival, whichever is later (`ScheduleLog#stallSinceLocked`): the
+  frontier owes nothing to a wait that has not begun. A slot taken past the frontier (past the cut
+  a non-`WAKE` slot is taken at once) or an event run free moves no wait for a slot or the line,
+  so it does not restart the stall (hdfs-17899-bug2 w4d1 CONFIRM: the test thread's polls took
+  their later slots, then ran free, for the whole of its 30 s wait while a BPServiceActor, held at
+  the order's end in a wait the recording never timed out, owed the frontier, its turn's `END`); a
+  poll past its recorded count goes on any move, but it waits for no slot's event. The CPU is
+  looked at once a second (`ScheduleLog#lookLocked`), the first look of a stall measuring from its
+  start. Something computes toward the frontier when its owner was seen at work: an event in the
+  frontier's own context or occurrence (where `#slotOf` and `#passedLocked` place a thread's own
+  events) since the last look, whatever CPU share the owner gets (the VM's arena mutex, a
+  collection, a busy host), except a poll past its recorded count that went only because the order
+  moved or it was let go (a loop reading a CLOCK root, or a `WAKE` taking its slot, is at work).
+  Otherwise which thread owes the frontier cannot be seen between two of its events, so any thread
+  may, except one waiting for a turn, the engine's own (`causynth-*`: the result publication, the
+  trace parse), and one seen at an event away from the frontier since the last look (run free or
+  into a slot past it, in neither its context nor its occurrence; a thread the watchdog let go
+  since the frontier moved is never away): it runs on elsewhere (`ScheduleLog#ELSEWHERE`). An
+  unseen owner is one thread, so one such thread's CPU plus the collectors' time over half the
+  look's span defers the give-up, not a sum: the traffic a free-running loop drives through threads
+  that make no event (an IPC reader, a connection's receiver) is no one computing. The watchdog
+  first lets the waits held without a slot go; a grace (`LET_GO_GRACE_MS`, 2 s) later it gives up
+  every open slot before the earliest waiter that waits for a slot. That is one let-go per
+  frontier: a slot taken past it earns the held waits no second one, which would hold the give-up
+  off for as long as anything ran elsewhere. A poll held past its count stands at a due slot and
+  waits for no slot's event, so it bounds no give-up; when only such polls wait, they are let go
+  again, a grace apart. A let-go does not restart the stall's clock for the waits that remain: a
+  wait for a slot is held at most `CEILING` timeouts and a grace, and an event that never comes,
+  with nothing computing toward it, costs a timeout and a grace. After two give-ups past the cut
+  the rest is released. Each let-go and give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row;
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that
   session's world (its flips and planted values); flips are cut only from ADMITTED sessions
@@ -324,13 +403,17 @@ randomness is seeded by endpoint (SYMBOL-SCOPE.md §4.5).
 ## 11. Current limits
 
 - The anchor is found through JVM-global tables (`Interactions`, `MessageDoors` stored versions);
-  the header carries no endpoint, so a context crosses only between nodes of one JVM.
+  the trace header carries no endpoint, so a context crosses only between nodes of one JVM (a codec
+  hole's producer travels in its envelope).
 - `Interactions` evicts past 8192 entries; a receipt whose sender was evicted or never filed gets
   no anchor, and its work takes a `Root` or `Lost` context instead, named by a `LINEAGE_LOST` gap
   on the receiving occurrence with the eviction count (`RuntimeTraceContext#unanchored`).
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
+- A codec decode on a thread no node is attributed to mints its holes under the unregistered
+  address (the Solr Overseer reads its queue item before its tick opens, so the queue's holes are
+  minted there, not in the tick).
 - Contexts and anchors exist only where a transport calls the doors. In the HDFS trees a
   DataTransfer operation is a tick root, not anchored to its sender; Solr's Overseer queue turns
   keep their own context; ZooKeeper watch work is outside the schedule.

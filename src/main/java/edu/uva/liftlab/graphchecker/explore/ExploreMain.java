@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
@@ -58,6 +59,9 @@ import java.util.Set;
 public final class ExploreMain {
     /** One wave's manifest: its anchors, tasks and verdict counts. */
     static final String MANIFEST_FILE = "explore_manifest.json";
+    /** One {@code <obligationId> TAB <flip>} line per obligation the wave
+     *  proposes ({@link ObligationFactory#flip}). */
+    static final String FLIPS_FILE = "flips.tsv";
 
     private ExploreMain() {
     }
@@ -188,21 +192,22 @@ public final class ExploreMain {
                 RowCodec::readObligationResult));
         List<ObligationFactory.Candidate> candidates =
                 new ArrayList<ObligationFactory.Candidate>();
-        for (Task task : tasks) {
-            candidates.addAll(ObligationFactory.candidates(corpus, task,
-                    flipSites.get(task.taskId()), bounds, frontier, gaps));
-        }
         if (!witness.isEmpty()) {
+            // No flip is sought: each would cost its query.
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, witness,
                     "an admitted replay observed the fatal at the declared "
                             + "occurrence, and this case stops exploring at "
-                            + "its first witness: " + candidates.size()
-                            + " flip(s) and " + grown.size()
-                            + " exposure(s) this wave would have asked are "
-                            + "not asked"));
-            candidates.clear();
+                            + "its first witness: no flip is sought, and the "
+                            + grown.size() + " exposure(s) this wave would "
+                            + "have grown are not grown"));
             grown.clear();
+        } else {
+            for (Task task : tasks) {
+                candidates.addAll(ObligationFactory.candidates(corpus, task,
+                        flipSites.get(task.taskId()), bounds, frontier,
+                        gaps));
+            }
         }
         Frontier.Wave open = frontier.open(wave, candidates);
 
@@ -250,10 +255,23 @@ public final class ExploreMain {
         // An empty file IS the frontier closing.
         RowCodec.writeAll(out.resolve("obligations.jsonl"), open.obligations,
                 ExploreCodec::writeObligation);
+        // The flips the wave asks, which the driver's no-progress stop
+        // compares: an id drifts as sessions land, a flip does not.
+        StringBuilder asked = new StringBuilder();
+        for (Map.Entry<String, String> flip : frontier.flips().entrySet()) {
+            asked.append(flip.getKey()).append('\t')
+                    .append(flip.getValue()).append('\n');
+        }
+        Files.write(out.resolve(FLIPS_FILE),
+                asked.toString().getBytes(StandardCharsets.UTF_8));
         RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
+        // The distinct questions this iteration's workers settled: what the
+        // driver's no-progress stop weighs beside the flips.
+        int answeredQuestions = ObligationDir.answered(iteration).size();
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
-                topologyEpoch, gaps, slots, skeleton, exposed, witness);
+                topologyEpoch, gaps, slots, skeleton, exposed, witness,
+                answeredQuestions);
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
@@ -457,7 +475,8 @@ public final class ExploreMain {
                                        String topologyEpoch,
                                        List<GapRow> gaps, SlotTable slots,
                                        SlotTable.Reconciliation skeleton,
-                                       int exposed, String witness) {
+                                       int exposed, String witness,
+                                       int answeredQuestions) {
         JsonObject manifest = new JsonObject();
         JsonArray anchors = new JsonArray();
         for (OccurrenceAddress root : roots) anchors.add(root.render());
@@ -477,6 +496,7 @@ public final class ExploreMain {
         manifest.addProperty("tasks", tasks.size());
         manifest.addProperty("proposed", open.obligations.size());
         manifest.addProperty("answered", frontier.answeredCount());
+        manifest.addProperty("answeredQuestions", answeredQuestions);
         JsonArray rows = new JsonArray();
         Map<String, Integer> proposedPerTask = frontier.proposedPerTask();
         for (Task task : tasks) {

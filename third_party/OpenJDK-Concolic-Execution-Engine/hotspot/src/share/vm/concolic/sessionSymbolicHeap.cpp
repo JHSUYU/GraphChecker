@@ -463,6 +463,23 @@ SymInstance *SessionSymbolicHeap::find_sym_inst_locked(oop obj) const {
   return NULL;
 }
 
+bool SessionSymbolicHeap::claim_object_expression(SymInstance *instance,
+                                                  int value_offset,
+                                                  Expression *expression) {
+  if (instance == NULL || expression == NULL) return false;
+  HeapLock guard(this);
+  // Its own expression is a semantic one: a String's shadow starts with an
+  // identity symbol, which states no value.
+  if (instance->has_semantic_expression()) return false;
+  if (value_offset < 0) {
+    instance->set_ref_exp(expression);
+  } else {
+    instance->set_sym_exp(value_offset, expression);
+  }
+  instance->mark_semantic_expression();
+  return true;
+}
+
 bool SessionSymbolicHeap::requires_detached_object_shadow(oop obj) const {
   if (obj == NULL || obj->is_array() || obj->klass() == NULL
       || obj->klass()->name() == NULL) {

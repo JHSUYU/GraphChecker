@@ -205,6 +205,14 @@ public:
   SymInstance *get_sym_inst(sym_rid_t sym_rid);
   SymInstance *find_sym_inst(oop obj) const;
   bool requires_detached_object_shadow(oop obj) const;
+  // Installs `expression` as an object's own expression -- a String's
+  // reference expression (`value_offset` < 0), a box's value -- unless it
+  // already carries a semantic one: checked and set in one step under the
+  // heap lock,
+  // so two mints of one object (a String two decodes share) never both
+  // land.  False when it already carried one.
+  bool claim_object_expression(SymInstance *instance, int value_offset,
+                               Expression *expression);
 
   // `named`: the shadow exists only because a load or store named the array
   // (SymArr::named).  Decided by the call that allocates the shadow, under

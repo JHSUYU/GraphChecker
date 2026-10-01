@@ -25,10 +25,20 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 - **Object identity.** Every object carries an extra header word `_sym_rid` (`VM/oops/oop.hpp`);
   it survives GC and is reset at every allocation path and on an `Object.clone` copy. Heap shadows
   (`SymInstance`, `SymArr`, container states) live in the session heap keyed by it
-  (`VM/concolic/sessionSymbolicHeap.cpp`). Interned strings get a detached shadow, never the shared
-  object's. A JVM-wide object (an interned String, a JDK box-cache entry, `Boolean.TRUE/FALSE`;
-  `symbolicPrimitive.cpp#jvm_shared_object`) never carries an expression: a value it stands for
-  rides the slot that holds it.
+  (`VM/concolic/sessionSymbolicHeap.cpp`). An interned String's header is never written: an
+  identity the session gives it lives beside it (a detached entry), and it carries no expression.
+  One rule: a JVM-wide identity (an interned String, a JDK box-cache entry or a cache's own array,
+  `Boolean.TRUE/FALSE`, an enum constant; `symbolicPrimitive.cpp#jvm_shared_object`) never carries
+  an expression. A value it stands for rides the slot that holds it. Every mint asks first: the
+  boxing and container models, `mintLeaf` (§7), and the symbolizers (`VM/concolic/fieldTraverser.cpp`,
+  `threadContext.cpp#symbolize_*`). A JVM-wide root or owner is not minted and the region's gate
+  stays as it was (a symbolizer opens it only once it mints); a walk does not enter a JVM-wide
+  object; a field holding a box, shared or fresh, is minted on the field as a value of the box's
+  sort (what an unboxing of it reads, under the primitive fields' replace rule) and the box stays
+  clean; a String field is minted on the field; any other JVM-wide referent (an enum constant) of
+  a selected field binds the field to a reference symbol, as a null one does.
+  `getSymbolicExpression` states `jvmShared` for an object, so a caller names a refused mint by
+  what it is.
 - **Stack shadows.** One `ThreadContext` per thread (`__thread`, `VM/concolic/concolicMngr.cpp`)
   shadows operand slots and locals; arguments and returns move through `ShadowStack` at every Zero
   frame push and pop (`VM/concolic/shadow/shadowStack.cpp`).
@@ -38,7 +48,11 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 - **Regions.** `startConcolicRegion` / `finishConcolicRegion` bracket one activation on one thread;
   each region frame owns its guard, auxiliary conditions and branch events
   (`VM/concolic/threadContext.cpp`). Nothing is recorded in a region until it reads something
-  symbolic (the admission gate); `observeField` and every mint open it.
+  symbolic (the admission gate); `observeField`, every mint, a getfield that yields an expression,
+  and a modeled call whose value operand (a String, a box or a StringBuilder) carries its own
+  expression (one a decode minted, `MethodSymbolizerHandle::general_check_param_symbolized`) open
+  it. An owner whose field was symbolized is marked the same way, but passing it along (a
+  `map.put(k, owner)`) opens nothing, and nothing opens it while observation is paused.
 - **Branches.** The weave marks decision sites with `markConcolicBranch(siteId, ...)`; a marked
   branch is an event even when concrete (zero conditions). `getConcolicBranchEvents` returns the
   events since the last read; `getConcolicPathConditionRange` a range of the region's conditions.
@@ -117,9 +131,9 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | class | modeled | not modeled |
 |---|---|---|
 | `String` (entered only with a symbolic operand) | `charAt compareTo concat contains endsWith equals equalsIgnoreCase hashCode indexOf isEmpty lastIndexOf length matches regionMatches replace* split startsWith substring toLowerCase toUpperCase trim valueOf ...`; results are string operations | `toCharArray`, `getBytes`, `getChars`, `new String(bytes/chars)` return no expression |
-| `StringBuilder` (and its `AbstractStringBuilder` methods) | `append` (as concat), `toString`, `length`; `insert delete deleteCharAt replace setCharAt setLength` as a concat of substrings of the content (an operand's slot shadow first) | `reverse`, `appendCodePoint` and a padding `setLength` drop the expression (the next use states the concrete content); `StringBuffer` |
+| `StringBuilder` (and its `AbstractStringBuilder` methods) | `append` (as concat; `append(CharSequence, start, end)` of a String or builder as a concat with its `substring` of `[start, end)`, of a `char[]` or another `CharSequence` with no expression of its own as a concat with the text it appended, of one with an expression as a concat with a named `unsupportedCharArrayRange`/`unsupportedCharSequenceRange` over it), `toString`, `length`; `insert delete deleteCharAt replace setCharAt setLength` as a concat of substrings of the content (an operand's slot shadow first) | `reverse`, `appendCodePoint` and a padding `setLength` drop the expression (the next use states the concrete content); `StringBuffer` |
 | boxing `valueOf`, `new X(v)` for `Boolean Byte Character Short Integer Long` | the value on the result slot, and on the returned object unless it is JVM-wide | `Float`/`Double.valueOf`. This JDK's `Integer/Long/Short/Byte/Boolean.valueOf` box afresh; `Character.valueOf` caches 0..127 |
-| `Integer.toString(int)`, `Integer.toString()` | string of the int | other primitive-to-string conversions become a named `unsupportedPrimitiveStringConversion:` operation |
+| decimal and boolean renderings: `Byte/Short/Integer/Long/Boolean.toString` (static of the class's own primitive, and the instance form), `String.valueOf` of an `int`, `long` or `boolean` or of such a box | one `toString` op of the value (`StringBuilder.append` wraps every primitive in the same op) | radix and hexadecimal conversions and char or floating renderings become a named `unsupportedPrimitiveStringConversion:` operation; `String.valueOf` of a char, float, double or other object stays a `valueOf` op |
 | `Integer.parseInt`, `Long.parseLong` | a method-return symbol stating its concrete value and its call (holder, name, descriptor, argument expressions), plus a `MethodExpression` condition | |
 | `BigDecimal` | 8 signatures | `<init>(double)`, `<init>(String)` mint symbols unrelated to the argument; `BigInteger` |
 | `AtomicInteger`, `AtomicLong` | `getAndIncrement getAndDecrement incrementAndGet decrementAndGet getAndAdd addAndGet compareAndSet weakCompareAndSet`, when the receiver is shadowed: the model states `new = old op delta` (or the CAS's expect/update) as an intent, and the compare-and-swap that performs it reads `old` at the word it compared and publishes the RMW version, in one critical section; a failed CAS reads the word it lost to | `set` is a putfield; `lazySet`, `getAndSet`, `AtomicReference`/`AtomicBoolean` (`value` observed on the atomic; `get`/`set` are a getfield/putfield, a CAS decides over the value it compared), field updaters are versioned as Unsafe writes with their captured operands, not modeled; `accumulate*`, `LongAdder`, atomic arrays |
@@ -286,12 +300,60 @@ identity node is built only when it roots a new state.
 
 ## 7. Wire handoff
 
-`VM/concolic/expressionBroker.{hpp,cpp}`: `exportExpression` publishes the live expression of an
-instance field and returns an opaque handle `(epoch << 32) | serial`; `attachExpression` resolves a
-handle and installs the expression as a `ConsumerBoundaryExpression` on the destination field (a
-container leaf becomes the destination container's state). Handles live for the session: any
-region on any attached thread of that session can attach; a handle of another session is
-`FOREIGN`. Statuses: `NO_ACTIVE_REGION -1`, `MISSING_METADATA -2`, `FIELD_NOT_FOUND -3`,
+**Leaf natives** (`VM/concolic/leafBroker.{hpp,cpp}`; `System.exportLeaf`, `System.mintLeaf`). A
+leaf is one value of a message graph, addressed by the slot that holds it: `FIELD` (a
+`java.lang.reflect.Field` of the parent instance), `ELEMENT` (an array and an `Integer`), `ENTRY` (a
+`HashMap`, `LinkedHashMap`, `ConcurrentHashMap` or `Hashtable` and its key: identity, a String by
+content, a box by value; the heap is walked with no member bound, `ContainerSupport::member_of`),
+`POSITION` (an `ArrayList` or `ArrayDeque` and an `Integer`), `VALUE` (the leaf itself). Both run
+inside a region or on a thread outside every region under an open workload session
+(`ConcolicMngr::may_use_session_heap`, the rule `exportExpression` uses), need no `ThreadContext`,
+and answer one JSON document (an expression table beside it) whose `status` names every refusal,
+with a `reason`.
+
+- `exportLeaf` peeks. It answers the slot's shadow (`source: SLOT`): a field shadow; for an element,
+  an entry or a position what the container's recorded chain says (`ContainerSupport::
+  element_answer`, `entry_answer`, `position_answer`): the value its newest write stored, a `READ`
+  of the state when the chain cannot name one write (a symbolic position or key, an opaque node),
+  nothing when the member is the heap's own. Else the leaf object's own expression (`OBJECT`; never
+  a JVM-wide object's), else its typed constant (status `CONSTANT`; a String past the symbol-name
+  bound states only `concrete`). It records no condition, read or version; it takes one event id
+  (`exportEvent`). Refusals: `NO_SESSION`, `SLOT_MISSING`, `NULL_LEAF`, `UNSUPPORTED` (a leaf that
+  is no primitive, box or String; a static field; an unmodeled container).
+- `mintLeaf` states a decoded leaf as a template `{"parts":[{"literal":T} |
+  {"hole":K,"label":L,"text":T}, ...]}` over fresh symbols: `NUM` (a primitive or box leaf's one
+  part: a symbol of its sort), `DEC_INT`/`DEC_LONG`/`BOOL` (`toString` of an `I`/`J`/`Z` symbol; the
+  text must be Java's rendering, `Long.toString(Long.parseLong(t)).equals(t)`), `STR` (a String
+  symbol). A hole labelled `L` is `M_<T>_field_L` (`M_L'String'_field_L`) and states its
+  `concreteValue`. A String leaf becomes `concat(parts)`, whose texts must be its content exactly,
+  compared in UTF-16. The expression lands on the slot for a field (a `WRITE` version, as a
+  putfield publishes) or an element (an INDEXED `WRITE`, the array named), and on the leaf object for
+  a value, an entry or a position. A mint never puts an expression on a JVM-wide object and never
+  replaces one; an object's expression is claimed in one step under the heap lock
+  (`SessionSymbolicHeap::claim_object_expression`), so of two mints of one object (a String two
+  decodes share) one lands and the other is `SHADOWED`. Refusals: `SHARED` (the landing object or
+  the holder of the slot is JVM-wide), `SHADOWED` (what the mint lands on already carries an
+  expression: the leaf object's semantic one -- a String's identity symbol is none -- e.g. a String
+  a codec's cache shares, or a field slot with a shadow
+  or an input owner's projection, or an element its array's recorded state names or an input array
+  holds). A refusal of a located leaf states `landsOn` (`OBJECT` or `SLOT`): for `OBJECT` the
+  caller stores a fresh equal object and mints again, a `SLOT` refusal stands. `TRACKED_CONTAINER`
+  (an entry's or position's container has a state, an element is versioned, or a field is a tracked
+  location), `TEMPLATE_MISMATCH`,
+  `MALFORMED_TEMPLATE`, `NO_SESSION`, `SLOT_MISSING`, `NULL_LEAF`, `UNSUPPORTED`. A mint records no
+  condition; on a thread inside a region it opens the admission gate. This JDK's
+  `Integer/Long/Short/Byte.valueOf` box afresh, so a JVM-wide box is only a `Character` cache entry
+  or `Boolean.TRUE/FALSE`; an enum constant is never a leaf (`UNSUPPORTED`) and, as a holder,
+  `SHARED`.
+- The codec runtime calls them (`runtime/CodecExport`, `HandoffMint#mintHoles`; IDENTITY.md §7.5);
+  a `WIRE_FLOW` row still crosses through the expression broker.
+
+**Expression broker** (`VM/concolic/expressionBroker.{hpp,cpp}`): `exportExpression` publishes the
+live expression of an instance field and returns an opaque handle `(epoch << 32) | serial`;
+`attachExpression` resolves a handle and installs the expression as a `ConsumerBoundaryExpression`
+on the destination field (a container leaf becomes the destination container's state). Handles live
+for the session: any region on any attached thread of that session can attach; a handle of another
+session is `FOREIGN`. Statuses: `NO_ACTIVE_REGION -1`, `MISSING_METADATA -2`, `FIELD_NOT_FOUND -3`,
 `NOT_SYMBOLIC -4`, `FOREIGN_HANDLE -5`, `UNKNOWN_HANDLE -6`, `SORT_MISMATCH -9`,
 `UNSUPPORTED_TARGET -12`. An attach is a version of the destination (a container attach: a
 `STATE_ATTACH` version, and one per tracked element of an array). The handoff is same-JVM: bytes
@@ -299,14 +361,15 @@ cross between nodes concretely, and the handle rides the message envelope (SYMBO
 
 ## 8. What the VM publishes
 
-`jdk/src/share/classes/java/lang/System.java` declares 32 concolic natives (registered in
+`jdk/src/share/classes/java/lang/System.java` declares 34 concolic natives (registered in
 `jdk/src/share/native/java/lang/System.c`, implemented in `VM/prims/jvm.cpp`).
-`runtime/ConcolicVmBroker` looks 23 of them up by reflection, so it loads on a stock JDK, and
+`runtime/ConcolicVmBroker` looks 25 of them up by reflection, so it loads on a stock JDK, and
 `#requireCurrentCapabilities` refuses a replay plan before its workload starts when any is missing:
 sessions, regions, context and event ids, `symbolize`/`symbolizeField`/`symbolizeExactField`,
 `observeField`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
 pause/resume, branch events and range, `endConcolic`, `exportExpression`/`attachExpression`,
-`getTrackedLocationVersions`, `installGuardedStoreSites`. `markConcolicBranch` and the pause
+`getTrackedLocationVersions`, `installGuardedStoreSites`, `exportLeaf`/`mintLeaf` (§7; bound as
+`ConcolicVmBroker#exportLeaf`/`#mintLeaf` with a `SlotKind` whose ordinal is the VM's). `markConcolicBranch` and the pause
 natives are called by woven code (`CausynthPipeline.HookCatalog#concolic`). The broker mirrors the
 statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATION_FAILED -1001`,
 `MALFORMED_RESULT -1002`, and names every status in the gap a refused export or attach files
@@ -350,17 +413,20 @@ that does not hold.
 | `Unsafe` puts, CAS, `getAndAdd*`/`getAndSet*` (`ConcurrentHashMap` slots, `lazySet`, `AtomicReference`, `AtomicBoolean`, field updaters, reflective `Field.set`) on a shadowed object | hooked: versioned with the captured operand; a captured CAS records `old == expected` (or `!=`) over the value it compared; uncaptured ones detected (`UNSAFE_WRITE_UNCAPTURED`) |
 | `String` and `StringBuilder`, boxing, `HashMap`/`ArrayList`/... operations, atomic RMW | modeled (§4) |
 | `Integer.parseInt`, `Long.parseLong` | detected and pinned (return symbol with its concrete value) |
-| primitive-to-string conversions other than `Integer.toString` | detected (a named operation, not pinned) |
+| decimal and boolean renderings (`toString`, `String.valueOf`, `append`) | modeled: one `toString` op |
+| radix, hexadecimal, char and floating renderings | detected (a named operation, not pinned) |
 | a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
 | an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
 | map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6); a callback's result and its side effects hooked |
 | list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
 | stream `write(byte[])`/`readFully`, `ByteArrayOutputStream` | through arraycopy: hooked |
 | a cached box, `Boolean.TRUE/FALSE`, an interned String returned by `valueOf` or a container | hooked: the value rides the result slot; the shared object stays clean |
+| a mint (`symbolize*`, `mintLeaf`) on a JVM-wide object | refused: a box a field holds is minted on the field; a shared root, owner or holder is not minted, and the runtime names it by its cause (`RootMint#mintRefused`, `HandoffMint#mintTemplate`) |
 | `Unsafe` volatile or object gets | the field shadow or nothing; a tracked location's get is not a versioned read |
 | a native method with a symbolic argument (JNI, most JDK natives) | silently lost |
 | `String.toCharArray`/`getBytes`/`getChars`, `new String(bytes)` | silently lost |
 | `StringBuilder.reverse`/`appendCodePoint`, a padding `setLength` | dropped: the builder's next use states its concrete content |
+| `StringBuilder.append` of a range of a `char[]` or a non-String `CharSequence` | modeled: the appended text as a constant, or a named operation over the sequence's own expression; the builder's earlier content stays |
 | `StringBuilder.append(Object)` of an unshadowed non-String | silently wrong (appends `""`) |
 | operations of an unmodeled collection | element fields hooked; the container relation silently lost |
 | digests, MACs, ciphers, logging | silently lost by design (muted) |
@@ -383,7 +449,9 @@ that does not hold.
 - A write from a muted or paused thread is unhooked (detected at the next read of a word it
   changed, not attributed).
 - `symbolize` stops at depth 5; mint failures print to the console only; a null argument to a mint
-  native aborts through `guarantee`. Symbol names are truncated at 1024 bytes; some model paths
+  native aborts through `guarantee` (the leaf natives answer a status instead). Symbol names are
+  truncated at 1024 bytes (a leaf template's literal past that bound is refused
+  `LITERAL_OVER_SYMBOL_BOUND`); some model paths
   abort on unexpected shapes (`symbolicString.cpp`, `symbolicStringBuilder.cpp`,
   `symbolicBigDecimal.cpp`).
 - Cost: every expression lives until session close under one global arena mutex; every in-region
@@ -393,7 +461,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 61
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 62
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -403,6 +471,10 @@ unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither 
 (`RegionTrackedRaceSmoke`, `RegionReadExactnessSmoke`, `RegionLoadedValueSmoke`,
 `RegionVersionDefectsSmoke`, and for a reference carrier `RegionReferenceSwapSmoke`); the
 collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, callbacks, a
-tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order), `RegionWrapperViewSmoke` (a view or wrapper is its container) and
-`RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers). No smoke test covers the
+tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
+`RegionWrapperViewSmoke` (a view or wrapper is its container) and
+`RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers); the leaf natives have
+`RegionLeafBrokerSmoke` (every slot kind with and without a region, peeks that record nothing,
+templates, `SHARED`, a region-less mint reaching a later region's path through `parseLong`, and
+the one `toString` op). No smoke test covers the
 collections the VM does not model, a resize caught in flight, or anything across JVMs.

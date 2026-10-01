@@ -551,11 +551,7 @@ SymArr *ThreadContext::find_sym_array(arrayOop array_obj) const {
 }
 
 void ThreadContext::symbolize_recursive(oop obj) {
-//  tty->print_cr(obj->klass()->signature_name());
-//  tty->print_cr(obj->klass()->name()->as_C_string());
-//  SimpleFieldPrinter field_printer(obj);
-//   field_printer.do_recursive();
-
+  if (jvm_shared_object(obj)) return;
   FieldSymbolizer field_symbolzier(obj, *this);
   field_symbolzier.do_recursive();
   if (obj != NULL && obj->is_array()) {
@@ -565,18 +561,14 @@ void ThreadContext::symbolize_recursive(oop obj) {
     SymInstance *instance = find_sym_inst(obj);
     if (instance != NULL) instance->mark_semantic_expression();
   }
-  // OopTraverser oop_traverser;
-  // tty->print_cr(CL_CYAN"================================================================="CNONE);
-  // obj->oop_iterate(&oop_traverser);
-  // tty->print_cr(CL_CYAN"================================================================="CNONE);
 }
 
 void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
-//  tty->print_cr(obj->klass()->signature_name());
-//  tty->print_cr(obj->klass()->name()->as_C_string());
-//  SimpleFieldPrinter field_printer(obj);
-//   field_printer.do_recursive();
-
+  // A JVM-shared identity never carries a shadow (jvm_shared_object): no
+  // mint, no mark on one another use made, and the region's gate stays as
+  // it was.  A mint is an input: only then does the gate open.
+  if (jvm_shared_object(obj)) return;
+  set_pc_admitted(true);
   FieldSymbolizer field_symbolzier(obj, *this, prefix);
   field_symbolzier.do_recursive();
   if (obj != NULL && obj->is_array()) {
@@ -604,14 +596,12 @@ void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
           instance->get_sym_rid(), prefix, T_OBJECT));
     }
   }
-  // OopTraverser oop_traverser;
-  // tty->print_cr(CL_CYAN"================================================================="CNONE);
-  // obj->oop_iterate(&oop_traverser);
-  // tty->print_cr(CL_CYAN"================================================================="CNONE);
 }
 
 void ThreadContext::symbolize_field(Handle handle, std::string field_name,
                                     std::string prefix) {
+  if (jvm_shared_object(handle())) return;
+  set_pc_admitted(true);
   FieldSymbolizer field_symbolizer(handle(), *this, prefix, field_name);
   field_symbolizer.do_once();
   SymInstance *owner = find_sym_inst(handle());
@@ -621,6 +611,8 @@ void ThreadContext::symbolize_field(Handle handle, std::string field_name,
 void ThreadContext::symbolize_exact_field(
     Handle owner, std::string declaring_class, std::string field_name,
     std::string descriptor, std::string prefix) {
+  if (jvm_shared_object(owner())) return;
+  set_pc_admitted(true);
   FieldSymbolizer field_symbolizer(
       owner(), *this, prefix, declaring_class, field_name, descriptor);
   field_symbolizer.do_once();

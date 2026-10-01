@@ -18,6 +18,23 @@ public class Z3Test {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
 
+    /** A z3 carries its own hard timeout, whole seconds ten past its budget. */
+    @Test
+    public void aZ3StopsItselfTenSecondsPastItsBudget() {
+        long[][] table = {
+                // budget ms, -T seconds
+                {1L, 11L},
+                {1_000L, 11L},
+                {1_500L, 12L},
+                {20_000L, 30L},
+                {1_800_000L, 1_810L},
+        };
+        for (long[] row : table) {
+            assertEquals("budget " + row[0] + " ms", "-T:" + row[1],
+                    Z3.hardTimeout(row[0]));
+        }
+    }
+
     /**
      * A z3 whose every run reads the arithmetic engine its query states and
      * acts as the query's {@code ; on<engine> <act>} comment says: answer

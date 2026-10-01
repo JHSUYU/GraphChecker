@@ -907,6 +907,11 @@ public class ContractTest {
         assertTrue(declared.keys().get(0).valueArray());
         assertEquals(0, declared.keys().get(1).pairsArgument());
         assertTrue(declared.transports().get(1).store());
+        // A request/response transport's header is bounded unless it says
+        // otherwise; a store's versions travel in no header.
+        assertEquals(WireDeclarations.DEFAULT_ENVELOPE_BYTES,
+                declared.transports().get(0).envelopeBytes());
+        assertEquals(0, declared.transports().get(1).envelopeBytes());
         assertEquals("SOLR_HTTP", declared.exchanges().get(0).transport());
 
         // One row bent per case (at its index, or added past the last).
