@@ -56,8 +56,9 @@ source "${case_dir}/case.sh" "${case_id}"
 target_occurrence=${CAUSYNTH_TARGET_OCCURRENCE_OVERRIDE-${target_occurrence}}
 system_paths
 tag=${case_name}${case_id:+-${case_id}}
-# The one per-host path a case has; a reader beside a running campaign (the
-# offline gate, tools/regress/offline-ab.sh) copies the scope elsewhere,
-# because prepare-analysis.sh empties this directory first.
-analysis=${CAUSYNTH_ANALYSIS_CLASSES_DIR:-/tmp/graphchecker-${tag}-classes}
+# The run's own local copy of the scope, named by the run's output directory:
+# two runs of one case on one host (two rounds, a round beside a tree's
+# workload check) must not share it, since prepare-analysis.sh empties it
+# first and EMIT checks it is still what the run froze.
+analysis=${CAUSYNTH_ANALYSIS_CLASSES_DIR:-/tmp/graphchecker-${tag}-$(printf '%s' "${CAUSYNTH_OUTPUT_DIR:-}" | sha1sum | cut -c1-12)-classes}
 test_name=${test_class}#${test_method}
