@@ -18,7 +18,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
-| EXPLORE | `campaign_explore`, `campaign_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions | the planner fails; an obligation does not finish; a replay states no verdict; a wave's BLOCKING row invariant (as IMPORT) |
+| EXPLORE | `campaign_explore`, `campaign_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions | the planner fails; a slot cannot read its host's memory; a GROW re-run does not finish; a wave's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
@@ -238,13 +238,16 @@ end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmissi
 starts after it), live activations settle, the run totals close the session's rows (a closed
 `SessionPublisher` writes nothing more), and only then the VM session closes. The settle
 (`ConcolicResultPublisher#awaitSelectedResultPublications`) is bounded by progress: it gives up once
-nothing has moved for 30 s (no loop body charged, no activation settled, no publication finished,
-and the publication thread spent no CPU), so a publication that computes is never cut and one
-blocked is: every activation still live is then stranded, and the publication left running is a
-`TASK_UNANSWERED` `RESULT_PUBLICATION_UNSETTLED` that holds every obligation of the replay
-`NOT_ADMITTED` (`FocusedReplay#noteUnsettledPublication`: its rows may be partial). A stranded
-activation's VM region is its thread's, so the terminal that thread still reaches closes it
-(`ConcolicRegionRuntime#strand`, `#closeStranded`) and publishes nothing. The end runs once: a
+nothing has moved for 30 s (`#Grace`: no loop body charged, no activation settled, no publication
+finished, no CPU on the publication thread and no garbage collection), so a publication that
+computes is never cut and one blocked is: every activation still live is then stranded, and the
+publication left running and every one queued behind it (the one publication thread reaches none)
+are each a `TASK_UNANSWERED` `RESULT_PUBLICATION_UNSETTLED`, a seed's or a confirmation's session
+included, which holds every obligation of the replay `NOT_ADMITTED`
+(`FocusedReplay#noteUnsettledPublication`: its rows may be partial or missing). A stranded
+activation is finished, abandoned and moved aside in one step (`ConcolicRegionRuntime#strand`,
+under the lock its terminal takes); its VM region is its thread's, so the terminal that thread still
+reaches closes it (`#closeStranded`) and publishes nothing. The end runs once: a
 second thread ending the same run (an early end meeting the workload's own) waits for the first's
 `System.exit`, and a caller of the run totals (`ConcolicResultPublisher#publishRunTotals`, also the
 shutdown hook) returns only once they are published, so no exit halts the close half-done. Cluster threads
@@ -410,18 +413,28 @@ share a variable with the guard (`compose.Independence.ofGuard`), plus the input
 ran, their handoff sites and producers, and those members' write counts at the locations the guard
 reads — never delivered values. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier wave answered it
-`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer), or an earlier wave answered
-its **question** under another id. The question (`ObligationFactory#question`) is
-`<flip>:<content>`: the flip (`#flip`: task, path, site, ordinal, flipped outcome), then a digest of
-the query as its solver is asked it (or the refusal that leaves none) and the world its replay would
-plant (the path's world: roots, clock skews, answers, inherited flips); an id drifts as sessions land (the factor, and so the input
-shape, grows) while the question does not as long as the query reads the same (SOLR-18413 r5:
-185 questions asked 717 times, 118 of the 166 re-asked byte-identical, 162 answered as before).
-The planner and the solver build the query the same way, over fresh session lowerings
-(`Corpus#isolated`: a lowering names refused constructs by a running count and states its facts
-in arrival order), so the planner's question is the one the solver asks; the solver writes the
-question it asked to the worker's `question.txt`. The ledger is rebuilt every wave from the corpus,
-`obligation_results.jsonl` and the workers' questions (`ObligationDir#questions`).
+`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). The ledger is rebuilt every
+wave from the corpus and `obligation_results.jsonl`.
+
+An id drifts as sessions land (the factor, and so the input shape, grows), so one flip is proposed
+again under new ids (SOLR-18413 r5: 185 questions asked 717 times, 118 of the 166 re-asked with
+byte-identical queries). Its **question** (`ObligationFactory#question`) does not drift while what its
+answer rests on reads the same: `<flip>:<content>`, the flip (`#flip`: task, path, site, ordinal,
+flipped outcome), then a digest of the query as its solver is asked it (or the refusal that leaves
+none) and all its replay is given -- the world it plants (the path's world: roots, clock skews,
+answers, inherited flips), the focused occurrence, the factor and the seed session of the focus row
+(the schedule cut is the path's session cut at the focus and factor), the declared occurrence, and
+the plan generation (a digest of the iteration's task plan, which GROW appends to and re-weaves
+from). The solver builds it and looks it up in the questions this iteration's workers settled
+(`ObligationDir#answered`); a settled one's answer is its answer, with no z3 and no replay (verdict
+and detail name the obligation that settled it; an `ADMITTED` names no session, the session stays
+that obligation's). A question is settled (`question.txt`) by a solver's own verdict or reused one
+(`UNSAT`, a decided `NOT_ADMITTED`), or, for a SAT model (`question.asked`), by its replay's verdict
+once the worker has it; never by a reuse (the obligation it reused settles it), a solver timeout or
+an undecided solver (the held re-ask included), a replay killed on its bound, a replay that ended
+without a publication (`RowRuntime#closeSession` withdraws the question), a solver that died, or a
+worker that did not finish. A settled question stands only while its worker holds it and, for an
+`ADMITTED` one, while its session is in the corpus (`ObligationDir#answered`).
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 
@@ -430,13 +443,9 @@ candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
 `--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32,
 `--max-world-depth` 3 (flips a cut path's world may already hold). Every bound that drops work files
-a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too. A candidate the ledger does not
-settle by id, whose flip an earlier wave answered a question about, is built its question; one an
-earlier wave answered settles it (a DIAGNOSTIC gap naming the obligation that asked it). No other
-query is built by the planner: one costs a solver up to a minute (hdfs-17960: 33 built in the planner
-took 23 min), and no other flip's question can have an answer. The wave writes `questions.tsv`
-(`<obligationId> TAB <question>`, or its flip where none was built, per proposed obligation) and
-states `answeredQuestions` (distinct questions answered so far) in `explore_manifest.json`. A case
+a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too. The planner builds no query:
+the wave writes `flips.tsv` (`<obligationId> TAB <flip>` per proposed obligation) and states
+`answeredQuestions` (distinct questions the workers settled) in `explore_manifest.json`. A case
 stopped at its witness seeks no flip at all.
 
 ### 7.5 One obligation: `explore.ObligationSolverMain`
@@ -498,12 +507,16 @@ whose model value is no string literal refuses, `NOT_ADMITTED`). Every recorded 
 (an arrival, a read's `concreteValue`, a root) is a literal of the sort its variable is declared at
 by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A model that plants
 nothing its path's session did not run -- no moved clock, no answer, and every assigned root at
-the value that session minted -- is refused before any replay (`ObligationFactory#plantsNothing`,
-`NOT_ADMITTED`, a DIAGNOSTIC `ADMISSION_GAP` under `EXPLORATION`): its replay would run that
-session's world again. Assigning roots, all at their recorded values, it names the polarity or
-binding fault that implies; assigning none (`EMPTY_WORLD`), it names the symbols the model moved
-that no replay plants -- writer choices `wchoice_*`, container states `st__*`, refused terms
-`unsupported__*` (SOLR-18413 r5: 67 such focused replays, r7 14, r9 2, none ever admitted). The
+the value that session minted -- would have its replay run that session's world again. Before it
+is refused, the query is asked again with every writer choice held to the writer the recording's
+read observed (`ObligationFactory#heldToRecording`; a container state follows its writer's, and a
+refused term `unsupported__*` has no recorded value and stays free): a model that then plants
+something is the one issued. Else it is refused before any replay (`NOT_ADMITTED`, a DIAGNOSTIC
+`ADMISSION_GAP` under `EXPLORATION`). Assigning roots, all at their recorded values, it names the
+polarity or binding fault that implies; assigning none (`EMPTY_WORLD`), it names the symbols it sets
+that no replay plants (writer choices `wchoice_*`, container states `st__*`, refused terms
+`unsupported__*`) and what the held query answered (SOLR-18413 r5: 67 such focused replays, r7 14,
+r9 2, none ever admitted). The
 parent world is overlaid (model wins) and its flips inherited. Every assigned root must
 have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`). The worker writes
 `obligation_result.jsonl` (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`,
@@ -561,7 +574,9 @@ wave's gate nor the next planner reads one a cached listing kept.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
 answer is `NOT_ADMITTED` naming the bound. A solver JVM that exits nonzero records `NOT_ADMITTED`
-with its last stderr line. A replay that states no verdict fails EXPLORE.
+with its last stderr line. A replay that states no verdict fails its worker, which is then that
+obligation's `NOT_ADMITTED` and an `OBLIGATION_UNFINISHED` gap (§7.7); in a GROW re-run it fails
+EXPLORE, and in CONFIRM it is a confirmation that did not confirm.
 
 ### 7.7 The work pool
 
@@ -583,9 +598,12 @@ whose worker does not finish (a nonzero exit, local or remote, or a result the h
 its own answer and the slot goes on (`campaign_obligation_unfinished`): every process on its host
 whose command line names its worker directory is ended (a peer's replay JVM is in a process group
 the remote wrapper's watchdog does not reach), a session naming it moves to
-`<worker>/unfinished-sessions/`, and its row is `NOT_ADMITTED` naming the host and the exit. Only a
-slot whose host's memory cannot be read fails the wave (the campaign fails at EXPLORE after
-reaping remote workers). Verdicts are appended to `obligation_results.jsonl` once the wave settled.
+`<worker>/unfinished-sessions/`, and its row is `NOT_ADMITTED` naming the host, the exit and the
+worker's own last error (an engine failure's `die` or `campaign_fail` line). An engine failure stays
+loud: each such obligation files a DIAGNOSTIC `ADMISSION_GAP` `OBLIGATION_UNFINISHED` in
+`campaign_gaps.jsonl`, which EMIT carries, and `iteration_manifest.json` counts them
+(`unfinishedObligations`). Only a slot whose host's memory cannot be read fails the wave (the
+campaign fails at EXPLORE after reaping remote workers). Verdicts are appended to `obligation_results.jsonl` once the wave settled.
 
 ### 7.8 GROW
 
@@ -604,10 +622,10 @@ exposure) fails EXPLORE.
 `campaign_explore`: plan wave N; if `obligations.jsonl` is empty and no region is exposed, stop (the
 fixed point). Otherwise stop with a DIAGNOSTIC `ADMISSION_GAP` row in `campaign_gaps.jsonl` when
 `N ≥ region_path_max_waves` (`REGION_PATH_WAVE_BUDGET_REACHED`) or when the signature over the
-wave's questions (`questions.tsv`), the count of distinct questions answered (`answeredQuestions`)
-and the exposures equals the previous wave's (`REGION_PATH_CLOSURE_NO_PROGRESS`: the wave before
-asked the same and learned no answer it did not have; ids drift and every re-ask adds a verdict
-row, so neither stops a loop). Else dispatch the obligations (if any), GROW (if a region is
+wave's flips (`flips.tsv`), the count of distinct questions settled (`answeredQuestions`) and the
+exposures equals the previous wave's (`REGION_PATH_CLOSURE_NO_PROGRESS`: the wave before asked the
+same flips and settled no question it had not; ids drift and every re-ask adds a verdict row, so
+neither stops a loop). Else dispatch the obligations (if any), GROW (if a region is
 exposed), then gate the wave: the IMPORT
 gate over the whole session roster (linked under `import-gates/obligations-NNNN/`) whenever the wave
 added a session; one BLOCKING violation fails the campaign at IMPORT.

@@ -923,6 +923,17 @@ public final class RowRuntime {
             session.obligationResult(result);
         }
         String worker = FocusedReplay.workerDir();
+        if (FocusedReplay.unsettled() && !worker.isEmpty()) {
+            // A session missing a publication's rows settles no question:
+            // the next ask of it replays again.
+            try {
+                Files.deleteIfExists(Paths.get(worker,
+                        ObligationDir.QUESTION_ASKED));
+            } catch (IOException undeleted) {
+                System.err.println("Causynth could not withdraw the question"
+                        + " this unsettled replay asked: " + undeleted);
+            }
+        }
         if (FocusedReplay.refusedAt().isEmpty() || worker.isEmpty()) {
             session.close();
             writeWorkerVerdicts(worker, results);

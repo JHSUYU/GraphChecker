@@ -208,8 +208,9 @@ field=<f> <subject>`.
   [PIPELINE.md §7.6](PIPELINE.md)).
 - The worker directory (`ObligationDir`): `<iteration>/obligations-NNNN/<obligationId>/` with
   `obligation.jsonl`, `obligation_result.jsonl` (the answer, written once by the worker),
-  `focused_task.jsonl`, plus `obligation_query.smt2`, `question.txt` (the question the solver
-  asked, `explore.ObligationFactory#question`), `gaps.jsonl`, `schedule_prefix.jsonl`,
+  `focused_task.jsonl`, plus `obligation_query.smt2`, `question.txt` (the question its answer
+  settles, `explore.ObligationFactory#question`) or `question.asked` (a SAT model's, until its
+  replay decides it), `gaps.jsonl`, `schedule_prefix.jsonl`,
   `schedule_suffix.jsonl`, the replay's `replay_verdict.jsonl` (what it stated) and its logs.
   `ObligationDir.workersIn` lists the workers whose result row names a session.
 - The focus row (`focused_task.jsonl`, `explore.ExploreCodec.writeFocusRow`, read by

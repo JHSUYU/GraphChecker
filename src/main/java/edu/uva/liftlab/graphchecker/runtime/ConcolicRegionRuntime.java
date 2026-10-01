@@ -1218,19 +1218,29 @@ public final class ConcolicRegionRuntime {
      * Activations the end of the run settled while their roots still ran
      * ({@code ConcolicResultPublisher#strandWithoutTerminal}), by token.
      */
-    private static final Map<Long, ActiveRegion> STRANDED =
+    static final Map<Long, ActiveRegion> STRANDED =
             new ConcurrentHashMap<>();
 
+    /** Makes finishing and stranding one step each ({@link #strand}). */
+    private static final Object STRAND_LOCK = new Object();
+
     /**
-     * Takes a live activation out of the run, settled without its terminal.
-     * Its VM region is its thread's (the VM closes a region on the thread
-     * that opened it), so the terminal that thread still reaches closes it
-     * ({@link #finish}); before, it found no activation, left the region
-     * open, and the VM session's close was refused for a member remaining.
+     * Takes a live activation out of the run, settled without its terminal,
+     * in one step: finished, abandoned and moved to {@link #STRANDED}
+     * together, so its own terminal either wins first (and the activation
+     * ends as usual) or finds it stranded.  Its VM region is its thread's
+     * (the VM closes a region on the thread that opened it), so the
+     * terminal that thread still reaches closes it ({@link #finish}).
+     *
+     * @return whether it was stranded, rather than already finished
      */
-    static void strand(ActiveRegion active) {
-        if (ACTIVE.remove(active.token, active)) {
+    static boolean strand(ActiveRegion active) {
+        synchronized (STRAND_LOCK) {
+            if (!active.finished.compareAndSet(false, true)) return false;
+            active.abandoned = true;
+            ACTIVE.remove(active.token, active);
             STRANDED.put(active.token, active);
+            return true;
         }
     }
 
@@ -1238,11 +1248,11 @@ public final class ConcolicRegionRuntime {
     static void finish(long token, String exitKind,
                                String exceptionType, Throwable throwable) {
         ActiveRegion active = ownerRegion(token);
-        if (active == null) {
+        if (active == null || !active.finished.compareAndSet(false, true)) {
+            // Stranded, or being stranded now: its VM region is still ours.
             closeStranded(token);
             return;
         }
-        if (!active.finished.compareAndSet(false, true)) return;
         beginSelectedResultPublication();
         boolean publicationDeferred = false;
         // Judgement and publication are bookkeeping: muted until VM close.
@@ -1268,11 +1278,15 @@ public final class ConcolicRegionRuntime {
      * A stranded activation's own terminal: its VM region closes on its
      * thread, and nothing more publishes (the strand published its mints).
      */
-    private static void closeStranded(long token) {
-        ActiveRegion stranded = STRANDED.get(token);
-        if (stranded == null || stranded.thread != Thread.currentThread()
-                || !STRANDED.remove(token, stranded)) {
-            return;
+    static void closeStranded(long token) {
+        ActiveRegion stranded;
+        synchronized (STRAND_LOCK) {
+            stranded = STRANDED.get(token);
+            if (stranded == null
+                    || stranded.thread != Thread.currentThread()) {
+                return;
+            }
+            STRANDED.remove(token);
         }
         pauseObservation();
         try {

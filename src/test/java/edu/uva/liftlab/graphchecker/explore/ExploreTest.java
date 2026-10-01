@@ -3281,7 +3281,7 @@ public class ExploreTest {
     public void aFlipOnlyAnotherWriterTakesIsRefusedBeforeItsReplay()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        Path iteration = twoWriters("empty-world");
+        Path iteration = twoWriters("empty-world", "(= M_READ_KEY 2)", null);
         Path out = tree.newFolder("empty-world-out").toPath();
         Path wave = out.resolve("obligations-0000");
         plan(iteration, TARGET_SELECTOR, null,
@@ -3294,72 +3294,117 @@ public class ExploreTest {
         assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
         assertTrue(detail(worker), detail(worker).startsWith("EMPTY_WORLD: "
                 + "the model assigns no root, moves no clock and answers no "
-                + "handoff, so the replay it asks for runs the world of "
+                + "handoff, so the replay it asks for would run the world of "
                 + "s-seed again")
-                && detail(worker).contains("wchoice_"));
+                && detail(worker).endsWith("; with every writer choice held "
+                + "to the writer the recording observed, no model takes the "
+                + "other arm"));
         assertEquals("and no replay is asked for", 0L, Files.size(
                 worker.directory.resolve(ObligationDir.FOCUSED_TASK)));
     }
 
     /**
-     * One question, one answer.  An obligation's id drifts as sessions land
-     * (its dependence's factor grows); its question -- the query as asked
-     * and the world it plants -- does not, and a question answered under
-     * another id is not asked again (SOLR-18413 r5: 185 questions asked 717
-     * times).  The planner's question, built for a flip an earlier wave
-     * answered, is the one its solver asked.
+     * A model that plants nothing is asked again with every writer choice
+     * held to the recorded writer; one that then plants a root is the one
+     * run.  The nearest-world objective keeps the root at its recording and
+     * lets the other writer take the arm; held, only the root can.
      */
     @Test
-    public void aQuestionAnsweredUnderAnotherIdIsNotAskedAgain()
+    public void aModelHeldToTheRecordedWriterPlantsTheRootInstead()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        Path iteration = twoWriters("asked-once");
+        Path iteration = twoWriters("held-writer",
+                "(or (= M_READ_KEY 2) (= M_LIMIT 5))", "0");
+        Path out = tree.newFolder("held-writer-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Worker worker = solve(iteration, wave,
+                named(obligations(wave), "Lookup#u8"), out, "w0");
+        assertEquals(detail(worker), Verdict.SAT_MODEL_READY,
+                worker.verdict);
+        assertEquals("5", worker.obligation.rootAssignments()
+                .get("CASE.LIMIT"));
+        assertTrue("the query run is the one held to the recording: "
+                + query(worker), query(worker).matches(
+                "(?s).*\\(assert wchoice_\\S+\\)\\n\\(check-sat\\).*"));
+    }
+
+    /**
+     * One question, one answer.  An obligation's id drifts as sessions land
+     * (its dependence's factor grows); its question -- the query as asked
+     * and all its replay is given -- does not, and a solver answers a
+     * question a worker settled with that answer (SOLR-18413 r5: 185
+     * questions asked 717 times).  A question only asked, whose replay
+     * decided nothing, settles nothing.
+     */
+    @Test
+    public void aSettledQuestionIsAnsweredWithoutItsSolver()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = twoWriters("asked-once", "(= M_READ_KEY 2)", null);
         Path out = tree.newFolder("asked-once-out").toPath();
         Path wave0 = out.resolve("obligations-0000");
-        Path results = out.resolve("results.jsonl");
-        plan(iteration, TARGET_SELECTOR, null, results, wave0, 0);
+        plan(iteration, TARGET_SELECTOR, null, out.resolve("results.jsonl"),
+                wave0, 0);
         Obligation lookup = named(obligations(wave0), "Lookup#u8");
-        String planned = new String(Files.readAllBytes(wave0.resolve(
-                ExploreMain.QUESTIONS_FILE)), StandardCharsets.UTF_8);
-        Worker worker = solve(iteration, wave0, lookup, out, "w0");
-        String asked = new String(Files.readAllBytes(worker.directory
+        Worker first = solve(iteration, wave0, lookup, out, "w0");
+        String asked = new String(Files.readAllBytes(first.directory
                 .resolve(ObligationDir.QUESTION)), StandardCharsets.UTF_8)
                 .trim();
-        assertEquals("a flip no wave answered is proposed under its flip "
-                        + "alone, its query unbuilt; the solver's question "
-                        + "is about that flip",
+        assertEquals("the wave names the flip, the question's first half",
                 lookup.obligationId() + "\t"
                         + asked.substring(0, asked.indexOf(':')) + "\n",
-                planned);
-        // The same question, answered by an earlier wave under an id that
-        // has since drifted.
-        Path earlier = Files.createDirectories(iteration.resolve(
-                "obligations-0000").resolve("OB.drifted"));
-        Files.write(earlier.resolve(ObligationDir.QUESTION),
-                (asked + "\n").getBytes(StandardCharsets.UTF_8));
-        Files.write(results, (RowCodec.toLine(RowCodec.writeObligationResult(
-                ObligationResult.of("OB.drifted", Verdict.NOT_ADMITTED, "",
-                        "refused"))) + "\n").getBytes(StandardCharsets.UTF_8));
-        Path wave1 = out.resolve("obligations-0001");
-        plan(iteration, TARGET_SELECTOR, null, results, wave1, 1);
-        assertNull("an answered question is not asked again",
-                named(obligations(wave1), "Lookup#u8"));
-        assertEquals("", new String(Files.readAllBytes(wave1.resolve(
-                ExploreMain.QUESTIONS_FILE)), StandardCharsets.UTF_8));
-        boolean named = false;
-        for (GapRow gap : RowCodec.readAll(wave1.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            named |= gap.detail().startsWith("question " + asked
-                    + " already answered NOT_ADMITTED by an earlier wave, as "
-                    + "obligation OB.drifted");
-        }
-        assertTrue("and the settled question is named", named);
+                new String(Files.readAllBytes(wave0.resolve(
+                        ExploreMain.FLIPS_FILE)), StandardCharsets.UTF_8));
+        // Asked by a worker whose replay was killed: nothing settled.  And
+        // an ADMITTED answer whose session left the corpus stands on
+        // nothing.
+        answer(iteration, "OB.killed", ObligationDir.QUESTION_ASKED, asked,
+                Verdict.NOT_ADMITTED, "",
+                "replay exceeded replay_timeout_s=2400");
+        answer(iteration, "OB.admitted", ObligationDir.QUESTION, asked,
+                Verdict.ADMITTED, "S.gone", "flipped");
+        Worker again = solve(iteration, wave0, lookup, out, "w1");
+        assertTrue(detail(again), detail(again).startsWith("EMPTY_WORLD"));
+        // Settled under an id that has since drifted: its answer, no solver.
+        answer(iteration, "OB.drifted", ObligationDir.QUESTION, asked,
+                Verdict.NOT_ADMITTED, "", "refused");
+        Worker settled = solve(iteration, wave0, lookup, out, "w2");
+        assertEquals(Verdict.NOT_ADMITTED, settled.verdict);
+        assertEquals(detail(settled), "question " + asked + " was settled "
+                + "NOT_ADMITTED by obligation OB.drifted, which asked the "
+                + "same flip and query of the same world, focus, factor, "
+                + "seed session, declared occurrence and plan generation: "
+                + "refused", detail(settled));
+        assertFalse("a reuse settles nothing itself: its source does",
+                Files.exists(settled.directory.resolve(
+                        ObligationDir.QUESTION)));
+    }
+
+    /** One earlier worker of this iteration: its question file and the
+     *  answer it wrote. */
+    private static void answer(Path iteration, String obligationId,
+                               String questionFile, String question,
+                               Verdict verdict, String sessionId,
+                               String detail) throws IOException {
+        Path worker = Files.createDirectories(iteration.resolve(
+                "obligations-0000").resolve(obligationId));
+        Files.write(worker.resolve(questionFile),
+                (question + "\n").getBytes(StandardCharsets.UTF_8));
+        Files.write(worker.resolve(ObligationDir.RESULT),
+                (RowCodec.toLine(RowCodec.writeObligationResult(
+                        ObligationResult.of(obligationId, verdict,
+                                sessionId, detail))) + "\n")
+                        .getBytes(StandardCharsets.UTF_8));
     }
 
     /** A target read of a map two concurrent addKeys wrote, recorded taking
-     *  the first write: {@code Lookup#u8} takes the other arm only if the
-     *  read took the other writer's. */
-    private Path twoWriters(String name) throws IOException {
+     *  the first write, and {@code Lookup#u8} deciding {@code term} over it
+     *  (and over root {@code CASE.LIMIT}, recorded {@code limit}, when one
+     *  is given). */
+    private Path twoWriters(String name, String term, String limit)
+            throws IOException {
         Path iteration = tree.newFolder(name).toPath();
         // A second addKeys, started by a request of its own.
         OccurrenceAddress again = occurrence("hdfs-case/dn0",
@@ -3376,7 +3421,11 @@ public class ExploreTest {
                 "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
                 ALL_KEYS, 6L, "e.2");
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "1");
-        seed.decision(TARGET, "Lookup#u8", 1, false, "(= M_READ_KEY 2)");
+        if (limit != null) {
+            seed.root(TARGET, "CASE.LIMIT", "M_LIMIT", RootKind.INTEGRAL,
+                    limit, "0", "10", true);
+        }
+        seed.decision(TARGET, "Lookup#u8", 1, false, term);
         seed.flush();
         scopeMap(iteration,
                 targetSite("REGION.target", "Throw#u30", "Lookup#u8"),

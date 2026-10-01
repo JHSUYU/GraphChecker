@@ -6,9 +6,13 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
+import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -93,52 +97,51 @@ final class ConcolicResultPublisher {
      * publications, and every activation still live is stranded at once
      * (retrying its work, it would keep resetting any grace).  Either way
      * the wait is bounded by progress: it gives up once nothing has moved
-     * for {@link #TERMINAL_GRACE_MILLIS} -- no loop body charged, no
-     * activation settled, no publication finished, and the publication
-     * thread spent no CPU, so a publication that computes is never cut and
-     * one blocked is (unbounded, a stuck publication kept a decided replay
-     * running to its {@code replay_timeout_s}).  Then every activation
-     * still live is stranded, and the publication still running is named
-     * ({@code RESULT_PUBLICATION_UNSETTLED}); the run ends without it, and
+     * for {@link #TERMINAL_GRACE_MILLIS} ({@link #progressLocked}: no loop
+     * body charged, no activation settled, no publication finished, no CPU
+     * on the publication thread and no garbage collection), so a
+     * publication that computes is never cut and one blocked is
+     * (unbounded, a stuck publication kept a decided replay running to its
+     * {@code replay_timeout_s}).  Then every activation still live is
+     * stranded, and the publication still running and every one queued
+     * behind it are named ({@code RESULT_PUBLICATION_UNSETTLED}, a seed's
+     * or a confirmation's session included); the run ends without them, and
      * a later settle of the same run waits for nothing.</p>
      */
     public static void awaitSelectedResultPublications() {
         boolean interrupted = false;
         List<ActiveRegion> stranded = new ArrayList<>();
-        ActiveRegion unsettled = null;
+        ActiveRegion running = null;
+        List<ActiveRegion> behind = new ArrayList<>();
         final Conclusion end;
         synchronized (PUBLICATION_LOCK) {
-            long progress = progressLocked();
-            long deadline = System.nanoTime()
-                    + TERMINAL_GRACE_MILLIS * 1_000_000L;
+            Grace grace = new Grace(TERMINAL_GRACE_MILLIS * 1_000_000L,
+                    System.nanoTime(), progressLocked());
             boolean spent = gaveUp;
             // An early end met while waiting stops the wait for the live.
             while (!spent && ((concluded == null && liveSelectedRegions > 0)
                     || resultPublicationsInFlight > 0)) {
-                long remaining = deadline - System.nanoTime();
+                long remaining = grace.remaining(System.nanoTime(),
+                        progressLocked());
                 if (remaining <= 0L) {
                     spent = true;
                     break;
                 }
-                int live = liveSelectedRegions;
-                int publishing = resultPublicationsInFlight;
                 try {
                     PUBLICATION_LOCK.wait(remaining / 1_000_000L,
                             (int) (remaining % 1_000_000L));
                 } catch (InterruptedException ignored) {
                     interrupted = true;
                 }
-                long observed = progressLocked();
-                if (observed != progress || live != liveSelectedRegions
-                        || publishing != resultPublicationsInFlight) {
-                    progress = observed;
-                    deadline = System.nanoTime()
-                            + TERMINAL_GRACE_MILLIS * 1_000_000L;
-                }
             }
             end = concluded;
             if (end != null || spent) stranded.addAll(ACTIVE.values());
-            if (spent && !gaveUp) unsettled = publishingNow;
+            if (spent && !gaveUp) {
+                // The one running, and every one queued behind it: the one
+                // publication thread will reach none of them.
+                running = publishingNow;
+                behind.addAll(queued);
+            }
             gaveUp = spent;
         }
         // Outside the barrier lock: each of these files a durable row.
@@ -152,41 +155,87 @@ final class ConcolicResultPublisher {
                     : end + ": the region root was still running when "
                     + end.when + ", and the replay ended there");
         }
-        if (unsettled != null) {
-            String detail = "RESULT_PUBLICATION_UNSETTLED: the row"
-                    + " publication of this completed occurrence made no"
-                    + " progress for " + TERMINAL_GRACE_MILLIS + "ms (its"
-                    + " thread spent no CPU) when the run ended, which ended"
-                    + " without it: its rows may be partial";
-            FocusedReplay.noteUnsettledPublication(detail);
-            taskUnanswered(unsettled.activation, detail);
+        String stall = " for " + TERMINAL_GRACE_MILLIS + "ms (no loop"
+                + " body, settled activation, finished publication,"
+                + " publication CPU or garbage collection) when the run"
+                + " ended, which ended without it";
+        if (running != null) {
+            unsettled(running, "made no progress" + stall
+                    + ": its rows may be partial");
+        }
+        for (ActiveRegion active : behind) {
+            unsettled(active, "was queued behind one that made no progress"
+                    + stall + ": it published no row");
         }
         if (interrupted) Thread.currentThread().interrupt();
     }
 
+    /** Names one publication the run ended without; the replay's
+     *  obligations admit nothing over a session missing its rows. */
+    private static void unsettled(ActiveRegion active, String what) {
+        String detail = "RESULT_PUBLICATION_UNSETTLED: the row publication"
+                + " of this completed occurrence " + what;
+        FocusedReplay.noteUnsettledPublication(detail);
+        taskUnanswered(active.activation, detail);
+    }
+
     /**
-     * What moves while a run settles, as one count that changes whenever
-     * something does: loop bodies the live activations charged,
-     * publications finished, and the CPU the publication thread spent.
+     * A wait's bound: spent once {@code graceNanos} pass with nothing moved,
+     * each move restarting it.
+     */
+    static final class Grace {
+        private final long graceNanos;
+        private long[] progress;
+        private long deadline;
+
+        Grace(long graceNanos, long now, long[] progress) {
+            this.graceNanos = graceNanos;
+            this.progress = progress;
+            this.deadline = now + graceNanos;
+        }
+
+        /** Nanoseconds left once {@code observed} is noted; not above zero
+         *  when the grace is spent. */
+        long remaining(long now, long[] observed) {
+            if (!Arrays.equals(observed, progress)) {
+                progress = observed;
+                deadline = now + graceNanos;
+            }
+            return deadline - now;
+        }
+    }
+
+    /**
+     * What moves while a run settles: publications finished, loop bodies
+     * the live activations charged, the CPU the publication thread spent,
+     * the JVM's time in garbage collection (a collection stops that thread
+     * too), and how many activations are live and publications running.
      * Called under {@link #PUBLICATION_LOCK}.
      */
-    private static long progressLocked() {
-        long moved = publicationsFinished;
+    private static long[] progressLocked() {
+        long loops = 0L;
         for (ActiveRegion active : ACTIVE.values()) {
-            moved += active.chargedLoopBodies;
+            loops += active.chargedLoopBodies;
         }
-        if (publishingThread != null) {
-            long cpu = ManagementFactory.getThreadMXBean()
-                    .getThreadCpuTime(publishingThread.getId());
-            if (cpu > 0L) moved += cpu;
+        long cpu = publishingThread == null ? 0L
+                : ManagementFactory.getThreadMXBean()
+                .getThreadCpuTime(publishingThread.getId());
+        long collecting = 0L;
+        for (GarbageCollectorMXBean collector
+                : ManagementFactory.getGarbageCollectorMXBeans()) {
+            collecting += Math.max(0L, collector.getCollectionTime());
         }
-        return moved;
+        return new long[] {publicationsFinished, loops, cpu, collecting,
+                liveSelectedRegions, resultPublicationsInFlight};
     }
 
     /** Guarded by {@link #PUBLICATION_LOCK}: the publication running, its
      *  thread, how many have finished, and whether a settle gave up. */
     private static ActiveRegion publishingNow;
     private static Thread publishingThread;
+    /** Submitted and not yet started, in submission order. */
+    private static final Set<ActiveRegion> queued =
+            new LinkedHashSet<ActiveRegion>();
     private static long publicationsFinished;
     private static boolean gaveUp;
 
@@ -290,10 +339,8 @@ final class ConcolicResultPublisher {
      */
     private static void strandWithoutTerminal(ActiveRegion active,
                                               String detail) {
-        if (!active.finished.compareAndSet(false, true)) return;
+        if (!ConcolicRegionRuntime.strand(active)) return;
         active.releaseActivation();
-        active.abandoned = true;
-        ConcolicRegionRuntime.strand(active);
         endLiveSelectedRegion();
         synchronized (active) {
             RowPublication.publishMints(active);
@@ -414,6 +461,7 @@ final class ConcolicResultPublisher {
         final long ordinal;
         synchronized (PUBLICATION_LOCK) {
             ordinal = ++submitted;
+            queued.add(active);
         }
         try {
             RESULT_PUBLICATION_EXECUTOR.execute(new Runnable() {
@@ -424,6 +472,9 @@ final class ConcolicResultPublisher {
             });
             return true;
         } catch (RejectedExecutionException rejected) {
+            synchronized (PUBLICATION_LOCK) {
+                queued.remove(active);
+            }
             // Never decode on the RPC owner as a fallback.
             taskUnanswered(active.activation, "RESULT_PUBLICATION_REJECTED: "
                     + "the row publication of a completed VM occurrence could"
@@ -439,6 +490,7 @@ final class ConcolicResultPublisher {
             Conclusion late;
             synchronized (PUBLICATION_LOCK) {
                 late = ordinal > submittedAtEnd ? concluded : null;
+                queued.remove(active);
                 publishingNow = active;
                 publishingThread = Thread.currentThread();
             }
