@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.Rule;
@@ -82,7 +83,8 @@ public class MultiTargetAggregationTest {
         }
         Map<String, CausynthTraceRecorder.TargetOutcome> outcomes =
                 withLoopBound(() -> CausynthTraceRecorder.aggregateTargets(
-                        recording(), aggregated));
+                        recording(), aggregated,
+                        RuntimeWorkflowDiscovery.FIRST));
         for (Object[] target : targets) {
             CausynthTraceRecorder.TargetOutcome outcome =
                     outcomes.get((String) target[0]);

@@ -987,8 +987,11 @@ do_workload() {
   campaign_recorded_workload_rss_mb=$(cat "${trace_dir}/workload_rss_mb" \
     2>/dev/null) || campaign_recorded_workload_rss_mb=""
   require_file "static scope map" "${causynth_static_scope_map}"
+  local -a declared=()
+  [[ -z "${declared_target_occurrence}" ]] \
+    || declared=(--target-occurrence "${declared_target_occurrence}")
   run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
-    --trace-dir "${trace_dir}" --test "${trace_test}" \
+    --trace-dir "${trace_dir}" --test "${trace_test}" "${declared[@]}" \
     --target "$(campaign_target_names | head -n 1)=${candidate_graph},\
 ${causynth_static_scope_map},${causynth_region_skeletons},${trace_dir}"
 }
@@ -1066,7 +1069,10 @@ ${target}/runtime")
       [[ -z "${bound}" ]] || timed_out=true ;;
   esac
   # A target the recording does not serve is its own outcome: the
-  # aggregation's status says only whether any was served.
+  # aggregation's status says only whether any was served.  Each target's
+  # plan is about the declared occurrence's (r,c) of its own throw.
+  [[ -z "${declared_target_occurrence}" ]] \
+    || targets+=(--target-occurrence "${declared_target_occurrence}")
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
     --trace-dir "${trace_dir}" --test "${trace_test}" "${targets[@]}" \
@@ -2321,20 +2327,24 @@ campaign_plan() {
 
 # What an iteration's PLAN states that its later stages read, taken into the
 # campaign's globals once per process that runs them (a batch target's
-# campaign reads its PLAN again): the declared "first" occurrence resolved
-# against the recording (RuntimeWorkflowDiscovery.FIRST), the frozen region
-# plan, and the one task-set membership decode -- the index is frozen beside
-# its rows and every later stage reads the rows.
+# campaign reads its PLAN again): the declared occurrence as the seed's
+# aggregation resolved it against the recording -- a sweep's "first", a
+# selector's k-th match, an address itself (RuntimeWorkflowDiscovery
+# #declaredOccurrence), marked on its plan row and stated by the index, so no
+# later stage counts a selector's k again over activations the question left
+# out -- the frozen region plan, and the one task-set membership decode -- the
+# index is frozen beside its rows and every later stage reads the rows.
 campaign_plan_read() {
   local iteration_dir=$1
   local index="${iteration_dir}/runtime_workflow_schedule_index.json"
-  if [[ "${declared_target_occurrence}" == first ]]; then
-    declared_target_occurrence=$(jq -r '.target.occurrenceId // ""' "${index}")
-    [[ -n "${declared_target_occurrence}" ]] \
-      || campaign_fail PLAN ConcolicScheduler "${index}" \
-        "the schedule index names no target for the declared first occurrence"
-    campaign_log "declared target first = ${declared_target_occurrence}"
-  fi
+  local resolved
+  resolved=$(jq -r '.target.occurrenceId // ""' "${index}")
+  [[ -n "${resolved}" ]] \
+    || campaign_fail PLAN ConcolicScheduler "${index}" \
+      "the schedule index names no declared target occurrence"
+  [[ "${resolved}" == "${declared_target_occurrence}" ]] \
+    || campaign_log "declared target ${declared_target_occurrence} = ${resolved}"
+  declared_target_occurrence=${resolved}
   # Every later consumer reads this iteration's frozen copy, never the mutable
   # discovery output.
   runtime_region_plan="${iteration_dir}/concolic_region_plan.jsonl"

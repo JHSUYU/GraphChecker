@@ -1838,35 +1838,36 @@ public final class Composer {
     /**
      * The locations a STATE family may re-pair at the anchor ({@link
      * ComposedFamilies#stateFamilies}): read there by this session, owned
-     * by a named object, with a writer the read could have seen besides the
-     * one it did ({@link Corpus#eligibleWrites}, the writers the family's
-     * arms are drawn from) or a version no row wrote.
+     * by a named object, by a read that could have seen a writer
+     * occurrence besides the one it did ({@link Corpus#eligibleWrites}, the
+     * writers the family's arms are drawn from: only an HB-concurrent one
+     * is another).  A version no row wrote has no writer of its own, so
+     * any eligible writer is another; but a read whose only eligible writer
+     * is the one it observed, or none, has no alternative: two reads that
+     * saw two ordered writers, or a hot field whose earliest versions the
+     * VM's version bound dropped and whose only writer is the reader's own
+     * occurrence (hdfs-17960 e1c: a configuration parser's fields in the
+     * checkpoint saver), stay the run's.
      */
     private Set<String> repaired(String session) {
-        Map<String, Set<String>> writers =
-                new LinkedHashMap<String, Set<String>>();
-        Set<String> unwritten = new LinkedHashSet<String>();
+        Set<String> repaired = new LinkedHashSet<String>();
         Set<String> asked = new LinkedHashSet<String>();
         for (ReadRow read : corpus.readsOn(session, anchor)) {
             long version = read.observedVersion();
             if (version < 0L || !Arms.namedOwner(read.location())) continue;
             String key = SmtLowering.locationKey(read.location());
-            Set<String> by = writers.computeIfAbsent(key,
-                    ignored -> new LinkedHashSet<String>());
-            if (!asked.add(key + "#" + version)) continue;
-            if (corpus.writeOf(session, key, version) == null) {
-                unwritten.add(key);
+            if (repaired.contains(key) || !asked.add(key + "#" + version)) {
+                continue;
             }
+            WriteRow observed = corpus.writeOf(session, key, version);
+            String seen = observed == null ? null
+                    : observed.endpoint().occurrence().id();
             for (WriteRow write : corpus.eligibleWrites(session, key,
                     version, anchor)) {
-                by.add(write.endpoint().occurrence().id());
-            }
-        }
-        Set<String> repaired = new LinkedHashSet<String>();
-        for (Map.Entry<String, Set<String>> location : writers.entrySet()) {
-            if (location.getValue().size()
-                    + (unwritten.contains(location.getKey()) ? 1 : 0) >= 2) {
-                repaired.add(location.getKey());
+                if (!write.endpoint().occurrence().id().equals(seen)) {
+                    repaired.add(key);
+                    break;
+                }
             }
         }
         return repaired;

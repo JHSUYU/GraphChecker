@@ -957,18 +957,6 @@ public class ExploreTest {
         assertEquals(1, gaps.size());
         assertEquals("s-elsewhere", gaps.get(0).subject());
         assertEquals(GapClass.DIAGNOSTIC, gaps.get(0).cls());
-
-        assertTrue(Branches.sameContext(Arrays.asList("RPC/a@nn0",
-                "Root:CLIENT/mkdir"), Arrays.asList("RPC/a@nn0",
-                "Root:CLIENT/mkdir")));
-        assertFalse(Branches.sameContext(Arrays.asList("RPC/a@nn0",
-                "Root:CLIENT/mkdir"), Arrays.asList("RPC/a@nn1",
-                "Root:CLIENT/mkdir")));
-        assertTrue("an unnamed sender is unknown", Branches.sameContext(
-                Arrays.asList("RPC/a@nn0", Corpus.UNKNOWN_HOP),
-                Arrays.asList("RPC/a@nn0", "RPC/b@dn1", "Root:TICK")));
-        assertFalse(Branches.sameContext(Arrays.asList("Root:CLIENT"),
-                Arrays.asList("RPC/a@nn0", "Root:CLIENT")));
     }
 
     // ---- (1b) a world is what it DELIVERED to the arm's task -----------

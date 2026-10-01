@@ -269,8 +269,7 @@ operation's, so a multi's later operations are unpaired under a fault); the `SOL
 catalog anchor already follows it). These rows are the tree adapters' hooks spelled out; they go
 when the engine finds a door's following hook itself (a hook call of the door method or of its
 caller after the anchor). There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
-`getChildren`): every packet and cluster-state read would be one, and ROOT_READ admission (§4.4)
-admits every occurrence that runs a marker.
+`getChildren`): every packet and cluster-state read would be one.
 
 A door applies where its class family (the method's outermost class with its nested classes) is
 analysed. `plan/ScopeGrowth --doors`, before the first static pass and again after every growth,
@@ -330,9 +329,44 @@ row it is pinned.
 | anything else | `CONCRETE`, `UNDECLARED_SYMBOLIC_INPUT` |
 
 At the end of SEED (the recording's aggregation, `runtime/CausynthTraceRecorder`),
-`causynth/RuntimeSelectedRegionFinalizer` admits every recorded occurrence that reads a
-clock or a fault marker, whether or not the target demands its outputs, and seeds the demand walk
-with its declared-site captures.
+`causynth/RuntimeSelectedRegionFinalizer` plans the recorded occurrences the failure's demand
+reaches, to a fixed point:
+
+- **The question** `(r,c)`: the declared occurrence, resolved once against the target occurrences
+  the recording observed (IDENTITY.md §9), and every target occurrence of its region and node whose
+  context has its shape (`contract/ContextShape#sameQuestion`, over the recording's schedule,
+  `RecordedMessages#shape`), at any index. A target occurrence outside it -- the same throw reached
+  under another request or on another node -- is not the question's: no rule below plans it, so
+  nothing only it would demand is planned either.
+- **The demand walk** (`DemandWalk`), backwards over the candidate graph, one demand per (occurrence,
+  cell). It starts at the operands of the fatal guards the question's target occurrences decided, and at the
+  occurrences that performed a declared port's capture (`DECLARED_COMMUNICATION_CAPTURE_V1`): their
+  declared-site cells, and the value each OUT port of theirs hands on, whose writers only the
+  sending node has. Inside an occurrence it follows the edges of the methods its regions hold (its
+  own and those folded into it); at a cell a `WRITE_SITE` names it crosses, on the same node, to
+  every activation that performed a storing region -- as its own region or folded into it -- and
+  ran the storing method (`SHARED_LOCATION_DEMAND_V1`), and keeps the guards of the read locally.
+  It records the locations it demanded per node and the wire consumer cells it demanded.
+- **Roots by relevance** (`causynth/RootRelevance`). A root read is a capture of a `CLOCK` or
+  `FAULT` `DECLARED_SITE`. Its influence is the forward reach of its `dependencyCell` over the
+  candidate edges of the methods its occurrence performed -- value, guard and exception edges
+  alike -- ended at a stored location (a cell some `WRITE_SITE` names) and at a wire producer
+  (recording the consumer cell its `wire_handoff` names). The influence is static: the arm a root
+  decides counts whether the recording took it or not (an expiry check that removed nothing), and
+  a value leaving by a wire counts on the consumer's side. An occurrence one of whose roots reaches
+  a location the walk demanded on its node, or a consumer cell it demanded anywhere, is admitted
+  (`ROOT_RELEVANT_V1`, unless another rule admitted it), and every such occurrence seeds the walk
+  with the cells on the root's way there, so what the root meets is demanded in turn (SOLR-18406:
+  the commit's reservation a checkpoint's clock is compared with, and so the clock that set it).
+- **Doors of a demanded message** (`RecordedMessages#doorsOf`): an occurrence that read a fault marker
+  and sent, or took in, the message that started an admitted occurrence (its `Anchor`; the
+  recorded schedule's `SEND` names the sender, a `RECV` under that anchor a receiver) is admitted
+  (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists. These are the control
+  producers EXPLORE proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS
+  `MARKER_FLIPPED` witnesses move such an IPC door.
+
+A root read none of this reaches is not planned: its occurrence runs concrete, unless another rule
+admits it.
 
 ### 4.5 Randomness is not a root
 
@@ -536,6 +570,14 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
   fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
   queues are classified by interface here, modeled by R3-REFCONT WP3b/c).
+- Root admission (§4.4) is by field, not by object: a root whose influence stores a demanded
+  field of another object is admitted. It sees a root's effect only through the candidate edges
+  of the methods its occurrence performed: an effect that leaves through a call outside them, or
+  through a location no `WRITE_SITE` names, is not seen. A fault reaches a planned occurrence only
+  as a door of the message that started it, so a door fault whose message started no planned
+  occurrence (one EXPLORE meets only as a member of a task's state-connected factor) stays
+  unplanned. The walk does not cross a wire: a value's provenance on the sending node is walked
+  only from a declared port's capture and through a root's influence.
 - A library call's receiver enters `S` only when it is shared state in the calling method (§2.2):
   a receiver passed in as a parameter is the caller's to demand, and is not followed up.
 - Control dependence follows only door faults a handler catches; any other exception edge is

@@ -1089,6 +1089,11 @@ public final class RuntimeRegionPlanner {
                     plan.put(depth, seed.get(depth));
                 }
             }
+            // The declaration, resolved once by the finalizer; PLAN reads it.
+            String declared = RuntimeSelectedRegionFinalizer.DECLARED_OCCURRENCE;
+            if (seed.containsKey(declared)) {
+                plan.put(declared, seed.get(declared));
+            }
             plan.put("closureGoals", Collections.singletonList(goal));
             stateAnchorOffAddress(plan, result.planGaps);
             result.regionPlans.add(plan);
