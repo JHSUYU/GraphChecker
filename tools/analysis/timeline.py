@@ -156,8 +156,17 @@ def round_rows(iteration):
     previous_end = mtime(os.path.join(iteration, "import_gate.json"))
     for wave in sorted(glob.glob(os.path.join(iteration, "obligations-[0-9]*"))):
         name = os.path.basename(wave)
-        plan_start = mtime(os.path.join(wave, "in_flight.jsonl")) or previous_end
+        # The planner's start: its in-flight rows, copied as it starts, or --
+        # a wave loop's run -- its stderr while still empty.
+        stderr = os.path.join(wave, "stderr.log")
+        plan_start = (mtime(os.path.join(wave, "in_flight.jsonl"))
+                      or (mtime(stderr) if os.path.isfile(stderr) and os.path.getsize(stderr) == 0
+                          else previous_end))
         plan_end = mtime(os.path.join(wave, "explore_manifest.json"))
+        # A wave loop gated each wave after it: import-gates/<wave> to its
+        # import_gate.json.
+        gate_start = mtime(os.path.join(iteration, "import-gates", name))
+        gate_end = mtime(os.path.join(wave, "import_gate.json")) or gate_start
         obligations = []
         for worker in sorted(glob.glob(os.path.join(wave, "*", ""))):
             worker = worker.rstrip("/")
@@ -185,11 +194,12 @@ def round_rows(iteration):
                 "rerun": bool(glob.glob(os.path.join(worker, "before-*"))),
             })
         ends = [t for t in (worker_times(os.path.join(wave, o["id"]))[3] for o in obligations) if t]
-        dispatch_end = max(ends) if ends else plan_end
+        dispatch_end = gate_start or (max(ends) if ends else plan_end)
         rows.append({"wave": name[-4:], "plan": (plan_end - plan_start) if plan_start and plan_end else None,
                      "dispatch": (dispatch_end - plan_end) if plan_end and dispatch_end else None,
+                     "gate": (gate_end - gate_start) if gate_start and gate_end else None,
                      "obligations": obligations})
-        previous_end = plan_end
+        previous_end = gate_end or dispatch_end or plan_end
     return rows
 
 
@@ -331,7 +341,8 @@ def report(root, label):
             print("   witness attempts: " + "; ".join("%s %s%s" % (dur(t), claim, " (ended EXPLORE)" if accepted else "")
                                                    for t, claim, accepted in attempts))
         steps = step_rows(iteration)
-        gates = [(g, n) for _, g, n in steps if n]
+        gates = ([(g, n) for _, g, n in steps if n] if steps
+                 else [(w["gate"], 0) for w in waves if w["gate"] is not None])
         if steps:
             print("   head steps: %d, %s each; %d gate(s) over %d session(s), %s each" % (
                 len(steps), spread(t for t, _, _ in steps), len(gates), sum(n for _, n in gates),
