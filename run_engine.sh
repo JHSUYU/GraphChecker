@@ -109,6 +109,17 @@ workflow_config_keys=(
   # (campaign_start_solver).  No default: the need is the case's, measured
   # (each replay states its peak), and a campaign that states none is refused.
   "obligation_memory_mb CAUSYNTH_OBLIGATION_MEMORY_MB krp -"
+  # How many obligations the capped explorations running at once keep in
+  # flight together, on all their hosts: each starts one more only while it
+  # runs fewer than its share, this over the capped explorations running
+  # now, at least one (campaign_stream_has_slot), so one running alone takes
+  # them all and ten take a tenth each.  An ad-hoc sweep states its hosts'
+  # obligation slots here (tools/adhoc/sweep.sh, campaign_pool_slots): one
+  # case's pool kept 27-32 Solr replays in flight on all ten lifts while
+  # the sweep's other cases waited for room (a40).  0 -- the default, a
+  # named acceptance run's -- is no cap: the hosts' memory and cores alone
+  # decide.
+  "stream_max_in_flight CAUSYNTH_STREAM_MAX_IN_FLIGHT krp 0"
   # The most heap, in MB, an engine JVM of the head is given -- one whose
   # main has no measured need starts there, and one that runs out of its
   # need runs again there (engine_java) -- and the heap of a solver asked
@@ -666,6 +677,9 @@ ${campaign_stop_after}" ;;
   [[ "${causynth_scope_growth_budget}" =~ ^[0-9]+$ ]] \
     || die "causynth_scope_growth_budget must be a non-negative integer: \
 ${causynth_scope_growth_budget}"
+  [[ "${stream_max_in_flight}" =~ ^(0|[1-9][0-9]*)$ ]] \
+    || die "stream_max_in_flight must be a non-negative integer: \
+${stream_max_in_flight}"
   # Every host in the worker list ends up inside an `ssh <host> ...` command,
   # so the spelling is checked before any work starts rather than discovered
   # by a shell on the far side.  Letters, digits, dot, dash and underscore is
@@ -3170,7 +3184,15 @@ replay carried and the replay ended there, so its rows are a prefix of a run"
 # with no ssh anywhere; a stated list is every machine an obligation may run
 # on.  How many run on one host at once is that host's to say: one more
 # starts while the memory ledger admits its replay, up to the host's cores
-# (campaign_stream_admit_host).
+# (campaign_stream_admit_host).  How many one exploration runs at once is,
+# under a cap (stream_max_in_flight), its share of it: the cap over the
+# capped explorations running now, each an entry of the ledger --
+#
+#   ${campaign_host_gate_root}/explorations/<id>  fresh while its head lives
+#
+# (campaign_stream_has_slot) -- so the cases a sweep runs at once share
+# their hosts' obligation slots (campaign_pool_slots), and one alone takes
+# them all.
 # ---------------------------------------------------------------------------
 
 # The pool's hosts, one per line: the stated list, or this machine.
@@ -3276,13 +3298,17 @@ campaign_host_poll_s=5
 campaign_ssh_patience_s=300
 # A lock older than this was left by a campaign that died holding it.
 campaign_host_lock_stale_s=30
-# A head reservation older than this was left by a head that is gone.
+# A head reservation, or a capped exploration's entry, older than this was
+# left by a head that is gone.
 campaign_head_reservation_stale_s=600
 # This head's reservation file (campaign_head_reserve), or empty, and the
 # process that holds it: a subshell of the head (a batch target) exits
 # without giving it up.
 campaign_head_reservation=""
 campaign_head_pid=""
+# This exploration's entry among the capped ones (campaign_stream_enroll),
+# or empty.
+campaign_stream_entry=""
 # Set while a head's own start asks the ledger (campaign_head_charged).
 campaign_host_head_start=0
 
@@ -3460,11 +3486,13 @@ campaign_head_reserve() {
 
 # The head lives: its reservation stays fresh, and states what its next
 # planner or composer starts at now (one that outgrew its need starts at
-# the engine heap from then on).
+# the engine heap from then on); so does its capped exploration's entry.
 campaign_head_heartbeat() {
   [[ -z "${campaign_head_reservation}" ]] \
     || campaign_head_need_mb >"${campaign_head_reservation}" 2>/dev/null \
     || true
+  [[ -z "${campaign_stream_entry}" ]] \
+    || touch -- "${campaign_stream_entry}" 2>/dev/null || true
 }
 
 # The head is done (or failed): its room is the hosts' again.
@@ -3505,6 +3533,27 @@ campaign_host_room() {
   printf '%s\n' "$(( available - charged \
     - $(campaign_host_head_room "${dir}" "${now}") \
     - total * (100 - campaign_host_max_used_pct) / 100 ))"
+}
+
+# campaign_pool_slots <need_mb> <host>...: how many starts of <need_mb> the
+# hosts hold at once when each holds its charge -- on each host, as many as
+# fit under its ceiling (CAUSYNTH_HOST_MAX_USED_PCT of its MemTotal) and no
+# more than its cores, both from the ledger -- summed: the obligation slots
+# an ad-hoc sweep's cases share (stream_max_in_flight, tools/adhoc/sweep.sh).
+# A host whose memory or cores cannot be read adds none.
+campaign_pool_slots() {
+  local need=$1 host dir total cores fit slots=0
+  shift
+  for host in "$@"; do
+    dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
+    mkdir -p "${dir}"
+    total=$(campaign_host_memory_total "${host}" "${dir}") || continue
+    cores=$(campaign_host_cores "${host}") || continue
+    fit=$(( total * campaign_host_max_used_pct / 100 / need ))
+    (( fit <= cores )) || fit=${cores}
+    slots=$(( slots + fit ))
+  done
+  printf '%s\n' "${slots}"
 }
 
 # Drops one start's row: what it ran has returned, and whatever it held is
@@ -3881,6 +3930,7 @@ campaign_explore() {
   local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
   local stream_generation=0 stream_next_host=0 stream_ticker=""
   local stream_waiting="" stream_admitted_host="" stream_stop=""
+  local stream_share_said=""
   local stream_stop_detail="" stream_anchors="[]"
   local stream_step_pid="" stream_step_dir="" stream_steps=0
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
@@ -3894,10 +3944,12 @@ campaign_explore() {
   ln -f "${iteration_dir}/execution_task_plan.jsonl" "${stream_plan}"
   mapfile -t stream_hosts < <(campaign_worker_host_list)
   campaign_stream_round_args
+  campaign_stream_enroll
   # A head that fails takes nothing it started with it: whatever still runs
-  # is ended first, here and on every peer; then its room goes, as it does
-  # when the head exits anywhere else (campaign_head_reserve).
-  trap 'campaign_stream_reap; campaign_head_unreserve' EXIT
+  # is ended first, here and on every peer; then its share and its room go,
+  # as they do when the head exits anywhere else (campaign_head_reserve).
+  trap 'campaign_stream_reap; campaign_stream_unenroll
+    campaign_head_unreserve' EXIT
 
   while true; do
     if [[ "${stream_stop}" == WITNESSED ]]; then
@@ -3928,6 +3980,7 @@ ${stream_stop_detail}"
     kill "${stream_ticker}" 2>/dev/null || true
     wait "${stream_ticker}" 2>/dev/null || true
   fi
+  campaign_stream_unenroll
   trap campaign_head_unreserve EXIT
   campaign_stream_promote_generation
   campaign_stream_truncation
@@ -4299,20 +4352,66 @@ campaign_process_tree() {
   printf '%s\n' "$1"
 }
 
-# Starts what the queue holds, first first, while a host admits it: an
-# obligation or a GROW re-run on the next host of the pool, round-robin,
-# whose memory ledger admits one more start and that runs fewer of this
-# campaign's than it has cores (campaign_stream_admit_host).  While GROW
-# owes re-runs or swaps, only re-runs start.
+# Starts what the queue holds, first first, while this exploration runs
+# fewer than its share of stream_max_in_flight (campaign_stream_has_slot)
+# and a host admits it: an obligation or a GROW re-run on the next host of
+# the pool, round-robin, whose memory ledger admits one more start and that
+# runs fewer of this campaign's than it has cores
+# (campaign_stream_admit_host).  While GROW owes re-runs or swaps, only
+# re-runs start.
 campaign_stream_dispatch() {
   local entry
   while (( ${#stream_queue[@]} > 0 )); do
     entry=${stream_queue[0]}
     [[ "${entry}" == RERUN\ * ]] || (( stream_hold == 0 )) || return 0
+    campaign_stream_has_slot || return 0
     campaign_stream_admit_host || return 0
     stream_queue=("${stream_queue[@]:1}")
     campaign_stream_start "${entry}" "${stream_admitted_host}"
   done
+}
+
+# Whether this exploration runs fewer starts than its share of
+# stream_max_in_flight: the cap over the capped explorations whose ledger
+# entry is fresh (this one's among them, campaign_stream_enroll), at least
+# one, read again at every start -- so the share grows as others end and
+# shrinks as others begin, and what already runs past it runs out.  Always,
+# with no cap.  1 when it runs its share, said once for every share it waits
+# at.
+campaign_stream_has_slot() {
+  local fresh sharers share
+  (( stream_max_in_flight > 0 )) || return 0
+  fresh=$(( $(date +%s) - campaign_head_reservation_stale_s ))
+  sharers=$(find "${campaign_host_gate_root}/explorations" -maxdepth 1 \
+    -type f -newermt "@${fresh}" | grep -c '') || sharers=0
+  (( sharers > 0 )) || sharers=1
+  share=$(( stream_max_in_flight / sharers ))
+  (( share > 0 )) || share=1
+  (( ${#stream_jobs[@]} >= share )) || return 0
+  if [[ "${stream_share_said}" != "${share}" ]]; then
+    campaign_log "waiting for a slot: ${#stream_jobs[@]} start(s) run, this \
+exploration's share ${share} of stream_max_in_flight=${stream_max_in_flight}, \
+shared by ${sharers} capped exploration(s)"
+    stream_share_said=${share}
+  fi
+  return 1
+}
+
+# A capped exploration's ledger entry, fresh while its head lives
+# (campaign_head_heartbeat) and gone when it ends (campaign_explore): what
+# the capped explorations running now count to share stream_max_in_flight
+# (campaign_stream_has_slot).  None with no cap.
+campaign_stream_enroll() {
+  local dir="${campaign_host_gate_root}/explorations"
+  (( stream_max_in_flight > 0 )) || return 0
+  mkdir -p "${dir}"
+  campaign_stream_entry="${dir}/$(hostname -s).${BASHPID}.$(date +%s)"
+  : >"${campaign_stream_entry}"
+}
+
+campaign_stream_unenroll() {
+  [[ -z "${campaign_stream_entry}" ]] || rm -f -- "${campaign_stream_entry}"
+  campaign_stream_entry=""
 }
 
 # Picks the host for one start and charges it there (stream_admitted_host):
