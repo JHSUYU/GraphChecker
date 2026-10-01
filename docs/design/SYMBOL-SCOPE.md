@@ -188,7 +188,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 |---|---|---|
 | `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
-| `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` |
+| `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field) |
 | `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
@@ -312,7 +312,8 @@ row it is pinned.
 | a declared communication port (`COMMUNICATION_SITE_PORT`) | tracked, never minted (the attach installs the producer's value) |
 | anything else | `CONCRETE`, `UNDECLARED_SYMBOLIC_INPUT` |
 
-At PLAN, `causynth/RuntimeSelectedRegionFinalizer` admits every recorded occurrence that reads a
+At the end of SEED (the recording's aggregation, `runtime/CausynthTraceRecorder`),
+`causynth/RuntimeSelectedRegionFinalizer` admits every recorded occurrence that reads a
 clock or a fault marker, whether or not the target demands its outputs, and seeds the demand walk
 with its declared-site captures.
 

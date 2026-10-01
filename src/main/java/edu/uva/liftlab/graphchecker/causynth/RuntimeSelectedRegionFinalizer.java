@@ -727,7 +727,7 @@ public final class RuntimeSelectedRegionFinalizer {
         // clock's value may leave by a wire the walk does not follow back
         // (hdfs-11741's key-rotation tick).  Their DECLARED_SITE captures
         // seed the walk.
-        Set<String> clockCallees = scopeMap.clockTicks().keySet();
+        Set<String> clockCallees = scopeMap.clocks().keySet();
         Set<String> declaredInputOccurrences = new LinkedHashSet<>();
         for (Map.Entry<String, Map<String, Object>> entry
                 : instances.entrySet()) {

@@ -52,14 +52,6 @@ final class StaticSymbolicSourceDiscovery {
         for (Map<String, Object> region : program.regions) {
             discoverRegion(region, regionRoots, cutBoundaries);
         }
-        Set<String> traceMethods = new LinkedHashSet<>(program.traceMethods);
-        for (Map<String, Object> region : program.regions) {
-            traceMethods.addAll(strings(region.get(
-                    ConfiguredSourcePhaseContract.TRACE_METHODS_FIELD)));
-        }
-        program.traceMethods.clear();
-        program.traceMethods.addAll(traceMethods);
-        Collections.sort(program.traceMethods);
     }
 
     private static void discoverRegion(

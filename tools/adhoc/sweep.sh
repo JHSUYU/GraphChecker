@@ -13,6 +13,9 @@
 # (default: launch-run.sh's).  Case n of the file writes
 # $GC_OUT/accept-<round>-<n>; <round>-cases.tsv maps n to the case id.  A
 # sweep started again resumes: fanout.sh skips every case that returned.
+# STATIC_ROOT, when set, is every case's causynth_static_root: an ad-hoc
+# batch case (cover.py `cases`) takes its checks' static slices from the
+# build's $GC_OUT/static/<key> (slice.sh) and records once for all of them.
 set -uo pipefail
 snapshot=$(cd "${1:?snapshot}" && pwd -P)
 round=${2:?round}
@@ -23,6 +26,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 source "${here}/../lib/gc-env.sh"
 out=${GC_OUT}
 vm=${VM_IMAGE:+CAUSYNTH_CUSTOM_JDK_HOME=${VM_IMAGE}}
+static=${STATIC_ROOT:+CAUSYNTH_STATIC_ROOT=${STATIC_ROOT}}
 
 # The heap a case's head needs: the experiment a case id names is the
 # longest "-"-prefix of it with a case.sh (accept.sh acc_experiment_of), and
@@ -52,6 +56,6 @@ jobs="${out}/sweep-${round}-jobs.txt"
 : > "${out}/sweep-${round}-cases.tsv"
 for n in "${!cases[@]}"; do
   printf '%s\t%s\n' "${n}" "${cases[$n]}" >> "${out}/sweep-${round}-cases.tsv"
-  printf '%s\n' "NEED_MB=$(head_need_mb "${cases[$n]}") PRUNE=1 CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' CAUSYNTH_CONCOLIC_JOBS=${CONCOLIC_JOBS:-4} GC_OUT=${out} CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} ${vm} bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
+  printf '%s\n' "NEED_MB=$(head_need_mb "${cases[$n]}") PRUNE=1 CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' CAUSYNTH_CONCOLIC_JOBS=${CONCOLIC_JOBS:-4} GC_OUT=${out} CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} ${vm} ${static} bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
 done
 exec bash "${here}/fanout.sh" "${jobs}" "${out}/sweep-${round}-logs" "${heads}"

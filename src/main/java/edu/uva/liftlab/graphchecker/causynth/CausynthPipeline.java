@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ObservedSite;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
@@ -164,9 +165,9 @@ public final class CausynthPipeline {
         // SYMBOL-SCOPE §2.3: over the door-woven bodies, before any hook is
         // woven, so site and guard ids are the unit indices a replay decides
         // at.
-        Map<String, Long> clockTicks = RootCatalog.clockTicks(result.edges);
+        Map<String, Clock> clocks = RootCatalog.clocks(result.edges);
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
-                result.edges, result.regions, clockTicks,
+                result.edges, result.regions, clocks,
                 method -> !CausynthStaticFacts.applicationMethod(method),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField);
@@ -175,7 +176,7 @@ public final class CausynthPipeline {
                         StaticScopeMap.siteIds(scopeSites)));
         List<JsonObject> frontier = ScopeFrontier.rows(result.edges,
                 CausynthStaticFacts::analysedMethod,
-                clockTicks.keySet());
+                clocks.keySet());
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
                 target.outputDir, result, scopeMap, frontier);

@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
@@ -177,12 +178,17 @@ public final class Composer {
         private final List<String> clockCells;
         private final Map<String, Long> clockReadings;
         private final Map<String, Long> clockNanos;
+        private final Map<String, String> clockBefore;
         private final Map<String, Set<String>> unattestedRoots;
         private final Map<String, List<String>> observedReads;
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         private final String seedSessionId;
+        /** Where each top-level command of the body ends, and the path
+         *  selector it is guarded by (null: every path's); #pathQuery. */
+        private final int[] commandEnds;
+        private final String[] commandGuards;
 
         /** The composer's state once every path is composed. */
         private Composition(Composer composed, String body,
@@ -190,7 +196,8 @@ public final class Composer {
                             List<Valuation> valuations,
                             List<String> clockCells,
                             Map<String, Long> clockReadings,
-                            Map<String, Long> clockNanos) {
+                            Map<String, Long> clockNanos,
+                            Map<String, String> clockBefore) {
             this.anchor = composed.anchor;
             this.body = body;
             this.disjuncts = Collections.unmodifiableList(disjuncts);
@@ -205,6 +212,7 @@ public final class Composer {
             this.clockReadings =
                     Collections.unmodifiableMap(clockReadings);
             this.clockNanos = Collections.unmodifiableMap(clockNanos);
+            this.clockBefore = Collections.unmodifiableMap(clockBefore);
             this.unattestedRoots =
                     Collections.unmodifiableMap(composed.unattestedRoots);
             this.observedReads =
@@ -215,6 +223,15 @@ public final class Composer {
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
             this.seedSessionId = composed.seed();
+            List<Integer> ends = new ArrayList<Integer>();
+            List<String> guards = new ArrayList<String>();
+            commands(body, new LinkedHashSet<String>(
+                    Composer.selectors(disjuncts)), ends, guards);
+            this.commandEnds = new int[ends.size()];
+            for (int index = 0; index < ends.size(); index++) {
+                this.commandEnds[index] = ends.get(index);
+            }
+            this.commandGuards = guards.toArray(new String[0]);
         }
 
         public OccurrenceAddress anchor() {
@@ -227,20 +244,147 @@ public final class Composer {
         }
 
         /**
-         * One question's text: the body (rendered once) plus these
-         * assertions.  Legal spelling is reapplied because pins name raw
-         * symbols such as {@code CLOCK/...#...}, and a bare {@code #} is a
-         * bit-vector literal to z3; the pass is idempotent.
+         * One question's text: the body plus these assertions.  The body is
+         * spelled legally once ({@link SmtLowering#body}); the assertions
+         * are spelled here, since pins name raw symbols such as
+         * {@code CLOCK/...#...} and a bare {@code #} is a bit-vector literal
+         * to z3.  Spelling is token-local, so each assertion spelled alone
+         * spells the text, and the body is copied once, into a builder of
+         * the text's size: a body can run to 100 MB, asked on 8 threads.
          */
         public String query(List<String> assertions) {
-            StringBuilder text = new StringBuilder(body);
-            if (assertions != null) {
-                for (String assertion : assertions) {
-                    if (assertion == null || assertion.isEmpty()) continue;
-                    text.append(assertion).append('\n');
-                }
+            List<String> legal = legal(assertions);
+            StringBuilder text = new StringBuilder(
+                    body.length() + length(legal));
+            text.append(body);
+            for (String assertion : legal) text.append(assertion);
+            return text.toString();
+        }
+
+        /**
+         * One path's question: the body without the commands another path's
+         * selector guards, this path's selector asserted, plus these
+         * assertions.  The partition forces every other selector false, so
+         * each command dropped held vacuously: the answer is
+         * {@link #query}'s with the selector asserted, but z3 reads what
+         * every path shares and this path's own text, not every path's.
+         */
+        public String pathQuery(String selector, List<String> assertions) {
+            List<String> legal = legal(assertions);
+            legal.add(0, "\n(assert " + selector + ")\n");
+            int size = length(legal);
+            int start = 0;
+            for (int index = 0; index < commandEnds.length; index++) {
+                if (kept(index, selector)) size += commandEnds[index] - start;
+                start = commandEnds[index];
             }
-            return SmtNames.legalSymbols(text.toString());
+            StringBuilder text = new StringBuilder(size);
+            start = 0;
+            for (int index = 0; index < commandEnds.length; index++) {
+                if (kept(index, selector)) {
+                    text.append(body, start, commandEnds[index]);
+                }
+                start = commandEnds[index];
+            }
+            for (String assertion : legal) text.append(assertion);
+            return text.toString();
+        }
+
+        private boolean kept(int command, String selector) {
+            String guard = commandGuards[command];
+            return guard == null || guard.equals(selector);
+        }
+
+        /** Each assertion spelled legally, one per line. */
+        private static List<String> legal(List<String> assertions) {
+            List<String> legal = new ArrayList<String>();
+            if (assertions == null) return legal;
+            for (String assertion : assertions) {
+                if (assertion == null || assertion.isEmpty()) continue;
+                legal.add(SmtNames.legalSymbols(assertion) + "\n");
+            }
+            return legal;
+        }
+
+        private static int length(List<String> texts) {
+            int length = 0;
+            for (String text : texts) length += text.length();
+            return length;
+        }
+
+        /**
+         * The body's top-level commands: where each ends (the first one's
+         * text starts at 0, each next at the previous end), and the selector
+         * among these that guards it, {@code (assert (=> selector ...))}
+         * named or not, else null.  Bar-quoted symbols, string literals and
+         * comments are skipped whole, so a parenthesis inside one is none.
+         */
+        private static void commands(String body, Set<String> selectors,
+                                     List<Integer> ends, List<String> guards) {
+            int start = 0;
+            int depth = 0;
+            int index = 0;
+            while (index < body.length()) {
+                char at = body.charAt(index);
+                if (at == '|') {
+                    int close = body.indexOf('|', index + 1);
+                    index = close < 0 ? body.length() : close + 1;
+                    continue;
+                }
+                if (at == '"') {
+                    int close = index + 1;
+                    while (close < body.length()) {
+                        if (body.charAt(close) == '"') {
+                            // "" is an escaped quote inside the literal.
+                            if (close + 1 < body.length()
+                                    && body.charAt(close + 1) == '"') {
+                                close += 2;
+                                continue;
+                            }
+                            break;
+                        }
+                        close++;
+                    }
+                    index = close + 1;
+                    continue;
+                }
+                if (at == ';') {
+                    int close = body.indexOf('\n', index);
+                    index = close < 0 ? body.length() : close;
+                    continue;
+                }
+                if (at == '(') depth++;
+                if (at == ')' && --depth == 0) {
+                    int from = start;
+                    while (Character.isWhitespace(body.charAt(from))) from++;
+                    ends.add(index + 1);
+                    guards.add(guard(body.substring(from,
+                            Math.min(index + 1, from + GUARD_PREFIX)),
+                            selectors));
+                    start = index + 1;
+                }
+                index++;
+            }
+            if (start < body.length()) {
+                ends.add(body.length());
+                guards.add(null);
+            }
+        }
+
+        /** How much of a command's head names its guard: the assert and
+         *  implication heads and a selector, whose names are short. */
+        private static final int GUARD_PREFIX = 256;
+
+        /** The selector this command's head is guarded by, or null. */
+        private static String guard(String command, Set<String> selectors) {
+            String rest = command.startsWith("(assert (! (=> ")
+                    ? command.substring("(assert (! (=> ".length())
+                    : command.startsWith("(assert (=> ")
+                    ? command.substring("(assert (=> ".length()) : null;
+            if (rest == null) return null;
+            int end = rest.indexOf(' ');
+            String token = end < 0 ? rest : rest.substring(0, end);
+            return selectors.contains(token) ? token : null;
         }
 
         public List<Disjunct> disjuncts() {
@@ -267,12 +411,15 @@ public final class Composer {
             return gaps;
         }
 
-        /** Every clock cell the formula declares. */
+        /** Every clock cell the formula declares, in the recording's seq
+         *  order, each with a reading ({@link #clockReadings}). */
         public List<String> clockCells() {
             return clockCells;
         }
 
-        /** Clock cell -> one instant some session read it at. */
+        /** Clock cell -> its instant on the recording's timeline: the
+         *  seed's reading, or where a session that read it places it
+         *  ({@code Composer#clocks}). */
         public Map<String, Long> clockReadings() {
             return clockReadings;
         }
@@ -281,6 +428,12 @@ public final class Composer {
          *  ({@code RootMintRow#clockNanos}). */
         public Map<String, Long> clockNanos() {
             return clockNanos;
+        }
+
+        /** Clock cell -> the cell before it on its node's clock, where its
+         *  order names one ({@code clock_order__}). */
+        public Map<String, String> clockBefore() {
+            return clockBefore;
         }
 
         /** Interaction -> the declared roots its unattested arms mention. */
@@ -587,7 +740,8 @@ public final class Composer {
         List<String> clockCells = new ArrayList<String>();
         Map<String, Long> clockReadings = new LinkedHashMap<String, Long>();
         Map<String, Long> clockNanos = new LinkedHashMap<String, Long>();
-        clocks(clockCells, clockReadings, clockNanos);
+        Map<String, String> clockBefore = new LinkedHashMap<String, String>();
+        clocks(clockCells, clockReadings, clockNanos, clockBefore);
         domains();
         lowering.assertIdentitiesDistinct();
         // Corpus inconsistencies (one name, two sorts; one truncated name,
@@ -634,7 +788,8 @@ public final class Composer {
             pins.addAll(valuation.assertions());
         }
         return new Composition(this, lowering.body(pins), disjuncts, entries,
-                valuations, clockCells, clockReadings, clockNanos);
+                valuations, clockCells, clockReadings, clockNanos,
+                clockBefore);
     }
 
     // ------------------------------------------------------------------
@@ -779,14 +934,12 @@ public final class Composer {
                 new LinkedHashMap<String, Set<String>>();
         terms.addAll(valuationOf(session, refusals, unminted));
 
-        // (2) Each anchor handoff: the obligation's answer if any, else
-        //     nothing (its family binds it; collected in `bound`).  Never a
-        //     recorded literal.
+        // (2) Each anchor handoff, answered or not: nothing here (its family
+        //     binds it; collected in `bound`).  Never a literal.
         Set<String> interactionIds = new LinkedHashSet<String>();
         Set<String> handoffs = new LinkedHashSet<String>();
         List<AttachRow> bound = new ArrayList<AttachRow>();
-        terms.addAll(handoffReads(session, interactionIds, handoffs,
-                refusals, bound));
+        handoffReads(session, interactionIds, handoffs, refusals, bound);
 
         // (3) State joins, read := observed write's expression, kept by
         //     symbol: a read with family alternatives must not also be
@@ -842,11 +995,11 @@ public final class Composer {
         }
 
         // (5b) Every OTHER handoff the conjunction reaches (via joins, pi,
-        //      phi), by the same rules as (2).
+        //      phi), by the same rule as (2).
         List<String> reaching = new ArrayList<String>(terms);
         reaching.addAll(joins.values());
-        terms.addAll(reachedHandoffs(session, reaching, interactionIds,
-                handoffs, refusals, bound));
+        reachedHandoffs(session, reaching, interactionIds, handoffs,
+                refusals, bound);
 
         // Read BEFORE end() forgets them: any refusal drops the whole path
         // (it would otherwise rest on a free constant).
@@ -1081,64 +1234,59 @@ public final class Composer {
     }
 
     /**
-     * What this path read at each of the anchor's handoffs, in order:
-     * <ol>
-     *   <li>an obligation answered the mint: that value;</li>
-     *   <li>an ATTESTED producer delivered it: nothing is conjoined; the
-     *       attach joins its FAMILY only (PIPELINE §8) and takes just its
-     *       sort from the delivery ({@link #attestedArrival});</li>
-     *   <li>otherwise refused by name.</li>
-     * </ol>
+     * Each of the anchor's handoffs, by {@link #handoffRead}: bound by its
+     * FAMILY alone, or the path is refused by name.
      */
-    private List<String> handoffReads(String session,
-                                      Set<String> interactionIds,
-                                      Set<String> handoffs,
-                                      List<GapRow> refusals,
-                                      List<AttachRow> bound) {
-        List<String> reads = new ArrayList<String>();
+    private void handoffReads(String session, Set<String> interactionIds,
+                              Set<String> handoffs, List<GapRow> refusals,
+                              List<AttachRow> bound) {
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
-            handoffRead(session, attach, reads, interactionIds, handoffs,
-                    refusals, bound);
+            handoffRead(session, attach, interactionIds, handoffs, refusals,
+                    bound);
         }
-        return reads;
     }
 
     /**
      * Every OTHER handoff this path's conjunction reaches (e.g. a delivered
-     * value a joined write put into a container), by the same rules, to a
-     * fixed point as in {@link Arms#wireArms}.  Unbound, each would be a free
-     * constant.
+     * value a joined write put into a container), by the same rule.
+     * Unbound, each would be a free constant: a handoff variable this
+     * session minted no attach for (the corpus states it of another run)
+     * has no family here, and refuses the path by name.
      */
-    private List<String> reachedHandoffs(String session, List<String> terms,
-                                         Set<String> interactionIds,
-                                         Set<String> handoffs,
-                                         List<GapRow> refusals,
-                                         List<AttachRow> bound) {
-        List<String> reads = new ArrayList<String>();
-        List<String> pending = new ArrayList<String>(terms);
-        while (!pending.isEmpty()) {
-            Set<String> reached = lowering.reachedSymbols(pending);
-            pending = new ArrayList<String>();
-            for (String name : reached) {
-                if (handoffs.contains(name)) continue;
-                AttachRow attach = corpus.attach(session, name);
-                if (attach == null) continue;
-                List<String> stated = new ArrayList<String>();
-                handoffRead(session, attach, stated, interactionIds,
-                        handoffs, refusals, bound);
-                reads.addAll(stated);
-                pending.addAll(stated);
+    private void reachedHandoffs(String session, List<String> terms,
+                                 Set<String> interactionIds,
+                                 Set<String> handoffs, List<GapRow> refusals,
+                                 List<AttachRow> bound) {
+        for (String name : lowering.reachedSymbols(terms)) {
+            if (handoffs.contains(name)) continue;
+            AttachRow attach = corpus.attach(session, name);
+            if (attach != null) {
+                handoffRead(session, attach, interactionIds, handoffs,
+                        refusals, bound);
+            } else if (corpus.handoffSymbol(name) && handoffs.add(name)) {
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, name, "this path names a "
+                                + "handoff variable no attach row of its "
+                                + "session minted, so no family of this "
+                                + "run binds what it read"));
             }
         }
-        return reads;
     }
 
     /**
-     * One attach, by the three rules, stated once per symbol
-     * ({@code handoffs} holds the symbols already bound).
+     * One attach, stated once per symbol ({@code handoffs} holds the
+     * symbols already bound): an ATTESTED producer delivered it, and its
+     * FAMILY alone binds it (PIPELINE §8); nothing is conjoined here, and
+     * it takes just its sort from the delivery ({@link #attestedArrival}).
+     * Answered or not: an obligation's answer is what its replay planted at
+     * the consumer, and a witness rests only on a value a run compatible
+     * with its path delivered (hdfs-17967-pathC rb1: a flip answered the
+     * DataNode's key id with 119532 while the moved serial had its producer
+     * deliver 119533, and the answer, pinned as a literal, let the solver
+     * move the serial past it).  Otherwise refused by name.
      */
     private void handoffRead(String session, AttachRow attach,
-                             List<String> reads, Set<String> interactionIds,
+                             Set<String> interactionIds,
                              Set<String> handoffs, List<GapRow> refusals,
                              List<AttachRow> bound) {
         if (!handoffs.add(attach.symbol())) return;
@@ -1149,16 +1297,11 @@ public final class Composer {
             // No known source, so no family: named, and refused below.
             composedFamilies.unpaired(session, attach);
         }
-        if (attach.answered()) {
-            String read = bind(attach, refusals);
-            if (!read.isEmpty()) reads.add(read);
-            return;
-        }
         if (attestedArrival(attach)) {
             bound.add(attach);
             return;
         }
-        // Never pin the received literal: the question is whether the
+        // Never pin the literal it took: the question is whether the
         // producer could have delivered another value.  Refuse by name.
         refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
                 GapClass.DIAGNOSTIC, attach.symbol(),
@@ -1166,52 +1309,13 @@ public final class Composer {
                         + "occurrence this delivery came from, so what was "
                         + "delivered is stated and why is not: this path "
                         + "would have to pin the read to the literal it "
-                        + "received"));
-    }
-
-    /**
-     * One answered handoff read, its answer a literal of the sort the MINT
-     * declared, never of the one the value's spelling suggests ("0" fits
-     * many sorts).
-     */
-    private String bind(AttachRow attach, List<GapRow> refusals) {
-        String symbol = attach.symbol();
-        Sort sort = scalarSort(attach.javaType(), attach.sessionId(),
-                symbol, refusals);
-        if (sort == null) return "";
-        String literal = smtLiteral(attach.answeredValue(), sort);
-        if (literal.isEmpty()) {
-            refusals.add(GapRow.of(attach.sessionId(),
-                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, symbol,
-                    "an answered attach whose value is not a " + sort.smt
-                            + " literal: " + attach.answeredValue()));
-            return "";
-        }
-        lowering.declareStated(symbol, sort);
-        return "(= " + symbol + " " + literal + ")";
+                        + (attach.answered() ? "was answered with"
+                        : "received")));
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
     private static Sort sortOf(RootMintRow row) {
         return row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT;
-    }
-
-    /**
-     * The scalar sort one JVM descriptor denotes, or a named refusal; never
-     * a fallback to {@code Ref}, which would leave the value unconstrained.
-     */
-    private Sort scalarSort(String javaType, String session, String subject,
-                            List<GapRow> refusals) {
-        Sort sort = JavaSmtSorts.sortOfJava(javaType);
-        if (sort.scalar()) return sort;
-        refusals.add(GapRow.of(session == null || session.isEmpty()
-                        ? COMPOSITION : session, GapKind.UNSTATED_VALUE,
-                GapClass.DIAGNOSTIC, subject,
-                "the row states the Java type as \""
-                        + (javaType == null ? "" : javaType)
-                        + "\", which names no scalar this lowering can "
-                        + "place"));
-        return null;
     }
 
     /**
@@ -2073,30 +2177,40 @@ public final class Composer {
     }
 
     /**
-     * Every declared CLOCK cell the formula names: its domain, its recorded
-     * reading, and its place in its node's order.
+     * Every declared CLOCK cell the formula names: its domain, its reading
+     * on the recording's timeline, and its place in its node's order.
      *
-     * <p>A cell is one per (root, occurrence); its reading is the SEED's.
-     * Domain ({@link JavaPrimitiveSmtSemantics#clockDomain}): floor = the
-     * reading, ceiling = reading + window, unless {@code root-domains.jsonl}
-     * declares bounds (the only way to ask for a backward move).  A cell
-     * the seed did not read is domained but has no reading.  EVERY cell is
-     * domained, or it is left free.</p>
+     * <p>A cell is one per (root, occurrence), and its reading is the
+     * SEED's.  A cell the seed never read (a region woven after it) is
+     * placed by a session that read it: at the seed's reading of the
+     * nearest cell (by seq) of the same clock that session also read, plus
+     * the time that session's host read between the two
+     * ({@link #placed}).  A cell no session can place has no instant any
+     * claim could judge it moved from: BLOCKING.  Domain ({@link
+     * JavaPrimitiveSmtSemantics#clockDomain}): floor = the reading, ceiling
+     * = reading + window, unless {@code root-domains.jsonl} declares bounds
+     * (the only way to ask for a backward move).</p>
      *
-     * <p>ONE ORDER PER CLOCK OF A NODE: a seed cell is no earlier than the
-     * last cell before it (by seq) that read the same clock.  A node reads
-     * more than one -- the wall clock and a monotonic one (hdfs-11741's
-     * Balancer: {@code Time.now()} for its keys, {@code monotonicNow()}
-     * for its SASL user) -- and ordering those against each other made
-     * every path false.  One run is far shorter than a clock window, so
-     * two readings of one clock share a tick and lie within one window;
-     * any other two are two clocks.</p>
+     * <p>ONE ORDER PER CLOCK OF A NODE: a cell is no earlier than the last
+     * cell before it by seq -- the event the recording read it at, the order
+     * a replay runs a planted clock on in ({@code runtime.NodeClocks}) --
+     * that read the same clock ({@link Clock#same}: one JVM clock at one
+     * tick; a node's wall clock and a monotonic one are two, and ordering
+     * those against each other made every path false; a cell whose row
+     * states no JVM clock is on no order, named).  Where the recording's own
+     * readings of the two run the other way (two threads between reading
+     * and logging), the order gives way by that much, so the recording
+     * always satisfies it.  {@code earlierOf} maps each ordered cell to that
+     * cell, which the claim runs its clock on from ({@code
+     * ClaimPolicy#runsOn}); {@code cells} are in seq order, the order the
+     * claim pins them back in.</p>
      */
     private void clocks(List<String> cells, Map<String, Long> readings,
-                        Map<String, Long> ticks) {
+                        Map<String, Long> ticks,
+                        Map<String, String> earlierOf) {
         String seed = seed();
-        Map<NodeId, List<RootMintRow>> byNode =
-                new LinkedHashMap<NodeId, List<RootMintRow>>();
+        List<RootMintRow> clocks = new ArrayList<RootMintRow>();
+        List<RootMintRow> read = new ArrayList<RootMintRow>();
         for (Map.Entry<String, List<RootMintRow>> entry
                 : corpus.roots().entrySet()) {
             RootMintRow row = seedRow(entry.getValue());
@@ -2104,20 +2218,38 @@ public final class Composer {
                     || !lowering.declared(row.symbol())) {
                 continue;
             }
-            long reading;
-            try {
-                reading = Long.parseLong(row.recordedValue().trim());
-            } catch (NumberFormatException notAnInstant) {
-                gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                        row.rootId(), "the mint of this clock cell states "
-                                + "no instant (" + row.recordedValue()
-                                + "), so it has no domain and no reading");
-                continue;
+            Long reading = instant(row);
+            if (reading == null) continue;
+            clocks.add(row);
+            if (row.sessionId().equals(seed)) {
+                readings.put(row.symbol(), reading);
+                read.add(row);
             }
+        }
+        List<RootMintRow> placedCells = new ArrayList<RootMintRow>();
+        for (RootMintRow row : clocks) {
+            if (!readings.containsKey(row.symbol())) {
+                Long reading = placed(corpus.roots().get(row.rootId()),
+                        read, readings);
+                if (reading == null) {
+                    gap(GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
+                            row.rootId(), "this clock cell reaches the "
+                                    + "composition, the recording never "
+                                    + "read it, and no session that read it "
+                                    + "read a cell of the same clock the "
+                                    + "recording read, so it has no instant "
+                                    + "on the recording's timeline: no claim "
+                                    + "can say whether a witness moved it");
+                    continue;
+                }
+                readings.put(row.symbol(), reading);
+            }
+            long reading = readings.get(row.symbol());
             String instant = Long.toString(reading);
-            cells.add(row.symbol());
+            placedCells.add(row);
             ticks.put(row.symbol(), row.clockNanos());
-            RootDomain domain = domainOf(row);
+            RootDomain domain = RootDomain.resolved(row, instant,
+                    declaredDomains);
             String floor = domain.min() == null ? instant
                     : integralLiteral(domain.min());
             String ceiling = domain.max() == null
@@ -2125,46 +2257,116 @@ public final class Composer {
                             row.clockNanos())
                     : integralLiteral(domain.max());
             roots.put(row.rootId(), RootDomain.of(row.rootId(),
-                    RootKind.CLOCK, row.recordedValue(), floor, ceiling));
+                    RootKind.CLOCK, instant, floor, ceiling));
             lowering.assertNamed("clock_domain__"
                             + ArtifactIO.digest(row.symbol(), 10),
                     JavaPrimitiveSmtSemantics.clockDomain(row.symbol(),
                             floor, ceiling));
-            if (!row.sessionId().equals(seed)) {
+            if (row.clock().source().isEmpty()) {
                 gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                        row.rootId(), "this cell reaches the composition "
-                                + "and the recording states no reading of "
-                                + "it, so no claim can say whether a "
-                                + "witness moved it away from what the run "
-                                + "read");
-                continue;
+                        row.rootId(), "this clock cell's row states no JVM "
+                                + "clock it reads, so it is on no clock's "
+                                + "order: no cell runs on from it, and it "
+                                + "from none");
             }
-            readings.put(row.symbol(), reading);
+        }
+        Map<NodeId, List<RootMintRow>> byNode =
+                new LinkedHashMap<NodeId, List<RootMintRow>>();
+        for (RootMintRow row : placedCells) {
             byNode.computeIfAbsent(row.occurrence().node(),
                     node -> new ArrayList<RootMintRow>()).add(row);
         }
+        placedCells.sort(Comparator.comparingLong(RootMintRow::seq)
+                .thenComparing(RootMintRow::symbol));
+        for (RootMintRow row : placedCells) cells.add(row.symbol());
         for (List<RootMintRow> mints : byNode.values()) {
             mints.sort(Comparator.comparingLong(RootMintRow::seq));
             for (int index = 1; index < mints.size(); index++) {
                 String later = mints.get(index).symbol();
                 long reading = readings.get(later);
-                long tick = ticks.get(later);
-                long window = JavaPrimitiveSmtSemantics.clockTicks(
-                        JavaPrimitiveSmtSemantics.CLOCK_SKEW_WINDOW_NANOS,
-                        tick);
                 for (int before = index - 1; before >= 0; before--) {
                     String earlier = mints.get(before).symbol();
-                    if (ticks.get(earlier) != tick
-                            || Math.abs(readings.get(earlier) - reading)
-                            > window) {
+                    long earlierReading = readings.get(earlier);
+                    if (!mints.get(index).clock().same(
+                            mints.get(before).clock())) {
                         continue;
                     }
+                    long inversion = earlierReading - reading;
                     lowering.assertNamed("clock_order__" + ArtifactIO.digest(
                                     earlier + "|" + later, 10),
-                            "(<= " + earlier + " " + later + ")");
+                            inversion <= 0L
+                                    ? "(<= " + earlier + " " + later + ")"
+                                    : "(<= (- " + earlier + " " + later
+                                    + ") " + integralLiteral(
+                                            Long.toString(inversion)) + ")");
+                    earlierOf.put(later, earlier);
                     break;
                 }
             }
+        }
+    }
+
+    /**
+     * A clock row's host reading, or null (named) when it states no
+     * instant.
+     */
+    private Long instant(RootMintRow row) {
+        Long reading = number(row.hostReading());
+        if (reading == null) {
+            gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    row.rootId(), "the mint of this clock cell states no "
+                            + "instant (" + row.recordedValue() + "), so it "
+                            + "has no domain and no reading");
+        }
+        return reading;
+    }
+
+    /**
+     * Where a cell the recording never read sits on its timeline: for the
+     * first session (of {@code rows}) that also read a cell the recording
+     * read on the same clock of the same node, the recording's reading of
+     * the nearest such cell (by seq, the earlier on a tie) plus the time
+     * that session's host read from it to this cell.  Null when no session
+     * read one.
+     */
+    private Long placed(List<RootMintRow> rows, List<RootMintRow> read,
+                        Map<String, Long> readings) {
+        for (RootMintRow cell : rows) {
+            Long host = number(cell.hostReading());
+            if (cell.kind() != RootKind.CLOCK || host == null) continue;
+            RootMintRow nearest = null;
+            long from = 0L;
+            for (RootMintRow anchor : read) {
+                RootMintRow same = corpus.rootOf(cell.sessionId(),
+                        anchor.rootId());
+                Long sameHost = same == null ? null
+                        : number(same.hostReading());
+                if (sameHost == null || !anchor.occurrence().node().equals(
+                        cell.occurrence().node())
+                        || !cell.clock().same(same.clock())) {
+                    continue;
+                }
+                long distance = Math.abs(anchor.seq() - cell.seq());
+                long best = nearest == null ? Long.MAX_VALUE
+                        : Math.abs(nearest.seq() - cell.seq());
+                if (distance < best || (distance == best
+                        && anchor.seq() < nearest.seq())) {
+                    nearest = anchor;
+                    from = sameHost;
+                }
+            }
+            if (nearest != null) {
+                return readings.get(nearest.symbol()) + (host - from);
+            }
+        }
+        return null;
+    }
+
+    private static Long number(String text) {
+        try {
+            return Long.valueOf(text.trim());
+        } catch (NumberFormatException notAnInstant) {
+            return null;
         }
     }
 

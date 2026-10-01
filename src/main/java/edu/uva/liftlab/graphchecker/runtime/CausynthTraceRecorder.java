@@ -98,11 +98,14 @@ public final class CausynthTraceRecorder {
     }
 
     /**
-     * Whether this JVM is a concolic replay rather than the recording or a
-     * native run; workload checks of the recording's world do not hold here.
+     * Whether this JVM runs a world the engine chose -- a concolic replay,
+     * or a native reproduction planting one ({@link RecordingPlant}) --
+     * rather than the recording or a native run; workload checks of the
+     * recording's world do not hold here.
      */
     public static boolean replaying() {
-        return RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT;
+        return RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT
+                || RecordingPlant.planting();
     }
 
     /**
@@ -111,9 +114,10 @@ public final class CausynthTraceRecorder {
      * <static-scope-map>,<region-skeletons>,<output-dir>} per target (its
      * static slice, and where its runtime region plan goes), and optionally
      * {@code --summary <file>}, where each target's {@link TargetOutcome} is
-     * written.  A target the recording does not serve fails alone, named on
-     * stderr; the run exits 1 when no target was served, or when the trace
-     * itself cannot be read.
+     * written beside how many marker answers the run's plant gave ({@link
+     * RecordingPlant}).  A target the recording does not serve fails alone,
+     * named on stderr; the run exits 1 when no target was served, or when the
+     * trace itself cannot be read.
      */
     public static void main(String[] args) {
         LongOptions options = LongOptions.parse(args);
@@ -127,9 +131,12 @@ public final class CausynthTraceRecorder {
             throw new IllegalArgumentException("--target is required");
         }
         Map<String, TargetOutcome> outcomes = new LinkedHashMap<>();
+        int plantsApplied = 0;
         Throwable unread = null;
         try {
-            outcomes = aggregateStateTrace(directory, test, targets);
+            TraceData trace = readStateTrace(directory, test);
+            plantsApplied = trace.plantsApplied;
+            outcomes = aggregateTargets(trace, targets);
         } catch (Throwable throwable) {
             // The trace itself: every target's outcome.
             unread = throwable;
@@ -145,6 +152,7 @@ public final class CausynthTraceRecorder {
                 rows.add(outcome.name, outcome.json());
             }
             JsonObject json = new JsonObject();
+            json.addProperty("plantsApplied", plantsApplied);
             json.add("targets", rows);
             try {
                 writeFile(new File(summary.trim()), json + "\n");
@@ -213,7 +221,7 @@ public final class CausynthTraceRecorder {
      * TARGET_BRANCH_NOT_OBSERVED} (one ran, and never decided the throw's
      * branch), {@code POLICY_ABSENT} (its region declares no fatal branch),
      * {@code NO_REGION} (no candidate region ran) or {@code ERROR} -- with
-     * the target occurrences, whether any of them took the throw's fatal arm
+     * the target occurrences, those of them that took the throw's fatal arm
      * (the TARGET_SITE guards' outcomes), and the refusal's words.
      */
     static final class TargetOutcome {
@@ -231,24 +239,24 @@ public final class CausynthTraceRecorder {
 
         final String name;
         final String state;
-        final boolean fatalArmObserved;
         final List<String> occurrences;
+        final List<String> fatalOccurrences;
         final String detail;
 
         private TargetOutcome(String name, String state,
-                              boolean fatalArmObserved,
-                              List<String> occurrences, String detail) {
+                              List<String> occurrences,
+                              List<String> fatalOccurrences, String detail) {
             this.name = name;
             this.state = state;
-            this.fatalArmObserved = fatalArmObserved;
             this.occurrences = occurrences;
+            this.fatalOccurrences = fatalOccurrences;
             this.detail = detail;
         }
 
         static TargetOutcome activated(String name, List<String> occurrences,
-                                       boolean fatalArmObserved) {
-            return new TargetOutcome(name, "ACTIVATED", fatalArmObserved,
-                    occurrences, "");
+                                       List<String> fatalOccurrences) {
+            return new TargetOutcome(name, "ACTIVATED", occurrences,
+                    fatalOccurrences, "");
         }
 
         /** A refusal: its state by the code its message starts with. */
@@ -258,7 +266,8 @@ public final class CausynthTraceRecorder {
             String state = colon < 0 ? null
                     : REFUSALS.get(message.substring(0, colon));
             return new TargetOutcome(name, state == null ? "ERROR" : state,
-                    false, Collections.<String>emptyList(),
+                    Collections.<String>emptyList(),
+                    Collections.<String>emptyList(),
                     state == null ? refusal.toString() : message);
         }
 
@@ -269,12 +278,16 @@ public final class CausynthTraceRecorder {
         JsonObject json() {
             JsonObject json = new JsonObject();
             json.addProperty("state", state);
-            json.addProperty("fatalArmObserved", fatalArmObserved);
-            JsonArray addresses = new JsonArray();
-            for (String occurrence : occurrences) addresses.add(occurrence);
-            json.add("occurrences", addresses);
+            json.add("occurrences", addresses(occurrences));
+            json.add("fatalOccurrences", addresses(fatalOccurrences));
             json.addProperty("detail", detail);
             return json;
+        }
+
+        private static JsonArray addresses(List<String> occurrences) {
+            JsonArray addresses = new JsonArray();
+            for (String occurrence : occurrences) addresses.add(occurrence);
+            return addresses;
         }
     }
 
@@ -311,8 +324,6 @@ public final class CausynthTraceRecorder {
                 : context.source != null && context.source.equals(
                 RuntimeTraceContext.sourceFor(receiver));
         String region = MapFields.safe(openedRegionId);
-        calls.push(new ActiveCall(id, parentSiteId, method,
-                context.spanId, parent == null, !region.isEmpty()));
         // No frame push here: #enterMethodFrame already opened this level
         // (IDENTITY §3); a second push would shift every address below it.
         String address = "";
@@ -328,6 +339,8 @@ public final class CausynthTraceRecorder {
             // it skips.
             folded = Identity.openedNone();
         }
+        calls.push(new ActiveCall(id, parentSiteId, method,
+                context.spanId, parent == null, !region.isEmpty(), address));
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
                         threadName, tid, method, objectId,
@@ -397,7 +410,7 @@ public final class CausynthTraceRecorder {
 
     /**
      * States one gap of the recording as a trace row; {@code RowRuntime.gap}
-     * routes here while no session is open, and {@link #aggregateStateTrace}
+     * routes here while no session is open, and {@link #readStateTrace}
      * hands it to the plan's gap list.
      */
     static void recordingGap(
@@ -1033,6 +1046,32 @@ public final class CausynthTraceRecorder {
                 site.siteId, site.declaredCallee);
     }
 
+    /** The occurrences this thread's region entries opened, rendered,
+     *  innermost first. */
+    static List<String> enclosingOccurrences() {
+        List<String> occurrences = new ArrayList<>();
+        for (ActiveCall call : ACTIVE_CALLS.get()) {
+            if (!call.occurrence.isEmpty()) occurrences.add(call.occurrence);
+        }
+        return occurrences;
+    }
+
+    /** One marker answer a plant gave ({@link RecordingPlant}), as a trace
+     *  row. */
+    static void plantApplied(String marker, String siteId, String occurrence,
+                             boolean value) {
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", RecordingPlant.APPLIED,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "marker", MapFields.safe(marker),
+                    "siteId", siteId,
+                    "occurrenceAddress", occurrence,
+                    "value", value);
+        }
+    }
+
     /**
      * Correlates a field hook inside an accessor body with the exact caller
      * callsite that selected that accessor.
@@ -1301,9 +1340,8 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** The trace is read once, then aggregated for every target. */
-    private static Map<String, TargetOutcome> aggregateStateTrace(
-            File directory, String test, List<AggregationTarget> targets)
+    /** The trace, read once for every target it is aggregated for. */
+    private static TraceData readStateTrace(File directory, String test)
             throws IOException {
         synchronized (LOCK) {
             clearInMemoryTrace();
@@ -1315,7 +1353,7 @@ public final class CausynthTraceRecorder {
             // No offline reattribution: runtime.Attribution stamped every
             // METHOD_ENTER live, as the replay does.
             nameObservedObjectsFromContent(trace);
-            return aggregateTargets(trace, targets);
+            return trace;
         }
     }
 
@@ -1416,7 +1454,7 @@ public final class CausynthTraceRecorder {
         writeRuntimeRegionPlans(target.outputDir, closure.regions, trace,
                 activationGraph.runtimeInstances, planGaps);
         List<String> occurrences = new ArrayList<>();
-        boolean fatalArm = false;
+        List<String> fatal = new ArrayList<>();
         for (Map<String, Object> activation
                 : activationGraph.runtimeInstances) {
             if (!Boolean.TRUE.equals(MapFields.booleanValue(activation.get(
@@ -1424,13 +1462,17 @@ public final class CausynthTraceRecorder {
                             .FAILURE_TARGET_OCCURRENCE)))) {
                 continue;
             }
-            occurrences.add(String.valueOf(activation.get("occurrenceId")));
+            String occurrence = String.valueOf(activation.get("occurrenceId"));
+            occurrences.add(occurrence);
             for (Map<String, Object> evidence
                     : MapFields.rows(activation.get("observedFatalTargets"))) {
-                fatalArm |= tookFatalArm(scopeMap, evidence);
+                if (tookFatalArm(scopeMap, evidence)) {
+                    fatal.add(occurrence);
+                    break;
+                }
             }
         }
-        return TargetOutcome.activated(target.name, occurrences, fatalArm);
+        return TargetOutcome.activated(target.name, occurrences, fatal);
     }
 
     /** Whether one observed decision of a TARGET_SITE guard took the arm
@@ -1822,6 +1864,7 @@ public final class CausynthTraceRecorder {
             trace.sources.addAll(part.sources);
             // Every list the parse fills, gaps included.
             trace.lineageGaps.addAll(part.lineageGaps);
+            trace.plantsApplied += part.plantsApplied;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("trace parse interrupted", interrupted);
@@ -1921,6 +1964,8 @@ public final class CausynthTraceRecorder {
                     row.stringValue("requestApi"),
                     row.stringValue("producerEndpointId"),
                     row.stringValue("producerEndpoint")));
+        } else if (RecordingPlant.APPLIED.equals(eventKind)) {
+            trace.plantsApplied++;
         } else if (GAP_EVENT.equals(eventKind)) {
             Map<String, Object> gap = new LinkedHashMap<>();
             gap.put("schemaVersion", 1);
@@ -2217,6 +2262,8 @@ public final class CausynthTraceRecorder {
         final List<SourceTraceEvent> sources = new ArrayList<>();
         /** Lineage gaps the recording stated, as plan-gap rows. */
         final List<Map<String, Object>> lineageGaps = new ArrayList<>();
+        /** How many marker answers the run's plant gave. */
+        int plantsApplied;
 
         private void sort() {
             methods.sort((left, right) -> Long.compare(left.seq, right.seq));
@@ -2252,16 +2299,19 @@ public final class CausynthTraceRecorder {
         private final boolean rootContext;
         /** Whether this activation pushed an execution-index frame. */
         private final boolean regionFrame;
+        /** The occurrence this entry opened, rendered; "" for none. */
+        private final String occurrence;
 
         private ActiveCall(long callId, long parentSiteId, String method,
                            long spanId, boolean rootContext,
-                           boolean regionFrame) {
+                           boolean regionFrame, String occurrence) {
             this.callId = callId;
             this.parentSiteId = parentSiteId;
             this.method = MapFields.safe(method);
             this.spanId = spanId;
             this.rootContext = rootContext;
             this.regionFrame = regionFrame;
+            this.occurrence = occurrence;
         }
     }
 

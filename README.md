@@ -144,9 +144,14 @@ for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f
    patches and Solr `fdf91e8` + the per-branch `consumed` commits; §4.9 deletions), then **W7**
    validation (11 cases live + one sweep each system). Ad-hoc checks need this: no hand rows.
 8. **ADHOC-INFRA** (`/bigtemp/vnr3ne/specs/ADHOC-INFRA-proposal.md`; WP4, WP5.A, WP1, WP5.C, WP2
-   are on main): WP5.B (compute the build key; re-slice every ad-hoc check under the new scope;
-   nightly snapshot; 5 % calibration tail), WP5.D, WP3 (one shared recording and seed replay per
-   test for all its checks).
+   and WP5.B's build key, nightly and snapshot locks, and WP5.D phase 1 (REPRODUCE plants fault
+   markers natively) are on main): WP5.B's `regress.sh` (the day's engine-fix regression list
+   that places the `regress-pass-*` tag the nightly freezes; tagged by hand until then), WP5.D
+   phase 2 (clock and config plants), and WP3's rest: a batch shares its checks' recording,
+   aggregation and seed replay (PIPELINE §2b; checks whose plans agree share one seed), but checks
+   that reach their own target at one occurrence still replay apart (a task with a list of target
+   branches in the runtime, M1/M2), and each check's slice is its own Soot pass (WP3.1, one scene).
+   The first nightly slices every declared check under the new build key.
 9. **R3 leftovers** (`/bigtemp/vnr3ne/specs/R3-REFCONT-proposal.md`): WP3b/c (TreeMap,
    ConcurrentSkipList*, LinkedList, CopyOnWrite*, queues in the VM), WP7 (`cone.py` follows writer
    families), D3 (STATE arms from other sessions); the VM does not state a container query's
@@ -223,7 +228,8 @@ after reading the code; implementers follow a written design.
 - Commit messages end with `Co-Authored-By: <model> <noreply@anthropic.com>`. Commits in the
   Solr/HDFS trees use `git -c user.name="Zhenyu Li" -c user.email=zhl136@ucsd.edu`.
 - Never edit the owner's dotfiles. Never rebuild a tree or edit a snapshot a campaign runs on.
-  Never remove a `~/gc-run/p<N>` a running round uses (check `pgrep` on all lifts first).
+  Never remove a `~/gc-run/p<N>` a running round uses: `tools/rounds/snapshot-gc.sh` removes one
+  only when no lock and no process on any lift names it.
 - Solr's test SecurityManager may be changed if it interferes (owner's permission); today it is
   off via `-Dtests.useSecurityManager=false`.
 
@@ -348,8 +354,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh '<round>-*' | grep -
 GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 ```
 
-- Always pass `GC_OUT=/bigtemp/vnr3ne/gc-out` (`stop-run.sh` otherwise looks in `~/gc-out` and
-  silently stops nothing).
+- Every tool takes `GC_OUT` from `tools/lib/gc-env.sh` (default `/bigtemp/vnr3ne/gc-out`).
 - A round name is written once (`accept-<round>-<case>` exists → refused). Names used so far:
   `v*`, `r1`–`r9`, `ra1`, `rb1`, agents' `a37f*`, `ee*`, `agent-*`, `w4-*`.
 - Typical wall time: HDFS cases 16–50 min (11741 longest), Solr 40 min–3 h.
@@ -397,6 +402,8 @@ COMPOSE     merge all sessions into one disjunction over the anchor, solve it pe
             valuation with z3, decide the claim (compose/ComposeMain: Composer, ClaimPolicy)
 SOLVE/DECIDE  check and print the solver verdict and the claim COMPOSE published
 CONFIRM     re-run the witness world, check its edges (explore/ConfirmMain)
+REPRODUCE   run a confirmed witness natively: the recording weave on the stock JDK,
+            planting only its fault markers (runtime/RecordingPlant), N times
 EMIT        final/result.json, gaps.json, run-manifest.json
 ```
 
@@ -444,22 +451,48 @@ Obligations of a campaign fan out over the hosts in `CAUSYNTH_CAMPAIGN_WORKER_HO
 host rotated per wave. Every start on a host is charged to the ledger first: an obligation
 (`obligation_memory_mb`, for 60 s), a campaign head's engine JVM (`engine_memory_mb`, else 8192, for
 120 s), its seed and CONFIRM replays (`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
-(its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, a 3072 MB
-reserve and every start still in its ramp there; a head's start is released when it returns.
+(its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, every start
+still in its ramp there and a reserve that keeps the host at most `CAUSYNTH_HOST_MAX_USED_PCT`
+(70) percent full; a head's start is released when it returns.
 A head's "waiting for memory" line goes to stderr (its stdout is often an artifact).
 
 ## Run an ad-hoc sweep
 
 An ad-hoc check is a guarded `throw` that a system's existing cluster test reaches and passes.
 A case is one check on one workload (`<check>.<workload>`), or a batch of checks on one workload
-(`B<n>`, a row of `batches.tsv` with its target spec `targets/B<n>.yaml`). The experiments are
-`experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds `checks.tsv`,
-`batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A check's case
-starts from the classes its experiment's communication mappings name (`system.sh`'s
-`system_mapping_scope`) and its own class; SEED adds the library doors' classes and grows the
-scope from there.
+(`B<n>`, a row of `batches.tsv` with its target spec `targets/B<n>.yaml`, `batch.sh`). The
+experiments are `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds
+`checks.tsv`, `batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A
+check's slice starts from the classes its experiment's communication mappings name (`system.sh`'s
+`system_mapping_scope`) and its own class; SEED adds the library doors' classes the system calls
+and grows the scope from there. A sweep runs batches:
+given `causynth_static_root` (`sweep.sh`'s `STATIC_ROOT`), a batch campaign takes each check's
+slice from the build, records its workload once for all its checks, plans each check, replays
+one seed per group of checks whose plans agree, and runs each check's campaign from EXPLORE on,
+all at once, in `out/<case>/targets/<check>/` (PIPELINE §2b).
 
-The steps, in order (`tools/adhoc/`; each script's header documents its arguments):
+`tools/adhoc/nightly.sh <system>/<experiment> [date]` runs the whole chain below once per night
+(one frozen, comparable sweep, never stopped for an engine fix) into
+`$GC_OUT/nightly/<date>-<experiment>/`: it freezes the newest commit tagged `regress-pass-*` (an
+annotated tag whose message holds a line `vm=<image>`, the VM the commit passed on; placed by
+hand after an acceptance round: `git tag -a regress-pass-<date> -m vm=<image> <commit>`) as
+`~/gc-run/n<date>-<experiment>`, locks it in `$GC_OUT/snapshots-in-use/`, writes `manifest.json`
+(commit, jar, VM, tree, build key), runs steps 1–14 with the caches below, runs a case lost to the
+infrastructure once more (DEAD, or STOPPED by a full disk or quota, ssh, or the case timeout),
+and writes `triage.tsv`, `findings.tsv` and `report.md` (`funnel.py`: each step's count, and the
+kept checks' outcomes beside the calibration tail's). `tools/rounds/snapshot-gc.sh <snapshot>...`
+removes a snapshot only when no lock and no process on any lift names it (`tools/lib/alive.sh`).
+
+The build key names what a static slice and a pre-screen recording depend on:
+`tools/adhoc/buildkey.sh <experiment>` prints `<experiment>-<12 hex>`, a digest of the jar's
+entries (stable across clean rebuilds of one commit), the tree's commit (a tree with uncommitted
+tracked changes is refused) and the scope declarations (`system.sh`, `case.sh`,
+`workflow.properties`, `communication-mappings.jsonl`, `loop-bounds.jsonl`). `slice.sh` and
+`prescreen.sh` compute it: a new jar, tree or scope is a new key, under which every check is
+sliced again, and the same build finds its slices and recordings again.
+
+The steps, in order (`tools/adhoc/`; each script's header documents its arguments). Steps 1–4
+are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree commit>/`):
 
 1. `workloads.py <system-dir> <repo>`: the system's cluster tests (`workloads.tsv`): every
    JUnit 4 or Jupiter `@Test` method, declared or inherited, that the engine's runner can call,
@@ -474,29 +507,38 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
    `<check>.<workload>` per check, its fastest usable workload.
 6. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
    line. Nothing in the tree is edited or rebuilt.
-7. `slice.sh <experiment> <key> <cases-file>`: the engine's own static slice of each check
+7. `slice.sh <experiment> <cases-file>`: the engine's own static slice of each check
    (`run.sh … slice`, ~70–100 s, 3.2 GB) and its score (`score.py`), in
-   `$GC_OUT/static/<key>/<check>/`, fanned out over the lifts. A check is kept when a root (clock,
-   fault door, READ placeholder, field another region stores, wire crossing) lies within 4 edges
-   of its fatal operands. `<key>` names the build. The ad-hoc starting scope changed with WP2, so
-   re-slice every check under a new key before a sweep.
+   `$GC_OUT/static/<key>/<check>/` (`key.json` there says what the key digests), fanned out over
+   the lifts; a check the key has a score for is kept. A check is kept when a root (clock, fault
+   door, READ placeholder, field another region stores, wire crossing) lies within 4 edges of its
+   fatal operands.
 8. `select.py <sweep-dir> <experiment> rank $GC_OUT/static/<key> <cases-file>`: `selected.jsonl`
-   (kept checks, best score first, at most three per class, plus every twentieth dropped check as
-   a calibration row).
+   (kept checks, best score first, at most three per class, plus the calibration tail: every
+   twentieth dropped check, 5 %, the same ones every night, which measures what the selection
+   drops).
 9. `cover.py <sweep-dir> <experiment> jobs [16] [2]`: `prescreen-jobs.tsv`, a greedy cover of the
-   selected checks by the tests that reach them, at most 16 checks per recording.
-10. `prescreen.sh <experiment> <key> <sweep-dir>/prescreen-jobs.tsv`: one recording per batch woven
-    for every check of it (`$GC_OUT/prescreen/<key>/B<n>/runtime/record-summary.json`: each
-    check's ACTIVATED or refusal). ~35 % of check/test pairs are not in the recording window and
-    are dropped here instead of dying at SEED.
-11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`.
-12. `sweep.sh <snapshot> <round> <sweep-dir>/cases.txt [heads-per-host]`: one campaign per case
-    over all ten lifts, `PRUNE=1`, 5400 s per case; restartable.
-13. `triage.py <round> <gc-out>`: outcome class per case (CONFIRMED, REFUTED, NO_WITNESS, STOPPED,
-    DEAD, RUNNING, PENDING). Pass the `$GC_OUT` (its default is still `~/gc-out`).
+   selected checks by the tests that reach them, at most 16 checks per recording, each recording
+   named by its workload and a digest of its checks.
+10. `prescreen.sh <experiment> <sweep-dir>/prescreen-jobs.tsv`: one recording per batch woven
+    for every check of it (`$GC_OUT/prescreen/<key>/<batch>/runtime/record-summary.json`: each
+    check's ACTIVATED or refusal; a batch the build recorded already is kept). Pairs not in the
+    recording window are dropped here instead of dying at SEED (WP2 measured ~35 %, while a check
+    whose region folds into another check's was still lost as `NOT_IN_WINDOW`; each check is
+    now aggregated on its view of the merged skeletons).
+11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`, one batch
+    case per workload with the checks it activated (at most four).
+12. `STATIC_ROOT=$GC_OUT/static/<key> sweep.sh <snapshot> <round> <sweep-dir>/cases.txt
+    [heads-per-host]`: one campaign per batch over all ten lifts, `PRUNE=1`, 5400 s per case;
+    restartable. A batch records once, plans each check, and seed-replays each group of checks
+    whose plans agree once (`out/<batch>/schedule/groups/`); each check explores on its own.
+13. `triage.py <round> [gc-out]`: outcome class per case, and per check of a batch case
+    (`<case>/<check>`): CONFIRMED, REFUTED, NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING; `gc-out`
+    defaults to `gc-env.sh`'s `GC_OUT`.
 14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
-    one row per mechanism among the confirmed witnesses (`findings.tsv`); the ledger marks each
-    new, known or dismissed.
+    one row per mechanism among the confirmed witnesses (`findings.tsv`), weighted by kind,
+    mediation and (1 + the rate at which REPRODUCE reproduced it natively at its anchor); the
+    ledger marks each new, known or dismissed.
 
 ## Outputs
 
@@ -509,7 +551,8 @@ The steps, in order (`tools/adhoc/`; each script's header documents its argument
 | `out/<case>/schedule/stage_metrics.tsv` | time per stage |
 | `out/<case>/schedule/iteration-0000/` | `execution_task_plan.jsonl`, `concolic_region_plan.jsonl`, `recorded_schedule.jsonl`, `sessions/<id>/`, `obligations-<NNNN>/` (per wave: one worker directory per obligation), `obligation_results.jsonl` |
 | `…/sessions/<id>/` | one replay's rows: `activations`, `decisions`, `reads`, `writes`, `exports`, `attaches`, `roots`, `targets`, `gaps`, `schedule` (`.jsonl`), `expressions.jsonl`, `manifest.json` |
-| `out/<case>/schedule/final/` | `result.json`, `claim.json`, `gaps.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `run-manifest.json` |
+| `out/<case>/schedule/final/` | `result.json`, `claim.json`, `gaps.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `reproduce.json`, `run-manifest.json` |
+| `out/<batch>/targets/<check>/` | a batch case's check: its frozen slice, its region plan (`runtime/`), `campaign.log`, and its campaign root `schedule/` laid out as above; the batch's one recording and `runtime/record-summary.json` are in `out/<batch>/` |
 
 A flip query can be re-solved by hand with `z3 -smt2 obligation_query.smt2`.
 
@@ -540,14 +583,16 @@ third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/sh
 experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
 experiments/hadoop/, experiments/solr/   per-system scripts, cases, ad-hoc experiments
-experiments/hbase/                HBase reading notes and sketches (not a runnable case)
-tools/lib/gc-env.sh               GC_OUT, host ledger, LIFTS for every tool
-tools/rounds/                     launch, monitor and stop campaigns on the lifts
-tools/adhoc/                      ad-hoc check discovery, slicing, selection, pre-screen, sweeps,
-                                  triage, findings
+tools/lib/                        gc-env.sh (GC_OUT, host ledger, LIFTS for every tool), alive.sh
+                                  (which runs a process on any lift still names)
+tools/rounds/                     launch, monitor and stop campaigns on the lifts; snapshot-gc.sh
+tools/adhoc/                      ad-hoc check discovery, build key, slicing, selection, pre-screen,
+                                  sweeps, the nightly, triage, findings
 tools/regress/                    offline-ab.sh: the offline merge gate
-tools/analysis/                   one-off analyses (chain check, graph diff, pairing probe)
-tools/case_onepager.py            one page per case from a campaign's artifacts
+tools/analysis/                   occurrences.py (a selector from a discovery log), timeline.py (where a
+                                  campaign's wall time went), the pairing probe,
+                                  batch_share.py (how much of a batch's per-target seed plans one
+                                  replay could share)
 docs/STATUS.md                    done / partial / not done, per requirement; open defects
 docs/design/                      the design of main (index: docs/design/README.md)
 ```

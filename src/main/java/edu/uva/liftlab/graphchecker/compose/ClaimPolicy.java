@@ -39,11 +39,12 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *       unsat.</li>
  *   <li><b>CLOCK_SKEW</b> -- no declared root moved; pinning every clock
  *       cell to its recorded reading makes the query unsat.  The witness is
- *       asked under every pin it can keep ({@link #leastClocks}), so {@link
- *       Claim#movedRoots} ({@link #movedRoots}) names only the cells it
- *       needs.  A moved marker is asked first ({@link #mechanism}); where
- *       the clock pins refute the recorded valuation, a moved root must
- *       reach the fatal arm under those same pins.</li>
+ *       asked with every clock running on wherever it can
+ *       ({@link #leastClocks}), so {@link Claim#movedRoots}
+ *       ({@link #movedRoots}) names only the jumps it needs.  A moved
+ *       marker is asked first ({@link #mechanism}); where the clock pins
+ *       refute the recorded valuation, a moved root must reach the fatal
+ *       arm under those same pins.</li>
  *   <li><b>MESSAGE_PAIRING_FLIPPED</b> -- an explored session's fatal path
  *       is sat at the recorded roots through attested arms while the seed's
  *       own disjunct is not.</li>
@@ -213,7 +214,7 @@ public final class ClaimPolicy {
         // is read by the alarm, loop 1, branch 2 and #mechanism.  Unsat while
         // the free valuation is sat means a clock or a pairing reaches the
         // fatal arm; asking the clocks alone tells which (CLOCK_SKEW).
-        List<String> cells = clockCellsRead(composition);
+        List<String> cells = composition.clockCells();
         List<String> asHappened = new ArrayList<String>(pins(composition,
                 cells));
         asHappened.addAll(composition.recordedPairings());
@@ -391,6 +392,9 @@ public final class ClaimPolicy {
     /** Budget of one self-refutation run: decides a path, scans them all. */
     static final long SELF_CHECK_BUDGET_MS = 60000L;
 
+    /** Budget of a disjunction's verdict asked whole (#byDisjunct). */
+    static final long WHOLE_BUDGET_MS = 60000L;
+
     /**
      * How many independent asks run at once, each its own z3 process beside
      * the composer's JVM on the campaign head (hdfs-17899-bug2: 128
@@ -435,11 +439,8 @@ public final class ClaimPolicy {
         // A sanity check, not the witness search: its own short budget.  An
         // undecided run leaves the path in the disjunction (safe direction).
         List<Z3.Answer> answers = inParallel(composition.disjuncts(),
-                disjunct -> solver.ask(composition.query(
-                        Collections.singletonList("(assert (! "
-                                + disjunct.selector() + " :named path_alone__"
-                                + ArtifactIO.digest(disjunct.path().pathId, 10)
-                                + "))")),
+                disjunct -> solver.ask(composition.pathQuery(
+                        disjunct.selector(), Collections.<String>emptyList()),
                         Collections.<String>emptyList(), false,
                         SELF_CHECK_BUDGET_MS));
         for (int i = 0; i < answers.size(); i++) {
@@ -456,8 +457,7 @@ public final class ClaimPolicy {
                     "this path's own conjunction is unsatisfiable with "
                             + "every root free, so no valuation of any root "
                             + "could have satisfied it and it contributes "
-                            + "nothing to the disjunction; z3 closed on "
-                            + answer.core()));
+                            + "nothing to the disjunction"));
         }
         if (undecided > 0) {
             // A budget that drops a question says so: runs stay comparable.
@@ -555,10 +555,15 @@ public final class ClaimPolicy {
 
     /**
      * The roots this witness moved: the valuation's moved roots plus every
-     * clock cell the model placed off its recorded reading (no valuation
-     * pins a clock, so the model is the only statement of it).  Cells at
-     * their reading are ones {@link #leastClocks} pinned as unneeded.
-     * NO_SUPPORTED_WITNESS claims carry an empty map instead.
+     * clock cell where the model's clock jumped ({@link #jump}; no valuation
+     * pins a clock, so the model is the only statement of it), at the
+     * model's instant.  A cell that runs on from the cell before it is one
+     * {@link #leastClocks} pinned as unneeded.  A jump BACK is a jump too: a
+     * cell the witness needs short of where its clock ran on to (it must
+     * stay below a bound an earlier jump would carry it past) is one a
+     * replay has to plant, or it runs on ahead; it is named at its model
+     * instant, which can be its own reading (the clock set back to the
+     * host's).  NO_SUPPORTED_WITNESS claims carry an empty map instead.
      */
     private static Map<String, String> movedRoots(
             Composer.Composition composition, Outcome outcome) {
@@ -567,12 +572,9 @@ public final class ClaimPolicy {
         moved.putAll(outcome.valuation().moved());
         Map<String, String> model = outcome.answer().values();
         for (String cell : composition.clockCells()) {
-            Long reading = composition.clockReadings().get(cell);
-            String answered = model.get(cell);
-            if (answered == null || reading == null) continue;
-            String at = answered.trim();
-            if (at.isEmpty() || at.equals(Long.toString(reading))) continue;
-            moved.put(cell, at);
+            Long jumped = jump(composition, model, cell);
+            if (jumped == null || jumped == 0L) continue;
+            moved.put(cell, model.get(cell).trim());
         }
         return moved;
     }
@@ -585,9 +587,9 @@ public final class ClaimPolicy {
         List<String> pinned =
                 new ArrayList<String>(outcome.valuation().assertions());
         pinned.addAll(outcome.pinned());
-        pinned.add("(assert " + outcome.selected().selector() + ")");
         pinned.addAll(observed);
-        return solver.ask(composition.query(pinned),
+        return solver.ask(composition.pathQuery(
+                outcome.selected().selector(), pinned),
                 Collections.<String>emptyList(), false).unsat();
     }
 
@@ -670,41 +672,72 @@ public final class ClaimPolicy {
         List<String> assertions =
                 new ArrayList<String>(valuation.assertions());
         assertions.addAll(pinned);
-        Z3.Answer answer = solver.ask(composition.query(assertions), asked,
-                wantCore);
+        Z3.Answer answer = byDisjunct(composition, solver, assertions,
+                composition.selectors(), asked, wantCore);
         return new Outcome(valuation, pinned, answer,
                 selectedOf(composition, answer), armsOf(composition, answer));
     }
 
-    /** The clock cells whose reading some session states, in order. */
-    private static List<String> clockCellsRead(
-            Composer.Composition composition) {
-        List<String> cells = new ArrayList<String>();
-        for (String cell : composition.clockCells()) {
-            if (composition.clockReadings().get(cell) != null) cells.add(cell);
+    /**
+     * "One of these disjuncts" under these assertions (which already say
+     * one of them holds).  Asked whole first, within {@link #WHOLE_BUDGET_MS}:
+     * where z3 decides the disjunction at all it does so in seconds, one
+     * parse for every path.  Undecided, it is asked one disjunct at a time:
+     * the body asserts exactly one path selector, so it is sat iff some
+     * disjunct is and unsat iff every one is (the core is the union of
+     * theirs).  Whole, z3 can spend any budget searching every path's
+     * conjunction at once where a case split settles each path in seconds
+     * (hdfs-11741 r3's valuation 0 over 47 paths: undecided after 30
+     * minutes, about a second a path).  The first sat disjunct answers; with
+     * none sat, an undecided one leaves the question undecided.  Selectors
+     * are never asserted together: two of them contradict the partition.
+     */
+    private static Z3.Answer byDisjunct(Composer.Composition composition,
+                                        Z3 solver, List<String> assertions,
+                                        List<String> selectors,
+                                        List<String> asked, boolean wantCore) {
+        Z3.Answer whole = solver.ask(composition.query(assertions), asked,
+                wantCore, WHOLE_BUDGET_MS);
+        if (whole.decided()) return whole;
+        List<Z3.Answer> refuted = new ArrayList<Z3.Answer>();
+        Z3.Answer undecided = null;
+        for (String selector : selectors) {
+            Z3.Answer answer = solver.ask(
+                    composition.pathQuery(selector, assertions), asked,
+                    wantCore);
+            if (answer.sat()) return answer;
+            if (answer.unsat()) {
+                refuted.add(answer);
+            } else if (undecided == null) {
+                undecided = answer;
+            }
         }
-        return cells;
+        return undecided != null ? undecided : Z3.Answer.unsatOfAll(refuted);
     }
 
     /**
-     * The witness under every clock pin it can keep: all cells pinned first;
-     * otherwise pin back one at a time in recording order, keeping each pin
-     * that stays sat.  The free cells are then a minimal needed set (z3's
-     * unsat core is not: it names every pin).
+     * The witness under every clock pin it can keep: every cell running on
+     * from the cell before it ({@link #runsOn}) first; otherwise pin back one
+     * at a time in the recording's seq order ({@code Composer#clocks}),
+     * keeping each pin that stays sat.  The free cells are then a minimal set
+     * of the jumps the witness needs (z3's unsat core is not: it names every
+     * pin), each as late as the witness allows: a later cell the fatal reads
+     * is pinned to run on only after the cells before it, so the jump lands
+     * on it, not on an earlier cell that would carry it along.
      */
     private static Outcome leastClocks(Composer.Composition composition,
                                        Z3 solver, Outcome outcome,
                                        List<String> cells) {
         if (cells.isEmpty()) return outcome;
         Outcome all = outcome(composition, solver, outcome.valuation(),
-                pins(composition, cells), false);
+                runsOn(composition, cells), false);
         if (all.witness()) return all;
         List<String> kept = new ArrayList<String>();
         Outcome witness = outcome;
         for (String cell : cells) {
             kept.add(cell);
             Outcome asked = outcome(composition, solver, outcome.valuation(),
-                    pins(composition, kept), false);
+                    runsOn(composition, kept), false);
             if (asked.witness()) {
                 witness = asked;
             } else {
@@ -715,42 +748,110 @@ public final class ClaimPolicy {
     }
 
     /**
-     * The witness with each clock it moves moved {@link ClockMargin#margin}
-     * (a minute in its ticks) further the same way, where the formula still reaches the fatal arm
-     * there; else the witness as it was.  The model is the cheapest world (a
-     * token's expiry passed by one millisecond), and the confirming replay
-     * reads every clock fresh, so an instant at the boundary falls back on
-     * the recorded arm: exploration's margin rule (adhoc token-expired.proxy
-     * missed by 70 ms).
+     * The witness with each clock jump it makes ({@link #jump}) made
+     * {@link ClockMargin#margin} (a minute in its ticks) further the same
+     * way, where the formula still reaches the fatal arm there.  The model is
+     * the cheapest world (a token's expiry passed by one millisecond), and
+     * the confirming replay reads every clock fresh, so an instant at the
+     * boundary falls back on the recorded arm: exploration's margin rule
+     * (adhoc token-expired.proxy missed by 70 ms).  Every margin at once
+     * first; else each jump's in seq order, kept where the witness stays: a
+     * jump back that sits on its cell's floor has no room, and costs the
+     * other jumps none of theirs.
      */
     private static Outcome withMargin(Composer.Composition composition,
                                       Z3 solver, Outcome witness) {
-        List<String> room = new ArrayList<String>(witness.pinned());
         Map<String, String> model = witness.answer().values();
+        List<String> margins = new ArrayList<String>();
         for (String cell : composition.clockCells()) {
-            Long reading = composition.clockReadings().get(cell);
-            String answered = model.get(cell);
-            if (reading == null || answered == null) continue;
-            long at;
-            try {
-                at = Long.parseLong(answered.trim());
-            } catch (NumberFormatException notAnInstant) {
-                continue;
-            }
-            if (at == reading.longValue()) continue;
-            boolean later = at > reading.longValue();
+            Long jumped = jump(composition, model, cell);
+            if (jumped == null || jumped == 0L) continue;
+            long at = Long.parseLong(model.get(cell).trim());
+            boolean later = jumped > 0L;
             long margin = ClockMargin.margin(
                     composition.clockNanos().get(cell));
-            room.add("(assert (! (" + (later ? ">=" : "<=") + " " + cell
+            margins.add("(assert (! (" + (later ? ">=" : "<=") + " " + cell
                     + " " + integralLiteral(Long.toString(later
                     ? at + margin : at - margin))
                     + ") :named clock_margin__" + ArtifactIO.digest(cell, 10)
                     + "))");
         }
-        if (room.size() == witness.pinned().size()) return witness;
-        Outcome asked = outcome(composition, solver, witness.valuation(),
+        if (margins.isEmpty()) return witness;
+        List<String> room = new ArrayList<String>(witness.pinned());
+        room.addAll(margins);
+        Outcome all = outcome(composition, solver, witness.valuation(),
                 room, false);
-        return asked.witness() ? asked : witness;
+        if (all.witness() || margins.size() == 1) {
+            return all.witness() ? all : witness;
+        }
+        List<String> kept = new ArrayList<String>(witness.pinned());
+        Outcome roomy = witness;
+        for (String margin : margins) {
+            kept.add(margin);
+            Outcome asked = outcome(composition, solver, witness.valuation(),
+                    kept, false);
+            if (asked.witness()) {
+                roomy = asked;
+            } else {
+                kept.remove(kept.size() - 1);
+            }
+        }
+        return roomy;
+    }
+
+    /**
+     * These cells running on from the cell before each on its node's clock
+     * ({@link Composer.Composition#clockBefore}), as named pins: a cell keeps
+     * that cell's skew off its reading, and a cell with none before it its
+     * reading.  A clock that jumped at one cell runs on from there, as a
+     * replay runs it ({@code runtime.NodeClocks}, by the same seq order), so
+     * the cells after a jump are no more the witness's moves than the cells
+     * before it (SOLR-18406: delete()'s clock jumped past G's reservation,
+     * and the commit's next two readings were moved with it, the second one
+     * outside the witness path's cone).
+     */
+    private static List<String> runsOn(Composer.Composition composition,
+                                       List<String> cells) {
+        List<String> pinned = new ArrayList<String>();
+        for (String cell : cells) {
+            String before = composition.clockBefore().get(cell);
+            String reading = integralLiteral(Long.toString(
+                    composition.clockReadings().get(cell)));
+            String runs = before == null
+                    ? "(= " + cell + " " + reading + ")"
+                    : "(= (- " + cell + " " + reading + ") (- " + before + " "
+                    + integralLiteral(Long.toString(composition
+                    .clockReadings().get(before))) + "))";
+            pinned.add("(assert (! " + runs + " :named clock_runs_on__"
+                    + ArtifactIO.digest(cell, 10) + "))");
+        }
+        return pinned;
+    }
+
+    /**
+     * How far a model's clock jumped at one cell: its skew off its reading
+     * less the skew of the cell before it on its node's clock, or null where
+     * the model or the recording states no instant for either.
+     */
+    private static Long jump(Composer.Composition composition,
+                             Map<String, String> model, String cell) {
+        Long skew = skew(composition, model, cell);
+        String before = composition.clockBefore().get(cell);
+        if (skew == null || before == null) return skew;
+        Long previous = skew(composition, model, before);
+        return previous == null ? null : skew - previous;
+    }
+
+    private static Long skew(Composer.Composition composition,
+                             Map<String, String> model, String cell) {
+        Long reading = composition.clockReadings().get(cell);
+        String answered = model.get(cell);
+        if (reading == null || answered == null) return null;
+        try {
+            return Long.parseLong(answered.trim()) - reading;
+        } catch (NumberFormatException notAnInstant) {
+            return null;
+        }
     }
 
     /** These cells at the instants the recording read, as named pins. */
@@ -797,27 +898,27 @@ public final class ClaimPolicy {
     }
 
     /**
-     * Whether the seed's own disjunct is unsat at the recorded roots; else
-     * the claim is about the recording, not a pairing.  No seed: false.
+     * Whether every disjunct of the seed's session is unsat at the recorded
+     * roots; else the claim is about the recording, not a pairing.  No seed
+     * path: false.
      */
-    private static boolean seedDisjunctUnsat(
+    static boolean seedDisjunctUnsat(
             Composer.Composition composition, Z3 solver) {
         String seed = composition.seedSessionId();
         if (seed == null) return false;
-        List<String> pinned = new ArrayList<String>();
-        Composer.Valuation recorded = composition.valuations().isEmpty()
-                ? null : composition.valuations().get(0);
-        if (recorded != null) pinned.addAll(recorded.assertions());
-        boolean found = false;
+        List<String> selectors = new ArrayList<String>();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            if (!disjunct.path().sessionId.equals(seed)) continue;
-            pinned.add("(assert (! " + disjunct.selector()
-                    + " :named seed_disjunct__"
-                    + ArtifactIO.digest(disjunct.path().pathId, 10) + "))");
-            found = true;
+            if (disjunct.path().sessionId.equals(seed)) {
+                selectors.add(disjunct.selector());
+            }
         }
-        if (!found) return false;
-        return solver.ask(composition.query(pinned),
+        if (selectors.isEmpty()) return false;
+        List<String> pinned = new ArrayList<String>();
+        if (!composition.valuations().isEmpty()) {
+            pinned.addAll(composition.valuations().get(0).assertions());
+        }
+        pinned.add("(assert " + VmTermLowering.or(selectors) + ")");
+        return byDisjunct(composition, solver, pinned, selectors,
                 Collections.<String>emptyList(), false).unsat();
     }
 }

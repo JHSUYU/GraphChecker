@@ -552,11 +552,13 @@ public class ManualMintStatesItsValueTest {
     }
 
     /** Puts the one account back the way the rest of this test found it. */
+    /** The abandonment undone, and the early end it decided with it. */
     private static void unmatchedPrefixCleared() throws Exception {
-        Field prefix = FocusedReplay.class
-                .getDeclaredField("unmatchedPrefix");
-        prefix.setAccessible(true);
-        prefix.set(null, "");
+        for (String name : new String[] {"unmatchedPrefix", "refusedAt"}) {
+            Field field = FocusedReplay.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.set(null, "");
+        }
     }
 
     /** One rendered address, as the contract parses one. */
@@ -961,14 +963,14 @@ public class ManualMintStatesItsValueTest {
                         SymbolizeAction.class,
                         String.class, List.class, String.class,
                         com.google.gson.JsonElement.class, boolean.class,
-                        boolean.class, String.class);
+                        boolean.class, String.class, long.class);
         record.setAccessible(true);
         record.invoke(active,
                 new SymbolizeAction(encoded),
                 "PORT.now", Collections.emptyList(),
                 "<org.apache.hadoop.security.token.delegation.DelegationKey:"
                         + " long expiryDate>", expression, true, false,
-                recordedValue);
+                recordedValue, 0L);
 
         List<JsonObject> published = symbolizedRows(active);
         assertEquals(1, published.size());
