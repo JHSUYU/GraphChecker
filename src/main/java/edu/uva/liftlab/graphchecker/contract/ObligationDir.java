@@ -3,9 +3,13 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * CONTRACT-SPEC §3: one obligation worker's directory
@@ -21,6 +25,9 @@ public final class ObligationDir {
      *  replay's process group is gone. */
     public static final String REPLAY_VERDICT = "replay_verdict.jsonl";
     public static final String FOCUSED_TASK = "focused_task.jsonl";
+    /** The question the worker's solver asked, as one key
+     *  ({@code explore.ObligationFactory#question}). */
+    public static final String QUESTION = "question.txt";
 
     /** The wave directories an iteration publishes, by name. */
     private static final String WAVES = "obligations-*";
@@ -48,6 +55,27 @@ public final class ObligationDir {
             }
         }
         return workers;
+    }
+
+    /**
+     * Obligation id -> the question its solver asked, for every worker of
+     * one iteration that states one (a solver that died states none).
+     */
+    public static Map<String, String> questions(Path iteration)
+            throws IOException {
+        Map<String, String> asked = new LinkedHashMap<String, String>();
+        for (Path wave : SessionDir.directories(iteration, WAVES)) {
+            for (Path worker : SessionDir.directories(wave, "*")) {
+                Path file = worker.resolve(QUESTION);
+                if (!Files.isRegularFile(file)) continue;
+                String question = new String(Files.readAllBytes(file),
+                        StandardCharsets.UTF_8).trim();
+                if (!question.isEmpty()) {
+                    asked.put(worker.getFileName().toString(), question);
+                }
+            }
+        }
+        return asked;
     }
 
     /** The session this worker's replay published, off its result row. */

@@ -107,6 +107,10 @@ public final class ObligationSolverMain {
         }
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
                 candidate, z3, timeoutMillis);
+        // The question it asked, by which the ledger answers it once.
+        Files.write(out.resolve(ObligationDir.QUESTION),
+                (outcome.question + System.lineSeparator())
+                        .getBytes(StandardCharsets.UTF_8));
         if (!outcome.issued()) {
             return publish(out, proposal, outcome.result, outcome.smt2,
                     outcome.gaps, null);
