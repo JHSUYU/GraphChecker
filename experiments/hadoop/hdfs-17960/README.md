@@ -19,7 +19,7 @@ flipped decision, which is what makes this case the worked example for the whole
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
-| the failure | `target.yaml` | `exception_target: hdfs-17960-snapshot-count-mismatch …FSImageFormatPBSnapshot 468`: the `throw new` at that line, in the nested `Saver.serializeSnapshotSection` |
+| the failure | the tree's marker | `@CausynthExceptionTarget("hdfs-17960")` on the `throw new` at line 468, in the nested `Saver.serializeSnapshotSection` (the tree spells its `Preconditions.checkState(i == sm.getNumSnapshots())` as that if/throw); `run.sh` derives the spec from it |
 | the occurrence | `declared_target_occurrence` in `workflow.properties` | `hdfs-17960/nn0#epoch1/region/REGION.5cf88831-22cf-3d39-88b2-258261af8fc8#1` — the checkpoint RPC handler on the restarted NameNode. The target site sits in `serializeSnapshotSection`, whose own region (`REGION.f0132fca`) is entered synchronously from inside that handler and therefore opens no occurrence of its own: its sites are events of the enclosing one. The selector carries no `@api` part, so it is read as region plus node, and `#1` names the first of the two observed instances |
 | roots | the checkout's hook | the one root is `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED`, minted by a `CausynthSymbolicSource.symbolize` hook in the checkout's own `SnapshotManager`, on the `dfs.namenode.snapshot.deletion.ordered` value the restarted NameNode caches. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so the field is not listed here |
 | region input | the static scope map (`inputKind: READ`) | `SnapshotManager.getNumSnapshots()` reads its `AtomicInteger` through a JDK accessor no replay versions, and other regions store it, so the read is a placeholder the closure binds to those writers -- the value the fatal predicate compares |
@@ -29,11 +29,11 @@ flipped decision, which is what makes this case the worked example for the whole
 
 ## Build and run
 
-Hadoop checkout `/u/vnr3ne/hadoop-hdfs-17960`, a worktree of `~/hadoop` on branch
-`gc/hdfs-17960` (branched from `origin/gc/hdfs-17960-snapshot-replay-jdk8`), compiled with
-Java 8. (It was `/u/vnr3ne/hadoop-hdfs-17960` on the host this case was first
-prepared on; that host is gone. `case.sh` names the checkout, and `artifacts/` still records the old path
-because those are a frozen run's own provenance and are not rewritten.) From this directory:
+Hadoop checkout: the unified HDFS tree `/u/vnr3ne/hadoop-hdfs-unified`, branch `gc/hdfs-unified` (trunk 734dd8a67cd; inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`). HDFS-17960's fix (PR #8672) is not in trunk, so the base has the
+bug; the workload (`TestOrderedSnapshotDeletion#testOrderedDeletionWithRestart`) is the one
+first written on the branch-3.4 tree `gc/hdfs-17960`, ported onto trunk's JUnit 5 file.
+`artifacts/` records that older tree's paths: they are a frozen run's own provenance and are
+not rewritten. From this directory:
 
 ```bash
 ../../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
