@@ -1130,7 +1130,7 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    Every such ask (and each re-ask below) is `compose.Disjunction#ask`: the disjunction whole, its
    verdict within 60 s (`WHOLE_BUDGET_MS`; its model and core runs keep the full budget), until a
    whole ask of the composition runs past that budget; from then on, every ask is path by path, the
-   same disjunction under more pins (hdfs-11741 i1: about twenty whole asks in a row ran their 60 s
+   same disjunction under more pins (hdfs-11741 i1: 24 of its 31 whole asks ran their 60 s
    out). Whole, z3 decides in seconds where it decides at all, but can spend any budget searching
    every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole, about a
    second each alone). Path by path, the paths are asked 8 at a time (`PATH_ASKS`, 16 z3

@@ -24,9 +24,9 @@ import java.util.concurrent.Future;
  *       {@link #WHOLE_BUDGET_MS}, z3 decides in seconds where it decides at
  *       all, one parse for every path.  Once a whole ask of the composition
  *       ran past that budget, every later one is asked path by path: they
- *       are the same disjunction under more pins (hdfs-11741 i1: 157 paths,
- *       and every whole ask after the first ran its 60 s out or near it,
- *       about two dozen of them in a row).</li>
+ *       are the same disjunction under more pins (hdfs-11741 i1, 157 paths:
+ *       24 of its 31 whole asks ran their 60 s out, 21 of them in a row,
+ *       each followed by every path asked anyway).</li>
  *   <li><b>Path by path, in parallel.</b>  The body asserts exactly one path
  *       selector, so the disjunction is sat iff some path is and unsat iff
  *       every one is (its core the union of theirs).  The paths are asked
