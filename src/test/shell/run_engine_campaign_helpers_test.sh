@@ -1743,6 +1743,12 @@ reset_config
 concolic_worker_count=2
 campaign_worker_hosts=""
 obligation_memory_mb=1
+# The ledger asks the host's memory; a loaded test host (above the 70 %
+# ceiling) would make every slot wait, which is the gate working, not the
+# pool: this test states an idle host, and restores the real readers after.
+pool_real_memory=$(declare -f campaign_host_available_mb campaign_host_total_mb)
+campaign_host_available_mb() { echo 30000; }
+campaign_host_total_mb() { echo 30000; }
 pool_jobs=(LONG F1 F2 F3 F4 F5)
 for pool_job in "${pool_jobs[@]}"; do
   mkdir -p "${pool_dir}/wave/${pool_job}"
@@ -1792,6 +1798,7 @@ done
     | wc -l)" -eq 6 ]] \
   || fail "the work queue does not hold one claim per obligation"
 unset -f campaign_obligation_worker
+eval "${pool_real_memory}"
 
 # POOL-2: an obligation whose worker did not finish is that obligation's own
 # answer, never the wave's death (a remote worker exiting nonzero failed the
