@@ -294,12 +294,13 @@ public final class Z3 {
     static final long ORPHAN_MARGIN_SECONDS = 10L;
 
     /**
-     * The z3 processes running now.  A JVM that ends (a bound's or a
-     * stop's TERM) takes them with it at once; one killed outright runs no
-     * hook, and the kernel kills its z3s ({@link #DIES_WITH_ITS_DRIVER}).
+     * The z3 processes running now, each with its pid (-1: unknown), whose
+     * resident memory {@link #enter} reads.  A JVM that ends (a bound's or
+     * a stop's TERM) takes them with it at once; one killed outright runs
+     * no hook, and the kernel kills its z3s ({@link #DIES_WITH_ITS_DRIVER}).
      */
-    private static final Set<Process> LIVE = Collections.newSetFromMap(
-            new ConcurrentHashMap<Process, Boolean>());
+    private static final Map<Process, Integer> LIVE =
+            new ConcurrentHashMap<Process, Integer>();
 
     /**
      * What every z3 is started under: the kernel sends it KILL when the
@@ -342,16 +343,26 @@ public final class Z3 {
     private static final long ROOM_POLL_MILLIS = 500L;
 
     /**
-     * Waits until this host has room for one more run -- its available
-     * memory at least the share {@link #CEILING_PERCENT} keeps free -- and
-     * counts the run in: true; false when interrupted first.  A JVM with
-     * no run in flight starts one anyway: it holds nothing it could give
-     * back by waiting.  A composition asks many paths at once
-     * ({@code compose.Disjunction}), each two z3s of up to a few GB.
+     * The most resident memory one z3 of this JVM has held, in kB, read as
+     * runs are admitted; until one is read, what a z3 is taken to grow to
+     * (i1's per-path z3s held 0.1 GB, m1's 1 GB, a whole 124 MB body 0.4).
+     */
+    private static long largestKb = 256L * 1024L;
+
+    /**
+     * Waits until this host has room for one more run and counts it in:
+     * true; false when interrupted first.  Room: the host's available
+     * memory, less what each running z3 may still grow to (the largest any
+     * z3 of this JVM has held) and two such z3s for the new run, at least
+     * the share {@link #CEILING_PERCENT} keeps free.  A JVM with no run in
+     * flight starts one anyway: it holds nothing it could give back by
+     * waiting.  A composition asks many paths at once
+     * ({@code compose.Disjunction}): sixteen z3s of hdfs-11741 m1's paths,
+     * a GB each beside the composer's 15, took a host to 82 %.
      */
     private static boolean enter() {
         synchronized (ROOM) {
-            while (RUNNING.get() > 0 && !hostHasRoom()) {
+            while (RUNNING.get() > 0 && !hostHasRoom(owed())) {
                 try {
                     ROOM.wait(ROOM_POLL_MILLIS);
                 } catch (InterruptedException interrupted) {
@@ -371,9 +382,27 @@ public final class Z3 {
         }
     }
 
-    /** Whether MemAvailable is at least what the ceiling keeps free; a
-     *  host whose memory cannot be read is taken to have room. */
-    static boolean hostHasRoom() {
+    /**
+     * In kB, what this JVM's z3s may still take: each running one up to the
+     * largest any has held, and the new run's two engines that much each.
+     */
+    private static long owed() {
+        long held = 0L;
+        List<Long> each = new ArrayList<Long>();
+        for (int pid : LIVE.values()) {
+            long kb = residentKb(pid);
+            if (kb < 0L) continue;
+            each.add(kb);
+            largestKb = Math.max(largestKb, kb);
+        }
+        for (long kb : each) held += largestKb - kb;
+        return held + 2L * largestKb;
+    }
+
+    /** Whether MemAvailable less {@code owedKb} is at least what the
+     *  ceiling keeps free; a host whose memory cannot be read is taken to
+     *  have room. */
+    static boolean hostHasRoom(long owedKb) {
         long total = -1L;
         long available = -1L;
         try {
@@ -387,8 +416,23 @@ public final class Z3 {
         } catch (IOException | RuntimeException unreadable) {
             return true;
         }
-        return total <= 0L || available < 0L
-                || available * 100L >= total * (100L - CEILING_PERCENT);
+        return total <= 0L || available < 0L || (available - owedKb) * 100L
+                >= total * (100L - CEILING_PERCENT);
+    }
+
+    /** A process's resident memory in kB, or -1 once it is gone. */
+    private static long residentKb(int pid) {
+        if (pid <= 0) return -1L;
+        try {
+            for (String line : java.nio.file.Files.readAllLines(Paths.get(
+                    "/proc", Integer.toString(pid), "status"),
+                    StandardCharsets.UTF_8)) {
+                if (line.startsWith("VmRSS:")) return kilobytes(line);
+            }
+        } catch (IOException | RuntimeException gone) {
+            return -1L;
+        }
+        return -1L;
     }
 
     private static long kilobytes(String line) {
@@ -396,9 +440,25 @@ public final class Z3 {
         return words.length < 2 ? -1L : Long.parseLong(words[1]);
     }
 
+    /**
+     * A started process's pid: Java 8 states it only in its UNIXProcess's
+     * own field.  -1 where it cannot be read: that z3's memory is then not
+     * counted (the run is still bounded by its driver's budget).
+     */
+    private static int pidOf(Process process) {
+        try {
+            java.lang.reflect.Field pid =
+                    process.getClass().getDeclaredField("pid");
+            pid.setAccessible(true);
+            return pid.getInt(process);
+        } catch (ReflectiveOperationException | RuntimeException unknown) {
+            return -1;
+        }
+    }
+
     static {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            for (Process process : LIVE) process.destroyForcibly();
+            for (Process process : LIVE.keySet()) process.destroyForcibly();
         }, "graphchecker-z3-reaper"));
     }
 
@@ -620,7 +680,7 @@ public final class Z3 {
             readers.add(null);
             return null;
         }
-        LIVE.add(process);
+        LIVE.put(process, pidOf(process));
         Thread writer = new Thread(() -> {
             try (BufferedWriter input = new BufferedWriter(new EngineWriter(
                     new OutputStreamWriter(process.getOutputStream(),

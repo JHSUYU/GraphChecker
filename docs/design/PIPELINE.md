@@ -609,8 +609,10 @@ running z3 processes with it (a shutdown hook), every z3 is started under `setpr
 KILL` (`Z3#DIES_WITH_ITS_DRIVER`), so the kernel kills it when the JVM thread that started it is
 gone however the JVM ended (a KILL runs no hook), and each z3 also carries its own hard timeout ten
 seconds past that budget (`-T`, `Z3#hardTimeout`), for a driver that hangs. A run starts only while
-its host's `MemAvailable` is at least the share `CAUSYNTH_HOST_MAX_USED_PCT` keeps free (`Z3#enter`;
-a JVM with no run in flight starts one anyway). Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
+its host's `MemAvailable`, less what this JVM's running z3s may still grow to (each up to the most
+any of them has held) and two such z3s for the new run, is at least the share
+`CAUSYNTH_HOST_MAX_USED_PCT` keeps free (`Z3#enter`; a JVM with no run in flight starts one anyway):
+sixteen z3s of hdfs-11741 m1's paths, a GB each beside the composer's 15 GB, took a host to 82 %. Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
 (`smt.arith.solver` 2, the one the query states, and 6; `Z3#ARITHMETIC`), and answers with the
 first that decides, killing the other; the stated engine's answer wins when it decides within as
 long again as the other took (at least a second), so what it alone decides promptly answers as it
