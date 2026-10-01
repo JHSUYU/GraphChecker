@@ -19,7 +19,8 @@ clock batch, the 11741 handoff fixes, the time robustness package and ADHOC-INFR
 `vm-r3b`; round `i2` ran HEAD's code before the run-directory fix (adds the question ledger,
 WIRE-CODEC W1/W4 and the stall watchdog) on `vm-w4d`: the same verdicts and moved roots,
 hdfs-17899-bug3's claim found but its EMIT refused by the shared `/tmp` scope copy (fixed on
-HEAD). HEAD needs W4's natives: `vm-w4e` (README §3.1). SOLR-18413 last ran in `r9` and `w4d1`.
+HEAD). HEAD needs W4's natives: `vm-w4e` (README §3.1). Round `g1` ran SOLR-18413 alone on HEAD `3fa15f0aa`
+(snapshot `p193`, `vm-w4e`).
 
 | case | run | verdict | mechanism / blocker |
 | --- | --- | --- | --- |
@@ -30,9 +31,9 @@ HEAD). HEAD needs W4's natives: `vm-w4e` (README §3.1). SOLR-18413 last ran in 
 | hdfs-17967-pathA, B, C | `i1` | PASS | MARKER_FLIPPED, IPC request door |
 | hdfs-11741 | `i1` | FAIL | NO_SUPPORTED_WITNESS: all 157 composed paths are unsatisfiable with every root free (BLOCKING). An arm now binds every handoff it names, which took away the earlier CLOCK_SKEW that rested on unbound handoff values; the workload rotates the cached key inside the recording window (`gc/hdfs-11741` `5cff0e12b1f`); the remaining contradiction is under investigation. |
 | solr-18406 | `i1` | PASS | CLOCK_SKEW, one jump of the `IndexCommitWrapper.delete()` clock read in `IndexFileDeleter.checkpoint` past the commit's one-hour reservation (`reserves`), so generation 2 is deleted and `getAndSaveCommitPoint(2)` throws; confirmed, moved root in the cone. |
-| solr-18413 | `r9` | FAIL | the `isExpired#u6` flip is SAT and its replay reproduces the fatal ("Could not find collection") and is ADMITTED, but IMPORT invariant 9 stops the campaign: that replay's target row states no `phiTerm`, since the fatal condition is concrete there. Fixed off main together with the VM's LinkedHashMap iteration order (open defect 29). |
+| solr-18413 | `g1` | PASS | CLOCK_SKEW, polarityDecides, confirmed: the Overseer's `MigrateCmd.call` clock (`REGION.b648bde9`) makes `expireAt` = clock + 1000 (`RoutingRule.makeExpiryAt`), carried in the queue message and through `SliceMutator` into `state.json`, parsed by the leader's `RoutingRule` (handoffs `HOFF.73ab4906` → `HOFF.16e615fc`) and compared with the leader's clock in its `/update` region (`REGION.f92dbcb6`); both clocks at one instant keep the rule unexpired at the leader, which then looks up the migrated target collection and throws (`DistributedZkUpdateProcessor`). 3164 s. |
 
-So HDFS stands at 8 of 9 and Solr at 1 of 2 on main.
+So HDFS stands at 8 of 9 and Solr at 2 of 2 on main.
 
 hdfs-11741 fails the cone gate (`experiments/accept/cone.py`): the NameNode clock roots it
 moves lie outside the selected path's causal cone. In that formula, the DataNode's expiry
