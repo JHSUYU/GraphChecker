@@ -419,8 +419,13 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
   an unknown key is refused;
 - `target.yaml`: `exception_target: <name> <binary class name> <source line> [<thrown type>]`.
   The engine finds the one `throw new` at that line of the class or of a class nested in it (a
-  lambda body, an anonymous class) in the compiled classes; the tree carries no annotation and is
-  not rebuilt. The thrown type is needed only when the line holds two throws;
+  lambda body, an anonymous class) in the compiled classes; the tree is not rebuilt. The thrown
+  type is needed only when the line holds two throws. A known bug's case keeps no `target.yaml`:
+  its tree marks the bug's target throw with `@CausynthExceptionTarget("<case id>[,<case
+  id>...]")` (the case id is `<case dir>-<case arg>`, e.g. `hdfs-17899-bug1`), and `run.sh`
+  derives the spec from the marker (`tools/lib/annotated.py <system dir> <tree> <case id>`, into
+  `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`). An ad-hoc sweep counts a confirmed finding at a
+  marked throw as that known bug found again (`findings.py --annotated`, `nightly.sh`);
 - optionally `communication-mappings.jsonl` (`DOOR` and `WIRE_FLOW` rows; on the R1-ROOTS branch
   doors come from the engine's library catalog instead), `root-domains.jsonl` and
   `loop-bounds*.jsonl`.

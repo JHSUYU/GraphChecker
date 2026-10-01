@@ -11,7 +11,8 @@ the selection (at most three per class) and its calibration tail
 the batch cases (cases.txt) and their checks' outcomes (triage.tsv).  The
 outcome of the kept checks' cases stands beside the calibration checks':
 a calibration case that reaches COMPOSE with a witness is one the static
-selection would have dropped.  findings.tsv's mechanisms close it."""
+selection would have dropped.  findings.tsv's mechanisms close it: the new
+ones, and the known bugs the sweep found again."""
 import collections
 import csv
 import json
@@ -92,6 +93,14 @@ def main():
     for row in new:
         print("- `%s` %s %s: %s (%s)" % (row["sig"], row["kind"], row["target"],
                                           row["moved roots"], row["best case"]))
+    # The known bugs the sweep found again (findings.py --annotated).
+    known = [row for row in findings if row.get("known bug")]
+    print("\n%d mechanism(s) at a known bug's marked site%s"
+          % (len(known), ":" if known else "."))
+    for row in known:
+        print("- %s: `%s` %s, %s (%s)" % (row["known bug"], row["sig"],
+                                           row["kind"], row["moved roots"],
+                                           row["best case"]))
 
 
 if __name__ == "__main__":
