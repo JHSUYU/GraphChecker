@@ -366,7 +366,7 @@ def report(root, label):
     if os.path.isfile(confirm):
         started = mtime(os.path.join(root, "final", "confirm", "worker", "focused_task.jsonl"))
         print("   CONFIRM replay %s" % dur(mtime(confirm) - started if started else None))
-    waits = len(re.findall(r"^\[campaign\] waiting for memory on localhost", log_text, re.M))
+    waits = len(re.findall(r"^\[campaign\] waiting for memory for a head step", log_text, re.M))
     if waits:
         print("   the head waited for memory %d time(s) (inside the stage or gate that started the JVM)" % waits)
     sinks.sort(key=lambda s: -s[1])

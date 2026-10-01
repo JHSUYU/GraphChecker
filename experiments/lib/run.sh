@@ -29,7 +29,7 @@ export CAUSYNTH_CLASSPATH
 # A campaign never sets it -- execute.sh reads the report either way.
 CAUSYNTH_CLASSPATH=${CAUSYNTH_CLASSPATH_OVERRIDE:-$(bash "${lib}/classpath.sh" \
   "${case_dir}" "${case_id}")}
-export CAUSYNTH_OUTPUT_DIR=${CAUSYNTH_OUTPUT_DIR:-/tmp/graphchecker-${tag}}
+export CAUSYNTH_OUTPUT_DIR=${output_dir}
 # A case directory without a target.yaml runs on the throw its tree marks with
 # the case's id (tools/lib/annotated.py): the spec is derived from the tree,
 # never kept by hand, and stays with the run's output.

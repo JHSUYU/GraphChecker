@@ -39,8 +39,8 @@ PLAN on, in `targets/<target name>/` (an ad-hoc sweep's case,
 | --- | --- |
 | `case-env.sh` | sourced by every script: reads the system's `system.sh`, then `case.sh`, and derives paths |
 | `run.sh` | the launcher: the case's declarations become the campaign environment, then `run_engine.sh` |
-| `execute.sh` | one workload JVM: the recording (with a native reproduction's plant, `CAUSYNTH_PLANT`), or a concolic replay |
-| `prepare-analysis.sh` | copies the declared scope into the classes directory the weave reads |
+| `execute.sh` | one workload JVM: the recording (with a native reproduction's plant, `CAUSYNTH_PLANT`), or a concolic replay; held to what its host was charged for it (`CAUSYNTH_CHARGED_MB`, `run_engine.sh` `campaign_watch_workload`) |
+| `prepare-analysis.sh` | copies the declared scope into the classes directory every static pass reads, `$CAUSYNTH_OUTPUT_DIR/declared-classes` (shared, so a pass placed on any host reads it) |
 | `classpath.sh` | the workload classpath, as the system's `system.sh` reads it off a test report (`experiments/<system>/classpath.py`) |
 | `java.sh` | the engine JVM |
 

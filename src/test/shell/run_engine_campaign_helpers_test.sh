@@ -953,8 +953,10 @@ COMPOSE SOLVE DECIDE CONFIRM EMIT REPRODUCE " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
-# REPRODUCE-1: a confirmed witness's native runs, all at once over the pool,
-# each charged the recording's peak memory until it returns, bounded by
+# REPRODUCE-1: a confirmed witness's native runs, all at once, each a head
+# step placed where there is room (here: the head's own host, which has it)
+# and charged the recording's peak memory until it returns, naming the host
+# it ran on, bounded by
 # reproduce_time_factor times the recording's workload and answering for
 # itself off its trace's plant rows; reproduce.json counts the answers and
 # names the runs that stated none.  A plant CONFIRM refuses, or a
@@ -972,8 +974,13 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     composition_manifest="${repro_dir}/manifest.json"
     campaign_worker_hosts=""
     campaign_host_gate_root="${repro_dir}/hosts"
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
     campaign_host_available_mb() { echo 30000; }
     campaign_host_total_mb() { echo 30000; }
+    campaign_host_max_used_pct=70
+    campaign_host_poll_s=0
+    campaign_head_charging=1
     reproduce_runs=4
     reproduce_time_factor=3
     campaign_recorded_workload_s=20
@@ -983,9 +990,11 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
       return "${repro_plant}"
     }
     # Run n: 1 at the anchor, 2 fatal elsewhere, 3 planted only, 4 no trace.
+    # Each states its bound and its charge, and the ledger's row for it.
     run_configured_workload() {
       local run=$1 n=${1##*-}
-      echo "$2" >>"${repro_dir}/bounds"
+      echo "$2 $4 $(grep -c " $4 60 " "${campaign_host_gate_root}/gate-head/\
+starts")" >>"${repro_dir}/bounds"
       (( n < 4 )) || return 1
       {
         echo '{"event":"BRANCH"}'
@@ -1003,8 +1012,17 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     || fail "a reproduction (plant ${repro_plant}, ${repro_rss} MB) is \
 $(cat "${repro_dir}/final/reproduce.json"): $(cat "${repro_dir}/log")"
   [[ "${repro_expected}" != *'"runs":4'* \
-      || "$(sort -u "${repro_dir}/bounds")" == 60 ]] \
-    || fail "a native run was not bounded by 3 x the recording's 20 s"
+      || "$(cut -d' ' -f1,2 "${repro_dir}/bounds" | sort -u)" \
+        == "60 ${repro_rss}" ]] \
+    || fail "a native run was not bounded by 3 x the recording's 20 s and \
+held to its ${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
+  [[ "${repro_expected}" != *'"runs":4'* \
+      || "$(awk '$3 < 1' "${repro_dir}/bounds")" == "" ]] \
+    || fail "a native run ran uncharged: $(cat "${repro_dir}/bounds")"
+  [[ "${repro_expected}" != *'"runs":4'* \
+      || "$(cat "${repro_dir}"/final/reproduce/run-*/host.txt | sort -u)" \
+        == gate-head ]] \
+    || fail "a native run does not name the host it ran on"
   [[ -z "$(cat "${repro_dir}"/hosts/*/starts 2>/dev/null)" ]] \
     || fail "a native run's charge outlived it: \
 $(cat "${repro_dir}"/hosts/*/starts)"
@@ -1375,10 +1393,118 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
   "${bound_dir}/validate.err" \
   || fail "validate accepted seed_replay_time_factor=0"
 
+# REPLAY-NEED: the seed replay (and CONFIRM's) is charged the recording's
+# measured peak when it is above one obligation's replay, else that
+# (campaign_replay_need_mb), and its replay JVM is handed that charge
+# (CAUSYNTH_CHARGED_MB, which execute.sh sizes and holds the JVM by).  Per
+# row: obligation_memory_mb, the recording's peak (- none), the need.
+while read -r need_obligation need_rss need_expected; do
+  [[ "${need_rss}" != - ]] || need_rss=""
+  need_said=$(
+    obligation_memory_mb=${need_obligation}
+    campaign_recorded_workload_rss_mb=${need_rss}
+    replay_timeout_s=2400 seed_replay_time_factor=40
+    campaign_recorded_workload_s=10
+    campaign_task_ids() { echo TASK.SEED; }
+    campaign_head_charged() { printf 'charged=%s ' "$1"; shift 2; "$@"; }
+    campaign_replay() { printf 'jvm=%s' "$7"; }
+    campaign_session_replay "${bound_dir}/seed-iteration"
+  )
+  [[ "${need_said}" == "charged=${need_expected} jvm=${need_expected}" ]] \
+    || fail "a seed replay with ${need_obligation} MB per obligation and a \
+'${need_rss}' MB recording is ${need_said}, not ${need_expected} MB"
+done <<'EOF'
+2500 442 2500
+2500 3000 3000
+2500 - 2500
+EOF
+need_dir="${bound_dir}/need"
+mkdir -p "${need_dir}"
+printf '{"taskId":"TASK.1"}\n' >"${need_dir}/plan.jsonl"
+(
+  campaign_run_adapter() { printf '%s\n' "$@" >"${need_dir}/adapter.args"; }
+  campaign_replay worker "${need_dir}/plan.jsonl" TASK.1 "${need_dir}/classes" \
+    "${need_dir}/result/r.jsonl" "${need_dir}/worker" 3000 tolerated
+) >/dev/null 2>&1 || fail "a tolerated replay failed"
+grep -qx 'CAUSYNTH_CHARGED_MB=3000' "${need_dir}/adapter.args" \
+  || fail "the replay JVM is not handed what its host was charged: \
+$(cat "${need_dir}/adapter.args")"
+
+# WATCH-1: a workload JVM that grows past its charge asks its host's ledger
+# for the excess -- the rule every start answers to, 3000 MB of a 10000 MB
+# host kept free -- and holds what it was granted; it is ended only when
+# the host cannot take it, and what it was granted is released when it
+# ends.  A recording (charged nothing) is only measured: its peak is the
+# trace's workload_rss_mb.  Per row: the host's MemAvailable, the charge,
+# the JVM's resident memory at each read, whether it was ended, the most
+# rows the ledger held for it, and what it says last.
+watch_dir="${test_tmp}/watch"
+while IFS='|' read -r watch_available watch_charged watch_rss watch_ended \
+    watch_rows watch_said; do
+  rm -rf -- "${watch_dir}"
+  mkdir -p "${watch_dir}/trace"
+  printf '%s\n' ${watch_rss//,/ } >"${watch_dir}/rss"
+  : >"${watch_dir}/rows"
+  (
+    campaign_host_gate_root="${watch_dir}/hosts"
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    campaign_host_available_mb() { echo "${watch_available}"; }
+    campaign_host_total_mb() { echo 10000; }
+    campaign_host_max_used_pct=70
+    campaign_watch_interval_s=0.1
+    # The JVM's resident memory, one read at a time, and the ledger's rows
+    # at that read; after the last read it ends.
+    campaign_process_rss_mb() {
+      local mb
+      mb=$(head -n 1 "${watch_dir}/rss")
+      cat "${campaign_host_gate_root}/gate-head/starts" 2>/dev/null \
+        | grep -c . >>"${watch_dir}/rows"
+      [[ -n "${mb}" ]] || { kill "$1"; return 1; }
+      sed -i 1d "${watch_dir}/rss"
+      echo "${mb}"
+    }
+    sleep 60 &
+    watch_jvm=$!
+    campaign_watch_workload "${watch_jvm}" "${watch_charged}" \
+      "${watch_dir}/trace" 2>"${watch_dir}/said" &
+    watch_pid=$!
+    watch_exit=0
+    wait "${watch_jvm}" 2>/dev/null || watch_exit=$?
+    wait "${watch_pid}"
+    echo "${watch_exit}" >"${watch_dir}/exit"
+  ) || fail "a watch failed"
+  [[ "$( (( $(cat "${watch_dir}/exit") == 137 )) && echo ended || echo ran)" \
+      == "${watch_ended}" ]] \
+    || fail "a JVM charged ${watch_charged} MB at ${watch_rss} MB on a host \
+with ${watch_available} MB was not ${watch_ended} (exit \
+$(cat "${watch_dir}/exit")): $(cat "${watch_dir}/said")"
+  [[ "$(sort -n "${watch_dir}/rows" | tail -n 1)" == "${watch_rows}" ]] \
+    || fail "the ledger held $(sort -n "${watch_dir}/rows" | tail -n 1) \
+rows for a JVM at ${watch_rss} MB, not ${watch_rows}"
+  [[ -z "$(cat "${watch_dir}/hosts/gate-head/starts" 2>/dev/null)" ]] \
+    || fail "what a JVM was granted outlived it"
+  [[ "$(cat "${watch_dir}/trace/workload_rss_mb")" \
+      == "$(tr ',' '\n' <<<"${watch_rss}" | sort -n | tail -n 1)" ]] \
+    || fail "the trace does not state the JVM's peak"
+  [[ "$(tail -n 1 "${watch_dir}/said")" == "${watch_said}" ]] \
+    || fail "a JVM at ${watch_rss} MB said: $(cat "${watch_dir}/said")"
+  [[ "${watch_ended}" == ran ]] \
+    || grep -q 'MB its host holds for it, and the host cannot take the [0-9]* MB more' \
+      "${watch_dir}/said" \
+    || fail "an ended JVM does not say why: $(cat "${watch_dir}/said")"
+done <<'EOF'
+28000|2500|1000,2541,2600|ran|2|causynth: the workload JVM's resident memory peaked at 2600 MB; its host was charged 2500 MB for it and took 2600 MB as it grew
+5000|2500|2541,6000|ended|1|causynth: the workload JVM's resident memory peaked at 6000 MB; its host was charged 2500 MB for it and took 2541 MB as it grew
+3000|2500|2400|ran|0|causynth: the workload JVM's resident memory peaked at 2400 MB; its host was charged 2500 MB for it
+28000|0|400,486|ran|0|
+EOF
+
 # SOLVER-SERVICE: an obligation's question goes to ONE solver JVM of its host
 # and corpus (ObligationSolverMain --serve), started by the first question
 # and charged its heap at the host's ledger; a question it could not answer
-# is its worker's failure, by name; and it ends once idle, naming no solver.
+# is its worker's failure, by name; and it ends once idle, naming no solver,
+# its charge given back as its JVM returns.
 # Two questions at once, over a corpus whose round holds neither obligation.
 solver_test=${test_tmp}/solver-service
 solver_wave=${solver_test}/iteration/obligations-0000
@@ -1396,6 +1522,14 @@ mkdir -p "${solver_test}/iteration/sessions" "${solver_wave}" \
   campaign_solver_idle_s=1
   # The test's host has room whatever else runs on it.
   campaign_host_max_used_pct=100
+  campaign_host_gate_root=${solver_test}/hosts
+  # Every solver started, counted.
+  eval "$(declare -f campaign_start_solver \
+    | sed '1s/campaign_start_solver/solver_started/')"
+  campaign_start_solver() {
+    echo "$1" >>"${solver_test}/solvers"
+    solver_started "$@"
+  }
   export TMPDIR=${solver_test}
   pids=()
   for question in a b; do
@@ -1413,15 +1547,19 @@ obligation OB.${question}" "${solver_test}/${question}.err" \
       || fail "the worker does not say why its question was not answered: \
 $(cat "${solver_test}/${question}.err")"
   done
-  [[ "$(cat "${campaign_host_gate_root}"/*/starts | wc -l)" -eq 1 ]] \
+  [[ "$(wc -l <"${solver_test}/solvers")" -eq 1 ]] \
     || fail "the host's two questions did not go to one solver"
   solver_home=$(campaign_solver_dir "${solver_test}/iteration/sessions")
   for ((waited = 0; waited < 30; waited++)); do
-    [[ -e "${solver_home}/server" ]] || break
+    [[ -e "${solver_home}/server" ]] \
+      || [[ -n "$(cat "${solver_test}/hosts/"*/starts)" ]] || break
     sleep 1
   done
   [[ ! -e "${solver_home}/server" ]] \
     || fail "an idle solver did not end: $(cat "${solver_home}/server")"
+  [[ -z "$(cat "${solver_test}/hosts/"*/starts)" ]] \
+    || fail "an ended solver is still charged: \
+$(cat "${solver_test}/hosts/"*/starts)"
 )
 
 # A question its host's solver could not answer (out of heap, died) is no
@@ -1655,7 +1793,8 @@ printf 'F:Q\n' >"${late_worker}/question.asked"
 (
   campaign_adapter_kill_grace_s=10
   campaign_obligation_replay OB.L "${withdraw_dir}/classes" \
-    "${late_worker}" "${late_dir}/sessions" "${withdraw_dir}/seed_plan.jsonl"
+    "${late_worker}" "${late_dir}/sessions" "${withdraw_dir}/seed_plan.jsonl" \
+    2500
 ) >"${late_worker}/worker.log" 2>&1 \
   || fail "REPLAY-BOUND-5: the worker failed: $(cat "${late_worker}/worker.log")"
 [[ "$(jq -r '.verdict + " " + .detail' \
@@ -1694,7 +1833,7 @@ printf 'F:Q\n' >"${refused_worker}/question.asked"
 (
   campaign_obligation_replay OB.R "${withdraw_dir}/classes" \
     "${refused_worker}" "${refused_dir}/sessions" \
-    "${withdraw_dir}/seed_plan.jsonl"
+    "${withdraw_dir}/seed_plan.jsonl" 2500
 ) >"${refused_worker}/worker.log" 2>&1 \
   || fail "EARLY-END-1: the worker failed on a replay that published no \
 session: $(cat "${refused_worker}/worker.log")"
@@ -2355,6 +2494,48 @@ stream_two_hosts stream-room
 $(cut -f1 "${stream_dir}/ssh-calls.txt")"
 reset_config
 
+# POOL-JOB: a start of the pool runs on the host that admitted it -- an
+# obligation's worker, or a GROW re-run's replay, which a peer runs as a
+# placed step -- and gives its ledger row back as soon as its work
+# returned, before the head waits to see what a peer wrote.  Per row: the
+# kind, the host, and what ran, each with the rows the ledger still held for
+# it then.
+job_dir="${test_tmp}/pool-job"
+while IFS='|' read -r job_kind job_host job_ran; do
+  rm -rf -- "${job_dir}"
+  mkdir -p "${job_dir}/worker"
+  : >"${job_dir}/ran"
+  (
+    campaign_host_gate_root="${job_dir}/hosts"
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    campaign_host_available_mb() { echo 30000; }
+    campaign_host_total_mb() { echo 30000; }
+    campaign_host_max_used_pct=70
+    campaign_host_try_start "${job_host}" 2500 60 \
+      || fail "the job's start was refused"
+    job_charge=${campaign_host_charge_id}
+    job_record() {
+      printf '%s(%s) ' "$1" "$(cat "${campaign_host_gate_root}"/*/starts \
+        | grep -c -- "${job_charge}")" >>"${job_dir}/ran"
+    }
+    campaign_obligation_worker() { job_record "worker:$1"; }
+    campaign_obligation_replay() { job_record "replay:$1:$6"; }
+    campaign_dispatch_remote() { job_record "$1:$4:$5"; }
+    campaign_run_placed() { job_record "$1:$2:$3:$8"; }
+    campaign_await_remote_result() { job_record "await:$3"; }
+    campaign_stream_job "${job_kind}" "${job_host}" "${job_charge}" OB.1 \
+      "${job_dir}/worker" OB.1 b c d e f
+  ) || fail "a ${job_kind} on ${job_host} failed"
+  [[ "$(cat "${job_dir}/ran")" == "${job_ran} " ]] \
+    || fail "a ${job_kind} on ${job_host} ran $(cat "${job_dir}/ran")"
+done <<'EOF'
+OBLIGATION|localhost|worker:OB.1(1)
+OBLIGATION|lift12|lift12:--run-obligation:OB.1(1) await:OB.1(0)
+RERUN|localhost|replay:OB.1:f(1)
+RERUN|lift12|lift12:campaign_obligation_replay:OB.1:f(1) await:OB.1(0)
+EOF
+
 # HOSTS-5: a remote worker whose head is gone kills its own process group.
 #
 # sshd does not do this.  Measured on lift12: an ssh client killed under a
@@ -2474,7 +2655,7 @@ $(cat "${frozen_dir}/nojar.log")"
     campaign_log "peer entered"
     campaign_peer_args=("$@")
   }
-  do_run_placed "${frozen_dir}" bash -c 'printf "%s" "${PWD##*/}"'
+  do_run_placed "${frozen_dir}" -- bash -c 'printf "%s" "${PWD##*/}"'
 ) >"${frozen_dir}/placed.out" 2>"${frozen_dir}/placed.err"
 [[ "$(cat "${frozen_dir}/placed.out")" == frozen-jar ]] \
   && grep -q 'peer entered' "${frozen_dir}/placed.err" \
@@ -2717,6 +2898,8 @@ confirm_stub_fatal=true
 confirm_stub_target_iteration=0
 confirm_stub_task_status=0
 confirm_stub_realized=false
+# The recording's measured peak resident memory, in MB (none: unmeasured).
+confirm_recorded_rss=""
 confirm_anchor='hdfs/dn0#epoch0/region/REGION.7c569c3f/ctx:Root:XCEIVER#1/idx:<a.Handler: void handle()>@0'
 # The decision's JVM, on the built jar: reset_config clears java_bin and
 # graphchecker_jar, which are workflow keys.
@@ -2745,7 +2928,8 @@ confirm_stub_main() {
 }
 confirm_stub_replay() {
   local worker=$3 sessions=$4
-  : >"${confirm_root}/replay-ran"
+  # What the replay JVM is charged.
+  printf '%s\n' "$6" >"${confirm_root}/replay-ran"
   mkdir -p "${sessions}/CONFIRM-1"
   jq -n -c --arg v "${confirm_stub_verdict}" '{schemaVersion: 1,
     kind: "OBLIGATION_RESULT", obligationId: "CONFIRM", verdict: $v,
@@ -2779,6 +2963,8 @@ run_confirm() {
       esac
     }
     campaign_obligation_replay() { confirm_stub_replay "$@"; }
+    obligation_memory_mb=2500
+    campaign_recorded_workload_rss_mb=${confirm_recorded_rss}
     campaign_confirm "${confirm_iteration}"
   ) >"${confirm_root}/confirm-stage.log" 2>&1 \
     || fail "the CONFIRM stage failed the campaign on claim=${claim}: \
@@ -2798,10 +2984,16 @@ run_confirm INCONCLUSIVE_PARTIAL
   || fail "a claim that is not SAT_CANDIDATE was confirmed"
 grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
   || fail "the stage did not say why it ran nothing"
-# The rule, both conditions holding.
+# The rule, both conditions holding.  The replay is charged as the seed's:
+# the recording's measured peak, above one obligation's replay here.
+confirm_recorded_rss=3000
 run_confirm SAT_CANDIDATE
 confirm_says true "the claim's anchor observed the fatal" \
   "a clean replay was not confirmed"
+[[ "$(cat "${confirm_root}/replay-ran")" == 3000 ]] \
+  || fail "the CONFIRM replay was charged $(cat "${confirm_root}/replay-ran") \
+MB, not the recording's 3000 MB peak"
+confirm_recorded_rss=""
 [[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == CONFIRM-1 ]] \
   || fail "the confirmation does not name the session that answered"
 [[ -s "${campaign_final}/confirm/worker/focused_task.jsonl" \
@@ -2951,25 +3143,28 @@ campaign_host_total_mb() { echo 10000; }
 campaign_host_max_used_pct=70
 campaign_host_ramp_s=60
 campaign_host_poll_s=0
-campaign_host_try_start lift14 \
+# Every start states its need and its ramp: an obligation's, here.
+memory_start=(6000 60)
+campaign_host_try_start lift14 "${memory_start[@]}" \
   || fail "20000 MB free did not admit a 6000 MB obligation"
-campaign_host_try_start lift14 \
+campaign_host_try_start lift14 "${memory_start[@]}" \
   || fail "20000 MB less one 6000 MB start did not admit a second"
-run_capturing_status campaign_host_try_start lift14
+run_capturing_status campaign_host_try_start lift14 "${memory_start[@]}"
 [[ "${status}" -eq 1 ]] \
   || fail "two starts charged 12000 MB, and a third was admitted over the \
 3000 MB reserve"
 [[ "${campaign_host_wait_reason}" == *"12000 MB charged"* ]] \
   || fail "the wait does not say what is charged: ${campaign_host_wait_reason}"
 # Another campaign, the same host: the same ledger refuses it too.
-( run_capturing_status campaign_host_try_start lift14; exit "${status}" ) \
+( run_capturing_status campaign_host_try_start lift14 "${memory_start[@]}"
+  exit "${status}" ) \
   && fail "another campaign's start ignored the charges on the host"
 # The window passes: the JVMs are in MemAvailable now, and the charge lapses.
 sed -i 's/^[0-9]* /1 /' "${campaign_host_gate_root}/lift14/starts"
-campaign_host_try_start lift14 \
+campaign_host_try_start lift14 "${memory_start[@]}" \
   || fail "starts older than the ramp window are still charged"
 # The head is one ledger under both of its names.
-campaign_host_try_start localhost \
+campaign_host_try_start localhost "${memory_start[@]}" \
   || fail "the head's first start was refused"
 [[ -s "${campaign_host_gate_root}/gate-head/starts" \
     && ! -e "${campaign_host_gate_root}/localhost" ]] \
@@ -2978,10 +3173,18 @@ campaign_host_try_start localhost \
 mkdir "${campaign_host_gate_root}/lift15"
 mkdir "${campaign_host_gate_root}/lift15/lock"
 touch -d '10 minutes ago' "${campaign_host_gate_root}/lift15/lock"
-run_capturing_status campaign_host_try_start lift15
+run_capturing_status campaign_host_try_start lift15 "${memory_start[@]}"
 [[ "${status}" -eq 3 && ! -e "${campaign_host_gate_root}/lift15/lock" ]] \
   || fail "a lock a dead campaign left was not broken"
-campaign_host_try_start lift15 || fail "the host stayed locked"
+campaign_host_try_start lift15 "${memory_start[@]}" \
+  || fail "the host stayed locked"
+# A lock held for the instant another start is charged is waited out, not
+# answered as no room (campaign_host_try_charge).
+mkdir "${campaign_host_gate_root}/lift15/lock"
+( sleep 1; rmdir "${campaign_host_gate_root}/lift15/lock" ) &
+campaign_host_try_charge lift15 "${memory_start[@]}"
+wait
+[[ "${status}" -eq 0 ]] || fail "a held lock was answered as ${status}"
 # A host whose memory stays unreadable past the ssh patience is the
 # waiter's named failure; within it the start waits (sshd refuses
 # connections under a round's burst).
@@ -2990,7 +3193,7 @@ real_campaign_log=$(declare -f campaign_log)
 campaign_log() { printf '%s\n' "$*" >>"${memory_dir}/gate.log"; }
 campaign_host_poll_s=0
 campaign_ssh_patience_s=1
-run_capturing_status campaign_await_host_memory lift13
+run_capturing_status campaign_await_host_memory lift13 "${memory_start[@]}"
 [[ "${status}" -eq 2 ]] \
   || fail "an unreadable host admitted an obligation"
 grep -q 'the memory of host lift13 could not be read for 1s' \
@@ -3079,11 +3282,11 @@ engine_memory_mb=12000
   [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
     || fail "the head reserved no room on its host, or the engine heap's: \
 $(cat "${campaign_host_gate_root}/gate-head/heads/"*)"
-  run_capturing_status campaign_host_try_start localhost 6000
+  run_capturing_status campaign_host_try_start localhost 6000 60
   [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"8192 MB held \
 for a head"* ]] || fail "an obligation took the room a head reserved: \
 ${campaign_host_wait_reason}"
-  campaign_host_try_start lift14 6000 \
+  campaign_host_try_start lift14 6000 60 \
     || fail "a head's room was held on another host"
   campaign_head_charged 9000 120 bash -c "ls '${campaign_host_gate_root}/\
 gate-head/heads/' >'${memory_dir}/head-busy'" \
@@ -3091,7 +3294,7 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
   grep -q '\.busy\.' "${memory_dir}/head-busy" \
     || fail "the head's room is held while its own JVM runs"
   touch -d '20 minutes ago' "${campaign_host_gate_root}/gate-head/heads/"*
-  campaign_host_try_start localhost 6000 \
+  campaign_host_try_start localhost 6000 60 \
     || fail "a stale reservation still holds room"
   campaign_head_heartbeat
   ( campaign_head_unreserve )
@@ -3102,59 +3305,85 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
   || fail "the head kept its room after it exited"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb
 
-# HEAD-PLACE: an engine JVM of an EXPLORE step goes wherever there is room:
-# the head's own host when it fits, else the pool's host with the most room
-# under the ceiling (lift15 here; lift14 has too little), charged there
-# while it runs and released after, run there (--run-placed, in the head's
-# working directory) with its standard output passed on as its own.
+# HEAD-PLACE: every heavy step of a head -- an engine JVM of any stage, the
+# seed or the CONFIRM replay, a native run of REPRODUCE -- goes wherever
+# there is room: the head's own host when it fits, else the pool's host
+# with the most room under the ceiling (MemAvailable less the 3000 MB
+# reserve of a 10000 MB host), charged there while it runs and released
+# after, and run there: --run-placed, in the head's working directory with
+# the head's exported variables, a program or a run_engine.sh function with
+# its arguments, its standard output passed on as its own.  Per row: the
+# head's, lift14's and lift15's MemAvailable, the step's need, and where it
+# runs.
 place_dir="${memory_dir}/place"
-mkdir -p "${place_dir}"
-(
-  campaign_host_gate_root="${place_dir}/hosts"
-  campaign_root="${place_dir}"
-  campaign_local_host_names=" localhost gate-head "
-  hostname() { echo gate-head; }
-  campaign_worker_hosts="gate-head lift14 lift15"
-  campaign_host_total_mb() { echo 10000; }
-  campaign_host_available_mb() {
-    case "$1" in
-      lift14) echo 7000 ;;
-      lift15) echo 9000 ;;
-      *) cat "${place_dir}/own-available" ;;
-    esac
-  }
-  echo 4000 >"${place_dir}/own-available"
-  campaign_host_max_used_pct=70
-  campaign_host_poll_s=0
-  campaign_head_charging=1
-  campaign_head_placing=1
-  campaign_dispatch_remote() {
-    local host=$1 dir=$2 workdir
-    shift 3
-    [[ "$1" == --run-placed ]] || fail "a head JVM was placed as $1"
-    workdir=$2
-    shift 2
-    printf '%s\n' "${host}" >>"${place_dir}/placed-on"
-    grep -c ' 5000 120 ' "${campaign_host_gate_root}/${host}/starts" \
-      >"${place_dir}/charged"
-    (cd "${workdir}" && "$@") >"${dir}/stdout.log" 2>"${dir}/stderr.log"
-  }
-  cd "${place_dir}"
-  [[ "$(campaign_head_charged 5000 120 bash -c 'printf "%s" "${PWD##*/}"')" \
-      == place ]] \
-    || fail "a placed JVM's output did not reach its reader, from the head's \
-working directory"
-  [[ "$(cat "${place_dir}/placed-on")" == lift15 \
-      && "$(cat "${place_dir}/charged")" == 1 ]] \
-    || fail "a head JVM was not placed on the host with the most room and \
-charged there: $(cat "${place_dir}/placed-on" "${place_dir}/charged")"
-  [[ -z "$(cat "${campaign_host_gate_root}/lift15/starts")" ]] \
-    || fail "a placed JVM's charge outlived it"
-  echo 20000 >"${place_dir}/own-available"
-  [[ "$(campaign_head_charged 5000 120 printf here)" == here \
-      && "$(wc -l <"${place_dir}/placed-on")" -eq 1 ]] \
-    || fail "a head JVM that fits on the head's host went elsewhere"
-) || exit 1
+! grep -q 'campaign_head_placing' "${repo}/run_engine.sh" \
+  || fail "a head step is placed by a second rule"
+while read -r place_own place_14 place_15 place_need place_expected; do
+  rm -rf -- "${place_dir}"
+  mkdir -p "${place_dir}"
+  (
+    campaign_host_gate_root="${place_dir}/hosts"
+    campaign_root="${place_dir}"
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    campaign_worker_hosts="gate-head lift14 lift15"
+    campaign_host_total_mb() { echo 10000; }
+    campaign_host_available_mb() {
+      case "$1" in
+        lift14) echo "${place_14}" ;;
+        lift15) echo "${place_15}" ;;
+        *) echo "${place_own}" ;;
+      esac
+    }
+    campaign_host_max_used_pct=70
+    campaign_host_poll_s=0
+    campaign_head_charging=1
+    # The peer: run_engine.sh --run-placed, as the remote worker script
+    # runs it, with nothing of the head's environment but what it forwards.
+    campaign_dispatch_remote() {
+      local host=$1 dir=$2
+      shift 3
+      [[ "$1" == --run-placed ]] || fail "a head step was placed as $1"
+      shift
+      printf '%s\n' "${host}" >"${place_dir}/placed-on"
+      (
+        unset CAUSYNTH_PLACE_PROBE
+        campaign_peer_enter() { campaign_peer_args=("$@"); }
+        do_run_placed "$@"
+      ) >"${dir}/stdout.log" 2>"${dir}/stderr.log"
+    }
+    # The step: where it runs from, its argument, the head's environment,
+    # and how many starts of its need the ledger holds while it runs.
+    place_probe() {
+      printf '%s %s %s %s' "${PWD##*/}" "$1" "${CAUSYNTH_PLACE_PROBE:-}" \
+        "$(cat "${campaign_host_gate_root}"/*/starts 2>/dev/null \
+          | grep -c " ${place_need} 120 ")"
+    }
+    export CAUSYNTH_PLACE_PROBE=exported
+    cd "${place_dir}"
+    [[ "$(campaign_head_charged "${place_need}" 120 place_probe argument)" \
+        == "place argument exported 1" ]] \
+      || fail "a step of ${place_need} MB did not run from the head's \
+directory with its arguments and the head's environment, charged once: \
+$(campaign_head_charged "${place_need}" 120 place_probe argument)"
+    [[ "$(campaign_head_charged "${place_need}" 120 \
+        bash -c 'printf "%s" "${CAUSYNTH_PLACE_PROBE}"')" == exported ]] \
+      || fail "a placed program did not see the head's environment"
+    place_ran=gate-head
+    [[ ! -e "${place_dir}/placed-on" ]] \
+      || place_ran=$(cat "${place_dir}/placed-on")
+    [[ "${place_ran}" == "${place_expected}" ]] \
+      || fail "a step of ${place_need} MB with ${place_own}/${place_14}/\
+${place_15} MB available ran on ${place_ran}, not ${place_expected}"
+    [[ -z "$(cat "${campaign_host_gate_root}"/*/starts 2>/dev/null)" ]] \
+      || fail "a placed step's charge outlived it"
+  ) || exit 1
+done <<'EOF'
+4000 7000 9000 5000 lift15
+20000 7000 9000 5000 gate-head
+4000 9000 8500 5000 lift14
+4000 7000 7000 2000 lift14
+EOF
 
 # ENGINE-HEAP: an engine JVM starts at what its main measurably needs, charged
 # that, and only a run that outgrows it -- the JVM's exit 3 under
@@ -3222,6 +3451,31 @@ grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
 ! grep -q . "${fanout_dir}/ledger/$(command hostname -s)/starts" \
   || fail "a returned job is still charged: \
 $(cat "${fanout_dir}/ledger/$(command hostname -s)/starts")"
+
+# HEADS-1: a round's heads are chosen at launch from the hosts' room
+# (tools/rounds/launch-round.sh, tools/lib/heads.sh heads_choose): the
+# heaviest case first, each to the host with the most room among those that
+# head the fewest cases, that host's room then less the case's need -- no
+# host heads two before every host heads one, and a busy host is the last
+# one chosen (round e1: two cases sat 30 min on a lift a stranger's JVM
+# filled while three lifts had 28 GB free).  Per row: each host's room, each
+# case's need, and the heads chosen in launch order.
+# shellcheck source=../../../tools/lib/heads.sh
+source "${repo}/tools/lib/heads.sh"
+while IFS='|' read -r heads_rooms heads_needs heads_expected; do
+  read -r -a heads_hosts <<<"${heads_rooms}"
+  heads_chosen=$(tr ' :' '\n ' <<<"${heads_needs}" \
+    | heads_choose "${heads_hosts[@]}" | paste -sd ' ' -)
+  [[ "${heads_chosen}" == "${heads_expected}" ]] \
+    || fail "rooms ${heads_rooms} and needs ${heads_needs} chose \
+'${heads_chosen}', not '${heads_expected}'"
+done <<'EOF'
+lift06:20000 lift07:5000 lift08:18000|8192:a 16384:b 8192:c|b lift06 a lift08 c lift07
+lift06:20000 lift07:9000|8192:a 8192:b 8192:c|a lift06 b lift07 c lift06
+lift06:19000 lift07:-2000 lift08:20000 lift15:21000|16384:hdfs-11741 8192:hdfs-17960 8192:hdfs-17967-pathC|hdfs-11741 lift15 hdfs-17960 lift08 hdfs-17967-pathC lift06
+EOF
+[[ -z "$(heads_choose </dev/null)" ]] && ! heads_choose </dev/null \
+  || fail "cases were headed with no host to head them"
 
 # UNION-1: a batch's one recording weave (do_record) is woven with every
 # target's skeletons merged by root -- one region per root, whichever

@@ -50,14 +50,13 @@ Commands:
               the obligation's own worker directory, so it is not a command
               to be typed.  The six positional arguments are exactly what
               campaign_obligation_worker takes.
-  --run-reproduction
-              Execute ONE native run of a campaign's REPRODUCE on a peer,
-              generated as --run-obligation is; the four positional
-              arguments are exactly what campaign_reproduce_run takes.
   --run-placed
-              Execute ONE engine JVM of a campaign head's EXPLORE step on a
-              peer with room (campaign_run_placed): a working directory,
-              then the command.
+              Execute ONE step of a campaign head on a peer with room
+              (campaign_run_placed) -- an engine JVM, the seed or CONFIRM
+              replay, a GROW re-run, a native run of REPRODUCE: a working
+              directory, the head's exported CAUSYNTH_/GRAPH_CHECKER_
+              assignments, `--`, then the command or run_engine.sh function
+              with its arguments.
 
 Environment variables matching normalized workflow keys may override values
 loaded from FILE.
@@ -99,8 +98,10 @@ workflow_config_keys=(
   # too.
   "campaign_worker_hosts CAUSYNTH_CAMPAIGN_WORKER_HOSTS krp -"
   # The memory, in MB, one replay takes on the host that runs it (an
-  # obligation's, the seed's, CONFIRM's): half its heap, half the VM's native
-  # symbolic state, and the bound execute.sh holds it to.  The pool starts an
+  # obligation's, a GROW re-run's; the seed's and CONFIRM's at least, see
+  # campaign_replay_need_mb): half its heap, half the VM's native symbolic
+  # state, and the charge execute.sh holds it to, grown while its host has
+  # room (campaign_watch_workload).  The pool starts an
   # obligation only on a host with that much available beyond what the starts
   # there in the last ramp window will still claim (campaign_host_try_start),
   # whichever campaign started them -- the hosts are shared, and so is this
@@ -466,8 +467,9 @@ run_in_directory() {
 }
 
 # The engine JVM, started at what its main measurably needs and charged that
-# -- on a campaign's head, for as long as a JVM takes to reach its size
-# (campaign_head_charged) -- and at the case's engine heap (engine_memory_mb,
+# -- on whichever host a campaign's head placed it, for as long as a JVM
+# takes to reach its size (campaign_head_charged) -- and at the case's
+# engine heap (engine_memory_mb,
 # else the launcher's 8 GB) only when it outgrows that.  A head that charged
 # every engine JVM 16 GB waited 35-69 minutes for room it did not use: the
 # start needs its charge plus the 30 % reserve free (fast2, solr-18406 and
@@ -540,19 +542,25 @@ campaign_engine_start_mb() {
 #   trace aggregation, scheduler, CONFIRM     0.1-0.5 GB
 #   (CausynthTraceRecorder, ConcolicScheduler, ConfirmMain; LineageScan 0.15
 #   GB sampled live)
+#   SEED's door step (ScopeGrowth --doors)    0.09-0.5 GB over 109 runs of
+#                                             the nine HDFS and two Solr cases
+#                                             (offline-ab SEED.static, 8 GB cap)
+#   the woven-class verifier                  0.17-0.19 GB, three HDFS and two
+#   (VerifyWovenClasses)                      Solr trees of round e1, 8 GB cap
 #   planner (ExploreMain)                     0.2-3 GB, but hdfs-17960 5.9-7.8
 #                                             GB and hdfs-11741 past 4 GB: at
 #                                             4 GB 17960 collected for 30 min
 #   composer (ComposeMain)                    1.4-4.3 GB; hdfs-11741 9.1 GB at
 #                                             8 GB, and m1-11741 ran out of 8
-#   ImportGateMain sizes itself (campaign_import_gate_heap_mb).  The mains
-# not listed (ScopeGrowth, VerifyWovenClasses, ExposedRegionPlanMain,
-# PlanUnion) are not measured yet and keep the engine heap.
+#   ImportGateMain sizes itself (campaign_import_gate_heap_mb).  ScopeGrowth's
+# growth step is the door step's main: measured as that.  The mains not
+# listed (ExposedRegionPlanMain, PlanUnion: GROW's and a batch's, which no
+# recorded round ran) are not measured yet and keep the engine heap.
 campaign_engine_need_mb() {
   case "$1" in
     *.GraphCheckerMain) echo 4096 ;;
-    *.CausynthTraceRecorder|*.ConcolicScheduler|*.ConfirmMain|*.LineageScan)
-      echo 2048 ;;
+    *.CausynthTraceRecorder|*.ConcolicScheduler|*.ConfirmMain|*.LineageScan \
+      |*.ScopeGrowth|*.VerifyWovenClasses) echo 2048 ;;
     *.ExploreMain|*.ComposeMain) echo 8192 ;;
   esac
 }
@@ -932,11 +940,12 @@ do_compose() {
     "${selection[@]}"
 }
 
-# run_configured_workload <trace-dir> [seconds] [plant]: the workload in the
-# recording weave (analysis_classes_dir, as SEED's static pass wove it), its
-# trace into <trace-dir>, under a wall-clock bound of <seconds> when one is
-# given (run_under_wall_clock_bound), with a native reproduction's plant
-# (runtime.RecordingPlant) when one is named.
+# run_configured_workload <trace-dir> [seconds] [plant] [charged_mb]: the
+# workload in the recording weave (analysis_classes_dir, as SEED's static
+# pass wove it), its trace into <trace-dir>, under a wall-clock bound of
+# <seconds> when one is given (run_under_wall_clock_bound), with a native
+# reproduction's plant (runtime.RecordingPlant) when one is named, and held
+# to what its host was charged for it when it was (campaign_watch_workload).
 run_configured_workload() {
   local trace_dir=$1
   local -a workload_env bound=()
@@ -946,6 +955,7 @@ run_configured_workload() {
     "CAUSYNTH_INSTRUMENTED_CLASSES_DIR=${analysis_classes_dir}"
     "CAUSYNTH_TRACE_OUTPUT_DIR=${trace_dir}"
     "CAUSYNTH_PLANT=${3:-}"
+    "CAUSYNTH_CHARGED_MB=${4:-}"
   )
   [[ -z "${2:-}" ]] || bound=(run_under_wall_clock_bound "$2")
   (cd "${workload_work_dir}" && "${bound[@]+"${bound[@]}"}" \
@@ -965,6 +975,9 @@ do_workload() {
   # file).  Which regions the run exercised is read off this trace by the
   # aggregation below, which writes them to ${trace_dir}/region_skeletons.jsonl.
   CAUSYNTH_TRACE_MODE=region-state do_analyze
+  # The recording runs uncharged where the head runs: what it needs is what
+  # it measures (workload_rss_mb, 0.4-0.8 GB over round e1), so there is no
+  # need yet to charge it with or to place it by (campaign_head_charged).
   local status=0 started=${SECONDS}
   run_configured_workload "${trace_dir}" || status=$?
   campaign_recorded_workload_s=$(( SECONDS - started ))
@@ -1703,18 +1716,6 @@ campaign_remote_visibility_wait_s=120
 # workflow file itself lives on that same shared home and can be edited
 # mid-run; forwarding the values means an edit cannot reach a worker,
 # because every key it could change arrives already decided.
-# One workflow key as its environment assignment, spelled by the table.
-config_env_assignment() {
-  local row config_key config_env config_flags config_default
-  for row in "${workflow_config_keys[@]}"; do
-    read_config_key_row "${row}"
-    [[ "${config_key}" == "$1" ]] || continue
-    printf '%s=%s\n' "${config_env}" "${!config_key-}"
-    return 0
-  done
-  die "no workflow key $1"
-}
-
 campaign_remote_env_assignments() {
   local row config_key config_env config_flags config_default
   for row in "${workflow_config_keys[@]}"; do
@@ -1725,9 +1726,11 @@ campaign_remote_env_assignments() {
 }
 
 # The script one peer runs for one piece of a campaign's work: run_engine.sh
-# in a peer mode, <mode> <args...> (--run-obligation, --run-reproduction,
-# --run-placed),
-# under <bound_s>, its stdout.log and stderr.log in <dir>.
+# in a peer mode, <mode> <args...> (--run-obligation, --run-placed), under
+# <bound_s>, its stdout.log and stderr.log in <dir>, charged to the ledger
+# its head charges (CAUSYNTH_HOST_LEDGER, under the same ceiling): a peer's
+# own starts -- its host's solver, a replay that outgrows its charge
+# (campaign_watch_workload) -- are the same hosts' rows.
 #
 # Written into the worker directory on the shared home rather than squeezed
 # through the ssh command line, which keeps the command line trivial (so the
@@ -1774,6 +1777,9 @@ campaign_write_remote_worker_script() {
     printf '    PATH=%q \\\n' "${PATH}"
     printf '    HOME=%q \\\n' "${HOME}"
     printf '    CAUSYNTH_LOCAL_SCRATCH=%q \\\n' "${campaign_local_scratch_root}"
+    printf '    CAUSYNTH_HOST_LEDGER=%q \\\n' "${campaign_host_gate_root}"
+    printf '    CAUSYNTH_HOST_MAX_USED_PCT=%q \\\n' \
+      "${campaign_host_max_used_pct}"
     while IFS= read -r assignment; do
       printf '    %q \\\n' "${assignment}"
     done < <(campaign_remote_env_assignments)
@@ -1829,23 +1835,6 @@ campaign_dispatch_remote() {
     "${host}" "exec /bin/bash $(printf '%q' "${dir}/remote-worker.sh")" \
     >"${dir}/ssh.log" 2>&1
   return "${status}"
-}
-
-# One obligation on one peer, and its files back.
-campaign_dispatch_remote_obligation() {
-  local host=$1 obligation_id=$2 obligations=$3 classes=$4 worker=$5
-  local sessions=$6 seed_plan=$7
-  local status=0
-  campaign_dispatch_remote "${host}" "${worker}" \
-    "$(campaign_remote_worker_bound_s)" --run-obligation "${obligation_id}" \
-    "${obligations}" "${classes}" "${worker}" "${sessions}" "${seed_plan}" \
-    || status=$?
-  if [[ "${status}" -ne 0 ]]; then
-    campaign_log "obligation ${obligation_id} on ${host}: the remote worker \
-exited ${status}; ssh's own output is in ${worker}/ssh.log"
-    return "${status}"
-  fi
-  campaign_await_remote_result "${worker}" "${host}" "${obligation_id}"
 }
 
 # The peer's evidence, visible HERE.
@@ -1962,9 +1951,6 @@ campaign_run_adapter() {
   shift 2
   local -a adapter_env
   adapter_env=(
-    # What one replay may use, which its JVM sizes its heap by; a peer's
-    # replay gets it with the rest (campaign_remote_env_assignments).
-    "$(config_env_assignment obligation_memory_mb)"
     "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}"
     # Every adapter loads the same frozen artifact as analysis and scheduling.
     "GRAPHCHECKER_JAR=${graphchecker_jar}"
@@ -2427,15 +2413,17 @@ campaign_replay_killed=""
 # tree holds those owners and nothing else. The replay classpath is therefore
 # that tree in front of the project's own classes: a replay given the tree
 # alone loads no workload class it did not rewrite.
-# $7 says what an all-skipped result means to this caller. A seed replay is
+# $7 is the memory, in MB, its host was charged for the replay JVM, which
+# sizes its heap and what it may hold (execute.sh, campaign_watch_workload).
+# $8 says what an all-skipped result means to this caller. A seed replay is
 # the iteration's only source of observed cases, so "required" (the default)
 # makes REPLAY fail closed on one. A flip worker may legitimately replay a
 # model the workload never realized, and campaign_obligation_worker already records
 # that as REPLAY_NOT_ADMITTED, so it passes "tolerated" and keeps that
 # recorded outcome instead of ending the campaign.
 campaign_replay() {
-  local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
-  local region_results=${7:-required}
+  local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6 charged=$7
+  local region_results=${8:-required}
   local status=0 started=${SECONDS}
   campaign_replay_killed=""
   # Where this replay writes its per-kind rows.  A focused replay is a
@@ -2454,6 +2442,7 @@ campaign_replay() {
   # cross-checked here.
   run_capturing_status \
     campaign_run_adapter "replay(${role})" "${concolic_replay_command}" \
+    "CAUSYNTH_CHARGED_MB=${charged}" \
     "CAUSYNTH_CONCOLIC_ROLE=${role}" \
     "CAUSYNTH_CONCOLIC_TASK_PLAN=${plan}" \
     "CAUSYNTH_CONCOLIC_TASK_ID=${ids}" \
@@ -2549,8 +2538,46 @@ campaign_target_reached() {
     | first // ""' "${rows[@]}"
 }
 
+# REPLAY: the seed replay, charged its need (campaign_replay_need_mb) and
+# placed where there is room (campaign_head_charged: it reads and writes only
+# the iteration), under a wall clock derived from the recording
+# (seed_replay_time_factor): the seed is the iteration's only source of
+# observed cases, so a replay past it is a campaign failure at REPLAY, named,
+# not a recorded verdict.
 campaign_session_replay() {
-  local iteration_dir=$1
+  local iteration_dir=$1 bound need
+  bound=$(( seed_replay_time_factor * campaign_recorded_workload_s ))
+  (( bound >= replay_timeout_s )) || bound=${replay_timeout_s}
+  need=$(campaign_replay_need_mb)
+  campaign_head_charged "${need}" 300 campaign_seed_replay "${iteration_dir}" \
+    "${causynth_static_scope_map}" "${need}" "${bound}" \
+    "seed_replay_time_factor=${seed_replay_time_factor} x the recording's \
+${campaign_recorded_workload_s}s workload and at least \
+replay_timeout_s=${replay_timeout_s}"
+}
+
+# The memory, in MB, the seed and the CONFIRM replay are charged: the
+# recording's own measured peak (workload_rss_mb, what a native run of it is
+# charged, REPRODUCE) when it is above one obligation's replay
+# (obligation_memory_mb), else that.  A replay that outgrows its charge grows
+# it while its host has room (campaign_watch_workload).
+campaign_replay_need_mb() {
+  local rss=${campaign_recorded_workload_rss_mb}
+  if [[ "${rss}" =~ ^[0-9]+$ ]] && (( rss > obligation_memory_mb )); then
+    printf '%s\n' "${rss}"
+  else
+    printf '%s\n' "${obligation_memory_mb}"
+  fi
+}
+
+# campaign_seed_replay <iteration_dir> <scope_map> <charged_mb> <bound_s>
+# <rule>: the seed replay itself, on whichever host its charge placed it
+# (run_engine.sh --run-placed).  What it reads of its head is in its
+# arguments -- a batch group's seed replays under its own scope map, and
+# under the bound <rule> states -- or in the run's configuration.
+campaign_seed_replay() {
+  local iteration_dir=$1 causynth_static_scope_map=$2 charged=$3 bound=$4
+  local rule=$5
   local seed="${iteration_dir}/seed-result"
   local plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   # CAUSYNTH_CONCOLIC_RESULTS names this replay, it is not a file:
@@ -2563,7 +2590,7 @@ campaign_session_replay() {
   # symbolic, everything else runs concretely, recording its exports and
   # minting v_H at every declared port.  It writes its rows per kind into its
   # own session directory (CONTRACT-SPEC §2.1), which is what IMPORT reads.
-  campaign_sessions_dir="${iteration_dir}/sessions"
+  local campaign_sessions_dir="${iteration_dir}/sessions"
   mkdir -p "${campaign_sessions_dir}"
   # The seed replay is held to the RECORDING's schedule: the plan it runs
   # was built from that execution, so its occurrences are the recording's
@@ -2571,19 +2598,12 @@ campaign_session_replay() {
   # beside its focus row (runtime.ScheduleLog#PREFIX_FILE).
   local recorded_schedule="${iteration_dir}/recorded_schedule.jsonl"
   [[ -s "${recorded_schedule}" ]] || recorded_schedule=""
-  # Under a wall clock derived from the recording (seed_replay_time_factor):
-  # the seed is the iteration's only source of observed cases, so a replay
-  # past it is a campaign failure at REPLAY, named, not a recorded verdict.
-  local bound=$(( seed_replay_time_factor * campaign_recorded_workload_s ))
-  (( bound >= replay_timeout_s )) || bound=${replay_timeout_s}
   campaign_schedule_prefix="${recorded_schedule}" \
     campaign_adapter_timeout_s="${bound}" \
-    campaign_adapter_timeout_rule="${bound}s, seed_replay_time_factor=\
-${seed_replay_time_factor} x the recording's ${campaign_recorded_workload_s}s \
-workload and at least replay_timeout_s=${replay_timeout_s}" \
-    campaign_head_charged "${obligation_memory_mb}" 300 \
+    campaign_adapter_timeout_rule="${bound}s, ${rule}" \
     campaign_replay worker "${plan}" "${ids}" \
-    "${iteration_dir}/instrumented-classes" "${results}" "${seed}/focused"
+    "${iteration_dir}/instrumented-classes" "${results}" "${seed}/focused" \
+    "${charged}"
 }
 
 
@@ -2656,7 +2676,7 @@ campaign_import_session() {
 # caller at a time: the campaign's head.
 #
 # The gate holds one session at a time, so its measured need -- its heap and
-# its charge on the head's host (engine_java) -- is what the corpus's
+# its charge on the host it is placed on (engine_java) -- is what the corpus's
 # largest session takes (campaign_import_gate_heap_mb), not the case's
 # engine heap, which is sized for a JVM holding the whole corpus: charged
 # 16 GB, the gate of one 6 MB session waited 7 minutes for room on a busy
@@ -2900,23 +2920,28 @@ campaign_solver_log() {
 
 # Starts the host's solver of the corpus <sessions> in <dir> once the host
 # has room for its heap, and names it in <dir>/server: the pid of the shell that runs the
-# JVM, which ends with it.  Returns without waiting for it; 1 when the host's
+# JVM, which ends with it, its charge released as the JVM returns.  Returns
+# without waiting for it; 1 when the host's
 # memory could not be read.  The root domains are the declaration EXPLORE
 # and COMPOSE read: an answer is only as free as the root domains behind the
 # arm that produces it.
 campaign_start_solver() {
-  local dir=$1 sessions=$2
+  local dir=$1 sessions=$2 charge
   campaign_await_host_memory localhost "${campaign_solver_heap_mb}" 120 \
     || return 1
-  engine_memory_mb=${campaign_solver_heap_mb} run_java_main \
-    edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
-    --serve "${dir}" \
-    --sessions "${sessions}" \
-    --z3 "${z3_bin}" \
-    --solver-timeout-ms "${solver_timeout_ms}" \
-    --idle-seconds "${campaign_solver_idle_s}" \
-    ${causynth_root_domains:+--root-domains "${causynth_root_domains}"} \
-    </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1 &
+  charge=${campaign_host_charge_id}
+  {
+    engine_memory_mb=${campaign_solver_heap_mb} run_capturing_status \
+      run_java_main edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
+      --serve "${dir}" \
+      --sessions "${sessions}" \
+      --z3 "${z3_bin}" \
+      --solver-timeout-ms "${solver_timeout_ms}" \
+      --idle-seconds "${campaign_solver_idle_s}" \
+      ${causynth_root_domains:+--root-domains "${causynth_root_domains}"} \
+      </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1
+    campaign_host_release localhost "${charge}"
+  } &
   printf '%s\n' "$!" >"${dir}/server.part"
   mv -f -- "${dir}/server.part" "${dir}/server"
 }
@@ -3000,7 +3025,7 @@ host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
   [[ "${outcome}" == "SAT_MODEL_READY" ]] \
     || die "the obligation verdict is not solver-backed: ${outcome}"
   campaign_obligation_replay "${obligation_id}" "${classes}" "${worker}" \
-    "${worker}/sessions" "${seed_plan}"
+    "${worker}/sessions" "${seed_plan}" "${obligation_memory_mb}"
 }
 
 # The replay half of an obligation: the solver's model, run focused, and the
@@ -3008,7 +3033,9 @@ host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
 # The worker calls it once the solver has answered SAT_MODEL_READY; GROW
 # calls it again for an obligation whose replay exposed a region, in a
 # directory of its own beside the worker, under the grown class tree; CONFIRM
-# for the claim's world.
+# for the claim's world.  Every argument is the caller's, so it runs on
+# whichever host its start was placed on (--run-placed): <charged_mb> is
+# what that start charged its host for the replay JVM.
 #
 # Two files, one shape each.  execution_task_plan.jsonl is the PLAN, whose
 # rows the workload session opener decodes (ConcolicTaskPlan.load ->
@@ -3018,6 +3045,7 @@ host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
 # solver and read unchanged by a re-run.
 campaign_obligation_replay() {
   local obligation_id=$1 classes=$2 worker=$3 sessions=$4 seed_plan=$5
+  local charged=$6
   # Charged as a whole by whoever starts it: the pool, GROW, or CONFIRM.
   local campaign_head_charging=0
   local plan="${worker}/execution_task_plan.jsonl"
@@ -3041,7 +3069,7 @@ campaign_obligation_replay() {
     campaign_adapter_timeout_s="${replay_timeout_s}" \
     campaign_adapter_timeout_rule="replay_timeout_s=${replay_timeout_s}" \
     campaign_replay worker "${plan}" "${replay_tasks}" "${classes}" \
-      "${results}" "${worker}" tolerated
+      "${results}" "${worker}" "${charged}" tolerated
   # ONE WRITER.  The replay's process group is gone
   # (run_under_wall_clock_bound), so nothing of it writes after this line,
   # and the obligation's answer is written below, once: the replay's own
@@ -3154,20 +3182,23 @@ $(hostname -s 2>/dev/null) "
 # start leaves a host more than that full.  A JVM takes
 # tens of seconds to reach its size and MemAvailable says nothing about
 # memory a JVM has not touched yet, so a start is charged in full for its own
-# ramp; after it, what it holds is in MemAvailable.  A start whose command
-# returned inside its ramp is released (campaign_host_release), so a head's
-# JVMs, one after another, are never charged twice.  A start that does not
-# fit WAITS -- an obligation goes to another host or later, never skipped --
-# and says so once.
+# ramp; after it, what it holds is in MemAvailable.  A start is released
+# the moment its command returns (campaign_host_release), whoever started
+# it, so a head's JVMs, one after another, are never charged twice and an
+# answer in seconds does not hold its host's room for the ramp.  A start
+# that does not fit WAITS -- an obligation or a head's step goes to another
+# host or later, never skipped -- and says so once.  A JVM that grows past
+# its charge after its start asks the host again for the excess, by the
+# same rule (campaign_watch_workload).
 #
 #   ${campaign_host_gate_root}/<host>/heads/<id>  "<mb>": a campaign head's
 #                                                 room on its host
 #
 # HEAD ROOM.  A head runs its engine JVMs -- a planner round, a gate, COMPOSE
-# -- on its own host between the obligations every campaign keeps starting
-# there, and a pool keeps every host as full as the ledger allows: a head
-# that waited for room like any start would wait for its own host to empty
-# (stream1: hdfs-11741's head waited 25 min in SEED).  So a head reserves
+# -- on its own host first, between the obligations every campaign keeps
+# starting there, and a pool keeps every host as full as the ledger allows:
+# a head that waited for room like any start would wait for its own host to
+# empty (stream1: hdfs-11741's head waited 25 min in SEED).  So a head reserves
 # room for its next JVM (campaign_head_reserve): its file states the need,
 # fresh while the head lives (campaign_head_heartbeat, at most
 # campaign_head_reservation_stale_s apart), idle unless one of its JVMs runs
@@ -3182,11 +3213,13 @@ source "${graphchecker_dir}/tools/lib/gc-env.sh"
 campaign_host_gate_root=${CAUSYNTH_HOST_LEDGER}
 # How long an obligation's start is charged in full: the time its replay JVM
 # takes to stand its cluster up (the host's solver is charged at its own
-# start, campaign_start_solver).
+# start, campaign_start_solver).  A native run of REPRODUCE, and the excess
+# a workload JVM grew past its charge (campaign_watch_workload), take the
+# same ramp.
 campaign_host_ramp_s=60
 # Whether this shell is a campaign's head, whose engine JVMs and replays are
-# charged to its own host (do_campaign); an obligation's replay is inside the
-# obligation's charge.
+# placed and charged as its steps (do_campaign, campaign_head_charged); an
+# obligation's replay is inside the obligation's charge.
 campaign_head_charging=0
 # The most of a host's memory a start may leave in use, in percent: what
 # stays free is the page cache the JVMs read their jars and corpora through,
@@ -3316,17 +3349,17 @@ campaign_host_lock() {
   return 3
 }
 
-# campaign_host_try_start <host> [need_mb] [ramp_s]: one try.  0 when the
+# campaign_host_try_start <host> <need_mb> <ramp_s>: one try.  0 when the
 # start may go now and is charged to the host, its row named in
 # campaign_host_charge_id; 1 when it does not fit yet (why, in
 # campaign_host_wait_reason); 2 when the host's memory cannot be read; 3 when
 # another start holds the ledger's lock for the instant it takes to charge
-# one.  An obligation's need and ramp are the defaults.
+# one.  Every start states its need -- what the JVM measurably takes -- and
+# the ramp it takes to reach it; neither has a default.
 campaign_host_wait_reason=""
 campaign_host_charge_id=""
 campaign_host_try_start() {
-  local host=$1 need=${2:-${obligation_memory_mb}}
-  local ramp=${3:-${campaign_host_ramp_s}} key dir now available total
+  local host=$1 need=$2 ramp=$3 key dir now available total
   local reserve charged kept held=0
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
@@ -3452,34 +3485,101 @@ campaign_host_release() {
   rmdir "${dir}/lock"
 }
 
-# campaign_head_charged <need_mb> <ramp_s> <command...>: a campaign head's
-# own heavy start -- an engine JVM, the seed or the CONFIRM replay -- waits
-# for room on the head's host, is charged there, and is released when it
-# returns.  An engine JVM of an EXPLORE step (campaign_head_placing: a gate,
-# a round's planner, a witness's composer, GROW's planner) reads and writes
-# only the shared campaign directory, so it goes wherever there is room
-# (campaign_head_place) and runs there (campaign_run_placed).  Outside a
-# head it runs the command alone.  The command runs as a plain command, so
-# errexit means inside it what it meant before: a failure that ends the
-# shell leaves the charge to lapse with its ramp.
-campaign_head_placing=0
+# campaign_host_try_start, the ledger's lock waited out -- another start
+# holds it for the instant it takes to be charged: its answer, 0, 1 or 2, in
+# the caller's `status`.
+campaign_host_try_charge() {
+  while true; do
+    run_capturing_status campaign_host_try_start "$@"
+    (( status != 3 )) && return 0
+    sleep 0.$(( (RANDOM % 9) + 1 ))
+  done
+}
+
+# The resident memory of process <pid>, in MB; nothing once it is gone.
+campaign_process_rss_mb() {
+  awk '/^VmRSS:/ {print int($2 / 1024)}' "/proc/$1/status" 2>/dev/null
+}
+
+# How often a workload JVM's resident memory is read.
+campaign_watch_interval_s=2
+
+# campaign_watch_workload <pid> <charged_mb> [trace_dir]: one workload JVM
+# watched until it ends (experiments/lib/execute.sh).  Its peak resident
+# memory, in MB, goes to <trace_dir>/workload_rss_mb, a recording's: what a
+# native run of it is charged (REPRODUCE); for a JVM its host was charged
+# <charged_mb> for (0: none, a recording) it is said at its end beside that
+# charge, the evidence a case's obligation_memory_mb is set from.  Such a
+# JVM that grows past what its host holds for it asks the host's ledger for
+# the excess, as one more start (campaign_host_try_start: no host past
+# CAUSYNTH_HOST_MAX_USED_PCT), and holds what it was granted; one the host
+# cannot take is ended there, and says so.  A replay whose native symbolic
+# state ran away reached 27 GB and the kernel killed what it chose on the
+# host (hdfs-17960 v96); one ended for 41 MB over its 2500 MB on a host with
+# 28 GB free failed its case for nothing (accept-e1b-17960's seed replay).
+# What it was granted is released when it ends.
+campaign_watch_workload() {
+  local pid=$1 charged=$2 trace=${3:-} peak=0 held=$2 mb id
+  local status=0 refused=""
+  local -a grants=()
+  while kill -0 "${pid}" 2>/dev/null; do
+    mb=$(campaign_process_rss_mb "${pid}") || mb=""
+    if (( ${mb:-0} > peak )); then
+      peak=${mb}
+      [[ -z "${trace}" ]] \
+        || printf '%s\n' "${peak}" >"${trace}/workload_rss_mb"
+    fi
+    if (( charged > 0 && peak > held )); then
+      campaign_host_try_charge localhost "$(( peak - held ))" \
+        "${campaign_host_ramp_s}"
+      if (( status != 0 )); then
+        refused="the host cannot take the $(( peak - held )) MB more \
+(${campaign_host_wait_reason})"
+        kill -KILL "${pid}" 2>/dev/null || true
+        break
+      fi
+      grants+=("${campaign_host_charge_id}")
+      held=${peak}
+    fi
+    sleep "${campaign_watch_interval_s}"
+  done
+  for id in "${grants[@]}"; do
+    campaign_host_release localhost "${id}"
+  done
+  (( charged > 0 )) || return 0
+  [[ -z "${refused}" ]] || echo "causynth: the workload JVM's resident \
+memory reached ${peak} MB, over the ${held} MB its host holds for it, and \
+${refused}; ended" >&2
+  echo "causynth: the workload JVM's resident memory peaked at ${peak} MB; \
+its host was charged ${charged} MB for it$( (( held == charged )) \
+    || echo " and took ${held} MB as it grew")" >&2
+}
+
+# campaign_head_charged <need_mb> <ramp_s> <command...>: one heavy start of
+# a campaign head -- an engine JVM of any stage, the seed or the CONFIRM
+# replay, a native run of REPRODUCE -- goes where there is room
+# (campaign_head_place), is charged there while it runs, and is released
+# when it returns.  Every such step reads and writes only the run's shared
+# directories (the case's scope copy among them, experiments/lib/case-env.sh)
+# and takes the rest of what it reads of the head as its arguments, so it
+# runs alike on whichever host it was placed on: here, or through the remote
+# worker script (campaign_run_placed).  What a head runs uncharged stays on
+# its host: the setup adapter's copy and the recording (do_workload).
+# Outside a head it runs the command alone.  The command runs as a plain
+# command, so errexit means inside it what it meant before: a failure that
+# ends the shell leaves the charge to lapse with its ramp.
 campaign_head_charged() {
-  local need=$1 ramp=$2 id status busy="" host=localhost
+  local need=$1 ramp=$2 id status busy="" host
   shift 2
   if [[ "${campaign_head_charging}" != 1 ]]; then
     "$@"
     return
   fi
   # Its words go to stderr: the command's stdout is often its artifact
-  # (ImportGateMain's summary JSON).  Its own room is not held against it.
+  # (ImportGateMain's summary JSON).
   campaign_head_heartbeat
-  if [[ "${campaign_head_placing}" == 1 ]]; then
-    campaign_head_place "${need}" "${ramp}" >&2 || return
-    host=${campaign_placed_host}
-  else
-    campaign_host_head_start=1 campaign_await_host_memory localhost \
-      "${need}" "${ramp}" >&2 || return
-  fi
+  campaign_head_place "${need}" "${ramp}" >&2
+  host=${campaign_placed_host}
   id=${campaign_host_charge_id}
   if campaign_host_is_local "${host}"; then
     if [[ -n "${campaign_head_reservation}" ]]; then
@@ -3498,7 +3598,7 @@ campaign_head_charged() {
   return "${status}"
 }
 
-# Room for a head JVM of <need_mb> for <ramp_s>, charged: on the head's own
+# Room for a head step of <need_mb> for <ramp_s>, charged: on the head's own
 # host when it fits there (its own room is not held against it), else on
 # the host of the pool with the most room under the ceiling
 # (campaign_host_room), as the pool would place one more start; waited for
@@ -3507,8 +3607,8 @@ campaign_placed_host=""
 campaign_head_place() {
   local need=$1 ramp=$2 host room best best_room said=false status=0
   while true; do
-    campaign_host_head_start=1 run_capturing_status campaign_host_try_start \
-      localhost "${need}" "${ramp}"
+    campaign_host_head_start=1 campaign_host_try_charge localhost "${need}" \
+      "${ramp}"
     if (( status == 0 )); then
       campaign_placed_host=localhost
       return 0
@@ -3523,15 +3623,14 @@ campaign_head_place() {
       best_room=${room}
     done < <(campaign_worker_host_list)
     if [[ -n "${best}" ]]; then
-      run_capturing_status campaign_host_try_start "${best}" "${need}" \
-        "${ramp}"
+      campaign_host_try_charge "${best}" "${need}" "${ramp}"
       if (( status == 0 )); then
         campaign_placed_host=${best}
         return 0
       fi
     fi
     if [[ "${said}" == false ]]; then
-      campaign_log "waiting for memory for a head JVM of ${need} MB on any \
+      campaign_log "waiting for memory for a head step of ${need} MB on any \
 host: ${campaign_host_wait_reason}"
       said=true
     fi
@@ -3540,15 +3639,16 @@ host: ${campaign_host_wait_reason}"
   done
 }
 
-# How long a head JVM placed on a peer may run there: the case's whole
+# How long a head step placed on a peer may run there: the case's whole
 # budget (experiments/accept/accept.sh), past which nothing of it is read.
 campaign_placed_bound_s=21600
 
-# <command...> of the head, run on <host> in the head's working directory
-# (run_engine.sh --run-placed, through the remote worker script, so it ends
-# with the head) with the CAUSYNTH_ and GRAPH_CHECKER_ variables the head
-# exports; its standard output and error are passed on as its own, and its
-# status is the command's.
+# <command...> of the head -- a program, or a run_engine.sh function whose
+# arguments are all it reads of the head -- run on <host> in the head's
+# working directory (run_engine.sh --run-placed, through the remote worker
+# script, so it ends with the head) with the CAUSYNTH_ and GRAPH_CHECKER_
+# variables the head exports; its standard output and error are passed on
+# as its own, and its status is the command's.
 campaign_run_placed() {
   local host=$1 dir name status=0
   local -a exported=()
@@ -3559,24 +3659,27 @@ campaign_run_placed() {
       && exported+=("${name}=${!name}")
   done
   campaign_dispatch_remote "${host}" "${dir}" "${campaign_placed_bound_s}" \
-    --run-placed "${PWD}" env "${exported[@]}" "$@" || status=$?
+    --run-placed "${PWD}" "${exported[@]}" -- "$@" || status=$?
   cat -- "${dir}/stdout.log" 2>/dev/null
   cat -- "${dir}/stderr.log" "${dir}/ssh.log" >&2 2>/dev/null
   rm -rf -- "${dir}"
   return "${status}"
 }
 
-# campaign_await_host_memory <host> [need_mb] [ramp_s]: blocks until one
+# campaign_await_host_memory <host> <need_mb> <ramp_s>: blocks until one
 # start fits on the host, then charges it there: 0.  2 when the host's
 # memory cannot be read for campaign_ssh_patience_s, the waiter's named
-# failure.  A campaign head's own starts wait here (campaign_head_charged);
-# an obligation's start is the pool's, which never waits on one host while
-# another has room (campaign_stream_admit_host).
+# failure.  What starts on the host that runs it waits here: a host's
+# solver (campaign_start_solver) and a question asked again of a solver of
+# its own (campaign_solve_obligation_alone).  A head's step goes to any host
+# with room (campaign_head_place), and an obligation's start is the pool's
+# (campaign_stream_admit_host): neither waits on one host while another
+# has room.
 campaign_await_host_memory() {
-  local host=$1 need=${2:-} ramp=${3:-}
+  local host=$1 need=$2 ramp=$3
   local said=false status=0 unread_since=""
   while true; do
-    run_capturing_status campaign_host_try_start "${host}" "${need}" "${ramp}"
+    campaign_host_try_charge "${host}" "${need}" "${ramp}"
     case "${status}" in
       0) return 0 ;;
       2)
@@ -3590,10 +3693,6 @@ ${campaign_ssh_patience_s}s"
         fi
         campaign_host_wait_reason="the memory of ${host} could not be read"
         ;;
-      3)
-        # Another start is being charged: a moment, not a poll interval.
-        sleep 0.$(( (RANDOM % 9) + 1 ))
-        continue ;;
       *) unread_since="" ;;
     esac
     if [[ "${said}" == false ]]; then
@@ -3606,22 +3705,42 @@ ${campaign_host_wait_reason}"
   done
 }
 
-# One obligation, on the host the pool admitted it on.  The local branch is a
-# subshell under `set -euo pipefail`, its stdout and stderr in the worker
-# directory.
-campaign_run_obligation_on_host() {
-  local host=$1 obligation_id=$2 obligations=$3 classes=$4 worker=$5
-  local sessions=$6 seed_plan=$7
+# campaign_stream_job <kind> <host> <charge> <id> <worker> <args...>: one
+# start of the pool, on the host that admitted it and charged it <charge>:
+# an OBLIGATION's worker (campaign_obligation_worker <args...>) or a GROW
+# RERUN's replay (campaign_obligation_replay <args...>).  A local one is a
+# subshell under `set -euo pipefail`; a remote one runs through the remote
+# worker script, an obligation as --run-obligation (the script and ssh's own
+# output beside its logs), a re-run as a placed step (campaign_run_placed);
+# its stdout and stderr are <worker>'s either way.  Its row is released as
+# soon as its work returned, before the head waits to see what a peer wrote
+# (campaign_await_remote_result): an answer in seconds does not hold its
+# host's room for the ramp.  A job the head reaps (campaign_stream_reap)
+# leaves its row to lapse with the ramp.
+campaign_stream_job() {
+  local kind=$1 host=$2 charge=$3 id=$4 worker=$5 status=0
+  shift 5
+  local -a work=(campaign_obligation_worker "$@")
+  [[ "${kind}" == OBLIGATION ]] || work=(campaign_obligation_replay "$@")
   if campaign_host_is_local "${host}"; then
-    (
-      set -euo pipefail
-      campaign_obligation_worker "${obligation_id}" "${obligations}" \
-        "${classes}" "${worker}" "${sessions}" "${seed_plan}"
-    ) >"${worker}/stdout.log" 2>"${worker}/stderr.log"
+    ( set -euo pipefail; "${work[@]}" ) >"${worker}/stdout.log" \
+      2>"${worker}/stderr.log" || status=$?
+  elif [[ "${kind}" == OBLIGATION ]]; then
+    campaign_dispatch_remote "${host}" "${worker}" \
+      "$(campaign_remote_worker_bound_s)" --run-obligation "$@" \
+      || status=$?
   else
-    campaign_dispatch_remote_obligation "${host}" "${obligation_id}" \
-      "${obligations}" "${classes}" "${worker}" "${sessions}" "${seed_plan}"
+    campaign_run_placed "${host}" "${work[@]}" >"${worker}/stdout.log" \
+      2>"${worker}/stderr.log" || status=$?
   fi
+  campaign_host_release "${host}" "${charge}"
+  campaign_host_is_local "${host}" && return "${status}"
+  if (( status != 0 )); then
+    campaign_log "${kind} ${id} on ${host}: the remote worker exited \
+${status}; its logs, and ssh's own output, are in ${worker}"
+    return "${status}"
+  fi
+  campaign_await_remote_result "${worker}" "${host}" "${id}"
 }
 
 # An obligation whose worker did not finish (it exited <status>, or the head
@@ -3683,8 +3802,7 @@ campaign log says}); its logs are in ${worker}"
 #   stream_queue      "<kind> <round> <id> [<session>]" not started yet:
 #                     OBLIGATION, or RERUN (GROW re-running the replay that
 #                     exposed a region, its exposing session named)
-#   stream_jobs       pid -> "<kind> <round> <id> <host> [<session>]";
-#                     stream_charges pid -> its row in its host's ledger
+#   stream_jobs       pid -> "<kind> <round> <id> <host> [<session>]"
 #   stream_pending    "<kind> <round> <id> <host> <status> [<session>]": what
 #                     returned since the last step began, not landed yet
 #   stream_flying     obligation id -> its row, queued, running or not
@@ -3730,7 +3848,7 @@ campaign_explore() {
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
   local -a stream_witnesses=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
-  local -A stream_jobs=() stream_charges=() stream_flying=()
+  local -A stream_jobs=() stream_flying=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
   : >"${results}"
   : >"${attempts}"
@@ -3880,8 +3998,6 @@ campaign_stream_step_dir() {
 campaign_stream_step() {
   local dir=$1 round_dir status=0
   local -a gate=() witnesses=()
-  # Its JVMs go wherever there is room (campaign_head_charged).
-  campaign_head_placing=1
   if [[ -s "${dir}/witnesses" ]]; then
     mapfile -t witnesses <"${dir}/witnesses"
     campaign_stream_attempt "${dir}" "${witnesses[@]}"
@@ -4145,54 +4261,42 @@ campaign_process_tree() {
   printf '%s\n' "$1"
 }
 
-# Starts what the queue holds, first first, while a host admits it.  A
-# re-run runs on the head; an obligation on the next host of the pool,
-# round-robin, whose memory ledger admits one more start and that runs fewer
-# of this campaign's than it has cores (campaign_stream_admit_host).  While
-# GROW owes re-runs or swaps, only re-runs start.
+# Starts what the queue holds, first first, while a host admits it: an
+# obligation or a GROW re-run on the next host of the pool, round-robin,
+# whose memory ledger admits one more start and that runs fewer of this
+# campaign's than it has cores (campaign_stream_admit_host).  While GROW
+# owes re-runs or swaps, only re-runs start.
 campaign_stream_dispatch() {
   local entry
   while (( ${#stream_queue[@]} > 0 )); do
     entry=${stream_queue[0]}
     [[ "${entry}" == RERUN\ * ]] || (( stream_hold == 0 )) || return 0
-    campaign_stream_admit_host "${entry%% *}" || return 0
+    campaign_stream_admit_host || return 0
     stream_queue=("${stream_queue[@]:1}")
     campaign_stream_start "${entry}" "${stream_admitted_host}"
   done
 }
 
-# Picks the host for one start of <kind> and charges it there
-# (stream_admitted_host): the head for a re-run; for an obligation, the pool
-# from the host after the last one chosen.  A host is skipped while it runs
-# as many of this campaign's as it has cores, or while the ledger has no
-# room on it (campaign_host_try_start: no start leaves a host more than
-# CAUSYNTH_HOST_MAX_USED_PCT full, and none takes a head's room).  1 when no
-# host has room now, said once per wait.
+# Picks the host for one start and charges it there (stream_admitted_host):
+# the pool from the host after the last one chosen, each start charged its
+# replay's need, obligation_memory_mb, for an obligation's ramp.  A host is
+# skipped while it runs as many of this campaign's as it has cores, or while
+# the ledger has no room on it (campaign_host_try_start: no start leaves a
+# host more than CAUSYNTH_HOST_MAX_USED_PCT full, and none takes a head's
+# room).  1 when no host has room now, said once per wait.
 campaign_stream_admit_host() {
-  local kind=$1 host turn count status=0
-  local -a candidates=()
+  local host turn count status=0
   count=${#stream_hosts[@]}
-  if [[ "${kind}" == RERUN ]]; then
-    candidates=(localhost)
-  else
-    for ((turn = 0; turn < count; turn++)); do
-      candidates+=("${stream_hosts[$(( (stream_next_host + turn) % count ))]}")
-    done
-  fi
-  for ((turn = 0; turn < ${#candidates[@]}; turn++)); do
-    host=${candidates[${turn}]}
+  for ((turn = 0; turn < count; turn++)); do
+    host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
     campaign_stream_has_cores "${host}" || continue
-    while true; do
-      run_capturing_status campaign_host_try_start "${host}"
-      (( status == 3 )) || break
-      sleep 0.$(( (RANDOM % 9) + 1 ))
-    done
+    campaign_host_try_charge "${host}" "${obligation_memory_mb}" \
+      "${campaign_host_ramp_s}"
     case "${status}" in
       0)
         stream_admitted_host=${host}
         unset 'stream_host_unread[$host]'
-        [[ "${kind}" == RERUN ]] \
-          || stream_next_host=$(( (stream_next_host + turn + 1) % count ))
+        stream_next_host=$(( (stream_next_host + turn + 1) % count ))
         stream_waiting=""
         return 0 ;;
       2) campaign_stream_unreadable "${host}" ;;
@@ -4234,30 +4338,27 @@ campaign_stream_unreadable() {
 could not be read for ${campaign_ssh_patience_s}s"
 }
 
-# Starts one queue entry on <host>, in the background, on the class tree and
-# plan of the generation current now (a later GROW weaves a new one; this
-# start keeps its own); the ledger row campaign_stream_admit_host charged
-# is its own until it returns.
+# Starts one queue entry on <host>, in the background (campaign_stream_job),
+# on the class tree and plan of the generation current now (a later GROW
+# weaves a new one; this start keeps its own); the ledger row
+# campaign_stream_admit_host charged is its own until it returns.
 campaign_stream_start() {
   local entry=$1 host=$2 kind round id session worker
+  local -a work=()
   read -r kind round id session <<<"${entry}"
   if [[ "${kind}" == OBLIGATION ]]; then
     worker="${iteration_dir}/${round}/${id}"
-    printf '%s\n' "${host}" >"${worker}/host.txt"
-    campaign_run_obligation_on_host "${host}" "${id}" \
-      "${iteration_dir}/${round}/obligations.jsonl" "${stream_classes}" \
-      "${worker}" "${sessions}" "${stream_plan}" &
+    work=("${id}" "${iteration_dir}/${round}/obligations.jsonl" \
+      "${stream_classes}" "${worker}" "${sessions}" "${stream_plan}")
   else
     worker=$(campaign_stream_rerun_dir "${round}" "${id}")
-    printf 'localhost\n' >"${worker}/host.txt"
-    (
-      set -euo pipefail
-      campaign_obligation_replay "${id}" "${stream_classes}" "${worker}" \
-        "${worker}/sessions" "${stream_plan}"
-    ) >"${worker}/stdout.log" 2>"${worker}/stderr.log" &
+    work=("${id}" "${stream_classes}" "${worker}" "${worker}/sessions" \
+      "${stream_plan}" "${obligation_memory_mb}")
   fi
+  printf '%s\n' "${host}" >"${worker}/host.txt"
+  campaign_stream_job "${kind}" "${host}" "${campaign_host_charge_id}" \
+    "${id}" "${worker}" "${work[@]}" &
   stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"
-  stream_charges[$!]=${campaign_host_charge_id}
   stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
 }
 
@@ -4290,10 +4391,9 @@ campaign_stream_wait() {
 }
 
 # One child the head waited for, ended with <status>: the ticker; the step
-# (campaign_stream_step_done); or a job, whose host has its slot and its
-# ledger row back -- what it ran has returned, so an answer in seconds does
-# not hold its host's room for the whole ramp -- and whose return waits in
-# stream_pending for the next step to land it.
+# (campaign_stream_step_done); or a job, whose host has its slot back (its
+# ledger row it gave back itself, campaign_stream_job) and whose return
+# waits in stream_pending for the next step to land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session
   if [[ "${pid}" == "${stream_ticker}" ]]; then
@@ -4302,8 +4402,7 @@ campaign_stream_ended() {
     campaign_stream_step_done "${status}"
   else
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
-    campaign_host_release "${host}" "${stream_charges[${pid}]}"
-    unset 'stream_jobs[$pid]' 'stream_charges[$pid]'
+    unset 'stream_jobs[$pid]'
     stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
     stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
   fi
@@ -4399,8 +4498,9 @@ campaign_exposures() {
 # generation's own tree.  A start takes the generation current when it
 # starts (campaign_stream_start), so whatever already runs keeps the plan
 # and the classes it started on.  Each exposing obligation's replay is
-# queued first, to re-run on the head in a directory of its own beside its
-# worker; until every re-run has returned and swapped its session in
+# queued first, to re-run -- on whichever host of the pool admits it, as an
+# obligation does -- in a directory of its own beside its worker; until
+# every re-run has returned and swapped its session in
 # (campaign_stream_swap), no obligation starts and no round is planned.
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
@@ -4414,7 +4514,7 @@ campaign_stream_grow() {
     || campaign_fail EXPLORE ExploreMain "${growth}" \
       "an EXPOSED_REGION row names no obligation; only a focused replay's \
 exposure can be grown into"
-  campaign_head_placing=1 run_capturing_status run_java_main \
+  run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
     --iteration "${iteration_dir}" \
     --static-scope-map "${causynth_static_scope_map}" \
@@ -4779,7 +4879,7 @@ campaign_decide() {
 campaign_confirm() {
   local iteration_dir=$1
   local claim confirm_dir="${campaign_final}/confirm"
-  local worker sessions status=0 reason
+  local worker sessions status=0 reason need
   claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
   if [[ "${claim}" != SAT_CANDIDATE ]]; then
     campaign_log "claim=${claim}: nothing to confirm"
@@ -4810,13 +4910,16 @@ campaign_confirm() {
     # whether a race the order does not hold goes the same way twice.
     jq -c '.' "${worker}/realized.json" >"${campaign_final}/confirm.json"
   else
-    # The replay, exactly as an obligation's.  A campaign_fail inside it
-    # ends a campaign; here, in a subshell, it ends the confirmation as "no
-    # verdict", which is one more way of not agreeing with the model.
-    ( campaign_head_charged "${obligation_memory_mb}" 300 \
+    # The replay, exactly as an obligation's, charged as the seed replay is
+    # (campaign_replay_need_mb) wherever there is room.  A campaign_fail
+    # inside it ends a campaign; here, in a subshell, it ends the
+    # confirmation as "no verdict", which is one more way of not agreeing
+    # with the model.
+    need=$(campaign_replay_need_mb)
+    ( campaign_head_charged "${need}" 300 \
         campaign_obligation_replay CONFIRM \
         "${iteration_dir}/instrumented-classes" "${worker}" "${sessions}" \
-        "${iteration_dir}/seed-replay/execution_task_plan.jsonl" ) \
+        "${iteration_dir}/seed-replay/execution_task_plan.jsonl" "${need}" ) \
       >>"${confirm_dir}/confirm.log" 2>&1 || status=$?
     if [[ "${status}" -ne 0 ]]; then
       campaign_confirm_verdict false "the confirmation replay published no \
@@ -4843,8 +4946,8 @@ ${confirm_dir}/confirm.log" "" >"${campaign_final}/confirm.json"
 # markers the confirmation's world plants and watching the target's guards
 # for their fatal arm at the claim's anchor (explore.ConfirmMain --plant, the
 # code that wrote CONFIRM's world; runtime.RecordingPlant).  reproduce_runs
-# runs, all at once, the pool's hosts in turn (campaign_reproduce_one), each
-# charged on its host the recording's measured peak resident memory and
+# runs, all at once, each a head step charged the recording's measured peak
+# resident memory wherever there is room (campaign_reproduce_one) and
 # bounded by reproduce_time_factor times the recording's own workload; a run
 # ends as soon as the planted world takes the fatal arm at the anchor, its
 # one question answered.  Each run states its answer itself
@@ -4860,8 +4963,7 @@ ${confirm_dir}/confirm.log" "" >"${campaign_final}/confirm.json"
 campaign_reproduce() {
   local iteration_dir=$1
   local dir="${campaign_final}/reproduce" status=0 bound run reason="" pid
-  local unread=0
-  local -a hosts=() pids=()
+  local -a pids=()
   if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       != SAT_CANDIDATE || "$(jq -r '.confirmed' \
       "${campaign_final}/confirm.json")" != true ]]; then
@@ -4895,17 +4997,14 @@ campaign_reproduce() {
 charged ${campaign_recorded_workload_rss_mb} MB and bounded by ${bound}s \
 (reproduce_time_factor=${reproduce_time_factor} x the recording's \
 ${campaign_recorded_workload_s}s)"
-  mapfile -t hosts < <(campaign_worker_host_list)
   for ((run = 0; run < reproduce_runs; run++)); do
-    campaign_reproduce_one "${hosts[$((run % ${#hosts[@]}))]}" \
-      "${dir}/run-$((run + 1))" "${bound}" "${dir}/plant.jsonl" &
+    campaign_reproduce_one "${dir}/run-$((run + 1))" "${bound}" \
+      "${dir}/plant.jsonl" &
     pids+=("$!")
   done
   for pid in "${pids[@]}"; do
-    wait "${pid}" || unread=$((unread + 1))
+    wait "${pid}" || true
   done
-  (( unread == 0 )) || campaign_log "reproduce: the memory of ${unread} \
-run(s)' host could not be read; they state no answer"
   find "${dir}" -mindepth 2 -maxdepth 2 -name answer.json -print0 \
     | xargs -0 -r cat \
     | jq -s --argjson runs "${reproduce_runs}" '
@@ -4920,51 +5019,42 @@ run(s)' host could not be read; they state no answer"
     "${campaign_final}/reproduce.json"
 }
 
-# One native run of REPRODUCE into <run>, on <host> (the runs take the pool's
-# hosts in turn, all at once): room there for the recording's peak memory,
-# charged until the run returns, then the run.  A remote run's answer is
-# waited for until the shared home shows it
+# One native run of REPRODUCE into <run>: a head step charged the
+# recording's peak memory for an obligation's ramp, wherever there is room
+# (campaign_head_charged), and released as it returns.  A run placed on a
+# peer has its answer waited for until the shared home shows it here
 # (campaign_remote_visibility_wait_s); one that never shows states none.
-# 2 when the host's memory could not be read.
 campaign_reproduce_one() {
-  local host=$1 run=$2 bound=$3 plant=$4 charge waited=0
+  local run=$1 bound=$2 plant=$3 waited=0
   mkdir -p "${run}"
-  printf '%s\n' "${host}" >"${run}/host.txt"
-  campaign_await_host_memory "${host}" "${campaign_recorded_workload_rss_mb}" \
-    || return 2
-  charge=${campaign_host_charge_id}
-  if campaign_host_is_local "${host}"; then
-    (
-      set -euo pipefail
-      campaign_reproduce_run "${analysis_classes_dir}" "${run}" "${bound}" \
-        "${plant}"
-    ) >"${run}/stdout.log" 2>"${run}/stderr.log" || true
-  else
-    campaign_dispatch_remote "${host}" "${run}" \
-      "$((bound + campaign_remote_bound_margin_s))" --run-reproduction \
-      "${analysis_classes_dir}" "${run}" "${bound}" "${plant}" \
-      || campaign_log "reproduce: $(basename "${run}") on ${host} exited \
-nonzero; its logs, and ssh's, are in ${run}"
-    while [[ ! -s "${run}/answer.json" ]] \
-        && (( waited < campaign_remote_visibility_wait_s )); do
-      ls "${run}" >/dev/null 2>&1 || true
-      sleep 1
-      waited=$((waited + 1))
-    done
-  fi
-  campaign_host_release "${host}" "${charge}"
+  campaign_head_charged "${campaign_recorded_workload_rss_mb}" \
+    "${campaign_host_ramp_s}" campaign_reproduce_run "${analysis_classes_dir}" \
+    "${run}" "${bound}" "${plant}" "${campaign_recorded_workload_rss_mb}" \
+    || campaign_log "reproduce: $(basename "${run}") exited nonzero; its \
+logs are in ${run}"
+  campaign_host_is_local "${campaign_placed_host}" && return 0
+  while [[ ! -s "${run}/answer.json" ]] \
+      && (( waited < campaign_remote_visibility_wait_s )); do
+    ls "${run}" >/dev/null 2>&1 || true
+    sleep 1
+    waited=$((waited + 1))
+  done
 }
 
-# One native run, on this host: the workload in the recording weave
-# <classes> with <plant>, its trace into <run>, under <seconds>.  Whatever
+# One native run, on the host it was placed on, which it names in
+# <run>/host.txt: the workload in the recording weave <classes> with
+# <plant>, charged <charged_mb>, its trace into <run>, under <seconds>, its
+# output in <run>.  Whatever
 # the workload's exit -- a planted fault may well fail the test, and a run
 # that answered ends early -- its answer is <run>/answer.json, read off its
 # trace's plant rows (a run killed mid-row loses only that row): {exit,
 # planted, fatal, atAnchor}.
 campaign_reproduce_run() {
-  local analysis_classes_dir=$1 run=$2 bound=$3 plant=$4 status=0
+  local analysis_classes_dir=$1 run=$2 bound=$3 plant=$4 charged=$5 status=0
   local trace="${run}/runtime_trace.jsonl"
-  run_capturing_status run_configured_workload "${run}" "${bound}" "${plant}"
+  hostname -s >"${run}/host.txt"
+  run_capturing_status run_configured_workload "${run}" "${bound}" "${plant}" \
+    "${charged}" >"${run}/stdout.log" 2>"${run}/stderr.log"
   [[ -s "${trace}" ]] || trace=/dev/null
   jq -n -c -R --argjson exit "${status}" '
     reduce (inputs | select(contains("\"event\":\"PLANT_")) | fromjson?)
@@ -5654,8 +5744,8 @@ ${group}"
   campaign_iteration_explore "${iteration_dir}" iteration-0000
 }
 
-# What every peer entry (--run-obligation, --run-reproduction,
-# --run-placed) checks before its work, on this machine.
+# What every peer entry (--run-obligation, --run-placed) checks before its
+# work, on this machine.
 #
 # The peer loads the same configuration file the campaign loaded, from the
 # same shared home, and every path in it resolves identically -- but two
@@ -5719,17 +5809,26 @@ scratch ${campaign_local_scratch_root:-<shared home>}"
   campaign_peer_args=("$@")
 }
 
-# ONE head JVM of somebody else's campaign, on this machine
-# (campaign_run_placed): <workdir> <command...>, its standard output the
-# command's alone.
+# ONE step of somebody else's campaign head, on this machine
+# (campaign_run_placed): <workdir> <NAME=VALUE>... -- <command...>.  The
+# head's exported variables are exported here, so the command -- a program,
+# or a run_engine.sh function whose arguments are all it reads of the head
+# -- sees the environment it would have seen there; its standard output is
+# the command's alone.
 do_run_placed() {
   campaign_peer_enter "$@" >&2
   set -- "${campaign_peer_args[@]}"
-  [[ $# -ge 2 ]] || die "--run-placed takes a working directory and a \
-command, got $#"
-  cd -- "$1" || die "--run-placed: no working directory $1"
+  [[ $# -ge 1 ]] && cd -- "$1" \
+    || die "--run-placed: no working directory ${1:-}"
   shift
-  exec "$@"
+  while [[ $# -gt 0 && "$1" != -- ]]; do
+    export "${1?}"
+    shift
+  done
+  [[ $# -ge 2 ]] || die "--run-placed takes a working directory, the \
+head's assignments, -- and a command"
+  shift
+  "$@"
 }
 
 # ONE obligation of somebody else's campaign, on this machine.
@@ -5739,16 +5838,6 @@ do_run_obligation() {
   [[ $# -eq 6 ]] || die "--run-obligation takes six positional arguments \
 (id obligations classes worker sessions seed-plan), got $#"
   campaign_obligation_worker "$@"
-}
-
-# ONE native run of somebody else's REPRODUCE, on this machine
-# (campaign_reproduce_one).
-do_run_reproduction() {
-  campaign_peer_enter "$@"
-  set -- "${campaign_peer_args[@]}"
-  [[ $# -eq 4 ]] || die "--run-reproduction takes four positional \
-arguments (classes run-dir seconds plant), got $#"
-  campaign_reproduce_run "$@"
 }
 
 # One campaign, one iteration.  What a replay learns past the recording's
@@ -5777,9 +5866,9 @@ do_campaign() {
   # Named now that the campaign root is claimed, because the root is what
   # makes it this run's and no other run's.
   campaign_init_local_scratch_root
-  # This shell is the head: its engine JVMs and its replays are charged to
-  # its host (campaign_head_charged), and its host keeps room for the next
-  # one (campaign_head_reserve).
+  # This shell is the head: its engine JVMs and its replays are charged
+  # wherever they are placed, its own host first (campaign_head_charged),
+  # and its host keeps room for the next one (campaign_head_reserve).
   campaign_head_charging=1
   campaign_head_reserve
 
@@ -5864,8 +5953,7 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|slice|record|config|validate|--run-obligation|--run-reproduction\
-  |--run-placed)
+  campaign|slice|record|config|validate|--run-obligation|--run-placed)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
@@ -5876,7 +5964,6 @@ case "${command_name}" in
       config) print_normalized_config ;;
       validate) validate_config ;;
       --run-obligation) do_run_obligation "$@" ;;
-      --run-reproduction) do_run_reproduction "$@" ;;
       --run-placed) do_run_placed "$@" ;;
     esac
     ;;

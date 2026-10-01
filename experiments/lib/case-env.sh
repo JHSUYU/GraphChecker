@@ -58,9 +58,13 @@ source "${case_dir}/case.sh" "${case_id}"
 target_occurrence=${CAUSYNTH_TARGET_OCCURRENCE_OVERRIDE-${target_occurrence}}
 system_paths
 tag=${case_name}${case_id:+-${case_id}}
-# The run's own local copy of the scope, named by the run's output directory:
-# two runs of one case on one host (two rounds, a round beside a tree's
-# workload check) must not share it, since prepare-analysis.sh empties it
-# first and EMIT checks it is still what the run froze.
-analysis=${CAUSYNTH_ANALYSIS_CLASSES_DIR:-/tmp/graphchecker-${tag}-$(printf '%s' "${CAUSYNTH_OUTPUT_DIR:-}" | sha1sum | cut -c1-12)-classes}
+# The run's output directory (run.sh exports it): where every artifact goes.
+output_dir=${CAUSYNTH_OUTPUT_DIR:-/tmp/graphchecker-${tag}}
+# The run's own copy of the case's scope, inside its output directory:
+# prepare-analysis.sh empties and fills it, every static pass reads it, and
+# FREEZE digests what EMIT checks it still is.  A campaign's output
+# directory is on the filesystem every host of its pool mounts (its sessions
+# are), so a pass placed on any host reads these classes (run_engine.sh
+# campaign_head_charged), and it is the run's alone: no two runs share it.
+analysis=${CAUSYNTH_ANALYSIS_CLASSES_DIR:-${output_dir}/declared-classes}
 test_name=${test_class}#${test_method}
