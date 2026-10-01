@@ -1770,16 +1770,21 @@ here after ${waited}s"
 # does not contain the pattern and pkill cannot match the process doing the
 # matching.
 campaign_reap_remote_workers() {
-  local host reaped=0
+  local host pid
+  local -a reaping=()
   [[ -n "${campaign_worker_hosts}" ]] || return 0
   [[ -n "${campaign_root}" ]] || return 0
+  # Every peer at once: each waits out its own kill grace.
   for host in ${campaign_worker_hosts}; do
     campaign_host_is_local "${host}" && continue
-    campaign_reap_on_host "${host}" "${campaign_root}"
-    reaped=$((reaped + 1))
+    campaign_reap_on_host "${host}" "${campaign_root}" &
+    reaping+=("$!")
   done
-  [[ "${reaped}" -eq 0 ]] || campaign_log "reaped this run's remote workers \
-on ${reaped} host(s) matching ${campaign_root}"
+  for pid in "${reaping[@]}"; do
+    wait "${pid}" || true
+  done
+  [[ "${#reaping[@]}" -eq 0 ]] || campaign_log "reaped this run's remote \
+workers on ${#reaping[@]} host(s) matching ${campaign_root}"
 }
 
 # Every process of this user on <host> whose command line matches <pattern>:
