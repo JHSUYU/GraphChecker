@@ -3829,21 +3829,22 @@ public class ComposerTest {
      * hash-ordered one keeps it through removals and updates, and a put of
      * another key may rebin it; a recording that states no order has none.
      * Where the order is not stated the positions are still a bijection
-     * with the keys, in no order: position 0 may name the last key put.
-     * {order, members, program mutations above the members (a negative
-     * removes that key), whether the chain states the order}.
+     * with the keys, in no order: position 0 may name the last key put, and
+     * the map is named DIAGNOSTIC with why.  {order, members, program
+     * mutations above the members (a negative removes that key), why the
+     * chain does not state the order ("" it does)}.
      */
     @Test
     public void aViewPositionIsTheOrderItsClassIteratesIn() {
         Object[][] rows = {
-                {"INSERTION", 2, new long[]{3L}, true},
-                {"HASH", 2, new long[]{}, true},
-                {"HASH", 2, new long[]{1L}, true},
-                {"HASH", 3, new long[]{-1L}, true},
-                {"HASH", 2, new long[]{-1L, 1L}, false},
-                {"HASH", 2, new long[]{3L}, false},
-                {"", -1, new long[]{1L, 2L}, false},
-                {"HASH", 0, new long[]{3L, 4L}, false}};
+                {"INSERTION", 2, new long[]{3L}, ""},
+                {"HASH", 2, new long[]{}, ""},
+                {"HASH", 2, new long[]{1L}, ""},
+                {"HASH", 3, new long[]{-1L}, ""},
+                {"HASH", 2, new long[]{-1L, 1L}, "HASH_INSERT"},
+                {"HASH", 2, new long[]{3L}, "HASH_INSERT"},
+                {"", -1, new long[]{1L, 2L}, "UNRECORDED"},
+                {"HASH", 0, new long[]{3L, 4L}, "HASH_INSERT"}};
         for (Object[] row : rows) {
             int members = (Integer) row[1];
             JsonObject state = snapshotBase("java/util/HashMap",
@@ -3874,7 +3875,14 @@ public class ComposerTest {
             assertEquals(java.util.Arrays.deepToString(row),
                     Collections.<String>emptyList(), lowering.openRefusals());
             List<String> facts = lowering.end();
-            String stated = (Boolean) row[3] ? "unsat" : "sat";
+            String why = (String) row[3];
+            assertEquals(java.util.Arrays.deepToString(row),
+                    why.isEmpty() ? Collections.<String>emptySet()
+                            : Collections.singleton(ContainerSmtCodec
+                            .ASSOC_VIEW_UNORDERED + ":" + why
+                            + ":M_L'java/util/HashMap'_88 (java/util/HashMap)"
+                            + "@s0"), lowering.diagnostics().keySet());
+            String stated = why.isEmpty() ? "unsat" : "sat";
             assertEquals(java.util.Arrays.deepToString(row) + ": position 0 "
                             + "names the last key the chain put",
                     stated, answer(lowering, facts, "(= " + view + " "

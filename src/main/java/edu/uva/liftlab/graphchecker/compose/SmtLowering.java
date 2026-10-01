@@ -832,8 +832,9 @@ public final class SmtLowering {
         /** method-return symbol -> the value its node states. */
         private final Map<String, String> pinnedReturns =
                 new LinkedHashMap<String, String>();
-        /** A candidate object with no answer -> why ({@link #fieldOf}). */
-        private final Map<String, String> candidateUnanswered =
+        /** A named DIAGNOSTIC that refuses nothing -> why
+         *  ({@link #diagnostics}). */
+        private final Map<String, String> diagnostics =
                 new LinkedHashMap<String, String>();
 
         private void refusal(String subject) {
@@ -860,7 +861,7 @@ public final class SmtLowering {
             cuts.addAll(other.cuts);
             sortConflicts.putAll(other.sortConflicts);
             pinnedReturns.putAll(other.pinnedReturns);
-            candidateUnanswered.putAll(other.candidateUnanswered);
+            diagnostics.putAll(other.diagnostics);
         }
     }
 
@@ -1986,7 +1987,7 @@ public final class SmtLowering {
      * session, made before the owner's location first stored the object;
      * or, never written, the one value every read of it states at one
      * version.  Any other cell has no one value an arm delivering the
-     * object reads: null, and named ({@link #candidateUnanswered}).
+     * object reads: null, and named ({@link #diagnostics}).
      */
     private Term fieldOf(long rid, String slot, Candidate candidate,
                          Sort sort, String owner, String origin) {
@@ -2011,7 +2012,7 @@ public final class SmtLowering {
                     + " the projection reads";
         }
         if (field != null && field.sort == sort) return field;
-        top().candidateUnanswered.put(CANDIDATE_UNANSWERED + ":" + cell + "@"
+        top().diagnostics.put(CANDIDATE_UNANSWERED + ":" + cell + "@"
                 + scope, "a STATE family may re-point " + owner + " to this "
                 + "object, and this session states " + why + ", so no "
                 + "pairing that delivers it is composed");
@@ -2176,7 +2177,7 @@ public final class SmtLowering {
                 if (!answered) reason = "UNLOWERED";
             }
             if (!reason.isEmpty()) {
-                top().candidateUnanswered.put(REFERENT_STATE_UNSTATED + ":"
+                top().diagnostics.put(REFERENT_STATE_UNSTATED + ":"
                         + reason + ":" + object + "@" + scope, "a STATE "
                         + "family may re-point " + owner + " to this object"
                         + " through a store at version " + store.version()
@@ -2410,12 +2411,14 @@ public final class SmtLowering {
     }
 
     /**
-     * Each candidate object with no answer ({@link #fieldOf},
-     * {@link #answerOf}), with why: the pairings delivering it are refused,
-     * not composed.
+     * Each DIAGNOSTIC this lowering names without refusing what it lowered,
+     * by subject, with why: a candidate object with no answer ({@link
+     * #fieldOf}, {@link #answerOf}: the pairings delivering it are not
+     * composed), a view whose positions are a bijection in no order
+     * ({@code ContainerSmtCodec#requireAssociativeViewBijection}).
      */
-    public Map<String, String> candidateUnanswered() {
-        return Collections.unmodifiableMap(root.candidateUnanswered);
+    public Map<String, String> diagnostics() {
+        return Collections.unmodifiableMap(root.diagnostics);
     }
 
     // ------------------------------------------------------------------
@@ -2589,6 +2592,11 @@ public final class SmtLowering {
             @Override
             public void unsupported(String reason) {
                 refuse(reason, "");
+            }
+
+            @Override
+            public void diagnostic(String subject, String detail) {
+                top().diagnostics.put(subject + "@" + scope, detail);
             }
         };
     }

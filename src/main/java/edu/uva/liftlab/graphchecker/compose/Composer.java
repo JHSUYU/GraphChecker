@@ -775,10 +775,10 @@ public final class Composer {
                             + " by a named assertion, and what it was "
                             + "computed from is not in the formula");
         }
-        for (Map.Entry<String, String> unanswered
-                : lowering.candidateUnanswered().entrySet()) {
+        for (Map.Entry<String, String> named
+                : lowering.diagnostics().entrySet()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    unanswered.getKey(), unanswered.getValue());
+                    named.getKey(), named.getValue());
         }
 
         // Valuations before the body: the body declares what pins reach.

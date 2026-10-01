@@ -190,10 +190,10 @@ See Acceptance above. What remains (the branches are in README §0.3):
   run's position 1 read `operation`: a snapshot now states its members in the order the class
   iterates and says which (`ContainerSupport::iteration_order`, image `vm-r3c`), and a view's
   positions follow the chain only where that order holds, else are a bijection in no order
-  (`ContainerSmtCodec#ordered`). With `r9`'s four message snapshots restated as `vm-r3c` records
-  them, COMPOSE claims CLOCK_SKEW offline: both clocks in the formula, MigrateCmd's moved, the
-  leader's held, polarity decides; under the fixed arithmetic engine z3 did not answer it in 30
-  minutes (open defect 33). The store
+  (`ContainerSmtCodec#unordered`). With `r9`'s four message snapshots restated as `vm-r3c` records
+  them, COMPOSE claims CLOCK_SKEW offline in 17 s: both clocks in the formula, MigrateCmd's moved,
+  the leader's held, polarity decides (one arithmetic engine alone did not answer its clock
+  question in 30 minutes; every z3 run now races two, `smt.Z3#run`). The store
   door files what a write carried after the schedule's SEND lets the queue's consumer run
   (`gc/runtime/MessageDoors#stored`, open defect 28), which can leave the Overseer queue's attach
   unpaired.
@@ -279,11 +279,6 @@ Scale and robustness:
 32. COMPOSE lowers and states a message family once per path that binds it
     (`gc/compose/ComposedFamilies#messageFamily`): hdfs-11741 r3's 47 paths carry 7 MB of family
     text per query, each arm body up to twice.
-33. Every lowered query fixes z3's arithmetic engine (`smt.arith.solver 2`,
-    `gc/compose/VmTermLowering#preamble`), and z3's time on one query swings by orders of
-    magnitude with it and with the random seed: SOLR-18413's composed query with its message maps
-    in link order ran past 900 s under it, and answered sat in 1 s under solver 6 and in 2-6 s
-    under seeds 1-3 (`ClaimPolicy#leastClocks` asks it once per clock).
 
 Fallbacks and dead code:
 

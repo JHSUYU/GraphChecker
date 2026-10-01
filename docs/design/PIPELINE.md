@@ -476,7 +476,13 @@ an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest 
 z3 runs with `solver_timeout_ms`, which its driver (`smt.Z3`) enforces; a JVM that ends takes its
 running z3 processes with it (a shutdown hook), and each z3 also carries its own hard timeout ten
 seconds past that budget (`-T`, `Z3#hardTimeout`), so one whose JVM was killed outright stops by
-itself. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
+itself. Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
+(`smt.arith.solver` 2, the one the query states, and 6; `Z3#ARITHMETIC`), and answers with the
+first that decides, killing the other; the stated engine's answer wins when it decides within as
+long again as the other took (at least a second), so what it alone decides promptly answers as it
+did alone, and an undecided pair is undecided (`Z3#run`). z3's time on one query swings by orders
+of magnitude with the engine: SOLR-18413 r9's composed query ran past 30 minutes under 2 and is
+sat in a second under 6. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
 `NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
 read back by root id, the flipped path's clocks as skews (`model − host reading`; one outside a Java
 long refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#answer`: a String
@@ -797,14 +803,16 @@ answers is its cell's `valueString`, null where the cell is the null cell `(VRef
 stated linearly in its chain's puts: each position below the size names a present key held at that
 position, and each put key present is held at a position below the size. A position is the run's
 iteration count, so the chain's order is the positions' only where it is the order the map's class
-iterates in (`ContainerSmtCodec#ordered`): the snapshot's members follow its base in that order
+iterates in (`ContainerSmtCodec#unordered`): the snapshot's members follow its base in that order
 (`order`, `members`); an `INSERTION` map iterates in its chain's order after them (a `putAll` in
 its source's); a `HASH` map keeps it through removals and updates of a key it holds, while a put of
 another key may rebin or resize its table. Past such a put, or over a base stating no order (a
 recording before it), the same facts are stated through `assoc_view_key` and
 `assoc_view_position` (`ContainerSmtCodec.ViewOrder.FREE`): the positions are a bijection with the
 keys in no order, so a view read as a set keeps every key and no position is tied to a key the run
-may not have had there. A view walks the state each step of its chain stands for (`Host#chain`: a
+may not have had there; each such map is named DIAGNOSTIC
+`ASSOC_VIEW_UNORDERED:<why>:<map symbol (class), or the location its state was read from>@<session>`
+(`SmtLowering#diagnostics`). A view walks the state each step of its chain stands for (`Host#chain`: a
 read's joined version), so a map's `values()` a region iterates through a read of it is bounded by
 that version's keys.
 
@@ -869,7 +877,7 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ClaimPolicy`:
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
-2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors,
+2. Every valuation is asked (4 asks at once, 8 z3 processes) for the path selectors, arm selectors,
    the nested state selectors a state arm's stores are chosen among (§8), clock cells and the codec
    holes the arms bind (`Composition#holeSymbols`); a selected
    state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →

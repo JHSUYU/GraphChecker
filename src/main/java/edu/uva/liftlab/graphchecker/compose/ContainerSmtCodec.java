@@ -887,7 +887,7 @@ public final class ContainerSmtCodec {
     /**
      * What a view's position is read through.  {@code STATED}: the chain's
      * order ({@code assoc_key_at}, {@code assoc_position}), where it is the
-     * order the map's class iterates in ({@link #ordered}).  {@code FREE}:
+     * order the map's class iterates in ({@link #unordered}).  {@code FREE}:
      * a bijection between the positions and the state's keys and nothing
      * more ({@code assoc_view_key}, {@code assoc_view_position},
      * {@code ContainerStateModel}), where it is not: the formula then names
@@ -949,8 +949,18 @@ public final class ContainerSmtCodec {
                     + associativeStateSubject(stateIr));
             return null;
         }
-        ViewOrder order = ordered(stateIr, host, put)
-                ? ViewOrder.STATED : ViewOrder.FREE;
+        String unordered = unordered(stateIr, host, put);
+        ViewOrder order = unordered.isEmpty() ? ViewOrder.STATED
+                : ViewOrder.FREE;
+        if (order == ViewOrder.FREE) {
+            host.diagnostic(ASSOC_VIEW_UNORDERED + ":" + unordered + ":"
+                    + mapNamed(stateIr, host), "a view of this map reads "
+                    + "positions its chain does not order (UNRECORDED: its "
+                    + "snapshot states no iteration order; HASH_INSERT: a "
+                    + "put of another key into a hash-ordered map may rebin "
+                    + "its table), so they are a bijection with its keys in "
+                    + "no order (assoc_view_key)");
+        }
         Term size = associativeSize(state, host);
         for (int position = 0; position < put.size(); position++) {
             Term key = shared(new Term("(" + order.keyAt + " " + state.text
@@ -974,8 +984,13 @@ public final class ContainerSmtCodec {
         return order;
     }
 
+    /** The DIAGNOSTIC naming a view whose positions are FREE. */
+    public static final String ASSOC_VIEW_UNORDERED = "ASSOC_VIEW_UNORDERED";
+
     /**
-     * Whether the chain's order is the order Java iterates this state in.
+     * Why the chain's order is not the order Java iterates this state in
+     * ({@code UNRECORDED}, {@code HASH_INSERT}, {@code CHAIN},
+     * {@code PUT_ALL:}<i>its source's</i>), or {@code ""} when it is.
      * A position is the run's iteration count; the model's is the chain's
      * order (a put appends a new key, a removal closes the gap).  The VM
      * states the members a snapshot read in their class's iteration order,
@@ -989,11 +1004,11 @@ public final class ContainerSmtCodec {
      * is a recording older than that; a program {@code CLEAR} empties the
      * state and keeps its class.  One key has one order.
      */
-    private static boolean ordered(JsonElement state, Host host,
-                                   List<JsonElement> put) {
+    private static String unordered(JsonElement state, Host host,
+                                    List<JsonElement> put) {
         Set<String> distinct = new HashSet<String>();
         for (JsonElement key : put) distinct.add(String.valueOf(key));
-        if (distinct.size() <= 1) return true;
+        if (distinct.size() <= 1) return "";
         List<Mutation> above = new ArrayList<Mutation>();
         JsonElement chain = state;
         JsonObject base = null;
@@ -1002,13 +1017,13 @@ public final class ContainerSmtCodec {
              depth++) {
             JsonElement node = host.chain(chain);
             Mutation mutation = associativeMutation(node);
-            if (mutation == null) return false;
+            if (mutation == null) return "CHAIN";
             if ("SNAPSHOT_BASE".equals(mutation.operation)) {
                 base = node.getAsJsonObject();
                 members = JsonFields.optionalInteger(base, "members", -1);
             } else if ("CLEAR".equals(mutation.operation)) {
                 base = snapshotBase(mutation.receiver, host);
-                if (base == null) return false;
+                if (base == null) return "CHAIN";
             } else {
                 above.add(mutation);
                 chain = mutation.receiver;
@@ -1018,7 +1033,7 @@ public final class ContainerSmtCodec {
         boolean hash = "HASH".equals(order);
         if (!hash && !"INSERTION".equals(order) || members < 0
                 || members > above.size()) {
-            return false;
+            return "UNRECORDED";
         }
         Set<String> present = new HashSet<String>();
         for (int index = above.size() - 1; index >= 0; index--) {
@@ -1027,16 +1042,16 @@ public final class ContainerSmtCodec {
             String key = mutation.arguments.size() == 0 ? null
                     : literalKey(mutation.arguments.get(0));
             if ("PUT_ALL".equals(mutation.operation)) {
-                if (hash) return false;
+                if (hash) return "HASH_INSERT";
                 JsonElement from = mutation.arguments.get(0);
                 List<JsonElement> source = associativeViewKeys(from, host);
-                if (source == null || !ordered(from, host, source)) {
-                    return false;
-                }
+                String why = source == null ? "CHAIN"
+                        : unordered(from, host, source);
+                if (!why.isEmpty()) return "PUT_ALL:" + why;
             } else if ("PUT".equals(mutation.operation)) {
                 if (!member && hash
                         && (key == null || !present.contains(key))) {
-                    return false;
+                    return "HASH_INSERT";
                 }
                 if (key != null) present.add(key);
             } else if (key == null) {
@@ -1045,7 +1060,39 @@ public final class ContainerSmtCodec {
                 present.remove(key);
             }
         }
-        return true;
+        return "";
+    }
+
+    /**
+     * The map a state is a version of, as the recording names it: the
+     * symbol of its root with its Java class, else the location its state
+     * was read from.
+     */
+    private static String mapNamed(JsonElement state, Host host) {
+        JsonObject base = snapshotBase(state, host);
+        JsonElement root = base == null ? null : base.get("receiver");
+        if (root != null && root.isJsonObject() && "STATE".equals(
+                optionalString(root.getAsJsonObject(), "operation"))) {
+            root = root.getAsJsonObject().get("receiver");
+        }
+        // A consumer boundary wraps the read that named the map.
+        while (root != null && root.isJsonObject()
+                && root.getAsJsonObject().has("expression")
+                && !root.getAsJsonObject().has("location")) {
+            root = root.getAsJsonObject().get("expression");
+        }
+        if (root == null || !root.isJsonObject()) return "unnamed";
+        JsonObject named = root.getAsJsonObject();
+        String symbol = optionalString(named, "_exp");
+        if (!symbol.isEmpty()) {
+            return symbol + " (" + optionalString(named, "_java_type") + ")";
+        }
+        JsonElement read = named.get("location");
+        if (read == null || !read.isJsonObject()) return "unnamed";
+        JsonObject location = read.getAsJsonObject();
+        return optionalString(location, "locationKind") + "/"
+                + JsonFields.optionalLongInteger(location, "ownerSymRid", -1L)
+                + "#" + JsonFields.optionalLongInteger(location, "slot", 0L);
     }
 
     /** The snapshot base beneath a program {@code CLEAR}, or null. */
@@ -1418,6 +1465,11 @@ public final class ContainerSmtCodec {
         JsonElement chain(JsonElement state);
 
         void require(String predicate);
+
+        /** Names, refusing nothing, what the lowering states only in part:
+         *  a DIAGNOSTIC gap {@code subject} (the encoder adds its session),
+         *  with why. */
+        void diagnostic(String subject, String detail);
 
         void unsupported(String reason);
 
