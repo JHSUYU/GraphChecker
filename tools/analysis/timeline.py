@@ -11,8 +11,8 @@ the sources are the files the campaign wrote:
                      the weave's "GraphChecker started/ran for" log lines
   EXPLORE per wave   obligations-NNNN/: the planner's empty stderr.log (created
                      when it starts) to explore_manifest.json; the dispatch to
-                     import-gates/<wave> (made when the gate starts); the gate
-                     to the wave's import_gate.json
+                     its last obligation's end (a GROW re-run's included); the
+                     gate from there to the wave's import_gate.json
   one obligation     host.txt (claimed) -> the solver's files -> replay.log
                      (the replay's end) -> stdout.log (the worker's end)
   a replay's outcome its obligation_result.jsonl: ADMITTED = flipped; NOT_ADMITTED
@@ -111,7 +111,12 @@ def worker_times(worker):
                "focused_task.jsonl", "schedule_prefix.jsonl", "schedule_suffix.jsonl")]
     solver = [t for t in solver if t]
     replay_end = mtime(os.path.join(worker, "replay.log"))
-    end = mtime(os.path.join(worker, "stdout.log")) or replay_end
+    # Its answer is written last; a remote worker's log may fall silent
+    # long before (a wait for its solver logs once).
+    ends = [t for t in (mtime(os.path.join(worker, "stdout.log")), replay_end,
+                        mtime(os.path.join(worker, "obligation_result.jsonl")))
+            if t]
+    end = max(ends) if ends else None
     return start, (max(solver) if solver else end), replay_end, end
 
 
@@ -153,8 +158,7 @@ def wave_rows(iteration):
         stderr = os.path.join(wave, "stderr.log")
         plan_start = mtime(stderr) if os.path.getsize(stderr) == 0 else previous_end
         plan_end = mtime(os.path.join(wave, "explore_manifest.json"))
-        gate_start = mtime(os.path.join(iteration, "import-gates", name))
-        gate_end = mtime(os.path.join(wave, "import_gate.json")) or gate_start
+        gate_end = mtime(os.path.join(wave, "import_gate.json"))
         obligations = []
         for worker in sorted(glob.glob(os.path.join(wave, "*", ""))):
             worker = worker.rstrip("/")
@@ -182,7 +186,8 @@ def wave_rows(iteration):
                 "rerun": bool(glob.glob(os.path.join(worker, "before-*"))),
             })
         ends = [t for t in (worker_times(os.path.join(wave, o["id"]))[3] for o in obligations) if t]
-        dispatch_end = gate_start or (max(ends) if ends else plan_end)
+        dispatch_end = max(ends) if ends else plan_end
+        gate_start = dispatch_end if gate_end else None
         rows.append({"wave": name[-4:], "plan": (plan_end - plan_start) if plan_start and plan_end else None,
                      "dispatch": (dispatch_end - plan_end) if plan_end and dispatch_end else None,
                      "gate": (gate_end - gate_start) if gate_start and gate_end else None,

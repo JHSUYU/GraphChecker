@@ -4061,8 +4061,8 @@ public class ExploreTest {
                          Obligation proposal, Path out, String name)
             throws IOException {
         Path worker = out.resolve(name);
-        ObligationSolverMain.solve(iteration, domains,
-                waveDir.resolve("obligations.jsonl"),
+        ObligationSolverMain.solve(Corpus.read(iteration, domains),
+                iteration, waveDir.resolve("obligations.jsonl"),
                 proposal.obligationId(), worker, Paths.get("z3"), 10_000L);
         List<ObligationResult> rows = RowCodec.readAll(
                 worker.resolve("obligation_result.jsonl"),

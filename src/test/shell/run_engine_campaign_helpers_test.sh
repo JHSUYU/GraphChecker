@@ -832,6 +832,8 @@ mkdir -p "${plan2_dir}/out"
 : >"${plan2_dir}/candidate.jsonl.gz"
 : >"${plan2_dir}/static_scope_map.jsonl"
 scheduler_args=""
+# The stub stands in for this test only: the real one is put back after.
+real_run_java_main=$(declare -f run_java_main)
 run_java_main() { scheduler_args="$*"; }
 runtime_region_plan="${plan2_dir}/region_plan.jsonl"
 candidate_graph="${plan2_dir}/candidate.jsonl.gz"
@@ -840,7 +842,7 @@ schedule_output_dir="${plan2_dir}/out"
 schedule_max_jobs=8
 declared_target_occurrence=""
 do_schedule
-unset -f run_java_main
+eval "${real_run_java_main}"
 for retired_option in --retain-regions --summaries --refined-graph --closure-mode; do
   [[ "${scheduler_args}" != *"${retired_option}"* ]] \
     || fail "PLAN still passes ${retired_option}: ${scheduler_args}"
@@ -1116,19 +1118,17 @@ grep -q "artifact=${gate_dir}/campaign_gaps.jsonl" "${gate_dir}/error.log" \
 [[ "$(wc -l <"${gate_dir}/campaign_gaps.jsonl")" -eq 2 ]] \
   || fail "the gate's gap file is not append-only"
 
-# The same gate over one wave's own sessions: EXPLORE calls it after the
+# The same gate over the sessions one wave added: EXPLORE calls it after the
 # wave's replays land, and a blocking violation there fails the campaign at
-# that wave.  What the wave ADDED decides whether the gate runs; what it READS
-# is the epoch's whole roster, seed included, because invariant 1 is a
-# set-level rule (exactly one session states role SEED) and a set cut down to
-# one wave never holds the seed.
+# that wave.  It names exactly the wave's own sessions -- each session is
+# judged once, and ImportGateMain judges the rules over the set (one seed,
+# the epoch's roots) against the sessions its ledger says were gated before
+# (ContractTest) -- and it reads the iteration itself, every wave's workers
+# included, so no session reads as having no focus row.
 declare -f campaign_explore | grep -q campaign_import_wave_gate \
   || fail "EXPLORE does not put its wave's sessions to the import gate"
 wave_gate="${test_tmp}/import-gate-wave"
-mkdir -p "${wave_gate}/sessions/seed-result-0" \
-         "${wave_gate}/obligations-0000/OBL.a"
-printf '{"sessionId":"focus-a"}\n' \
-  >"${wave_gate}/obligations-0000/OBL.a/obligation_result.jsonl"
+mkdir -p "${wave_gate}/sessions/seed-result-0" "${wave_gate}/obligations-0000"
 campaign_session_roster "${wave_gate}/sessions" \
   >"${wave_gate}/obligations-0000/sessions-before.txt"
 # The wave's own replay lands after the roster is taken.
@@ -1138,27 +1138,20 @@ mkdir -p "${wave_gate}/sessions/focus-a"
   || fail "the wave gate does not count exactly the sessions the wave added"
 (
   run_java_main() {
-    # The gate is handed a session directory of its own, holding the
-    # epoch's whole roster, and the wave itself as the one wave of
-    # obligation workers behind it.  It is built BESIDE the waves, never
-    # inside one: a gate under its own wave links its own ancestor.
-    [[ "$3" == "${wave_gate}/import-gates/obligations-0000/sessions" ]] \
-      || fail "the wave gate did not name its own session set: $3"
-    [[ -d "$3/focus-a" ]] \
-      || fail "the wave gate did not gate the session its wave published"
-    [[ -d "$3/seed-result-0" ]] \
-      || fail "the wave gate left the epoch's seed out of the set it gated, \
-so invariant 1 has no SEED to find"
-    [[ -f "${wave_gate}/import-gates/obligations-0000/obligations-0000/\
-OBL.a/obligation_result.jsonl" ]] \
-      || fail "the wave gate hid its own obligation workers"
-    [[ ! -e "${wave_gate}/obligations-0000/import-gate" ]] \
-      || fail "the wave gate was built inside the wave it links"
+    [[ "$*" == *"--sessions ${wave_gate}/sessions --gate focus-a --gated \
+${wave_gate}/import_gated.txt "* ]] \
+      || fail "the wave gate did not gate exactly its wave's session of the \
+iteration, against the iteration's ledger: $*"
+    # It holds one session at a time: its heap (and charge) is what the
+    # largest session takes, not the case's engine heap for a whole corpus.
+    [[ "${engine_memory_mb}" -ge 512 && "${engine_memory_mb}" -lt 1024 ]] \
+      || fail "the gate of two empty sessions asked ${engine_memory_mb} MB"
     printf '%s\n' '{"violations":1,"blocking":1,'\
 '"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
     printf '{"schemaVersion":1,"cls":"BLOCKING"}\n' \
       >>"${wave_gate}/campaign_gaps.jsonl"
   }
+  engine_memory_mb=16384
   campaign_import_wave_gate "${wave_gate}" iteration-0000 \
     "${wave_gate}/obligations-0000" "${wave_gate}/sessions" >/dev/null
 ) 2>"${wave_gate}/error.log" \
@@ -1171,48 +1164,19 @@ grep -q 'roots.jsonl seq=3 field=recordedValue' "${wave_gate}/error.log" \
   || fail "the wave gate's failure does not name the first blocking subject"
 [[ -s "${wave_gate}/obligations-0000/import_gate.json" ]] \
   || fail "the wave gate wrote no summary of its own"
-
-# And EVERY wave of the epoch is behind the set it gates, not just the one
-# being gated.  Invariant 6 asks of each FOCUSED session which world it ran
-# in, and its worker's focus row is the only thing that says so; a gate that
-# links this wave alone hides every earlier wave's focus rows, so each session
-# an earlier wave focused reads as "no focus row this epoch".  hdfs-11741
-# campaign #3: wave 1 was the first wave of any campaign to publish a session,
-# and its gate refused with 13 BLOCKING invariant-6 rows, one per session that
-# wave 0 had focused.
-mkdir -p "${wave_gate}/obligations-0001/OBL.b"
-printf '{"sessionId":"focus-b"}\n' \
-  >"${wave_gate}/obligations-0001/OBL.b/obligation_result.jsonl"
-campaign_session_roster "${wave_gate}/sessions" \
-  >"${wave_gate}/obligations-0001/sessions-before.txt"
-mkdir -p "${wave_gate}/sessions/focus-b"
+# A session the gate is handed is a session of the iteration's corpus, or
+# the gate refuses it by name: one outside would be judged against an epoch
+# it is not part of.
 (
-  run_java_main() {
-    [[ -f "${wave_gate}/import-gates/obligations-0001/obligations-0000/\
-OBL.a/obligation_result.jsonl" ]] \
-      || fail "the wave gate hid an EARLIER wave's obligation workers, so \
-every session that wave focused reads as having no focus row"
-    [[ -f "${wave_gate}/import-gates/obligations-0001/obligations-0001/\
-OBL.b/obligation_result.jsonl" ]] \
-      || fail "the wave gate hid its own obligation workers"
-    printf '%s\n' '{"violations":0,"blocking":0,"firstBlockingSubject":""}'
-  }
-  campaign_import_wave_gate "${wave_gate}" iteration-0000 \
-    "${wave_gate}/obligations-0001" "${wave_gate}/sessions" >/dev/null
-) || fail "a wave gate over two waves did not link both waves"
-[[ -s "${wave_gate}/obligations-0001/import_gate.json" ]] \
-  || fail "the wave gate's summary does not stay with its wave"
-# NO LINK INTO ITS OWN ANCESTOR: the gate is beside the waves, so nothing
-# under it resolves to a directory that contains it -- a walker that
-# recurses cannot loop.
-for gate_link in "${wave_gate}"/import-gates/*/*; do
-  [[ -L "${gate_link}" ]] || continue
-  gate_target=$(readlink -f "${gate_link}")
-  gate_holder=$(readlink -f "$(dirname "${gate_link}")")
-  [[ "${gate_holder}" != "${gate_target}"/* \
-     && "${gate_holder}" != "${gate_target}" ]] \
-    || fail "the wave gate links its own ancestor: ${gate_link}"
-done
+  run_java_main() { fail "the gate ran over a session outside the corpus"; }
+  campaign_import_gate "${wave_gate}" iteration-0000 \
+    "${wave_gate}/elsewhere.json" "${wave_gate}/obligations-0000"
+) 2>"${wave_gate}/outside.log" \
+  && fail "the gate took a directory outside the corpus as a session"
+grep -q "not a session directory of ${wave_gate}/sessions" \
+  "${wave_gate}/outside.log" \
+  || fail "the gate's refusal does not name the corpus: \
+$(cat "${wave_gate}/outside.log")"
 
 # INSTRUMENT-VERIFY: the woven classes are put to the JVM verifier in the
 # stage that wrote them.  9d2761c17 asked it for the first time inside the
@@ -1422,6 +1386,97 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
   "${bound_dir}/validate.err" \
   || fail "validate accepted seed_replay_time_factor=0"
 
+# SOLVER-SERVICE: an obligation's question goes to ONE solver JVM of its host
+# and wave (ObligationSolverMain --serve), started by the first question and
+# charged its heap at the host's ledger; a question it could not answer is
+# its worker's failure, by name; and it ends once idle, naming no solver.
+# Two questions at once, over a corpus whose wave holds neither obligation.
+solver_test=${test_tmp}/solver-service
+solver_wave=${solver_test}/iteration/obligations-0000
+mkdir -p "${solver_test}/iteration/sessions" "${solver_wave}" \
+  "${solver_test}/a" "${solver_test}/b"
+: >"${solver_wave}/obligations.jsonl"
+(
+  java_bin=${test_java}
+  graphchecker_jar=${default_graphchecker_jar}
+  graphchecker_work_dir=${solver_test}
+  causynth_loop_default_bound=1
+  causynth_root_domains=""
+  z3_bin=z3
+  solver_timeout_ms=1000
+  campaign_solver_idle_s=1
+  # The test's host has room whatever else runs on it.
+  campaign_host_max_used_pct=100
+  export TMPDIR=${solver_test}
+  pids=()
+  for question in a b; do
+    campaign_solve_obligation "OB.${question}" "${solver_wave}/obligations.jsonl" \
+      "${solver_test}/iteration/sessions" "${solver_test}/${question}" \
+      >/dev/null 2>"${solver_test}/${question}.err" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "${pid}" && fail "a question its solver could not answer passed"
+  done
+  for question in a b; do
+    grep -q "ObligationSolverMain: java.io.IOException: the wave has no \
+obligation OB.${question}" "${solver_test}/${question}.err" \
+      || fail "the worker does not say why its question was not answered: \
+$(cat "${solver_test}/${question}.err")"
+  done
+  [[ "$(cat "${campaign_host_gate_root}"/*/starts | wc -l)" -eq 1 ]] \
+    || fail "the host's two questions did not go to one solver"
+  solver_home=$(campaign_solver_dir "${solver_wave}/obligations.jsonl")
+  for ((waited = 0; waited < 30; waited++)); do
+    [[ -e "${solver_home}/server" ]] || break
+    sleep 1
+  done
+  [[ ! -e "${solver_home}/server" ]] \
+    || fail "an idle solver did not end: $(cat "${solver_home}/server")"
+)
+
+# A question its host's solver could not answer (out of heap, died) is no
+# answer: it is asked once more of a solver of its own, and a second failure
+# fails the worker -- an unfinished obligation (campaign_obligation_unfinished)
+# -- never a bare NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations
+# "answered" by an OutOfMemoryError).  Neither settles its question.
+retry_test=${test_tmp}/solver-retry
+for alone in answers fails; do
+  mkdir -p "${retry_test}/${alone}"
+  retry_status=0
+  (
+    campaign_solve_obligation() {
+      : >"$4/question.asked"
+      echo "ObligationSolverMain: java.lang.OutOfMemoryError: Java heap space" >&2
+      return 1
+    }
+    campaign_solve_obligation_alone() {
+      [[ "${alone}" == answers ]] || { echo "the second one died" >&2; return 1; }
+      printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
+        >"$4/obligation_result.jsonl"
+      printf '(assert false)\n' >"$4/obligation_query.smt2"
+    }
+    campaign_obligation_worker OB.1 obligations classes \
+      "${retry_test}/${alone}" sessions plan
+  ) >"${retry_test}/${alone}.log" 2>"${retry_test}/${alone}/stderr.log" \
+    || retry_status=$?
+  [[ ! -e "${retry_test}/${alone}/question.asked" ]] \
+    || fail "a solver that failed settled a question"
+  if [[ "${alone}" == answers ]]; then
+    [[ "${retry_status}" -eq 0 && "$(jq -r .verdict \
+        "${retry_test}/answers/obligation_result.jsonl")" == UNSAT ]] \
+      || fail "the second solver's answer is not the obligation's"
+  else
+    [[ "${retry_status}" -ne 0 && ! -e \
+        "${retry_test}/fails/obligation_result.jsonl" ]] \
+      || fail "a question no solver answered was given an answer"
+    grep -q 'Error: obligation OB.1: its solver failed twice.*the second one died' \
+      "${retry_test}/fails/stderr.log" \
+      || fail "the unfinished worker does not say why: \
+$(cat "${retry_test}/fails/stderr.log")"
+  fi
+done
+
 # REPLAY-BOUND-3: what one obligation whose replay never returns records.
 # The same terminal NOT_ADMITTED row the worker writes for a solver that
 # failed -- one obligation's own answer, never the wave's death -- naming the
@@ -1441,7 +1496,7 @@ schedule_max_jobs=1
 trace_test=T
 (
   # The solver settled it: a model is ready and the replay is what decides.
-  run_java_main() {
+  campaign_solve_obligation() {
     jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
       obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
       detail: ""}' >"${worker_dir}/obligation_result.jsonl"
@@ -1481,7 +1536,7 @@ mkdir -p "${worker_dir}"
 replay_timeout_s=60
 concolic_replay_command='kill -KILL $$'
 (
-  run_java_main() {
+  campaign_solve_obligation() {
     jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
       obligationId: "OB.2", verdict: "SAT_MODEL_READY", sessionId: "",
       detail: ""}' >"${worker_dir}/obligation_result.jsonl"
@@ -1540,7 +1595,7 @@ chmod +x "${withdraw_dir}/replay.sh"
 replay_timeout_s=5
 concolic_replay_command="${withdraw_dir}/replay.sh"
 (
-  run_java_main() {
+  campaign_solve_obligation() {
     jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
       obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
       detail: ""}' >"${withdraw_worker}/obligation_result.jsonl"
@@ -2892,6 +2947,7 @@ campaign_host_try_start lift15 || fail "the host stayed locked"
 # obligation's named failure; within it the slot waits (sshd refuses
 # connections under a round's burst).
 campaign_host_available_mb() { return 1; }
+real_campaign_log=$(declare -f campaign_log)
 campaign_log() { printf '%s\n' "$*" >>"${memory_dir}/gate.log"; }
 campaign_host_poll_s=0
 campaign_ssh_patience_s=1
@@ -2907,7 +2963,8 @@ mkdir "${memory_dir}/queue/000000"
 run_capturing_status campaign_await_host_memory lift13 "${memory_dir}/queue" 1
 [[ "${status}" -eq 1 ]] \
   || fail "a slot kept waiting for room after the wave was all claimed"
-unset -f hostname campaign_host_available_mb campaign_host_total_mb campaign_log
+unset -f hostname campaign_host_available_mb campaign_host_total_mb
+eval "${real_campaign_log}"
 reset_config
 
 # MEMORY-3: a start states its need and its own ramp, and counts while that
@@ -2963,6 +3020,27 @@ campaign_host_poll_s=0
 [[ "$(campaign_head_charged 7000 120 printf artifact 2>/dev/null)" \
     == artifact ]] || fail "a head's wait for memory reached its stdout"
 eval "${real_try_start}"
+# A slot's start is released when its obligation returns inside its ramp,
+# as a head's is: an obligation answered in seconds held its 60 s charge, and
+# hosts sat idle while slots waited for memory (rounds i2/m1).
+slot_test="${memory_dir}/slot"
+mkdir -p "${slot_test}/wave/OB.1" "${slot_test}/queue"
+printf 'OB.1\n' >"${slot_test}/jobs"
+obligation_memory_mb=6000
+campaign_run_obligation_on_host() {
+  grep -c ' 6000 60 ' "${campaign_host_gate_root}/lift15/starts" \
+    >"${slot_test}/during"
+  printf '{"verdict":"UNSAT"}\n' >"$5/obligation_result.jsonl"
+}
+campaign_wave_slot lift15 "${slot_test}/queue" 1 "${slot_test}/jobs" \
+  "${slot_test}/wave" obligations classes sessions plan >/dev/null \
+  || fail "a slot whose one obligation returned failed"
+[[ "$(cat "${slot_test}/during")" -eq 1 ]] \
+  || fail "a slot's obligation was not charged while it ran"
+! grep -q ' 6000 60 ' "${campaign_host_gate_root}/lift15/starts" \
+  || fail "a start that returned inside its ramp still holds its charge: \
+$(cat "${campaign_host_gate_root}/lift15/starts")"
+unset -f campaign_run_obligation_on_host
 campaign_head_charging=0
 campaign_head_charged 999999 120 true \
   || fail "a start outside a head waited for the ledger"

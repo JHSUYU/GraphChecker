@@ -164,12 +164,15 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 
 ### 2.6 The row invariants (`RowInvariants`, run by `ImportGateMain`)
 
-`ImportGateMain --sessions <iteration>/sessions --out <gaps file> --topology-epoch <id>` reads the
-sessions and each obligation worker's focus rows (joined to a session by the worker's result row,
-never by directory name), appends every violation to the gaps file with `topologyEpoch`, and prints
+`ImportGateMain --sessions <iteration>/sessions [--gate <session>...] [--gated <ledger>] --out <gaps
+file> --topology-epoch <id>` gates the named sessions (none named: every session the ledger does not
+name), each once: it reads them and their obligation workers' focus rows (joined to a session by the
+worker's result row, never by directory name), judges invariants 1 and 11, the rules over the set,
+against the sessions the ledger names that are still in the corpus (PIPELINE §6), appends every
+violation to the gaps file with `topologyEpoch`, adds the gated sessions to the ledger, and prints
 `{topologyEpoch, sessions, violations, blocking, diagnostic, firstBlockingSubject, gaps,
-blockingSubjects}`; it exits 0 unless the sessions are unreadable, and IMPORT fails on `blocking >
-0`. One session is held in memory at a time. A violation's subject is `<kind>.jsonl seq=<n>
+blockingSubjects}` of this gate; it exits 0 unless the sessions are unreadable or a named one is not
+in the corpus, and IMPORT fails on `blocking > 0`. One session is held in memory at a time. A violation's subject is `<kind>.jsonl seq=<n>
 field=<f> <subject>`.
 
 | # | rule | kind, class |
