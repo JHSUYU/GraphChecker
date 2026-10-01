@@ -197,7 +197,16 @@ See Acceptance above. What remains (the branches are in README §0.3):
   (`ContainerSmtCodec#unordered`). With `r9`'s four message snapshots restated as `vm-r3c` records
   them, COMPOSE claims CLOCK_SKEW offline in 17 s: both clocks in the formula, MigrateCmd's moved,
   the leader's held, polarity decides (one arithmetic engine alone did not answer its clock
-  question in 30 minutes; every z3 run now races two, `smt.Z3#run`). The store
+  question in 30 minutes; every z3 run now races two, `smt.Z3#run`). Live `s13a` (vm-r3c) claimed
+  it, and CONFIRM did not confirm it: its ORDER held `migrateKey`'s entry until the watcher's parse
+  of the routing rule exited, a parse that follows the rule `migrateKey` itself offers (fixed: an
+  ORDER holds the last activation entered before the read, `ConfirmMain.StateClosure#holdBefore`,
+  here the poll's `getRoutingRules`); and 38 STATE edges named the parse of the watcher's second
+  delivery of that version (`STATEWATCHER.2`), which that run took once (fixed: CONFIRM names every
+  delivery of one version alike, `OccurrenceAddress#anyDelivery`: 32 of the 38 offline; the other
+  6 follow the poll iteration the stalled entry shifted). Its PLAN
+  refused `OCCURRENCE_ADDRESS_SHARED` for two ZooKeeper callback tasks under a Lost context, which
+  the R1-ROOTS branch's unnamed-work rule opens no occurrence for. The store
   door files what a write carried after the schedule's SEND lets the queue's consumer run
   (`gc/runtime/MessageDoors#stored`, open defect 28), which can leave the Overseer queue's attach
   unpaired.

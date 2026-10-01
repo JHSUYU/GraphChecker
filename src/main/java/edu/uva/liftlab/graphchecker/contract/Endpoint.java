@@ -101,12 +101,25 @@ public final class Endpoint extends Value {
      * The unit a CONFIRM order gate holds ({@code runtime.Confirmation}).
      */
     public String activation() {
+        return activation(occurrence, ExecutionIndex.of(activationFrames()));
+    }
+
+    /** The frames of {@link #activation()}: the site index without the
+     *  event's own frame. */
+    public List<Frame> activationFrames() {
         List<Frame> frames = siteIndex.frames();
         int last = frames.size() - 1;
         boolean eventFrame = last >= 0 && frames.get(last).callSite()
                 .equals(site.replace('/', '.'));
-        return activation(occurrence, ExecutionIndex.of(
-                eventFrame ? frames.subList(0, last) : frames));
+        return eventFrame ? frames.subList(0, last) : frames;
+    }
+
+    /** This endpoint as every delivery of its occurrence's stored message
+     *  states it ({@link OccurrenceAddress#anyDelivery}). */
+    public Endpoint anyDelivery() {
+        OccurrenceAddress delivered = occurrence.anyDelivery();
+        return delivered == occurrence ? this
+                : new Endpoint(delivered, site, siteIndex, attempt);
     }
 
     /** The one spelling of an activation key. */

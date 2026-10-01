@@ -230,7 +230,9 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   are kept with the version, and so are the codec holes an encode bound to `data` (§7.5).
 - `notified(kind, callback)` + `fetched(transport, key, owner)`: inside a watch callback, the first
   read of a stored version installs the writer's context, with `via` = the watcher kind (and
-  `.<n>` from a node's second delivery of that version on). Such receipts are unawaited: the work
+  `.<n>` from a node's second delivery of that version on; how many deliveries a run takes is the
+  store's timing, so CONFIRM names every delivery of one version alike,
+  `CausalContext.Anchor#anyDelivery`). Such receipts are unawaited: the work
   they anchor takes no place in the schedule. A read outside a callback is data, not a cause.
   `fetched(transport, key, owner, data)` binds `data` to the version's codec holes on every read,
   inside a callback or not: a value is data, a notification a cause.

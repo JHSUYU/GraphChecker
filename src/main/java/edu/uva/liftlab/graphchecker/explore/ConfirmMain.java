@@ -6,6 +6,9 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -91,8 +94,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *       query through a re-pointable reference the state of the delivered
  *       object its nested selector chose, the arm's {@code
  *       referentStates}), {@code ORDER} per held join (the writer's
- *       activation before the reader's; every other writer of the location
- *       the held write is of before the writer or after the reader), {@code
+ *       activation exits before the last activation the reader entered
+ *       before its read, {@code StateClosure#holdBefore}; every other writer
+ *       of the location the held write is of before the writer or after the
+ *       reader), {@code
  *       MARKER} per planted marker, {@code ANCHOR}.</li>
  * </ul>
  *
@@ -787,8 +792,10 @@ public final class ConfirmMain {
                 }
                 JsonObject edge = new JsonObject();
                 edge.addProperty("kind", "WIRE");
-                edge.addProperty("consumer", consumerId);
-                edge.addProperty("producer", paired.producer().id());
+                edge.addProperty("consumer",
+                        Confirmation.id(paired.endpoint()));
+                edge.addProperty("producer",
+                        Confirmation.id(paired.producer()));
                 edge.addProperty("selector", selector);
                 if (paired.hole() != null) {
                     // A codec's hole (WIRE-CODEC §6.5): the version of the
@@ -827,10 +834,86 @@ public final class ConfirmMain {
                 new LinkedHashMap<String, WriteRow>();
         /** The reads of a reached occurrence at or past its cutoff. */
         private final Set<String> past = new LinkedHashSet<String>();
+        /** Occurrence id -> where its events sat: activation frames, seq. */
+        private final Map<String, List<Placed>> placed =
+                new LinkedHashMap<String, List<Placed>>();
+
+        /** One event's activation frames and its place in the order. */
+        private static final class Placed {
+            private final List<Frame> frames;
+            private final long seq;
+
+            private Placed(Endpoint at, long seq) {
+                this.frames = at.activationFrames();
+                this.seq = seq;
+            }
+        }
+
+        private void place(Endpoint at, long seq) {
+            if (at == null) return;
+            placed.computeIfAbsent(at.occurrence().id(),
+                    key -> new ArrayList<Placed>()).add(new Placed(at, seq));
+        }
+
+        /**
+         * {@code first}'s activation exits before {@code then}'s event,
+         * unless one occurrence holds both: it runs on one thread, whose
+         * program order already orders them.  The hold is the last
+         * activation entry before the event on its thread
+         * ({@link #holdBefore}).
+         */
+        private void order(Set<String> orders, Endpoint first, Endpoint then,
+                           long thenSeq) {
+            if (first.occurrence().id().equals(then.occurrence().id())) return;
+            orders.add(Confirmation.activation(first.occurrence(),
+                    ExecutionIndex.of(first.activationFrames())) + "\n"
+                    + holdBefore(then, thenSeq));
+        }
+
+        /**
+         * Where a run is held so that an event comes after what the model
+         * orders before it: the entry of the last activation its thread
+         * entered before the event -- the last call the event's own
+         * activation made before it, else that activation's entry.  An
+         * activation that runs while what it waits for is made (SOLR-18413
+         * s13a: MigrateCmd#migrateKey offers the routing rule, then polls
+         * the cluster state until the watcher's parse of it lands) cannot be
+         * held at its own entry: the writer follows that entry, and holding
+         * it there waits out the order's timeout.  The last call before the
+         * read (the poll's {@code getRoutingRules}) is entered after.
+         */
+        private String holdBefore(Endpoint event, long seq) {
+            List<Frame> own = event.activationFrames();
+            List<Frame> hold = own;
+            long latest = Long.MIN_VALUE;
+            List<Placed> events = placed.get(event.occurrence().id());
+            for (Placed other : events == null
+                    ? Collections.<Placed>emptyList() : events) {
+                if (other.seq >= seq || other.seq <= latest
+                        || other.frames.size() <= own.size()
+                        || !other.frames.subList(0, own.size()).equals(own)) {
+                    continue;
+                }
+                latest = other.seq;
+                hold = other.frames.subList(0, own.size() + 1);
+            }
+            return Confirmation.activation(event.occurrence(),
+                    ExecutionIndex.of(hold));
+        }
 
         private StateClosure(SessionReader session, OccurrenceAddress anchor,
                              long cutoff) {
+            for (ReadRow read : session.reads()) {
+                place(read.endpoint(), read.seq());
+            }
+            for (ExportRow export : session.exports()) {
+                place(export.endpoint(), export.seq());
+            }
+            for (AttachRow attach : session.attaches()) {
+                place(attach.endpoint(), attach.seq());
+            }
             for (WriteRow write : session.writes()) {
+                place(write.endpoint(), write.seq());
                 writes.put(version(write.location(), write.version()), write);
                 byLocation.computeIfAbsent(SmtLowering.locationKey(
                         write.location()),
@@ -984,7 +1067,9 @@ public final class ConfirmMain {
      * may make it at another endpoint or not at all (r7 hdfs-17960: the
      * fsimage's name maps, re-serialized after the flip).  A read no row
      * answers is held only where the model chose a writer for it; otherwise
-     * its outside store is the run's own.
+     * its outside store is the run's own.  Endpoints and activations are
+     * named as every delivery of their stored message is
+     * ({@link Confirmation#id}).
      */
     private static List<JsonObject> stateEdges(StateClosure closure,
                                                Map<String, WriteRow> chosen,
@@ -1000,31 +1085,33 @@ public final class ConfirmMain {
                     ? chosen.get(reader.getKey())
                     : closure.joined.get(reader.getKey());
             if (held == null) continue;
-            Endpoint writer = held.endpoint();
             String location = SmtLowering.locationKey(held.location());
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
-            edge.addProperty("reader", reader.getKey());
+            edge.addProperty("reader", Confirmation.id(read.endpoint()));
             // A mint read lands on whichever racing occurrence reads the cell
             // first, so it is held by the writer (runtime/Confirmation), not
             // the reader.
             boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
             edge.addProperty("mint", mint);
-            edge.addProperty("writer", writer.id());
+            edge.addProperty("writer", Confirmation.id(held.endpoint()));
             edge.addProperty("version", held.version());
             edge.addProperty("location", location);
             edges.add(edge);
             if (mint) continue;
-            order(orders, writer, read.endpoint());
+            closure.order(orders, held.endpoint(), read.endpoint(),
+                    read.seq());
             // No other writer of the location it reads between the two: one
             // recorded before the write goes before it, any other after the
             // read.
             for (WriteRow other : closure.byLocation.get(location)) {
-                if (other.endpoint().equals(writer)) continue;
+                if (other.endpoint().equals(held.endpoint())) continue;
                 if (other.seq() < held.seq()) {
-                    order(orders, other.endpoint(), writer);
+                    closure.order(orders, other.endpoint(), held.endpoint(),
+                            held.seq());
                 } else {
-                    order(orders, read.endpoint(), other.endpoint());
+                    closure.order(orders, read.endpoint(), other.endpoint(),
+                            other.seq());
                 }
             }
         }
@@ -1037,16 +1124,6 @@ public final class ConfirmMain {
             edges.add(row);
         }
         return edges;
-    }
-
-    /** {@code first}'s activation exits before {@code then}'s enters, unless
-     *  one occurrence holds both: it runs on one thread, whose program order
-     *  already orders them (and a nested activation cannot exit before the
-     *  one around it enters). */
-    private static void order(Set<String> orders, Endpoint first,
-                              Endpoint then) {
-        if (first.occurrence().id().equals(then.occurrence().id())) return;
-        orders.add(first.activation() + "\n" + then.activation());
     }
 
     /** One write the path rests on: reach its writer, sweep older versions. */

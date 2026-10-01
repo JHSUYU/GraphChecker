@@ -1031,14 +1031,20 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   all; the write the model chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
   endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a
   query through a re-pointable reference the write of the state its arm's `referentStates` name,
-  §8), `ORDER` rows (the writer's activation exits before the reader's enters; every other writer of
-  the location the held write is of before the writer or after the reader), `MARKER` per planted
-  marker, `ANCHOR`. A `referentStates` row with no reader (a query asked outside every container
+  §8), `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
+  activation entry before the read on its thread, the last call the reader's activation made before
+  it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); every other writer of
+  the location the held write is of before the writer or after the reader, held alike), `MARKER`
+  per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
+  stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
+  delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where
+  the recording took two still takes the model's edges). A `referentStates` row with no reader (a query asked outside every container
   read), at a read that is no read of the closure, or naming a write the session does not state
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
   `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, and for a codec
-  hole the message key and the decoded text the mint states), STATE at close, and holds each `ORDER` activation's
+  hole the message key and the decoded text the mint states), STATE at close (both by
+  `Confirmation#id`), and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
   mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
   are not read by the runtime. A CONFIRM run (`FocusedReplay.confirming`: its obligation flips

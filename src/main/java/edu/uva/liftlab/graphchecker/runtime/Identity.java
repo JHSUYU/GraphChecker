@@ -585,7 +585,7 @@ public final class Identity {
 
     /**
      * The key of the method activation at level {@code top} of the running
-     * occurrence ({@link Endpoint#activation}), or null outside one: what a
+     * occurrence ({@link Confirmation#activation}), or null outside one: what a
      * CONFIRM order gate holds.
      */
     private static String activation(State state, int top) {
@@ -596,7 +596,7 @@ public final class Identity {
         for (int index = from; index < top; index++) {
             frames[index - from] = state.addressedFrame(index);
         }
-        return Endpoint.activation(running.occurrence,
+        return Confirmation.activation(running.occurrence,
                 ExecutionIndex.of(Arrays.asList(frames)));
     }
 
@@ -749,8 +749,8 @@ public final class Identity {
         if (closed.occurrence != null) {
             ScheduleLog.closed(closed.occurrence.id());
             if (Confirmation.ordering()) {
-                Confirmation.exited(Endpoint.activation(closed.occurrence,
-                        ExecutionIndex.empty()));
+                Confirmation.exited(Confirmation.activation(
+                        closed.occurrence, ExecutionIndex.empty()));
             }
         }
     }
@@ -895,7 +895,7 @@ public final class Identity {
             // Where a prefix focusing this occurrence is cut.
             ScheduleLog.mark(address.id());
             if (Confirmation.ordering()) {
-                Confirmation.entering(Endpoint.activation(address,
+                Confirmation.entering(Confirmation.activation(address,
                         ExecutionIndex.empty()));
             }
         }

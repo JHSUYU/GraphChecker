@@ -227,7 +227,8 @@ field=<f> <subject>`.
   arm's message was, when that key is a store's `<transport> <path>@<version>` -- an exchange's
   correlation id is its own run's; `value` the text the hole must decode to, the claim's
   `holeTexts`), `STATE {reader, mint, writer, version, location}`, `ORDER {before, after}`
-  (activation keys), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation
+  (activation keys; `after` the last activation entered before the event it orders), every endpoint
+  id and activation key as every delivery of its stored message names it (`Confirmation#id`), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation
   flips nothing (`Obligation.confirming`) owes these rows: missing or unreadable, it files a
   `CONFIRM_MISMATCH`. `final/confirm.json` is `{schemaVersion 1, kind CONFIRMATION, confirmed,
   reason, sessionId}` ([PIPELINE.md §10](PIPELINE.md)).

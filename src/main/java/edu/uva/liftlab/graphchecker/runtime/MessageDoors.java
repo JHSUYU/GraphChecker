@@ -308,7 +308,9 @@ public final class MessageDoors {
         SymbolicMessageEnvelope.clearInbound();
         // The notified kind is part of the context the callback's work is
         // addressed by, never of the pairing with the write; so is which of
-        // the node's deliveries of this version it is, from the second on.
+        // the node's deliveries of this version it is, from the second on --
+        // the store's timing, which CONFIRM compares through
+        // (CausalContext.Anchor#anyDelivery).
         int delivery = DELIVERIES.merge(RuntimeTraceContext.ownedSource(owner)
                 .key() + "\n" + transport + "\n" + key + "\n" + kind, 1,
                 Integer::sum);

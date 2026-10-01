@@ -342,6 +342,27 @@ public class ContractTest {
                         CausalContext.of(Role.UNKNOWN), site), PORT, site, 0),
                 attach).producer().occurrence().lineageLost());
 
+        // A store's re-delivery of one version to one watcher is its own
+        // activation (MessageDoors#fetched: KIND.n from the second on), and
+        // how many a run takes is the store's timing: every delivery is
+        // addressed alike for CONFIRM (anyDelivery), and nothing else is.
+        String[][] deliveries = {
+                {"SOLR_ZK.ZKSTATEREADER$STATEWATCHER.2/OVERSEER_STATE_UPDATE",
+                        "SOLR_ZK.ZKSTATEREADER$STATEWATCHER/OVERSEER_STATE_UPDATE"},
+                {"SOLR_ZK.ZKSTATEREADER$STATEWATCHER/OVERSEER_STATE_UPDATE",
+                        null},
+                {"SOLR_HTTP/.update", null},
+                {"HADOOP_IPC/ping.2", null}};
+        for (String[] row : deliveries) {
+            OccurrenceAddress notified = OccurrenceAddress.of(DN0, REGION,
+                    CausalContext.of(PRODUCER_ID, row[0]),
+                    ExecutionIndex.of(path));
+            assertEquals(row[0], row[1] == null ? notified
+                    : OccurrenceAddress.of(DN0, REGION, CausalContext.of(
+                    PRODUCER_ID, row[1]), ExecutionIndex.of(path)),
+                    notified.anyDelivery());
+        }
+
         // ONE owner spelling, the one the runtime writes: the VM's
         // symbolic rid of the object whose state this is.  A join is per
         // session, and inside one run two rids are two objects.  The
