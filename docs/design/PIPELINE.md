@@ -306,7 +306,11 @@ session's. The two over the set are judged against the gated sessions still in t
 one SEED (1), and the epoch's roots (11) -- a new session against every root of the epoch, a gated
 one again only for a root (id, symbol) a new session brings. So gating the corpus a wave, or a
 session, at a time files exactly the rows one gate over all of it would, each once. One caller at a
-time (the head).
+time (the head). The gate holds one session at a time, so its heap and its charge on the head's host
+are 512 MB plus four times the largest session's size on disk (`campaign_import_gate_heap_mb`), not
+`engine_memory_mb`, which is sized for a JVM holding the whole corpus (SOLR-18406 i1: charged
+16 GB, IMPORT waited 7 min for room on the head and a wave's gate 30 min; the gate itself ran
+seconds).
 
 ## 7. EXPLORE
 
@@ -568,7 +572,8 @@ shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER
 `MemAvailable − (rows still inside their own ramp) ≥ need + MemTotal × (100 − p) / 100`, where
 `p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no start leaves a host more than 70 % full. An obligation needs
 `obligation_memory_mb` for 60 s. The head (`do_campaign`, `campaign_head_charged`) charges each of
-its engine JVMs `engine_memory_mb` (else 8192) for 120 s and its seed and CONFIRM replays
+its engine JVMs `engine_memory_mb` (else 8192) for 120 s -- the import gate, which holds one
+session at a time, its own heap (§6) -- and its seed and CONFIRM replays
 `obligation_memory_mb` for 300 s, and releases the row when the command returns
 (`campaign_host_release`); an obligation's own JVMs are inside its slot's charge. An obligation
 whose worker does not finish (a nonzero exit, local or remote, or a result the head cannot see) is

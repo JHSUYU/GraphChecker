@@ -1138,11 +1138,16 @@ mkdir -p "${wave_gate}/sessions/focus-a"
 ${wave_gate}/import_gated.txt "* ]] \
       || fail "the wave gate did not gate exactly its wave's session of the \
 iteration, against the iteration's ledger: $*"
+    # It holds one session at a time: its heap (and charge) is what the
+    # largest session takes, not the case's engine heap for a whole corpus.
+    [[ "${engine_memory_mb}" -ge 512 && "${engine_memory_mb}" -lt 1024 ]] \
+      || fail "the gate of two empty sessions asked ${engine_memory_mb} MB"
     printf '%s\n' '{"violations":1,"blocking":1,'\
 '"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
     printf '{"schemaVersion":1,"cls":"BLOCKING"}\n' \
       >>"${wave_gate}/campaign_gaps.jsonl"
   }
+  engine_memory_mb=16384
   campaign_import_wave_gate "${wave_gate}" iteration-0000 \
     "${wave_gate}/obligations-0000" "${wave_gate}/sessions" >/dev/null
 ) 2>"${wave_gate}/error.log" \

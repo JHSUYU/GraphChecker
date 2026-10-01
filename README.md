@@ -450,7 +450,7 @@ is written.
 Obligations of a campaign fan out over the hosts in `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, the first
 host rotated per wave. Every start on a host is charged to the ledger first: an obligation
 (`obligation_memory_mb`, for 60 s), a campaign head's engine JVM (`engine_memory_mb`, else 8192, for
-120 s), its seed and CONFIRM replays (`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
+120 s; the import gate its own heap, PIPELINE §6), its seed and CONFIRM replays (`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
 (its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, every start
 still in its ramp there and a reserve that keeps the host at most `CAUSYNTH_HOST_MAX_USED_PCT`
 (70) percent full; a head's start is released when it returns.

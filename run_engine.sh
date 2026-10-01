@@ -2511,13 +2511,20 @@ campaign_import_session() {
 # the whole corpus would, each row once (contract.ImportGateMain).  One
 # caller at a time: the campaign's head.
 #
+# The gate holds one session at a time, so its heap -- and its charge on the
+# head's host -- is what the corpus's largest session takes
+# (campaign_import_gate_heap_mb), not the case's engine heap, which is sized
+# for a JVM holding the whole corpus: charged 16 GB, the gate of one 6 MB
+# session waited 7 minutes for room on a busy head, and a wave's gate 30
+# (accept-i1-solr-18406).
+#
 # Append-only, into the campaign's own gap file: a gap row a later stage
 # overwrites was never evidence.
 campaign_import_gate() {
   local iteration_dir=$1 iteration_id=$2
   local summary=${3:-${iteration_dir}/import_gate.json}
   local gaps="${iteration_dir}/campaign_gaps.jsonl"
-  local blocking violations first session
+  local blocking violations first session heap
   local -a gate=()
   shift $(( $# < 3 ? $# : 3 ))
   for session in "$@"; do
@@ -2527,7 +2534,9 @@ campaign_import_gate() {
         "not a session directory of ${iteration_dir}/sessions"
     gate+=(--gate "$(basename -- "${session}")")
   done
-  run_java_main edu.uva.liftlab.graphchecker.contract.ImportGateMain \
+  heap=$(campaign_import_gate_heap_mb "${iteration_dir}/sessions")
+  engine_memory_mb=${heap} run_java_main \
+    edu.uva.liftlab.graphchecker.contract.ImportGateMain \
     --sessions "${iteration_dir}/sessions" "${gate[@]}" \
     --gated "${iteration_dir}/import_gated.txt" \
     --out "${gaps}" \
@@ -2544,6 +2553,23 @@ campaign_import_gate() {
 ${blocking} blocking"
   [[ "${blocking}" -eq 0 ]] || campaign_fail IMPORT ImportGate "${gaps}" \
     "${blocking} row invariants violated: ${first}"
+}
+
+# The import gate's heap, in MB, over the session directories under ${1}: it
+# holds one session at a time, read whole (the gate reads again a session it
+# gated before when a new one brings a root), so 512 MB plus four times the
+# largest session's size on disk.  Measured: SOLR-18406's 41 MB focused
+# session gates in 64 MB of heap and not in 48 (accept-i1-solr-18406), and
+# hdfs-11741's 175 sessions of up to 21 MB in 512.
+campaign_import_gate_heap_mb() {
+  local sessions=$1 entry size largest=0
+  for entry in "${sessions}"/*/; do
+    # A session withdrawn while it is measured is not one the gate reads.
+    size=$(du -s -m -- "${entry}" 2>/dev/null) || continue
+    size=${size%%[[:space:]]*}
+    (( size <= largest )) || largest=${size}
+  done
+  printf '%s\n' "$(( 512 + 4 * largest ))"
 }
 
 # The same gate, over the sessions one wave added -- its replays' and GROW's
