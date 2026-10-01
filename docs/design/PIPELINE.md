@@ -339,10 +339,11 @@ worker's focus row as that session's world, the wave verdicts, the recorded sche
 
 Demand starts at the anchor: its flip sites are the target sites' guards
 (`StaticScopeMap.Site.guards`) when some run reached the anchor, else the sites of the target's path
-chain (`pathSites`). The demanded symbols of an occurrence are those its demanded values reach
-(`SmtLowering.reachedSymbols` over the lowered terms and, where a read's refused join gave way to its
-mint or its value, over what that join lowered: `Lowered.reach`; such a lowering is no `Lowered.ok`
-value a flip query stands on): the anchor's `phiTerm`, its own decisions at its flip sites (a factor
+chain (`pathSites`). The demanded symbols of an occurrence are those its demanded values reach,
+asked of their expressions' shared nodes, never of their lowered text (`Corpus#termSymbols`,
+`#expressionSymbols`: the symbol leaves, through each joinable read to the value its version holds,
+a container read's state rows by the v_C rule, a read no write answers as its mint; each expression
+walked once per session): the anchor's `phiTerm`, its own decisions at its flip sites (a factor
 member deciding the same site decides it on its own objects), and the values it contributed (the
 exports a demanded attach paired with, the write a demanded read could observe), closed over the
 reads those name and the writes they could observe. The occurrence and its state-connected factor are
@@ -393,7 +394,8 @@ same demand, and folding it changes nothing (`ClosurePlanner#candidates`); the w
 once. Each demanded occurrence becomes a `Task` (id =
 `digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
 the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
-plus every fault site (`Corpus.faultSites`: a decision whose lowered term reaches a MARKER root). A
+plus every fault site (`Corpus.faultSites`: a decision whose term reaches a MARKER root, by the same
+walk). A
 demanded occurrence no session captured (ran, but no planned task admitted it) is: skipped if it is a
 role (`ROLE.*`, `LINEAGE_LOST` when lost); skipped when its chain began at a daemon tick later than the
 recording's last tick of that role on that node (`Corpus.tickPastRecording`, DIAGNOSTIC); *exposed*

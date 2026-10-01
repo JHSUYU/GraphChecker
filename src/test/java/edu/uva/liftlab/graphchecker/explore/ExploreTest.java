@@ -1340,6 +1340,42 @@ public class ExploreTest {
         session.flush();
     }
 
+    /**
+     * Whether a decision is a fault decision, and what a term rests on, are
+     * asked of the expressions' shared nodes, never of their lowered text:
+     * a chain each of whose 64 nodes names the one below twice is 64 nodes,
+     * and its text 2^64 leaves (hdfs-17960 rr1's wave planner).
+     */
+    @Test
+    public void aTermReachesWhatItsSharedExpressionNamesUnrendered()
+            throws Exception {
+        Path iteration = tree.newFolder("dag").toPath();
+        Session session = new Session(iteration, "s-dag");
+        session.activation(TARGET, false);
+        session.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        JsonObject marked = leaf("M_MARKER", "I");
+        JsonObject unmarked = leaf("M_OTHER", "I");
+        for (int depth = 0; depth < 64; depth++) {
+            marked = binary("+", marked, marked);
+            unmarked = binary("+", unmarked, unmarked);
+        }
+        session.expression("EXPR.00000000000000d1",
+                binary("==", marked, literal(0)));
+        session.expression("EXPR.00000000000000d2",
+                binary("==", unmarked, literal(0)));
+        session.decision(TARGET, "Guard#u8", 1, false,
+                "EXPR.00000000000000d1");
+        session.decision(TARGET, "Guard#u9", 1, false,
+                "EXPR.00000000000000d2");
+        session.flush();
+        Corpus corpus = Corpus.read(iteration, null);
+        assertEquals(Collections.singleton("Guard#u8"),
+                corpus.faultSites(TARGET));
+        assertEquals(Collections.singleton("M_OTHER"),
+                corpus.termSymbols("s-dag", "(not EXPR.00000000000000d2)"));
+    }
+
     // ---- (2) a handoff is answered only with what a producer delivers --
 
     @Test
@@ -2746,16 +2782,15 @@ public class ExploreTest {
                 "test");
         assertTrue("the container version stands in the text as one name: "
                 + mapGuard, mapGuard.contains("container_dag__"));
-        Set<String> says = lowering.reachedSymbols(mapGuard,
-                new LinkedHashSet<String>(), new LinkedHashSet<String>());
+        Set<String> says = lowering.reachedSymbols(
+                Collections.singletonList(mapGuard));
         assertFalse("and the text does not SAY the read behind it, which is "
                         + "what a query binds its variables by: " + says,
                 says.contains(mapState));
-        Set<String> restsOn = new LinkedHashSet<String>();
-        lowering.reachedSymbols(mapGuard, new LinkedHashSet<String>(),
-                restsOn);
-        assertTrue("it RESTS ON it, which is what the closure demands: "
-                + restsOn, restsOn.contains(mapState));
+        Set<String> restsOn = vC.termSymbols("s-seed",
+                "EXPR.0000000000000005");
+        assertTrue("its expression RESTS ON it, which is what the closure "
+                + "demands: " + restsOn, restsOn.contains(mapState));
         // THE FACTS: what the recording states about the names the guard
         // rests on travels with them.  The map read lowered to an opaque
         // identity, and the recording states that identity was not null --
