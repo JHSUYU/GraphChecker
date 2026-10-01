@@ -123,7 +123,8 @@ See Acceptance above. What remains (the branches are in README §0.3):
   `operation`, `collection`, ...) by its table, `collection` first, so the leader's lookup at the
   run's position 1 read `operation`: a snapshot now states its members in the order the class
   iterates and says which (`ContainerSupport::iteration_order`, image `vm-r3c`), and a view's
-  positions follow the chain only where that order holds (`ContainerSmtCodec#unstatedOrder`). With
+  positions follow the chain only where that order holds, else are a bijection in no order
+  (`ContainerSmtCodec#ordered`). With
   `r9`'s four message snapshots restated as `vm-r3c` records them, COMPOSE claims CLOCK_SKEW
   offline: both clocks in the formula, MigrateCmd's moved, the leader's held, polarity decides;
   under the fixed arithmetic engine z3 did not answer it in 30 minutes (open defect 30). The store

@@ -3551,36 +3551,39 @@ public class ComposerTest {
     }
 
     /**
-     * A VIEW'S POSITION IS THE RUN'S ITERATION COUNT, stated only where the
-     * chain states the order its class iterates in (SOLR-18413 r9: a
-     * LinkedHashMap snapshot stated in hash order keyed a lookup at another
-     * key).  The VM's snapshot states its members in their iteration order
-     * and says which order that is; an insertion-ordered class iterates in
-     * the chain's order after it; a hash-ordered one keeps it through
-     * removals and updates, and a put of another key may rebin it; a
-     * recording that states no order has none.  {order, members, program
-     * mutations above the members, refusal ("" stated)}.
+     * A VIEW'S POSITION IS THE RUN'S ITERATION COUNT, and the chain states
+     * it only where the chain's order is the one the map's class iterates
+     * in (SOLR-18413 r9: a LinkedHashMap snapshot stated in hash order keyed
+     * a lookup at another key).  The VM's snapshot states its members in
+     * their iteration order and says which order that is; an
+     * insertion-ordered class iterates in the chain's order after it; a
+     * hash-ordered one keeps it through removals and updates, and a put of
+     * another key may rebin it; a recording that states no order has none.
+     * Where the order is not stated the positions are still a bijection
+     * with the keys, in no order: position 0 may name the last key put.
+     * {order, members, program mutations above the members (a negative
+     * removes that key), whether the chain states the order}.
      */
     @Test
     public void aViewPositionIsTheOrderItsClassIteratesIn() {
         Object[][] rows = {
-                {"INSERTION", 2, new long[]{3L}, ""},
-                {"HASH", 2, new long[]{}, ""},
-                {"HASH", 2, new long[]{1L}, ""},
-                {"HASH", 2, new long[]{-1L, 1L}, "HASH_INSERT"},
-                {"HASH", 2, new long[]{3L}, "HASH_INSERT"},
-                {"", -1, new long[]{1L, 2L}, "UNRECORDED"},
-                {"HASH", 0, new long[]{3L, 4L}, "HASH_INSERT"},
-                {"HASH", 0, new long[]{3L}, ""}};
+                {"INSERTION", 2, new long[]{3L}, true},
+                {"HASH", 2, new long[]{}, true},
+                {"HASH", 2, new long[]{1L}, true},
+                {"HASH", 3, new long[]{-1L}, true},
+                {"HASH", 2, new long[]{-1L, 1L}, false},
+                {"HASH", 2, new long[]{3L}, false},
+                {"", -1, new long[]{1L, 2L}, false},
+                {"HASH", 0, new long[]{3L, 4L}, false}};
         for (Object[] row : rows) {
-            // Members 1..members, then the program's puts (a negative is the
-            // removal of that key).
             int members = (Integer) row[1];
             JsonObject state = snapshotBase("java/util/HashMap",
                     (String) row[0], members);
+            List<Long> keys = new ArrayList<Long>();
             for (long key = 1L; key <= Math.max(members, 0); key++) {
                 state = relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
                         state, integer("I", key), integer("I", key));
+                keys.add(key);
             }
             for (long key : (long[]) row[2]) {
                 state = key < 0L
@@ -3588,20 +3591,42 @@ public class ComposerTest {
                         "java/util/HashMap", state, integer("I", -key))
                         : relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
                         state, integer("I", key), integer("I", key));
+                if (key < 0L) {
+                    keys.remove(Long.valueOf(-key));
+                } else if (!keys.contains(key)) {
+                    keys.add(key);
+                }
             }
             SmtLowering lowering = new SmtLowering(
                     Collections.<String, VmTermLowering.Sort>emptyMap());
             lowering.begin("s0", SmtLowering.NO_JOIN, null);
-            lowering.dispatch(viewKey(state, 0), null, "view");
-            List<String> refused = new ArrayList<String>(
-                    lowering.openRefusals());
-            lowering.end();
-            String expected = (String) row[3];
-            assertTrue(java.util.Arrays.deepToString(row) + ": " + refused,
-                    expected.isEmpty() ? refused.isEmpty()
-                            : refused.contains(ContainerSmtCodec
-                            .ASSOC_VIEW_ORDER_UNSTATED + ":" + expected));
+            String view = lowering.dispatch(viewKey(state, 0), null, "view")
+                    .text;
+            assertEquals(java.util.Arrays.deepToString(row),
+                    Collections.<String>emptyList(), lowering.openRefusals());
+            List<String> facts = lowering.end();
+            String stated = (Boolean) row[3] ? "unsat" : "sat";
+            assertEquals(java.util.Arrays.deepToString(row) + ": position 0 "
+                            + "names the last key the chain put",
+                    stated, answer(lowering, facts, "(= " + view + " "
+                            + keys.get(keys.size() - 1) + ")"));
+            assertEquals(java.util.Arrays.deepToString(row) + ": and the "
+                            + "first", "sat", answer(lowering, facts,
+                    "(= " + view + " " + keys.get(0) + ")"));
         }
+    }
+
+    /** What z3 answers a lowering's facts asked with one more question. */
+    private String answer(SmtLowering lowering, List<String> facts,
+                          String question) {
+        List<String> asked = new ArrayList<String>();
+        for (String fact : facts) asked.add(SmtNames.legalSymbols(fact));
+        asked.add(SmtNames.legalSymbols(question));
+        StringBuilder query = new StringBuilder(lowering.body(asked));
+        for (String each : asked) {
+            query.append("(assert ").append(each).append(")\n");
+        }
+        return solver().ask(query.toString(), null, false).status();
     }
 
     /** A snapshot's base, as the VM states its members' order and count;

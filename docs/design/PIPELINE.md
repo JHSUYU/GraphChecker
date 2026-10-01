@@ -649,15 +649,17 @@ answers is its cell's `valueString`, null where the cell is the null cell `(VRef
 (`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A view's positions are
 stated linearly in its chain's puts: each position below the size names a present key held at that
 position, and each put key present is held at a position below the size. A position is the run's
-iteration count, so it is stated only where the chain's order is the one the map's class iterates
-in (`ContainerSmtCodec#unstatedOrder`): the snapshot's members follow its base in that order
+iteration count, so the chain's order is the positions' only where it is the order the map's class
+iterates in (`ContainerSmtCodec#ordered`): the snapshot's members follow its base in that order
 (`order`, `members`); an `INSERTION` map iterates in its chain's order after them (a `putAll` in
 its source's); a `HASH` map keeps it through removals and updates of a key it holds, while a put of
-another key may rebin or resize its table. Two or more keys past such a put, or a base stating no
-order (a recording before it), are refused by name
-(`UNSTATED_VALUE:AssociativeViewOrder:HASH_INSERT`, `:UNRECORDED`). A view walks the state
-each step of its chain stands for (`Host#chain`: a read's joined version), so a map's `values()` a
-region iterates through a read of it is bounded by that version's keys.
+another key may rebin or resize its table. Past such a put, or over a base stating no order (a
+recording before it), the same facts are stated through `assoc_view_key` and
+`assoc_view_position` (`ContainerSmtCodec.ViewOrder.FREE`): the positions are a bijection with the
+keys in no order, so a view read as a set keeps every key and no position is tied to a key the run
+may not have had there. A view walks the state each step of its chain stands for (`Host#chain`: a
+read's joined version), so a map's `values()` a region iterates through a read of it is bounded by
+that version's keys.
 
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
