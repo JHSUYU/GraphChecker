@@ -14,10 +14,12 @@ Pointers are `path` plus class and method. `gc/` stands for
 
 ## Acceptance
 
-Live runs on the concolic VM `/bigtemp/vnr3ne/vm-r3b/j2sdk-image`, outputs under
-`/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`. Round `i1` ran this code (integration `int1`,
-`d60d89cde`: the clock batch, the 11741 handoff fixes, the time robustness package, ADHOC-INFRA
-WP5.B/5.D/WP3) on nine HDFS cases and SOLR-18406; SOLR-18413 last ran in `r9` and `w4d1`.
+Live runs, outputs under `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`. Round `i1` ran the
+clock batch, the 11741 handoff fixes, the time robustness package and ADHOC-INFRA on
+`vm-r3b`; round `i2` ran HEAD's code before the run-directory fix (adds the question ledger,
+WIRE-CODEC W1/W4 and the stall watchdog) on `vm-w4d`: the same verdicts and moved roots,
+hdfs-17899-bug3's claim found but its EMIT refused by the shared `/tmp` scope copy (fixed on
+HEAD). HEAD needs W4's natives: `vm-w4e` (README §3.1). SOLR-18413 last ran in `r9` and `w4d1`.
 
 | case | run | verdict | mechanism / blocker |
 | --- | --- | --- | --- |
