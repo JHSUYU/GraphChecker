@@ -34,6 +34,9 @@ enum Capability {
   CAPABILITY_HASH_SET
 };
 Capability capability(oop value);
+// The VM freed classes: every cached field offset, keyed by a Klass* that may
+// now be another class, is dropped.  At a safepoint (ConcolicMngr).
+void klasses_freed();
 // The shape a capability's state has: "INDEXED", "ASSOCIATIVE", or NULL.
 const char *shape(oop value);
 // The order Java's iterator of this container's class walks its members

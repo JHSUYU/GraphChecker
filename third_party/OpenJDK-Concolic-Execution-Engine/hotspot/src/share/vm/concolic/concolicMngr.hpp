@@ -211,6 +211,14 @@ public:
    */
   static jint installGuardedStoreSites(const char *table);
 
+  /**
+   * The VM freed metadata (a redefinition's old versions, an unloaded
+   * loader's classes; ClassLoaderData, at a safepoint): every cache keyed by
+   * a Method* or Klass* address the VM may reuse is dropped -- the
+   * guarded-store memo and the container field offsets.
+   */
+  static void metadata_freed();
+
   static std::string getSymbolicFieldExpression(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor, Handle concrete_value);
