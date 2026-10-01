@@ -1791,6 +1791,9 @@ $(cat "${stream_dir}/campaign_gaps.jsonl" 2>&1)"
   || fail "an empty campaign_worker_hosts invoked ssh"
 [[ "$(cat "${stream_dir}"/obligations-*/*/host.txt | LC_ALL=C sort -u)" \
     == localhost ]] || fail "a local obligation did not record its host"
+[[ ! -s "${campaign_host_gate_root}/$(hostname -s)/starts" ]] \
+  || fail "an obligation's ledger row outlived its return: \
+$(cat "${campaign_host_gate_root}/$(hostname -s)/starts")"
 
 # STREAM-2: THE END AT A WITNESS (PIPELINE §7.9).  An admitted replay whose
 # target row at the declared occurrence observed the fatal pauses the pool,

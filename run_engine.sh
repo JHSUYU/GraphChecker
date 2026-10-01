@@ -3232,7 +3232,8 @@ campaign log says}); its logs are in ${worker}"
 #   stream_queue      "<kind> <round> <id> [<session>]" not started yet:
 #                     OBLIGATION, or RERUN (GROW re-running the replay that
 #                     exposed a region, its exposing session named)
-#   stream_jobs       pid -> "<kind> <round> <id> <host> [<session>]"
+#   stream_jobs       pid -> "<kind> <round> <id> <host> [<session>]";
+#                     stream_charges pid -> its row in its host's ledger
 #   stream_pending    "<kind> <round> <id> <host> <status> [<session>]": what
 #                     returned since the last step began, not landed yet
 #   stream_flying     obligation id -> its row, queued, running or not
@@ -3279,8 +3280,8 @@ campaign_explore() {
   local stream_attempting=0
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
-  local -A stream_jobs=() stream_flying=() stream_host_jobs=()
-  local -A stream_host_cores=() stream_host_unread=()
+  local -A stream_jobs=() stream_charges=() stream_flying=()
+  local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
   : >"${results}"
   : >"${attempts}"
   mkdir -p "$(dirname "${stream_plan}")"
@@ -3746,7 +3747,8 @@ could not be read for ${campaign_ssh_patience_s}s"
 
 # Starts one queue entry on <host>, in the background, on the class tree and
 # plan of the generation current now (a later GROW weaves a new one; this
-# start keeps its own).
+# start keeps its own); the ledger row campaign_stream_admit_host charged
+# is its own until it returns.
 campaign_stream_start() {
   local entry=$1 host=$2 kind round id session worker
   read -r kind round id session <<<"${entry}"
@@ -3766,6 +3768,7 @@ campaign_stream_start() {
     ) >"${worker}/stdout.log" 2>"${worker}/stderr.log" &
   fi
   stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"
+  stream_charges[$!]=${campaign_host_charge_id}
   stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
 }
 
@@ -3798,8 +3801,10 @@ campaign_stream_wait() {
 }
 
 # One child the head waited for, ended with <status>: the ticker; the step
-# (campaign_stream_step_done); or a job, whose host has its slot back and
-# whose return waits in stream_pending for the next step to land it.
+# (campaign_stream_step_done); or a job, whose host has its slot and its
+# ledger row back -- what it ran has returned, so an answer in seconds does
+# not hold its host's room for the whole ramp -- and whose return waits in
+# stream_pending for the next step to land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session
   if [[ "${pid}" == "${stream_ticker}" ]]; then
@@ -3808,7 +3813,8 @@ campaign_stream_ended() {
     campaign_stream_step_done "${status}"
   else
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
-    unset 'stream_jobs[$pid]'
+    campaign_host_release "${host}" "${stream_charges[${pid}]}"
+    unset 'stream_jobs[$pid]' 'stream_charges[$pid]'
     stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
     stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
   fi
