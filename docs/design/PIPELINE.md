@@ -643,8 +643,12 @@ charged at its own start; the slot releases the row when the obligation returns,
 does. A replay JVM holds no more than it is charged: its heap is half of
 `obligation_memory_mb` (2 GB at least), and `experiments/lib/execute.sh` ends one whose resident
 memory passes `obligation_memory_mb` and states each one's peak at its end. The head (`do_campaign`, `campaign_head_charged`) charges each of
-its engine JVMs `engine_memory_mb` (else 8192) for 120 s -- the import gate, which holds one
-session at a time, its own heap (§6) -- and its seed and CONFIRM replays
+its engine JVMs for 120 s at the heap each starts at (`engine_java`): its main's measured need
+(`campaign_engine_need_mb`: the static pass 4 GB, the planner and the composer 8 GB, the trace
+aggregation, scheduler, lineage scan and CONFIRM 2 GB; the import gate its own, §6), or
+`engine_memory_mb` (else 8192) for a main with none; a JVM that runs out of its need (exit 3
+under `-XX:+ExitOnOutOfMemoryError`) runs once more at `engine_memory_mb`, charged so, saying
+so, and later starts of that main begin there -- and its seed and CONFIRM replays
 `obligation_memory_mb` for 300 s, and releases the row when the command returns
 (`campaign_host_release`); an obligation's replay is inside its slot's charge. An obligation
 whose worker does not finish (a nonzero exit, local or remote, or a result the head cannot see) is

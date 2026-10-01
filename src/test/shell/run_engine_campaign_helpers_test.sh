@@ -1144,8 +1144,8 @@ ${wave_gate}/import_gated.txt "* ]] \
 iteration, against the iteration's ledger: $*"
     # It holds one session at a time: its heap (and charge) is what the
     # largest session takes, not the case's engine heap for a whole corpus.
-    [[ "${engine_memory_mb}" -ge 512 && "${engine_memory_mb}" -lt 1024 ]] \
-      || fail "the gate of two empty sessions asked ${engine_memory_mb} MB"
+    [[ "${engine_need_mb}" -ge 512 && "${engine_need_mb}" -lt 1024 ]] \
+      || fail "the gate of two empty sessions needs ${engine_need_mb} MB"
     printf '%s\n' '{"violations":1,"blocking":1,'\
 '"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
     printf '{"schemaVersion":1,"cls":"BLOCKING"}\n' \
@@ -3046,6 +3046,47 @@ campaign_head_charged 999999 120 true \
   || fail "a start outside a head waited for the ledger"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb
 reset_config
+
+# ENGINE-HEAP: an engine JVM starts at what its main measurably needs, charged
+# that, and only a run that outgrows it -- the JVM's exit 3 under
+# -XX:+ExitOnOutOfMemoryError -- runs once more at the engine heap, saying
+# so; the reader of its standard output sees the finished run's alone, and
+# later starts of that main go straight to the engine heap.  A main with no
+# measured need runs at the engine heap.
+engine_test=${test_tmp}/engine-heap
+mkdir -p "${engine_test}"
+cat >"${engine_test}/java" <<'EOF'
+#!/usr/bin/env bash
+oom=n
+[[ "$1" == -XX:+ExitOnOutOfMemoryError ]] && oom=y
+echo "heap=${GRAPH_CHECKER_ENGINE_MEMORY_MB} oom=${oom}" >>"${ENGINE_TEST_LOG}"
+if [[ "${oom}" == y && "${GRAPH_CHECKER_ENGINE_MEMORY_MB}" -lt 4000 ]]; then
+  echo "half of an artifact"
+  exit 3
+fi
+echo whole
+EOF
+chmod +x "${engine_test}/java"
+(
+  export ENGINE_TEST_LOG=${engine_test}/log
+  java_bin=${engine_test}/java
+  engine_memory_mb=8000
+  campaign_head_charging=0
+  campaign_engine_need_mb() { [[ "$1" != x.Grows ]] || echo 2000; }
+  engine_java -Dk=v -cp jar x.Grows a b >"${engine_test}/out" 2>"${engine_test}/err" \
+    || fail "an engine JVM that outgrew its need failed"
+  [[ "$(cat "${engine_test}/out")" == whole ]] \
+    || fail "the outgrown run's output reached its reader: $(cat "${engine_test}/out")"
+  grep -q 'Grows ran out of its 2000 MB heap; run again at 8000 MB' \
+    "${engine_test}/err" || fail "an engine JVM outgrew its need silently"
+  engine_java -cp jar x.Grows >/dev/null
+  engine_java -cp jar x.Other >/dev/null
+  engine_need_mb=6000 engine_java -cp jar x.Other >/dev/null
+  [[ "$(tr '\n' ' ' <"${engine_test}/log")" == "heap=2000 oom=y heap=8000 oom=n \
+heap=8000 oom=n heap=8000 oom=n heap=6000 oom=y " ]] \
+    || fail "engine JVMs did not start at their needs: \
+$(tr '\n' ' ' <"${engine_test}/log")"
+)
 
 # HOSTS-7: a wave rotates the slot list, so the one-obligation waves of a
 # campaign do not all start on the first host.
