@@ -18,7 +18,7 @@ other. The fault points are the transport doors' (`FAULT:HADOOP_IPC:REQUEST`,
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
-| the failure | `target.yaml` | `exception_target: hdfs-17897 …BlockTokenSecretManager 587`: the `throw new` at that line of `retrieveDataEncryptionKey` |
+| the failure | the tree's marker | `@CausynthExceptionTarget` naming `hdfs-17897` on `BlockTokenSecretManager.retrieveDataEncryptionKey`'s missing-key `throw new` (line 582); `run.sh` derives `exception_target: hdfs-17897 …BlockTokenSecretManager 582` from it |
 | the occurrence | `declared_target_occurrence` in `workflow.properties` | `hdfs-17897/dn0#epoch0/region/REGION.53092d3e-263d-3a18-b7a5-ae5b437d96de@hdfs-17897/client#epoch0/striped-file-checksum#1` — the campaign composes and judges that one and reports the others |
 | clock roots | the program text (`causynth/RootCatalog`) | every read the slice reaches of a clock -- a JVM clock or a method returning one under constant arithmetic (`Timer.now()`, `Time.now()`, `Time.monotonicNow()`) -- is a root, and the occurrence that reads it is admitted as a root reader |
 | hook-minted roots | the Hadoop checkout, not this directory | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` roots the counter each new `BlockKey` takes its id from; `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so neither field appears in `symbolic-inputs.jsonl` |
@@ -36,7 +36,7 @@ node's own readings came in, and the value each path read.
 
 ## Build and run
 
-Hadoop checkout `/u/vnr3ne/hadoop-hdfs-17897`, branch `gc/hdfs-17897`. Replay
+Hadoop checkout: the unified HDFS tree `/u/vnr3ne/hadoop-hdfs-unified`, branch `gc/hdfs-unified` (trunk 734dd8a67cd; inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`), where HDFS-17897's fix (e23df4c4b84, which trunk carried) is reverted. Replay
 concurrency is fixed at `concolic_worker_count=8` in `workflow.properties`. From this
 directory:
 

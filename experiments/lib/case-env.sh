@@ -19,7 +19,9 @@
 # and optionally
 #   target_occurrence   the declared target (empty keeps every observed one)
 #   loop_bounds         default: <case-dir>/loop-bounds.jsonl
-#   target_spec         default: <case-dir>/target.yaml
+#   target_spec         default: <case-dir>/target.yaml; when there is none,
+#                       run.sh derives it from the tree's marker of the case
+#                       (tools/lib/annotated.py)
 #   classpath_test      the test class whose report states the module's test
 #                       classpath (default: test_class)
 #   workload_properties system properties every workload JVM of the case

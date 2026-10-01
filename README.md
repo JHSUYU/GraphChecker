@@ -158,7 +158,7 @@ for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f
    answer (`ContainerSupport::query_state`).
 
 **Phase 2 — the sweeps** (after 1–2): follow "Run an ad-hoc sweep" below on HDFS
-(`~/hadoop-hdfs-17967-c`) and Solr (`~/lucene-solr-unified`), all ten lifts; triage with
+(`~/hadoop-hdfs-unified`) and Solr (`~/lucene-solr-unified`), all ten lifts; triage with
 `triage.py`, dedupe with `findings.py`; a finding is new only if CONFIRMED and not a known
 mechanism (the two old token-expiry CLOCK_SKEWs were judged HDFS's clock-sync assumption).
 
@@ -312,7 +312,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | z3 | `~/.local/bin/z3` (4.14.1) |
 | concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-r3b/j2sdk-image`** (f14 + R3 + r3-fix envelope bound). Others: `vm-r3` (before r3-fix), `vm-w1` (W1, parked), `vm-w4` (W4 branch), `vm-w4b` (possibly partial — rebuild), `vm-f14`, `~/gc-out/vm-f*` (old). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME`, never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
-| HDFS trees | `~/hadoop-hdfs-<case>` (worktrees of `~/hadoop`, branch `gc/<case>`); ad-hoc HDFS checks run on `~/hadoop-hdfs-17967-c` only |
+| HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) and the ad-hoc sweep -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
 | Solr trees | One Solr 8.11 tree, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches; solr-18406, solr-18413 and solr-adhoc all name it (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
 
@@ -419,8 +419,13 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
   an unknown key is refused;
 - `target.yaml`: `exception_target: <name> <binary class name> <source line> [<thrown type>]`.
   The engine finds the one `throw new` at that line of the class or of a class nested in it (a
-  lambda body, an anonymous class) in the compiled classes; the tree carries no annotation and is
-  not rebuilt. The thrown type is needed only when the line holds two throws;
+  lambda body, an anonymous class) in the compiled classes; the tree is not rebuilt. The thrown
+  type is needed only when the line holds two throws. A known bug's case keeps no `target.yaml`:
+  its tree marks the bug's target throw with `@CausynthExceptionTarget("<case id>[,<case
+  id>...]")` (the case id is `<case dir>-<case arg>`, e.g. `hdfs-17899-bug1`), and `run.sh`
+  derives the spec from the marker (`tools/lib/annotated.py <system dir> <tree> <case id>`, into
+  `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`). An ad-hoc sweep counts a confirmed finding at a
+  marked throw as that known bug found again (`findings.py --annotated`, `nightly.sh`);
 - optionally `communication-mappings.jsonl` (`DOOR` and `WIRE_FLOW` rows; on the R1-ROOTS branch
   doors come from the engine's library catalog instead), `root-domains.jsonl` and
   `loop-bounds*.jsonl`.

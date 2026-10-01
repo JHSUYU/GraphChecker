@@ -14,11 +14,13 @@ tree at `Client$Connection.sendRpcRequest`) or the NameNode's answer lost after 
 the request (`FAULT:HADOOP_IPC:RESPONSE`, at `Client.getRpcResponse`), to a DataNode or to
 the application.
 
-| Case | Request flow | Hadoop worktree | Branch |
-| --- | --- | --- | --- |
-| `bug1` | NameNode -> Balancer -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug1` | `gc/hdfs-17899-bug1` |
-| `bug2` | NameNode -> SPS -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug2` | `gc/hdfs-17899-bug2` |
-| `bug3` | NameNode -> source DataNode -> target DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug3` | `gc/hdfs-17899-bug3` |
+| Case | Request flow |
+| --- | --- |
+| `bug1` | NameNode -> Balancer -> DataNode |
+| `bug2` | NameNode -> SPS -> DataNode |
+| `bug3` | NameNode -> source DataNode -> target DataNode |
+
+All three run on the unified HDFS tree `/u/vnr3ne/hadoop-hdfs-unified`, branch `gc/hdfs-unified` (trunk 734dd8a67cd; inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`); HDFS-17899's fix (62729b06d70) landed after that base.
 
 ## The workloads
 
@@ -50,7 +52,7 @@ workload asserts the gap itself.
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
-| the failure | `target.yaml` | `exception_target: hdfs-17899 …BlockTokenSecretManager 582`, the same line in each of the three checkouts |
+| the failure | the tree's marker | `@CausynthExceptionTarget` naming `hdfs-17899-bug1`, `-bug2` and `-bug3` on `BlockTokenSecretManager.retrieveDataEncryptionKey`'s missing-key `throw new` (line 582); `run.sh` derives each case's spec from it |
 | the occurrence | `target_occurrence` in `case.sh`, exported as `CAUSYNTH_TARGET_OCCURRENCE` | `bug1` `hdfs-17899/target-dn#epoch0/…@hdfs-17899/balancer#epoch0/balance-block#1`; `bug2` `…/target-dn#epoch0/…@hdfs-17899/sps#epoch0/satisfy-storage-policy#1`; `bug3` `…/target-dn#epoch0/…@hdfs-17899/source-dn#epoch0/replicate-block#1`. Left empty, the run keeps every observed occurrence |
 | clock roots | the program text (`causynth/RootCatalog`) | every read the slice reaches of a clock -- a JVM clock or a method returning one under constant arithmetic (`Timer.now()`, `Time.now()`, `Time.monotonicNow()`) -- is a root, and the occurrence that reads it is admitted as a root reader |
 | fault points | the Hadoop worktrees, not this directory | every mapped transport door mints its Boolean fault point unconditionally: `Debug.makeSymbolicBoolean("FAULT:HADOOP_IPC:REQUEST")` in `Client$Connection.sendRpcRequest` (the key-refresh RPC failure) and `…("FAULT:HDFS_SASL:REQUEST")` in `SaslDataTransferClient.doSaslHandshake`. The recorded polarity is false; true throws the transport's `IOException` before the request leaves, with no `causynth.active()` guard |
