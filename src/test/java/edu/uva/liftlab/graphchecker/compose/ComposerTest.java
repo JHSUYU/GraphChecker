@@ -3746,8 +3746,8 @@ public class ComposerTest {
         assertFalse("which is not a symbol of the recording",
                 SmtNames.symbols(guard, new LinkedHashSet<String>())
                         .contains(SERIAL));
-        Set<String> reached = lowering.reachedSymbols(guard,
-                new LinkedHashSet<String>(), new LinkedHashSet<String>());
+        Set<String> reached = lowering.reachedSymbols(
+                Collections.singletonList(guard));
         assertTrue("and the recorded symbol behind it is: " + reached,
                 reached.contains(SERIAL));
         for (String name : reached) {
@@ -5006,17 +5006,15 @@ public class ComposerTest {
                             named(gaps, "UndeclaredFreeSymbol:" + NO_ROW));
                     // EXPLORE: the node's value stands in for the join, no
                     // flip is built over it, and the closure still reaches
-                    // what the join lowered (M1).
-                    SmtLowering.Lowered explored = Corpus.read(iteration,
-                            null).lowering("s0").lower(
-                            "EXPR.00000000000000b3");
+                    // what the join reads, through the expressions (M1).
+                    Corpus explore = Corpus.read(iteration, null);
+                    SmtLowering.Lowered explored = explore.lowering("s0")
+                            .lower("EXPR.00000000000000b3");
                     assertFalse(name + ": no flip over the pin: " + explored,
                             explored.ok());
-                    assertTrue(name + ": the join is still reached: "
-                                    + explored.reach(),
-                            explored.reach().size() == 2
-                                    && explored.reach().get(0).contains(
-                                    "1001") && explored.reach().get(1)
+                    assertTrue(name + ": the join is still reached",
+                            explore.expressionSymbols("s0",
+                                    "EXPR.00000000000000b3")
                                     .contains(NO_ROW));
                     break;
                 case "unstated":
@@ -5301,9 +5299,8 @@ public class ComposerTest {
             assertTrue(depth + ": the map is one named subterm per put",
                     text[0].contains("container_dag__"));
             assertTrue(depth + ": the query reaches the deepest put's symbol",
-                    lowering.reachedSymbols(text[0],
-                            new LinkedHashSet<String>(), null)
-                            .contains(deepest));
+                    lowering.reachedSymbols(Collections.singletonList(
+                            text[0])).contains(deepest));
             List<String> names = new ArrayList<String>();
             for (SmtLowering.Declaration declaration : lowering.reachedBy(
                     Collections.singletonList(text[0]))) {

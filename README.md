@@ -421,9 +421,9 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
   The engine finds the one `throw new` at that line of the class or of a class nested in it (a
   lambda body, an anonymous class) in the compiled classes; the tree carries no annotation and is
   not rebuilt. The thrown type is needed only when the line holds two throws;
-- optionally `communication-mappings.jsonl` (`DOOR` and `WIRE_FLOW` rows; on the R1-ROOTS branch
-  doors come from the engine's library catalog instead), `root-domains.jsonl` and
-  `loop-bounds*.jsonl`.
+- optionally `communication-mappings.jsonl` (`WIRE_FLOW` rows; the fault doors are the engine's
+  library catalog, `docs/design/SYMBOL-SCOPE.md` §4.2),
+  `root-domains.jsonl` and `loop-bounds*.jsonl`.
 
 Everything executable is in `experiments/lib/`; its README gives the workload rules. Per-system
 parts are in `experiments/<system>/{system.sh,build.sh,classpath.py}`.
@@ -464,7 +464,8 @@ A case is one check on one workload (`<check>.<workload>`), or a batch of checks
 experiments are `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds
 `checks.tsv`, `batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A
 check's slice starts from the classes its experiment's communication mappings name (`system.sh`'s
-`system_mapping_scope`) and its own class, and grows the scope from there. A sweep runs batches:
+`system_mapping_scope`) and its own class, and grows the scope from there; the library doors'
+classes join it once a class of that scope calls them. A sweep runs batches:
 given `causynth_static_root` (`sweep.sh`'s `STATIC_ROOT`), a batch campaign takes each check's
 slice from the build, records its workload once for all its checks, plans each check, replays
 one seed per group of checks whose plans agree, and runs each check's campaign from EXPLORE on,

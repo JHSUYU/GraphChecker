@@ -117,8 +117,8 @@ public final class SmtLowering {
          * The symbols this session's read rows state for one location at one
          * version.  The join inlines the writer's propagation, so a
          * container's read symbol appears nowhere in the text; this is how
-         * {@link #reachedSymbols} names the recorded state a
-         * {@code container_dag__} stands for.
+         * {@code Corpus#expressionSymbols} names the recorded state a
+         * container read rests on.
          *
          * <p>Placeholder rows are excluded: their {@code observedVersion} is
          * the write they were laid over, so listing them here would put the
@@ -710,19 +710,6 @@ public final class SmtLowering {
         /** The lowered text, a refused construct as its fresh name. */
         public String text() {
             return text;
-        }
-
-        /**
-         * What the rest reaches through it: its text, and the text of each
-         * join a mint or a pin stood in for, whose parts that lowered (the
-         * writer's reads, the container states they observed) are still
-         * what the value rests on ({@code ClosurePlanner}).
-         */
-        public List<String> reach() {
-            List<String> reach = new ArrayList<String>();
-            reach.add(text);
-            reach.addAll(dropped);
-            return reach;
         }
 
         /**
@@ -1516,9 +1503,9 @@ public final class SmtLowering {
             public Term join(JsonElement value) {
                 answering.push(new ReadAt(key, version));
                 try {
-                    return observing(element(dispatch(value, whole(value,
-                            expected), origin + ":join"), expression,
-                            location, key, version, expected), key, version);
+                    return element(dispatch(value, whole(value, expected),
+                            origin + ":join"), expression, location, key,
+                            version, expected);
                 } finally {
                     answering.pop();
                 }
@@ -1621,19 +1608,6 @@ public final class SmtLowering {
         if (movable.add(scope + SEPARATOR + symbol)) {
             memo = new HashMap<MemoKey, Attempt<?>>();
         }
-    }
-
-    /**
-     * Records the read rows' symbols on the named container subterm the
-     * read produced, where {@link #reachedSymbols} finds them (the inlined
-     * body never names the cell).  A subterm two reads produce carries both.
-     */
-    private Term observing(Term value, String key, long version) {
-        SharedTerm shared = sharedByName.get(value.text);
-        if (shared != null) {
-            shared.states.addAll(join.readSymbols(key, version));
-        }
-        return value;
     }
 
     /**
@@ -2633,12 +2607,6 @@ public final class SmtLowering {
         private final String name;
         private final Sort sort;
         private final String body;
-        /**
-         * The recorded state this subterm is the value of (the read rows'
-         * symbols).  Not derivable from the body, whose base is often an
-         * empty container rather than a symbol.
-         */
-        private final Set<String> states = new LinkedHashSet<String>();
 
         private SharedTerm(String name, Sort sort, String body) {
             this.name = name;
@@ -3045,35 +3013,25 @@ public final class SmtLowering {
     }
 
     /**
-     * The recording's symbols of one term, THROUGH the container subterms it
-     * names (same reachability as {@link #reachedBy}); minted names are
-     * walked through, never reported.  A guard over a map read is just
-     * {@code container_dag__...}, so the text alone names nothing.
-     *
-     * <p>Two outputs: {@code into} is what the term SAYS (recorded names);
-     * {@code states} is what it RESTS ON, the read rows behind named
-     * container subterms ({@link SharedTerm#states}, the v_C rule of
-     * PIPELINE §7.2): the closure's demand, which may pass one set for
-     * both.  A query binds only what its text says
-     * ({@link #reachedSymbols(Iterable)}).</p>
+     * The recording's symbols these texts SAY, together, THROUGH the
+     * container subterms they name (same reachability as {@link
+     * #reachedBy}); minted names are walked through, never reported.  A
+     * guard over a map read is just {@code container_dag__...}, so the text
+     * alone names nothing.  What a term RESTS ON is the closure's question,
+     * asked of the expressions, not of their text ({@code
+     * Corpus#expressionSymbols}).
      */
-    public Set<String> reachedSymbols(String text, Set<String> into,
-                                      Set<String> states) {
-        reachedSymbols(text, new LinkedHashSet<String>(), into, states);
-        return into;
-    }
-
-    /** What these texts SAY, together; what they rest on is not asked. */
     public Set<String> reachedSymbols(Iterable<String> texts) {
         Set<String> into = new LinkedHashSet<String>();
-        for (String text : texts) reachedSymbols(text, into, null);
+        Set<String> seen = new LinkedHashSet<String>();
+        for (String text : texts) reachedSymbols(text, seen, into);
         return into;
     }
 
     /** On a stack, as {@link #reach}: capped at depth 512, a mutation chain
      *  hid the symbols of its deeper subterms. */
     private void reachedSymbols(String text, Set<String> seen,
-                                Set<String> into, Set<String> states) {
+                                Set<String> into) {
         if (text == null || text.isEmpty()) return;
         Deque<Iterator<String>> names = new ArrayDeque<Iterator<String>>();
         names.push(SmtNames.names(text).iterator());
@@ -3086,9 +3044,6 @@ public final class SmtLowering {
             if (SmtNames.BUILTIN.contains(name) || !seen.add(name)) continue;
             SharedTerm shared = sharedByName.get(name);
             if (shared != null) {
-                // v_C (PIPELINE §7.2): a term reaching the dag rests on the
-                // state it stands for, which its body does not name.
-                if (states != null) states.addAll(shared.states);
                 names.push(SmtNames.names(shared.body).iterator());
                 continue;
             }

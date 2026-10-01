@@ -36,6 +36,18 @@ the thread has a context of its own. A thread boundary always ends an occurrence
 inherits region depth but no occurrence. PLAN records the folded regions on their owner
 (`RuntimeRegionPlanner#stampFoldedRegionEntries`).
 
+**Unnamed work** (`Identity#occurrence`): work started where no hop named its starter (§3) opens
+no occurrence while no hop names it either (its lineage is empty, `Lineage#named`: one test for
+both); its region entries push a marker as a fold does, and its events are its role's. Such
+siblings differ by nothing an address names: a DataNode's connection threads, which its acceptor
+starts under no root, each enter the SASL server's regions before their first message, and would
+share one address. Once the message's hop stands, the regions they enter open under it. Neither
+pass records an activation for an entry that opened none (the trace states `regionFolded`; an
+unnamed one has no owner). Never silent: each region a node's unnamed work entered is a
+`LINEAGE_LOST` DIAGNOSTIC row (`RowRuntime#unnamedEntry`, in the recording's trace or the
+session), the session manifest counts every entry (`unnamedEntries`), and a closure that reaches
+such role work names the roots and decisions it left unrecorded (`ClosurePlanner#unrecorded`).
+
 ## 2. The causal context `c`
 
 `contract/CausalContext`, exactly three forms:
@@ -81,8 +93,11 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   already stands on its creator's frames and adds the start frame alone. So siblings started from
   one site differ by that frame's `k` or, started in two calls of the method holding the site, by
   the frames above it. Claimed starts nest; a pool thread drops a finished task's start levels
-  before claiming the next. A start under a `Lost` context files no frame,
-  captures no scope and writes no event: its k would count arrivals, which nothing schedules.
+  before claiming the next. A start made where no hop names the starter (its lineage is
+  empty) files no frame, captures no scope and writes no event -- its k would count arrivals,
+  which nothing schedules -- but an unnamed start: the work that claims it is unnamed (§1), a
+  started thread for its life, a task claimed on a pool's thread until the next claim on that
+  thread or until a level below its claim exits.
 - **Scope base** (`Identity#scopeStart`, `Hop`): an occurrence's index starts at its context's
   origin: the inbound scope for `ANCHOR` (which pooled handler serves a request is scheduling, not
   identity), the scope start for `SCOPE_ROOT` (a request, a carried scope, a wake turn), the claimed
@@ -182,9 +197,10 @@ another node than its address is `TASK_UNANSWERED` BLOCKING
 | work entries (where a start is claimed) | `Runnable.run`, `Callable.call`, `ForkJoinTask.exec`/`compute`, `Thread.run` |
 | timed waits | `Thread.sleep`, `TimeUnit.sleep`, `Object.wait(long)`, `LockSupport.parkNanos`, `Condition.awaitNanos`/`await(long, TimeUnit)`, `BlockingQueue.poll(long, TimeUnit)`; notifiers and untimed waits as signal state |
 
-A start (under a context that is not `Lost`, §3) captures the starter's scope with the carrier
+A start made under a hop (§3) captures the starter's scope with the carrier
 (`RuntimeTraceContext#captureAsync`) and writes a `START` event; the claim restores it
-(`RuntimeTraceContext#claimCarried`) and writes a `CLAIM` event. A pool's own worker thread
+(`RuntimeTraceContext#claimCarried`) and writes a `CLAIM` event. A start no hop names captures
+nothing and writes no event; its work is unnamed (§1). A pool's own worker thread
 inherits no scope (`runtime/PoolWorkers`: `ThreadPoolExecutor.addWorker`,
 `ForkJoinPool.createWorker`, Jetty `QueuedThreadPool.startThread`); each task carries its own.
 
@@ -241,7 +257,7 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
 
 ### 7.3 Typed faults
 
-The DOOR rows and the woven markers are SYMBOL-SCOPE.md §4.2. A marker's branch is a decision of
+The library catalog's doors and the woven markers are SYMBOL-SCOPE.md §4.2. A marker's branch is a decision of
 the occurrence that runs the door; `explore/ClosurePlanner#controlProducer` adds the sender and the
 receiver of the message a demanded occurrence served (found through its `Anchor`,
 `explore/Corpus#senderOf`, `#receiverOf`) as control producers, so their door faults are proposed

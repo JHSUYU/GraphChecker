@@ -10,7 +10,9 @@
 # outputs are compared by tools/regress/ab_compare.py:
 #
 #   chain     stage       mirrors                       reads
-#   SEED      SEED.static do_analyze (static pass)      the case's scope, copied again from its tree
+#   SEED      SEED.static do_analyze (static pass),     the case's scope, copied again from its tree,
+#                         after the door step of        and the library doors' classes it calls
+#                         campaign_analyze_grown_scope
 #             SEED.trace  do_workload's aggregation     the recording's runtime/ + one set of static
 #                                                       artifacts for both sides (ab_seed)
 #             PLAN        do_schedule                   this side's SEED.trace plan
@@ -191,10 +193,12 @@ ab_explore_args() {
 }
 
 ab_stage_seed_static() {
-  local dir classes out growth sha
+  local dir classes out grown growth sha
+  local -a roots=()
   dir=$(ab_stage_dir SEED.static)
   classes=${dir}/classes
   out=${dir}/out
+  grown=${dir}/scope-classes
   growth=$(ab_cfg causynth_scope_growth_budget)
   [[ -z "${growth}" || "${growth}" == 0 ]] \
     || ab_skip "${dir}" "scope growth (budget ${growth}) is not mirrored" || return
@@ -209,13 +213,33 @@ ab_stage_seed_static() {
   sha=$(cd "${classes}" && find . -type f -print0 | LC_ALL=C sort -z \
     | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')
   printf '%s\n' "${sha}" >"${dir}/classes.sha256"
-  mkdir -p "${out}"
-  ab_props=(
+  mkdir -p "${out}" "${grown}"
+  # campaign_analyze_grown_scope's door step, outside the budget: the class
+  # families of the library doors the analysis scope calls join it
+  # (doors/stdout.txt names them).  A jar that ships no catalog has no doors.
+  IFS=: read -r -a roots <<<"$(ab_cfg causynth_lineage_roots)"
+  # The system's own doors replace the catalog's, in the door step as in
+  # the static pass (run_engine.sh run_java_main, do_analyze).
+  ab_props=("-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)")
+  if (( ${#roots[@]} > 0 )) && unzip -Z1 "${ab_jar}" \
+      edu/uva/liftlab/graphchecker/library-catalog.jsonl >/dev/null 2>&1; then
+    mkdir -p "${dir}/doors"
+    ab_java "${dir}/doors" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
+      "${ab_jar}" edu.uva.liftlab.graphchecker.plan.ScopeGrowth --doors \
+      "${grown}" "${classes}" "${ab_project_cp}" "${roots[@]}" \
+      || ab_skip "${dir}" "the door scope failed (doors/stderr.log)" || return
+    cp "${dir}/doors/stdout.log" "${dir}/doors/stdout.txt"
+  fi
+  ab_props+=(
     "-Dcausynth.output.dir=${out}"
     "-Dcausynth.target.spec=$(ab_cfg causynth_target_spec)"
     "-Dcausynth.loop.bounds=$(ab_cfg causynth_loop_bounds)"
     "-Dcausynth.region.skeletons=${out}/region_skeletons.jsonl.gz"
   )
+  [[ ! -s "${grown}/GROWN" ]] \
+    || ab_props+=("-Dcausynth.process.dirs=${grown}")
+  [[ -z "$(ab_cfg causynth_lineage_roots)" ]] || ab_props+=(
+    "-Dcausynth.lineage.roots=$(ab_cfg causynth_lineage_roots)")
   [[ -z "$(ab_cfg causynth_communication_mappings)" ]] || ab_props+=(
     "-Dcausynth.communication.mappings=$(ab_cfg causynth_communication_mappings)")
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \

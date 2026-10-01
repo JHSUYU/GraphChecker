@@ -25,9 +25,13 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.compose.SmtNames;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -38,9 +42,11 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -919,20 +925,105 @@ public final class Corpus implements Arms.Rows {
                         session));
     }
 
-    /** Whether a decision is a FAULT decision: its lowered term REACHES a
-     *  MARKER root the same session minted (PIPELINE §7.2). */
+    /** Whether a decision is a FAULT decision: its term REACHES a MARKER
+     *  root the same session minted (PIPELINE §7.2, {@link #termSymbols}). */
     public boolean fault(String sessionId, DecisionRow decision) {
-        SmtLowering lowering = lowering(sessionId);
-        if (lowering == null || !Arms.predicate(decision.term())) return false;
-        Set<String> reached = new LinkedHashSet<String>();
-        lowering.reachedSymbols(FlipQuery.statedTerm(this, sessionId,
-                decision.term()), reached, reached);
-        for (String symbol : reached) {
+        if (!Arms.predicate(decision.term())) return false;
+        for (String symbol : termSymbols(sessionId, decision.term())) {
             RootMintRow root = rootBySymbol(sessionId, symbol);
             if (root != null && root.kind() == RootKind.MARKER) return true;
         }
         return false;
     }
+
+    /**
+     * The recorded symbols one published term REACHES: every symbol it names
+     * itself, and those of each expression it references ({@code EXPR.*},
+     * {@link #expressionSymbols}).  Asked of the expressions' shared DAG,
+     * never of the term's lowered text, which unfolds every shared subterm
+     * at each use (hdfs-17960's wave planner ran out of heap rendering
+     * decisions only to learn whether they reach a fault marker).
+     */
+    public Set<String> termSymbols(String sessionId, String term) {
+        Set<String> reached = new LinkedHashSet<String>();
+        if (term == null || term.isEmpty()) return reached;
+        for (String name : SmtNames.names(term)) {
+            if (symbolKind(sessionId, name) != SymbolKind.UNKNOWN) {
+                reached.add(name);
+            }
+        }
+        java.util.regex.Matcher refs = EXPRESSION_REF.matcher(term);
+        while (refs.find()) {
+            reached.addAll(expressionSymbols(sessionId, refs.group()));
+        }
+        return reached;
+    }
+
+    /**
+     * The recorded symbols one expression rests on, kept per session: its
+     * symbol leaves, over its shared nodes (each once, {@link
+     * ExpressionWalk}), and through each joinable read to the value its
+     * version holds, as the lowering's join reads it ({@link
+     * SmtLowering.SessionJoin#writeExpression}).  A read whose version holds
+     * a container rests on that state's read rows, which the container's
+     * value never names (the v_C rule, PIPELINE §7.2); a read no write
+     * answers stands as the symbol it was minted.
+     */
+    public Set<String> expressionSymbols(String sessionId,
+                                         String expressionRef) {
+        String key = sessionId + "|" + expressionRef;
+        Set<String> held = symbolsByExpression.get(key);
+        if (held != null) return held;
+        Set<String> symbols = new LinkedHashSet<String>();
+        SmtLowering.SessionJoin join = join(sessionId);
+        Deque<JsonElement> roots = new ArrayDeque<JsonElement>();
+        roots.add(expression(sessionId, expressionRef));
+        Set<JsonElement> walked = ExpressionWalk.identitySet();
+        while (!roots.isEmpty()) {
+            JsonElement root = roots.poll();
+            if (root == null) continue;
+            for (ExpressionWalk walk = ExpressionWalk.of(root, walked);
+                 walk.hasNext(); ) {
+                JsonObject node = walk.next();
+                String type = VmExpressionIr.typeOf(node);
+                if (VmExpressionIr.SYMBOL_TYPE.equals(type)) {
+                    String raw = JsonFields.optionalString(node, "_exp");
+                    if (!raw.isEmpty()
+                            && !VmExpressionIr.builtinSymbol(raw)) {
+                        symbols.add(raw);
+                    }
+                }
+                if (!VmRows.GUARDED_READ_TYPE.equals(type)
+                        || !VmRows.joinable(node)) {
+                    continue;
+                }
+                long version = VmRows.recordedVersion(node);
+                JsonElement location = node.get("location");
+                if (version < 0L || location == null
+                        || !location.isJsonObject()) {
+                    continue;
+                }
+                String at = SmtLowering.locationKey(
+                        location.getAsJsonObject());
+                JsonElement written = join.writeExpression(at, version);
+                if (written == null) {
+                    symbols.addAll(join.mintedReadSymbols(version));
+                    continue;
+                }
+                if ("ContainerRelation".equals(
+                        VmExpressionIr.typeOf(written))) {
+                    symbols.addAll(join.readSymbols(at, version));
+                }
+                roots.add(written);
+            }
+        }
+        symbolsByExpression.put(key, symbols);
+        return symbols;
+    }
+
+    /** session|expression ref -> {@link #expressionSymbols}. */
+    private final Map<String, Set<String>> symbolsByExpression =
+            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
 
     /** The sites of every fault decision any session took at one occurrence. */
     public Set<String> faultSites(OccurrenceAddress occurrence) {

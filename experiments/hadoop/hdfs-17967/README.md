@@ -67,12 +67,13 @@ carries what is per case, including the per-case analysis scope.
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `+0` to `+3`: the recorded value and up to three rotations past it |
 | analysis scope | `case.sh` (`scope`) | a shared narrow set (the SASL client/server, the key managers, `PBHelper`, `ipc/Client`), plus `DFSClient` for A and the erasure-coding reconstruction families for C |
 
-**Fault points.** Every mapped transport door mints its fault point unconditionally:
-`FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest` and
-`FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake`, the same code in every
-tree. The recorded polarity is false; true throws the transport's failure before the request
-leaves. `ipc/Client` stays in the analysis scope: the door and the IPC message-propagation
-calls the causal context travels on live in the same file.
+**Fault points.** The engine's library catalog doors (`docs/design/SYMBOL-SCOPE.md` §4.2):
+`FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest`, `FAULT:HADOOP_IPC:RESPONSE`,
+`FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake` and
+`FAULT:HDFS_DATA_TRANSFER:SEND` in `datatransfer.Sender.send`, the same code in every tree. The
+recorded polarity is false; true throws the transport's failure before the request leaves.
+`ipc/Client` stays in the analysis scope: the door and the IPC message-propagation calls the
+causal context travels on live in the same file.
 
 ## The workloads
 

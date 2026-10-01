@@ -59,6 +59,18 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 - **Control dependence**: a demanded definition demands the operands of every branch from which it
   is reachable by a proper subset of the branch's successors (`demandControllingGuards`,
   `SiteControlDependence.MethodGuards#reaching`), published as `guard_dependency` edges.
+- **Door faults** (`causynth/FaultPropagation`): a *raise* is a unit that can throw a door kind (a
+  catalog door's checked exception, §4.2): a woven door throw (`DoorWeave#woven`), a call whose
+  targets (CHA over the analysed program) let one escape, a call of an application interface method
+  no analysed class implements that declares a supertype of the kind (a proxy: it raises the kinds
+  of the doors an analysed `InvocationHandler#invoke` reaches by calls), and a handler's rethrow of
+  what it caught (a `finally` or `synchronized` block). A kind goes to the handler of the first trap
+  covering the raise that catches it, else it escapes the method; to a fixed point. A call that can
+  leave a fault to a handler is a *fault branch* (§3): the sites only one of its exits reaches
+  depend on it, and its operand is `<callee>.throws` of each callee it escapes. A demanded
+  `<m>.throws` (`expandThrows`) takes an `exception_flow` edge from the origin of each raise a fault
+  escapes `m` from -- the woven throw's marker local, a callee's `<callee>.throws` -- under the
+  raise's guards, so a handler's effects lead back to the door's marker.
 - **Constant stores**: a store of a constant carries no data, so the guards of the calls into the
   storing method are demanded too, up to three calls up, dispatch included
   (`expandStoreCallerGuards`, `STORE_CALLER_DEPTH`).
@@ -67,14 +79,25 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   receiver (`accessor_receiver`) and a dispatched call's (`dispatch_receiver`) are. A reference
   read only to reach a projection (SOLR-18406's `latestCommit`, whose generation the throw
   compares) is therefore a cell a branch decides through (§5.1).
-- **Library calls**: the result of a non-application call depends on its arguments only; its
-  receiver is dropped (`localValueUses`). Exceptions: `String`, `StringBuilder`,
-  `StringBuffer` and every wrapper's unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`,
-  `Boolean.booleanValue` included) keep the receiver (`isValueLikeLibraryInvoke`); a JDK
-  atomic's `get()` is an accessor of its `value` (`AtomicBoolean.get()` is `value != 0`), read
-  off a table rather than its body (`plan/SharedFieldFlow#atomicRead`,
-  `StructuralFieldAccessorProof#atomicField`); and a container query depends on receiver and
-  arguments (`processSemanticContainerOperation`, `container_receiver`, `container_argument`).
+- **Library calls**: the result of a non-application call depends on its arguments, and on its
+  receiver by one of these rules: `String`, `StringBuilder`, `StringBuffer` and every wrapper's
+  unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`, `Boolean.booleanValue` included) keep
+  the receiver as a value (`isValueLikeLibraryInvoke`); a JDK atomic's `get()` is an accessor of
+  its `value` (`AtomicBoolean.get()` is `value != 0`), read off a table rather than its body
+  (`plan/SharedFieldFlow#atomicRead`, `StructuralFieldAccessorProof#atomicField`); a container
+  query depends on receiver and arguments (`processSemanticContainerOperation`,
+  `container_receiver`, `container_argument`); and any other library call on a receiver that is
+  shared state -- its definition, through copies and casts, is `this`, a field read or a
+  structural accessor's result -- depends on it (`processLibraryReceiver`,
+  `causynth/LibraryReceivers`, `library_receiver`, `dependencyRole VALUE_FRONTIER`):
+  `lock.isWriteLockedByCurrentThread()` on a field's lock, a ZooKeeper client's `zk.getState()`.
+  A library is code no class root of the system holds (`LibraryReceivers#systemClasses`, over
+  the campaign's `causynth_lineage_roots`, `-Dcausynth.lineage.roots`; a static pass that meets a
+  library call with no roots stated is refused by name): a call into the system's
+  own code outside the scope is the frontier's (§2.4), where the slice stops and scope growth
+  takes the class whose body says what the result rests on. Not a receiver the method allocated
+  or was passed, not a call on `Object`, `Class`, a logger or a `metrics` package, and not a
+  clock, whose value is a root (§4.1).
 - **Containers, by interface** (`smt/JavaContainerTypes`): a call's contract is its receiver
   type's interface's -- `Map` (`ConcurrentMap`, `SortedMap`, `NavigableMap` alike), `Set`
   (`NavigableSet`), `List`, `Queue`, `Deque`, `Iterator`, `Map.Entry` -- read off the Soot
@@ -151,7 +174,8 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
 3. The grown directory joins every later pass as `-Dcausynth.process.dirs`: one application scope.
 
 Only classes under the lineage roots are indexed, so nothing else (the JDK, a library jar) is
-ever grown.
+ever grown by a row. Before the first pass, outside the budget, the door step copies the class
+families of the library doors the system calls (§4.2), from a library jar too.
 
 ## 3. The static scope map
 
@@ -172,7 +196,12 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 
 **Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
 some successor of `b` is post-dominated by `t` and `b` is not; the outcome names the arm that
-reaches `t`. The CFG has no exception edges (`BriefUnitGraph`). A `WRITE_SITE` also carries the
+reaches `t`. The CFG has no exception edges (`BriefUnitGraph`), but for door faults a handler
+catches (§2.2): over the CFG with those edges, a site also depends on each fault branch (a call
+that can leave a fault to a handler) that decides it, with outcome `null` (no decision is ever
+recorded at a call; a fault flips at its marker), and on that call's own guards. A fault branch
+adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
+behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
 those callers (`Guards#callersOf`). A guard that tests a helper's constant return names the helper
 branch that decides it (`causynth/BooleanReturns`, `guardDeciders`).
@@ -202,30 +231,80 @@ obligation states (`FocusedReplay.clockSkew`).
 
 ### 4.2 Fault markers
 
-A `DOOR` row of the communication mapping (`causynth/DoorWeave`):
+Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
+(`src/main/resources/edu/uva/liftlab/graphchecker/library-catalog.jsonl`, read by
+`causynth/LibraryCatalog`), woven by `causynth/DoorWeave`:
 
 ```json
 {"schemaVersion": 1, "kind": "DOOR", "transport": "HADOOP_IPC", "direction": "REQUEST",
- "method": "<...Client$Connection: void sendRpcRequest(...)>",
- "after": "<...CausynthMessagePropagation: ...Outbound outbound(...)>",
+ "method": "<...Client$Connection: void sendRpcRequest(...Client$Call)>",
+ "after": "<...RpcWritable: void writeTo(...ResponseBuffer)>",
  "faults": ["java.io.IOException", "org.apache.hadoop.net.ConnectTimeoutException"]}
 ```
+
+| transport | direction | door method | anchor |
+| --- | --- | --- | --- |
+| `HADOOP_IPC` | `REQUEST` | `Client$Connection#sendRpcRequest` | after the request's `RpcWritable#writeTo` (serialized, not yet queued) |
+| `HADOOP_IPC` | `RESPONSE` | `Client#getRpcResponse` | after `CompletableFuture#get` (trunk); before `Call#getRpcResponse` (3.4) |
+| `HDFS_SASL` | `REQUEST` | `SaslDataTransferClient#doSaslHandshake` | before `DataOutputStream#writeInt` |
+| `HDFS_DATA_TRANSFER` | `SEND` | `datatransfer.Sender#send` | before `DataOutputStream#flush` |
+| `SOLR_HTTP` | `REQUEST` / `RESPONSE` | `HttpSolrClient#executeMethod` | before / after `HttpClient#execute` |
+| `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
+| `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
+
+A door keeps the pairing its call made: a request door lies after the tree's outbound message hook
+(or before anything is sent: the SASL magic number), a response door after its inbound hook, a
+store door after the store hook. Where a system's own hook follows the library's call, the
+library anchor cannot be there, and the system states only where its hook sits: a `HOOK` row of
+`experiments/<system>/doors.jsonl` (`run.sh` passes it as `-Dcausynth.system.doors`) names a catalog
+door (`transport`, `direction`, `door`: its method) and the system call after which it is woven
+(`method`, `after`); the door keeps the catalog's kinds, no door is added or dropped, and a `HOOK`
+naming no catalog door, or a `DOOR` row in a system's file, is refused (`LibraryCatalog#placed`).
+Solr's: `ZooKeeper#setData`, `#create` and `#multiInternal` in `SolrZkClient#setData`, `#create`
+and `#multi` after `causynthWrote` (the store hook `MessageDoors.stored`; in `multi`, after the first
+operation's, so a multi's later operations are unpaired under a fault); the `SOLR_HTTP` and
+`SOLR_HTTP2` responses after `CausynthHttp#response` (in `HttpSolrClient#executeMethod` and
+`Http2SolrClient#processErrorsAndResponse`). HDFS's: the trunk line's `HADOOP_IPC` response in
+`Client#getRpcResponse` after `installCausynthResponse`, the response's inbound hook (the 3.4 line's
+catalog anchor already follows it). These rows are the tree adapters' hooks spelled out; they go
+when the engine finds a door's following hook itself (a hook call of the door method or of its
+caller after the anchor). There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
+`getChildren`): every packet and cluster-state read would be one, and ROOT_READ admission (§4.4)
+admits every occurrence that runs a marker.
+
+A door applies where its class family (the method's outermost class with its nested classes) is
+analysed. `plan/ScopeGrowth --doors`, before the first static pass and again after every growth,
+outside the growth budget (§2.4, `run_engine.sh campaign_scope_doors`), copies into
+`scope-classes/` the family of every door that a class of the analysis scope (the case's scope and
+what it grew) outside the family calls, from the first of the roots and the workload classpath
+holding it (the system's own classes or a library jar), unless the scope holds it; its `GROWN`
+lines have kind `DOOR`. A class of the roots the scope never reached brings no door (hadoop-common's
+`ActiveStandbyElector` calls ZooKeeper, which no HDFS case's slice reaches).
 
 At the first call of `after` (or before the first call of `before`) in `method`, the weave inserts,
 per fault kind in row order, `if (Debug.makeSymbolicBoolean(name)) throw new Kind("symbolic
 <name>")`, the false arm falling to the next marker. `name` is `FAULT:<TRANSPORT>:<DIRECTION>` for
-`java.io.IOException` and `FAULT:<TRANSPORT>:<DIRECTION>:<SimpleName>` otherwise. A method, call or
-exception class that does not resolve is refused by name (`DOOR_METHOD_UNAVAILABLE`,
-`DOOR_SITE_UNAVAILABLE`, `DOOR_FAULT_KIND_UNAVAILABLE`). A kind is an environment failure the
-transport can raise and a caller tells apart (a retry policy fails over on one and retries
-another); a semantic server exception is never a kind, it must come from the causal chain. The
-weave runs before any analysis (`CausynthPipeline#run`), so every pass numbers units over the same
-woven body and site ids agree across passes; they differ from the unwoven method's.
+`java.io.IOException` and `FAULT:<TRANSPORT>:<DIRECTION>:<SimpleName>` otherwise. Rows of one door
+method (transport, direction, class and method name) are its signatures on different library lines;
+where the family is analysed, every row that resolves is woven and a door method none of whose rows
+resolves is refused (`DOOR_METHOD_UNAVAILABLE`), as is an exception class that does not resolve
+(`DOOR_FAULT_KIND_UNAVAILABLE`). A kind is an environment failure the transport can raise and a
+caller tells apart (a retry policy fails over on one and retries another); a semantic server
+exception is never a kind, it must come from the causal chain. The weave runs before any analysis
+(`CausynthPipeline#run`), so every pass numbers units over the same woven body and site ids agree
+across passes; they differ from the unwoven method's.
 
-A `FAULT:` marker is a `DECLARED_SITE` (`inputKind: FAULT`) iff its transport has a DOOR row
-(`StaticScopeMap#declaredFault`, `WireFlowCatalog#declaredTransports`); a marker whose name does
-not start with `FAULT:` is the workload's own and always declared. The recorded polarity is
-`false`. How fault decisions become flip sites is IDENTITY.md §7.
+The catalog's rows each state `schemaVersion 1` and their `kind` and are keyed by
+`library-catalog.jsonl:<line>`, the shape `contract/WireDeclarations` reads (CONTRACT-SPEC §6.1). A
+malformed row, a member its kind lacks and a row stated twice are refused by name. `CONFIG_SOURCE`
+rows (`method`, `keyArg` naming the String key argument, optional `defaultArg`) list configuration
+getters (Hadoop `Configuration.get*`, Solr `getClusterProperty` and `XmlConfigFile.get*`); only
+`tools/analysis/rootcov.py` reads them yet.
+
+A `FAULT:` marker is a `DECLARED_SITE` (`inputKind: FAULT`) iff its transport is a catalog door's
+(`StaticScopeMap#declaredFault`, `LibraryCatalog#transports`); a marker whose name does not start
+with `FAULT:` is the workload's own and always declared. The recorded polarity is `false`. How
+fault decisions become flip sites is IDENTITY.md §7.
 
 ### 4.3 Configured sources
 
@@ -380,8 +459,8 @@ id (`plan/CommunicationCatalogContract#portId`).
 ### 6.1 Declared rows
 
 `communication-mappings.jsonl` (`-Dcausynth.communication.mappings` or
-`CAUSYNTH_COMMUNICATION_MAPPINGS`, from `causynth_communication_mappings`) holds DOOR rows (§4.2)
-and WIRE_FLOW rows:
+`CAUSYNTH_COMMUNICATION_MAPPINGS`, from `causynth_communication_mappings`) holds WIRE_FLOW rows; a
+row of any other kind (a DOOR row: doors are the library catalog's, §4.2) is refused:
 
 ```json
 {"schemaVersion": 2, "kind": "WIRE_FLOW", "id": "block-key-id", "javaType": "int",
@@ -417,7 +496,7 @@ is one whose first parameter is `*.protobuf.RpcController`: the shape protoc emi
 which the system's RPC engine proxies on the client and dispatches on the server, so every call
 crosses the transport's door (Hadoop: the IPC door in `Client`). The services are those of the
 loaded program (Soot resolves the analysis scope's references transitively), read once, at the
-first demanded getter. The rule does not read the DOOR rows: which transport serves a proxy is
+first demanded getter. The rule does not read the doors: which transport serves a proxy is
 decided at run time, where no static pass follows it. A message no service reaches (an fsimage
 section, an edit-log record, a DataTransfer op) is written to a file or a stream that no door
 carries values over, and derives no port.
@@ -445,7 +524,8 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
 
 ## 7. Current limits
 
-- Roots are clocks recognized by the call-return rule, declared door faults and tree hooks. A clock
+- Roots are clocks recognized by the call-return rule, the library catalog's door faults (no door
+  on a read, §4.2) and tree hooks. A clock
   read through a field, a parameter, `java.time`, or an interface whose implementation is outside
   the scope is not recognized; configuration values and pre-window state are roots only where a
   tree hook says so.
@@ -456,12 +536,14 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
   fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
   queues are classified by interface here, modeled by R3-REFCONT WP3b/c).
-- A non-application call's receiver is dropped from the slice (§2.2) unless the call is a
-  container query or an atomic's accessor, so state behind any other library object never
-  enters `S`.
-- Control dependence ignores exception edges and follows a call up only for constant stores,
-  field-effect calls and write-site guards (three calls up); it never crosses a thread start, an
-  executor submission or the wire.
+- A library call's receiver enters `S` only when it is shared state in the calling method (§2.2):
+  a receiver passed in as a parameter is the caller's to demand, and is not followed up.
+- Control dependence follows only door faults a handler catches; any other exception edge is
+  ignored. A fault reaches a caller only through the analysed program: a protocol call of a class
+  outside the scope (HDFS's `*TranslatorPB`, whose RPC engine invoker is out of scope too) raises
+  nothing, so the IPC doors of the named HDFS cases stay outside their callers' slices. It
+  follows a call up only for constant stores, field-effect calls and write-site guards (three
+  calls up); it never crosses a thread start, an executor submission or the wire.
 - Derived ports cover only scalar getters of protobuf messages a protobuf service carries, with a
   setter call in scope: no repeated, enum, `bytes`, nested or map-keyed fields, no string codecs,
   no frames, no message of a transport without services (DataTransfer ops, HTTP bodies, ZooKeeper

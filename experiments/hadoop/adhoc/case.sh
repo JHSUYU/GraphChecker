@@ -38,7 +38,8 @@ target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
   "${here}/occurrences.tsv")
 target_occurrence=${target_occurrence:-first}
 # The mappings' classes (system.sh), and each check's own class; the scope
-# grows from there to what the slice needs (SEED, `slice`).
+# grows from there to what the slice needs (SEED, `slice`), and the library
+# doors' classes join it by themselves (ScopeGrowth --doors).
 scope=("${system_mapping_scope[@]}")
 for check in ${checks}; do
   row=$(awk -F'\t' -v c="${check}" '$1 == c' "${here}/checks.tsv")

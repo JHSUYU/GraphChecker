@@ -17,15 +17,6 @@ solr_seed=F0993D5343E20BA4
 # GraphChecker's jar follows the tree's classpath: the tree's own libraries
 # (Guava, protobuf, commons-io) are not the engine's versions.
 system_jar_first=false
-# The scope every ad-hoc check starts from: each class the ad-hoc
-# communication mappings name, which the static pass refuses to find out of
-# scope -- the fault doors (DOOR rows): the HTTP client's send and receive,
-# and ZooKeeper writes.  No door on ZooKeeper reads: every cluster-state read
-# and watch is one, and a door per read admits an occurrence per read.
-system_mapping_scope=(
-  solrj:org/apache/solr/client/solrj/impl/HttpSolrClient
-  solrj:org/apache/solr/common/cloud/SolrZkClient
-)
 # The class a cluster test names: tools/adhoc/workloads.py lists the tests
 # of the classes that do.
 system_cluster_class=org/apache/solr/cloud/MiniSolrCloudCluster

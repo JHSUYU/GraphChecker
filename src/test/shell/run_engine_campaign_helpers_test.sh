@@ -725,7 +725,9 @@ done
 # long its recording may run.
 # 51: `reproduce_runs` joined it with REPRODUCE: how often a confirmed
 # witness is run natively.
-[[ "$(print_normalized_config | wc -l)" -eq 51 ]] \
+# 52: `causynth_system_doors` joined it with the library catalog: a system's
+# own doors, which replace the catalog's where its hook follows the call.
+[[ "$(print_normalized_config | wc -l)" -eq 52 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
