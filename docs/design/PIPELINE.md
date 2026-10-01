@@ -1163,7 +1163,10 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   all; the write the model chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
   endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a
   query through a re-pointable reference the write of the state its arm's `referentStates` name,
-  §8), `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
+  §8; a recorded join to a container's INITIAL is no edge -- that version is the members the VM read
+  where it first observed the container, which no occurrence wrote and which access first observes
+  it is the run's own history, as a scalar's INITIAL is no row: `StateClosure#initial`, the write
+  whose expression is its `SNAPSHOT_BASE`'s `members` and nothing above them), `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
   it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); every other writer of
   the location the held write is of before the writer or after the reader, held alike), `MARKER`
@@ -1176,7 +1179,10 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
   `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, and for a codec
   hole the message key and the decoded text the mint states), STATE at close (both by
-  `Confirmation#id`), and holds each `ORDER` activation's
+  `Confirmation#id`; a STATE edge is taken when the model's reader observed the model's writer, or
+  when a read at its site at another turn of the loops on its path did, `readerAnyTurn`,
+  `Endpoint#anyTurn`: how many turns a loop that polls for a write takes is that write's timing),
+  and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
   mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
   are not read by the runtime. A CONFIRM run (`FocusedReplay.confirming`: its obligation flips

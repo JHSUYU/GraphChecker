@@ -34,7 +34,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * every pass weaves ({@code Identity}); the held activation is the last one
  * entered before the ordered event ({@code ConfirmMain}).  Endpoints and
  * activations are compared as every delivery of their stored message names
- * them ({@link #id}).  An activation that waits out
+ * them ({@link #id}), and a STATE reader at any turn of the loops on its
+ * path ({@link #anyTurn}).  An activation that waits out
  * {@link #ORDER_TIMEOUT_PROPERTY} proves the model's order unrealizable in
  * this program: it goes on, and the stall is a {@code CONFIRM_MISMATCH}, so
  * the claim is not confirmed.  Any other difference is one too.</p>
@@ -72,6 +73,15 @@ public final class Confirmation {
     /** Reader endpoint id -> the writer endpoint id the model joined to. */
     private static final Map<String, String> STATE =
             new LinkedHashMap<String, String>();
+    /** STATE reader endpoint id -> its id at any turn ({@link #anyTurn}). */
+    private static final Map<String, String> TURNS =
+            new LinkedHashMap<String, String>();
+    /** The any-turn ids {@link #TURNS} names. */
+    private static final Set<String> TURNED = new HashSet<String>();
+    /** Any-turn reader id -> every (location key, version) this run's
+     *  reads there observed. */
+    private static final Map<String, Set<String>> READ_TURNS =
+            new LinkedHashMap<String, Set<String>>();
     /** Reader endpoint id -> the version the model joined to (report). */
     private static final Map<String, String> VERSION =
             new LinkedHashMap<String, String>();
@@ -177,6 +187,14 @@ public final class Confirmation {
             if (mintVersion != ReadRow.UNKNOWN_VERSION) {
                 MINTED.add(key(location, observedVersion));
             }
+            if (!TURNED.isEmpty()) {
+                String turns = anyTurn(reader);
+                if (TURNED.contains(turns)) {
+                    READ_TURNS.computeIfAbsent(turns,
+                            key -> new LinkedHashSet<String>())
+                            .add(key(location, observedVersion));
+                }
+            }
             if (!STATE.containsKey(id(reader))) return;
             READ.put(id(reader), key(location, observedVersion));
         }
@@ -189,6 +207,12 @@ public final class Confirmation {
      */
     public static String id(Endpoint endpoint) {
         return endpoint.anyDelivery().id();
+    }
+
+    /** The id of {@code endpoint} at any turn of its loops ({@link
+     *  Endpoint#anyTurn}), named as {@link #id} names it. */
+    public static String anyTurn(Endpoint endpoint) {
+        return endpoint.anyDelivery().anyTurn().id();
     }
 
     /** The key CONFIRM knows one method activation by ({@link #id}). */
@@ -273,6 +297,7 @@ public final class Confirmation {
             for (Map.Entry<String, String> edge : STATE.entrySet()) {
                 String observed = READ.get(edge.getKey());
                 String version = VERSION.get(edge.getKey());
+                if (atAnotherTurn(edge.getKey(), edge.getValue())) continue;
                 if (observed == null) {
                     mismatches.add("STATE " + edge.getKey() + ": the model"
                             + " joined this read to writer "
@@ -291,6 +316,20 @@ public final class Confirmation {
             }
         }
         return mismatches;
+    }
+
+    /**
+     * Whether a read at this reader's site, at some turn of the loops on its
+     * path, observed a version the model's writer wrote: a loop that polls
+     * for the write reads it at whichever turn it lands.
+     */
+    private static boolean atAnotherTurn(String reader, String writer) {
+        Set<String> observed = READ_TURNS.get(TURNS.get(reader));
+        if (observed == null) return false;
+        for (String version : observed) {
+            if (writer.equals(WROTE.get(version))) return true;
+        }
+        return false;
     }
 
     /** A member a row states, or null when it states none. */
@@ -341,6 +380,11 @@ public final class Confirmation {
                                 optionalString(row, "writer"));
                         VERSION.put(optionalString(row, "reader"),
                                 optionalString(row, "version"));
+                        String turns = stated(row, "readerAnyTurn");
+                        if (turns != null) {
+                            TURNS.put(optionalString(row, "reader"), turns);
+                            TURNED.add(turns);
+                        }
                     } else if ("ORDER".equals(kind)) {
                         BEFORE.computeIfAbsent(optionalString(row, "after"),
                                 key -> new LinkedHashSet<String>())
@@ -357,6 +401,8 @@ public final class Confirmation {
                 WIRE.clear();
                 STATE.clear();
                 VERSION.clear();
+                TURNS.clear();
+                TURNED.clear();
                 MINT.clear();
                 BEFORE.clear();
             }
@@ -375,6 +421,9 @@ public final class Confirmation {
             WIRE.clear();
             STATE.clear();
             VERSION.clear();
+            TURNS.clear();
+            TURNED.clear();
+            READ_TURNS.clear();
             MINT.clear();
             MINTED.clear();
             ATTACHED.clear();
