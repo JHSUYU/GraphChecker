@@ -87,13 +87,16 @@ heap_mb=$(( ${CAUSYNTH_OBLIGATION_MEMORY_MB:-0} / 2 ))
 # noInflation: a reflective call is served by a generated accessor from its
 # first call, not by the native one for fifteen calls and a generated one
 # after, so one write through reflection names one site in every run.
-# The host's memory gate reserves obligation_memory_mb for this JVM, and
+# The host's memory gate charges obligation_memory_mb for this JVM, and
 # nothing else holds it to that: a replay whose native symbolic state ran
 # away reached 27 GB, and the kernel killed what it chose on the host
-# (hdfs-17960 v96).  One that outgrows twice its reservation is ended here,
-# and says so; the heap alone is 2 GB at least, so a small reservation is
-# no hard bound on a JVM that stays well.
+# (hdfs-17960 v96).  So one that outgrows what its host was charged is ended
+# here, and says so: a JVM never holds more than the ledger counts for it.
+# Its peak is said at its end, the evidence a case's obligation_memory_mb is
+# set from (i2/m1, sampled: replays peaked at 0.2-1.0 GB for hdfs-11741 and
+# HDFS cases, 1.6 GB for SOLR-18406).
 reserve_mb=${CAUSYNTH_OBLIGATION_MEMORY_MB:-0}
+peak_file="${tmpdir}/workload-peak-rss-mb"
 set +e
 "${jdk}/bin/java" -ea -Xmx${heap_mb}m -Djava.awt.headless=true \
   -Dsun.reflect.noInflation=true \
@@ -106,12 +109,17 @@ set +e
 jvm=$!
 watchdog=""
 if (( reserve_mb > 0 )); then
+  peak_mb=0
   while kill -0 "${jvm}" 2>/dev/null; do
     rss_kb=$(awk '/VmRSS/ {print $2}' "/proc/${jvm}/status" 2>/dev/null)
-    if (( ${rss_kb:-0} / 1024 > 2 * reserve_mb )); then
+    if (( ${rss_kb:-0} / 1024 > peak_mb )); then
+      peak_mb=$(( rss_kb / 1024 ))
+      echo "${peak_mb}" >"${peak_file}"
+    fi
+    if (( peak_mb > reserve_mb )); then
       echo "causynth: the workload JVM's resident memory reached" \
-        "$(( rss_kb / 1024 )) MB, over twice the ${reserve_mb} MB its" \
-        "host reserved for it; ended" >&2
+        "${peak_mb} MB, over the ${reserve_mb} MB its host was charged" \
+        "for it; ended" >&2
       kill -9 "${jvm}"
       break
     fi
@@ -121,7 +129,12 @@ if (( reserve_mb > 0 )); then
 fi
 wait "${jvm}"
 status=$?
-[[ -z ${watchdog} ]] || kill "${watchdog}" 2>/dev/null
+if [[ -n ${watchdog} ]]; then
+  kill "${watchdog}" 2>/dev/null
+  echo "causynth: the workload JVM's resident memory peaked at" \
+    "$(cat "${peak_file}" 2>/dev/null || echo 0) MB of the ${reserve_mb} MB" \
+    "its host was charged for it" >&2
+fi
 set -e
 if [[ -n ${results:-} ]]; then
   [[ -s ${results} ]] || exit $((status == 0 ? 2 : status))

@@ -571,7 +571,9 @@ shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER
 (`tools/lib/gc-env.sh`): each row is `<epoch> <mb> <ramp_s> <id>`, and a start is allowed when
 `MemAvailable − (rows still inside their own ramp) ≥ need + MemTotal × (100 − p) / 100`, where
 `p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no start leaves a host more than 70 % full. An obligation needs
-`obligation_memory_mb` for 60 s. The head (`do_campaign`, `campaign_head_charged`) charges each of
+`obligation_memory_mb` for 60 s. A replay JVM holds no more than it is charged: its heap is half of
+`obligation_memory_mb` (2 GB at least), and `experiments/lib/execute.sh` ends one whose resident
+memory passes `obligation_memory_mb` and states each one's peak at its end. The head (`do_campaign`, `campaign_head_charged`) charges each of
 its engine JVMs `engine_memory_mb` (else 8192) for 120 s -- the import gate, which holds one
 session at a time, its own heap (§6) -- and its seed and CONFIRM replays
 `obligation_memory_mb` for 300 s, and releases the row when the command returns
