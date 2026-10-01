@@ -745,13 +745,12 @@ public class ExploreTest {
         // a wave that nests no deeper than the seed cuts nothing from it --
         // and says how many paths that left unread.
         Path shallow = out.resolve("obligations-0005");
-        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results,
+        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results, null,
                 iteration.resolve(StaticScopeMap.FILE), shallow, 5, "epoch0",
                 ClosurePlanner.DEFAULT_MAX_TASKS,
                 new ObligationFactory.Bounds(
                         ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK,
-                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH, 0),
-                false);
+                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH, 0));
         for (Obligation obligation : obligations(shallow)) {
             assertFalse("no obligation is cut from a world deeper than the "
                             + "bound: " + obligation,
@@ -838,15 +837,17 @@ public class ExploreTest {
     }
 
     /**
-     * A case that asks about ONE occurrence stops at its first witness: an
-     * admitted replay that observed the fatal at the declared occurrence ends
-     * the exploration (owner 2026-09-28: hdfs-11741, hdfs-17899-bug2), and a
-     * case that does not ask so keeps exploring.
+     * THE ROUND STATES, THE CAMPAIGN STOPS (PIPELINE §7.9).  A round names
+     * every admitted replay that observed the fatal at the declared
+     * occurrence and keeps proposing -- whether the exploration ends there
+     * is the campaign's, once COMPOSE has judged the corpus.  It never
+     * proposes an obligation the campaign has in flight, under its id or
+     * under the question its row asks (an id moves as sessions land), and
+     * its wave is one past the deepest wave a landed session came from.
      */
     @Test
-    public void aWitnessAtTheDeclaredOccurrenceEndsTheExploration()
+    public void aRoundNamesItsWitnessesAndHoldsWhatIsInFlight()
             throws Exception {
-        Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("witness").toPath();
         Session seed = new Session(iteration, "s-seed");
         seed.activation(TARGET, false);
@@ -861,31 +862,113 @@ public class ExploreTest {
         fatal.answered(ObligationResult.of("OBL.s-fatal", Verdict.ADMITTED,
                 "s-fatal", "the focused prefix reproduced"));
         fatal.flush();
+        worker(iteration, "obligations-0002", "OBL.s-fatal", "OBL.s-fatal",
+                "s-fatal", TARGET, "Guard#u8",
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap());
+        Files.write(iteration.resolve("obligations-0002")
+                        .resolve(ExploreMain.MANIFEST_FILE),
+                "{\"wave\": 1}\n".getBytes(StandardCharsets.UTF_8));
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8"));
         Path out = tree.newFolder("witness-out").toPath();
         Path results = out.resolve("obligation_results.jsonl");
         Files.write(results, new byte[0]);
 
-        Path asked = out.resolve("asked");
-        assertEquals("OBLIGATIONS_PROPOSED", plan(iteration, TARGET_SELECTOR,
-                null, results, asked, 1).get("state").getAsString());
-        assertFalse(obligations(asked).isEmpty());
+        Path asked = out.resolve("obligations-0003");
+        JsonObject manifest = plan(iteration, TARGET_SELECTOR, null, results,
+                asked, 3);
+        assertEquals("OBLIGATIONS_PROPOSED",
+                manifest.get("state").getAsString());
+        assertEquals("[\"s-fatal\"]",
+                manifest.get("witnesses").toString());
+        assertEquals("one past the wave s-fatal's obligation was planned in",
+                2, manifest.get("wave").getAsInt());
+        List<Obligation> proposed = obligations(asked);
+        assertFalse(proposed.isEmpty());
 
-        Path stopped = out.resolve("stopped");
-        JsonObject manifest = ExploreMain.plan(iteration, TARGET_SELECTOR,
-                null, results, iteration.resolve(StaticScopeMap.FILE),
-                stopped, 1, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults(), true);
-        assertEquals("WITNESSED", manifest.get("state").getAsString());
-        assertTrue(obligations(stopped).isEmpty());
-        boolean named = false;
-        for (GapRow gap : RowCodec.readAll(stopped.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            named |= gap.subject().startsWith("s-fatal at ")
-                    && gap.cls() == GapClass.DIAGNOSTIC;
+        // In flight under its own id, and under another id for the same
+        // question: neither is proposed again, and the round says so.
+        Obligation first = proposed.get(0);
+        Path flying = out.resolve("in_flight.jsonl");
+        RowCodec.writeAll(flying, Arrays.asList(Obligation.of("OBL.moved",
+                first.taskId(), first.pathId(), first.siteId(),
+                first.ordinal(), first.flippedOutcome(),
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap(),
+                Collections.<String>emptyList())),
+                ExploreCodec::writeObligation);
+        Path held = out.resolve("obligations-0004");
+        JsonObject awaiting = ExploreMain.plan(iteration, TARGET_SELECTOR,
+                null, results, flying, iteration.resolve(StaticScopeMap.FILE),
+                held, 4, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+                ObligationFactory.Bounds.defaults());
+        assertEquals(proposed.size() - 1, obligations(held).size());
+        assertEquals(1, awaiting.get("heldInFlight").getAsInt());
+        assertEquals(1, awaiting.get("inFlight").getAsInt());
+        if (proposed.size() == 1) {
+            assertEquals("nothing new while an arm is in flight is no fixed "
+                    + "point", "AWAITING",
+                    awaiting.get("state").getAsString());
         }
-        assertTrue("the stop names the witness", named);
+    }
+
+    /**
+     * A BRANCH WITHOUT THE DECLARED REGION UNDER ITS CONTEXT STOPS
+     * (PIPELINE §7.4).  An admitted replay that ran the declared region
+     * under the declared context at another index -- a window index a retry
+     * moved -- parents obligations; one that ran it only under another
+     * context does not, and is named; a refused replay parents nothing
+     * either way.  A sender no row names is unknown, never a difference.
+     */
+    @Test
+    public void aBranchWithoutTheDeclaredRegionUnderItsContextStops()
+            throws Exception {
+        Path iteration = tree.newFolder("branches").toPath();
+        OccurrenceAddress shifted = occurrence("hdfs-case/dn0",
+                "REGION.target",
+                CausalContext.of(Role.of("DATA_XCEIVER"), "", 3),
+                "o.a.h.h.s.d.DataXceiver#run#14");
+        OccurrenceAddress elsewhere = occurrence("hdfs-case/dn0",
+                "REGION.target", CausalContext.of(Role.of("BALANCER"), "", 1),
+                "o.a.h.h.s.d.DataXceiver#run#12");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.flush();
+        for (String[] row : new String[][] {
+                {"s-shifted", "ADMITTED"}, {"s-elsewhere", "ADMITTED"},
+                {"s-refused", "NOT_ADMITTED"}}) {
+            Session focused = new Session(iteration, row[0]);
+            focused.activation(row[0].equals("s-shifted") ? shifted
+                    : elsewhere, true);
+            focused.answered(ObligationResult.of("OBL." + row[0],
+                    Verdict.valueOf(row[1]), row[0], "fixture"));
+            focused.flush();
+        }
+        List<GapRow> gaps = new ArrayList<GapRow>();
+        Branches branches = Branches.of(Corpus.read(iteration, null),
+                Collections.singletonList(TARGET), gaps);
+        assertTrue(branches.parents("s-seed"));
+        assertTrue("the same chain at another index",
+                branches.parents("s-shifted"));
+        assertFalse("another chain", branches.parents("s-elsewhere"));
+        assertFalse("a refused replay", branches.parents("s-refused"));
+        assertEquals(1, branches.stopped());
+        assertEquals(1, gaps.size());
+        assertEquals("s-elsewhere", gaps.get(0).subject());
+        assertEquals(GapClass.DIAGNOSTIC, gaps.get(0).cls());
+
+        assertTrue(Branches.sameContext(Arrays.asList("RPC/a@nn0",
+                "Root:CLIENT/mkdir"), Arrays.asList("RPC/a@nn0",
+                "Root:CLIENT/mkdir")));
+        assertFalse(Branches.sameContext(Arrays.asList("RPC/a@nn0",
+                "Root:CLIENT/mkdir"), Arrays.asList("RPC/a@nn1",
+                "Root:CLIENT/mkdir")));
+        assertTrue("an unnamed sender is unknown", Branches.sameContext(
+                Arrays.asList("RPC/a@nn0", Corpus.UNKNOWN_HOP),
+                Arrays.asList("RPC/a@nn0", "RPC/b@dn1", "Root:TICK")));
+        assertFalse(Branches.sameContext(Arrays.asList("Root:CLIENT"),
+                Arrays.asList("RPC/a@nn0", "Root:CLIENT")));
     }
 
     // ---- (1b) a world is what it DELIVERED to the arm's task -----------
@@ -1213,9 +1296,8 @@ public class ExploreTest {
             StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
                     targetSite("REGION.target",
                             "BlockTokenSecretManager#u120")));
-            ClosurePlanner.Plan plan = ClosurePlanner.plan(
-                    Corpus.read(iteration, null), TARGET,
-                    ClosurePlanner.DEFAULT_MAX_TASKS, map);
+            ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
+                    TARGET, map);
             boolean task = false;
             for (Task planned : plan.tasks) {
                 task |= planned.focused().equals(producer);
@@ -1340,6 +1422,42 @@ public class ExploreTest {
         session.answered(ObligationResult.of("OBL." + sessionId,
                 Verdict.ADMITTED, sessionId, "the focused prefix reproduced"));
         session.flush();
+    }
+
+    /**
+     * Whether a decision is a fault decision, and what a term rests on, are
+     * asked of the expressions' shared nodes, never of their lowered text:
+     * a chain each of whose 64 nodes names the one below twice is 64 nodes,
+     * and its text 2^64 leaves (hdfs-17960 rr1's wave planner).
+     */
+    @Test
+    public void aTermReachesWhatItsSharedExpressionNamesUnrendered()
+            throws Exception {
+        Path iteration = tree.newFolder("dag").toPath();
+        Session session = new Session(iteration, "s-dag");
+        session.activation(TARGET, false);
+        session.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        JsonObject marked = leaf("M_MARKER", "I");
+        JsonObject unmarked = leaf("M_OTHER", "I");
+        for (int depth = 0; depth < 64; depth++) {
+            marked = binary("+", marked, marked);
+            unmarked = binary("+", unmarked, unmarked);
+        }
+        session.expression("EXPR.00000000000000d1",
+                binary("==", marked, literal(0)));
+        session.expression("EXPR.00000000000000d2",
+                binary("==", unmarked, literal(0)));
+        session.decision(TARGET, "Guard#u8", 1, false,
+                "EXPR.00000000000000d1");
+        session.decision(TARGET, "Guard#u9", 1, false,
+                "EXPR.00000000000000d2");
+        session.flush();
+        Corpus corpus = Corpus.read(iteration, null);
+        assertEquals(Collections.singleton("Guard#u8"),
+                corpus.faultSites(TARGET));
+        assertEquals(Collections.singleton("M_OTHER"),
+                corpus.termSymbols("s-dag", "(not EXPR.00000000000000d2)"));
     }
 
     // ---- (2) a handoff is answered only with what a producer delivers --
@@ -1848,9 +1966,8 @@ public class ExploreTest {
             seed.target(TARGET, "Handler#get#5", "(= M_KC 0)");
             seed.flush();
 
-            ClosurePlanner.Plan plan = ClosurePlanner.plan(
-                    Corpus.read(iteration, null), TARGET,
-                    ClosurePlanner.DEFAULT_MAX_TASKS, StaticScopeMap.empty());
+            ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
+                    TARGET, StaticScopeMap.empty());
             List<String> focused = new ArrayList<String>();
             for (Task task : plan.tasks) focused.add(task.focused().render());
             assertTrue("the store's writer: " + focused,
@@ -1907,7 +2024,7 @@ public class ExploreTest {
         StaticScopeMap map = StaticScopeMap.read(mapFile);
 
         Corpus corpus = Corpus.read(iteration, null);
-        ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, target, ClosurePlanner.DEFAULT_MAX_TASKS, map);
+        ClosurePlanner.Plan plan = closure(corpus, target, map);
         List<String> focused = new ArrayList<String>();
         for (Task task : plan.tasks) focused.add(task.focused().render());
         assertTrue("the writer of the version the anchor read is in the "
@@ -2026,8 +2143,8 @@ public class ExploreTest {
                 scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
                         "PBHelper#convert#9", "PBHelper#convert", "", "",
                         "XCH.resp.block-key-id")));
-        ClosurePlanner.Plan scoped = ClosurePlanner.plan(
-                Corpus.read(perNode, null), target, ClosurePlanner.DEFAULT_MAX_TASKS, spreadMap);
+        ClosurePlanner.Plan scoped = closure(Corpus.read(perNode, null),
+                target, spreadMap);
         Map<String, String> scopedWhy = new LinkedHashMap<String, String>();
         for (Task task : scoped.tasks) {
             scopedWhy.put(task.focused().render(),
@@ -2143,8 +2260,8 @@ public class ExploreTest {
                 scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
                         "PBHelper#convert#9", "PBHelper#convert", "", "",
                         "XCH.resp.block-key-id")));
-        ClosurePlanner.Plan viaState = ClosurePlanner.plan(
-                Corpus.read(restsOnState, null), target, ClosurePlanner.DEFAULT_MAX_TASKS, restsMap);
+        ClosurePlanner.Plan viaState = closure(
+                Corpus.read(restsOnState, null), target, restsMap);
         Map<String, Set<String>> statedFlips =
                 new LinkedHashMap<String, Set<String>>();
         for (Task task : viaState.tasks) {
@@ -2192,8 +2309,8 @@ public class ExploreTest {
         other.target(confused, "BlockTokenSecretManager#get#3",
                 "(= M_READ_KEY 0)");
         other.flush();
-        ClosurePlanner.Plan divergent = ClosurePlanner.plan(
-                Corpus.read(split, null), confused, ClosurePlanner.DEFAULT_MAX_TASKS, map);
+        ClosurePlanner.Plan divergent = closure(Corpus.read(split, null),
+                confused, map);
         List<String> divergentFocused = new ArrayList<String>();
         for (Task task : divergent.tasks) {
             divergentFocused.add(task.focused().render());
@@ -2493,8 +2610,8 @@ public class ExploreTest {
         partialRun.target(target, "BlockTokenSecretManager#get#3",
                 "(= M_READ_KEY 0)");
         partialRun.flush();
-        ClosurePlanner.Plan withGhost = ClosurePlanner.plan(
-                Corpus.read(unrun, null), target, ClosurePlanner.DEFAULT_MAX_TASKS, map);
+        ClosurePlanner.Plan withGhost = closure(Corpus.read(unrun, null),
+                target, map);
         for (Task task : withGhost.tasks) {
             assertFalse("an occurrence no session ran is not a task",
                     task.focused().id().equals(ghost.id()));
@@ -2526,8 +2643,8 @@ public class ExploreTest {
         stated.target(target, "BlockTokenSecretManager#get#3",
                 "(not EXPR.0000000000000002)");
         stated.flush();
-        ClosurePlanner.Plan lowered = ClosurePlanner.plan(
-                Corpus.read(viaRef, null), target, ClosurePlanner.DEFAULT_MAX_TASKS, map);
+        ClosurePlanner.Plan lowered = closure(Corpus.read(viaRef, null),
+                target, map);
         for (GapRow gap : lowered.gaps) {
             assertFalse("the anchor's own read is what its phi rests on: "
                             + gap.detail(),
@@ -2748,16 +2865,15 @@ public class ExploreTest {
                 "test");
         assertTrue("the container version stands in the text as one name: "
                 + mapGuard, mapGuard.contains("container_dag__"));
-        Set<String> says = lowering.reachedSymbols(mapGuard,
-                new LinkedHashSet<String>(), new LinkedHashSet<String>());
+        Set<String> says = lowering.reachedSymbols(
+                Collections.singletonList(mapGuard));
         assertFalse("and the text does not SAY the read behind it, which is "
                         + "what a query binds its variables by: " + says,
                 says.contains(mapState));
-        Set<String> restsOn = new LinkedHashSet<String>();
-        lowering.reachedSymbols(mapGuard, new LinkedHashSet<String>(),
-                restsOn);
-        assertTrue("it RESTS ON it, which is what the closure demands: "
-                + restsOn, restsOn.contains(mapState));
+        Set<String> restsOn = vC.termSymbols("s-seed",
+                "EXPR.0000000000000005");
+        assertTrue("its expression RESTS ON it, which is what the closure "
+                + "demands: " + restsOn, restsOn.contains(mapState));
         // THE FACTS: what the recording states about the names the guard
         // rests on travels with them.  The map read lowered to an opaque
         // identity, and the recording states that identity was not null --
@@ -2776,8 +2892,7 @@ public class ExploreTest {
         }
         assertTrue("the identity the guard rests on is stated non-null: "
                 + states, notNull);
-        ClosurePlanner.Plan demanded = ClosurePlanner.plan(vC, target, ClosurePlanner.DEFAULT_MAX_TASKS,
-                ofAllKeys);
+        ClosurePlanner.Plan demanded = closure(vC, target, ofAllKeys);
         Map<String, String> whyMap = new LinkedHashMap<String, String>();
         Map<String, Set<String>> flipsOf =
                 new LinkedHashMap<String, Set<String>>();
@@ -2970,10 +3085,10 @@ public class ExploreTest {
             throws IOException {
         Path waveDir = tree.newFolder("roots-wave").toPath();
         JsonObject manifest = ExploreMain.plan(iteration, TARGET_SELECTOR,
-                null, iteration.resolve("results.jsonl"),
-                iteration.resolve(StaticScopeMap.FILE), waveDir, 0,
-                "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults(), false);
+                null, iteration.resolve("results.jsonl"), null,
+                iteration.resolve(StaticScopeMap.FILE), waveDir, 0, "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                ObligationFactory.Bounds.defaults());
         List<String> anchors = new ArrayList<String>();
         for (JsonElement element : manifest.getAsJsonArray("anchors")) {
             anchors.add(element.getAsString());
@@ -2996,10 +3111,10 @@ public class ExploreTest {
         only.flush();
         Path absentWave = tree.newFolder("roots-absent-wave").toPath();
         ExploreMain.plan(elsewhere, TARGET.render(), null,
-                elsewhere.resolve("results.jsonl"),
+                elsewhere.resolve("results.jsonl"), null,
                 elsewhere.resolve(StaticScopeMap.FILE), absentWave, 0,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults(), false);
+                ObligationFactory.Bounds.defaults());
         boolean named = false;
         for (GapRow gap : RowCodec.readAll(absentWave.resolve("gaps.jsonl"),
                 RowCodec::readGap)) {
@@ -3352,11 +3467,12 @@ public class ExploreTest {
         String asked = new String(Files.readAllBytes(first.directory
                 .resolve(ObligationDir.QUESTION)), StandardCharsets.UTF_8)
                 .trim();
-        assertEquals("the wave names the flip, the question's first half",
-                lookup.obligationId() + "\t"
-                        + asked.substring(0, asked.indexOf(':')) + "\n",
-                new String(Files.readAllBytes(wave0.resolve(
-                        ExploreMain.FLIPS_FILE)), StandardCharsets.UTF_8));
+        assertEquals("the question's first half is the flip a round holds "
+                        + "in flight (Frontier#inFlight)",
+                ObligationFactory.flip(lookup.taskId(), lookup.pathId(),
+                        lookup.siteId(), lookup.ordinal(),
+                        lookup.flippedOutcome()),
+                asked.substring(0, asked.indexOf(':')));
         // Asked by a worker whose replay was killed: nothing settled.  And
         // an ADMITTED answer whose session left the corpus stands on
         // nothing.
@@ -3733,16 +3849,28 @@ public class ExploreTest {
     // ---- driving the stage the way the campaign drives it -------------
 
     /**
-     * One wave, planned from the case's own selector as the stage does, over
-     * the static map the epoch published beside its sessions.
+     * One round, planned from the case's own selector as the stage does,
+     * over the static map the epoch published beside its sessions, with
+     * nothing in flight.
      */
     private JsonObject plan(Path iteration, String selector, Path domains,
-                            Path results, Path waveDir, int wave)
+                            Path results, Path roundDir, int round)
             throws IOException {
-        return ExploreMain.plan(iteration, selector, domains, results,
-                iteration.resolve(StaticScopeMap.FILE), waveDir, wave,
+        return ExploreMain.plan(iteration, selector, domains, results, null,
+                iteration.resolve(StaticScopeMap.FILE), roundDir, round,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults(), false);
+                ObligationFactory.Bounds.defaults());
+    }
+
+    /** One anchor's closure, every admitted session a parent of growth but
+     *  those whose branch stopped ({@link Branches}). */
+    private static ClosurePlanner.Plan closure(Corpus corpus,
+                                               OccurrenceAddress anchor,
+                                               StaticScopeMap map) {
+        return ClosurePlanner.plan(corpus, anchor,
+                ClosurePlanner.DEFAULT_MAX_TASKS, map,
+                Branches.of(corpus, Collections.singletonList(anchor),
+                        new ArrayList<GapRow>()));
     }
 
     /**
@@ -3824,9 +3952,8 @@ public class ExploreTest {
         // Without the skeletons beside it the map can say nothing about
         // holding, and the join is the region-id equality it always was:
         // nothing runs REGION.inner, so nothing is a candidate.
-        Map<String, String> blind = why(ClosurePlanner.plan(
-                Corpus.read(iteration, null), TARGET, ClosurePlanner.DEFAULT_MAX_TASKS,
-                StaticScopeMap.read(mapFile)));
+        Map<String, String> blind = why(closure(Corpus.read(iteration, null),
+                TARGET, StaticScopeMap.read(mapFile)));
         assertFalse("with no skeletons, equality finds no occurrence of the"
                         + " region the site is published under: " + blind,
                 blind.containsKey(holder.render()));
@@ -3840,10 +3967,8 @@ public class ExploreTest {
                 skeleton("REGION.outer", "BlockTokenSecretManager"),
                 skeleton("REGION.elsewhere", "DataXceiver"),
                 skeleton("REGION.target", "BlockTokenSecretManager"));
-        ClosurePlanner.Plan plan = ClosurePlanner.plan(
-                Corpus.read(iteration, null), TARGET,
-                ClosurePlanner.DEFAULT_MAX_TASKS,
-                StaticScopeMap.read(mapFile));
+        ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
+                TARGET, StaticScopeMap.read(mapFile));
         Map<String, String> held = why(plan);
         assertEquals("the occurrence whose region holds the site's method is"
                         + " the static candidate writer: " + held,
@@ -4026,8 +4151,8 @@ public class ExploreTest {
                          Obligation proposal, Path out, String name)
             throws IOException {
         Path worker = out.resolve(name);
-        ObligationSolverMain.solve(iteration, domains,
-                waveDir.resolve("obligations.jsonl"),
+        ObligationSolverMain.solve(Corpus.read(iteration, domains),
+                iteration, waveDir.resolve("obligations.jsonl"),
                 proposal.obligationId(), worker, Paths.get("z3"), 10_000L);
         List<ObligationResult> rows = RowCodec.readAll(
                 worker.resolve("obligation_result.jsonl"),

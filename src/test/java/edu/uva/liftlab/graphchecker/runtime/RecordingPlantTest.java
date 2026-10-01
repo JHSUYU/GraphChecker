@@ -22,43 +22,47 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
 /**
- * A native reproduction's plant: which rows a plant file may hold, and which
- * enclosing occurrence of a marker call a row plants.
+ * A native reproduction's plant: which rows a plant file may hold, which
+ * enclosing occurrence of a marker call a row plants, and which enclosing
+ * occurrence of a fatal decision is the anchor's.
  */
 public class RecordingPlantTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
 
     private static final String SITE = "<o.a.h.ipc.Client: void send()>#u16";
+    private static final String GUARD = "<o.a.h.Sasl: void handle()>#u4";
     private static final String OUTER = address("REGION.outer");
     private static final String INNER = address("REGION.inner");
+    private static final String ID = OccurrenceAddress.parse(OUTER).id();
 
-    /** A plant row per file line: accepted, or the row refused. */
+    /** A plant file: its markers, fatal arms and anchor, or refused. */
     @Test
-    public void aPlantHoldsMarkerRowsOnly() throws Exception {
-        String id = OccurrenceAddress.parse(OUTER).id();
+    public void aPlantHoldsMarkersAndOneTarget() throws Exception {
+        String marker = row("MARKER", ID, SITE, "true");
+        String target = row("TARGET", ID, GUARD, "false");
         Object[][] files = {
-                {"{\"kind\":\"MARKER\",\"occurrence\":\"" + id
-                        + "\",\"siteId\":\"" + SITE + "\",\"value\":true}",
-                        Collections.singletonMap(SITE,
-                                Collections.singletonMap(id, true))},
-                {"{\"kind\":\"CLOCK\",\"occurrence\":\"" + id
-                        + "\",\"siteId\":\"" + SITE + "\",\"value\":true}",
-                        null},
-                {"{\"kind\":\"MARKER\",\"occurrence\":\"" + id
-                        + "\",\"siteId\":\"" + SITE + "\",\"value\":\"true\"}",
-                        null},
-                {"{\"kind\":\"MARKER\",\"occurrence\":\"" + id
-                        + "\",\"value\":true}", null},
+                {marker + target, Collections.singletonMap(SITE,
+                        Collections.singletonMap(ID, true)),
+                        Collections.singletonMap(GUARD, false)},
+                {row("CLOCK", ID, SITE, "true") + target, null, null},
+                {row("MARKER", ID, SITE, "\"true\"") + target, null, null},
+                {row("MARKER", ID, "", "true") + target, null, null},
+                // No target: the run could not tell what it reproduced.
+                {marker, null, null},
+                {marker + target + row("TARGET", "other", GUARD, "true"),
+                        null, null},
         };
         for (Object[] file : files) {
             File plant = folder.newFile();
-            Files.write(plant.toPath(), ((String) file[0] + "\n")
-                    .getBytes(StandardCharsets.UTF_8));
+            Files.write(plant.toPath(),
+                    ((String) file[0]).getBytes(StandardCharsets.UTF_8));
             try {
-                assertEquals((String) file[0], file[1],
-                        RecordingPlant.read(plant.toPath()));
+                RecordingPlant.Plant read = RecordingPlant.read(plant.toPath());
                 if (file[1] == null) fail("accepted " + file[0]);
+                assertEquals((String) file[0], file[1], read.markers);
+                assertEquals((String) file[0], file[2], read.fatalArms);
+                assertEquals((String) file[0], ID, read.anchor);
             } catch (IOException refused) {
                 if (file[1] != null) throw refused;
             }
@@ -86,6 +90,30 @@ public class RecordingPlantTest {
                     RecordingPlant.plantedOccurrence(rows, (String) call[0],
                             enclosing));
         }
+    }
+
+    /** A fatal decision is at the anchor when an occurrence enclosing it,
+     *  at any depth, is the anchor's. */
+    @Test
+    public void aFatalDecisionIsAtTheAnchorInsideItsOccurrence() {
+        Object[][] decisions = {
+                {Arrays.asList(INNER, OUTER), OUTER},
+                {Collections.singletonList(OUTER), OUTER},
+                {Collections.singletonList(INNER), null},
+                {Collections.<String>emptyList(), null},
+        };
+        for (Object[] decision : decisions) {
+            @SuppressWarnings("unchecked")
+            List<String> enclosing = (List<String>) decision[0];
+            assertEquals(Arrays.toString(decision), decision[1],
+                    RecordingPlant.anchorOf(enclosing, ID));
+        }
+    }
+
+    private static String row(String kind, String occurrence, String site,
+                              String value) {
+        return "{\"kind\":\"" + kind + "\",\"occurrence\":\"" + occurrence
+                + "\",\"siteId\":\"" + site + "\",\"value\":" + value + "}\n";
     }
 
     private static String address(String region) {

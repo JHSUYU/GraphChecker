@@ -194,7 +194,7 @@ public final class ExploreCodec {
         json.add("producer", RowCodec.writeEndpoint(slot.producer));
         json.add("consumer", RowCodec.writeEndpoint(slot.consumer));
         json.addProperty("openedBySession", slot.openedBySession);
-        json.addProperty("openedAtWave", slot.openedAtWave);
+        json.addProperty("openedAtRound", slot.openedAtRound);
         json.addProperty("world", slot.world);
         return json;
     }
@@ -206,7 +206,7 @@ public final class ExploreCodec {
                 RowCodec.readEndpoint(object(json, "producer")),
                 RowCodec.readEndpoint(object(json, "consumer")),
                 optionalString(json, "openedBySession"),
-                optionalInteger(json, "openedAtWave", 0),
+                optionalInteger(json, "openedAtRound", 0),
                 optionalString(json, "world"));
     }
 

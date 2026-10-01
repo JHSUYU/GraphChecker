@@ -234,6 +234,22 @@ ContainerSupport::Capability ContainerSupport::capability(oop value) {
   return CAPABILITY_NONE;
 }
 
+const char *ContainerSupport::iteration_order(oop value) {
+  switch (capability(value)) {
+    case CAPABILITY_HASH_MAP:
+      return klass_name_is(value, "java/util/LinkedHashMap")
+          ? "INSERTION" : "HASH";
+    case CAPABILITY_HASH_SET:
+      return klass_name_is(value, "java/util/LinkedHashSet")
+          ? "INSERTION" : "HASH";
+    case CAPABILITY_CONCURRENT_MAP:
+    case CAPABILITY_HASHTABLE:
+      return "HASH";
+    default:
+      return NULL;
+  }
+}
+
 const char *ContainerSupport::shape(oop value) {
   switch (capability(value)) {
     case CAPABILITY_INDEXED: return "INDEXED";
@@ -467,12 +483,47 @@ bool walk_chain(oop node, const char *key_name, const char *value_name,
   return true;
 }
 
-// HashMap/LinkedHashMap: table is a Node[]; each bin is a chain linked by
-// `next`.  A treeified bin holds TreeNodes, and TreeNode extends
-// LinkedHashMap.Entry extends HashMap.Node, so `next` still threads every
-// member of the bin -- one chain walk covers both bin kinds and no red-black
-// traversal is needed.
+// A LinkedHashMap's entries in the order its iterator returns them: from
+// `head` by `after`, the order keys were first put (an access-ordered map is
+// no modeled container).  A treeified bin's TreeNodes are LinkedHashMap
+// entries too, so the links thread every member.  Bounded against a
+// corrupted cycle.
+bool walk_links(oop map, MemberWalk *walk) {
+  const char *const ENTRY = "Ljava/util/LinkedHashMap$Entry;";
+  oop node = object_field(map, "head", ENTRY);
+  if (node == NULL) return field_offsets()->offset(map, "head", ENTRY) >= 0;
+  for (int guard = 0; node != NULL && guard < (1 << 20); ++guard) {
+    const int key_offset =
+        field_offsets()->offset(node, "key", "Ljava/lang/Object;");
+    const int value_offset =
+        field_offsets()->offset(node, "value", "Ljava/lang/Object;");
+    const int after_offset = field_offsets()->offset(node, "after", ENTRY);
+    if (key_offset < 0 || value_offset < 0 || after_offset < 0) {
+      return false;
+    }
+    if (!walk->add(node->obj_field(key_offset),
+                   node->obj_field(value_offset))) {
+      return true;
+    }
+    node = node->obj_field(after_offset);
+  }
+  return node == NULL;
+}
+
+// HashMap/LinkedHashMap, in the order the class's iterator returns them.  A
+// LinkedHashMap by its links (walk_links).  A HashMap by its table, from bin
+// 0 up, each bin a chain linked by `next`: a treeified bin holds TreeNodes,
+// and TreeNode extends LinkedHashMap.Entry extends HashMap.Node, so `next`
+// still threads every member of the bin -- one chain walk covers both bin
+// kinds and no red-black traversal is needed.  Walking a LinkedHashMap's
+// table stated its members in hash order (SOLR-18413 r9: MigrateCmd's
+// message map, `operation` then `collection`, was stated `collection`
+// first, and the leader's lookup keyed at the run's position 1 was
+// `operation` in the formula).
 bool read_hash_map(oop map, MemberWalk *walk) {
+  if (klass_name_is(map, "java/util/LinkedHashMap")) {
+    return walk_links(map, walk);
+  }
   const int table_offset =
       field_offsets()->offset(map, "table", "[Ljava/util/HashMap$Node;");
   if (table_offset < 0) return false;
@@ -535,7 +586,8 @@ bool read_concurrent_hash_map(oop map, MemberWalk *walk) {
   return true;
 }
 
-// Hashtable: table is an Entry[] of chains by `next`.
+// Hashtable: table is an Entry[] of chains by `next`, which its iterators
+// and enumerations walk from the last bin down.
 bool read_hashtable(oop table_owner, MemberWalk *walk) {
   const int table_offset = field_offsets()->offset(
       table_owner, "table", "[Ljava/util/Hashtable$Entry;");
@@ -544,7 +596,8 @@ bool read_hashtable(oop table_owner, MemberWalk *walk) {
   if (table == NULL) return true;
   if (!table->is_objArray()) return false;
   objArrayOop bins = objArrayOop(table);
-  for (int bin = 0; bin < bins->length() && !walk->over_bound(); ++bin) {
+  for (int bin = bins->length() - 1; bin >= 0 && !walk->over_bound();
+       --bin) {
     if (!walk_chain(bins->obj_at(bin), "key", "value",
                     "Ljava/util/Hashtable$Entry;", walk)) {
       return false;
@@ -730,8 +783,13 @@ int ContainerSupport::install_receiver_snapshot(
   exp_list_t no_arguments;
   Expression *root = ConcolicMngr::ctx->container_state(container, shape);
   if (root == NULL) return -1;
-  Expression *state =
+  ContainerExpression *base =
       new ContainerExpression(shape, "SNAPSHOT_BASE", root, no_arguments);
+  // The members follow in the order the class's iterator returns them; the
+  // base states that order and how many of the relations above it are
+  // members, so a reader tells them from the program's own mutations.
+  if (associative) base->state_members(iteration_order(container), entries);
+  Expression *state = base;
   for (int index = 0; index < entries; ++index) {
     exp_list_t arguments;
     if (associative) {

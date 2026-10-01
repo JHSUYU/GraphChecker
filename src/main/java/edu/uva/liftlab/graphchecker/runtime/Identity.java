@@ -76,6 +76,17 @@ public final class Identity {
          * task runs (a FutureTask inside an executor's wrapper) nests.
          */
         private final Deque<Integer> starts = new ArrayDeque<Integer>();
+        /**
+         * Whether this thread's own start was UNNAMED ({@link #startWork}
+         * where no hop names the starter): for the thread's life.
+         */
+        private boolean unnamedThread;
+        /**
+         * The depth at which this thread claimed a task's UNNAMED start, or
+         * -1: until the next claim finds that work over, or a level below
+         * it exits ({@link #endUnnamedWork}, {@link Identity#exitFrame}).
+         */
+        private int unnamedAt = -1;
         /** The region activations open on this thread, innermost last. */
         private final List<Region> regions = new ArrayList<Region>();
         /**
@@ -184,6 +195,32 @@ public final class Identity {
         /** The depth of the innermost claimed start frame, or -1. */
         private int innermostStart() {
             return starts.isEmpty() ? -1 : starts.peek();
+        }
+
+        /** Claims an UNNAMED start: the thread's own, or a task's here. */
+        private void claimUnnamed(boolean thread) {
+            if (thread) {
+                unnamedThread = true;
+            } else {
+                unnamedAt = depth();
+            }
+        }
+
+        /**
+         * Ends a task's unnamed claim whose work is over -- no entered frame
+         * stands at its depth or above -- before the next claim on this
+         * thread: a pool's thread takes its next task.
+         */
+        private void endUnnamedWork() {
+            if (unnamedAt >= 0 && onlyStartsFrom(unnamedAt)) unnamedAt = -1;
+        }
+
+        /**
+         * Whether this thread runs unnamed work that no hop names yet: what
+         * it enters is no occurrence ({@link Identity#occurrence}).
+         */
+        private boolean unnamed() {
+            return (unnamedThread || unnamedAt >= 0) && !Lineage.named();
         }
 
         /**
@@ -381,9 +418,13 @@ public final class Identity {
 
     /**
      * One filed start: its frames and its starter.  A thread whose frames
-     * name no component belongs to the one that started it.
+     * name no component belongs to the one that started it.  An UNNAMED
+     * start ({@link #startWork} where no hop names the starter) has
+     * neither: it states only that the work has no identity of its own.
      */
     private static final class Start {
+        private static final Start UNNAMED = new Start(
+                Collections.<Frame>emptyList(), null);
         /** The starter's frames from its scope root, then the start's. */
         private final List<Frame> frames;
         private final Attribution.Reference starter;
@@ -456,7 +497,14 @@ public final class Identity {
         if (start == null) return;
         // The thread a start created claims it itself, standing on the
         // frames it inherited; a task is claimed on a pool's thread.
-        state.openStart(start, carrier == Thread.currentThread());
+        boolean inherited = carrier == Thread.currentThread();
+        if (start == Start.UNNAMED) {
+            // Work no hop started: nothing to open, nothing carried, no
+            // CLAIM (its START was never an event).
+            state.claimUnnamed(inherited);
+            return;
+        }
+        state.openStart(start, inherited);
         state.starter = start.starter;
         state.adopted = true;
         // The starter's scope comes with the work; it closes when the start
@@ -480,20 +528,28 @@ public final class Identity {
      * worker stopped inheriting its creator's frames).  Starts the index
      * cannot separate share an endpoint id and are refused at the mint,
      * never renumbered here.</p>
+     *
+     * <p>A starter no hop names files no frame: under no hop (a connection
+     * acceptor) its k would count arrivals, which nothing schedules ({@code
+     * ScheduleLog.pending} refuses such events likewise).  It files an
+     * UNNAMED start instead: siblings started so differ by nothing an
+     * address names, so the work opens no occurrence until a hop names it
+     * ({@link #occurrence}).  One test decides both: {@link Lineage#named}.</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
         String site = JvmNames.stable(Text.safe(startSiteId));
         if (site.isEmpty() || carrier == null) return;
-        // A thread with no identity files no frame: under no root hop (a
-        // connection acceptor) its k would count arrivals, which nothing
-        // schedules.  ScheduleLog.pending refuses such events likewise.
-        if (contextHere().isLost()) return;
+        sweep();
+        if (!Lineage.named()) {
+            // Never in place of a named start of the same carrier.
+            STARTS.putIfAbsent(new Carrier(carrier, COLLECTED), Start.UNNAMED);
+            return;
+        }
         State state = state();
         int iteration = state.nextSiteEvent(site);
         List<Frame> frames = new ArrayList<Frame>(
                 Arrays.asList(state.snapshot(state.scopeBase)));
         frames.add(Frame.of(site, iteration));
-        sweep();
         // The start's scope travels with the work
         // (RuntimeTraceContext#claimCarried takes it back).
         RuntimeTraceContext.captureAsync(carrier);
@@ -544,6 +600,8 @@ public final class Identity {
         if (carrier == null) return;
         State state = state();
         state.work = carrier;
+        // A task claimed here takes the place of a finished unnamed one.
+        state.endUnnamedWork();
         if (!STARTS.isEmpty()) adopt(state, carrier);
     }
 
@@ -585,7 +643,7 @@ public final class Identity {
 
     /**
      * The key of the method activation at level {@code top} of the running
-     * occurrence ({@link Endpoint#activation}), or null outside one: what a
+     * occurrence ({@link Confirmation#activation}), or null outside one: what a
      * CONFIRM order gate holds.
      */
     private static String activation(State state, int top) {
@@ -596,7 +654,7 @@ public final class Identity {
         for (int index = from; index < top; index++) {
             frames[index - from] = state.addressedFrame(index);
         }
-        return Endpoint.activation(running.occurrence,
+        return Confirmation.activation(running.occurrence,
                 ExecutionIndex.of(Arrays.asList(frames)));
     }
 
@@ -622,6 +680,7 @@ public final class Identity {
             }
             // A start frame closed with this level: its work is over.
             state.closeStartsFrom(state.depth());
+            if (state.depth() < state.unnamedAt) state.unnamedAt = -1;
             // Clamp the scope root to the deepest level still shared: a
             // scope opened inside a returning call (inbound propagation)
             // would otherwise index from a gone level and collide.  This
@@ -749,8 +808,8 @@ public final class Identity {
         if (closed.occurrence != null) {
             ScheduleLog.closed(closed.occurrence.id());
             if (Confirmation.ordering()) {
-                Confirmation.exited(Endpoint.activation(closed.occurrence,
-                        ExecutionIndex.empty()));
+                Confirmation.exited(Confirmation.activation(
+                        closed.occurrence, ExecutionIndex.empty()));
             }
         }
     }
@@ -871,9 +930,18 @@ public final class Identity {
      * recording stated, never re-derive it.  {@code null} when no node can
      * be named: a guessed node is a wrong causal chain.
      *
+     * <p>UNNAMED WORK opens none: work started under no context ({@link
+     * #startWork}) differs from its siblings by nothing an address names --
+     * a DataNode's connections, each run before its first message by a
+     * thread its acceptor started under no root, would share one address.
+     * Until a hop names it, a region it enters is a marker like a fold's,
+     * and its events are its role's ({@link #currentOccurrence}).</p>
+     *
      * @param open whether this is a region ENTRY (opens an occurrence, or
      *             folds into the running one, {@link #fold}) or only a read,
      *             which must not move the base of an open region
+     * @return the address, or null when no node can be named or an entry
+     *         of unnamed work opened none
      */
     public static OccurrenceAddress occurrence(String nodeKey, String regionId,
                                                boolean open) {
@@ -885,6 +953,14 @@ public final class Identity {
         if (open) {
             OccurrenceAddress enclosing = fold();
             if (enclosing != null) return enclosing;
+            State state = state();
+            if (state.unnamed()) {
+                Region marker = new Region(state.regionBase());
+                marker.unnamed = true;
+                state.regions.add(marker);
+                RowRuntime.unnamedEntry(node, region);
+                return null;
+            }
         }
         ExecutionIndex index = open ? regionEnter() : atScope();
         OccurrenceAddress address = OccurrenceAddress.of(
@@ -895,7 +971,7 @@ public final class Identity {
             // Where a prefix focusing this occurrence is cut.
             ScheduleLog.mark(address.id());
             if (Confirmation.ordering()) {
-                Confirmation.entering(Endpoint.activation(address,
+                Confirmation.entering(Confirmation.activation(address,
                         ExecutionIndex.empty()));
             }
         }
@@ -914,9 +990,8 @@ public final class Identity {
      *
      * <p>Save one (owner, 2026-09-27): an occurrence that opened Lost names
      * no context to fold into.  Once this thread has one, a declared region
-     * opens its own: a DataXceiver runs before its connection's first
-     * message, its acceptor files no start frame, and folded into it every
-     * connection of a DataNode shared one address.</p>
+     * opens its own, or every context the thread takes later would share
+     * the Lost address.</p>
      *
      * @return the occurrence this entry folded into, or null when the entry
      *         opens its own
@@ -934,15 +1009,16 @@ public final class Identity {
     }
 
     /**
-     * Whether the innermost region entry was FOLDED (IDENTITY §1): it is a call
-     * inside the running occurrence, so neither pass records an activation
-     * for it.  Asked at the entry, where the marker is innermost.
+     * Whether the innermost region entry opened no occurrence (IDENTITY §1):
+     * it FOLDED into the running one, or unnamed work entered it ({@link
+     * #occurrence}), so neither pass records an activation for it.  Asked at
+     * the entry, where its marker is innermost.
      */
-    public static boolean foldedEntry() {
+    public static boolean openedNone() {
         State state = state();
         Region innermost = state.region();
         return innermost != null && innermost.occurrence == null
-                && state.activeRegion() != null;
+                && (innermost.unnamed || state.activeRegion() != null);
     }
 
     /**
@@ -1130,14 +1206,17 @@ public final class Identity {
 
     /**
      * One open region entry: where its endpoints are indexed from.  An
-     * opening entry carries its occurrence; a folded one ({@link #fold})
-     * carries none and is a pure ownership marker.
+     * opening entry carries its occurrence; a folded one ({@link #fold}) or
+     * unnamed work's ({@link #occurrence}) carries none and is a marker that
+     * keeps the region stack balanced.
      */
     private static final class Region {
         private final int base;
         private FrameJournal journal;
-        /** The occurrence this entry opened, or null when folded. */
+        /** The occurrence this entry opened, or null when it opened none. */
         private OccurrenceAddress occurrence;
+        /** Whether unnamed work entered it, opening none ({@link #occurrence}). */
+        private boolean unnamed;
         /**
          * Decisions per site on this OCCURRENCE ({@link #nextBranchOrdinal});
          * empty on a folded entry.

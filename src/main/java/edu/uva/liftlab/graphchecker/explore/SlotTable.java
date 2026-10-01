@@ -49,17 +49,17 @@ public final class SlotTable {
         public final Endpoint producer;
         public final Endpoint consumer;
         public final String openedBySession;
-        public final int openedAtWave;
+        public final int openedAtRound;
         /** The world of the opening session; {@code ""} is the seed's. */
         public final String world;
 
         Slot(InteractionKind kind, Endpoint producer, Endpoint consumer,
-             String openedBySession, int openedAtWave, String world) {
+             String openedBySession, int openedAtRound, String world) {
             this.kind = kind;
             this.producer = producer;
             this.consumer = consumer;
             this.openedBySession = openedBySession;
-            this.openedAtWave = openedAtWave;
+            this.openedAtRound = openedAtRound;
             this.world = world == null ? "" : world;
         }
 
@@ -97,7 +97,7 @@ public final class SlotTable {
     SlotTable() {
     }
 
-    /** The iteration's table, or an empty one before its first wave. */
+    /** The iteration's table, or an empty one before its first round. */
     public static SlotTable read(Path iteration) throws IOException {
         SlotTable table = new SlotTable();
         if (iteration == null) return table;
@@ -144,7 +144,7 @@ public final class SlotTable {
     /** Takes every interaction the corpus states; only a consumer in {@code
      *  closure} opens a slot. */
     public Reconciliation reconcile(Corpus corpus, Set<String> closure,
-                                    int wave) {
+                                    int round) {
         List<Slot> opened = new ArrayList<Slot>();
         List<GapRow> gaps = new ArrayList<GapRow>();
         Set<String> outside = new LinkedHashSet<String>();
@@ -168,7 +168,7 @@ public final class SlotTable {
                     continue;
                 }
                 switch (take(InteractionKind.WIRE, attach.producer(), consumer,
-                        session.sessionId(), world, authority, wave, opened,
+                        session.sessionId(), world, authority, round, opened,
                         gaps)) {
                     case FILLED: filled++; break;
                     case REPLACED: replaced = true; break;
@@ -209,7 +209,7 @@ public final class SlotTable {
                     continue;
                 }
                 switch (take(InteractionKind.STATE, writer.endpoint(), consumer,
-                        session.sessionId(), world, authority, wave, opened,
+                        session.sessionId(), world, authority, round, opened,
                         gaps)) {
                     case FILLED: filled++; break;
                     default: break;
@@ -362,9 +362,9 @@ public final class SlotTable {
     /** One pair against the skeleton: grow it, fill it, or contradict it. */
     private Outcome take(InteractionKind kind, Endpoint producer,
                          Endpoint consumer, String sessionId, String world,
-                         boolean authority, int wave,
+                         boolean authority, int round,
                          List<Slot> opened, List<GapRow> gaps) {
-        Slot slot = new Slot(kind, producer, consumer, sessionId, wave, world);
+        Slot slot = new Slot(kind, producer, consumer, sessionId, round, world);
         if (byInteraction.containsKey(slot.interactionId() + "|" + world)) {
             return Outcome.FILLED;
         }

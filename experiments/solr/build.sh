@@ -13,13 +13,20 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker=$(cd "${here}/../.." && pwd -P)
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export PATH=${JAVA_HOME}/bin:${PATH}
+# Ant, wherever the host installed it: a remote command's PATH (onlift.sh)
+# has it on some lifts only (lift12-15 keep it under /usr/lib/ant/bin).
+ant=$(command -v ant || true)
+for candidate in /usr/share/ant/bin/ant /usr/lib/ant/bin/ant; do
+  [[ -n "${ant}" ]] || [[ ! -x "${candidate}" ]] || ant=${candidate}
+done
+[[ -n "${ant}" ]] || { echo "no ant on $(hostname)" >&2; exit 2; }
 
 jar=${graphchecker}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
 [[ "${SKIP_GRAPHCHECKER_INSTALL:-0}" == 1 ]] \
   || (cd "${graphchecker}" && mvn -q -o -DskipTests package)
 cd "${repo}/solr/core"
-ant -q -Dgraphchecker.jar="${jar}" compile-test
-ant -q -Dgraphchecker.jar="${jar}" test -Dtests.class="${test_class}" \
+"${ant}" -q -Dgraphchecker.jar="${jar}" compile-test
+"${ant}" -q -Dgraphchecker.jar="${jar}" test -Dtests.class="${test_class}" \
   -Dtests.method="${test_method}" -Dtests.seed="${seed}" -Dtests.jvms=1 \
   -Dtests.useSecurityManager=false -Dargs="-Dcausynth.cluster.automatic=true"
 

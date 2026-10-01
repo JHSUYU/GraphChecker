@@ -123,6 +123,18 @@ public final class OccurrenceAddress extends Value {
         return regionId.startsWith(ROLE_REGION);
     }
 
+    /**
+     * This occurrence as every delivery of its stored message is addressed
+     * ({@link CausalContext.Anchor#anyDelivery}); itself for any other.
+     */
+    public OccurrenceAddress anyDelivery() {
+        if (!(context instanceof CausalContext.Anchor)) return this;
+        CausalContext.Anchor delivered =
+                ((CausalContext.Anchor) context).anyDelivery();
+        return delivered == context ? this
+                : new OccurrenceAddress(node, regionId, delivered, index);
+    }
+
     /** Whether the context is {@link CausalContext.Lost} (derived). */
     public boolean lineageLost() {
         return context.isLost();

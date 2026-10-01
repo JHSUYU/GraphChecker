@@ -51,7 +51,7 @@ and `manifest.json` when the session opens, and appends and flushes each row as 
 | `obligations.jsonl` | the replay's `ObligationResult` per obligation it ran, written at close (`RowRuntime.closeSession`); the authority on its verdict; a SEED has none |
 | `schedule.jsonl` | the run's `ScheduleEvent`s in order, with `{mark, at}` rows; not a row kind, no invariant is stated over it |
 | `expressions.jsonl` | the session's expression log (§2.3) |
-| `manifest.json` | `SessionManifest`: `{schemaVersion 1, kind SESSION_MANIFEST, sessionId, role SEED\|FOCUSED, obligationIds}` — FOCUSED when the replay was handed a focus row, its obligation ids from it. The only answer to "which session is the recording"; an absent or unknown role is refused |
+| `manifest.json` | `SessionManifest`: `{schemaVersion 1, kind SESSION_MANIFEST, sessionId, role SEED\|FOCUSED, obligationIds, unnamedEntries}` — FOCUSED when the replay was handed a focus row, its obligation ids from it. The only answer to "which session is the recording"; an absent or unknown role is refused. `unnamedEntries` (`{"<node>/region/<regionId>": n}`, restated at the run's end) counts the region entries unnamed work made, which opened no occurrence (IDENTITY §1) |
 
 IMPORT requires the ten files `activations` … `gaps` and `schedule` to exist and `expressions.jsonl`
 to be non-empty (`campaign_import_session`). The publisher writes a root once per (occurrence, root
@@ -86,7 +86,7 @@ or zero. Every row but a `ScheduleEvent` carries `sessionId`; every row but an `
 | `WriteRow` | `seq, endpoint, location, version, expressionRef, javaType, referentState?, referentStateRefused?` | a write and the version of the location it produced; versions join reads within one session. A write of a reference to a modeled container (or a view or wrapper of one) states `referentState` = `{location, version}`: the canonical container's `MAP` location and its version live at the store (invariant 12), else `referentStateRefused` = the VM's reason (`UNREADABLE_CONTAINER:<class>`, `TRUNCATED`, `RESIZING`, `NO_CONTEXT`); neither for null or a plain object |
 | `ReadRow` | `seq, endpoint, location, observedVersion, symbol, javaType, mintVersion?, concreteValue?, unnamedWriter?` | a read: `observedVersion` = the version seen, `-1` when unknown (never 0) -- known when the location's writer set was whole or the VM verified the read (`observedExact`, `VmRows#joinable`); `mintVersion` = a placeholder's own store version (a placeholder's site contains `#PLACEHOLDER#`); `concreteValue` = what the read returned as `ReadRow.returned` spells it (a scalar's payload, a String as its JSON string literal, Java null as `N`, an object as its identity's name `M_L'<class>'_<rid>`; for an exact read the VM left unstated, its version's leaf of those kinds; absent for a String the VM cut); `unnamedWriter` = `true` only when a writer the VM's log never named had reached the location (any incompleteness but the version bound), which leaves the read no alternative writer (`Arms#stateArms`) |
 | `RootMintRow` | `seq, occurrence, rootId, symbol, kind, recordedValue, domainMin?, domainMax?, declared, clockNanos?, clockSource?, clockSkew?` | a root minted here. `kind` `MARKER` (a boolean: fault marker or boolean configured source), `INTEGRAL`, `CLOCK`; `symbol` is the root's one solver name; `recordedValue` is the value the region ran the root at — a fresh-box mint states the box it handed the region, the plant where one was applied (`runtime.RootMint.materializePrimitiveValue`); for a CLOCK the instant its node's clock read there, and `clockSkew` how far that clock ran off the host's reading (a plant, or the jump it ran on from, `runtime.NodeClocks`; absent = 0, the host's own instant, always so in the seed): the host's reading, `hostReading` = `recordedValue − clockSkew`, is what a clock's counterfactual (the focus row's skew) is off. A CLOCK row's `seq` is the event the recording read it at, the same in every session. A clock site read again inside the occurrence is a later instant of the same root and stays concrete, so a clock root is the site's first reading in the occurrence. `domainMin/Max` absolute or absent (both absent = pinned); `clockNanos` = a CLOCK's tick in ns (1 for `nanoTime`, 1,000,000 for `currentTimeMillis`), present exactly for CLOCK; `clockSource` = the JVM clock it wraps (`currentTimeMillis`, `nanoTime`; absent when the plan states none), which with the tick is the clock's identity (`contract.Clock`) |
-| `TargetRow` | `seq, occurrence, anchorSiteId, phiTerm, observedFatal, reachedAnchor` | the declared target site, published whether or not the run reached it (unreached: `seq` 0). `phiTerm` is in the FATAL polarity and nobody re-derives it; empty when the anchor decided concretely. How the runtime forms it: [PIPELINE.md §5](PIPELINE.md) |
+| `TargetRow` | `seq, occurrence, anchorSiteId, phiTerm, observedFatal, reachedAnchor` | the declared target site, published whether or not the run reached it (unreached: `seq` 0, `phiTerm` empty). `phiTerm` is in the FATAL polarity and nobody re-derives it; a reached anchor always states it: a concrete fatal condition as the constant of the arm it took, `true` on the fatal arm and `false` on the healthy one, and that fatal rests on the path condition that reached the anchor (`compose.Composer#fatalRests`). How the runtime forms it: [PIPELINE.md §5](PIPELINE.md) |
 | `GapRow` | `kind, cls, subject, detail` | a refusal or diagnostic naming its subject; `sessionId` is the session, or `exploration` / `composition` for a stage's own rows |
 | `ObligationResult` | `schemaVersion 1, kind OBLIGATION_RESULT, obligationId, verdict, detail` | §3 |
 | `ScheduleEvent` | `seq, kind, context, site, k, occurrence?, endpoint?` (no `sessionId`) | `kind` ∈ `START, CLAIM, SEND, RECV, WAKE, END, INTERRUPT`; `context` = `<node>\|<causal context>[\|<start frames>]`; `k` = the k-th event of (kind, context, site); `occurrence` = the open region, where a prefix is cut; `endpoint` = the producer endpoint a SEND minted. Two runs compare events by `key()` = (kind, context, site). A `{mark: <occurrence id>, at: <seq>}` row marks where an occurrence opened; `{mark: WITNESS, at}` that the run was cut at its witness. Readers stop at the first unreadable line. How the runtime records and holds it: [IDENTITY.md §8](IDENTITY.md) |
@@ -164,12 +164,15 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 
 ### 2.6 The row invariants (`RowInvariants`, run by `ImportGateMain`)
 
-`ImportGateMain --sessions <iteration>/sessions --out <gaps file> --topology-epoch <id>` reads the
-sessions and each obligation worker's focus rows (joined to a session by the worker's result row,
-never by directory name), appends every violation to the gaps file with `topologyEpoch`, and prints
+`ImportGateMain --sessions <iteration>/sessions [--gate <session>...] [--gated <ledger>] --out <gaps
+file> --topology-epoch <id>` gates the named sessions (none named: every session the ledger does not
+name), each once: it reads them and their obligation workers' focus rows (joined to a session by the
+worker's result row, never by directory name), judges invariants 1 and 11, the rules over the set,
+against the sessions the ledger names that are still in the corpus (PIPELINE §6), appends every
+violation to the gaps file with `topologyEpoch`, adds the gated sessions to the ledger, and prints
 `{topologyEpoch, sessions, violations, blocking, diagnostic, firstBlockingSubject, gaps,
-blockingSubjects}`; it exits 0 unless the sessions are unreadable, and IMPORT fails on `blocking >
-0`. One session is held in memory at a time. A violation's subject is `<kind>.jsonl seq=<n>
+blockingSubjects}` of this gate; it exits 0 unless the sessions are unreadable or a named one is not
+in the corpus, and IMPORT fails on `blocking > 0`. One session is held in memory at a time. A violation's subject is `<kind>.jsonl seq=<n>
 field=<f> <subject>`.
 
 | # | rule | kind, class |
@@ -182,7 +185,7 @@ field=<f> <subject>`.
 | 6 | a decision term that evaluates at the valuation the session ran under (declared roots and literals through `==, !=, <, <=, >, >=, +, -, *, &, \|, ^`, boundary and read-from nodes) agrees with `outcome`; the valuation is the mints' `recordedValue` for the seed and the focus row's ask for a focused session (a CLOCK = its `recordedValue`); a FOCUSED session with no focus row is BLOCKING | `UNSTATED_VALUE`, BLOCKING |
 | 7 | an observed version no `WriteRow` and no `mintVersion` of the session states — DIAGNOSTIC; a placeholder read without `mintVersion`, or a `WriteRow` at a placeholder's minted version (a fabricated write) — BLOCKING | `UNSTATED_VALUE` |
 | 8 | a `RootMintRow` only for a declared root (`DECLARATION_MISSING`); a MARKER reads `true`/`false`, an INTEGRAL or CLOCK a plain decimal; one row per (occurrence, root id) (`UNSTATED_VALUE`) | BLOCKING |
-| 9 | a reached anchor states a `phiTerm` (BLOCKING when it observed the fatal, else DIAGNOSTIC: a concrete branch); an observed fatal's `phiTerm` does not evaluate false at the session's valuation (BLOCKING) | `UNSTATED_VALUE` |
+| 9 | a reached anchor states a `phiTerm`, a term or the constant of its arm (none: BLOCKING when it observed the fatal, else DIAGNOSTIC, as COMPOSE refuses the path); where the session's valuation decides it, `phiTerm` holds exactly on the fatal arm: `false` or a false term on an observed fatal, `true` or a true term on a healthy arm, is BLOCKING | `UNSTATED_VALUE` |
 | 10 | a focused session states a decision at its focus row's flip (site, ordinal) with the asked outcome | `ADMISSION_GAP`, DIAGNOSTIC |
 | 11 | every root symbol a session names (in a term, a `phiTerm`, or its expression table) has a `RootMintRow` of that session | `MINT_UNATTRIBUTED`, BLOCKING |
 | 12 | a write's `referentState` names a version below the write's own (BLOCKING), stated by a `WriteRow` of the same session (else DIAGNOSTIC, as a read of an unwritten version: COMPOSE composes no reader through that store, `REFERENT_STATE_UNSTATED:UNPUBLISHED`) | `UNSTATED_VALUE` |
@@ -227,7 +230,8 @@ field=<f> <subject>`.
   arm's message was, when that key is a store's `<transport> <path>@<version>` -- an exchange's
   correlation id is its own run's; `value` the text the hole must decode to, the claim's
   `holeTexts`), `STATE {reader, mint, writer, version, location}`, `ORDER {before, after}`
-  (activation keys), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation
+  (activation keys; `after` the last activation entered before the event it orders), every endpoint
+  id and activation key as every delivery of its stored message names it (`Confirmation#id`), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation
   flips nothing (`Obligation.confirming`) owes these rows: missing or unreadable, it files a
   `CONFIRM_MISMATCH`. `final/confirm.json` is `{schemaVersion 1, kind CONFIRMATION, confirmed,
   reason, sessionId}` ([PIPELINE.md §10](PIPELINE.md)).
@@ -259,7 +263,8 @@ field=<f> <subject>`.
 ## 5. Rules every stage keeps
 
 - Identity is by `Endpoint` and `Interaction`; a family is keyed by its interaction.
-- `phiTerm` is published in the fatal polarity by the runtime; COMPOSE never re-derives polarity.
+- `phiTerm` is published in the fatal polarity by the runtime; COMPOSE never re-derives polarity
+  and never invents a phi a row does not state.
 - A decision's polarity is applied by its reader (`Arms.conjunct`, `Arms.pathCondition`), for
   COMPOSE and flip queries alike.
 - One lowering, `compose.SmtLowering`, serves COMPOSE and the flip queries
@@ -327,8 +332,9 @@ a run demands only the ports its `causynth.codec.ports` file names, and the `WIR
 
 One schema for the engine's library catalog and a system's `wire.jsonl`, read together:
 `WireDeclarations.of(rows)` takes every row of the five kinds, each keyed by where it was read
-(`file:line`); the caller routes rows of other kinds (`DOOR`) away first. `WireDeclarations.read`
-reads one file, a JSON row per line, passing over its `DOOR` rows (the door weave's);
+(`file:line`); the caller routes rows of other kinds away first (the library catalog's `DOOR` and
+`CONFIG_SOURCE` rows are `causynth/LibraryCatalog`'s, SYMBOL-SCOPE §4.2). `WireDeclarations.read`
+reads one file, a JSON row per line, passing over its `DOOR` rows;
 `WireDeclarations.configured` reads the file the system property `causynth.wire.declarations`
 (else the environment variable `CAUSYNTH_WIRE_DECLARATIONS`) names, and none when neither does.
 Every row states `schemaVersion 1` and its `kind`. A malformed row, a member its kind does not have, a declaration

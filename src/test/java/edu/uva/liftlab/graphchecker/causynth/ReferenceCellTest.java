@@ -74,6 +74,7 @@ public class ReferenceCellTest {
     @After
     public void resetSoot() {
         G.reset();
+        System.clearProperty(LibraryReceivers.ROOTS);
     }
 
     /** The contracts are the interfaces': a class's own, its supertypes',
@@ -158,6 +159,9 @@ public class ReferenceCellTest {
      */
     @Test
     public void aReferenceCellIsReadStoredAndConstructed() throws Exception {
+        // The system's own roots hold none of the scene's library classes.
+        System.setProperty(LibraryReceivers.ROOTS,
+                tree.newFolder("roots").getPath());
         StaticProgram program = new SeedBackwardStaticAnalyzer(scene())
                 .analyze();
         Object[][] edges = {

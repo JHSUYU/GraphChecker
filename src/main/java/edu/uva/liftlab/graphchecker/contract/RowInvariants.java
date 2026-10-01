@@ -55,24 +55,63 @@ public final class RowInvariants {
     }
 
     /**
-     * Every violation, one session held at a time: an iteration no longer
-     * fits one heap (hdfs-11741 v74: 240 sessions with 3 MB expression
-     * tables ran the gate out of 8 GB).  Who states SEED and which roots
-     * the epoch has come from every session's manifest and root rows first.
-     * {@code focus} maps session id to the focus rows its replay ran: the
-     * first is the ask ({@code rootAssignments}, {@code clockDeltas}), each
-     * one a flip it owes.
+     * The violations of the sessions {@code gated}, each judged once, as
+     * members of one epoch with the sessions {@code admitted} (gated before,
+     * still in the epoch, never judged again).  Every rule but two is one
+     * session's; the two over the SET are judged over both: exactly one
+     * SEED (1), and the epoch's roots (11) -- a gated session against every
+     * root of the epoch, and an admitted one against each root (id, symbol)
+     * the gated sessions bring that the admitted ones did not mint, which is
+     * the one reason an admitted session is read again.  So gating an epoch
+     * a few sessions at a time files exactly the violations one gate over
+     * all of it would, each once.
+     *
+     * <p>One session held at a time: an iteration no longer fits one heap
+     * (hdfs-11741 v74: 240 sessions with 3 MB expression tables ran the gate
+     * out of 8 GB).  Who states SEED and which roots the epoch has come from
+     * every session's manifest and root rows first.  {@code focus} maps a
+     * gated session's id to the focus rows its replay ran: the first is the
+     * ask ({@code rootAssignments}, {@code clockDeltas}), each one a flip it
+     * owes.</p>
      */
-    public static List<GapRow> check(List<SessionDir> sessions,
+    public static List<GapRow> check(List<SessionDir> admitted,
+                                     List<SessionDir> gated,
                                      Map<String, List<JsonObject>> focus)
             throws IOException {
         List<GapRow> gaps = new ArrayList<GapRow>();
-        if (sessions.isEmpty()) return gaps;
+        if (gated.isEmpty()) return gaps;
+        Set<SessionDir> fresh = new LinkedHashSet<SessionDir>(gated);
+        List<SessionDir> epoch = new ArrayList<SessionDir>(fresh);
+        for (SessionDir dir : admitted) {
+            if (!fresh.contains(dir)) epoch.add(dir);
+        }
+        // The epoch in one order whichever sessions it was gated in: the
+        // first session to mint a root names its symbol.
+        Collections.sort(epoch, (left, right) ->
+                left.dir().compareTo(right.dir()));
         List<SessionReader> headers = new ArrayList<SessionReader>();
-        for (SessionDir dir : sessions) headers.add(SessionReader.readHeader(dir));
-        sessionSet(headers, gaps);
+        List<SessionReader> before = new ArrayList<SessionReader>();
+        Set<String> freshIds = new LinkedHashSet<String>();
+        for (SessionDir dir : epoch) {
+            SessionReader header = SessionReader.readHeader(dir);
+            headers.add(header);
+            if (fresh.contains(dir)) {
+                freshIds.add(dir.sessionId());
+            } else {
+                before.add(header);
+            }
+        }
+        sessionSet(headers, freshIds, gaps);
         Map<String, String> roots = epochRoots(headers);
-        for (SessionDir dir : sessions) {
+        Map<String, String> brought = new LinkedHashMap<String, String>(roots);
+        brought.entrySet().removeAll(epochRoots(before).entrySet());
+        for (SessionDir dir : epoch) {
+            if (!fresh.contains(dir)) {
+                if (!brought.isEmpty()) {
+                    attributed(SessionReader.read(dir), brought, gaps);
+                }
+                continue;
+            }
             SessionReader session = SessionReader.read(dir);
             complete(session, gaps);
             List<JsonObject> rows = focus.getOrDefault(session.sessionId(),
@@ -106,13 +145,17 @@ public final class RowInvariants {
      * Exactly one session states it is the seed, and the seed names no
      * obligation.  Read off {@code manifest.json}, never inferred from
      * activations: a focused replay that never activated looks like a seed.
+     * The count is the epoch's; what a session's own manifest states is
+     * judged of the sessions being gated only.
      */
     private static void sessionSet(List<SessionReader> sessions,
+                                   Set<String> gated,
                                    List<GapRow> gaps) {
         List<String> stated = SessionReader.seedSessionIds(sessions);
         for (SessionReader session : sessions) {
             SessionManifest manifest = session.manifest();
-            if (manifest == null || !manifest.seed()
+            if (!gated.contains(session.sessionId()) || manifest == null
+                    || !manifest.seed()
                     || manifest.obligationIds().isEmpty()) {
                 continue;
             }
@@ -540,7 +583,8 @@ public final class RowInvariants {
         return planted.trim();
     }
 
-    /** Truth of a term at the valuation; null at an unevaluable leaf. */
+    /** Truth of a term at the valuation -- a reference, possibly negated,
+     *  or a constant; null at an unevaluable leaf. */
     private static Boolean truth(SessionReader session, String term,
                                  Map<String, String> declared) {
         String text = term.trim();
@@ -549,9 +593,9 @@ public final class RowInvariants {
             negated = !negated;
             text = operand(text);
         }
-        if (!REFERENCE.matcher(text).matches()) return null;
-        Object value = value(session.expressions().expression(text),
-                declared);
+        Object value = REFERENCE.matcher(text).matches()
+                ? value(session.expressions().expression(text), declared)
+                : literal(text);
         if (!(value instanceof Boolean)) return null;
         boolean held = ((Boolean) value).booleanValue();
         return Boolean.valueOf(negated != held);
@@ -797,10 +841,14 @@ public final class RowInvariants {
     // ---- 9. targets ----------------------------------------------------
 
     /**
-     * CONTRACT-SPEC §2.6: {@code phiTerm} is in the FATAL polarity.  A reached
-     * anchor with no predicate is a concrete branch (DIAGNOSTIC) unless the
-     * fatal arm was observed (BLOCKING).  An observed fatal's phi must HOLD
-     * at the session's valuation where the roots decide it.
+     * CONTRACT-SPEC §2.6: {@code phiTerm} is in the FATAL polarity, and a
+     * reached anchor states it: a decision's term, or for a concrete fatal
+     * condition the constant of the arm it took ({@code true} on the fatal
+     * arm, {@code false} on the healthy one).  None stated is BLOCKING where
+     * the run observed the fatal (the witness would rest on a predicate no
+     * row states), else DIAGNOSTIC (a path with no phi is no disjunct).  A
+     * stated phi holds exactly on the fatal arm: where the session's
+     * valuation decides it, it agrees with {@code observedFatal}.
      */
     private static void targets(SessionReader session,
                                 Map<String, String> executed,
@@ -808,32 +856,38 @@ public final class RowInvariants {
         Map<String, String> declared = executed == null
                 ? Collections.<String, String>emptyMap() : executed;
         for (TargetRow row : session.targets()) {
-            boolean empty = row.phiTerm().trim().isEmpty();
-            if (empty && row.reachedAnchor()) {
+            if (!row.reachedAnchor()) continue;
+            if (row.phiTerm().trim().isEmpty()) {
                 gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                         row.observedFatal() ? GapClass.BLOCKING
                                 : GapClass.DIAGNOSTIC, "targets", row.seq(),
                         "phiTerm", row.anchorSiteId(),
-                        "invariant 9 (CONTRACT-SPEC §2.6: phiTerm is published "
-                                + "in the FATAL polarity): the anchor was "
+                        "invariant 9 (CONTRACT-SPEC §2.6: a reached anchor "
+                                + "states phi, a concrete condition as the "
+                                + "constant of its arm): the anchor was "
                                 + "reached and states no predicate"
                                 + (row.observedFatal()
                                         ? ", and the run OBSERVED the fatal "
-                                        + "arm, so there was one"
-                                        : "; a concrete branch is "
-                                        + "legitimate")));
+                                        + "arm, so the witness would rest on "
+                                        + "a predicate no row states"
+                                        : "")));
                 continue;
             }
-            if (empty || !row.observedFatal() || declared.isEmpty()) continue;
             Boolean held = truth(session, row.phiTerm(), declared);
-            if (held == null || held.booleanValue()) continue;
+            if (held == null || held.booleanValue() == row.observedFatal()) {
+                continue;
+            }
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "targets", row.seq(), "phiTerm",
                     row.anchorSiteId(),
                     "invariant 9 (CONTRACT-SPEC §2.6: phiTerm is published in "
-                            + "the FATAL polarity): the run observed the "
-                            + "fatal arm and this term is FALSE at the root "
-                            + "values this session RAN under"));
+                            + "the FATAL polarity): the run "
+                            + (row.observedFatal()
+                                    ? "observed the fatal arm and this term "
+                                    + "is FALSE"
+                                    : "took the healthy arm and this term is "
+                                    + "TRUE")
+                            + " at the root values this session RAN under"));
         }
     }
 

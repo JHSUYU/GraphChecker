@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import soot.Body;
 import soot.BooleanType;
 import soot.Local;
@@ -12,24 +12,43 @@ import soot.SootMethod;
 import soot.SootMethodRef;
 import soot.Type;
 import soot.Unit;
+import soot.Value;
 import soot.VoidType;
+import soot.jimple.AssignStmt;
+import soot.jimple.EqExpr;
+import soot.jimple.IfStmt;
 import soot.jimple.IntConstant;
+import soot.jimple.InvokeStmt;
 import soot.jimple.Jimple;
+import soot.jimple.NewExpr;
+import soot.jimple.SpecialInvokeExpr;
+import soot.jimple.StaticInvokeExpr;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
+import soot.jimple.ThrowStmt;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * The transport doors' fault points, declared by {@code DOOR} rows of the
- * communication mapping and woven into the program before any analysis, so
- * every pass sees them as program text: one boolean marker per fault kind,
- * {@code if (Debug.makeSymbolicBoolean(name)) throw new Kind(..)}, in the
- * row's order.  The marker is the one the analysis already roots
- * ({@code EXPLICIT_SYMBOLIC_FAULT}); false is the recorded polarity.
+ * The transport doors' fault points, the {@code DOOR} rows of the engine's
+ * library catalog ({@link LibraryCatalog}), woven into the program before any
+ * analysis, so every pass sees them as program text: one boolean marker per
+ * fault kind, {@code if (Debug.makeSymbolicBoolean(name)) throw new
+ * Kind(..)}, in the row's order, at the first call of the row's anchor.  The
+ * marker is the one the analysis already roots ({@code
+ * EXPLICIT_SYMBOLIC_FAULT}); false is the recorded polarity.
+ *
+ * <p>A door applies where its class family is analysed: an application
+ * class of this run that is not there for its lineage alone (no pass analyses
+ * or weaves such a class's text).  There every row whose method and anchor
+ * resolve is woven, and a door method none of whose rows resolves is refused
+ * ({@code DOOR_METHOD_UNAVAILABLE}): the library moved under the catalog.</p>
  *
  * <p>A kind is an ENVIRONMENT failure the transport can raise and a caller
  * distinguishes (e.g. {@code RetryPolicies} fails over on
@@ -40,7 +59,7 @@ import java.util.List;
  * its simple class name.</p>
  */
 final class DoorWeave {
-    static final String KIND = "DOOR";
+    private static final Logger LOG = LoggerFactory.getLogger(DoorWeave.class);
     private static final String GENERIC = "java.io.IOException";
     private static final String MARKER_CLASS =
             "edu.uva.liftlab.graphchecker.annotation.Debug";
@@ -48,37 +67,52 @@ final class DoorWeave {
     private DoorWeave() {
     }
 
-    /** Weaves every declared door; refuses a door that names no site. */
-    static void apply() throws IOException {
-        for (JsonObject door : WireFlowCatalog.rowsOfKind(KIND)) {
-            weave(door);
+    /** Weaves every catalog door of an analysed family. */
+    static void apply() {
+        Map<String, List<String>> missed = new LinkedHashMap<>();
+        Set<String> doorMethods = new LinkedHashSet<>();
+        List<String> woven = new ArrayList<>();
+        for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
+            if (!analysed(door.family())) continue;
+            String miss = weave(door);
+            if (miss.isEmpty()) {
+                doorMethods.add(door.doorMethod());
+                woven.add(door.name() + " at " + door.method);
+            } else {
+                missed.computeIfAbsent(door.doorMethod(),
+                        method -> new ArrayList<>()).add(miss);
+            }
         }
+        missed.keySet().removeAll(doorMethods);
+        if (!missed.isEmpty()) {
+            throw new IllegalStateException(
+                    "DOOR_METHOD_UNAVAILABLE: " + missed);
+        }
+        LOG.info("Library doors woven: {}", woven);
     }
 
-    private static void weave(JsonObject door) {
-        String name = "FAULT:" + text(door, "transport") + ":"
-                + text(door, "direction").toUpperCase();
-        String signature = text(door, "method");
-        SootMethod method = CausynthStaticFacts.method(signature);
-        if (method == null || !method.isConcrete()) {
-            throw new IllegalStateException("DOOR_METHOD_UNAVAILABLE: "
-                    + name + " at " + signature);
+    /** Whether a class family is this run's analysed program. */
+    private static boolean analysed(String family) {
+        SootClass type = Scene.v().getSootClassUnsafe(family, false);
+        return type != null && !type.isPhantom() && type.isApplicationClass()
+                && !LineageScope.lineageOnly(family);
+    }
+
+    /** Weaves one door; "" when woven, else why not. */
+    private static String weave(LibraryCatalog.Door door) {
+        SootMethod method = CausynthStaticFacts.method(door.method);
+        if (method == null || !method.isConcrete()
+                || !method.getDeclaringClass().isApplicationClass()) {
+            return "no method " + door.method;
         }
         Body body = method.retrieveActiveBody();
-        boolean after = !text(door, "after").isEmpty();
-        String callee = after ? text(door, "after") : text(door, "before");
-        Stmt site = firstCall(body, callee);
+        Stmt site = firstCall(body, door.anchor);
         if (site == null) {
-            throw new IllegalStateException("DOOR_SITE_UNAVAILABLE: " + name
-                    + " calls no " + callee + " in " + signature);
+            return door.method + " calls no " + door.anchor;
         }
-        List<String> kinds = new ArrayList<String>();
-        for (JsonElement kind : door.getAsJsonArray("faults")) {
-            kinds.add(kind.getAsString());
-        }
-        Unit next = after ? body.getUnits().getSuccOf(site) : site;
+        Unit next = door.after ? body.getUnits().getSuccOf(site) : site;
         List<Unit> units = new ArrayList<Unit>();
-        if (!after) {
+        if (!door.after) {
             // Every path that reached the site passes the door first; taken
             // before the markers' own branches to the site exist.
             Unit entry = Jimple.v().newNopStmt();
@@ -87,22 +121,82 @@ final class DoorWeave {
         }
         // Built back to front: each marker's false arm falls to the next.
         List<Unit> faults = new ArrayList<Unit>();
+        List<String> kinds = new ArrayList<>(door.faults);
         Collections.reverse(kinds);
         for (String kind : kinds) {
-            List<Unit> fault = fault(body, name, kind, next);
+            List<Unit> fault = fault(body, door.name(), kind, next);
             faults.addAll(0, fault);
             next = fault.get(0);
         }
         units.addAll(faults);
         Unit at = site;
         for (Unit unit : units) {
-            if (after) {
+            if (door.after) {
                 body.getUnits().insertAfter(unit, at);
                 at = unit;
             } else {
                 body.getUnits().insertBeforeNoRedirect(unit, site);
             }
         }
+        return "";
+    }
+
+    /** One woven fault's throw: the marker local its branch tests, the
+     *  marker's name and the kind thrown. */
+    static final class Fault {
+        final Local marker;
+        final String name;
+        final String kind;
+
+        private Fault(Local marker, String name, String kind) {
+            this.marker = marker;
+            this.name = name;
+            this.kind = kind;
+        }
+    }
+
+    /**
+     * The woven fault {@code unit} throws, or null: the shape {@link #fault}
+     * weaves -- {@code m = makeSymbolicBoolean(FAULT:..); if m == 0 goto ..;
+     * e = new Kind; e.<init>(..); throw e} -- read back off the unit chain.
+     */
+    static Fault woven(Body body, Unit unit) {
+        if (!(unit instanceof ThrowStmt)) return null;
+        soot.util.Chain<Unit> units = body.getUnits();
+        Unit init = units.getPredOf(unit);
+        Unit allocation = init == null ? null : units.getPredOf(init);
+        Unit test = allocation == null ? null : units.getPredOf(allocation);
+        Unit call = test == null ? null : units.getPredOf(test);
+        if (!(init instanceof InvokeStmt)
+                || !(((InvokeStmt) init).getInvokeExpr()
+                instanceof SpecialInvokeExpr)
+                || !(allocation instanceof AssignStmt)
+                || !(((AssignStmt) allocation).getRightOp()
+                instanceof NewExpr)
+                || ((AssignStmt) allocation).getLeftOp()
+                != ((ThrowStmt) unit).getOp()
+                || !(test instanceof IfStmt)
+                || !(((IfStmt) test).getCondition() instanceof EqExpr)
+                || !(call instanceof AssignStmt)
+                || !(((AssignStmt) call).getRightOp()
+                instanceof StaticInvokeExpr)) {
+            return null;
+        }
+        StaticInvokeExpr marker = (StaticInvokeExpr)
+                ((AssignStmt) call).getRightOp();
+        Value tested = ((EqExpr) ((IfStmt) test).getCondition()).getOp1();
+        if (!MARKER_CLASS.equals(marker.getMethodRef().getDeclaringClass()
+                .getName())
+                || marker.getArgCount() != 1
+                || !(marker.getArg(0) instanceof StringConstant)
+                || ((AssignStmt) call).getLeftOp() != tested
+                || !(tested instanceof Local)) {
+            return null;
+        }
+        String name = ((StringConstant) marker.getArg(0)).value;
+        return name.startsWith("FAULT:") ? new Fault((Local) tested, name,
+                ((NewExpr) ((AssignStmt) allocation).getRightOp())
+                        .getBaseType().getClassName()) : null;
     }
 
     /** {@code if (marker) throw new kind("..")}, falling to {@code next}. */
@@ -164,11 +258,5 @@ final class DoorWeave {
             }
         }
         return null;
-    }
-
-    private static String text(JsonObject row, String field) {
-        JsonElement value = row.get(field);
-        return value == null || value.isJsonNull() ? ""
-                : value.getAsString().trim();
     }
 }

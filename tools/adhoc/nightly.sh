@@ -37,9 +37,11 @@
 #    .lost, its fanout .exit removed).  A second loss, or a seed replay past
 #    its bound, is a result.
 # 4. Report: triage.tsv; findings.tsv (findings.py, with the cluster's
-#    ledger $GC_OUT/findings/ledger.jsonl); report.md (funnel.py: every
-#    step's count, and the kept checks' outcomes beside the calibration
-#    tail's).  Then the lock goes.
+#    ledger $GC_OUT/findings/ledger.jsonl, and the tree's known-bug markers:
+#    a finding at a marked throw is a known bug found again); report.md
+#    (funnel.py: every step's count, the kept checks' outcomes beside the
+#    calibration tail's, the new mechanisms and the known bugs re-found).
+#    Then the lock goes.
 #
 # Started again with the same date it resumes: every step keeps or resumes
 # what it finished, and the infrastructure re-run happens once.
@@ -176,7 +178,7 @@ fi
 # 4. Report.
 python3 "${tools}/triage.py" "${round}" "${night}" >"${night}/triage.tsv"
 python3 "${tools}/findings.py" "${night}" --ledger "${GC_OUT}/findings/ledger.jsonl" \
-  --static "${GC_OUT}/static/${key}"
+  --static "${GC_OUT}/static/${key}" --annotated "${system_dir}" "${tree}"
 python3 "${tools}/funnel.py" "${night}" "${GC_OUT}/static/${key}" \
   "${GC_OUT}/prescreen/${key}" >"${night}/report.md"
 rm -f -- "${lock}"

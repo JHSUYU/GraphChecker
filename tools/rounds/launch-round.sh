@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# launch-round.sh <snapshot> <round> [workers-per-host]
+# launch-round.sh <snapshot> <round>
 #
 # Starts the eleven acceptance campaigns of one round (nine HDFS, two Solr)
 # from one snapshot worktree, each
@@ -13,12 +13,11 @@
 # the heads are spread so no host carries two heavy ones: 11741 and each Solr
 # case alone on its head, two cases on each of the others.  lift11 -- the
 # owner's interactive machine -- is no head, only a worker.  Its OBLIGATIONS
-# run on every host in LIFTS,
-# with workers-per-host slots per host (default 4), and each start waits until
-# that host has the case's obligation_memory_mb to spare beyond what every
-# campaign's recent starts there will still claim (run_engine.sh,
-# campaign_await_host_memory) -- the slots make the pool wide, the gate keeps
-# each host's memory safe.
+# run on every host in LIFTS, as many on a host as it has the case's
+# obligation_memory_mb to spare beyond what every campaign's recent starts
+# there will still claim, up to its cores (run_engine.sh,
+# campaign_stream_admit_host): the hosts' memory makes the pool wide, and the
+# same ledger keeps each host's memory safe.
 #
 # CASES narrows the round to some of its cases, each still on its own head.
 # CAUSYNTH_CUSTOM_JDK_HOME, when set, is the VM image every campaign runs
@@ -30,9 +29,8 @@
 # directories are written once: a name already used is refused.
 set -euo pipefail
 
-snapshot=${1:?usage: launch-round.sh <snapshot> <round> [workers-per-host]}
-round=${2:?usage: launch-round.sh <snapshot> <round> [workers-per-host]}
-workers=${3:-4}
+snapshot=${1:?usage: launch-round.sh <snapshot> <round>}
+round=${2:?usage: launch-round.sh <snapshot> <round>}
 # shellcheck source=../lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
 out=${GC_OUT}
@@ -56,8 +54,6 @@ experiments=(
 
 [[ -s "${snapshot}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar" ]] \
   || { echo "no built jar in the snapshot: ${snapshot}" >&2; exit 2; }
-[[ "${workers}" =~ ^[1-9][0-9]*$ ]] \
-  || { echo "workers-per-host must be a positive integer: ${workers}" >&2; exit 2; }
 wanted=" ${CASES:-} "
 vm=${CAUSYNTH_CUSTOM_JDK_HOME:+CAUSYNTH_CUSTOM_JDK_HOME=${CAUSYNTH_CUSTOM_JDK_HOME}}
 
@@ -90,7 +86,7 @@ mkdir -p "${out}"
 for launch in "${launches[@]}"; do
   read -r head case_id suffix <<<"${launch}"
   command="setsid nohup env CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' \
-CAUSYNTH_CONCOLIC_JOBS=${workers} GC_OUT=${out} \
+GC_OUT=${out} \
 CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} ${vm} \
 bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} ${case_id} ${suffix} \
 > ${out}/launch-${suffix}.log 2>&1 < /dev/null &"
@@ -99,5 +95,5 @@ bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} ${case_id} ${suffix} \
   else
     ssh -n -o BatchMode=yes -o ConnectTimeout=20 "${head}" "${command}"
   fi
-  echo "$(date +%T) LAUNCHED ${case_id} head=${head} workers=${workers}/host on ${LIFTS} -> ${out}/accept-${suffix}"
+  echo "$(date +%T) LAUNCHED ${case_id} head=${head} on ${LIFTS} -> ${out}/accept-${suffix}"
 done

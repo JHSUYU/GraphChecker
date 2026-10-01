@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -38,6 +39,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * The target's closure: what its failure can depend on, and the branches
@@ -86,7 +88,7 @@ public final class ClosurePlanner {
         public final List<GapRow> gaps;
         /** task id -> why it is in the closure. */
         public final Map<String, String> why;
-        /** task id -> site ids this wave may flip. */
+        /** task id -> site ids this round may flip. */
         public final Map<String, Set<String>> flipSites;
         /** A demanded occurrence no session captured -> the admitted
          *  focused session whose rows name it: GROWTH (PIPELINE §7.8). */
@@ -114,8 +116,11 @@ public final class ClosurePlanner {
         }
     }
 
+    /** The closure of one anchor; {@code branches} says which sessions may
+     *  expose a region for growth. */
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
-                            int maxTasks, StaticScopeMap scope) {
+                            int maxTasks, StaticScopeMap scope,
+                            Branches branches) {
         Walk walk = new Walk(corpus, scope);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
@@ -167,7 +172,7 @@ public final class ClosurePlanner {
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
-                uncaptured(corpus, demand.occurrence, exposed, waiting,
+                uncaptured(corpus, branches, demand, scope, exposed, waiting,
                         walk.gaps);
                 continue;
             }
@@ -192,7 +197,7 @@ public final class ClosurePlanner {
      * it has no decisions to flip.  It is the retained set that must grow
      * (PIPELINE §7.2, §7.8): an admitted focused
      * session naming it is re-run with a plan row at its address, and the
-     * next wave has it as a task.  hdfs-17899: a DataNode's periodic
+     * next round has it as a task.  hdfs-17899: a DataNode's periodic
      * heartbeat sends its request through the woven IPC door under no task,
      * and the closure demands that door as the sender of a message the
      * NameNode served.
@@ -208,21 +213,28 @@ public final class ClosurePlanner {
      * last began ({@link Corpus#tickPastRecording}) is neither grown nor
      * waited for -- only a replay slower than the recording ran it, so
      * nothing the recording decided rests on it.</p>
+     *
+     * <p>Only a session that may parent an obligation exposes ({@link
+     * Branches#parents}): one named only by admitted sessions whose branch
+     * stopped is a DIAGNOSTIC gap, since nothing grown from them could be
+     * cut from.</p>
      */
-    private static void uncaptured(Corpus corpus,
-                                   OccurrenceAddress occurrence,
+    private static void uncaptured(Corpus corpus, Branches branches,
+                                   Demand demand, StaticScopeMap scope,
                                    Map<OccurrenceAddress, String> exposed,
                                    Set<OccurrenceAddress> waiting,
                                    Set<GapRow> gaps) {
+        OccurrenceAddress occurrence = demand.occurrence;
         if (occurrence.role()) {
             if (occurrence.lineageLost()) {
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                         occurrence.render(), "the closure reached a scope "
-                                + "the recording lost: " + occurrence
-                                .regionId() + " is a role, not a region of "
-                                + "the static graph, so nothing can weave "
-                                + "it"));
+                                + "the recording lost (" + demand.why
+                                + "): " + occurrence.regionId() + " is a "
+                                + "role, not a region of the static graph, "
+                                + "so nothing can weave it" + unrecorded(
+                                demand, scope)));
             }
             return;
         }
@@ -238,10 +250,15 @@ public final class ClosurePlanner {
         }
         String seed = corpus.seedSessionId();
         String exposing = "";
+        String stopped = "";
         for (String sessionId : corpus.namedBy(occurrence)) {
-            if (sessionId.equals(seed)
-                    || !corpus.session(sessionId).admitted()
-                    || corpus.session(sessionId).obligations().isEmpty()) {
+            SessionReader session = corpus.session(sessionId);
+            if (sessionId.equals(seed) || !session.admitted()
+                    || session.obligations().isEmpty()) {
+                continue;
+            }
+            if (!branches.parents(sessionId)) {
+                stopped = sessionId;
                 continue;
             }
             if (exposing.isEmpty()) exposing = sessionId;
@@ -258,10 +275,41 @@ public final class ClosurePlanner {
             waiting.add(occurrence);
             return;
         }
+        if (!stopped.isEmpty()) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    occurrence.render(), "only sessions whose branch "
+                            + "stopped ran this occurrence (" + stopped
+                            + " among them), so it is not grown"));
+            return;
+        }
         gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
                 GapClass.BLOCKING, occurrence.render(),
                 "no session of this corpus ran this occurrence, so no replay "
                         + "can be focused on it and it is not a task"));
+    }
+
+    /**
+     * What a lost scope ran that no row states: the roots the scope map
+     * declares in the methods its index stands on, and the decisions the
+     * closure would have flipped there.  Unnamed work's regions open no
+     * occurrence (IDENTITY §1), so these are what the closure loses.
+     */
+    private static String unrecorded(Demand demand, StaticScopeMap scope) {
+        Set<String> methods = new LinkedHashSet<String>();
+        for (Frame frame : demand.occurrence.index().frames()) {
+            String method = SiteId.methodOf(frame.callSite());
+            methods.add(method.isEmpty() ? frame.callSite() : method);
+        }
+        Set<String> roots = new TreeSet<String>();
+        for (StaticScopeMap.Site site : scope.declaredSites()) {
+            if (methods.contains(SiteId.methodOf(site.siteId))) {
+                roots.add(site.siteId + (site.declared == null ? ""
+                        : " " + site.declared.inputKind));
+            }
+        }
+        return "; unrecorded there: roots " + roots + ", decisions "
+                + new TreeSet<String>(demand.flipSites);
     }
 
     /** One task's id: the occurrence it focuses and nothing else. */
@@ -531,7 +579,8 @@ public final class ClosurePlanner {
      *  expressions -- then the fixed point over its group's reads and the
      *  writes they could observe. A factor member deciding the same site
      *  decides it on its own objects, and demands nothing here. Terms are
-     *  EXPR references, resolved by the ONE lowering (CONTRACT-SPEC §5). */
+     *  EXPR references, asked of their expressions' DAG
+     *  ({@link Corpus#termSymbols}), never rendered. */
     private static Set<String> demanded(Corpus corpus, Demand demand,
                                         List<OccurrenceAddress> group) {
         Set<String> named = new LinkedHashSet<String>();
@@ -539,15 +588,15 @@ public final class ClosurePlanner {
         for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
             for (DecisionRow decision : path.decisions) {
                 if (!demand.flipSites.contains(decision.siteId())) continue;
-                reaches(corpus, path.sessionId, FlipQuery.reach(corpus,
-                        path.sessionId, decision.term()), named);
+                named.addAll(corpus.termSymbols(path.sessionId,
+                        decision.term()));
                 reads.under(corpus, path.sessionId, decision.term(), named);
             }
         }
         if (demand.anchor) {
             for (TargetRow target : corpus.targetsOn(demand.occurrence)) {
-                reaches(corpus, target.sessionId(), FlipQuery.reach(corpus,
-                        target.sessionId(), target.phiTerm()), named);
+                named.addAll(corpus.termSymbols(target.sessionId(),
+                        target.phiTerm()));
                 reads.under(corpus, target.sessionId(), target.phiTerm(),
                         named);
             }
@@ -555,11 +604,9 @@ public final class ClosurePlanner {
         for (String contributed : demand.contributed) {
             int split = contributed.indexOf('|');
             if (split < 0) continue;
-            String sessionId = contributed.substring(0, split);
-            SmtLowering lowering = corpus.lowering(sessionId);
-            if (lowering == null) continue;
-            reaches(corpus, sessionId, lowering.lower(
-                    contributed.substring(split + 1)).reach(), named);
+            named.addAll(corpus.expressionSymbols(
+                    contributed.substring(0, split),
+                    contributed.substring(split + 1)));
         }
         Set<String> settled = new LinkedHashSet<String>();
         boolean grew = true;
@@ -573,10 +620,8 @@ public final class ClosurePlanner {
                             SmtLowering.locationKey(row.location()),
                             row.observedVersion(),
                             row.endpoint().occurrence())) {
-                        grew |= reaches(corpus, write.sessionId(),
-                                corpus.lowering(write.sessionId())
-                                        .lower(write.expressionRef()).reach(),
-                                named);
+                        grew |= named.addAll(corpus.expressionSymbols(
+                                write.sessionId(), write.expressionRef()));
                     }
                 }
             }
@@ -633,27 +678,6 @@ public final class ClosurePlanner {
                 if (symbols != null) named.addAll(symbols);
             }
         }
-    }
-
-    /**
-     * The recorded symbols one lowered term REACHES (not merely spells), into
-     * {@code named}: {@link SmtLowering#reachedSymbols}, as the flip query
-     * uses, over its text and every join a mint or a pin stood in for
-     * ({@link SmtLowering.Lowered#reach}). Trap: {@code SmtLowering.symbols}
-     * sees only a {@code container_dag__} name that matches no row. Includes
-     * the state behind a container name (the v_C rule, PIPELINE §7.2).
-     *
-     * @return whether the set grew
-     */
-    private static boolean reaches(Corpus corpus, String sessionId,
-                                   List<String> texts, Set<String> named) {
-        SmtLowering lowering = corpus.lowering(sessionId);
-        if (lowering == null) return false;
-        Set<String> reached = new LinkedHashSet<String>();
-        for (String text : texts) {
-            lowering.reachedSymbols(text, reached, reached);
-        }
-        return named.addAll(reached);
     }
 
     /**

@@ -11,8 +11,10 @@ import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
@@ -376,8 +378,8 @@ public final class ContainerSmtCodec {
 
     private static Term relation(JsonObject expression, Host host) {
         // The view states whose bijection this call already stated.
-        Set<JsonElement> views = Collections.newSetFromMap(
-                new IdentityHashMap<JsonElement, Boolean>());
+        Map<JsonElement, ViewOrder> views =
+                new IdentityHashMap<JsonElement, ViewOrder>();
         String shape = optionalString(expression, "shape");
         String operation = optionalString(expression, "operation");
         String javaType = optionalString(expression, "_java_type");
@@ -593,7 +595,8 @@ public final class ContainerSmtCodec {
     /** One operation on a map or set state. */
     private static Term associative(JsonObject expression, String operation,
                                     JsonArray arguments, String javaType,
-                                    Host host, Set<JsonElement> views) {
+                                    Host host,
+                                    Map<JsonElement, ViewOrder> views) {
         JsonElement receiverIr = associativeStateExpression(
                 expression.get("receiver"));
         if (("READ".equals(operation) || "CONTAINS".equals(operation))
@@ -631,13 +634,12 @@ public final class ContainerSmtCodec {
             if (index == null) return null;
             // Removing AT a position is a walk of the same view: which
             // key the position names is the bijection's to say.
-            if (!requireAssociativeViewBijection(receiverIr, receiver,
-                    host, views)) {
-                return null;
-            }
-            requireAssociativeMember(receiver, index, host);
+            ViewOrder order = requireAssociativeViewBijection(receiverIr,
+                    receiver, host, views);
+            if (order == null) return null;
+            requireAssociativeMember(receiver, index, order, host);
             return new Term("(let ((s " + receiver.text
-                    + ")) (assoc_remove s (assoc_key_at s "
+                    + ")) (assoc_remove s (" + order.keyAt + " s "
                     + index.text + ")))", Sort.ASSOCIATIVE);
         }
         if ("REMOVE".equals(operation) && arguments.size() == 1) {
@@ -788,21 +790,22 @@ public final class ContainerSmtCodec {
     }
 
     /** One positional key/value observation of a view's whole state. */
-    private static Term associativeEntryValue(Entry entry, String viewKind,
-                                              String javaType, Host host,
-                                              Set<JsonElement> views) {
+    private static Term associativeEntryValue(
+            Entry entry, String viewKind, String javaType, Host host,
+            Map<JsonElement, ViewOrder> views) {
         Term state = associativeState(entry.stateExpression, host);
         Term index = integer(entry.indexExpression, host);
         if (state == null || index == null) return null;
         // Only where the recording bounds the view's positions.
-        if (!requireAssociativeViewBijection(entry.stateExpression, state,
-                host, views)) {
-            return null;
-        }
-        requireAssociativeMember(state, index, host);
-        return new Term(("KEY_VIEW".equals(viewKind)
-                ? "(assoc_key_at " : "(assoc_value_at ") + state.text + " "
-                + index.text + ")", Sort.VALUE);
+        ViewOrder order = requireAssociativeViewBijection(
+                entry.stateExpression, state, host, views);
+        if (order == null) return null;
+        requireAssociativeMember(state, index, order, host);
+        String key = "(" + order.keyAt + " " + state.text + " "
+                + index.text + ")";
+        return new Term("KEY_VIEW".equals(viewKind) ? key
+                : "(assoc_read " + state.text + " " + key + ")",
+                Sort.VALUE);
     }
 
     /**
@@ -871,15 +874,44 @@ public final class ContainerSmtCodec {
     }
 
     private static void requireAssociativeMember(
-            Term state, Term index, Host host) {
+            Term state, Term index, ViewOrder order, Host host) {
         host.require("(let ((s " + state.text + ") (i " + index.text
                 + ")) (and (<= 0 i) (< i (assoc_size s))"
-                + " (assoc_has s (assoc_key_at s i))))");
+                + " (assoc_has s (" + order.keyAt + " s i))))");
     }
 
     /** Refusal subject for a view whose map size nothing bounds. */
     public static final String ASSOC_VIEW_SIZE_UNSTATED =
             "UNSTATED_VALUE:AssociativeViewSize";
+
+    /**
+     * What a view's position is read through.  {@code STATED}: the chain's
+     * order ({@code assoc_key_at}, {@code assoc_position}), where it is the
+     * order the map's class iterates in ({@link #unordered}).  {@code FREE}:
+     * a bijection between the positions and the state's keys and nothing
+     * more ({@code assoc_view_key}, {@code assoc_view_position},
+     * {@code ContainerStateModel}), where it is not: the formula then names
+     * no order the run did not have, and a consumer that reads the view as
+     * a set (hdfs-11741's exported block keys) keeps every key.
+     */
+    enum ViewOrder {
+        STATED("assoc_key_at"), FREE("assoc_view_key");
+
+        final String keyAt;
+
+        ViewOrder(String keyAt) {
+            this.keyAt = keyAt;
+        }
+
+        /** The position this order holds one key at. */
+        Term position(Term state, Term key, Host host) {
+            return shared(new Term(this == STATED
+                    ? "(select (assoc_position " + state.text + ") "
+                    + key.text + ")"
+                    : "(assoc_view_position " + state.text + " "
+                    + key.text + ")", Sort.INT), host);
+        }
+    }
 
     /**
      * AN INDEXED VIEW OF AN ASSOCIATIVE STATE IS A BIJECTION between
@@ -898,48 +930,184 @@ public final class ContainerSmtCodec {
      * <p>Two positions name two keys: a key has one position.  {@code m},
      * the chain's put count, bounds {@code n} (from an empty base the keys
      * are exactly the ones put), so the facts are written at CONCRETE
-     * positions with no quantifier, linear in the chain.  Java's iteration
-     * ORDER is not stated: the recording does not state it.  A state with
+     * positions with no quantifier, linear in the chain.  {@code k_p} and
+     * {@code position} are the chain's order where the chain states the
+     * class's iteration order, else free ({@link ViewOrder}).  A state with
      * no bounding chain is refused ({@link #ASSOC_VIEW_SIZE_UNSTATED}).</p>
      *
-     * @return whether the view's positions are stated
+     * @return how the view's positions are read, or null when refused
      */
-    private static boolean requireAssociativeViewBijection(
+    private static ViewOrder requireAssociativeViewBijection(
             JsonElement stateIr, Term state, Host host,
-            Set<JsonElement> views) {
-        if (stateIr != null && views.contains(stateIr)) return true;
+            Map<JsonElement, ViewOrder> views) {
+        if (stateIr != null && views.containsKey(stateIr)) {
+            return views.get(stateIr);
+        }
         List<JsonElement> put = associativeViewKeys(stateIr, host);
         if (put == null) {
             host.unsupported(ASSOC_VIEW_SIZE_UNSTATED + ":"
                     + associativeStateSubject(stateIr));
-            return false;
+            return null;
+        }
+        String unordered = unordered(stateIr, host, put);
+        ViewOrder order = unordered.isEmpty() ? ViewOrder.STATED
+                : ViewOrder.FREE;
+        if (order == ViewOrder.FREE) {
+            host.diagnostic(ASSOC_VIEW_UNORDERED + ":" + unordered + ":"
+                    + mapNamed(stateIr, host), "a view of this map reads "
+                    + "positions its chain does not order (UNRECORDED: its "
+                    + "snapshot states no iteration order; HASH_INSERT: a "
+                    + "put of another key into a hash-ordered map may rebin "
+                    + "its table), so they are a bijection with its keys in "
+                    + "no order (assoc_view_key)");
         }
         Term size = associativeSize(state, host);
         for (int position = 0; position < put.size(); position++) {
-            Term key = shared(new Term("(assoc_key_at " + state.text + " "
-                    + position + ")", Sort.VALUE), host);
+            Term key = shared(new Term("(" + order.keyAt + " " + state.text
+                    + " " + position + ")", Sort.VALUE), host);
             host.require("(=> (< " + position + " " + size.text
                     + ") (and " + associativeHas(state, key, host).text
-                    + " (= " + positionOf(state, key, host).text + " "
+                    + " (= " + order.position(state, key, host).text + " "
                     + position + ")))");
         }
         for (JsonElement each : put) {
             Term key = host.box(each);
-            if (key == null) return false;
-            Term where = positionOf(state, key, host);
+            if (key == null) return null;
+            Term where = order.position(state, key, host);
             host.require("(=> " + associativeHas(state, key, host).text
                     + " (and (<= 0 " + where.text + ") (< " + where.text
-                    + " " + size.text + ") (= (assoc_key_at " + state.text
-                    + " " + where.text + ") " + key.text + ")))");
+                    + " " + size.text + ") (= (" + order.keyAt + " "
+                    + state.text + " " + where.text + ") " + key.text
+                    + ")))");
         }
-        views.add(stateIr);
-        return true;
+        views.put(stateIr, order);
+        return order;
     }
 
-    /** The position a state holds one key at. */
-    private static Term positionOf(Term state, Term key, Host host) {
-        return shared(new Term("(select (assoc_position " + state.text + ") "
-                + key.text + ")", Sort.INT), host);
+    /** The DIAGNOSTIC naming a view whose positions are FREE. */
+    public static final String ASSOC_VIEW_UNORDERED = "ASSOC_VIEW_UNORDERED";
+
+    /**
+     * Why the chain's order is not the order Java iterates this state in
+     * ({@code UNRECORDED}, {@code HASH_INSERT}, {@code CHAIN},
+     * {@code PUT_ALL:}<i>its source's</i>), or {@code ""} when it is.
+     * A position is the run's iteration count; the model's is the chain's
+     * order (a put appends a new key, a removal closes the gap).  The VM
+     * states the members a snapshot read in their class's iteration order,
+     * and how many of the relations above the base they are ({@code
+     * SNAPSHOT_BASE}'s {@code order} and {@code members}).  An {@code
+     * INSERTION} class (LinkedHashMap, LinkedHashSet) then iterates in the
+     * chain's order, a {@code putAll} in its source's.  A {@code HASH} class
+     * (HashMap, HashSet, ConcurrentHashMap, Hashtable) keeps its snapshot's
+     * order through removals and updates of a key it holds, while a put of
+     * any other key may rebin or resize its table.  A base stating no order
+     * is a recording older than that; a program {@code CLEAR} empties the
+     * state and keeps its class.  One key has one order.
+     */
+    private static String unordered(JsonElement state, Host host,
+                                    List<JsonElement> put) {
+        Set<String> distinct = new HashSet<String>();
+        for (JsonElement key : put) distinct.add(String.valueOf(key));
+        if (distinct.size() <= 1) return "";
+        List<Mutation> above = new ArrayList<Mutation>();
+        JsonElement chain = state;
+        JsonObject base = null;
+        int members = 0;
+        for (int depth = 0; depth < VIEW_CHAIN_LIMIT && base == null;
+             depth++) {
+            JsonElement node = host.chain(chain);
+            Mutation mutation = associativeMutation(node);
+            if (mutation == null) return "CHAIN";
+            if ("SNAPSHOT_BASE".equals(mutation.operation)) {
+                base = node.getAsJsonObject();
+                members = JsonFields.optionalInteger(base, "members", -1);
+            } else if ("CLEAR".equals(mutation.operation)) {
+                base = snapshotBase(mutation.receiver, host);
+                if (base == null) return "CHAIN";
+            } else {
+                above.add(mutation);
+                chain = mutation.receiver;
+            }
+        }
+        String order = base == null ? "" : optionalString(base, "order");
+        boolean hash = "HASH".equals(order);
+        if (!hash && !"INSERTION".equals(order) || members < 0
+                || members > above.size()) {
+            return "UNRECORDED";
+        }
+        Set<String> present = new HashSet<String>();
+        for (int index = above.size() - 1; index >= 0; index--) {
+            Mutation mutation = above.get(index);
+            boolean member = index >= above.size() - members;
+            String key = mutation.arguments.size() == 0 ? null
+                    : literalKey(mutation.arguments.get(0));
+            if ("PUT_ALL".equals(mutation.operation)) {
+                if (hash) return "HASH_INSERT";
+                JsonElement from = mutation.arguments.get(0);
+                List<JsonElement> source = associativeViewKeys(from, host);
+                String why = source == null ? "CHAIN"
+                        : unordered(from, host, source);
+                if (!why.isEmpty()) return "PUT_ALL:" + why;
+            } else if ("PUT".equals(mutation.operation)) {
+                if (!member && hash
+                        && (key == null || !present.contains(key))) {
+                    return "HASH_INSERT";
+                }
+                if (key != null) present.add(key);
+            } else if (key == null) {
+                present.clear();
+            } else {
+                present.remove(key);
+            }
+        }
+        return "";
+    }
+
+    /**
+     * The map a state is a version of, as the recording names it: the
+     * symbol of its root with its Java class, else the location its state
+     * was read from.
+     */
+    private static String mapNamed(JsonElement state, Host host) {
+        JsonObject base = snapshotBase(state, host);
+        JsonElement root = base == null ? null : base.get("receiver");
+        if (root != null && root.isJsonObject() && "STATE".equals(
+                optionalString(root.getAsJsonObject(), "operation"))) {
+            root = root.getAsJsonObject().get("receiver");
+        }
+        // A consumer boundary wraps the read that named the map.
+        while (root != null && root.isJsonObject()
+                && root.getAsJsonObject().has("expression")
+                && !root.getAsJsonObject().has("location")) {
+            root = root.getAsJsonObject().get("expression");
+        }
+        if (root == null || !root.isJsonObject()) return "unnamed";
+        JsonObject named = root.getAsJsonObject();
+        String symbol = optionalString(named, "_exp");
+        if (!symbol.isEmpty()) {
+            return symbol + " (" + optionalString(named, "_java_type") + ")";
+        }
+        JsonElement read = named.get("location");
+        if (read == null || !read.isJsonObject()) return "unnamed";
+        JsonObject location = read.getAsJsonObject();
+        return optionalString(location, "locationKind") + "/"
+                + JsonFields.optionalLongInteger(location, "ownerSymRid", -1L)
+                + "#" + JsonFields.optionalLongInteger(location, "slot", 0L);
+    }
+
+    /** The snapshot base beneath a program {@code CLEAR}, or null. */
+    private static JsonObject snapshotBase(JsonElement state, Host host) {
+        JsonElement chain = state;
+        for (int depth = 0; depth < VIEW_CHAIN_LIMIT; depth++) {
+            JsonElement node = host.chain(chain);
+            Mutation mutation = associativeMutation(node);
+            if (mutation == null) return null;
+            if ("SNAPSHOT_BASE".equals(mutation.operation)) {
+                return node.getAsJsonObject();
+            }
+            chain = mutation.receiver;
+        }
+        return null;
     }
 
     /**
@@ -1297,6 +1465,11 @@ public final class ContainerSmtCodec {
         JsonElement chain(JsonElement state);
 
         void require(String predicate);
+
+        /** Names, refusing nothing, what the lowering states only in part:
+         *  a DIAGNOSTIC gap {@code subject} (the encoder adds its session),
+         *  with why. */
+        void diagnostic(String subject, String detail);
 
         void unsupported(String reason);
 

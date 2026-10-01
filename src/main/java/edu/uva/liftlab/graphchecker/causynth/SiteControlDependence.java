@@ -31,8 +31,13 @@ import java.util.Set;
  * can reach the site but only one makes it unavoidable -- and so NAMES that
  * arm ({@link StaticScopeMap.Guard#outcome()}).</p>
  *
- * <p>The CFG is {@link BriefUnitGraph} (no exception edges: they would leave
- * almost nothing post-dominated, and a throw is no flippable branch).</p>
+ * <p>The CFG is {@link BriefUnitGraph}: an exception edge would leave almost
+ * nothing post-dominated.  The one exception it adds is a door fault a
+ * handler catches ({@link FaultPropagation}): a call that can leave one to a
+ * handler is a fault branch over the CFG with that edge, deciding the sites
+ * only one of its exits reaches, with no boolean arm (its guard's outcome is
+ * null) and no decision ever recorded at it -- a fault is flipped at its
+ * marker ({@link MethodGuards}).</p>
  *
  * <p>Every index is the ORIGINAL one ({@link
  * CausynthPipeline#originalUnitIndex}), the numbering of every published site
@@ -226,29 +231,115 @@ public final class SiteControlDependence {
         return false;
     }
 
-    /** One method's post-dominance relation, built once; callers keep it. */
+    /** {@link BriefUnitGraph}'s edges and the door faults' handler edges. */
+    private static final class FaultGraph extends UnitGraph {
+        FaultGraph(Body body, String method) {
+            super(body);
+            unitToSuccs = new LinkedHashMap<Unit, List<Unit>>();
+            unitToPreds = new LinkedHashMap<Unit, List<Unit>>();
+            buildUnexceptionalEdges(unitToSuccs, unitToPreds);
+            FaultPropagation faults = FaultPropagation.current();
+            for (Unit unit : body.getUnits()) {
+                for (Unit handler : faults.handlers(method, unit)) {
+                    addEdge(unitToSuccs, unitToPreds, unit, handler);
+                }
+            }
+            buildHeadsAndTails();
+        }
+    }
+
+    /** One CFG's post-dominance over some of its branches. */
+    private static final class Relation {
+        final UnitGraph cfg;
+        final MHGPostDominatorsFinder<Unit> post;
+        final List<Unit> branches;
+
+        Relation(UnitGraph cfg, List<Unit> branches) {
+            this.cfg = cfg;
+            this.post = new MHGPostDominatorsFinder<Unit>(cfg);
+            this.branches = branches;
+        }
+
+        /** The branches one of whose arms makes {@code site} run and which
+         *  {@code site} does not post-dominate. */
+        List<Unit> deciding(Unit site) {
+            List<Unit> found = new ArrayList<Unit>();
+            for (Unit branch : branches) {
+                if (post.isDominatedBy(branch, site)) continue;
+                for (Unit successor : cfg.getSuccsOf(branch)) {
+                    if (post.isDominatedBy(successor, site)) {
+                        found.add(branch);
+                        break;
+                    }
+                }
+            }
+            return found;
+        }
+
+        /** The branches {@code site} is reachable from, by a proper subset
+         *  of their successors when {@code controllingOnly}. */
+        List<Unit> reaching(Unit site, boolean controllingOnly) {
+            List<Unit> found = new ArrayList<Unit>();
+            for (Unit branch : branches) {
+                List<Unit> successors = cfg.getSuccsOf(branch);
+                int reaching = 0;
+                for (Unit successor : successors) {
+                    if (reachesWithoutRevisiting(successor, site, branch)) {
+                        reaching++;
+                    }
+                }
+                if (reaching == 0) continue;
+                if (controllingOnly && reaching == successors.size()) {
+                    continue;
+                }
+                found.add(branch);
+            }
+            return found;
+        }
+
+        /** Reachability within one occurrence: the branch is a barrier. */
+        private boolean reachesWithoutRevisiting(Unit start, Unit site,
+                                                 Unit branch) {
+            Set<Unit> seen = new LinkedHashSet<Unit>();
+            Deque<Unit> work = new ArrayDeque<Unit>();
+            work.add(start);
+            while (!work.isEmpty()) {
+                Unit current = work.removeFirst();
+                if (current == site) return true;
+                if (current == branch || !seen.add(current)) continue;
+                work.addAll(cfg.getSuccsOf(current));
+            }
+            return false;
+        }
+    }
+
+    /**
+     * One method's control dependence, built once; callers keep it.  Two
+     * relations: the branches' over {@link BriefUnitGraph}, and, when a call
+     * of the method can leave a door fault to a handler, the fault branches'
+     * over the {@link FaultGraph}.  A fault branch adds to a site's guards,
+     * never takes a branch's place: the branches deciding the call decide
+     * the site through it, so a recorded branch is never hidden behind a
+     * call no decision is recorded at.
+     */
     public static final class MethodGuards {
         private final String method;
-        /** The multi-successor units that have an original index. */
-        private final List<Unit> branches;
         private final Map<Unit, Integer> original;
         private final Map<Integer, Unit> byIndex;
-        private final MHGPostDominatorsFinder<Unit> post;
-        private final UnitGraph cfg;
+        private final Relation plain;
+        /** Null when no call of the method leaves a fault to a handler. */
+        private final Relation faults;
         private final Map<Integer, List<StaticScopeMap.Guard>> cache =
                 new LinkedHashMap<Integer, List<StaticScopeMap.Guard>>();
         private final Map<String, List<Integer>> reachingCache =
                 new LinkedHashMap<String, List<Integer>>();
 
-        private MethodGuards(String method, UnitGraph cfg,
-                             MHGPostDominatorsFinder<Unit> post,
-                             List<Unit> branches,
+        private MethodGuards(String method, Relation plain, Relation faults,
                              Map<Unit, Integer> original,
                              Map<Integer, Unit> byIndex) {
             this.method = method;
-            this.cfg = cfg;
-            this.post = post;
-            this.branches = branches;
+            this.plain = plain;
+            this.faults = faults;
             this.original = original;
             this.byIndex = byIndex;
         }
@@ -259,7 +350,6 @@ public final class SiteControlDependence {
                     CausynthStaticFacts.method(method));
             if (body == null) {
                 return new MethodGuards(method, null, null,
-                        Collections.<Unit>emptyList(),
                         Collections.<Unit, Integer>emptyMap(),
                         Collections.<Integer, Unit>emptyMap());
             }
@@ -277,17 +367,21 @@ public final class SiteControlDependence {
                 }
             }
             UnitGraph cfg = new BriefUnitGraph(body);
-            MHGPostDominatorsFinder<Unit> post =
-                    new MHGPostDominatorsFinder<Unit>(cfg);
+            FaultPropagation raised = FaultPropagation.current();
             List<Unit> branches = new ArrayList<Unit>();
+            List<Unit> calls = new ArrayList<Unit>();
             for (Unit unit : units) {
-                if (cfg.getSuccsOf(unit).size() > 1
-                        && original.get(unit).intValue() >= 0) {
-                    branches.add(unit);
+                if (original.get(unit).intValue() < 0) continue;
+                if (cfg.getSuccsOf(unit).size() > 1) branches.add(unit);
+                if (!raised.handlers(method, unit).isEmpty()
+                        && unit.fallsThrough()) {
+                    calls.add(unit);
                 }
             }
-            return new MethodGuards(method, cfg, post, branches, original,
-                    byIndex);
+            return new MethodGuards(method, new Relation(cfg, branches),
+                    calls.isEmpty() ? null : new Relation(
+                            new FaultGraph(body, method), calls),
+                    original, byIndex);
         }
 
         /** The branches the unit at this ORIGINAL index depends on. */
@@ -329,7 +423,8 @@ public final class SiteControlDependence {
 
         /**
          * Every branch from which the unit at this ORIGINAL index is
-         * reachable.  SCOPE for widening the slice, not a guard set: it
+         * reachable, and every fault branch with the branches it is
+         * reachable from.  SCOPE for widening the slice, not a guard set: it
          * names no arm and decides nothing.
          *
          * @param controllingOnly keep a branch only when a proper subset of
@@ -340,80 +435,83 @@ public final class SiteControlDependence {
             String key = unitIndex + (controllingOnly ? "|c" : "|r");
             List<Integer> cached = reachingCache.get(key);
             if (cached != null) return cached;
-            List<Integer> computed = computeReaching(unitIndex,
-                    controllingOnly);
+            Unit site = byIndex.get(Integer.valueOf(unitIndex));
+            Set<Integer> found = new LinkedHashSet<Integer>();
+            if (site != null && plain != null) {
+                for (Unit branch : plain.reaching(site, controllingOnly)) {
+                    found.add(original.get(branch));
+                }
+                for (Unit branch : faultClosure(site, controllingOnly)) {
+                    found.add(original.get(branch));
+                    for (Unit outer : plain.reaching(branch,
+                            controllingOnly)) {
+                        found.add(original.get(outer));
+                    }
+                }
+            }
+            List<Integer> computed = Collections.unmodifiableList(
+                    new ArrayList<Integer>(found));
             reachingCache.put(key, computed);
             return computed;
         }
 
-        private List<Integer> computeReaching(int unitIndex,
-                                              boolean controllingOnly) {
-            Unit site = byIndex.get(Integer.valueOf(unitIndex));
-            if (site == null || cfg == null) {
-                return Collections.<Integer>emptyList();
-            }
-            List<Integer> found = new ArrayList<Integer>();
-            for (Unit branch : branches) {
-                List<Unit> successors = cfg.getSuccsOf(branch);
-                int reaching = 0;
-                for (Unit successor : successors) {
-                    if (reachesWithoutRevisiting(successor, site, branch)) {
-                        reaching++;
-                    }
-                }
-                if (reaching == 0) continue;
-                if (controllingOnly && reaching == successors.size()) {
-                    continue;
-                }
-                found.add(original.get(branch));
-            }
-            return Collections.unmodifiableList(found);
-        }
-
-        /** Reachability within one occurrence: the branch is a barrier. */
-        private boolean reachesWithoutRevisiting(Unit start, Unit site,
-                                                 Unit branch) {
-            Set<Unit> seen = new LinkedHashSet<Unit>();
-            Deque<Unit> work = new ArrayDeque<Unit>();
-            work.add(start);
-            while (!work.isEmpty()) {
-                Unit current = work.removeFirst();
-                if (current == site) return true;
-                if (current == branch || !seen.add(current)) continue;
-                work.addAll(cfg.getSuccsOf(current));
-            }
-            return false;
-        }
-
         private List<StaticScopeMap.Guard> compute(int unitIndex) {
             Unit site = byIndex.get(Integer.valueOf(unitIndex));
-            if (site == null || cfg == null) {
+            if (site == null || plain == null) {
                 return Collections.<StaticScopeMap.Guard>emptyList();
             }
             Set<String> named = new LinkedHashSet<String>();
             List<StaticScopeMap.Guard> found =
                     new ArrayList<StaticScopeMap.Guard>();
-            for (Unit branch : branches) {
-                if (post.isDominatedBy(branch, site)) continue;
-                Boolean arm = reachingArm(branch, site);
-                if (arm == null && !reaches(branch, site)) continue;
-                String guardSite = SiteId.of(method,
-                        original.get(branch).intValue());
-                if (named.add(guardSite)) {
-                    found.add(new StaticScopeMap.Guard(guardSite, arm,
-                            arm == null ? null : BooleanReturns.decider(
-                                    cfg.getBody(), branch, arm)));
+            addGuards(site, named, found);
+            for (Unit call : faultClosure(site, null)) {
+                if (named.add(siteOf(call))) {
+                    found.add(new StaticScopeMap.Guard(siteOf(call), null));
                 }
+                addGuards(call, named, found);
             }
             return Collections.unmodifiableList(found);
         }
 
-        /** True when one arm of {@code branch} makes {@code site} run. */
-        private boolean reaches(Unit branch, Unit site) {
-            for (Unit successor : cfg.getSuccsOf(branch)) {
-                if (post.isDominatedBy(successor, site)) return true;
+        /** The plain relation's guards of {@code site}, each on its arm. */
+        private void addGuards(Unit site, Set<String> named,
+                               List<StaticScopeMap.Guard> found) {
+            for (Unit branch : plain.deciding(site)) {
+                Boolean arm = reachingArm(branch, site);
+                if (named.add(siteOf(branch))) {
+                    found.add(new StaticScopeMap.Guard(siteOf(branch), arm,
+                            arm == null ? null : BooleanReturns.decider(
+                                    plain.cfg.getBody(), branch, arm)));
+                }
             }
-            return false;
+        }
+
+        /**
+         * The fault branches {@code site} depends on, and theirs: deciding
+         * it (post-dominance, {@code controllingOnly} null) or reaching it.
+         */
+        private List<Unit> faultClosure(Unit site, Boolean controllingOnly) {
+            List<Unit> closure = new ArrayList<Unit>();
+            if (faults == null) return closure;
+            Set<Unit> seen = new LinkedHashSet<Unit>();
+            Deque<Unit> work = new ArrayDeque<Unit>();
+            work.add(site);
+            while (!work.isEmpty()) {
+                Unit unit = work.removeFirst();
+                for (Unit call : controllingOnly == null
+                        ? faults.deciding(unit)
+                        : faults.reaching(unit, controllingOnly)) {
+                    if (seen.add(call)) {
+                        closure.add(call);
+                        work.add(call);
+                    }
+                }
+            }
+            return closure;
+        }
+
+        private String siteOf(Unit unit) {
+            return SiteId.of(method, original.get(unit).intValue());
         }
 
         /** The arm of an if that makes {@code site} unavoidable, or null. */
@@ -422,11 +520,12 @@ public final class SiteControlDependence {
             IfStmt conditional = (IfStmt) branch;
             Unit taken = conditional.getTarget();
             boolean takenForces = taken != null
-                    && post.isDominatedBy(taken, site);
+                    && plain.post.isDominatedBy(taken, site);
             boolean fallsThroughForces = false;
-            for (Unit successor : cfg.getSuccsOf(branch)) {
+            for (Unit successor : plain.cfg.getSuccsOf(branch)) {
                 if (successor == taken) continue;
-                fallsThroughForces |= post.isDominatedBy(successor, site);
+                fallsThroughForces |= plain.post.isDominatedBy(successor,
+                        site);
             }
             if (takenForces == fallsThroughForces) return null;
             return Boolean.valueOf(takenForces);
