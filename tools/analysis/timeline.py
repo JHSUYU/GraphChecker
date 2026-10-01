@@ -111,7 +111,12 @@ def worker_times(worker):
                "focused_task.jsonl", "schedule_prefix.jsonl", "schedule_suffix.jsonl")]
     solver = [t for t in solver if t]
     replay_end = mtime(os.path.join(worker, "replay.log"))
-    end = mtime(os.path.join(worker, "stdout.log")) or replay_end
+    # Its answer is written last; a remote worker's log may fall silent
+    # long before (a wait for its solver logs once).
+    ends = [t for t in (mtime(os.path.join(worker, "stdout.log")), replay_end,
+                        mtime(os.path.join(worker, "obligation_result.jsonl")))
+            if t]
+    end = max(ends) if ends else None
     return start, (max(solver) if solver else end), replay_end, end
 
 
