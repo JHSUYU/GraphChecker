@@ -1203,8 +1203,8 @@ public class ComposerTest {
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             // One path's question holds its own guarded commands and none
             // of the other path's (Composition#pathQuery).
-            String alone = composition.pathQuery(disjunct.selector(),
-                    composition.valuations().get(0).assertions());
+            String alone = text(composition.pathQuery(disjunct.selector(),
+                    composition.valuations().get(0).assertions()));
             for (Composer.Disjunct other : composition.disjuncts()) {
                 assertEquals("guarded by " + other.selector(),
                         other == disjunct, alone.contains(
@@ -1317,7 +1317,7 @@ public class ComposerTest {
         // nothing is satisfiable -- so a reader running `z3` on the
         // artifact by hand read "sat" off a composition that had refused
         // to answer.  The blocker is asserted false, by name.
-        String candidate = ComposeMain.candidate(composition, decision);
+        String candidate = text(ComposeMain.candidate(composition, decision));
         assertTrue("the blocked candidate closes the question: " + candidate,
                 candidate.contains("(assert false) ; fail closed: "
                         + GapKind.DECLARATION_MISSING.name() + ":"));
@@ -5624,6 +5624,16 @@ public class ComposerTest {
         for (JsonObject argument : arguments) list.add(argument);
         node.add("arguments", list);
         return node;
+    }
+
+    /** What a written query or artifact writes. */
+    private static String text(ArtifactIO.Body body) throws IOException {
+        java.io.StringWriter written = new java.io.StringWriter();
+        try (java.io.BufferedWriter output =
+                     new java.io.BufferedWriter(written)) {
+            body.writeTo(output);
+        }
+        return written.toString();
     }
 
     /** One integer literal, as the VM serializes it. */

@@ -74,7 +74,7 @@ public final class ComposeMain {
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
 
-        ArtifactIO.replace(arguments.output,
+        ArtifactIO.atomicReplace(arguments.output,
                 candidate(composition, decision));
         CompositionManifest composed = CompositionManifest.of(anchor,
                 composition.paths(), composition.families(),
@@ -106,31 +106,35 @@ public final class ComposeMain {
      * BLOCKED or pathless composition asserts false with the blocker named,
      * since an empty query would read "sat" by hand.
      */
-    static String candidate(Composer.Composition composition,
-                            ClaimPolicy.Decision decision) {
-        StringBuilder query = new StringBuilder(composition.body());
-        if (!composition.valuations().isEmpty()) {
-            query.append("; valuation 0: the run as it happened\n");
-            for (String assertion
-                    : composition.valuations().get(0).assertions()) {
-                query.append(assertion).append('\n');
-            }
-        }
-        if (!decision.outcomes().isEmpty()
-                && !decision.outcomes().get(0).pinned().isEmpty()) {
-            query.append("; held at the recording: the clocks the witness "
-                    + "does not need, and each path's own pairing where the "
-                    + "recording decides the arm\n");
-            for (String pin : decision.outcomes().get(0).pinned()) {
-                query.append(pin).append('\n');
-            }
-        }
+    static ArtifactIO.Body candidate(Composer.Composition composition,
+                                     ClaimPolicy.Decision decision) {
         String blocker = blocker(composition, decision);
-        if (!blocker.isEmpty()) {
-            query.append("(assert false) ; fail closed: ")
-                    .append(blocker).append('\n');
-        }
-        return query.append("(check-sat)\n").toString();
+        return output -> {
+            output.write(composition.body());
+            if (!composition.valuations().isEmpty()) {
+                output.write("; valuation 0: the run as it happened\n");
+                for (String assertion
+                        : composition.valuations().get(0).assertions()) {
+                    output.write(assertion);
+                    output.write('\n');
+                }
+            }
+            if (!decision.outcomes().isEmpty()
+                    && !decision.outcomes().get(0).pinned().isEmpty()) {
+                output.write("; held at the recording: the clocks the "
+                        + "witness does not need, and each path's own "
+                        + "pairing where the recording decides the arm\n");
+                for (String pin : decision.outcomes().get(0).pinned()) {
+                    output.write(pin);
+                    output.write('\n');
+                }
+            }
+            if (!blocker.isEmpty()) {
+                output.write("(assert false) ; fail closed: " + blocker
+                        + "\n");
+            }
+            output.write("(check-sat)\n");
+        };
     }
 
     /**

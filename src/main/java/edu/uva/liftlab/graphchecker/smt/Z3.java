@@ -1,9 +1,10 @@
 package edu.uva.liftlab.graphchecker.smt;
 
+import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -173,35 +174,55 @@ public final class Z3 {
         return ask(query, modelSymbols, wantCore, 0L);
     }
 
+    /** The same ask with its verdict under its own budget. */
+    public Answer ask(String query, List<String> modelSymbols,
+                      boolean wantCore, long budgetMillis) {
+        String text = query == null ? "" : query;
+        return ask(output -> output.write(text), modelSymbols, wantCore,
+                budgetMillis);
+    }
+
+    /** The same ask over a query written out rather than held. */
+    public Answer ask(ArtifactIO.Body query, List<String> modelSymbols,
+                      boolean wantCore) {
+        return ask(query, modelSymbols, wantCore, 0L);
+    }
+
     /**
      * The same ask with its verdict under its own budget ({@code <= 0}: the
      * instance's).  A decided verdict's model and core runs keep the
      * instance's: each solves again, and a tracked core run can take far
      * longer than its verdict ({@link #CORE_TRACKING}).  Same instance, so
      * the run counter and error set stay whole.
+     *
+     * <p>The query is WRITTEN to each z3, never copied into one text per
+     * run: a composition's body runs past 200 MB, asked on
+     * {@code ClaimPolicy#PARALLEL_ASKS} threads at once, and a copy per
+     * ask (the text, the text with its command, its bytes) ran the
+     * composer out of an 8 GB heap (hdfs-11741 m1).  What each run reads
+     * back is z3's answer to the one command after it.</p>
      */
-    public Answer ask(String query, List<String> modelSymbols,
+    public Answer ask(ArtifactIO.Body query, List<String> modelSymbols,
                       boolean wantCore, long budgetMillis) {
         long budget = budgetMillis > 0L ? budgetMillis : timeoutMillis;
-        String text = query == null ? "" : query;
-        String status = firstLine(run(text + "(check-sat)\n", budget));
+        String status = firstLine(run("", query, "(check-sat)\n", budget));
         Map<String, String> values = Collections.emptyMap();
         if ("sat".equals(status) && modelSymbols != null
                 && !modelSymbols.isEmpty()) {
-            values = parseValues(run(modelQuery(text, modelSymbols),
+            values = parseValues(run("", query, valueCommand(modelSymbols),
                     timeoutMillis));
         }
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
-            core = parseCore(run(CORE_TRACKING + text
-                    + "(check-sat)\n(get-unsat-core)\n", timeoutMillis));
+            core = parseCore(run(CORE_TRACKING, query,
+                    "(check-sat)\n(get-unsat-core)\n", timeoutMillis));
         }
         // Not after a timeout: it would spend the budget again for "".
         String reason = "";
         if (!"sat".equals(status) && !"unsat".equals(status)
                 && !TIMEOUT.equals(status)) {
-            reason = parseReason(run(text
-                    + "(check-sat)\n(get-info :reason-unknown)\n", budget));
+            reason = parseReason(run("", query,
+                    "(check-sat)\n(get-info :reason-unknown)\n", budget));
         }
         return new Answer(status, values, core, reason);
     }
@@ -211,8 +232,12 @@ public final class Z3 {
      * must use it so the file is the question actually solved.
      */
     public static String modelQuery(String query, List<String> modelSymbols) {
-        StringBuilder text = new StringBuilder(query == null ? "" : query);
-        text.append("(check-sat)\n(get-value (");
+        return (query == null ? "" : query) + valueCommand(modelSymbols);
+    }
+
+    /** The commands that ask a sat query for these constants' values. */
+    private static String valueCommand(List<String> modelSymbols) {
+        StringBuilder text = new StringBuilder("(check-sat)\n(get-value (");
         if (modelSymbols != null) {
             for (String symbol : modelSymbols) {
                 text.append(' ').append(symbol);
@@ -260,7 +285,8 @@ public final class Z3 {
      * queries deadlock), and the timeout is enforced here; z3's own
      * ({@link #hardTimeout}) only outlives a driver that died.
      */
-    private String run(String input, long budgetMillis) {
+    private String run(String prefix, ArtifactIO.Body query, String suffix,
+                       long budgetMillis) {
         runs.incrementAndGet();
         long budget = TimeUnit.MILLISECONDS.toNanos(budgetMillis);
         Process process;
@@ -275,20 +301,23 @@ public final class Z3 {
         }
         LIVE.add(process);
         try {
-            return drive(process, input, budget);
+            return drive(process, prefix, query, suffix, budget);
         } finally {
             LIVE.remove(process);
         }
     }
 
     /** One launched z3, fed and read under its budget. */
-    private String drive(Process process, String input, long budget) {
-        byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
+    private String drive(Process process, String prefix,
+                         ArtifactIO.Body query, String suffix, long budget) {
         AtomicReference<String> read = new AtomicReference<String>("");
         Thread writer = new Thread(() -> {
-            try (OutputStream stream = process.getOutputStream()) {
-                stream.write(bytes);
-                stream.flush();
+            try (BufferedWriter input = new BufferedWriter(
+                    new OutputStreamWriter(process.getOutputStream(),
+                            StandardCharsets.UTF_8), 1 << 16)) {
+                input.write(prefix);
+                query.writeTo(input);
+                input.write(suffix);
             } catch (IOException closed) {
                 // z3 closed its input after answering.
             }

@@ -892,7 +892,9 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ClaimPolicy`:
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
-2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors,
+2. Every valuation is asked (up to 8 z3 processes at once; each question is written to its z3 from
+   the one body the composition holds, never copied per ask, `Composition#query`/`#pathQuery`,
+   `Z3#ask`) for the path selectors, arm selectors,
    the nested state selectors a state arm's stores are chosen among (§8), clock cells and the codec
    holes the arms bind (`Composition#holeSymbols`); a selected
    state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →
