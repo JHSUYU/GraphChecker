@@ -23,159 +23,87 @@ agents in parallel, and how the servers and tools work. The capability inventory
 
 ---------------------------------------------------------------------------------------------------
 
-## 0. Handover (state at 2026-09-30 ~13:00 EDT, main = `f3b31968a`)
+## 0. Handover (state at 2026-10-01 ~10:30 EDT)
 
 ### 0.1 The goal
 
 The owner's active goal, verbatim: «跑通solr这两个case的.smt。完成后。为了找到新bug。在hdfs和solr上都去做大规模的adhoc
 check，并让我们的引擎给这样大规模的check提供更多的支持。worklaod都用已有的cluster based unit test»
 
-1. **Phase 1:** a correct `.smt` for **SOLR-18413** and **SOLR-18406** (both CLOCK_SKEW), while
-   the nine HDFS cases keep passing on the current VM.
-2. **Phase 2:** large-scale ad-hoc checks on HDFS and Solr to find new bugs, with the systems'
-   **existing cluster-based unit tests** as workloads (HDFS `MiniDFSCluster` tests, Solr
-   `MiniSolrCloudCluster` / `SolrCloudTestCase` tests), and engine support for checks at that
-   scale.
+1. **Phase 1:** a correct `.smt` (causal chain checked by hand against the system's code) for
+   the nine HDFS cases and SOLR-18413 / SOLR-18406.
+2. **Phase 2:** a finished large-scale ad-hoc sweep on HDFS and Solr with the systems' existing
+   cluster tests as workloads, finding new bugs, on the two unified trees (§0.2), after the
+   automation in §0.4 removed the hand-written pieces.
 
-The owner's requirements R1–R6 that everything is measured against are in
+The owner wants outcomes, not intermediate report files. Requirements R1–R6:
 `/bigtemp/vnr3ne/analysis/audit/COMMON.md`; `docs/STATUS.md` is organised by them.
 
-### 0.2 Where each case stands
+### 0.2 Where things stand
 
-A **PASS** is `experiments/accept/report.py`'s verdict: SAT_CANDIDATE, no BLOCKING gap, the
-case's expected mechanism, `polarityDecides`, a confirmation, and every moved root inside the
-causal cone (`cone.py`). The owner additionally checks the `.smt` causal chain by hand against
-the system's code (§1). All runs are under `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`.
+A **PASS** is `experiments/accept/report.py`'s verdict (SAT_CANDIDATE, no BLOCKING gap, the
+expected mechanism, `polarityDecides`, confirmed, moved roots in `cone.py`'s cone) plus the
+owner's hand check of the chain. Per-case runs and mechanisms: `docs/STATUS.md` "Acceptance".
 
-| case | best live run | verdict | mechanism / blocker |
-| --- | --- | --- | --- |
-| hdfs-17897 | `r7`, `rb1` | PASS | MARKER_FLIPPED, IPC request door `REGION.763d087e` |
-| hdfs-17899-bug1 | `r7` | PASS | MARKER_FLIPPED, IPC request door (`in.305c06e3`) |
-| hdfs-17899-bug2 | `r8` | PASS | MARKER_FLIPPED, IPC response door `REGION.9ffdee3d` |
-| hdfs-17899-bug3 | `r7` | PASS | MARKER_FLIPPED, IPC request door (`in.305c06e3`; earlier rounds moved the response door) |
-| hdfs-17960 | `r8`, `rb1` | PASS | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
-| hdfs-17967-pathA/B/C | `r7` | PASS | MARKER_FLIPPED, IPC request door |
-| hdfs-11741 | `r8` | FAIL | CLOCK_SKEW found (NN + DN clocks, polarityDecides) but 22 BLOCKING gaps; all fixed on branch `agent-11741-regress` (§0.3) whose fresh-seed round `rb1` is running. Residual risk: 3 of 4 NN clocks move only through the `clock_order` constraint and may fail `cone.py` (the v93 failure mode). |
-| **solr-18406** | `a37f4` (branch, not main) | **PASS** | CLOCK_SKEW, polarityDecides, one clock root `M_J_field_REGION.57488ec0…Long` moved, CONFIRMED ("every edge the model chose was taken, and the claim's anchor observed the fatal"), 7 declared roots in the cone. Code is on branch `worktree-agent-ae3796f20246f25c6` (§0.3), NOT merged. On main (`r7`, `rb1`) 18406 still fails: its one anchor path is UNSAT with every root free. |
-| **solr-18413** | `r9` (main `a53174bf1`) | FAIL, last step | The `isExpired#u6` flip is SAT (Overseer `MigrateCmd` clock +262 s) and its replay REPRODUCES the bug ("Could not find collection : causynthMigrate-target") and is ADMITTED; the wave-0 IMPORT gate then stops on one BLOCKING row: invariant 9, the target row that observed the fatal states no `phiTerm` because the fatal condition (`targetColl == null`, `DistributedZkUpdateProcessor:932`) is concrete in the replay. A WIP fix is on branch `worktree-agent-a564ae2a2ad314535` (§0.3). |
+- **10 of 11 PASS:** the eight HDFS block-key/17960 cases (round `i1`), solr-18406 (`i1`), and
+  solr-18413 (`g1`, main `3fa15f0aa`, 53 min alone on the cluster; chain checked).
+- **hdfs-11741 FAILS** on main: COMPOSE guarded nested families by the path selector instead of
+  the arm that needs them, so 234 of 235 paths were unsatisfiable. The fix is on branch
+  `agent-11741-regress` (`152d7a93f` and on), in its offline gate; next: review, merge, run
+  11741 alone on the cluster (tree `~/hadoop-hdfs-11741`, its own branch `gc/hdfs-11741`).
+- **Trees:** `~/hadoop-hdfs-unified` (`gc/hdfs-unified`: every named HDFS bug's pre-fix code
+  except 11741, all their workloads, `@CausynthExceptionTarget` markers), `~/lucene-solr-unified`
+  (`gc/solr-unified`, both Solr bugs), `~/hadoop-hdfs-11741`. Never edit or rebuild a tree a run
+  reads; work on a new branch in a new worktree of it.
+- **Main's VM:** `/bigtemp/vnr3ne/vm-w4e/j2sdk-image`.
+- **Snapshot:** `~/gc-run/p193` = main `3fa15f0aa` (round `g1`, the paused coverage below).
 
-The 18413 chain in Solr 8.11 (tree `~/lucene-solr-unified`): Overseer task `MigrateCmd.java:196-205`
-`expireAt = RoutingRule.makeExpiryAt(timeout)` (`RoutingRule.java:60-62`, Overseer clock + 1 s) →
-queue item (`ZkDistributedQueue.java:328`, store door `SolrZkClient.java:446`) → Overseer tick
-`SliceMutator.addRoutingRule` (`SliceMutator.java:225`, `:238-257`) → `state.json` write
-(`SolrZkClient.java:392`) → leader StateWatcher `ZkStateReader.java:1345-1385`,
-`ClusterState.load` → `Slice.java:204-212` → `RoutingRule.java:48` `parseLong(expireAt)` → leader
-`/update` `DistributedZkUpdateProcessor.processAdd` (`:233`, `:254-265`) → `getNodesByRoutingRules`
-→ `:925 !rule.isExpired()` (leader clock, `RoutingRule.java:66`) → `:932` target lookup null →
-`:934` throw. In the recording the rule is expired, so `:932-934` never run; the witness moves
-the Overseer clock so the rule is still valid at the leader. The flip obligation's formula
-already states the chain: `vH_overseer = clk_Overseer + 1000`, `vH_leader = vH_overseer` (ZK
-handoff), `vH_leader >= clk_Leader + 60000`.
+### 0.3 Work in flight
 
-### 0.3 Branches and worktrees in flight (nothing here is on `main` unless it says so)
+Agents work in `.claude/worktrees/agent-*` on branches `worktree-agent-*` (`git worktree list`);
+none merges itself. Each reports in ≤ 15 lines and names the live runs it wants; the lead runs
+live campaigns one case at a time on the whole cluster.
 
-All agents were stopped at the handover. Uncommitted work was committed as `WIP (handover,
-untested)` on its own branch. Worktrees under `.claude/worktrees/agent-*` are git worktrees of
-this repo; `git worktree list` shows them all.
+| job | branch | spec |
+| --- | --- | --- |
+| hdfs-11741 nested-family guard | `agent-11741-regress` | — |
+| R1-ROOTS WP-D config roots, then WP-F1 static root demand | new `worktree-agent-*` | `/bigtemp/vnr3ne/specs/R1-ROOTS-proposal.md` §2–§3 |
+| R1-ROOTS WP-E admission by relevance + WP0 `tools/analysis/rootcov.py` | new `worktree-agent-*` | same, §4, §8 |
+| R1-ROOTS D0: a concrete anchor demands its predicate reads; gap `NO_ROOT_REACHES_ANCHOR` | new `worktree-agent-*` | same, §2.3 |
+| WIRE-CODEC W3 (absorbs `worktree-agent-a2a3969b54657da82`) and W6 (declarations, no `WIRE_FLOW` rows, tree reverts) | new `worktree-agent-*` | `/bigtemp/vnr3ne/specs/WIRE-CODEC-proposal.md` |
 
-| branch (worktree) | head | content | state | next step |
-| --- | --- | --- | --- | --- |
-| `worktree-agent-ae3796f20246f25c6` | `ba1a3de59` | **SOLR-18406 fix**, 5 commits: `fef79768c` a long sum is a Long cell; `9cc025e68` a flip query binds only what its text names; `d573e4e72` a planted clock runs on from its plant; `6daf4e490` a confirmation plants a clock on the recording's timeline; `ba1a3de59` a claim's clock moves are its jumps. Rebased on a recent main. | live run `accept-a37f4-solr-18406` (snapshot `~/gc-run/a37p4` = the pre-rebase `bfb6be211`) **PASSES**; gates on the rebased head were running when stopped | 1) review the 5 commits (clock planting changes CONFIRM for every CLOCK case); 2) offline gate `--round r8 --round r7` on the HDFS cases (COMPOSE+CONFIRM identical) and on 18406; 3) merge; 4) re-run 18406 + 11741 live |
-| `worktree-agent-a564ae2a2ad314535` | `6ba631b27` (WIP) | 18413: a fatal arm observed under a concrete condition states its phi (RowInvariants, JavaPrimitiveSmtSemantics, CONTRACT-SPEC) | **WIP, not built, not gated** | finish: the rule is "a concrete fatal condition publishes phi as the constant of the arm taken; the causal chain rests on the path condition reaching the anchor" — never a silent empty phi, never BLOCKING; re-run IMPORT..COMPOSE offline on `accept-r9-solr-18413` (expect CLOCK_SKEW with both clocks moved), gate HDFS, merge, run 18413 live |
-| `agent-11741-regress` | `ffed14866` | 11741 regression fixes: `2b4bf4391` order by row seq not anchor chain (TOPOLOGY_DIVERGENCE); `62aa5d992` a pool task keeps the frames it was submitted under (OCCURRENCE_ADDRESS_SHARED; changes every pool-task address); `c76077d8b` an export stating no expression; `f0cb0686e` Independence demands only what lowering reads; `ee1b030ac` a valuation undecided whole is asked per path (and fixes a live main bug: `seedDisjunctUnsat` asserted every seed selector at once); `7b0f25f2d` test; `fab3758c8` probe per path. Merged with main `a53174bf1`. | reviewed "merge after fixes"; fixes (b),(c) done; fresh-seed round **`rb1` running** (snapshot `~/gc-run/p183`) | read `rb1`: so far 17897, 17960 PASS; **17967-pathC FAILS** (witness moved `HDFS.BLOCK_KEY.SERIAL_NO` instead of an IPC door fault — a regression vs main's r7); find why before merging |
-| `worktree-agent-ab7747be564843aea` (R1-ROOTS) | `35c5eec90` | R1-ROOTS WP-C (fault doors from the engine library catalog `src/main/resources/.../library-catalog.jsonl`, DOOR rows gone from case mappings, `ScopeGrowth --doors`) + WP-S (exception-aware control dependence `FaultPropagation`, `.throws` guard cells, `LibraryReceivers`), merged with main `8820c3129` | live A/B round **`ra1`** (snapshot `~/gc-run/p182`): pathA/B/C, bug3 PASS; **17897 FAIL** (new BLOCKING PLAN OCCURRENCE_ADDRESS_SHARED on the new SASL door region, `ctx:Lost:UNKNOWN`); **17960 FAIL** (wave-1 planner OOM at 8 GB: the target region grew 12→32 methods into fsimage serialization); others running | fix both (the pool-task identity fix in `agent-11741-regress` may cure the shared address; the 17960 planner OOM needs a general memory or scope fix), re-run `ra1`, merge. W3 depends on it. |
-| `worktree-agent-a2a3969b54657da82` (WIRE-CODEC W3) | `c9776df4b` | W3 static key-jump on top of R1-ROOTS: `242f12133` a read of a codec key demands every write of it; `812c6d339` offline gate reads the side's codec declarations; `c9776df4b` a codec port reads a message's fields only once Soot lists them | stopped mid-work (docs update); not gated | finish per spec §3 (schema 6 bump lands here, CODEC_PORT rows, demanded-port file for W4's `runtime/DemandedPorts`), gate SEED on 11 cases |
-| `worktree-agent-aa7a714834869b4df` (WIRE-CODEC W1+W4) | `638509485` (WIP) | W1 VM natives `exportLeaf`/`mintLeaf` + W4 runtime (CodecWeave, CodecWalker, holes/templates, message binding, CSE6 envelope, HandoffMint), append-range VM fix; live 18413 evidence in `/bigtemp/vnr3ne/gc-out/w4-18413-1` | reviewed "merge after fixes"; the WIP commit holds fixes (a)–(d) half done, **not built** | finish review fixes: (a) template mismatch → named `CODEC_MISMATCH`, no pairing; (b) VM refuses minting on an object that already carries an expression and checks holders for JVM-wide identity, runtime mints on fresh String copies; (c) admission gate opens only for value operands (String/box/StringBuilder) and never while paused; (d) `envelopeBytes` required/default 4 KB for HTTP, bounding the whole header; + minors. Rebuild image to `/bigtemp/vnr3ne/vm-w4b` (a partial one may exist there — rebuild), smoke, merge main, then a live round on vm-w4b (the reviewer's list: 9 HDFS no codec rows 8/9 with matching obligation counts; one codec-declared HDFS run; one Solr run with 0 VALUE_MISMATCH) |
-| `worktree-agent-ac487236f0fb1620e` | `093ae45b3` | time: `2736970e1` `tools/analysis/timeline.py` (where a campaign's wall time went); `a5ae0d849` a focused replay ends at the refusal that decides it and publishes no session; `bb1dd2e1e` a replay's end runs once; `0c7d19b99`, `093ae45b3` | live: `accept-ee-17899-bug1` PASS in 1031 s (r7: 2192 s), `accept-ee-17967-pathA` PASS in 1088 s (r7: 1622 s); verdict comparison with r7 was in progress | compare verdict/moved roots with r7, review (replay exit path is high-risk), merge |
-| `worktree-agent-ab6c654a022ddde8f` | `afe4a2599` | WIRE-CODEC W1 alone | superseded by the W4 branch (which contains it) | delete after W4 merges |
-| `r3-*`, `vm-f14`, `views-test`, `w4-p2`, other `worktree-agent-*` with `ahead=0` | — | already merged into main | — | safe to remove (`git worktree remove`, `git branch -d`) |
+**Coverage of the unified trees (sweep steps 1–4) is paused** at 1551 of 4183 HDFS jobs
+(`$GC_OUT/coverage/adhoc-89f4c5348dfb/`): its fanout charges the host ledger and held back a live
+campaign's obligations. Resume when no critical campaign runs, with
+`GC_OUT=/bigtemp/vnr3ne/gc-out SLOTS=6 /bigtemp/vnr3ne/bin/tree-coverage.sh /u/vnr3ne/gc-run/p193 hadoop/adhoc`
+(then `solr/solr-adhoc`); the fanout skips finished jobs.
 
-Snapshots (`~/gc-run/p<N>`, each a detached worktree with its own built jar): **p182 (ra1) and
-p183 (rb1) are in use by running rounds — do not remove them.** p175–p181, `a37p1-4`, `ee1`,
-`ee2` are free once you no longer need their runs.
+### 0.4 TODO, in order (run everything with no open dependency in parallel, §2)
 
-### 0.4 Rounds still running on the lifts
-
-`ra1` (R1-ROOTS A/B, all 11 cases, snapshot p182) and `rb1` (11741 branch, fresh seeds, all 11
-cases, snapshot p183), both on VM `/bigtemp/vnr3ne/vm-r3b/j2sdk-image`. Watch and stop:
-
-```bash
-cd ~/GraphChecker
-GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh 'ra1-*' 'rb1-*' | grep --line-buffered 'DONE '
-GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh ra1-11741 ...    # one or more <round>-<case>
-for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f1,4,11,12; done
-```
-
-### 0.5 TODO, in dependency order (run every item with no open dependency IN PARALLEL, §2)
-
-**Phase 1 — the two Solr `.smt` (critical path):**
-
-1. **18406:** review + gate + merge `worktree-agent-ae3796f20246f25c6`; live-run 18406 and all
-   CLOCK cases on main; hand-check its `.smt` chain against Solr (`IndexDeletionPolicyWrapper`
-   `latestCommit`/`reserves`/`knownCommitPoints`, `ReplicationHandler` file list, the reservation
-   expiry clock).
-2. **18413:** finish the phi rule (branch `worktree-agent-a564ae2a2ad314535`), validate offline on
-   `accept-r9-solr-18413`, merge, live-run; hand-check the chain in §0.2. Open defect 28 in
-   STATUS (store-door race: `MessageDoors.stored` files what a write carried only after
-   `outboundExchange` logged the SEND that releases the Overseer's tick) can leave the queue link
-   unpaired in some seeds.
-3. **HDFS 9/9:** decide `agent-11741-regress` from `rb1` (fix the pathC regression first); then
-   check 11741's cone (the 3 NN clocks moved only by `clock_order`: either the claim reports only
-   causally relevant moves or `cone.py` accepts order-forced moves — a design decision to write
-   down, not a per-case patch).
-4. After each merge that touches a case: re-run the round and **check every `.smt` causal chain**
-   against the system code (§1 rule).
-
-**Engine support for scale (Phase 2 prerequisites):**
-
-5. **Time.** Merge the early-exit branch (`worktree-agent-ac487236f0fb1620e`). Then, with
-   `timeline.py` after every round: decide an obligation NOT_ADMITTED before replaying it when its
-   flip needs a value the replay cannot plant (r5 18413: all 67 focused replays served obligations
-   that ended NOT_ADMITTED). EXPLORE streams (no wave barrier, PIPELINE §7.9) and ends at its first
-   accepted witness.
-6. **R1-ROOTS:** fix `ra1`'s two failures, merge. Then the rest of the R1-ROOTS spec
-   (`/bigtemp/vnr3ne/specs/R1-ROOTS-proposal.md`): WP-D config roots, WP-E admission by relevance,
-   WP-F1/F2 root demand.
-7. **WIRE-CODEC** (`/bigtemp/vnr3ne/specs/WIRE-CODEC-proposal.md`; W0, W2, W5 are on main): W3
-   (after R1-ROOTS), W4 review fixes, then **W6** (declarations `experiments/{hadoop,solr}/wire.jsonl`,
-   tree adapters pass payloads: `SolrZkClient`, `CausynthHttp.respond`, Hadoop `Client`/`Server`
-   via the shim; views for `ClusterState`, `ShardTerms`, `AutoScalingConfig`; a node alias for the
-   Overseer's pre-tick decodes; delete all `WIRE_FLOW` rows, revert the HDFS `Integer.toString`
-   patches and Solr `fdf91e8` + the per-branch `consumed` commits; §4.9 deletions), then **W7**
-   validation (11 cases live + one sweep each system). Ad-hoc checks need this: no hand rows.
-8. **ADHOC-INFRA** (`/bigtemp/vnr3ne/specs/ADHOC-INFRA-proposal.md`; WP4, WP5.A, WP1, WP5.C, WP2
-   and WP5.B's build key, nightly and snapshot locks, and WP5.D phase 1 (REPRODUCE plants fault
-   markers natively) are on main): WP5.B's `regress.sh` (the day's engine-fix regression list
-   that places the `regress-pass-*` tag the nightly freezes; tagged by hand until then), WP5.D
-   phase 2 (clock and config plants), and WP3's rest: a batch shares its checks' recording,
-   aggregation and seed replay (PIPELINE §2b; checks whose plans agree share one seed), but checks
-   that reach their own target at one occurrence still replay apart (a task with a list of target
-   branches in the runtime, M1/M2), and each check's slice is its own Soot pass (WP3.1, one scene).
-   The first nightly slices every declared check under the new build key.
-9. **R3 leftovers** (`/bigtemp/vnr3ne/specs/R3-REFCONT-proposal.md`): WP3b/c (TreeMap,
-   ConcurrentSkipList*, LinkedList, CopyOnWrite*, queues in the VM), WP7 (`cone.py` follows writer
-   families), D3 (STATE arms from other sessions); the VM does not state a container query's
-   answer (`ContainerSupport::query_state`).
-
-**Phase 2 — the sweeps** (after 1–2): follow "Run an ad-hoc sweep" below on HDFS
-(`~/hadoop-hdfs-unified`) and Solr (`~/lucene-solr-unified`), all ten lifts; triage with
-`triage.py`, dedupe with `findings.py`; a finding is new only if CONFIRMED and not a known
-mechanism (the two old token-expiry CLOCK_SKEWs were judged HDFS's clock-sync assumption).
+1. Review + merge 11741's fix; run 11741 alone; hand-check its chain (NameNode key-expiry clock →
+   `expiryDate` → export → DataNode attach → second `removeExpiredKeys` against the DataNode
+   clock → the Balancer's key gone).
+2. Review + merge the four automation branches (§0.3); one validation round of all 11 cases on
+   the merged main (cases one or two at a time on the whole cluster), every `.smt` chain checked.
+3. Finish coverage (§0.3), then sweep steps 5–14 ("Run an ad-hoc sweep") on both unified trees,
+   all ten lifts; `triage.py`, `findings.py --annotated` (the sweep must rediscover the known
+   bugs at their markers; anything else CONFIRMED and not a known mechanism is a new-bug
+   candidate to check by hand).
+4. After each merge that touches a case: re-run it and check its `.smt` causal chain (§1).
 
 Open defects with numbers are listed at the end of `docs/STATUS.md`.
 
-### 0.6 Designs and analyses (outside the repo, on `/bigtemp/vnr3ne`)
+### 0.5 Designs and analyses (outside the repo, on `/bigtemp/vnr3ne`)
 
 | path | what |
 | --- | --- |
-| `/bigtemp/vnr3ne/specs/WIRE-CODEC-proposal.md` | values cross processes at serialization boundaries as typed holes by key path; W0–W7; **"Designer decisions" blocks at the end are binding** (1–13) |
-| `/bigtemp/vnr3ne/specs/R1-ROOTS-proposal.md` | automatic roots: library door/config catalog, slice rules, config roots, relevance admission, root demand |
+| `/bigtemp/vnr3ne/specs/WIRE-CODEC-proposal.md` | values cross processes at serialization boundaries as typed holes by key path; W0–W7; the "Designer decisions" blocks at the end are binding (1–14) |
+| `/bigtemp/vnr3ne/specs/R1-ROOTS-proposal.md` | automatic roots: library door/config catalog, slice rules, config roots, relevance admission, root demand; binding decisions at the end |
 | `/bigtemp/vnr3ne/specs/ADHOC-INFRA-proposal.md` | ad-hoc checks at scale: WP1 selection by slice, WP2 pre-screen, WP3 shared recording, WP4 line targets, WP5 operations |
 | `/bigtemp/vnr3ne/specs/R3-REFCONT-proposal.md`, `R3-shapes.md` | shared state in one JVM: reference cells, containers, owner-indexed answers |
 | `/bigtemp/vnr3ne/specs/C2.md`, `F14.md`, `DOCS.md` | the single binding rule JOIN→MINT→PIN; VM f14; docs policy |
 | `/bigtemp/vnr3ne/analysis/audit/COMMON.md` | the owner's requirements R1–R6 (the yardstick) |
-| `/bigtemp/vnr3ne/analysis/audit/*.md` | code audits per area (vm, slice-scope, wire-identity, explore-compose, adhoc-scale, system-specific); may be older than main — the code wins |
-| `/bigtemp/vnr3ne/analysis/review*/`, `/bigtemp/vnr3ne/ab/` | past review notes; offline A/B gate outputs |
+| `/bigtemp/vnr3ne/analysis/codemap-2026-09-30/` | code maps per package |
 
 ---------------------------------------------------------------------------------------------------
 
@@ -356,8 +284,9 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 
 - Every tool takes `GC_OUT` from `tools/lib/gc-env.sh` (default `/bigtemp/vnr3ne/gc-out`).
 - A round name is written once (`accept-<round>-<case>` exists → refused). Names used so far:
-  `v*`, `r1`–`r9`, `ra1`, `rb1`, agents' `a37f*`, `ee*`, `agent-*`, `w4-*`.
-- Typical wall time: HDFS cases 16–50 min (11741 longest), Solr 40 min–3 h.
+  `v*`, `r1`–`r9`, `ra1`, `rb1`, `i1`–`i3`, `stream*`, `fast*`, `g1`, agents' `a37f*`, `ee*`, `agent-*`, `w4-*`.
+- Typical wall time alone on the cluster: HDFS cases 15–45 min, solr-18406 ~25 min, solr-18413 ~50 min
+  (its seed replay alone ~18 min).
 
 ### 3.5 The offline regression gate (merge gate)
 
