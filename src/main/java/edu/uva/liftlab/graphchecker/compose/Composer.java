@@ -1017,8 +1017,9 @@ public final class Composer {
         //     back with it.
         List<String> familyTerms = new ArrayList<String>();
         List<GapRow> unproducible = new ArrayList<GapRow>();
+        Set<String> closed = new LinkedHashSet<String>();
         if (!composedFamilies.closeFamilies(ordinal, selector, session,
-                interactionIds, bound, familyTerms, unproducible)) {
+                interactionIds, bound, familyTerms, unproducible, closed)) {
             composedFamilies.discard();
             refused(unproducible);
             return null;
@@ -1027,7 +1028,7 @@ public final class Composer {
         //     A read a family gives alternatives to takes its value there.
         Set<String> chosen = composedFamilies.stateFamilies(path,
                 ordinal, selector, joined, joins, interactionIds,
-                familyTerms, observed);
+                familyTerms, observed, closed);
         // (8) And the state joins this conjunction ASKS ABOUT.
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 

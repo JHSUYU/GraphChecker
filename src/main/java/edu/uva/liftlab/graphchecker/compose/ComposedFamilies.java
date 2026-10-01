@@ -390,15 +390,21 @@ final class ComposedFamilies {
      * two runs' responses.  Wire arrivals are bound HERE only (PIPELINE §8);
      * a message no session could send is refused by name.
      *
+     * @param closed the messages this path has closed, one family each
+     *               under its selector: shared with {@link #stateFamilies},
+     *               whose writer arms close the messages their deliveries
+     *               rest on under the same selector (two families of one
+     *               name are a query z3 answers with an error, hdfs-11741
+     *               m1: 470 names defined twice)
      * @return whether every message this path binds has an eligible
      *         session; if not, the path leaves the disjunction
      */
     boolean closeFamilies(int ordinal, String selector, String owner,
                           Set<String> reached,
                           List<AttachRow> bound, List<String> stated,
-                          List<GapRow> refusals) {
+                          List<GapRow> refusals, Set<String> closed) {
         return closeMessages(ordinal, selector, owner, bound, reached,
-                stated, refusals, new LinkedHashSet<String>(), 0);
+                stated, refusals, closed, 0);
     }
 
     /** How deep one delivery may be handed on before this refuses. */
@@ -445,7 +451,8 @@ final class ComposedFamilies {
         for (Map.Entry<String, List<AttachRow>> message
                 : byMessage.entrySet()) {
             List<AttachRow> leaves = message.getValue();
-            if (!closedGroups.add(groupId(leaves))) continue;
+            String group = groupId(leaves);
+            if (!closedGroups.add(group)) continue;
             // (2) Each leaf's arms, one hop deep, and who attests them.
             Map<String, Interaction> slotOf =
                     new LinkedHashMap<String, Interaction>();
@@ -478,11 +485,13 @@ final class ComposedFamilies {
             // (3) and (4): eligibility, then one case split per message.
             List<String> eligible = eligibleSessions(message.getKey(),
                     slotOf.keySet(), attestedAt, refusals);
-            if (eligible == null) return false;
-            if (!messageFamily(ordinal, guard, owner, message.getKey(),
-                    leaves, slotOf, symbolOf, eligible, attestedAt,
-                    bySession, reached, stated, refusals, closedGroups,
-                    depth)) {
+            // A message this could not close is not closed: another arm
+            // resting on it must close it itself, or be refused.
+            if (eligible == null || !messageFamily(ordinal, guard, owner,
+                    message.getKey(), leaves, slotOf, symbolOf, eligible,
+                    attestedAt, bySession, reached, stated, refusals,
+                    closedGroups, depth)) {
+                closedGroups.remove(group);
                 return false;
             }
         }
@@ -1186,7 +1195,9 @@ final class ComposedFamilies {
      * arm) the run as it happened is no world of the formula, and a BLOCKING
      * gap says so: STATE_PAIRING_FLIPPED and the recording's own verdict pin
      * that pairing, and every other kind is named only once the pairing flip
-     * is ruled out ({@link ClaimPolicy}).
+     * is ruled out ({@link ClaimPolicy}).  A writer arm closes the messages
+     * its delivery rests on among the path's {@code closed} ones
+     * ({@link #closeFamilies}).
      */
     Set<String> stateFamilies(Corpus.RecordedPath path,
                               int ordinal, String selector,
@@ -1194,7 +1205,8 @@ final class ComposedFamilies {
                               Map<String, String> pins,
                               Set<String> reached,
                               List<String> stated,
-                              List<String> recorded) {
+                              List<String> recorded,
+                              Set<String> closed) {
         String session = path.sessionId;
         Set<String> chosen = new LinkedHashSet<String>();
         // Reads grouped by location: every read of it takes the same arm.
@@ -1312,7 +1324,7 @@ final class ComposedFamilies {
             lowering.declare(name, VmTermLowering.Sort.BOOL);
             String body = producerBody(ordinal, selector, writer.getKey(),
                     session, writer.getValue(), reached,
-                    new ArrayList<String>(), new LinkedHashSet<String>(), 0,
+                    new ArrayList<String>(), closed, 0,
                     new LinkedHashMap<String, BoundHole>());
             if (body == null) continue;
             selectorOf.put(writer.getKey(), name);

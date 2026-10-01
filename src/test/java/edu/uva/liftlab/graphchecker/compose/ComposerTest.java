@@ -5419,10 +5419,21 @@ public class ComposerTest {
                                                 int maxValuations,
                                                 StaticScopeMap scope)
             throws IOException {
-        return Composer.compose(Corpus.read(iteration, null), anchor,
+        Composer.Composition composition = Composer.compose(
+                Corpus.read(iteration, null), anchor,
                 Collections.<String,
                         edu.uva.liftlab.graphchecker.contract.RootDomain>
                         emptyMap(), maxValuations, scope);
+        // Every composition: one name, one assertion (z3 answers a name
+        // defined twice with an error, hdfs-11741 m1).
+        java.util.regex.Matcher named = java.util.regex.Pattern.compile(
+                ":named ([^ )]+)").matcher(composition.body());
+        Set<String> names = new LinkedHashSet<String>();
+        while (named.find()) {
+            assertTrue("named once: " + named.group(1),
+                    names.add(named.group(1)));
+        }
+        return composition;
     }
 
     private Z3 solver() {
