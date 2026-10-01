@@ -193,8 +193,8 @@ public final class SlotTable {
                     continue;
                 }
                 // PIPELINE §7.1: a read happening before the write it claims to
-                // observe (Arms.ancestor) contradicts the run's order.
-                if (contradictsOrder(corpus, read, writer)) {
+                // observe contradicts the run's order.
+                if (contradictsOrder(read, writer)) {
                     gaps.add(GapRow.of(session.sessionId(),
                             GapKind.TOPOLOGY_DIVERGENCE,
                             authority ? GapClass.BLOCKING
@@ -259,10 +259,19 @@ public final class SlotTable {
                 + SmtLowering.locationKey(read.location());
     }
 
-    private static boolean contradictsOrder(Corpus corpus, ReadRow read,
+    /**
+     * Whether this run read before the write it claims to have observed.
+     * Both rows' seqs are the VM's one event clock of the session
+     * (CONTRACT-SPEC §2.2), so they order the two whatever thread ran
+     * them; a row the clock did not number (seq 0) orders nothing.  Never
+     * the anchor chain: an occurrence goes on after the message it sent,
+     * and hdfs-11741 r3's balancer dispatcher read the delay its own move
+     * task had written a turn before (32 BLOCKING rows).
+     */
+    private static boolean contradictsOrder(ReadRow read,
                                             WriteRow observed) {
-        return corpus.arms().ancestor(read.endpoint(), read.seq(),
-                observed.endpoint(), observed.seq(), read.sessionId());
+        return read.seq() > 0L && observed.seq() > 0L
+                && read.seq() < observed.seq();
     }
 
     /** One session that pairs a slot's consumer with another producer. */

@@ -15,6 +15,7 @@ import java.lang.ref.WeakReference;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
@@ -146,21 +147,38 @@ public final class Identity {
         }
 
         /**
-         * Opens the frame of the start this thread's work runs under
-         * (IDENTITY §3, start frames): two siblings started from one
-         * site in one loop differ by this frame alone.  Its level has no
-         * token, so no frame exit closes it.
+         * Opens the frames of the start this thread's work runs under
+         * (IDENTITY §3, start frames): the starter's index from its scope
+         * root, then the start's own frame, so two starts from one site
+         * differ by the frames they were made under or by that frame's k.
+         * A started thread stands on its creator's frames already
+         * ({@link #copy}) and opens the start's own frame alone.  Their
+         * levels have no token, so no frame exit closes them.
          */
-        private void openStart(Frame frame, int startedIn) {
-            // A pool thread drops its finished task's start frame (and the
-            // scope it carried) before taking the next; a nested start nests.
-            if (innermostStart() == depth() - 1 && depth() > 0) {
-                levels.remove(depth());
-                closeStartsFrom(depth());
+        private void openStart(Start start, boolean inherited) {
+            // A pool thread drops its finished task's start (and the scope
+            // it carried) before taking the next; a nested start nests.
+            int held = innermostStart();
+            if (held >= 0 && onlyStartsFrom(held)) {
+                while (depth() > held) levels.remove(depth());
+                closeStartsFrom(held);
             }
             starts.push(depth());
-            // The frame belongs to the window the start was counted in.
-            levels.add(new Level(frame, 0L, null, startedIn));
+            // The frames belong to the window the start was counted in.
+            for (Frame frame : inherited
+                    ? Collections.singletonList(start.frame())
+                    : start.frames) {
+                levels.add(new Level(frame, 0L, null, start.window));
+            }
+        }
+
+        /** Whether no entered frame stands at depth {@code from} or above:
+         *  only claimed starts' levels, whose work is over. */
+        private boolean onlyStartsFrom(int from) {
+            for (int index = from; index < depth(); index++) {
+                if (levels.get(index + 1).token != 0L) return false;
+            }
+            return true;
         }
 
         /** The depth of the innermost claimed start frame, or -1. */
@@ -362,18 +380,24 @@ public final class Identity {
             new ConcurrentHashMap<Carrier, Start>();
 
     /**
-     * One filed start: its frame and its starter.  A thread whose frames
+     * One filed start: its frames and its starter.  A thread whose frames
      * name no component belongs to the one that started it.
      */
     private static final class Start {
-        private final Frame frame;
+        /** The starter's frames from its scope root, then the start's. */
+        private final List<Frame> frames;
         private final Attribution.Reference starter;
         /** The window the start was counted in ({@link Level#window}). */
         private final int window = RecordingWindow.index();
 
-        private Start(Frame frame, Attribution.Reference starter) {
-            this.frame = frame;
+        private Start(List<Frame> frames, Attribution.Reference starter) {
+            this.frames = frames;
             this.starter = starter;
+        }
+
+        /** The start's own frame: its site and k. */
+        private Frame frame() {
+            return frames.get(frames.size() - 1);
         }
     }
 
@@ -430,25 +454,32 @@ public final class Identity {
         if (carrier == null || STARTS.isEmpty()) return;
         Start start = STARTS.remove(new Carrier(carrier, null));
         if (start == null) return;
-        state.openStart(start.frame, start.window);
+        // The thread a start created claims it itself, standing on the
+        // frames it inherited; a task is claimed on a pool's thread.
+        state.openStart(start, carrier == Thread.currentThread());
         state.starter = start.starter;
         state.adopted = true;
         // The starter's scope comes with the work; it closes when the start
-        // level goes (#exitFrame, State#openStart).
+        // levels go (#exitFrame, State#openStart).
         RuntimeTraceContext.claimCarried(carrier);
         // The CLAIM half of the handoff, at the site the START named.
         ScheduleLog.observe(ScheduleEvent.Kind.CLAIM,
-                start.frame.callSite());
+                start.frame().callSite());
     }
 
     /**
-     * Files the frame of one {@code Thread.start} or work submission.
+     * Files the frames of one {@code Thread.start} or work submission: the
+     * starter's index from its scope root, then the start's own frame.
      *
      * <p>The iteration is the k-th start at this site in the level making
      * it ({@link State#nextSiteEvent}), so siblings from one loop differ by
-     * it alone (IDENTITY §3) -- never a thread id or session ordinal.
-     * Starts the index cannot separate share an endpoint id and are refused
-     * at the mint, never renumbered here.</p>
+     * it (IDENTITY §3) -- never a thread id or session ordinal.  Starts from
+     * one site in two calls of the method holding it are both its first:
+     * the frames above tell them apart (hdfs-11741 r3: the balancer's two
+     * {@code executePendingMove} tasks shared one address once a pool's
+     * worker stopped inheriting its creator's frames).  Starts the index
+     * cannot separate share an endpoint id and are refused at the mint,
+     * never renumbered here.</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
         String site = JvmNames.stable(Text.safe(startSiteId));
@@ -459,12 +490,15 @@ public final class Identity {
         if (contextHere().isLost()) return;
         State state = state();
         int iteration = state.nextSiteEvent(site);
+        List<Frame> frames = new ArrayList<Frame>(
+                Arrays.asList(state.snapshot(state.scopeBase)));
+        frames.add(Frame.of(site, iteration));
         sweep();
         // The start's scope travels with the work
         // (RuntimeTraceContext#claimCarried takes it back).
         RuntimeTraceContext.captureAsync(carrier);
         STARTS.put(new Carrier(carrier, COLLECTED),
-                new Start(Frame.of(site, iteration), Attribution.capture()));
+                new Start(frames, Attribution.capture()));
         ScheduleLog.observe(ScheduleEvent.Kind.START, site);
     }
 
@@ -793,9 +827,10 @@ public final class Identity {
     }
 
     /**
-     * The start frames from the scope root, outermost first, as {@code
-     * site@k>site@k}, or {@code ""}: the thread handoffs inside the scope,
-     * the rest of the causal context.  Keyed by scope alone, a schedule
+     * The claimed starts' frames from the scope root, outermost first, as
+     * {@code site@k>site@k}, or {@code ""}: the thread handoffs inside the
+     * scope, each the frames it was made under and its own, the rest of the
+     * causal context.  Keyed by scope alone, a schedule
      * event's k would count across threads started under it, which an
      * event identity may never do ({@link ScheduleLog}).
      */

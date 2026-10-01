@@ -49,7 +49,12 @@ import java.util.function.Predicate;
  * built-in null or void), or a tracked location.  A read's value is what its
  * observed write stated, and rests on the decisions its referent was built
  * under (R3-REFCONT §1.6); a location as a whole moves only where a family
- * binds it, since one family re-pairs every read of it.</p>
+ * binds it, since one family re-pairs every read of it.  A field projection
+ * names what its lowering reads ({@link ContainerSmtCodec#fieldOperands}),
+ * not how the VM reached its owner: walked whole, hdfs-11741 r3's
+ * {@code isIterationOver} clock test brought in every block-location list
+ * and storage-group lookup its Source had been found through, none of
+ * which the composer can state.</p>
  *
  * <p>An obligation is keyed by the closure one flipped GUARD shares
  * variables with ({@link #ofGuard}, {@code ObligationFactory#dependence}):
@@ -341,7 +346,10 @@ public final class Independence {
                             VmRows.recordedVersion(object), into, pending);
                 }
             }
-            pending.addAll(object.asMap().values());
+            List<JsonElement> operands = ContainerSmtCodec.handlesField(object)
+                    ? ContainerSmtCodec.fieldOperands(object) : null;
+            pending.addAll(operands != null ? operands
+                    : object.asMap().values());
         }
     }
 

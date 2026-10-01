@@ -1,1 +1,0 @@
-exception_target: hbase-token-key-roll org.apache.hadoop.hbase.security.token.AuthenticationTokenSecretManager 160

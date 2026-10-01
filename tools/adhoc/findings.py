@@ -2,7 +2,8 @@
 """findings.py <sweep-dir> [--ledger FILE] [--static DIR]
 
 One row per mechanism among a sweep's confirmed witnesses: every
-<sweep-dir>/accept-*/out/<case>/schedule/final/result.json whose claim is
+<sweep-dir>/accept-*/out/<case>/schedule/final/result.json (a batch case's:
+out/<case>/targets/<check>/schedule/final/result.json) whose claim is
 SAT_CANDIDATE and whose confirmation is true.  Two witnesses are one
 mechanism when they share a signature:
 
@@ -22,18 +23,23 @@ kind, recorded value, node and context are its roots.jsonl row in the
 witness's selected session.  Everything read is kept by PRUNE.
 
 Weight, per witness (a signature takes its best):
+    (finding kind + mediated) x (1 + native reproduction rate) - extra roots
   finding kind     STATE_/MESSAGE_PAIRING_FLIPPED 5, MARKER_FLIPPED with a
                    fault door root 4, other MARKER_FLIPPED 3,
                    RECORDED_FAILURE_EXPLAINED 3, CLOCK_SKEW 2 when every
                    clock moved at most a minute (else 1: a clock-sync
                    assumption)
-  + 2              every moved root the check's static slice holds
+  mediated         2 when every moved root the check's static slice holds
                    (--static DIR: slice.sh's $GC_OUT/static/<key>, whose
                    score.json names the check's TARGET_SITE) it reaches only
-                   through a field or a wire
-  - 1              per moved root beyond the first
+                   through a field or a wire, else 0
+  reproduction     result.json's reproduction (run_engine.sh REPRODUCE): the
+                   share of its native runs that took the fatal arm at the
+                   claim's anchor; 0 when it ran none
+  extra roots      1 per moved root beyond the first
 
-Writes <sweep-dir>/findings.tsv, best weight first.  With --ledger, the
+Writes <sweep-dir>/findings.tsv, best weight first, with the best case's native
+reproduction (runs at the anchor / runs).  With --ledger, the
 ledger (one JSON row per signature: sig, firstSeen, lastSeen, cases, status)
 is read and rewritten: a signature it did not hold is new, one it held is
 known, and one dismissed.tsv beside it names (sig, reason, JIRA id; by hand)
@@ -95,8 +101,15 @@ def node_role(node):
     return re.sub(r"\d+", "", node.rsplit("/", 1)[-1].split("#", 1)[0])
 
 
-def skew_bucket(row, model):
-    nanos = abs(int(model) - int(row["recordedValue"])) * row["clockNanos"]
+def skew_bucket(row, model, readings):
+    """How far the model moved a clock cell, off the reading the composition
+    anchored it to (the manifest's roots, the recording's timeline): the
+    session's own recordedValue is the instant its replay ran, on its host's
+    timeline, plant included."""
+    if row["rootId"] not in readings:
+        raise ValueError("the composition anchors no reading of clock %s"
+                         % row["rootId"])
+    nanos = abs(int(model) - int(readings[row["rootId"]])) * row["clockNanos"]
     return next((name for bound, name in BUCKETS if nanos <= bound), ">1h")
 
 
@@ -109,6 +122,11 @@ def witness(final):
     schedule = os.path.dirname(final)
     case_dir = os.path.dirname(schedule)
     moved = result["movedRoots"]
+    manifest = json.load(open(os.path.join(
+        final, "candidate_composition_manifest.json")))
+    readings = {root["rootId"]: root["recordedValue"]
+                for root in manifest.get("roots") or []
+                if root.get("kind") == "CLOCK"}
     session = next(v["selectedSessionId"] for v in result["valuations"]
                    if v["ordinal"] == result["valuationOrdinal"])
     rows = {}
@@ -140,7 +158,7 @@ def witness(final):
         if kind == "CLOCK":
             if "clockNanos" not in row:
                 raise ValueError("clock root %s states no clockNanos" % row["rootId"])
-            bucket = skew_bucket(row, model)
+            bucket = skew_bucket(row, model, readings)
             clocks.append(bucket)
         context = row["occurrence"].get("context", {})
         parts.append((kind, action["siteId"].rsplit("#", 1)[0],
@@ -156,8 +174,12 @@ def witness(final):
         weight = 2 if all(b in ("<=1s", "<=1min") for b in clocks) else 1
     else:
         weight = KIND_WEIGHT.get(kind, 0)
+    reproduction = result.get("reproduction") or {}
+    runs = reproduction.get("runs", 0)
     return {"target": target_site(case_dir), "kind": kind, "parts": parts,
-            "weight": weight - (len(parts) - 1)}
+            "weight": weight, "extra": len(parts) - 1,
+            "native": "%d/%d" % (reproduction.get("atAnchor", 0), runs),
+            "rate": reproduction.get("atAnchor", 0) / runs if runs else 0.0}
 
 
 def signature(found):
@@ -197,8 +219,11 @@ def main():
             score = json.load(open(path))
             scores[score["target"]] = score["roots"]
     witnesses = collections.defaultdict(list)
+    # A batch case's checks each have their own campaign, targets/<check>/.
     for final in sorted(glob.glob(os.path.join(
-            args.sweep, "accept-*", "out", "*", "schedule", "final"))):
+            args.sweep, "accept-*", "out", "*", "schedule", "final"))
+            + glob.glob(os.path.join(args.sweep, "accept-*", "out", "*",
+                                     "targets", "*", "schedule", "final"))):
         if not os.path.exists(os.path.join(final, "result.json")):
             continue
         case = os.path.relpath(os.path.dirname(os.path.dirname(final)), args.sweep)
@@ -210,8 +235,8 @@ def main():
         if found is None:
             continue
         found["case"] = case
-        if mediated(found, scores):
-            found["weight"] += 2
+        base = found["weight"] + (2 if mediated(found, scores) else 0)
+        found["weight"] = round(base * (1 + found["rate"]) - found["extra"], 2)
         witnesses[signature(found)].append(found)
     now = datetime.datetime.now().isoformat(timespec="seconds")
     ledger, dismissed = {}, {}
@@ -234,12 +259,13 @@ def main():
         row.update(lastSeen=now, status=status,
                    cases=sorted(set(row["cases"]) | set(cases)))
         roots = " + ".join(describe(part) for part in sorted(best["parts"]))
-        table.append((best["weight"], sig, status, best["kind"], best["target"],
-                      roots, best["case"], len(cases), " ".join(cases)))
-    table.sort(key=lambda row: (-row[0], row[1]))
+        table.append((best["weight"], best["native"], sig, status, best["kind"],
+                      best["target"], roots, best["case"], len(cases),
+                      " ".join(cases)))
+    table.sort(key=lambda row: (-row[0], row[2]))
     with open(os.path.join(args.sweep, "findings.tsv"), "w") as out:
-        out.write("weight\tsig\tstatus\tkind\ttarget\tmoved roots\tbest case"
-                  "\tcases\tall cases\n")
+        out.write("weight\tnative\tsig\tstatus\tkind\ttarget\tmoved roots"
+                  "\tbest case\tcases\tall cases\n")
         for row in table:
             out.write("\t".join(str(v) for v in row) + "\n")
     if args.ledger:
@@ -250,7 +276,7 @@ def main():
         os.replace(args.ledger + ".partial", args.ledger)
     print("%d confirmed witness(es), %d mechanism(s), %d new"
           % (sum(map(len, witnesses.values())), len(witnesses),
-             sum(1 for row in table if row[2] == "new")), file=sys.stderr)
+             sum(1 for row in table if row[3] == "new")), file=sys.stderr)
 
 
 if __name__ == "__main__":

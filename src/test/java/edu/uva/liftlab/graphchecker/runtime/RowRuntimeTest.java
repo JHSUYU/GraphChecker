@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
@@ -732,10 +733,10 @@ public class RowRuntimeTest {
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6253L, "w",
                 "I", "1", "", ReadRow.UNKNOWN_VERSION);
         RowRuntime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
-                "M_I_1", RootKind.INTEGRAL, "3", "3", "6", true, 0L);
+                "M_I_1", RootKind.INTEGRAL, "3", "3", "6", true, null, 0L);
         RowRuntime.rootMint(occurrence, 13L,
                 "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED", "M_Z_marker",
-                RootKind.MARKER, "true", "", "", true, 0L);
+                RootKind.MARKER, "true", "", "", true, null, 0L);
         RowRuntime.target(occurrence, 15L, "Klass.m()#u8", expression, true,
                 true, true);
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, "s", "d");
@@ -1465,11 +1466,13 @@ public class RowRuntimeTest {
         // Two clocks of one JVM -- the cluster's nodes run in one process --
         // and one root that is not a clock at all.
         RowRuntime.rootMint(occurrence, 3L, "HDFS.KEY.NOW@nn0", "M_J_now_nn0",
-                RootKind.CLOCK, "1789358344655", "", "", true, 1_000_000L);
+                RootKind.CLOCK, "1789358344655", "", "", true,
+                Clock.of(1_000_000L, Clock.WALL), 0L);
         RowRuntime.rootMint(occurrence, 4L, "HDFS.KEY.NOW@dn1", "M_J_now_dn1",
-                RootKind.CLOCK, "1789358344999", "", "", true, 1_000_000L);
+                RootKind.CLOCK, "1789358344999", "", "", true,
+                Clock.of(1_000_000L, Clock.WALL), 0L);
         RowRuntime.rootMint(occurrence, 5L, "HDFS.BLOCK_KEY.SERIAL_NO",
-                "M_I_serial", RootKind.INTEGRAL, "3", "3", "6", true, 0L);
+                "M_I_serial", RootKind.INTEGRAL, "3", "3", "6", true, null, 0L);
 
         // `key.getExpiryDate() < now`, over nn0's clock alone.
         RowRuntime.decision(occurrence, 12L,
@@ -1915,9 +1918,10 @@ public class RowRuntimeTest {
                 Identity.atScope().render());
 
         // A pool thread was created before the work it runs, so it inherits
-        // nothing from the submission: the start filed for the TASK is
-        // claimed on the object the region is entered on, and the next task
-        // replaces that frame instead of nesting under it.
+        // nothing from the submission: the start filed for the TASK -- the
+        // frames it was submitted under, then its own -- is claimed on the
+        // object the region is entered on, and the next task replaces those
+        // levels instead of nesting under them.
         Identity.resetForTests();
         final List<String> ran =
                 Collections.synchronizedList(new ArrayList<String>());
@@ -1940,9 +1944,15 @@ public class RowRuntimeTest {
         Object submitter = new Object();
         RuntimeTraceContext.registerSource(submitter, NN);
         long submitting = RuntimeTraceContext.beginRequest(submitter, "submit");
-        Identity.enterFrame("Pool.submitAll()#u5", null);
-        Identity.startWork("Pool.submitAll()#u9", tasks[0]);
-        Identity.startWork("Pool.submitAll()#u9", tasks[1]);
+        // Each task from one site of a method called once per task, as
+        // hdfs-11741's balancer submits its moves: both starts are the first
+        // at that site, and only the call they were made in tells them apart
+        // (r3: the two move tasks shared one address).
+        for (Object task : tasks) {
+            long submitOne = Identity.enterFrame("Pool.submitOne()#u5", null);
+            Identity.startWork("Pool.submitOne()#u9", task);
+            Identity.exitFrame(submitOne);
+        }
         worker.start();
         try {
             worker.join();
@@ -1950,8 +1960,10 @@ public class RowRuntimeTest {
             Thread.currentThread().interrupt();
         }
         RuntimeTraceContext.endRequest(submitting);
-        assertEquals("Pool.submitAll()#u9@0/Task.run()#u1@0", ran.get(0));
-        assertEquals("Pool.submitAll()#u9@1/Task.run()#u1@0", ran.get(1));
+        assertEquals("Pool.submitOne()#u5@0/Pool.submitOne()#u9@0"
+                + "/Task.run()#u1@0", ran.get(0));
+        assertEquals("Pool.submitOne()#u5@1/Pool.submitOne()#u9@0"
+                + "/Task.run()#u1@0", ran.get(1));
 
         // An activation's push and its pop are paired, recursion included:
         // the frames an occurrence stands on ARE its identity, so a frame

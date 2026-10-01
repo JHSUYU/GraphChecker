@@ -38,10 +38,13 @@ import java.util.Set;
  *       domain (a marker over both values), else PINNED to the recorded read,
  *       as the composition pins it;</li>
  *   <li>a CLOCK is per path, never equal across paths, with domain {@code
- *       [that execution's reading, reading + 30 days]} in the clock's own
- *       ticks ({@link JavaPrimitiveSmtSemantics#clockSkewCeiling}; no
- *       reading: {@code [0, Long.MAX_VALUE]}); clocks never go back
- *       (PIPELINE §7.5);</li>
+ *       [host reading, host reading + 30 days]} in the clock's own ticks:
+ *       the host's reading of that execution ({@code
+ *       RootMintRow#hostReading}), which a skew is off, so no model skews a
+ *       clock behind its host ({@link
+ *       JavaPrimitiveSmtSemantics#clockSkewCeiling}; no reading: {@code [0,
+ *       Long.MAX_VALUE]}); its nearest world is the instant the execution
+ *       ran it at (PIPELINE §7.5);</li>
  *   <li>a CONTROL handoff (attached at the flipped occurrence, where a
  *       replay can be answered) is bound by its family {@code OR_q (pi_q AND
  *       guard_q AND v_H = e_q)} (a codec's hole by COMPOSE's hole-arm rule,
@@ -595,16 +598,19 @@ final class FlipQuery {
                     clockVariables.put(variable, row.rootId());
                 }
                 // {@link JavaPrimitiveSmtSemantics#clockDomain}: floor = this
-                // execution's reading ({@link #clockReading}), ceiling =
-                // reading + window ({@link
+                // execution's host reading (a skew is off it, and never
+                // below), ceiling = floor + window ({@link
                 // JavaPrimitiveSmtSemantics#clockSkewCeiling}), so no model
-                // flips by long overflow.
-                String reading = clockReading(minted, row.rootId());
+                // flips by long overflow.  The nearest world is the instant
+                // the execution ran the cell at, where its node's clock may
+                // have run on off the host (RootMintRow#clockSkew).
+                String floor = instant(minted.hostReading());
                 rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable,
-                        reading.isEmpty() ? "0" : reading,
-                        JavaPrimitiveSmtSemantics.clockSkewCeiling(reading,
+                        floor.isEmpty() ? "0" : floor,
+                        JavaPrimitiveSmtSemantics.clockSkewCeiling(floor,
                                 row.clockNanos())));
-                if (!reading.isEmpty()) nearest.put(variable, reading);
+                String ran = instant(minted.recordedValue());
+                if (!ran.isEmpty()) nearest.put(variable, ran);
                 return;
             }
             rootVariables.put(variable, row.rootId());
@@ -645,10 +651,9 @@ final class FlipQuery {
             }
         }
 
-        /** The instant this cell's execution read, or ""; floor and ceiling
-         *  both derive from it. */
-        private String clockReading(RootMintRow minted, String rootId) {
-            String reading = corpus.rootValue(minted.sessionId(), rootId);
+        /** A clock row's instant as a decimal, or "" when it states none a
+         *  Java long can hold. */
+        private static String instant(String reading) {
             if (reading == null || reading.trim().isEmpty()) return "";
             try {
                 java.math.BigInteger instant =
@@ -887,53 +892,6 @@ final class FlipQuery {
             bind(row, variable(row.sessionId(), row.symbol()));
         }
 
-        /**
-         * THE v_C VARIABLE: the container state a guard reads (behind the
-         * {@code container_dag__} name, {@link SmtLowering#reachedSymbols}),
-         * bound as ONE variable at the sort its WRITERS deliver. Trap: the
-         * row's {@code javaType} is the reference's ({@code "L"}), not the
-         * state's shape; declaring at it makes z3 reject the query on sort
-         * mismatch. Writers delivering two shapes are refused by name.
-         */
-        private void state(String sessionId, String symbol) {
-            ReadRow row = corpus.read(sessionId, symbol);
-            if (row == null) return;
-            List<Arms.Arm> eligible = eligible(row);
-            Set<String> shapes = new LinkedHashSet<String>();
-            for (Arms.Arm arm : eligible) {
-                SmtLowering.Lowered delivered =
-                        corpus.lowering(arm.sessionId())
-                                .lower(arm.expressionRef());
-                if (delivered.ok()) shapes.add(delivered.sort());
-            }
-            if (shapes.isEmpty()) {
-                gaps.add(GapRow.of(sessionId, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, row.endpoint().toString(),
-                        "no writer of " + row.location() + " delivers an "
-                                + "expression this corpus lowers, so nothing "
-                                + "states the shape of the state this path's "
-                                + "guard reads"));
-                return;
-            }
-            if (shapes.size() > 1) {
-                refusal = "UNSTATED_VALUE:" + row.endpoint();
-                gaps.add(GapRow.of(sessionId, GapKind.UNSTATED_VALUE,
-                        GapClass.BLOCKING, row.endpoint().toString(),
-                        "the writers of " + row.location() + " deliver this "
-                                + "one state at " + shapes + ": a state has "
-                                + "one shape, and nothing is composed over a "
-                                + "corpus that states two"));
-                return;
-            }
-            String variable = readVariable(sessionId, row);
-            if (explained.contains(variable)) return;
-            declare(variable, shapes.iterator().next(),
-                    "container state " + row.location() + " read at "
-                            + row.endpoint() + " version "
-                            + row.observedVersion());
-            bind(row, variable);
-        }
-
         /** The writer occurrences one read could have taken its value from. */
         private List<Arms.Arm> eligible(ReadRow row) {
             List<Arms.Arm> eligible = corpus.arms().stateArms(row.endpoint(),
@@ -1059,29 +1017,23 @@ final class FlipQuery {
             Map<String, String> rename = renamesOf(sessionId);
             // THE CLOSURE: a term's symbols are those REACHABLE through the
             // subterms it names (SmtLowering, as the closure planner asks), not
-            // only visible ones.
+            // only visible ones.  What a container subterm RESTS ON (the
+            // read rows of the state it is the value of) is the closure's
+            // demand, not a variable of this query: the join inlined that
+            // state's chain, so no text names the read, and a variable bound
+            // to its writers' states would constrain nothing (for any choice
+            // of writer the variable is that writer's state) while its
+            // equalities over lambda-built states took z3 out of what it
+            // decides.
             SmtLowering lowering = corpus.lowering(sessionId);
-            Set<String> states = new LinkedHashSet<String>();
-            for (String token : lowering.reachedSymbols(term,
-                    new LinkedHashSet<String>(), states)) {
+            for (String token : lowering.reachedSymbols(
+                    Collections.singletonList(term))) {
                 if (corpus.symbolKind(sessionId, token)
                         == Corpus.SymbolKind.UNKNOWN) {
                     continue;
                 }
                 rename.put(token, variable(sessionId, token));
                 bound.add(sessionId + "|" + token);
-            }
-            // THE v_C RULE (PIPELINE §7.5): container state behind a name is
-            // one READ variable, bound by the read rule; enqueued, not renamed
-            // into the text.
-            for (String symbol : states) {
-                if (corpus.symbolKind(sessionId, symbol)
-                        != Corpus.SymbolKind.READ) {
-                    continue;
-                }
-                lowered.add(sessionId);
-                bound.add(sessionId + "|" + symbol);
-                state(sessionId, symbol);
             }
             return SmtNames.rename(term, rename,
                     name -> stated(name, sessionId), unknown);
@@ -1159,8 +1111,7 @@ final class FlipQuery {
             }
         }
 
-        /** The one variable of a READ event, whether the text names it or a
-         *  container rests on it (v_C). */
+        /** The one variable of a READ event the text names. */
         private String readVariable(String sessionId, ReadRow row) {
             return names.name("read|" + sessionId + "|"
                             + row.endpoint().id(),

@@ -73,13 +73,22 @@ public final class RootDomain extends Value {
      */
     public static RootDomain resolved(RootMintRow row,
                                       Map<String, RootDomain> declared) {
+        return resolved(row, row.recordedValue(), declared);
+    }
+
+    /**
+     * The same, about a reading other than the mint's own: a clock cell the
+     * composition anchors on the recording's timeline
+     * ({@code Composer#clocks}).
+     */
+    public static RootDomain resolved(RootMintRow row, String reading,
+                                      Map<String, RootDomain> declared) {
         RootDomain stated = declared == null ? null
                 : declared.get(row.rootId());
         String min = stated == null ? row.domainMin() : stated.min();
         String max = stated == null ? row.domainMax() : stated.max();
-        return of(row.rootId(), row.kind(), row.recordedValue(),
-                resolve(min, row.recordedValue()),
-                resolve(max, row.recordedValue()));
+        return of(row.rootId(), row.kind(), reading, resolve(min, reading),
+                resolve(max, reading));
     }
 
     /**

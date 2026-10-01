@@ -7,6 +7,10 @@ package edu.uva.liftlab.graphchecker.runtime;
  * itself is run by {@link JUnitLifecycle}.
  */
 public final class JUnitMethodRunner {
+    private static final Object ENDING = new Object();
+    /** Guarded by {@link #ENDING}: whether some thread ends the run. */
+    private static boolean ending;
+
     private JUnitMethodRunner() {
     }
 
@@ -76,11 +80,6 @@ public final class JUnitMethodRunner {
         }
         System.exit(code);
     }
-
-    /** Guards {@link #ending}. */
-    private static final Object ENDING = new Object();
-    /** Whether some thread is ending the run ({@link #exit}). */
-    private static boolean ending;
 
     /**
      * Closes the workload session; a refusal is printed, not thrown, so it

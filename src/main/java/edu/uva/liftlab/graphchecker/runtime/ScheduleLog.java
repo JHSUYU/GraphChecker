@@ -522,11 +522,7 @@ public final class ScheduleLog {
      * The event context: node, causal context and {@link Identity#handoffs},
      * so a key's k never counts two threads interleaved.
      */
-    static String contextHere() {
-        return contextOf(Identity.contextHere());
-    }
-
-    private static String contextOf(CausalContext context) {
+    static String contextOf(CausalContext context) {
         String node = Text.safe(RuntimeTraceContext.nodeHere());
         String handoffs = Identity.handoffs();
         return node + "|" + context.render()

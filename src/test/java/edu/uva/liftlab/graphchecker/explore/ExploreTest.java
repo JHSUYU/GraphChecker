@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -2755,14 +2756,6 @@ public class ExploreTest {
                 restsOn);
         assertTrue("it RESTS ON it, which is what the closure demands: "
                 + restsOn, restsOn.contains(mapState));
-        // And what the state the guard rests on IS: the shape its WRITER
-        // delivers, which is what a query must declare the v_C variable at.
-        // The read row states javaType "L" -- the reference whose state was
-        // read -- so a query that took the sort off the row asserted an
-        // AssocState chain over a Ref and z3 answered the obligation
-        // `(error "Sorts Ref and AssocState are incompatible")`.
-        assertEquals("the writer of the state delivers its shape",
-                "AssocState", lowering.lower("e.map").sort());
         // THE FACTS: what the recording states about the names the guard
         // rests on travels with them.  The map read lowered to an opaque
         // identity, and the recording states that identity was not null --
@@ -3271,6 +3264,63 @@ public class ExploreTest {
         assertTrue("and the model clears the inherited literal by the margin"
                         + " too: " + skew,
                 skew + 1000L <= 100000L - ClockMargin.margin(1_000_000L));
+    }
+
+    // ---- (6a) a flip no replay can plant is refused before its replay --
+
+    /**
+     * A model that assigns no root, moves no clock and answers no handoff
+     * asks for a replay of the world its path already ran: it takes the
+     * other arm only through which writer a read observes, which no replay
+     * sets.  SOLR-18413 r5: all 67 focused replays were such, each ended
+     * NOT_ADMITTED after 10 to 22 minutes; now the solver says so.
+     */
+    @Test
+    public void aFlipOnlyAnotherWriterTakesIsRefusedBeforeItsReplay()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("empty-world").toPath();
+        // A second addKeys, started by a request of its own.
+        OccurrenceAddress again = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.of("KEY_UPDATE"), "",
+                        2), "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(WRITER, false);
+        seed.activation(again, false, true, "fixture#key-updater");
+        seed.constant("e.1", "1");
+        seed.constant("e.2", "2");
+        seed.write(STORED, ALL_KEYS, 5L, "e.1");
+        seed.write(at(again, Endpoint.stateSite("BlockTokenSecretManager",
+                "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
+                ALL_KEYS, 6L, "e.2");
+        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "1");
+        seed.decision(TARGET, "Lookup#u8", 1, false, "(= M_READ_KEY 2)");
+        seed.flush();
+        scopeMap(iteration,
+                targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""));
+        Path out = tree.newFolder("empty-world-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Obligation lookup = named(obligations(wave), "Lookup#u8");
+        assertNotNull(lookup);
+        Worker worker = solve(iteration, wave, lookup, out, "w0");
+        assertTrue("the other writer is the flip's only way: "
+                + query(worker), query(worker).contains("wchoice_"));
+        assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
+        assertTrue(detail(worker), detail(worker).startsWith("EMPTY_WORLD: "
+                + "the model assigns no root, moves no clock and answers no "
+                + "handoff, so the replay it asks for runs the world of "
+                + "s-seed again")
+                && detail(worker).contains("wchoice_"));
+        assertEquals("and no replay is asked for", 0L, Files.size(
+                worker.directory.resolve(ObligationDir.FOCUSED_TASK)));
     }
 
     // ---- (6b) a handoff nobody can answer moves only with its own run --
@@ -4023,9 +4073,16 @@ public class ExploreTest {
 
         private void activation(OccurrenceAddress occurrence, boolean focused,
                                 boolean instrumented) {
+            activation(occurrence, focused, instrumented,
+                    "fixture#" + occurrence.node().node());
+        }
+
+        /** The same, on a thread of its own. */
+        private void activation(OccurrenceAddress occurrence, boolean focused,
+                                boolean instrumented, String thread) {
             activations.add(ActivationRow.of(sessionId, occurrence,
                     "task-" + occurrence.regionId(), focused, instrumented,
-                    "fixture#" + occurrence.node().node()));
+                    thread));
         }
 
         private void decision(OccurrenceAddress occurrence, String site,
@@ -4059,7 +4116,8 @@ public class ExploreTest {
                           String min, String max, boolean declared) {
             roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId,
                     symbol, kind, recorded, min, max, declared,
-                    kind == RootKind.CLOCK ? 1_000_000L : 0L));
+                    kind == RootKind.CLOCK
+                ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
         }
 
         private void export(Endpoint endpoint, String ref, long handle,

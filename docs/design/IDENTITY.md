@@ -74,14 +74,22 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   in both passes (`Identity#enterFrame`, `#exitFrame`). A frame's `k` is the k-th event at that
   site in the enclosing level under the current root hop (`State#nextSiteEvent`, keyed by level,
   root-hop token and site). It is not a loop-iteration count.
-- **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, a frame
-  (site, k-th start at that site) with the carrier; the started work claims it at its first
-  identity event or at its functional method's entry (`#claimStart`), so siblings started from one
-  site differ by that frame alone. Claimed starts nest.
+- **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, the starter's
+  index from its scope base followed by a frame (site, k-th start at that site) with the carrier;
+  the started work claims them at its first identity event or at its functional method's entry
+  (`#claimStart`). A task claimed on a pool's thread stands on all of them; a started thread
+  already stands on its creator's frames and adds the start frame alone. So siblings started from
+  one site differ by that frame's `k` or, started in two calls of the method holding the site, by
+  the frames above it. Claimed starts nest; a pool thread drops a finished task's start levels
+  before claiming the next. A start under a `Lost` context files no frame,
+  captures no scope and writes no event: its k would count arrivals, which nothing schedules.
 - **Scope base** (`Identity#scopeStart`, `Hop`): an occurrence's index starts at its context's
   origin: the inbound scope for `ANCHOR` (which pooled handler serves a request is scheduling, not
   identity), the scope start for `SCOPE_ROOT` (a request, a carried scope, a wake turn), the claimed
-  start frame for `STARTED_ROOT` (a daemon tick).
+  start frame for `STARTED_ROOT` (a daemon tick). A claimed start opens no scope
+  (`RuntimeTraceContext#claimCarried`): a task's index runs from the claiming thread's base (a pool
+  worker's own) through its start frame and holds none of the starter's frames, so two starts from
+  one site in two calls of the method holding it can share an address.
 - **Occurrence index** = frames from the scope base to the region entry (`#regionEnter`).
 - **Window rule** (`runtime/RecordingWindow`): the workload opens the window
   (`MessageDoors.startRecording`) and may close it (`stopRecording`); every count restarts at the
@@ -140,12 +148,15 @@ cross-run object identity.
 
 ## 5. Attribution: which node
 
-`runtime/Attribution#resolve`, three rules in order: the innermost explicit scope on the thread
+`runtime/Attribution#resolve`, four rules in order: the innermost explicit scope on the thread
 (a request, a registered inbound owner, a tick owner); else the innermost frame whose receiver is a
-registered object; else the node of whatever started this work (followed through starters, at most
-32 deep). All three failing is `null`, never a guess: the activation then has no address, and an
-activation under a `Lost` context keeps its degraded one; both are `LINEAGE_LOST` DIAGNOSTIC rows
-(`runtime/RowRuntime#beginActivation`).
+registered object, the receiver of the thread's last work entry (`Identity#claimStart`) counting
+as its outermost; else, on a thread that claimed no start, the explicit scope its creator stood in
+when it constructed it (`RuntimeTraceContext#inheritedSource`); else the node of whatever started
+this work (followed through starters, at most 32 deep). All four failing is `null`, never a guess:
+the activation is then attributed to `workload/unregistered`
+(`RuntimeTraceContext#activationSource`), so every activation has an address. An activation under
+a `Lost` context is a `LINEAGE_LOST` DIAGNOSTIC row (`runtime/RowRuntime#beginActivation`).
 
 The system's test adapter registers nodes through `MessageDoors.registerNode` (anchor plus aliases:
 the objects the node runs its work through), `registerSource`, `registerSourceAlias` and
@@ -170,9 +181,9 @@ another node than its address is `TASK_UNANSWERED` BLOCKING
 | work entries (where a start is claimed) | `Runnable.run`, `Callable.call`, `ForkJoinTask.exec`/`compute`, `Thread.run` |
 | timed waits | `Thread.sleep`, `TimeUnit.sleep`, `Object.wait(long)`, `LockSupport.parkNanos`, `Condition.awaitNanos`/`await(long, TimeUnit)`, `BlockingQueue.poll(long, TimeUnit)`; notifiers and untimed waits as signal state |
 
-A start captures the starter's scope with the carrier (`RuntimeTraceContext#captureAsync`) and
-writes a `START` event; the claim restores it (`RuntimeTraceContext#claimCarried`) and writes a
-`CLAIM` event. A pool's own worker thread
+A start (under a context that is not `Lost`, §3) captures the starter's scope with the carrier
+(`RuntimeTraceContext#captureAsync`) and writes a `START` event; the claim restores it
+(`RuntimeTraceContext#claimCarried`) and writes a `CLAIM` event. A pool's own worker thread
 inherits no scope (`runtime/PoolWorkers`: `ThreadPoolExecutor.addWorker`,
 `ForkJoinPool.createWorker`, Jetty `QueuedThreadPool.startThread`); each task carries its own.
 
@@ -235,6 +246,7 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
 `CLAIM`, `SEND` (with the producer endpoint), `RECV`, `WAKE` (a timed wait's timeout; a tick's
 begin), `END` (a tick's end), `INTERRUPT`. `context` = `<node>|<ctx render>[|<start frames>]`
+(the claimed starts' levels, each start's own frame after the starter's frames it was filed with)
 (`ScheduleLog#contextOf`, `Identity#handoffs`); `k` counts events per (kind, context, site). A
 `Lost` context, and a context anchored by an unawaited receipt, make no event. `mark` rows state
 where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS, at}` states the run
@@ -245,7 +257,9 @@ order:
 
 - the order is the source session's prefix (`CAUSYNTH_SCHEDULE_PREFIX` / `causynth.schedule.prefix`)
   then its rest (`schedule_suffix.jsonl`), cut by `explore/SchedulePrefix` at the task's target;
-- an event takes the earliest open or given-up slot of its key; with none it runs free. A slot
+- an event takes the earliest open or given-up slot of its key that its own occurrence made, else
+  the earliest of its key (`ScheduleLog#slotOf`: two concurrent RPCs under one context share a key
+  and must not swap slots); with none it runs free. A slot
   before the cut, or a `WAKE` slot anywhere, is held until every earlier slot is settled;
   `INTERRUPT` is never held;
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
