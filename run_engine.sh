@@ -101,12 +101,12 @@ workflow_config_keys=(
   # case's, measured (each replay states its peak), and a campaign that
   # states none is refused.
   "obligation_memory_mb CAUSYNTH_OBLIGATION_MEMORY_MB krp -"
-  # The heap, in MB, of the head's own engine JVMs -- analysis, planner,
-  # composer, decision -- the largest of which hold the whole corpus, and the
-  # most a host's solver is given.  Empty: the launcher's default.  A case
-  # whose corpus outgrows it states its own (hdfs-11741: 202 sessions by wave
-  # 4 ran the planner out of 8 GB).  The import gate holds one session and
-  # takes its own (campaign_import_gate_heap_mb).
+  # The most heap, in MB, an engine JVM of the head is given -- one whose
+  # main has no measured need starts there, and one that runs out of its
+  # need runs again there (engine_java) -- and the heap of a solver asked
+  # again (campaign_solve_obligation_alone).  Empty: the launcher's default.
+  # A case whose corpus outgrows it states its own (hdfs-11741: 202 sessions
+  # by wave 4 ran the planner out of 8 GB).
   "engine_memory_mb GRAPH_CHECKER_ENGINE_MEMORY_MB krp -"
   # The stage a measurement run stops after, once its measurement is
   # complete.  `IMPORT` returns successfully right after the IMPORT stage:
@@ -454,12 +454,82 @@ run_in_directory() {
   (cd "${directory}" && "$@")
 }
 
-# The engine JVM, with the heap the case states (engine_memory_mb, else the
-# launcher's 8 GB) -- on a campaign's head charged to its host for as long as
-# a JVM takes to reach its size (campaign_head_charged).
+# The engine JVM, started at what its main measurably needs and charged that
+# -- on a campaign's head, for as long as a JVM takes to reach its size
+# (campaign_head_charged) -- and at the case's engine heap (engine_memory_mb,
+# else the launcher's 8 GB) only when it outgrows that.  A head that charged
+# every engine JVM 16 GB waited 35-69 minutes for room it did not use: the
+# start needs its charge plus the 30 % reserve free (fast2, solr-18406 and
+# hdfs-11741 planners).  The arguments are the JVM's own: options, -cp
+# <classpath>, the main class, its arguments.
+#
+# A main with a measured need (campaign_engine_need_mb, or the caller's
+# engine_need_mb) runs at it with -XX:+ExitOnOutOfMemoryError; one that runs
+# out of heap there (the JVM's exit 3) runs once more at the engine heap,
+# saying so, and every later start of that main in this shell starts there.
+# Its standard output is passed on only from the run that finished, so a
+# reader of it never sees the first run's half.  A main without a need, or
+# whose need the engine heap does not exceed, runs at the engine heap.
+campaign_engine_outgrown=""
+campaign_jvm_out_of_heap_status=3
 engine_java() {
-  campaign_head_charged "${engine_memory_mb:-8192}" 120 \
-    env "$(config_env_assignment engine_memory_mb)" "${java_bin}" "$@"
+  local heap=${engine_memory_mb:-8192} main="" need index next status=0
+  local out
+  for (( index = 1; index < $#; index++ )); do
+    [[ "${!index}" == -cp ]] || continue
+    next=$((index + 2))
+    main=${!next}
+    break
+  done
+  need=${engine_need_mb:-$(campaign_engine_need_mb "${main}")}
+  if [[ -z "${need}" ]] || (( need >= heap )) \
+      || [[ " ${campaign_engine_outgrown} " == *" ${main} "* ]]; then
+    campaign_head_charged "${heap}" 120 \
+      env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" "$@"
+    return
+  fi
+  out=$(mktemp) || return
+  campaign_head_charged "${need}" 120 \
+    env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${need}" "${java_bin}" \
+    -XX:+ExitOnOutOfMemoryError "$@" >"${out}" || status=$?
+  if (( status != campaign_jvm_out_of_heap_status )); then
+    cat -- "${out}"
+    rm -f -- "${out}"
+    return "${status}"
+  fi
+  rm -f -- "${out}"
+  campaign_engine_outgrown+=" ${main}"
+  printf '[campaign] %s ran out of its %s MB heap; run again at %s MB\n' \
+    "${main##*.}" "${need}" "${heap}" >&2
+  campaign_head_charged "${heap}" 120 \
+    env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" "$@"
+}
+
+# The heap, in MB, an engine main measurably needs, or nothing for the
+# engine heap: the largest need over the cases measured, so no case's run
+# lives at the edge of its heap (a JVM near its cap can collect for half an
+# hour before it gives up).  Measured offline over round i1's ten cases,
+# every stage at a 4 GB and an 8 GB cap (offline-ab.sh AB_HEAP_MB, peak RSS):
+#   static pass (GraphCheckerMain; the weave   2.3-2.8 GB at 4 GB, all pass
+#   is the same main)
+#   trace aggregation, scheduler, CONFIRM     0.1-0.5 GB
+#   (CausynthTraceRecorder, ConcolicScheduler, ConfirmMain; LineageScan 0.15
+#   GB sampled live)
+#   planner (ExploreMain)                     0.2-3 GB, but hdfs-17960 5.9-7.8
+#                                             GB and hdfs-11741 past 4 GB: at
+#                                             4 GB 17960 collected for 30 min
+#   composer (ComposeMain)                    1.4-4.3 GB; hdfs-11741 9.1 GB at
+#                                             8 GB, and m1-11741 ran out of 8
+#   ImportGateMain sizes itself (campaign_import_gate_heap_mb).  The mains
+# not listed (ScopeGrowth, VerifyWovenClasses, ExposedRegionPlanMain,
+# PlanUnion) are not measured yet and keep the engine heap.
+campaign_engine_need_mb() {
+  case "$1" in
+    *.GraphCheckerMain) echo 4096 ;;
+    *.CausynthTraceRecorder|*.ConcolicScheduler|*.ConfirmMain|*.LineageScan)
+      echo 2048 ;;
+    *.ExploreMain|*.ComposeMain) echo 8192 ;;
+  esac
 }
 
 run_java_main() {
@@ -2514,12 +2584,12 @@ campaign_import_session() {
 # the whole corpus would, each row once (contract.ImportGateMain).  One
 # caller at a time: the campaign's head.
 #
-# The gate holds one session at a time, so its heap -- and its charge on the
-# head's host -- is what the corpus's largest session takes
-# (campaign_import_gate_heap_mb), not the case's engine heap, which is sized
-# for a JVM holding the whole corpus: charged 16 GB, the gate of one 6 MB
-# session waited 7 minutes for room on a busy head, and a wave's gate 30
-# (accept-i1-solr-18406).
+# The gate holds one session at a time, so its measured need -- its heap and
+# its charge on the head's host (engine_java) -- is what the corpus's
+# largest session takes (campaign_import_gate_heap_mb), not the case's
+# engine heap, which is sized for a JVM holding the whole corpus: charged
+# 16 GB, the gate of one 6 MB session waited 7 minutes for room on a busy
+# head, and a wave's gate 30 (accept-i1-solr-18406).
 #
 # Append-only, into the campaign's own gap file: a gap row a later stage
 # overwrites was never evidence.
@@ -2527,7 +2597,7 @@ campaign_import_gate() {
   local iteration_dir=$1 iteration_id=$2
   local summary=${3:-${iteration_dir}/import_gate.json}
   local gaps="${iteration_dir}/campaign_gaps.jsonl"
-  local blocking violations first session heap
+  local blocking violations first session
   local -a gate=()
   shift $(( $# < 3 ? $# : 3 ))
   for session in "$@"; do
@@ -2537,8 +2607,8 @@ campaign_import_gate() {
         "not a session directory of ${iteration_dir}/sessions"
     gate+=(--gate "$(basename -- "${session}")")
   done
-  heap=$(campaign_import_gate_heap_mb "${iteration_dir}/sessions")
-  engine_memory_mb=${heap} run_java_main \
+  engine_need_mb=$(campaign_import_gate_heap_mb "${iteration_dir}/sessions") \
+    run_java_main \
     edu.uva.liftlab.graphchecker.contract.ImportGateMain \
     --sessions "${iteration_dir}/sessions" "${gate[@]}" \
     --gated "${iteration_dir}/import_gated.txt" \
