@@ -3755,8 +3755,9 @@ did not stage"
     read -r worker staged session <<<"${entry}"
     [[ "$(jq -r '.verdict // ""' "${worker}/obligation_result.jsonl")" \
         == ADMITTED ]] || continue
-    jq -e --argjson anchors "${stream_anchors}" \
-      'select(.observedFatal == true
+    # One answer over every row: jq -e reads the last input's output alone.
+    jq -e -s --argjson anchors "${stream_anchors}" \
+      'any(.[]; .observedFatal == true
               and (.occurrence as $at | any($anchors[]; . == $at)))' \
       "${sessions}/${session}/targets.jsonl" >/dev/null 2>&1 || continue
     witnesses+=("${session}")

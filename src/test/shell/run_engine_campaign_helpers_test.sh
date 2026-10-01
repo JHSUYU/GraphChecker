@@ -1709,7 +1709,7 @@ stream_propose() {
 }
 # What a worker leaves: its answer, and the session it staged when it names
 # one -- with `fatal`, one whose target row at the declared occurrence
-# observed the fatal.
+# observed the fatal, before a row of another occurrence that did not.
 stream_answer() {
   local worker=$1 id=$2 verdict=$3 session=${4:-} fatal=${5:-}
   if [[ -n "${session}" ]]; then
@@ -1719,7 +1719,8 @@ stream_answer() {
         role: "FOCUSED", obligationIds: [$id]}' \
       >"${worker}/sessions/${session}/manifest.json"
     jq -n -c --argjson fatal "$([[ -n "${fatal}" ]] && echo true \
-        || echo false)" '{occurrence: {node: "anchor"}, observedFatal: $fatal}' \
+        || echo false)" '{occurrence: {node: "anchor"}, observedFatal: $fatal},
+        {occurrence: {node: "elsewhere"}, observedFatal: false}' \
       >"${worker}/sessions/${session}/targets.jsonl"
   fi
   jq -n -c --arg id "${id}" --arg verdict "${verdict}" \
