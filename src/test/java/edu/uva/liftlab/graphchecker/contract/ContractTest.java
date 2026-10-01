@@ -442,7 +442,7 @@ public class ContractTest {
                 null);
         RootMintRow minted = RootMintRow.of("s-17897-1", 2L, producer,
                 "SERIAL_NO", "root_serial_no", RootKind.INTEGRAL, "3", "3",
-                "6", true, 0L);
+                "6", true, null, 0L);
         TargetRow target = TargetRow.of("s-17897-1", 15L, anchor,
                 "BlockTokenSecretManager#retrieve#61", "(= key nil)", true,
                 true);
@@ -533,6 +533,17 @@ public class ContractTest {
         assertFalse(RowCodec.writeRead(read).has("unnamedWriter"));
         assertEquals(minted, RowCodec.readRootMint(
                 reline(RowCodec.writeRootMint(minted))));
+        // A clock states the instant its node's clock ran it at and how far
+        // that ran off the host's reading, the reading a skew is off; a
+        // reading at the host's own instant states no skew.
+        RootMintRow ranOn = RootMintRow.of("s-17897-1", 16067L, producer,
+                "CLOCK.nn0", "M_J_clock", RootKind.CLOCK, "1790775789773",
+                null, null, true, Clock.of(1_000_000L, Clock.WALL), 3_600_000L);
+        assertEquals(ranOn, RowCodec.readRootMint(
+                reline(RowCodec.writeRootMint(ranOn))));
+        assertEquals("1790772189773", ranOn.hostReading());
+        assertFalse(RowCodec.writeRootMint(minted).has(
+                RootMintRow.CLOCK_SKEW));
         assertEquals(target, RowCodec.readTarget(
                 reline(RowCodec.writeTarget(target))));
         assertEquals(gap, RowCodec.readGap(reline(RowCodec.writeGap(gap))));
@@ -759,12 +770,12 @@ public class ContractTest {
         Rows undeclared = clean();
         undeclared.roots.set(0, RootMintRow.of("s-gate", 2L,
                 undeclared.anchor, "CASE.MARKER", "M_Z_marker",
-                RootKind.MARKER, "true", null, null, false, 0L));
+                RootKind.MARKER, "true", null, null, false, null, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=declared", undeclared);
         Rows unspelled = clean();
         unspelled.roots.set(0, RootMintRow.of("s-gate", 2L, unspelled.anchor,
                 "CASE.MARKER", "M_Z_marker", RootKind.MARKER, "1", null,
-                null, true, 0L));
+                null, true, null, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=recordedValue",
                 unspelled);
         // 9: phi is published in the FATAL polarity, so an observed fatal
@@ -878,6 +889,11 @@ public class ContractTest {
         assertTrue(declared.keys().get(0).valueArray());
         assertEquals(0, declared.keys().get(1).pairsArgument());
         assertTrue(declared.transports().get(1).store());
+        // A request/response transport's header is bounded unless it says
+        // otherwise; a store's versions travel in no header.
+        assertEquals(WireDeclarations.DEFAULT_ENVELOPE_BYTES,
+                declared.transports().get(0).envelopeBytes());
+        assertEquals(0, declared.transports().get(1).envelopeBytes());
         assertEquals("SOLR_HTTP", declared.exchanges().get(0).transport());
 
         // One row bent per case (at its index, or added past the last).
@@ -1065,7 +1081,7 @@ public class ContractTest {
         // A marker the session minted true, and a term that is true at it.
         rows.roots.add(RootMintRow.of("s-gate", 2L, rows.anchor,
                 "CASE.MARKER", "M_Z_marker", RootKind.MARKER, "true", null,
-                null, true, 0L));
+                null, true, null, 0L));
         rows.expressions.put("EXPR.0000000000000001",
                 binary("!=", symbol("M_Z_marker"), literal("Y_Z_0")));
         rows.expressions.put("EXPR.0000000000000002",

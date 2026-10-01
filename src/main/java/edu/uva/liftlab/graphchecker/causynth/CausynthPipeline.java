@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ObservedSite;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
@@ -7,6 +8,7 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.I
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.contract.WireDeclarations;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
@@ -164,9 +166,9 @@ public final class CausynthPipeline {
         // SYMBOL-SCOPE §2.3: over the door-woven bodies, before any hook is
         // woven, so site and guard ids are the unit indices a replay decides
         // at.
-        Map<String, Long> clockTicks = RootCatalog.clockTicks(result.edges);
+        Map<String, Clock> clocks = RootCatalog.clocks(result.edges);
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
-                result.edges, result.regions, clockTicks,
+                result.edges, result.regions, clocks,
                 method -> !CausynthStaticFacts.applicationMethod(method),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField);
@@ -175,7 +177,7 @@ public final class CausynthPipeline {
                         StaticScopeMap.siteIds(scopeSites)));
         List<JsonObject> frontier = ScopeFrontier.rows(result.edges,
                 CausynthStaticFacts::analysedMethod,
-                clockTicks.keySet());
+                clocks.keySet());
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
                 target.outputDir, result, scopeMap, frontier);
@@ -478,6 +480,7 @@ public final class CausynthPipeline {
         instrumentConcolicLoopBounds(envelope.loopBoundMethods,
                 envelope.loopBound, envelope.fixedCountLoopSites, refs);
         instrumentConcolicCommunicationHandoffs(campaign, refs);
+        CodecWeave.apply(wireDeclarations(), refs);
         envelope.freezeRootLoops();
         for (InstrumentationPlan plan : campaign) {
             instrumentConcolicRegion(plan, refs, envelope);
@@ -495,6 +498,16 @@ public final class CausynthPipeline {
         instrumentConcolicBranches(envelope.methods, refs);
         // Same scope as the recording; LAST, to bracket every inner hook.
         instrumentApplicationScope(refs);
+    }
+
+    /** The codec declarations this weave was given (none: no codec). */
+    private static WireDeclarations wireDeclarations() {
+        try {
+            return WireDeclarations.configured();
+        } catch (IOException unreadable) {
+            throw new IllegalStateException("CODEC_DECLARATIONS_UNREADABLE: "
+                    + unreadable.getMessage(), unreadable);
+        }
     }
 
     /** Opens every skeleton root's index region, as the recording does. */
@@ -1135,7 +1148,7 @@ public final class CausynthPipeline {
     }
 
     /** The original returns from index {@code from} on (none when -1). */
-    private static List<Unit> originalReturns(List<Unit> originalUnits,
+    static List<Unit> originalReturns(List<Unit> originalUnits,
                                               int from) {
         List<Unit> returns = new ArrayList<>();
         for (int index = from; index >= 0 && index < originalUnits.size();
@@ -2742,7 +2755,7 @@ public final class CausynthPipeline {
                 ? current.get(requestedIndex) : null;
     }
 
-    private static List<Unit> snapshotUnits(Body body) {
+    static List<Unit> snapshotUnits(Body body) {
         List<Unit> units = new ArrayList<>();
         for (Unit unit : body.getUnits()) {
             units.add(unit);
@@ -3020,7 +3033,7 @@ public final class CausynthPipeline {
      *
      * @return the unit after {@code prologue}, or null (no trap) at body end
      */
-    private static Unit afterWovenPrologue(Body body, List<Unit> prologue) {
+    static Unit afterWovenPrologue(Body body, List<Unit> prologue) {
         if (prologue == null || prologue.isEmpty()) return null;
         return body.getUnits().getSuccOf(prologue.get(prologue.size() - 1));
     }
@@ -3044,7 +3057,7 @@ public final class CausynthPipeline {
      * Appends a catch-all handler from {@code start} to the body end: bind
      * the throwable, run {@code report}, rethrow.  No trap at a null start.
      */
-    private static void appendCatchAll(Body body, Unit start,
+    static void appendCatchAll(Body body, Unit start,
                                        String localName,
                                        BiConsumer<List<Unit>, Local> report) {
         if (start == null) {
@@ -3072,14 +3085,14 @@ public final class CausynthPipeline {
                 .declaringClass().getName());
     }
 
-    private static void insertBeforeSequence(Body body, Unit anchor,
+    static void insertBeforeSequence(Body body, Unit anchor,
                                              List<Unit> units) {
         for (Unit unit : units) {
             body.getUnits().insertBefore(unit, anchor);
         }
     }
 
-    private static void insertBeforeOrAppendNoRedirect(Body body, Unit anchor,
+    static void insertBeforeOrAppendNoRedirect(Body body, Unit anchor,
                                                         List<Unit> units) {
         if (anchor == null) {
             for (Unit unit : units) {
@@ -3092,7 +3105,7 @@ public final class CausynthPipeline {
         }
     }
 
-    private static void insertAfterSequence(Body body, Unit anchor,
+    static void insertAfterSequence(Body body, Unit anchor,
                                             List<Unit> units) {
         Unit current = anchor;
         for (Unit unit : units) {
@@ -3335,7 +3348,7 @@ public final class CausynthPipeline {
         return false;
     }
 
-    private enum Hook {
+    enum Hook {
         ENTER_METHOD,
         RECORD_METHOD_ARGUMENT,
         BEGIN_CALL,
@@ -3374,6 +3387,12 @@ public final class CausynthPipeline {
         MATERIALIZE_FIELD,
         EXPORT_COMMUNICATION_LEAF,
         ATTACH_COMMUNICATION_LEAF,
+        ENTER_CODEC,
+        EXIT_CODEC,
+        ENCODED_BY_CODEC,
+        DECODED_BY_CODEC,
+        BEGIN_CODEC_EXCHANGE,
+        END_CODEC_EXCHANGE,
         PUSH_OUTBOUND_MESSAGE_FRAME,
         POP_OUTBOUND_MESSAGE_FRAME,
         PUSH_INBOUND_MESSAGE_FRAME,
@@ -3393,7 +3412,7 @@ public final class CausynthPipeline {
     }
 
     /** Typed registry for static instrumentation hooks. */
-    private static final class HookCatalog {
+    static final class HookCatalog {
         private final EnumMap<Hook, SootMethodRef> refs =
                 new EnumMap<>(Hook.class);
 
@@ -3430,14 +3449,13 @@ public final class CausynthPipeline {
          * (the recording has none).
          * @return the hook call
          */
-        private Unit bracket(Collection<Unit> units, Hook hook,
-                             Value... args) {
+        Unit bracket(Collection<Unit> units, Hook hook, Value... args) {
             return bracketed(units, invoke(ref(hook), args));
         }
 
         /** Appends {@code target = hook(args)}, the same way. */
-        private Unit bracket(Collection<Unit> units, Value target, Hook hook,
-                             Value... args) {
+        Unit bracket(Collection<Unit> units, Value target, Hook hook,
+                     Value... args) {
             return bracketed(units, invokeTo(target, ref(hook), args));
         }
 
@@ -3559,6 +3577,19 @@ public final class CausynthPipeline {
                     .add(Hook.ATTACH_COMMUNICATION_LEAF, runtime,
                             "attachCommunicationLeaf", VoidType.v(), string,
                             object, string, string)
+                    .add(Hook.ENTER_CODEC, runtime, "enterCodec",
+                            IntType.v(), string)
+                    .add(Hook.EXIT_CODEC, runtime, "exitCodec", VoidType.v(),
+                            string, IntType.v())
+                    .add(Hook.ENCODED_BY_CODEC, runtime, "encodedByCodec",
+                            VoidType.v(), string, IntType.v(), object, object,
+                            BooleanType.v())
+                    .add(Hook.DECODED_BY_CODEC, runtime, "decodedByCodec",
+                            object, string, IntType.v(), object, object)
+                    .add(Hook.BEGIN_CODEC_EXCHANGE, runtime,
+                            "beginCodecExchange", LongType.v(), string)
+                    .add(Hook.END_CODEC_EXCHANGE, runtime,
+                            "endCodecExchange", VoidType.v(), LongType.v())
                     .add(Hook.PUSH_OUTBOUND_MESSAGE_FRAME, runtime,
                             "pushOutboundMessageFrame", VoidType.v())
                     .add(Hook.POP_OUTBOUND_MESSAGE_FRAME, runtime,

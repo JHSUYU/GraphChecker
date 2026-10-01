@@ -1,7 +1,11 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/concolicMngr.hpp"
+#include "classfile/javaClasses.hpp"
+#include "classfile/systemDictionary.hpp"
 #include "classfile/vmSymbols.hpp"
+#include "concolic/utils.hpp"
+#include "memory/resourceArea.hpp"
 #include "oops/typeArrayKlass.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/exp/containerExpression.hpp"
@@ -612,18 +616,13 @@ bool read_array_deque(oop deque, MemberWalk *walk) {
   return true;
 }
 
-} // anonymous namespace
-
-bool ContainerSupport::read_concrete_members(oop container,
-                                             std::vector<oop> *keys,
-                                             std::vector<oop> *values,
-                                             const char **unsupported_class,
-                                             bool *over_bound) {
+// read_concrete_members, stopping one past `limit` members.
+bool read_members(oop container, std::vector<oop> *keys,
+                  std::vector<oop> *values, size_t limit,
+                  const char **unsupported_class, bool *over_bound) {
   if (unsupported_class != NULL) *unsupported_class = NULL;
   if (over_bound != NULL) *over_bound = false;
   if (container == NULL || keys == NULL || values == NULL) return false;
-  // One past the snapshot bound is enough to know a walk is over it.
-  const size_t limit = (size_t) ConcolicMngr::initialSnapshotMaxEntries();
 
   if (container->is_array()) {
     if (!container->is_objArray()) {
@@ -643,23 +642,23 @@ bool ContainerSupport::read_concrete_members(oop container,
   MemberWalk positional(NULL, values, limit);
   MemberWalk *walk = &positional;
   bool read = false;
-  switch (capability(container)) {
-    case CAPABILITY_HASH_MAP:
+  switch (ContainerSupport::capability(container)) {
+    case ContainerSupport::CAPABILITY_HASH_MAP:
       walk = &associative;
       read = read_hash_map(container, walk);
       break;
-    case CAPABILITY_CONCURRENT_MAP:
+    case ContainerSupport::CAPABILITY_CONCURRENT_MAP:
       walk = &associative;
       read = read_concurrent_hash_map(container, walk);
       break;
-    case CAPABILITY_HASHTABLE:
+    case ContainerSupport::CAPABILITY_HASHTABLE:
       walk = &associative;
       read = read_hashtable(container, walk);
       break;
-    case CAPABILITY_HASH_SET:
+    case ContainerSupport::CAPABILITY_HASH_SET:
       read = read_hash_set(container, walk, limit);
       break;
-    case CAPABILITY_INDEXED:
+    case ContainerSupport::CAPABILITY_INDEXED:
       if (klass_name_is(container, "java/util/ArrayList")) {
         read = read_array_list(container, walk);
       } else if (klass_name_is(container, "java/util/ArrayDeque")) {
@@ -682,6 +681,19 @@ bool ContainerSupport::read_concrete_members(oop container,
         : container->klass()->name()->as_C_string();
   }
   return false;
+}
+
+} // anonymous namespace
+
+bool ContainerSupport::read_concrete_members(oop container,
+                                             std::vector<oop> *keys,
+                                             std::vector<oop> *values,
+                                             const char **unsupported_class,
+                                             bool *over_bound) {
+  // One past the snapshot bound is enough to know a walk is over it.
+  return read_members(container, keys, values,
+                      (size_t) ConcolicMngr::initialSnapshotMaxEntries(),
+                      unsupported_class, over_bound);
 }
 
 int ContainerSupport::install_receiver_snapshot(
@@ -1163,13 +1175,14 @@ Expression *ContainerSupport::concrete_value(oop value) {
 }
 
 Expression *ContainerSupport::semantic_value(oop value) {
-  if (value == NULL || ConcolicMngr::ctx == NULL) return NULL;
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
+  if (value == NULL || heap == NULL) return NULL;
   if (value->is_array()) {
-    SymArr *array = ConcolicMngr::ctx->find_sym_array((arrayOop)value);
+    SymArr *array = heap->find_sym_array((arrayOop)value);
     return array != NULL && array->has_semantic_expression()
         ? array->get_ref_exp() : NULL;
   }
-  SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(value);
+  SymInstance *instance = heap->find_sym_inst(value);
   return instance != NULL && instance->has_semantic_expression()
       ? instance->get_ref_exp() : NULL;
 }
@@ -1246,39 +1259,62 @@ bool ContainerSupport::recorded_element(arrayOop heap_array, SymArr *array,
                                         Expression *position, jint index,
                                         Expression **stored) {
   jint at = index;
-  if (array == NULL || state == NULL || !array->named()
-      || array->has_semantic_expression()
-      || (position != NULL && !position->concrete_int_value(&at))) {
-    return false;
+  *stored = NULL;
+  if (position != NULL && !position->concrete_int_value(&at)) return false;
+  switch (element_answer(heap_array, array, state, at, stored)) {
+    case MEMBER_UNDECIDED:
+      return false;
+    case MEMBER_STALE:
+      // A write no hook saw (JNI, a muted store) made the log stale.  The
+      // heap then decides, as a concrete read, and the container's log, if
+      // it has one, is marked incomplete by name -- detected, never silently
+      // the stale value.
+      mark_state_gap(heap_array, "UNHOOKED_ELEMENT_WRITE");
+      *stored = NULL;
+      return true;
+    default:
+      return true;
+  }
+}
+
+ContainerSupport::MemberAnswer ContainerSupport::element_answer(
+    arrayOop heap_array, SymArr *array, Expression *state, jint index,
+    Expression **stored) {
+  *stored = NULL;
+  if (heap_array == NULL || array == NULL || state == NULL
+      || !array->named() || array->has_semantic_expression()
+      || index < 0 || index >= heap_array->length()) {
+    return MEMBER_UNDECIDED;
   }
   // The state itself, not what a consumer boundary around it delegates to:
   // the boundary is the cross-process provenance of every element.
   ContainerExpression *relation = state->as_container_expression();
   ElementWord word;
-  if (relation != state || !relation->stored_at(at, stored, &word)) {
-    return false;
+  if (relation != state || !relation->stored_at(index, stored, &word)) {
+    *stored = NULL;
+    return MEMBER_UNDECIDED;
   }
-  if (*stored == NULL || !word.stated) return true;
-  // The element must still hold what the write left: a write no hook saw
-  // (JNI, a muted store) made the log stale.  The heap then decides, as a
-  // concrete read, and the container's log, if it has one, is marked
-  // incomplete by name -- detected, never silently the stale value.
+  if (*stored == NULL) return MEMBER_HEAP;
+  if (!word.stated) return MEMBER_RECORDED;
+  // The element must still hold what the write left.
   jlong held = 0;
   if (heap_array->is_objArray()) {
-    oop element = objArrayOop(heap_array)->obj_at(at);
+    oop element = objArrayOop(heap_array)->obj_at(index);
     held = element == NULL ? 0 : (jlong) element->get_sym_rid();
   } else {
-    held = SharedFieldVersions::element_bits(heap_array, at).bits;
+    held = SharedFieldVersions::element_bits(heap_array, index).bits;
   }
   if (held != word.bits) {
-    mark_state_gap(heap_array, "UNHOOKED_ELEMENT_WRITE");
     *stored = NULL;
-    return true;
+    return MEMBER_STALE;
   }
   // A concrete store left exactly the heap's word: the element is concrete
   // (a constant as an expression would read as symbolic downstream).
-  if (!word.symbolic) *stored = NULL;
-  return true;
+  if (!word.symbolic) {
+    *stored = NULL;
+    return MEMBER_HEAP;
+  }
+  return MEMBER_RECORDED;
 }
 
 void ContainerSupport::attach_result(oop result, Expression *expression,
@@ -1331,6 +1367,217 @@ void ContainerSupport::publish_attached_state(oop destination,
                                 element_type),
         NULL, SharedFieldVersions::VERSION_WRITE);
   }
+}
+
+// ---------------------------------------------------------------------------
+// One member, as the recording states it (a peek: nothing is recorded).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+enum KeyMatch { KEY_EQUAL, KEY_DIFFERENT, KEY_UNKNOWN };
+
+// Whether the key a recorded PUT/REMOVE names is `key`, decided concretely.
+// A constant String or int is compared by value, the key object's own
+// expression by identity; anything else (a symbolic key) cannot be told.
+KeyMatch key_match(Expression *recorded, oop key) {
+  if (recorded == NULL) return KEY_UNKNOWN;
+  std::string text;
+  if (recorded->concrete_string_value(&text)) {
+    if (key == NULL || key->klass() != SystemDictionary::String_klass()) {
+      return KEY_DIFFERENT;
+    }
+    ResourceMark rm;
+    return text == OopUtils::java_string_to_c(key) ? KEY_EQUAL
+                                                   : KEY_DIFFERENT;
+  }
+  jint number = 0;
+  if (recorded->concrete_int_value(&number)) {
+    if (key == NULL || key->klass() == SystemDictionary::String_klass()) {
+      return KEY_DIFFERENT;
+    }
+    jvalue value;
+    if (java_lang_boxing_object::get_value(key, &value) != T_INT) {
+      return KEY_UNKNOWN;
+    }
+    return value.i == number ? KEY_EQUAL : KEY_DIFFERENT;
+  }
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
+  SymInstance *own = key == NULL || key->is_array() || heap == NULL
+      ? NULL : heap->find_sym_inst(key);
+  return own != NULL && own->get_ref_exp() == recorded ? KEY_EQUAL
+                                                       : KEY_UNKNOWN;
+}
+
+// Whether two keys are one key to a JDK map: the same object, two Strings of
+// one content, or two boxes of one class and value.  Any other class is
+// matched by identity alone (its equals() is not run here).
+bool same_key(oop left, oop right) {
+  if (left == right) return true;
+  if (left == NULL || right == NULL || left->klass() != right->klass()) {
+    return false;
+  }
+  if (left->klass() == SystemDictionary::String_klass()) {
+    return java_lang_String::equals(left, right);
+  }
+  jvalue a;
+  jvalue b;
+  const BasicType type = java_lang_boxing_object::get_value(left, &a);
+  if (type == T_ILLEGAL || java_lang_boxing_object::get_value(right, &b)
+                               != type) {
+    return false;
+  }
+  switch (type) {
+    case T_BOOLEAN: return a.z == b.z;
+    case T_BYTE:    return a.b == b.b;
+    case T_CHAR:    return a.c == b.c;
+    case T_SHORT:   return a.s == b.s;
+    case T_INT:     return a.i == b.i;
+    case T_LONG:    return a.j == b.j;
+    // Float.equals and Double.equals compare the bits.
+    case T_FLOAT:   return jint_cast(a.f) == jint_cast(b.f);
+    case T_DOUBLE:  return jlong_cast(a.d) == jlong_cast(b.d);
+    default:        return false;
+  }
+}
+
+// The one relation a chain node is, never a boundary around one.
+ContainerExpression *own_relation(Expression *node, const char *shape) {
+  ContainerExpression *relation =
+      node == NULL ? NULL : node->as_container_expression();
+  if (relation == NULL || relation != node
+      || relation->get_shape() != shape) {
+    return NULL;
+  }
+  return relation;
+}
+
+}  // namespace
+
+ContainerSupport::MemberAnswer ContainerSupport::entry_answer(
+    Expression *state, oop key, Expression **stored) {
+  *stored = NULL;
+  Expression *cursor = state;
+  for (int depth = 0; depth < CONTAINER_CHAIN_DEPTH_LIMIT; ++depth) {
+    ContainerExpression *relation = own_relation(cursor, "ASSOCIATIVE");
+    if (relation == NULL) return MEMBER_UNDECIDED;
+    const std::string &operation = relation->get_operation();
+    const exp_list_t &arguments = relation->get_arguments();
+    // An opaque root: what it held is the heap's.  A stated base or a
+    // clear under every recorded PUT of the key contradicts the entry the
+    // heap holds.
+    if (operation == "STATE") return MEMBER_HEAP;
+    if (operation == "SNAPSHOT_BASE" || operation == "CLEAR") {
+      return MEMBER_STALE;
+    }
+    const bool put = operation == "PUT" && arguments.size() == 2;
+    const bool removal = (operation == "REMOVE" || operation == "REMOVE_IF")
+        && arguments.size() == 1;
+    if (!put && !removal) return MEMBER_UNDECIDED;
+    const KeyMatch match = key_match(arguments[0], key);
+    if (match == KEY_UNKNOWN) return MEMBER_UNDECIDED;
+    if (match == KEY_EQUAL) {
+      if (put) {
+        *stored = arguments[1];
+        return *stored == NULL ? MEMBER_HEAP : MEMBER_RECORDED;
+      }
+      // A recorded removal the heap's entry outlived; a guarded one may
+      // not have fired, which only the READ can say.
+      return operation == "REMOVE" ? MEMBER_STALE : MEMBER_UNDECIDED;
+    }
+    cursor = relation->get_receiver();
+  }
+  return MEMBER_UNDECIDED;
+}
+
+ContainerSupport::MemberAnswer ContainerSupport::position_answer(
+    Expression *state, jint position, int size, Expression **stored) {
+  *stored = NULL;
+  std::vector<ContainerExpression *> history;
+  Expression *cursor = state;
+  bool based = false;
+  for (int depth = 0; depth < CONTAINER_CHAIN_DEPTH_LIMIT && !based;
+       ++depth) {
+    ContainerExpression *relation = own_relation(cursor, "INDEXED");
+    if (relation == NULL || relation->get_operation() == "STATE") {
+      return MEMBER_UNDECIDED;
+    }
+    if (relation->get_operation() == "SNAPSHOT_BASE") {
+      based = true;
+    } else {
+      history.push_back(relation);
+      cursor = relation->get_receiver();
+    }
+  }
+  if (!based) return MEMBER_UNDECIDED;
+  // Replayed oldest first: the snapshot's APPENDs, then every mutation, each
+  // at the concrete position it names.
+  std::vector<Expression *> members;
+  for (size_t step = history.size(); step > 0; --step) {
+    ContainerExpression *relation = history[step - 1];
+    const std::string &operation = relation->get_operation();
+    const exp_list_t &arguments = relation->get_arguments();
+    jint at = -1;
+    const bool positioned = !arguments.empty() && arguments[0] != NULL
+        && arguments[0]->concrete_int_value(&at) && at >= 0;
+    const jint count = (jint) members.size();
+    if (operation == "APPEND" && arguments.size() == 1) {
+      members.push_back(arguments[0]);
+    } else if (operation == "INSERT" && arguments.size() == 2 && positioned
+               && at <= count) {
+      members.insert(members.begin() + at, arguments[1]);
+    } else if (operation == "WRITE" && arguments.size() == 2 && positioned
+               && at < count) {
+      members[at] = arguments[1];
+    } else if (operation == "REMOVE" && arguments.size() == 1 && positioned
+               && at < count) {
+      members.erase(members.begin() + at);
+    } else if (operation == "CLEAR" && arguments.empty()) {
+      members.clear();
+    } else {
+      return MEMBER_UNDECIDED;
+    }
+  }
+  if ((int) members.size() != size || position < 0 || position >= size) {
+    return MEMBER_STALE;
+  }
+  *stored = members[position];
+  return *stored == NULL ? MEMBER_HEAP : MEMBER_RECORDED;
+}
+
+bool ContainerSupport::member_of(oop container, oop key, jint position,
+                                 oop *member, int *count,
+                                 const char **unreadable) {
+  *member = NULL;
+  *count = 0;
+  if (unreadable != NULL) *unreadable = NULL;
+  std::vector<oop> keys;
+  std::vector<oop> values;
+  bool over_bound = false;
+  // No member bound: the walk stops at the heap's own bounds (a corrupted
+  // chain, a ConcurrentHashMap past its bin bound).
+  if (!read_members(container, &keys, &values, (size_t) -1 - 1, unreadable,
+                    &over_bound)) {
+    return false;
+  }
+  if (over_bound) {
+    if (unreadable != NULL) *unreadable = "OVER_BOUND";
+    return false;
+  }
+  *count = (int) values.size();
+  if (key != NULL) {
+    if (keys.size() != values.size()) return false;
+    for (size_t index = 0; index < keys.size(); ++index) {
+      if (same_key(keys[index], key)) {
+        *member = values[index];
+        return true;
+      }
+    }
+    return false;
+  }
+  if (position < 0 || (size_t) position >= values.size()) return false;
+  *member = values[position];
+  return true;
 }
 
 #endif  // ENABLE_CONCOLIC

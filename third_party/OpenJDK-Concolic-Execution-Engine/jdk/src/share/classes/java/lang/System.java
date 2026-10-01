@@ -546,7 +546,9 @@ public final class System {
 
     /**
      * Serializes the current symbolic expression associated with {@code obj}.
-     * The returned value is a JSON envelope and never exposes VM pointers.
+     * The returned value is a JSON envelope and never exposes VM pointers;
+     * for a live region and a non-null object it states {@code jvmShared}:
+     * whether the object is JVM-wide, which no mint touches.
      */
     public static native String getSymbolicExpression(Object obj);
 
@@ -630,6 +632,79 @@ public final class System {
     public static native long attachExpression(
             Object owner, String declaringClass, String fieldName,
             String descriptor, long handle, long[] eventOut);
+
+    /**
+     * Peeks at one leaf's symbolic expression, for the side that encodes it.
+     * {@code parent}, {@code slotKind} and {@code slot} address the leaf:
+     * {@code 0} FIELD, {@code slot} a {@link java.lang.reflect.Field} of the
+     * instance {@code parent}; {@code 1} ELEMENT, {@code parent} an array and
+     * {@code slot} an {@code Integer} index; {@code 2} ENTRY, {@code parent}
+     * a {@code HashMap}, {@code LinkedHashMap}, {@code ConcurrentHashMap} or
+     * {@code Hashtable} and {@code slot} the key (matched by identity, a
+     * String by content, a box by value); {@code 3} POSITION, {@code parent}
+     * an {@code ArrayList} or {@code ArrayDeque} and {@code slot} an
+     * {@code Integer} position; {@code 4} VALUE, {@code parent} the leaf
+     * itself and {@code slot} ignored.
+     * The slot's own shadow comes first (a field's, or what the container's
+     * recorded state says of the element, entry or position -- the value its
+     * newest write stored, else a {@code READ} of the state when the record
+     * cannot name one write), then the leaf object's own (a String's, a
+     * box's), then the leaf's typed constant.  It records no path condition,
+     * no read and no container event.  It runs inside a region, or outside
+     * every region while a workload session is open.
+     *
+     * @return one JSON document {@code {schemaVersion, kind:"VM_LEAF_EXPORT",
+     *         slotKind, status, reason?, source, exportEvent, javaType,
+     *         expression, concrete, vmExpressionTable}}; {@code status} is
+     *         {@code OK} (source {@code SLOT} or {@code OBJECT}),
+     *         {@code CONSTANT}, or a refusal: {@code NO_SESSION},
+     *         {@code SLOT_MISSING}, {@code NULL_LEAF}, {@code UNSUPPORTED}
+     *         (with its {@code reason})
+     */
+    public static native String exportLeaf(Object parent, int slotKind,
+                                           Object slot);
+
+    /**
+     * States one decoded leaf as a template over fresh boundary symbols
+     * ("holes").  {@code templateJson} is
+     * {@code {"parts":[P, ...]}} where a part is {@code {"literal":TEXT}} or
+     * {@code {"hole":KIND,"label":LABEL,"text":TEXT}}; KIND is {@code NUM}
+     * (a primitive or box leaf's one part, no text), {@code DEC_INT},
+     * {@code DEC_LONG} (Java's decimal rendering), {@code BOOL}
+     * ({@code true}/{@code false}) or {@code STR}; LABEL is visible ASCII
+     * without quotes or backslashes.  A hole labelled L is the symbol
+     * {@code M_<T>_field_L} ({@code M_L'String'_field_L} for STR) and states
+     * the value it held; a String leaf becomes {@code concat} of literals,
+     * {@code toString} of DEC/BOOL holes and STR holes, whose texts must be
+     * exactly its content.  The expression lands on the slot for
+     * {@code FIELD} (a versioned write) and {@code ELEMENT}, and on the leaf
+     * object for {@code VALUE}, {@code ENTRY} and {@code POSITION}.  It
+     * records no path condition; a thread inside a region has its
+     * path-condition gate opened.
+     *
+     * @return one JSON document {@code {schemaVersion, kind:"VM_LEAF_MINT",
+     *         slotKind, status, reason?, landsOn?, javaType, holes:[{label,
+     *         kind, exp, javaType, concreteValue}], expression,
+     *         vmExpressionTable}}; {@code status} is {@code OK} or one of
+     *         these refusals:
+     *         <ul>
+     *         <li>{@code SHARED}: the leaf object or the slot's holder is
+     *         JVM-wide;</li>
+     *         <li>{@code SHADOWED}: what the mint lands on (the leaf object,
+     *         or the field or element slot) already carries an expression,
+     *         and a mint never replaces one;</li>
+     *         <li>{@code TRACKED_CONTAINER}, {@code TEMPLATE_MISMATCH},
+     *         {@code MALFORMED_TEMPLATE}, {@code NO_SESSION},
+     *         {@code SLOT_MISSING}, {@code NULL_LEAF},
+     *         {@code UNSUPPORTED}.</li>
+     *         </ul>
+     *         A refusal of a located leaf states {@code landsOn}
+     *         ({@code OBJECT} or {@code SLOT}): an {@code OBJECT} refusal
+     *         (SHARED, SHADOWED) is answered by storing a fresh equal object
+     *         through the holder and minting again; a {@code SLOT} one stands
+     */
+    public static native String mintLeaf(Object parent, int slotKind,
+                                         Object slot, String templateJson);
 
     /**
      * Serializes the half-open path-condition index range
@@ -728,7 +803,12 @@ public final class System {
     public static native String finishConcolicRegion();
 
     /**
-     * make an Object symbolic with prefix for symbolic variable name
+     * Makes an object symbolic, its symbols named after {@code prefix}.  A
+     * JVM-wide object (an interned String, a cached box, Boolean.TRUE, an
+     * enum constant) is refused, as it is by {@link #symbolizeField} and
+     * {@link #symbolizeExactField} as the owner: nothing is minted and the
+     * region's path-condition gate stays as it was.  A field holding a box
+     * is minted on the field, as a value of the box's sort.
      */
     public static native void symbolize(Object obj, String prefix);
 

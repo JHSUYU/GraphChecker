@@ -70,6 +70,10 @@ public final class Frontier {
     /** arm key -> proposing task, this wave. */
     private final Map<String, String> proposedBy =
             new LinkedHashMap<String, String>();
+    /** obligation id -> its flip ({@code ObligationFactory#flip}), for
+     *  what this wave proposes. */
+    private final Map<String, String> flips =
+            new LinkedHashMap<String, String>();
 
     /** Indexes every arm the corpus recorded for these tasks, over all paths:
      *  {@code maxPathsPerTask} bounds what a flip is cut from, not what
@@ -142,9 +146,16 @@ public final class Frontier {
             if (!proposed.add(candidate.obligationId)) continue;
             proposedBy.put(candidate.obligationId,
                     candidate.task.taskId());
+            flips.put(candidate.obligationId,
+                    ObligationFactory.flip(candidate));
             obligations.add(candidate.proposal());
         }
         return new Wave(index, obligations);
+    }
+
+    /** Obligation id -> the flip it asks, for this wave's proposals. */
+    public Map<String, String> flips() {
+        return Collections.unmodifiableMap(flips);
     }
 
     /** Per task: how many obligations this wave proposes. */
@@ -169,4 +180,5 @@ public final class Frontier {
     public int answeredCount() {
         return answered.size();
     }
+
 }

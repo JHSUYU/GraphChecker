@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.smt.Z3;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Arm;
@@ -1459,6 +1460,73 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A NODE'S CLOCK IS ONE ORDER, THE RECORDING'S.  Its cells are listed in
+     * the recording's seq order whatever order the corpus holds them in (the
+     * claim pins them back in it, and a replay runs a plant on in it); a
+     * link the recording's own readings run against gives way by that much;
+     * a cell the seed never read is placed at the seed's reading of a cell
+     * its session also read, plus the time its host read between the two;
+     * one no session can place is BLOCKING.
+     */
+    @Test
+    public void aNodesClockIsOneOrderOnTheRecordingsTimeline()
+            throws Exception {
+        Path iteration = folder.newFolder("clock-order").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.roots.add(clockCell("s0", 30L, "ROOT.LATE", "clk_late", "990"));
+        seed.roots.add(clockCell("s0", 10L, "ROOT.EARLY", "clk_early",
+                "1000"));
+        seed.decision(ANCHOR, "anchor#u1", "(> (+ clk_late clk_early) 0)",
+                "ROOT.LATE", 990L);
+        seed.target("true", false, true);
+        seed.write();
+        Session grown = new Session(iteration, "s1", true);
+        grown.roots.add(clockCell("s1", 10L, "ROOT.EARLY", "clk_early",
+                "5000"));
+        grown.roots.add(clockCell("s1", 20L, "ROOT.GROWN", "clk_grown",
+                "5004"));
+        grown.decision(ANCHOR, "anchor#u1", "(> (+ clk_grown clk_early) 0)",
+                "ROOT.GROWN", 5004L);
+        grown.target("true", false, true);
+        grown.write();
+
+        Composer.Composition composition = compose(iteration, 4);
+        assertEquals("the recording's seq order, not the corpus's",
+                Arrays.asList("clk_early", "clk_grown", "clk_late"),
+                composition.clockCells());
+        assertEquals("the grown cell: the seed's 1000 plus the 4 its "
+                        + "session read after clk_early", Long.valueOf(1004L),
+                composition.clockReadings().get("clk_grown"));
+        assertEquals("clk_grown", composition.clockBefore().get("clk_late"));
+        assertTrue(composition.body(), composition.body().contains(
+                "(<= clk_early clk_grown)"));
+        assertTrue("the recording read clk_late 14 before clk_grown, so the "
+                        + "order gives way by 14: " + composition.body(),
+                composition.body().contains("(<= (- clk_grown clk_late) 14)"));
+        assertFalse(composition.gaps().toString(),
+                blocking(composition.gaps()));
+
+        Session lone = new Session(iteration, "s2", true);
+        lone.roots.add(clockCell("s2", 40L, "ROOT.LONE", "clk_lone", "7000"));
+        lone.decision(ANCHOR, "anchor#u1", "(> clk_lone 0)", "ROOT.LONE",
+                7000L);
+        lone.target("true", false, true);
+        lone.write();
+        Composer.Composition unplaced = compose(iteration, 4);
+        assertTrue("a cell no session can place on the recording's timeline "
+                        + "is refused by name: " + unplaced.gaps(),
+                blocking(unplaced.gaps(), "ROOT.LONE"));
+        assertFalse(unplaced.clockCells().contains("clk_lone"));
+    }
+
+    private static RootMintRow clockCell(String session, long seq,
+                                         String rootId, String symbol,
+                                         String reading) {
+        return RootMintRow.of(session, seq, ANCHOR, rootId, symbol,
+                RootKind.CLOCK, reading, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L);
+    }
+
     // ------------------------------------------------------------------
     // 8. A mechanism the recording does not decide is not a finding.
     // ------------------------------------------------------------------
@@ -1525,6 +1593,30 @@ public class ComposerTest {
                 Long.parseLong(at.trim())
                         > 1000L + edu.uva.liftlab.graphchecker.explore
                         .ClockMargin.margin(1_000_000L));
+
+        // R2b: THE CLOCK RUNS ON FROM ITS JUMP.  A later reading of the same
+        // clock is no earlier than the cell before it, so the model moves it
+        // too; it runs on from the jump as a replay runs it, and the claim
+        // names the jump alone (SOLR-18406's cleanReserves clock, moved with
+        // delete()'s and outside the witness path's cone).
+        Path runs = folder.newFolder("clock-runs-on").toPath();
+        Session twice = new Session(runs, "s0", false);
+        twice.clock("700");
+        twice.roots.add(RootMintRow.of("s0", ++twice.seq, ANCHOR, "ROOT.THEN",
+                "clock_then", RootKind.CLOCK, "705", null, null, true,
+                Clock.of(1_000_000L, Clock.WALL), 0L));
+        twice.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
+                + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        twice.decision(ANCHOR, "anchor#u2", "(or (> clock_then 0) "
+                + "(not (> clock_then 0)))", "ROOT.THEN", 705L);
+        twice.target("(> " + CLOCK + " 1000)", false, true);
+        twice.write();
+        ClaimPolicy.Decision ranOn = ClaimPolicy.decide(compose(runs, 4),
+                solver());
+        assertEquals(ClaimKind.CLOCK_SKEW, ranOn.claim().kind());
+        assertEquals("the jump alone: the later reading runs on from it",
+                Collections.singleton(CLOCK),
+                ranOn.claim().movedRoots().keySet());
 
         // R3: AND A WINDOWED ROOT BESIDE THE CLOCK DOES NOT TAKE THE CLAIM
         // AWAY.  Same clock, plus one declared counter the case gave a
@@ -2600,7 +2692,7 @@ public class ComposerTest {
             if (guarded) {
                 session.roots.add(RootMintRow.of("s0", ++session.seq,
                         writers[2], "ROOT.CLEAN", "M_J_clean",
-                        RootKind.CLOCK, "1000", null, null, true, 1L));
+                        RootKind.CLOCK, "1000", null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
                 session.expression("EXPR.0000000000000090", binary("<",
                         symbol("M_J_clean", "J"), integer("J", 2_000L)));
                 session.decision(writers[2], "Cleaner#clean#u3", true,
@@ -2774,10 +2866,11 @@ public class ComposerTest {
         LocationId reserves = LocationId.of(LocationKind.MAP, "50", "-3");
         session.roots.add(RootMintRow.of(id, ++session.seq, reserver,
                 "ROOT.RESERVED", RESERVED, RootKind.CLOCK,
-                Long.toString(seed - 1_000L), null, null, true, 1L));
+                Long.toString(seed - 1_000L), null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
+        // As the VM publishes it: an arithmetic node states no Java type,
+        // and the deadline is a Long cell by its width alone.
         JsonObject deadline = binary("+", symbol(RESERVED, "J"),
                 integer("J", 6_000L));
-        deadline.addProperty("_java_type", "J");
         JsonObject reserved = relation("ASSOCIATIVE", "PUT", "java/util/Map",
                 relation("ASSOCIATIVE", "SNAPSHOT_BASE",
                         "java/util/concurrent/ConcurrentHashMap", null),
@@ -2789,7 +2882,7 @@ public class ComposerTest {
         session.roots.add(RootMintRow.of(id, ++session.seq, newer,
                 "ROOT.RESERVE", NANO, RootKind.CLOCK, Long.toString(
                         expired ? seed + 10_000L : seed), null, null, true,
-                1L));
+                Clock.of(1L, Clock.MONOTONIC), 0L));
         // The older commit's map, then its store.
         JsonObject base = relation("ASSOCIATIVE", "SNAPSHOT_BASE", map, null);
         JsonObject four = putCommit(base, 4L);
@@ -4060,21 +4153,23 @@ public class ComposerTest {
      * A node that reads the wall clock and a monotonic one orders each on
      * its own: the second wall reading is no earlier than the first, and
      * neither is ordered against the monotonic one (hdfs-11741 v78: wall
-     * 1.79e12 "before" monotonic 4.5e9 made all 165 paths false).
+     * 1.79e12 "before" monotonic 4.5e9 made all 165 paths false).  Which
+     * clock a cell reads is its row's statement, never its value's size.
      */
     @Test
     public void aNodeReadingTwoClocksOrdersEachClockOnItsOwn()
             throws Exception {
         Path iteration = folder.newFolder("two-clocks").toPath();
         Session session = new Session(iteration, "s0", false);
-        String[][] cells = {{"CLOCK.wall.1", "M_J_wall_1", "1790500000000"},
-                {"CLOCK.mono", "M_J_mono", "4549240012"},
-                {"CLOCK.wall.2", "M_J_wall_2", "1790500000900"}};
+        String[][] cells = {
+                {"CLOCK.wall.1", "M_J_wall_1", "1790500000000", Clock.WALL},
+                {"CLOCK.mono", "M_J_mono", "1790500000400", Clock.MONOTONIC},
+                {"CLOCK.wall.2", "M_J_wall_2", "1790500000900", Clock.WALL}};
         StringBuilder phi = new StringBuilder("(and");
         for (String[] cell : cells) {
             session.roots.add(RootMintRow.of("s0", ++session.seq, ANCHOR,
                     cell[0], cell[1], RootKind.CLOCK, cell[2], null, null,
-                    true, 1_000_000L));
+                    true, Clock.of(1_000_000L, cell[3]), 0L));
             phi.append(" (> ").append(cell[1]).append(" 0)");
         }
         session.target(phi.append(")").toString(), false, true);
@@ -5615,7 +5710,7 @@ public class ComposerTest {
 
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
-                    RootKind.MARKER, recorded, null, null, true, 0L));
+                    RootKind.MARKER, recorded, null, null, true, null, 0L));
         }
 
         /**
@@ -5628,7 +5723,7 @@ public class ComposerTest {
          */
         void clock(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,
-                    RootKind.CLOCK, recorded, null, null, true, 1_000_000L));
+                    RootKind.CLOCK, recorded, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
         }
 
         /** One decision, and the clock cells its predicate read. */
@@ -5642,7 +5737,7 @@ public class ComposerTest {
         /** A declared counter, with the window the CASE states around it. */
         void serial(String recorded, String min, String max) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
-                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true, 0L));
+                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true, null, 0L));
         }
 
         void expression(String ref, JsonObject node) {
@@ -5715,7 +5810,8 @@ public class ComposerTest {
                   RootKind kind, String recorded) {
             roots.add(RootMintRow.of(id, ++seq, at, rootId, symbol, kind,
                     recorded, null, null, true,
-                    kind == RootKind.CLOCK ? 1_000_000L : 0L));
+                    kind == RootKind.CLOCK
+                ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
         }
 
         /** @return the session event this write was sequenced at. */

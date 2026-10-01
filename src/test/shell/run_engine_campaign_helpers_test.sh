@@ -120,6 +120,9 @@ emit_fixture() {
   jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: true,
     reason: "every edge the model chose was taken, and the anchor observed the fatal",
     sessionId: "CONFIRM-1"}' >"${campaign_final}/confirm.json"
+  # REPRODUCE's answer for that confirmed claim, which EMIT copies beside it.
+  jq -n '{schemaVersion: 1, kind: "REPRODUCTION", runs: 10, planted: 10,
+    fatal: 7, atAnchor: 6, reason: ""}' >"${campaign_final}/reproduce.json"
   # One replay session, per kind, as the runtime publishes it.  IMPORT
   # counted these into the census EMIT requires; the fixture states both.
   for session_kind in activations decisions exports attaches writes reads \
@@ -189,6 +192,8 @@ run_emit
   || fail "a complete candidate was withheld: $(<"${emit_root}/emit.log")"
 [[ $(jq -r '.claim' "${campaign_final}/result.json") == SAT_CANDIDATE ]] \
   || fail "the accepted SAT claim was not published"
+[[ $(jq -r '.reproduction.atAnchor' "${campaign_final}/result.json") == 6 ]] \
+  || fail "the result lost the native reproduction"
 [[ $(jq -r '.provenance.loopBounds.sha256' \
       "${campaign_final}/result.json") \
     == "$(campaign_digest "${emit_bounds}")" ]] \
@@ -718,7 +723,9 @@ done
 # 50: `causynth_static_root` and `record_timeout_s` joined it with `record`,
 # the pre-screen: which static slices it aggregates each target on, and how
 # long its recording may run.
-[[ "$(print_normalized_config | wc -l)" -eq 50 ]] \
+# 51: `reproduce_runs` joined it with REPRODUCE: how often a confirmed
+# witness is run natively.
+[[ "$(print_normalized_config | wc -l)" -eq 51 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -967,9 +974,102 @@ stop_after_campaign "${stop_after_dir}/campaign-full" \
   || fail "a campaign with campaign_stop_after unset did not exit 0"
 [[ "$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")" == \
     "PREFLIGHT FREEZE_TOOL FREEZE SEED PLAN INSTRUMENT REPLAY IMPORT EXPLORE \
-COMPOSE SOLVE DECIDE CONFIRM EMIT " ]] \
+COMPOSE SOLVE DECIDE CONFIRM REPRODUCE EMIT " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
+
+# REACHED-1: a replay reached its target when a session published a target
+# row at a TARGET_SITE method of the scope map (any of them: a batch group's
+# map names each target's); no session, or rows of another method, is "".
+reached_dir="${test_tmp}/reached"
+mkdir -p "${reached_dir}/sessions/s1"
+jq -n -c '{role: "TARGET_SITE", siteId: "<A: void m()>#u20"},
+  {role: "TARGET_SITE", siteId: "<B: void n()>#u3"},
+  {role: "GUARD", siteId: "<C: void o()>#u1"}' >"${reached_dir}/map.jsonl"
+while IFS='|' read -r reached_anchor reached_expected; do
+  if [[ -n "${reached_anchor}" ]]; then
+    jq -n -c --arg site "${reached_anchor}" '{anchorSiteId: $site}' \
+      >"${reached_dir}/sessions/s1/targets.jsonl"
+  else
+    rm -f -- "${reached_dir}/sessions/s1/targets.jsonl"
+  fi
+  [[ "$(campaign_target_reached "${reached_dir}/sessions" \
+      "${reached_dir}/map.jsonl")" == "${reached_expected}" ]] \
+    || fail "a target row at '${reached_anchor}' is not reached as \
+'${reached_expected}'"
+done <<'EOF'
+<A: void m()>#u8#1|<A: void m()>#u8#1
+<B: void n()>#u1#2|<B: void n()>#u1#2
+<A: void mm()>#u8#1|
+<C: void o()>#u1#1|
+|
+EOF
+
+# BATCH-1: a batch campaign (causynth_static_root) plans every target its
+# recording activated, seed-replays each group of plans once, all groups at
+# once, and runs the campaign of every target its group's seed reached, all
+# at once, each logging to its own targets/<name>/campaign.log.  A target
+# whose campaign reached EMIT (exit 0, 2 or 3) is its own verdict; one its
+# group's seed did not reach or ended before, whose log then names that
+# failure, or whose campaign ended before EMIT, fails the batch once every
+# other has finished.  Per row: b's exit, the targets the seeds reached, the
+# group whose seed fails, the batch's status, and the last line of b's log.
+batch_out="${test_tmp}/batch"
+while IFS='|' read -r batch_exit batch_served batch_broken batch_status \
+    batch_last; do
+  rm -rf -- "${batch_out}"
+  mkdir -p "${batch_out}/runtime" "${batch_out}/targets/a" \
+    "${batch_out}/targets/b" "${batch_out}/targets/c"
+  jq -n '{exit: 0, wallSeconds: 1, timedOut: false,
+    targets: {a: {state: "ACTIVATED"}, b: {state: "ACTIVATED"},
+              c: {state: "NOT_IN_WINDOW", detail: "no activation"}}}' \
+    >"${batch_out}/runtime/record-summary.json"
+  status=0
+  (
+    causynth_output_dir="${batch_out}"
+    campaign_root="${batch_out}/schedule"
+    campaign_stage_metrics="${batch_out}/metrics.tsv"
+    campaign_batch_seed() { :; }
+    campaign_batch_plan() { echo "plan of $1"; }
+    campaign_batch_union() {
+      mkdir -p "$1"
+      jq -n '[{group: 0, targets: ["a"]}, {group: 1, targets: ["b"]}]' \
+        >"$1/groups.json"
+    }
+    campaign_batch_group() {
+      local dir=$1 name
+      shift
+      mkdir -p "${dir}"
+      [[ "$*" != "${batch_broken}" ]] \
+        || campaign_fail REPLAY WORKLOAD "${dir}" "broken seed"
+      for name in "$@"; do
+        [[ " ${batch_served} " != *" ${name} "* ]] \
+          || printf '%s\t%s\n' "${name}" "${dir}"
+      done >"${dir}/served"
+    }
+    campaign_batch_target() {
+      echo "campaign of $1 on $(basename "$2")"
+      [[ "$1" == a ]] && exit 2
+      exit "${batch_exit}"
+    }
+    campaign_batch
+  ) </dev/null >"${batch_out}/batch.log" 2>&1 || status=$?
+  [[ "${status}" -eq "${batch_status}" ]] \
+    || fail "a batch (${batch_served}) exited ${status}: \
+$(cat "${batch_out}/batch.log")"
+  [[ "$(cat "${batch_out}/targets/a/campaign.log")" == \
+      $'plan of a\ncampaign of a on group-0' \
+      && "$(head -n 1 "${batch_out}/targets/b/campaign.log")" == "plan of b" \
+      && "$(tail -n 1 "${batch_out}/targets/b/campaign.log")" \
+        == "${batch_last}" \
+      && ! -e "${batch_out}/targets/c/campaign.log" ]] \
+    || fail "a batch (${batch_served}) ran other campaigns than its targets'"
+done <<'EOF'
+3|a b||0|campaign of b on group-1
+1|a b||1|campaign of b on group-1
+0|a||1|plan of b
+0|a|b|1|  reason=broken seed
+EOF
 
 # IMPORT-GATE: the row contract stops the campaign at IMPORT, or records.
 #
@@ -1246,10 +1346,11 @@ done
 mkdir -p "${bound_dir}/work"
 workload_work_dir="${bound_dir}/work"
 custom_jdk_home=""
-# Five seconds, not one: the adapter is a LOGIN shell, and the lifts' login
-# profile runs a quota check on NFS that alone takes up to a second, so a
-# one-second bound sometimes fired before the payload wrote its pid.
-campaign_adapter_timeout_s=5
+# Ten seconds, not one: the adapter is a LOGIN shell, and the lifts' login
+# profile runs a quota check on NFS, which right after `mvn package` took
+# over five seconds, so a shorter bound sometimes fired before the payload
+# wrote its pid.
+campaign_adapter_timeout_s=10
 run_capturing_status campaign_run_adapter "replay(test)" \
   "sleep 120 & echo \$! >'${bound_dir}/grandchild.pid'; wait" \
   >"${bound_dir}/adapter.log" 2>&1
@@ -1480,6 +1581,98 @@ $(cat "${withdraw_worker}/obligation_result.jsonl")"
     == "replay exceeded replay_timeout_s=5" ]] \
   || fail "withdrawing the session changed the recorded detail: \
 $(cat "${withdraw_worker}/obligation_result.jsonl")"
+
+# REPLAY-BOUND-5: ONE WRITER, after the replay's process group is gone.
+# solr-18406 ra1: a TERM on the bound ended the launcher at once while the
+# JVM below it ran its shutdown hooks, which rewrote the verdict a second
+# after the worker wrote its own, naming the session the worker had just
+# withdrawn.  Here a group member outlives its launcher, shrugs off the TERM
+# and writes the answer file late: the worker's row still stands, because
+# the worker writes only once nothing of the group runs.
+late_dir="${bound_dir}/late"
+late_worker="${late_dir}/obligation"
+mkdir -p "${late_worker}" "${late_dir}/sessions"
+cat >"${late_dir}/replay.sh" <<EOF
+#!/usr/bin/env bash
+( trap '' TERM; sleep 3
+  jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.L",
+    verdict: "ADMITTED", sessionId: "SESSION.late", detail: "late"}' \\
+    >"\${CAUSYNTH_CONCOLIC_WORKER_DIR}/obligation_result.jsonl" ) &
+sleep 120
+EOF
+chmod +x "${late_dir}/replay.sh"
+# Four seconds: the launcher must be running when the bound fires.
+replay_timeout_s=4
+concolic_replay_command="${late_dir}/replay.sh"
+printf '{"taskId":"TASK.1"}\n' >"${late_worker}/focused_task.jsonl"
+printf 'F:Q\n' >"${late_worker}/question.asked"
+(
+  campaign_adapter_kill_grace_s=10
+  campaign_obligation_replay OB.L "${withdraw_dir}/classes" \
+    "${late_worker}" "${late_dir}/sessions" "${withdraw_dir}/seed_plan.jsonl"
+) >"${late_worker}/worker.log" 2>&1 \
+  || fail "REPLAY-BOUND-5: the worker failed: $(cat "${late_worker}/worker.log")"
+[[ "$(jq -r '.verdict + " " + .detail' \
+    "${late_worker}/obligation_result.jsonl")" \
+    == "NOT_ADMITTED replay exceeded replay_timeout_s=4" ]] \
+  || fail "REPLAY-BOUND-5: a member of the replay's group wrote after the \
+worker: $(cat "${late_worker}/obligation_result.jsonl")"
+[[ ! -e "${late_worker}/question.asked" && ! -e "${late_worker}/question.txt" ]] \
+  || fail "REPLAY-BOUND-5: a killed replay's question stands settled"
+
+# EARLY-END-1: a replay a refusal decided ended there, and its verdict names
+# no session (RowRuntime.closeSession): the session it opened is a prefix of
+# a run and leaves the corpus on the host that ran it, under the worker; the
+# verdict row stays the replay's own.  The head, reading a peer's result,
+# waits until its own listing holds no session naming the obligation.
+refused_dir="${bound_dir}/refused"
+refused_worker="${refused_dir}/obligation"
+mkdir -p "${refused_worker}" "${refused_dir}/sessions"
+cat >"${refused_dir}/replay.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.cut"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.cut", role: "FOCUSED", obligationIds: ["OB.R"]}' \\
+  >"\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.cut/manifest.json"
+jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.R",
+  verdict: "NOT_ADMITTED", sessionId: "", detail: "wrong decision; ended"}' \\
+  >"\${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
+EOF
+chmod +x "${refused_dir}/replay.sh"
+replay_timeout_s=60
+concolic_replay_command="${refused_dir}/replay.sh"
+printf '{"taskId":"TASK.1"}\n' >"${refused_worker}/focused_task.jsonl"
+printf 'F:Q\n' >"${refused_worker}/question.asked"
+(
+  campaign_obligation_replay OB.R "${withdraw_dir}/classes" \
+    "${refused_worker}" "${refused_dir}/sessions" \
+    "${withdraw_dir}/seed_plan.jsonl"
+) >"${refused_worker}/worker.log" 2>&1 \
+  || fail "EARLY-END-1: the worker failed on a replay that published no \
+session: $(cat "${refused_worker}/worker.log")"
+[[ ! -e "${refused_dir}/sessions/SESSION.cut" \
+    && -f "${refused_worker}/refused-sessions/SESSION.cut/manifest.json" ]] \
+  || fail "EARLY-END-1: the session of a replay whose verdict names none is \
+not withdrawn under its worker: $(find "${refused_dir}" | LC_ALL=C sort)"
+[[ "$(jq -r '.detail' "${refused_worker}/obligation_result.jsonl")" \
+    == "wrong decision; ended" ]] \
+  || fail "EARLY-END-1: the withdrawal changed the replay's verdict row"
+[[ "$(cat "${refused_worker}/question.txt" 2>/dev/null)" == F:Q \
+    && ! -e "${refused_worker}/question.asked" ]] \
+  || fail "EARLY-END-1: the question a replay decided is not settled"
+mkdir -p "${refused_dir}/sessions/SESSION.stale"
+cp "${refused_worker}/refused-sessions/SESSION.cut/manifest.json" \
+  "${refused_dir}/sessions/SESSION.stale/"
+( sleep 2; rm -rf "${refused_dir}/sessions/SESSION.stale" ) &
+campaign_remote_visibility_wait_s=30 campaign_await_remote_result \
+  "${refused_worker}" peer OB.R "${refused_dir}/sessions" \
+  >"${refused_worker}/await.log" 2>&1 \
+  || fail "EARLY-END-1: the head did not wait out a listing that still held \
+the withdrawn session: $(cat "${refused_worker}/await.log")"
+[[ ! -e "${refused_dir}/sessions/SESSION.stale" ]] \
+  || fail "EARLY-END-1: the head returned while its listing held the session"
+wait
 reset_config
 
 # ---- CHECKOUT-STATE-1: a clean tree hashes nothing -------------------------
@@ -1600,12 +1793,11 @@ done
   || fail "the work queue does not hold one claim per obligation"
 unset -f campaign_obligation_worker
 
-# POOL-2: a failed obligation still fails the WAVE, and still lets the wave
-# finish.  campaign_wait_workers' semantics are what the barrier had: the
-# remaining obligations ran after one of them failed, and the wave failed at
-# the end.  A pool that stopped its slot on the first failure would discard
-# verdicts the wave had already paid for -- the same loss REPLAY-BOUND-1
-# exists to prevent.
+# POOL-2: an obligation whose worker did not finish is that obligation's own
+# answer, never the wave's death (a remote worker exiting nonzero failed the
+# campaign), and the rest of the wave runs.  A pool that stopped its slot on
+# the first failure would discard verdicts the wave had already paid for --
+# the same loss REPLAY-BOUND-1 exists to prevent.
 pool_fail_dir="${test_tmp}/pool-fail"
 mkdir -p "${pool_fail_dir}/wave"
 for pool_job in A B C D; do mkdir -p "${pool_fail_dir}/wave/${pool_job}"; done
@@ -1618,16 +1810,34 @@ campaign_obligation_worker() {
     >"${worker}/obligation_result.jsonl"
 }
 concolic_worker_count=2
-campaign_dispatch_wave "${pool_fail_dir}/wave" /dev/null /dev/null /dev/null \
-  /dev/null A B C D >"${pool_fail_dir}/dispatch.log" 2>&1 \
-  && fail "one failed obligation did not fail the wave"
+mkdir -p "${pool_fail_dir}/sessions/SESSION.B"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST", sessionId: "SESSION.B",
+  role: "FOCUSED", obligationIds: ["B"]}' \
+  >"${pool_fail_dir}/sessions/SESSION.B/manifest.json"
+campaign_dispatch_wave "${pool_fail_dir}/wave" /dev/null /dev/null \
+  "${pool_fail_dir}/sessions" /dev/null A B C D \
+  >"${pool_fail_dir}/dispatch.log" 2>&1 \
+  || fail "one unfinished obligation failed the wave: \
+$(cat "${pool_fail_dir}/dispatch.log")"
 for pool_job in A B C D; do
   [[ -f "${pool_fail_dir}/wave/${pool_job}/ran" ]] \
     || fail "obligation ${pool_job} never ran: one failure stopped its slot"
 done
-grep -q 'DID NOT FINISH' "${pool_fail_dir}/dispatch.log" \
-  || fail "the failed obligation is not named in the wave's log: \
-$(cat "${pool_fail_dir}/dispatch.log")"
+[[ "$(jq -r '.verdict + "|" + .sessionId + "|" + .detail' \
+    "${pool_fail_dir}/wave/B/obligation_result.jsonl")" \
+    == "NOT_ADMITTED||its worker on "*" did not finish (exit 7: "*"); its \
+logs are in ${pool_fail_dir}/wave/B" ]] \
+  || fail "the unfinished obligation is not answered as itself: \
+$(cat "${pool_fail_dir}/wave/B/obligation_result.jsonl" 2>&1)"
+[[ ! -e "${pool_fail_dir}/sessions/SESSION.B" \
+    && -f "${pool_fail_dir}/wave/B/unfinished-sessions/SESSION.B/manifest.json" ]] \
+  || fail "the unfinished obligation's session is still in the corpus"
+[[ "$(jq -r 'select(.subject == "OBLIGATION_UNFINISHED") | .detail' \
+    "${pool_fail_dir}/campaign_gaps.jsonl")" == "B: its worker on "* ]] \
+  || fail "the unfinished obligation has no gap row of its own: \
+$(cat "${pool_fail_dir}/campaign_gaps.jsonl" 2>&1)"
+[[ "$(campaign_unfinished_count "${pool_fail_dir}")" -eq 1 ]] \
+  || fail "the iteration does not count its unfinished obligation"
 unset -f campaign_obligation_worker
 reset_config
 
@@ -1796,6 +2006,7 @@ campaign_worker_hosts="lift12 lift13"
 campaign_local_host_names=" localhost this-machine "
 obligation_memory_mb=1
 campaign_host_available_mb() { echo 30000; }
+campaign_host_total_mb() { echo 30000; }
 campaign_dispatch_wave "${twohost_dir}/wave" "${twohost_dir}/obligations.jsonl" \
   "${twohost_dir}/classes" "${twohost_dir}/sessions" \
   "${twohost_dir}/seed.jsonl" A B C D \
@@ -1841,6 +2052,7 @@ room_wave="${twohost_dir}/wave-room"
 for pool_job in E F G; do mkdir -p "${room_wave}/${pool_job}"; done
 campaign_host_poll_s=0
 campaign_host_available_mb() { [[ "$1" == lift13 ]] && echo 0 || echo 30000; }
+campaign_host_total_mb() { echo 30000; }
 campaign_dispatch_wave "${room_wave}" "${twohost_dir}/obligations.jsonl" \
   "${twohost_dir}/classes" "${twohost_dir}/sessions" \
   "${twohost_dir}/seed.jsonl" E F G \
@@ -2113,7 +2325,7 @@ jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
 jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
   verdict: "NOT_ADMITTED", sessionId: "SESSION.regrown",
   detail: "the grown region refused the flip"}' \
-  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/obligation_result.jsonl"
+  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
 EOF
 chmod +x "${grow_dir}/replay.sh"
 reset_config
@@ -2230,9 +2442,12 @@ explore_loop_planner() {
     esac
   done
   : >"${out}/obligations.jsonl"
+  : >"${out}/flips.tsv"
+  printf '{"answeredQuestions":%s}\n' "${wave}" >"${out}/explore_manifest.json"
   printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
   case "${wave}" in
-    0) printf '{"obligationId":"OB.a"}\n' >"${out}/obligations.jsonl" ;;
+    0) printf '{"obligationId":"OB.a"}\n' >"${out}/obligations.jsonl"
+       printf 'OB.a\tQ.a\n' >"${out}/flips.tsv" ;;
     1) printf '%s\n' \
         '{"kind":"EXPOSED_REGION","regionId":"REGION.g","node":"nn0","occurrence":"REGION.g#1","sessionId":"SESSION.a","obligationId":"OB.a"}' \
         >>"${out}/growth.jsonl" ;;
@@ -2317,6 +2532,55 @@ jq -e 'select(.subject == "REGION_PATH_WAVE_BUDGET_REACHED")
 $(cat "${bound_loop}/campaign_gaps.jsonl")"
 grep -q 'region_path_max_waves=1' "${bound_loop}/explore.log" \
   || fail "the wave bound is not stated in the campaign log"
+# EXPLORE-4: NO PROGRESS, by flip.  Each wave asks the one flip Q under an
+# id of its own (an id drifts as sessions land); wave 1 settles no question
+# wave 0 had not (the planner's answeredQuestions stays 1), so wave 2 is the
+# fixed point the ids alone never showed (SOLR-18413 r5: 185 questions
+# asked 717 times).
+drift_loop="${test_tmp}/explore-drift/iteration-0000"
+mkdir -p "${drift_loop}/sessions" "${drift_loop}/seed-replay"
+: >"${drift_loop}/seed-replay/execution_task_plan.jsonl"
+region_path_max_waves=12
+(
+  run_java_main() {
+    local wave="" out=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --wave) wave=$2; shift 2 ;;
+        --output-dir) out=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf '{"obligationId":"OB.%s"}\n' "${wave}" >"${out}/obligations.jsonl"
+    printf 'OB.%s\tQ\n' "${wave}" >"${out}/flips.tsv"
+    printf '{"answeredQuestions":%s}\n' "$(( wave > 0 ? 1 : 0 ))" \
+      >"${out}/explore_manifest.json"
+    printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
+  }
+  campaign_dispatch_wave() {
+    local wave_dir=$1
+    shift 5
+    local job
+    for job in "$@"; do
+      jq -n -c --arg id "${job}" '{schemaVersion: 1,
+        kind: "OBLIGATION_RESULT", obligationId: $id,
+        verdict: "NOT_ADMITTED", sessionId: "", detail: ""}' \
+        >"${wave_dir}/${job}/obligation_result.jsonl"
+    done
+  }
+  campaign_import_wave_gate() { :; }
+  campaign_explore "${drift_loop}" iteration-0000
+) >"${drift_loop}/explore.log" 2>&1 \
+  || fail "EXPLORE-4: the drifting loop did not finish: \
+$(cat "${drift_loop}/explore.log")"
+[[ -d "${drift_loop}/obligations-0002" && ! -e "${drift_loop}/obligations-0003" ]] \
+  || fail "EXPLORE-4: the loop did not stop at the wave that asked what the \
+wave before asked: $(ls "${drift_loop}")"
+jq -e 'select(.subject == "REGION_PATH_CLOSURE_NO_PROGRESS")
+  | .detail | test("asks the same 1 flip")' \
+  "${drift_loop}/campaign_gaps.jsonl" >/dev/null \
+  || fail "EXPLORE-4: the stop is not stated by question: \
+$(cat "${drift_loop}/campaign_gaps.jsonl" 2>&1)"
 # And a planner that states no growth file is a planner that did not run
 # to completion: refused by name, never read as "nothing exposed".
 nogrowth_loop="${test_tmp}/explore-nogrowth/iteration-0000"
@@ -2587,7 +2851,8 @@ hostname() { echo gate-head; }
 memory_available=20000
 campaign_host_available_mb() { echo "${memory_available}"; }
 obligation_memory_mb=6000
-campaign_host_reserve_mb=3000
+campaign_host_total_mb() { echo 10000; }
+campaign_host_max_used_pct=70
 campaign_host_ramp_s=60
 campaign_host_poll_s=0
 campaign_host_try_start lift14 \
@@ -2640,7 +2905,7 @@ mkdir "${memory_dir}/queue/000000"
 run_capturing_status campaign_await_host_memory lift13 "${memory_dir}/queue" 1
 [[ "${status}" -eq 1 ]] \
   || fail "a slot kept waiting for room after the wave was all claimed"
-unset -f hostname campaign_host_available_mb campaign_log
+unset -f hostname campaign_host_available_mb campaign_host_total_mb campaign_log
 reset_config
 
 # MEMORY-3: a start states its need and its own ramp, and counts while that
@@ -2650,7 +2915,8 @@ campaign_host_gate_root="${memory_dir}/ramps"
 campaign_local_host_names=" localhost gate-head "
 hostname() { echo gate-head; }
 campaign_host_available_mb() { echo 20000; }
-campaign_host_reserve_mb=3000
+campaign_host_total_mb() { echo 10000; }
+campaign_host_max_used_pct=70
 campaign_host_poll_s=0
 mkdir -p "${campaign_host_gate_root}/lift14"
 memory_now=$(date +%s)
@@ -2698,7 +2964,7 @@ eval "${real_try_start}"
 campaign_head_charging=0
 campaign_head_charged 999999 120 true \
   || fail "a start outside a head waited for the ledger"
-unset -f hostname campaign_host_available_mb
+unset -f hostname campaign_host_available_mb campaign_host_total_mb
 reset_config
 
 # HOSTS-7: a wave rotates the slot list, so the one-obligation waves of a
@@ -2747,9 +3013,12 @@ grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
 $(cat "${fanout_dir}/ledger/$(command hostname -s)/starts")"
 
 # UNION-1: a batch's one recording weave (do_record) is woven with every
-# target's skeletons merged by region, their lists united and the first
+# target's skeletons merged by root -- one region per root, whichever
+# authority each target rooted it under -- their lists united and the first
 # target's words kept, and over every target's grown classes with one GROWN
-# row per class.
+# row per class.  Each target is aggregated on its view of it: its own
+# selection at a root it plans, and another target's exception context as
+# state.
 union_dir="${test_tmp}/union"
 causynth_static_root="${union_dir}/static"
 causynth_output_dir="${union_dir}/out"
@@ -2761,17 +3030,30 @@ for target in a b; do
     >"${causynth_static_root}/${target}/scope-classes/GROWN"
 done
 printf '%s\n' \
-  '{"regionId":"R1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2"]}' \
-  '{"regionId":"R2","selection":"STATE_CONTEXT","methods":["m3"]}' \
+  '{"regionId":"R1","rootMethod":"r1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2"]}' \
+  '{"regionId":"R2","rootMethod":"r2","selection":"STATE_CONTEXT","methods":["m3"]}' \
+  '{"regionId":"R4","rootMethod":"r4","selection":"EXCEPTION_CONTEXT","methods":["m6"]}' \
   | gzip -c >"${causynth_static_root}/a/region_skeletons.jsonl.gz"
 printf '%s\n' \
-  '{"regionId":"R1","selection":"STATE_CONTEXT","methods":["m2","m4"]}' \
+  '{"regionId":"R1","rootMethod":"r1","selection":"STATE_CONTEXT","methods":["m2","m4"]}' \
+  '{"regionId":"R3","rootMethod":"r2","selection":"EXCEPTION_CONTEXT","methods":["m5"]}' \
   | gzip -c >"${causynth_static_root}/b/region_skeletons.jsonl.gz"
 campaign_union_static a b
 [[ "$(zcat "${causynth_region_skeletons}" | jq -c .)" == \
-    '{"regionId":"R1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2","m4"]}
-{"regionId":"R2","selection":"STATE_CONTEXT","methods":["m3"]}' ]] \
+    '{"regionId":"R1","rootMethod":"r1","selection":"EXCEPTION_CONTEXT","methods":["m1","m2","m4"]}
+{"regionId":"R2","rootMethod":"r2","selection":"STATE_CONTEXT","methods":["m3","m5"]}
+{"regionId":"R4","rootMethod":"r4","selection":"EXCEPTION_CONTEXT","methods":["m6"]}' ]] \
   || fail "the union skeletons: $(zcat "${causynth_region_skeletons}")"
+for target in a b; do
+  campaign_region_view "${causynth_static_root}/${target}" | zcat \
+    | jq -r .selection | paste -sd ' ' - >"${union_dir}/${target}.view"
+done
+[[ "$(cat "${union_dir}/a.view")" == \
+    "EXCEPTION_CONTEXT STATE_CONTEXT EXCEPTION_CONTEXT" \
+    && "$(cat "${union_dir}/b.view")" == \
+    "STATE_CONTEXT EXCEPTION_CONTEXT STATE_CONTEXT" ]] \
+  || fail "a target's view of the union: a $(cat "${union_dir}/a.view"), \
+b $(cat "${union_dir}/b.view")"
 [[ -e "${causynth_output_dir}/scope-classes/p/A.class" \
     && -e "${causynth_output_dir}/scope-classes/p/B.class" ]] \
   || fail "a target's grown classes are missing from the union"

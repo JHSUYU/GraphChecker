@@ -6,6 +6,7 @@ import com.google.gson.JsonElement;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
@@ -61,8 +62,9 @@ final class SymbolizeAction {
     final String accessorImplementationMethod;
     /** How the finalizer classified the port that minted this action. */
     final String sourceKind;
-    /** A clock's tick in nanoseconds (the plan's), 0 for any other input. */
-    final long clockNanos;
+    /** A clock input's clock (the plan's: the JVM clock it wraps, its
+     *  tick), null for any other input. */
+    final Clock clock;
     /** The static site the plan observed this read at, or "". */
     final String siteId;
     /** The recorded event this read was observed at, or -1. */
@@ -122,8 +124,10 @@ final class SymbolizeAction {
         this.accessorImplementationMethod = optionalString(json,
                 "accessorImplementationMethod");
         this.sourceKind = optionalString(json, "sourceKind");
-        this.clockNanos = optionalLongInteger(json,
+        long clockNanos = optionalLongInteger(json,
                 InputActionCatalog.DECLARED_WALL_CLOCK, 0L);
+        this.clock = clockNanos > 0L ? Clock.of(clockNanos, optionalString(
+                json, InputActionCatalog.DECLARED_CLOCK_SOURCE)) : null;
         this.siteId = optionalString(json, "siteId");
         this.eventSeq = optionalLongInteger(json, "eventSeq", -1L);
         this.recordedPrimitiveValue = optionalBool(json, "observed", false)
@@ -233,7 +237,7 @@ final class SymbolizeAction {
 
     /** A declared wall-clock read with a recorded answer (moved by offset). */
     boolean declaresWallClockRead() {
-        return clockNanos > 0L && !recordedPrimitiveValue.isEmpty();
+        return clock != null && !recordedPrimitiveValue.isEmpty();
     }
 
     boolean matchesStaticField(String actualMethod,

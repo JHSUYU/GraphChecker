@@ -199,7 +199,7 @@ public class ScheduleLogTest {
         });
         plain.start();
         plain.join();
-        String scope = ScheduleLog.contextHere();
+        String scope = ScheduleLog.contextOf(Identity.contextHere());
         List<String> sends = new ArrayList<String>();
         for (ScheduleEvent event : events()) {
             if (event.kind() == ScheduleEvent.Kind.SEND) {
@@ -1540,6 +1540,140 @@ public class ScheduleLogTest {
     }
 
     /**
+     * The stall is the frontier's.  A daemon waits at tick.d behind x, which
+     * x's owner makes in the test's context, while a thread in a context of
+     * its own runs on elsewhere for longer than {@link ScheduleLog#CEILING}
+     * timeouts, burning CPU: making events the order lacks, or taking the
+     * order's slots past x (a test's polling loop past the cut).  Neither
+     * moves the frontier nor defers the give-up: x is given up a timeout and
+     * a CPU look after it stood, not at the ceiling or when the loop ends
+     * (hdfs-17899-bug2 w4d1 CONFIRM).  x's owner seen at work in x's context
+     * defers it however little CPU it gets: here a third of one.
+     */
+    @Test(timeout = 60000L)
+    public void aThreadRunningElsewhereDefersNoStallTheFrontiersOwnerDoes()
+            throws Exception {
+        long timeout = 500L;
+        // row: what the other thread does, its site, x's owner works.
+        Object[][] rows = {
+            {"runs free", "free", false},
+            {"takes the slots past x", "e", false},
+            {"takes the slots past x while x's owner works", "e", true},
+        };
+        for (Object[] row : rows) {
+            restart();
+            final String name = "a thread that " + row[0];
+            final String site = (String) row[1];
+            final boolean owner = (Boolean) row[2];
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
+                    String.valueOf(timeout));
+            final String[] context = new String[1];
+            final CountDownLatch placed = new CountDownLatch(1);
+            final CountDownLatch go = new CountDownLatch(1);
+            final boolean[] stop = new boolean[1];
+            Thread elsewhere = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    long own = RuntimeTraceContext.beginRequest(NODE,
+                            "elsewhere", true);
+                    context[0] = ScheduleLog.contextOf(Identity.contextHere());
+                    placed.countDown();
+                    try {
+                        go.await();
+                        while (!stop[0]) {
+                            ScheduleLog.observe(ScheduleEvent.Kind.SEND, site);
+                            spin(100L);
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        RuntimeTraceContext.endRequest(own);
+                    }
+                }
+            });
+            elsewhere.start();
+            placed.await();
+            List<ScheduleEvent> rest = new ArrayList<ScheduleEvent>(
+                    Arrays.asList(event(ScheduleEvent.Kind.SEND, "x"),
+                            event(ScheduleEvent.Kind.WAKE, "tick.d")));
+            for (int poll = 0; poll < 200; poll++) {
+                rest.add(ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
+                        context[0], "e", 0, ""));
+            }
+            ScheduleLog.enforceForTests(
+                    Collections.<ScheduleEvent>emptyList(), rest);
+            Thread works = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        for (int step = 0; step < 30; step++) {
+                            spin(30L);
+                            Thread.sleep(70L);
+                            ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                                    "work");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+                }
+            });
+            long before = System.nanoTime();
+            go.countDown();
+            if (owner) works.start();
+            Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+            daemon.join(15000L);
+            long took = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - before);
+            boolean held = daemon.isAlive();
+            stop[0] = true;
+            elsewhere.join(5000L);
+            works.join(10000L);
+            daemon.join(5000L);
+            assertFalse(name + ": tick.d went while it ran", held);
+            List<String> sites = sites();
+            sites.retainAll(Arrays.asList("x", "tick.d"));
+            String progress = ScheduleLog.progress();
+            if (owner) {
+                assertEquals(name, Arrays.asList("x", "tick.d"), sites);
+                assertTrue(name + ": " + progress,
+                        progress.contains(" 0 given up"));
+                assertTrue(name + ", held for x: " + took, took >= 2900L);
+            } else {
+                assertEquals(name, Collections.singletonList("tick.d"), sites);
+                assertTrue(name + ": " + progress,
+                        progress.contains(" 1 given up"));
+                assertTrue(name + ", well inside the ceiling: " + took,
+                        took < ScheduleLog.CEILING * timeout - 1000L);
+            }
+        }
+    }
+
+    /**
+     * A frontier that stood with no one waiting owes its first waiter a
+     * whole timeout: x, long overdue, is given up only a timeout after
+     * tick.d began to wait for it.
+     */
+    @Test(timeout = 30000L)
+    public void aStallIsTimedFromItsEarliestWaiter() throws Exception {
+        long timeout = 1500L;
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
+                String.valueOf(timeout));
+        ScheduleLog.enforceForTests(Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "x"),
+                event(ScheduleEvent.Kind.WAKE, "tick.d")));
+        Thread.sleep(timeout + 500L);
+        long before = System.nanoTime();
+        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+        daemon.join(10000L);
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertFalse(daemon.isAlive());
+        assertTrue("a timeout from its arrival: " + took, took >= timeout);
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 1 given up"));
+    }
+
+    /**
      * A loop polling past its recorded count, its context's next slot due,
      * does not spin: its first poll past the count goes (its last recorded
      * WAKE's slot moved the order), and every later one waits for the order
@@ -1735,7 +1869,8 @@ public class ScheduleLogTest {
     /** One event of this thread's context inside a recorded occurrence. */
     private static ScheduleEvent inOccurrence(ScheduleEvent.Kind kind,
                                               String site, String occurrence) {
-        return ScheduleEvent.of(0L, kind, ScheduleLog.contextHere(), site, 0,
+        return ScheduleEvent.of(0L, kind,
+                ScheduleLog.contextOf(Identity.contextHere()), site, 0,
                 occurrence);
     }
 
@@ -1766,8 +1901,7 @@ public class ScheduleLogTest {
      * the test's one request, so every one states the same context.
      */
     private static ScheduleEvent event(ScheduleEvent.Kind kind, String site) {
-        return ScheduleEvent.of(0L, kind, ScheduleLog.contextHere(), site, 0,
-                "");
+        return inOccurrence(kind, site, "");
     }
 
     private List<ScheduleEvent> events() {

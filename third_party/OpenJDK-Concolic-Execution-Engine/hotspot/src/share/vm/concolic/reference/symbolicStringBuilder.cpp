@@ -5,8 +5,10 @@
 #include "concolic/concolicMngr.hpp"
 #include "concolic/exp/methodExpression.hpp"
 #include "concolic/reference/containerSupport.hpp"
+#include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/utils.hpp"
+#include "utilities/utf8.hpp"
 
 const char *SymStrBuilder::TYPE_NAME = "java/lang/StringBuilder";
 method_set_t SymStrBuilder::handle_method_names = init_handle_method_names();
@@ -58,6 +60,22 @@ static jint builder_length(oop builder) {
 }
 
 static const char *ABSTRACT_BUILDER = "java/lang/AbstractStringBuilder";
+
+// append(CharSequence, int, int) and append(char[], int, int): a range of
+// the operand, not the operand and two renderings of its bounds.
+static bool is_ranged_append(MethodSymbolizerHandle &handle) {
+  if (handle.get_callee_name() != "append") return false;
+  ResourceMark rm;
+  SignatureStream ss(handle.get_callee_method()->signature());
+  BasicType types[3];
+  int count = 0;
+  for (; !ss.at_return_type(); ss.next()) {
+    if (count == 3) return false;
+    types[count++] = ss.type();
+  }
+  return count == 3 && (types[0] == T_OBJECT || types[0] == T_ARRAY)
+      && types[1] == T_INT && types[2] == T_INT;
+}
 
 void SymStrBuilder::init_register_class(MethodSymbolizer *m_symbolizer) {
   // AbstractStringBuilder too: setLength and setCharAt are declared only
@@ -135,6 +153,18 @@ void SymStrBuilder::prepare_param(MethodSymbolizerHandle &handle) {
   if (!callee_method->is_static()) {
     SymStrBuilder::prepare_param_helper(handle, T_OBJECT, offset);
     ++offset;
+  }
+  if (is_ranged_append(handle)) {
+    // [content, what the range appends (NULL: a sequence with no
+    // expression, whose text finish reads back off the builder), the
+    // builder's length before]: the bounds as the int expressions they are.
+    exp_list_t &params = handle.get_param_list();
+    params.push_back(range_of(handle, offset,
+                              handle.get_primitive_exp(offset + 1, T_INT),
+                              handle.get_primitive_exp(offset + 2, T_INT)));
+    params.push_back(new ConExpression(
+        builder_length(handle.get_param<oop>(offset - 1))));
+    return;
   }
 
   ResourceMark rm;
@@ -220,6 +250,43 @@ void __attribute__((optimize("O0"))) SymStrBuilder::add_to_string_for_param_list
   }
 }
 
+namespace {
+
+Expression *substring(Expression *content, Expression *begin,
+                      Expression *end) {
+  exp_list_t arguments;
+  arguments.push_back(content);
+  arguments.push_back(begin);
+  if (end != NULL) arguments.push_back(end);
+  return new OpStrExpression("substring", arguments);
+}
+
+Expression *concat(Expression *first, Expression *second,
+                   Expression *third = NULL) {
+  exp_list_t arguments;
+  arguments.push_back(first);
+  arguments.push_back(second);
+  if (third != NULL) arguments.push_back(third);
+  return new OpStrExpression("concat", arguments);
+}
+
+Expression *plus_one(Expression *index) {
+  return new OpSymExpression(index, new ConExpression((jint) 1), op_add);
+}
+
+// `end` clamped to the length as Java clamps it, when both are concrete.
+Expression *clamped(Expression *end, Expression *length) {
+  jint at = 0;
+  jint bound = 0;
+  if (end->concrete_int_value(&at) && length->concrete_int_value(&bound)
+      && at > bound) {
+    return length;
+  }
+  return end;
+}
+
+}  // namespace
+
 Expression *
 SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
   BasicType type = handle.get_result_type();
@@ -239,9 +306,15 @@ SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
     return type == T_VOID ? NULL : exp;
   }
   if (callee_name == "append") {
-    exp_list_t string_exp_list;
-    add_to_string_for_param_list(handle, string_exp_list);
-    exp = new OpStrExpression("concat", string_exp_list);
+    if (is_ranged_append(handle)) {
+      const exp_list_t &params = handle.get_param_list();
+      exp = concat(params[0], params[1] != NULL ? params[1]
+                   : appended_text(handle.get_param<oop>(0), params[2]));
+    } else {
+      exp_list_t string_exp_list;
+      add_to_string_for_param_list(handle, string_exp_list);
+      exp = new OpStrExpression("concat", string_exp_list);
+    }
     SymStrBuilder *sym_res_strBuilder =
         (SymStrBuilder *)ConcolicMngr::ctx->get_or_alloc_sym_inst(result);
     if (sym_res_strBuilder != NULL) {
@@ -306,42 +379,67 @@ void SymStrBuilder::prepare_mutation(MethodSymbolizerHandle &handle) {
                        ? new ConExpression(length) : (Expression *) NULL);
 }
 
-namespace {
 
-Expression *substring(Expression *content, Expression *begin,
-                      Expression *end) {
-  exp_list_t arguments;
-  arguments.push_back(content);
-  arguments.push_back(begin);
-  if (end != NULL) arguments.push_back(end);
-  return new OpStrExpression("substring", arguments);
-}
-
-Expression *concat(Expression *first, Expression *second,
-                   Expression *third = NULL) {
-  exp_list_t arguments;
-  arguments.push_back(first);
-  arguments.push_back(second);
-  if (third != NULL) arguments.push_back(third);
-  return new OpStrExpression("concat", arguments);
-}
-
-Expression *plus_one(Expression *index) {
-  return new OpSymExpression(index, new ConExpression((jint) 1), op_add);
-}
-
-// `end` clamped to the length as Java clamps it, when both are concrete.
-Expression *clamped(Expression *end, Expression *length) {
-  jint at = 0;
-  jint bound = 0;
-  if (end->concrete_int_value(&at) && length->concrete_int_value(&bound)
-      && at > bound) {
-    return length;
+Expression *SymStrBuilder::range_of(MethodSymbolizerHandle &handle,
+                                    int offset, Expression *start,
+                                    Expression *end) {
+  oop sequence = handle.get_param<oop>(offset);
+  if (sequence == NULL) {
+    return substring(new ConStringSymbolExp(std::string("null")), start, end);
   }
-  return end;
+  if (sequence->is_instance()
+      && (sequence->klass()->name()->equals(SymString::TYPE_NAME)
+          || sequence->klass()->name()->equals(SymStrBuilder::TYPE_NAME))) {
+    return substring(operand_exp(handle, offset, sequence), start, end);
+  }
+  // A char[] or another CharSequence: no String operation states its range.
+  // With an expression of its own the range is a named operation over it;
+  // without one it is the text it appended (NULL here: finish reads it).
+  Expression *shadow = NULL;
+  if (sequence->is_array()) {
+    // Only an array that already has a state or an expression: asking for
+    // its state would make one for any array.
+    SymArr *array = ConcolicMngr::ctx->find_sym_array(arrayOop(sequence));
+    shadow = ConcolicMngr::ctx->find_container_state(sequence);
+    if (shadow == NULL && array != NULL && array->has_semantic_expression()) {
+      shadow = ConcolicMngr::ctx->container_state(sequence, "INDEXED");
+    }
+  } else {
+    SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(sequence);
+    if (instance != NULL && instance->has_semantic_expression()) {
+      shadow = instance->get_ref_exp();
+    }
+  }
+  if (shadow == NULL) return NULL;
+  exp_list_t arguments;
+  arguments.push_back(shadow);
+  arguments.push_back(start);
+  arguments.push_back(end);
+  return new OpStrExpression(sequence->is_array()
+                                 ? "unsupportedCharArrayRange"
+                                 : "unsupportedCharSequenceRange",
+                             arguments);
 }
 
-}  // namespace
+Expression *SymStrBuilder::appended_text(oop builder, Expression *before) {
+  jint from = 0;
+  typeArrayOop value = OopUtils::java_string_to_char_array(builder);
+  const jint to = builder_length(builder);
+  if (value == NULL || to < 0 || !before->concrete_int_value(&from)
+      || from < 0 || from > to) {
+    return new OpStrExpression("unsupportedCharSequenceRange",
+                               (Expression *) new ConExpression(to));
+  }
+  ResourceMark rm;
+  const std::string text(UNICODE::as_utf8(value->char_at_addr(from),
+                                          to - from));
+  if (!ConStringSymbolExp::fits(text)) {
+    // A constant past the symbol-name bound would be cut: named instead.
+    return new OpStrExpression("unsupportedCharSequenceRange",
+                               (Expression *) new ConExpression(to - from));
+  }
+  return new ConStringSymbolExp(text);
+}
 
 Expression *SymStrBuilder::mutated(MethodSymbolizerHandle &handle) {
   const exp_list_t &params = handle.get_param_list();

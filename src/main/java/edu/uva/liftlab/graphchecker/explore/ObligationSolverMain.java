@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
@@ -35,7 +36,9 @@ import java.util.List;
  *   --obligation-id &lt;id&gt;      which row of it this worker owns
  *   --sessions &lt;dir&gt;          the corpus every wave so far has written
  *   --output-dir &lt;dir&gt;        obligation_result.jsonl, obligation.jsonl,
- *                             obligation_query.smt2, focused_task.jsonl
+ *                             obligation_query.smt2, focused_task.jsonl,
+ *                             question.txt (a decided verdict of its own
+ *                             settles its question) or question.asked (SAT)
  *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
  *                             declaration the wave was planned under
  *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt;
@@ -104,11 +107,26 @@ public final class ObligationSolverMain {
                             "the obligation names a path the corpus does "
                                     + "not hold")), null);
         }
+        OccurrenceAddress declared = declaredTarget(obligations);
+        // What the replay is given besides the corpus, as the question
+        // keys it: the declared occurrence, and the plan generation its
+        // class tree is woven from (GROW appends to the plan and re-weaves).
+        Path plan = iteration.resolve(PLAN);
+        String given = "declared " + (declared == null ? ""
+                : declared.render()) + "\nplan " + (Files.isRegularFile(plan)
+                ? ArtifactIO.sha256(plan) : "");
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
-                candidate, z3, timeoutMillis);
+                candidate, z3, timeoutMillis, given,
+                ObligationDir.answered(iteration));
         if (!outcome.issued()) {
-            return publish(out, proposal, outcome.result, outcome.smt2,
-                    outcome.gaps, null);
+            JsonObject published = publish(out, proposal, outcome.result,
+                    outcome.smt2, outcome.gaps, null);
+            // Last: a verdict that settles its question says so only once
+            // it is written.
+            if (outcome.settles) {
+                ask(out.resolve(ObligationDir.QUESTION), outcome.question);
+            }
+            return published;
         }
         // The schedule half of the world (SchedulePrefix). Mints are listed,
         // not derived: one whole-workload run can focus several occurrences
@@ -117,12 +135,25 @@ public final class ObligationSolverMain {
                 candidate.path.sessionId, targetOccurrences(candidate), true,
                 out);
         Task task = candidate.task;
-        return publish(out, outcome.obligation, outcome.result, outcome.smt2,
-                outcome.gaps, ExploreCodec.writeFocusRow(task.focused(),
-                        declaredTarget(obligations), task.seedSessionId(),
-                        task.factor(),
+        JsonObject published = publish(out, outcome.obligation,
+                outcome.result, outcome.smt2, outcome.gaps,
+                ExploreCodec.writeFocusRow(task.focused(), declared,
+                        task.seedSessionId(), task.factor(),
                         outcome.obligation, outcome.inheritedFlips,
                         outcome.clockDeltas, outcome.rootMints, cut));
+        // Asked, and settled only by what its replay decides: its worker
+        // makes it the settled question then (run_engine.sh
+        // campaign_obligation_replay).
+        ask(out.resolve(ObligationDir.QUESTION_ASKED), outcome.question);
+        return published;
+    }
+
+    /** The iteration's task plan, which GROW appends to. */
+    private static final String PLAN = "execution_task_plan.jsonl";
+
+    private static void ask(Path file, String question) throws IOException {
+        Files.write(file, (question + System.lineSeparator())
+                .getBytes(StandardCharsets.UTF_8));
     }
 
     /**

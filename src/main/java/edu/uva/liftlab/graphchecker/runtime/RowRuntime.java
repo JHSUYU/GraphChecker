@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -13,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.ExpressionRefs;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
@@ -241,7 +243,10 @@ public final class RowRuntime {
                     occurrence, Text.safe(siteId), ordinal, outcome, ref,
                     clockReadings(condition)));
         }
-        FocusedReplay.observeDecision(occurrence, siteId, ordinal, outcome);
+        if (FocusedReplay.observeDecision(occurrence, siteId, ordinal,
+                outcome)) {
+            ConcolicResultPublisher.concludeAtRefusal();
+        }
     }
 
     /** One arm's term: the ref in that polarity (the composer lowers). */
@@ -332,6 +337,52 @@ public final class RowRuntime {
         return endpoint;
     }
 
+
+    /**
+     * One hole a codec's encode exported, published when a message carries
+     * it (WIRE-CODEC §4.6): its operand is {@code e_p}, keyed by the message
+     * its consumers name as their correlation id.
+     */
+    static void exportedHole(CodecMessages.Entry entry, String messageKey) {
+        SessionPublisher session = publisher;
+        if (session == null) return;
+        String ref = expressionRef(entry.operand);
+        if (ref.isEmpty() || Text.safe(entry.javaType).isEmpty()) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    entry.producer.id(), "the hole " + entry.contractHole()
+                            + " a message carried states no operand or sort,"
+                            + " so no arm is keyed by its producer");
+            return;
+        }
+        session.export(ExportRow.of(sessionId(), sequence(entry.exportSeq),
+                entry.producer, ref, entry.javaType, 0L, entry.text,
+                entry.contractHole(), messageKey));
+    }
+
+    /**
+     * One hole a decode minted: paired by the envelope that carried its
+     * producer ({@link AttachRow#ENVELOPE}), its correlation id the
+     * message's key.
+     */
+    static void attachedHole(Endpoint endpoint, long seq, Endpoint producer,
+                             String messageKey, Hole hole, String symbol,
+                             String javaType, String arrival,
+                             boolean answered, String answeredValue) {
+        // CONFIRM (b): compared with the model's producer, message and
+        // value, never enforced.
+        String mismatch = Confirmation.attached(endpoint, producer,
+                messageKey, arrival);
+        if (!mismatch.isEmpty()) {
+            gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, endpoint.id(),
+                    mismatch);
+        }
+        SessionPublisher session = publisher;
+        if (session == null) return;
+        session.attach(AttachRow.of(sessionId(), sequence(seq), endpoint,
+                symbol, javaType, arrival, answered,
+                answered ? answeredValue : null, producer, messageKey,
+                AttachRow.ENVELOPE, hole));
+    }
 
     /**
      * The occurrence an event on this thread belongs to, through
@@ -465,7 +516,7 @@ public final class RowRuntime {
                                 String rootId, String symbol, RootKind kind,
                                 String recordedValue, String domainMin,
                                 String domainMax, boolean declared,
-                                long clockNanos) {
+                                Clock clock, long clockSkew) {
         if (kind == RootKind.CLOCK) {
             // The cell the mint already filed, restated so a CLOCK row
             // nothing filed at the mint still resolves.
@@ -480,7 +531,7 @@ public final class RowRuntime {
                 Text.safe(recordedValue),
                 Text.safe(domainMin).isEmpty() ? null : Text.safe(domainMin),
                 Text.safe(domainMax).isEmpty() ? null : Text.safe(domainMax),
-                declared, clockNanos));
+                declared, clock, clockSkew));
         // The mint is IN the session -- a different fact from the plant,
         // which survives an occurrence whose rows are discarded.
         FocusedReplay.mintPublished(rootId);
@@ -881,9 +932,13 @@ public final class RowRuntime {
     /**
      * Publishes what only the end of a replay can state, and closes.
      *
-     * <p>The replay owns the verdict and writes it twice: into the session
-     * (evidence) and the worker's {@code obligation_result.jsonl} (what the
-     * wave reads).</p>
+     * <p>The replay owns the verdict and states it twice: into the session
+     * (evidence) and the worker's {@code replay_verdict.jsonl}, which the
+     * worker, the one writer of the obligation's answer, makes that answer
+     * once the replay's process group is gone ({@code run_engine.sh}
+     * {@code campaign_obligation_replay}).  A replay a refusal decided
+     * withdraws its own session first, to {@code <worker>/refused-sessions/},
+     * so no stage can read the prefix of a run it wrote.</p>
      */
     public static void closeSession() {
         SessionPublisher session = publisher;
@@ -914,15 +969,44 @@ public final class RowRuntime {
         for (ObligationResult result : results) {
             session.obligationResult(result);
         }
-        writeWorkerVerdicts(results);
-        session.close();
+        String worker = FocusedReplay.workerDir();
+        if (FocusedReplay.unsettled() && !worker.isEmpty()) {
+            // A session missing a publication's rows settles no question:
+            // the next ask of it replays again.
+            try {
+                Files.deleteIfExists(Paths.get(worker,
+                        ObligationDir.QUESTION_ASKED));
+            } catch (IOException undeleted) {
+                System.err.println("Causynth could not withdraw the question"
+                        + " this unsettled replay asked: " + undeleted);
+            }
+        }
+        if (FocusedReplay.refusedAt().isEmpty() || worker.isEmpty()) {
+            session.close();
+            writeWorkerVerdicts(worker, results);
+            return;
+        }
+        // A replay a refusal decided publishes no session
+        // (FocusedReplay#refusedAt): it withdraws the directory it opened,
+        // and its verdict rows name none.
+        String unmoved = session.withdrawTo(
+                Paths.get(worker, REFUSED_SESSIONS));
+        if (!unmoved.isEmpty()) {
+            System.err.println("Causynth could not withdraw the session of"
+                    + " this decided replay to " + worker + "/"
+                    + REFUSED_SESSIONS + " (" + unmoved + "); its worker"
+                    + " withdraws what is still listed");
+        }
+        writeWorkerVerdicts(worker, FocusedReplay.results(""));
     }
 
-    /** The wave's own file: one row per obligation this replay ran. */
-    private static void writeWorkerVerdicts(List<ObligationResult> results) {
-        if (results.isEmpty()) return;
-        String worker = FocusedReplay.workerDir();
-        if (worker.isEmpty()) return;
+    /** Where a decided replay's session goes, under its worker. */
+    static final String REFUSED_SESSIONS = "refused-sessions";
+
+    /** The replay's statement to its worker: one row per obligation. */
+    private static void writeWorkerVerdicts(String worker,
+                                            List<ObligationResult> results) {
+        if (results.isEmpty() || worker.isEmpty()) return;
         StringBuilder rows = new StringBuilder();
         for (ObligationResult result : results) {
             rows.append(RowCodec.toLine(
@@ -931,7 +1015,7 @@ public final class RowRuntime {
         try {
             Files.write(
                     Paths.get(worker,
-                            ObligationDir.RESULT),
+                            ObligationDir.REPLAY_VERDICT),
                     rows.toString().getBytes(
                             StandardCharsets.UTF_8));
         } catch (IOException unwritable) {

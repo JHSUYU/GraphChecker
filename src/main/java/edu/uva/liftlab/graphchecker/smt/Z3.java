@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -225,8 +226,39 @@ public final class Z3 {
     // ------------------------------------------------------------------
 
     /**
+     * How far past its budget a z3 stops itself ({@code -T}, whole seconds).
+     * The driver stops z3 at the budget; z3's own clock matters only once
+     * no driver is left -- its JVM killed on a bound, stopped, or out of
+     * memory -- and an orphan ran on alone for hours (lift06: four
+     * {@code z3 -in -smt2} of 2.4 GB each, 8.5 h after their JVMs died).
+     * Past the budget, so a live driver is always the one that stops z3.
+     */
+    static final long ORPHAN_MARGIN_SECONDS = 10L;
+
+    /**
+     * The z3 processes running now.  A JVM that ends (a bound's or a
+     * stop's TERM) takes them with it at once; one killed outright runs no
+     * hook, and its z3 stops on its own clock ({@link #hardTimeout}) --
+     * budgets run to 30 minutes.
+     */
+    private static final Set<Process> LIVE = Collections.newSetFromMap(
+            new ConcurrentHashMap<Process, Boolean>());
+
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            for (Process process : LIVE) process.destroyForcibly();
+        }, "graphchecker-z3-reaper"));
+    }
+
+    /** z3's own wall clock for one run of {@code budgetMillis}. */
+    static String hardTimeout(long budgetMillis) {
+        return "-T:" + ((budgetMillis + 999L) / 1000L + ORPHAN_MARGIN_SECONDS);
+    }
+
+    /**
      * One z3 process.  Each pipe direction has its own thread (else large
-     * queries deadlock), and the timeout is enforced here, not by z3.
+     * queries deadlock), and the timeout is enforced here; z3's own
+     * ({@link #hardTimeout}) only outlives a driver that died.
      */
     private String run(String input, long budgetMillis) {
         runs.incrementAndGet();
@@ -234,18 +266,27 @@ public final class Z3 {
         Process process;
         try {
             ProcessBuilder builder = new ProcessBuilder(z3.toString(),
-                    "-in", "-smt2");
+                    hardTimeout(budgetMillis), "-in", "-smt2");
             builder.redirectErrorStream(true);
             process = builder.start();
         } catch (IOException notLaunched) {
             // z3 never ran: undecided, not a z3 "(error ...)".
             return "error " + notLaunched.getMessage();
         }
-        Process running = process;
+        LIVE.add(process);
+        try {
+            return drive(process, input, budget);
+        } finally {
+            LIVE.remove(process);
+        }
+    }
+
+    /** One launched z3, fed and read under its budget. */
+    private String drive(Process process, String input, long budget) {
         byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
         AtomicReference<String> read = new AtomicReference<String>("");
         Thread writer = new Thread(() -> {
-            try (OutputStream stream = running.getOutputStream()) {
+            try (OutputStream stream = process.getOutputStream()) {
                 stream.write(bytes);
                 stream.flush();
             } catch (IOException closed) {
@@ -254,7 +295,7 @@ public final class Z3 {
         }, "graphchecker-z3-writer");
         Thread reader = new Thread(() -> {
             try {
-                read.set(readAll(running.getInputStream()));
+                read.set(readAll(process.getInputStream()));
             } catch (IOException truncated) {
                 // A broken pipe answers nothing: "" is undecided.
             }
