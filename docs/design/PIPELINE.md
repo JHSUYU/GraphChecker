@@ -345,8 +345,9 @@ schedule) and:
    no single SEED session, an unresolved selector, or an address the seed never activated is a
    BLOCKING gap and leaves the round with no root.
 3. Stops the branches that cannot answer the question (`explore.Branches`, §7.4) and plans the
-   anchor's closure (§7.2). A closure truncated at `--max-tasks` is a BLOCKING `ADMISSION_GAP`
-   (DIAGNOSTIC once a witness exists, step 6).
+   anchor's closure (§7.2). A closure truncated at `--max-tasks` is the round's DIAGNOSTIC
+   `ADMISSION_GAP` and its manifest's `truncated` (the occurrences not planned); whether it blocks
+   a claim is the exploration's end's to say (§7.9).
 4. Reconciles the slot table (`explore.SlotTable`, `iteration-0000/slots.jsonl`): one slot per
    (interaction, world) inside the closure; a WIRE consumer paired with another producer in the same
    world is a replacement, and a read whose observed write the run orders after it (the two rows'
@@ -773,8 +774,11 @@ cancelled or reaped, by id):
   every answer, proposed and exposed nothing.
 
 A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
-proposed twice; the wave budget is what bounds the derivation. COMPOSE, CONFIRM and EMIT then run on
-the corpus EXPLORE left, as after any end.
+proposed twice; the wave budget is what bounds the derivation. An end other than WITNESSED on a
+last round whose closure was truncated (its `truncated`) is one BLOCKING
+`REGION_PATH_CLOSURE_TRUNCATED` row naming that round (`campaign_stream_truncation`): a claim over
+that closure misses arms. An accepted witness asks nothing past it, so its rounds' truncations stay
+DIAGNOSTIC. COMPOSE, CONFIRM and EMIT then run on the corpus EXPLORE left, as after any end.
 
 `campaign_publish_iteration_manifest` then writes `iteration_manifest.json`: provenance, digests of the
 task plan, schedule index, census and obligation results, the members and their obligation digests.

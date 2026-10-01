@@ -3102,6 +3102,23 @@ public class ExploreTest {
                 manifest.get("tasks").getAsInt() >= 2);
         assertFalse("and a run's own address is not a second root: " + anchors,
                 anchors.contains(ran.render()));
+        // Cut at one task, the round says how much it did not plan, and its
+        // own truncation row is DIAGNOSTIC: whether it blocks a claim is the
+        // exploration's end's to say (PIPELINE §7.9).
+        Path cut = tree.newFolder("roots-cut").toPath();
+        JsonObject truncated = ExploreMain.plan(iteration, TARGET_SELECTOR,
+                null, iteration.resolve("results.jsonl"), null,
+                iteration.resolve(StaticScopeMap.FILE), cut, 0, "epoch0", 1,
+                ObligationFactory.Bounds.defaults());
+        assertTrue(truncated.get("truncated").getAsInt() >= 1);
+        boolean recorded = false;
+        for (GapRow gap : RowCodec.readAll(cut.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            if (!gap.detail().startsWith("closure truncated")) continue;
+            assertEquals(GapClass.DIAGNOSTIC, gap.cls());
+            recorded = true;
+        }
+        assertTrue("the round records its truncation", recorded);
 
         // A declared anchor the seed session never ran: BLOCKING, and the
         // refusal names the address rather than leaving "no tasks".

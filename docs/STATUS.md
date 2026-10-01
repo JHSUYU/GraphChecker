@@ -286,8 +286,9 @@ Scale and robustness:
 
 9. One BLOCKING row invariant in any focused session fails the campaign at the gate that lands
    it. The offending session is not withdrawn.
-10. A truncated closure is BLOCKING (`gc/explore/ExploreMain#plan`). It is DIAGNOSTIC only
-    once an admitted replay has observed the fatal at the declared occurrence.
+10. A truncated closure is BLOCKING when the exploration ends on it other than at an accepted
+    witness (`run_engine.sh` `campaign_stream_truncation`, the last round's `truncated`); every
+    round's own truncation row is DIAGNOSTIC (`gc/explore/ExploreMain#plan`).
 12. The seed recording has no wall-clock bound; only the case budget ends it.
 13. VM: every expression is kept until the session closes, under one global mutex.
 32. COMPOSE lowers and states a message family once per path that binds it

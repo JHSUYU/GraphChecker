@@ -1816,7 +1816,8 @@ stream_planner() {
   stream_wave=0
   stream_round_plan "${round}" "${out}"
   jq -n --argjson wave "${stream_wave}" \
-    '{wave: $wave, witnesses: [], branchesStopped: 0,
+    --argjson truncated "${stream_truncated:-0}" \
+    '{wave: $wave, witnesses: [], branchesStopped: 0, truncated: $truncated,
       anchorOccurrences: [{node: "anchor"}]}' \
     >"${out}/explore_manifest.json"
 }
@@ -1964,6 +1965,9 @@ mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
 printf '1\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
 (
   stream_stubs
+  # Every round's closure truncated: an accepted witness asks nothing past
+  # it, so that blocks nothing.
+  stream_truncated=3
   stream_round_plan() {
     [[ "$1" != 0 ]] || stream_propose "$2" A B C LONG1 LONG2
   }
@@ -2016,6 +2020,10 @@ jq -e -s 'map(.obligationId) | sort == ["A","B","C"]' \
 jq -e 'select(.subject == "WITNESSED" and .cls == "DIAGNOSTIC")' \
   "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
   || fail "the end at a witness is not a DIAGNOSTIC row"
+! jq -e 'select(.cls == "BLOCKING")' "${stream_dir}/campaign_gaps.jsonl" \
+  >/dev/null \
+  || fail "a truncated closure blocked a claim the accepted witness ended: \
+$(cat "${stream_dir}/campaign_gaps.jsonl")"
 [[ "$(jq -r '.solver.campaignClaim.claim' "${stream_dir}/witness-attempts/\
 0001/candidate_composition_manifest.json")" == SAT_CANDIDATE ]] \
   || fail "the accepted attempt's composition is not kept"
@@ -2073,6 +2081,28 @@ stream_fixture stream-4
 grep -q 'round growth rows' "${stream_dir}/explore.err" \
   || fail "the missing growth file is not named: \
 $(cat "${stream_dir}/explore.err")"
+
+# STREAM-7: THE CLOSURE IT ENDED ON.  An exploration that ends at its fixed
+# point on a round whose closure was truncated at the task bound leaves a
+# claim over that closure missing arms: one BLOCKING row, naming the round.
+stream_fixture stream-7
+(
+  stream_stubs
+  stream_truncated=2
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A; }
+  campaign_obligation_worker() {
+    stream_answer "$4" A UNSAT
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the truncated loop did not finish: $(cat "${stream_dir}/explore.log")"
+jq -e -s 'map(select(.cls == "BLOCKING")) | length == 1
+  and (.[0].subject == "REGION_PATH_CLOSURE_TRUNCATED")
+  and (.[0].detail | test("FIXED_POINT") and test("obligations-0001")
+       and test("2 occurrence"))' \
+  "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  || fail "a fixed point on a truncated closure is not one BLOCKING row: \
+$(cat "${stream_dir}/campaign_gaps.jsonl" 2>&1)"
 
 # STREAM-5: THE GATE OVER WHAT LANDED (PIPELINE §6, §7.9).  A step gates the
 # sessions landed since the step before, once each is in the corpus, in one

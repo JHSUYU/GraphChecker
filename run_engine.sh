@@ -3774,6 +3774,7 @@ ${stream_stop_detail}"
   fi
   trap campaign_head_unreserve EXIT
   campaign_stream_promote_generation
+  campaign_stream_truncation
   campaign_stream_manifest
   campaign_log "exploration stopped (${stream_stop}) after ${stream_round} \
 round(s), $(grep -c '' "${results}" || true) obligation verdict(s); ran on: \
@@ -3959,7 +3960,7 @@ obligation(s), ${exposed} exposure(s), $(grep -c '' \
 reached its configured budget of region_path_max_waves=${region_path_max_waves} \
 with ${proposed} obligation(s) still open and ${exposed} region exposure(s) \
 not yet woven"
-    campaign_stream_gap "${stream_stop}" "${stream_stop_detail}"
+    campaign_stream_gap DIAGNOSTIC "${stream_stop}" "${stream_stop_detail}"
     stream_cancelled+=("${ids[@]}")
     return 0
   fi
@@ -3976,17 +3977,39 @@ not yet woven"
   done
 }
 
-# A forced end of the exploration, as the DIAGNOSTIC row EMIT publishes and
-# a log line: coverage telemetry, never a campaign failure.
+# One row of the exploration's own, <class> <subject> <detail>, as EMIT
+# publishes it, and a log line: a forced end is DIAGNOSTIC coverage
+# telemetry, never a campaign failure; a closure it ended on truncated is
+# BLOCKING for a claim over it (campaign_stream_truncation).
 campaign_stream_gap() {
-  local kind=$1 detail=$2
-  jq -n -c --arg kind "${kind}" --arg detail "${detail}" \
+  local cls=$1 kind=$2 detail=$3
+  jq -n -c --arg cls "${cls}" --arg kind "${kind}" --arg detail "${detail}" \
     --arg epoch "${iteration_id}" \
     '{schemaVersion: 1, sessionId: "", stage: "EXPLORE",
-      kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
+      kind: "ADMISSION_GAP", cls: $cls,
       subject: $kind, detail: $detail, topologyEpoch: $epoch}' \
     >>"${iteration_dir}/campaign_gaps.jsonl"
-  campaign_log "exploration stops: ${kind}: ${detail}"
+  campaign_log "exploration: ${kind}: ${detail}"
+}
+
+# The closure the exploration ended on, judged.  An accepted witness ended
+# it: nothing past that point is asked, so a truncation asks nothing more
+# (each round's own row is DIAGNOSTIC, ExploreMain).  Any other end: when its
+# last round's closure was truncated at the task bound (--max-tasks, the
+# manifest's `truncated`), a claim over it misses arms, BLOCKING.
+campaign_stream_truncation() {
+  local last truncated
+  [[ "${stream_stop}" != WITNESSED ]] && (( stream_round > 0 )) || return 0
+  last=$(printf '%s/obligations-%04d' "${iteration_dir}" \
+    "$((stream_round - 1))")
+  truncated=$(jq -r '.truncated' "${last}/explore_manifest.json")
+  campaign_count EXPLORE ExploreMain "${last}/explore_manifest.json" \
+    "the closure's occurrences not planned" "${truncated}"
+  (( truncated > 0 )) || return 0
+  campaign_stream_gap BLOCKING REGION_PATH_CLOSURE_TRUNCATED "the \
+exploration ended (${stream_stop}) on $(basename "${last}")'s closure, \
+truncated at its task bound: ${truncated} occurrence(s) were not planned \
+(its gaps.jsonl names them), so a claim over it misses their arms"
 }
 
 # One COMPOSE over the corpus as it stands -- the stage's own entry,
@@ -4072,7 +4095,7 @@ campaign_stream_end() {
     read -r kind round id host status session <<<"${entry}"
     dropped+=("${kind} ${round} ${id}")
   done
-  campaign_stream_gap WITNESSED "${stream_stop_detail}; \
+  campaign_stream_gap DIAGNOSTIC WITNESSED "${stream_stop_detail}; \
 ${#stream_queue[@]} queued obligation(s) cancelled and ${#dropped[@]} \
 unlanded one(s) reaped (exploration.json)"
   campaign_stream_drop cancelled

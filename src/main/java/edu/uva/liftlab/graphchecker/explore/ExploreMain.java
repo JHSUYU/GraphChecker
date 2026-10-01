@@ -145,18 +145,20 @@ public final class ExploreMain {
         Set<OccurrenceAddress> waiting =
                 new LinkedHashSet<OccurrenceAddress>();
         List<String> witnesses = witnesses(corpus, roots);
+        int truncated = 0;
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks, scope, branches);
             gaps.addAll(plan.gaps);
             if (!plan.truncated.isEmpty()) {
-                // A truncated closure misses arms: unsound for a claim over
-                // it, so BLOCKING -- unless an admitted replay already
-                // witnessed the declared occurrence, where the campaign ends
-                // (PIPELINE §7.9) and nothing past that point is asked.
+                // A truncated closure misses arms, but whether that blocks a
+                // claim is the exploration's end's to say: none once an
+                // accepted witness ended it, else the closure it ended on
+                // (the manifest's `truncated`, PIPELINE §7.9).  This round's
+                // own is its record.
+                truncated += plan.truncated.size();
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
-                        GapKind.ADMISSION_GAP, witnesses.isEmpty()
-                                ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+                        GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         root.render(), "closure truncated at " + maxTasks
                                 + " tasks; " + plan.truncated.size()
                                 + " occurrences were not planned, so this "
@@ -251,8 +253,8 @@ public final class ExploreMain {
         RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
-                topologyEpoch, gaps, slots, skeleton, exposed, witnesses,
-                wave(iteration, corpus), branches);
+                topologyEpoch, gaps, slots, skeleton, exposed, truncated,
+                witnesses, wave(iteration, corpus), branches);
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
@@ -488,7 +490,8 @@ public final class ExploreMain {
                                        String topologyEpoch,
                                        List<GapRow> gaps, SlotTable slots,
                                        SlotTable.Reconciliation skeleton,
-                                       int exposed, List<String> witnesses,
+                                       int exposed, int truncated,
+                                       List<String> witnesses,
                                        int wave, Branches branches) {
         JsonObject manifest = new JsonObject();
         JsonArray anchors = new JsonArray();
@@ -514,6 +517,8 @@ public final class ExploreMain {
         manifest.addProperty("heldInFlight", open.heldInFlight);
         manifest.addProperty("branchesStopped", branches.stopped());
         manifest.addProperty("exposedRegions", exposed);
+        // Occurrences this round's closure did not plan (--max-tasks).
+        manifest.addProperty("truncated", truncated);
         JsonObject skeletonRow = new JsonObject();
         skeletonRow.addProperty("slots", slots.size());
         skeletonRow.addProperty("opened", skeleton.opened.size());
