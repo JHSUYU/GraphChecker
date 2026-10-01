@@ -2704,20 +2704,13 @@ names it; nothing withdrawn"
 # back within minutes.
 campaign_solver_idle_s=300
 
-# The solver's heap, in MB, for the corpus under ${1}: 1 GB plus twice the
-# corpus's size on disk, and never more than the case's engine heap
-# (engine_memory_mb, else 8192), which its planner holds the same corpus in.
-# Measured over the i1 rounds' final corpora, one obligation each: 17897
-# (162 MB on disk), 17899-bug2 (386 MB) and SOLR-18406 (144 MB) solve in
-# 1 GB; hdfs-11741 (3231 MB, 175 sessions) runs out of 2 GB and solves in 3
-# GB (104 s) and 4 GB (83 s).
-campaign_solver_heap_mb() {
-  local size heap
-  size=$(du -s -m -L -- "$1/" 2>/dev/null) || size=0
-  heap=$(( 1024 + 2 * ${size%%[[:space:]]*} ))
-  printf '%s\n' "$(( heap < ${engine_memory_mb:-8192} ? heap \
-    : ${engine_memory_mb:-8192} ))"
-}
+# The solver's heap, in MB: the 8 GB every solver JVM has had, which no
+# solver of the i1 rounds outgrew (their solvers peaked at 7.0 GB RSS).  It
+# is not the corpus's size: a query's lowering over large terms is the peak
+# (hdfs-17960, one session: served at 1 GB, 29 of 35 questions ran out of
+# heap, fast1).  A question it cannot answer is asked once more of a solver
+# of its own at the case's engine heap (campaign_obligation_worker).
+campaign_solver_heap_mb=8192
 
 # The solver directory of the wave whose obligations file is ${1}, on this
 # host: named by the host too, since a pid means something on one host only.
@@ -2805,27 +2798,48 @@ campaign_solver_log() {
 # Starts the host's solver for the wave in <dir> once the host has room for
 # its heap, and names it in <dir>/server: the pid of the shell that runs the
 # JVM, which ends with it.  Returns without waiting for it; 1 when the host's
-# memory could not be read.
+# memory could not be read.  The root domains are the declaration EXPLORE
+# and COMPOSE read: an answer is only as free as the root domains behind the
+# arm that produces it.
 campaign_start_solver() {
-  local dir=$1 obligations=$2 sessions=$3 heap
-  local -a domain_args=()
-  # The same declaration EXPLORE and COMPOSE read: an answer is only as free
-  # as the root domains behind the arm that produces it.
-  [[ -z "${causynth_root_domains}" ]] \
-    || domain_args+=(--root-domains "${causynth_root_domains}")
-  heap=$(campaign_solver_heap_mb "${sessions}")
-  campaign_await_host_memory localhost "" 0 "${heap}" 120 || return 1
-  engine_memory_mb=${heap} run_java_main \
+  local dir=$1 obligations=$2 sessions=$3
+  campaign_await_host_memory localhost "" 0 "${campaign_solver_heap_mb}" 120 \
+    || return 1
+  engine_memory_mb=${campaign_solver_heap_mb} run_java_main \
     edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
     --serve "${dir}" \
     --sessions "${sessions}" \
     --z3 "${z3_bin}" \
     --solver-timeout-ms "${solver_timeout_ms}" \
     --idle-seconds "${campaign_solver_idle_s}" \
-    "${domain_args[@]}" </dev/null >>"$(campaign_solver_log \
-      "${obligations}")" 2>&1 &
+    ${causynth_root_domains:+--root-domains "${causynth_root_domains}"} \
+    </dev/null >>"$(campaign_solver_log "${obligations}")" 2>&1 &
   printf '%s\n' "$!" >"${dir}/server.part"
   mv -f -- "${dir}/server.part" "${dir}/server"
+}
+
+# campaign_solve_obligation_alone <obligation_id> <obligations> <sessions>
+# <worker>: the question once more, of a solver JVM of its own at the case's
+# engine heap, charged that heap while it runs; its files go straight into
+# <worker>, and its status is the JVM's.  For a question the host's solver
+# could not answer: a JVM that ran out of heap or died is the solver's
+# failure, never the obligation's answer.
+campaign_solve_obligation_alone() {
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4
+  local heap=${engine_memory_mb:-8192} charge status=0
+  campaign_await_host_memory localhost "" 0 "${heap}" 120 || return 1
+  charge=${campaign_host_charge_id}
+  engine_memory_mb=${heap} run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
+    --obligations "${obligations}" \
+    --obligation-id "${obligation_id}" \
+    --sessions "${sessions}" \
+    --output-dir "${worker}" \
+    --z3 "${z3_bin}" \
+    --solver-timeout-ms "${solver_timeout_ms}" \
+    ${causynth_root_domains:+--root-domains "${causynth_root_domains}"}
+  campaign_host_release localhost "${charge}"
+  return "${status}"
 }
 
 # One obligation: solve it, replay it focused, record its verdict.
@@ -2841,7 +2855,7 @@ campaign_start_solver() {
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
   local seed_plan=$6
-  local outcome status=0
+  local outcome status=0 why
   # Its slot charged the host obligation_memory_mb, its replay's: a local
   # slot is a subshell of the head, and its JVMs are not the head's; the
   # host's solver charges its own.
@@ -2850,11 +2864,29 @@ campaign_obligation_worker() {
   run_capturing_status campaign_solve_obligation "${obligation_id}" \
     "${obligations}" "${sessions}" "${worker}"
   if [[ "${status}" -ne 0 ]]; then
+    # A solver that ran out of heap or died answered nothing about the
+    # obligation: asked once more, of a solver of its own.
+    campaign_log "obligation ${obligation_id}: its host's solver did not \
+answer ($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
+      | tail -n 1)); asked again of a solver of its own at \
+${engine_memory_mb:-8192} MB"
+    run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
+      "${obligations}" "${sessions}" "${worker}"
+  fi
+  if [[ "${status}" -ne 0 ]]; then
+    why=$(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
+      | tail -n 1)
     campaign_log "obligation solver failed on ${obligation_id} \
-(exit ${status}): $(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" \
-      2>/dev/null | tail -n 1)"
-    jq -n -c --arg id "${obligation_id}" --arg detail "$(grep -v -E \
-        '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null | tail -n 1)" \
+(exit ${status}): ${why}"
+    # Twice: still no answer.  The wave holds one row per obligation it
+    # claimed, and this one's names the failure; the BLOCKING gap keeps it
+    # from reading as an outcome (EMIT).
+    jq -n -c --arg id "${obligation_id}" --arg detail "its solver failed \
+twice, its host's and one of its own at ${engine_memory_mb:-8192} MB, so \
+the arm has no answer: ${why}" \
+      '{sessionId: "exploration", kind: "ADMISSION_GAP", cls: "BLOCKING",
+        subject: $id, detail: $detail}' >>"${worker}/gaps.jsonl"
+    jq -n -c --arg id "${obligation_id}" --arg detail "${why}" \
       '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
         verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
       >"${result_row}"

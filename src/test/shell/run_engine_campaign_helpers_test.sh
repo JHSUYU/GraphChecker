@@ -1432,6 +1432,41 @@ $(cat "${solver_test}/${question}.err")"
     || fail "an idle solver did not end: $(cat "${solver_home}/server")"
 )
 
+# A question its host's solver could not answer (out of heap, died) is no
+# answer: it is asked once more of a solver of its own, and a second failure
+# is a BLOCKING gap beside the row that names it, never a bare NOT_ADMITTED
+# (hdfs-17960 fast1: 29 of 35 obligations "answered" by an OutOfMemoryError).
+retry_test=${test_tmp}/solver-retry
+for alone in answers fails; do
+  mkdir -p "${retry_test}/${alone}"
+  (
+    campaign_solve_obligation() {
+      echo "ObligationSolverMain: java.lang.OutOfMemoryError: Java heap space" >&2
+      return 1
+    }
+    campaign_solve_obligation_alone() {
+      [[ "${alone}" == answers ]] || { echo "the second one died" >&2; return 1; }
+      printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
+        >"$4/obligation_result.jsonl"
+      printf '(assert false)\n' >"$4/obligation_query.smt2"
+    }
+    campaign_obligation_worker OB.1 obligations classes \
+      "${retry_test}/${alone}" sessions plan
+  ) >"${retry_test}/${alone}.log" 2>"${retry_test}/${alone}/stderr.log" \
+    || fail "a worker whose solver failed did not return"
+done
+[[ "$(jq -r .verdict "${retry_test}/answers/obligation_result.jsonl")" == UNSAT \
+   && ! -e "${retry_test}/answers/gaps.jsonl" ]] \
+  || fail "the second solver's answer is not the obligation's"
+[[ "$(jq -r .verdict "${retry_test}/fails/obligation_result.jsonl")" \
+     == NOT_ADMITTED \
+   && "$(jq -r 'select(.cls == "BLOCKING") | .subject' \
+     "${retry_test}/fails/gaps.jsonl")" == OB.1 ]] \
+  || fail "a question no solver answered is not a BLOCKING gap: \
+$(cat "${retry_test}/fails/gaps.jsonl" 2>/dev/null)"
+grep -q 'the second one died' "${retry_test}/fails/gaps.jsonl" \
+  || fail "the gap does not say why the second solver failed"
+
 # REPLAY-BOUND-3: what one obligation whose replay never returns records.
 # The same terminal NOT_ADMITTED row the worker writes for a solver that
 # failed -- one obligation's own answer, never the wave's death -- naming the

@@ -439,15 +439,19 @@ a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too.
 
 The obligations of one wave that run on one host are answered by ONE solver JVM there
 (`campaign_solve_obligation`; `ObligationSolverMain --serve`, `explore.SolverService`): the first
-question starts it (`campaign_start_solver`, charged at the host ledger its heap, `1024 + 2 ×` the
-corpus's size on disk in MB and at most `engine_memory_mb`, for 120 s), it reads the corpus once,
+question starts it (`campaign_start_solver`, charged at the host ledger its heap, the 8 GB every
+solver has had, `campaign_solver_heap_mb`, for 120 s: a query's lowering, not the corpus, is its
+peak), it reads the corpus once,
 answers the questions in the order they came, each from the corpus as read
 (`Corpus#freshLowerings`, so each obligation's files are the ones a JVM of its own writes), into a
 directory on the host's disk that the asking worker moves into its worker directory, and ends once
 none has come for `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the wave's
-`obligations.jsonl`. A question a solver took and ended on, or a second solver that ended before
-answering, is that obligation's `NOT_ADMITTED`; one still waiting starts the next solver.
-`ObligationSolverMain --obligation-id` answers one obligation in a JVM of its own (the offline gate).
+`obligations.jsonl`. A question still waiting when its solver ended starts the next one. A question
+the host's solver could not answer (it ran out of heap on it, or ended while answering it) is no
+answer: it is asked once more of a solver JVM of its own at `engine_memory_mb`
+(`campaign_solve_obligation_alone`, `ObligationSolverMain --obligation-id`, the offline gate's
+entry too), and a second failure is a BLOCKING `ADMISSION_GAP` in the worker's `gaps.jsonl` beside
+the `NOT_ADMITTED` row that names it.
 
 `ObligationFactory.locate` finds the published obligation's path in the corpus under the wave's id
 (a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
@@ -568,8 +572,7 @@ listing holds no session naming the obligation (`campaign_await_remote_result`),
 wave's gate nor the next planner reads one a cached listing kept.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
-answer is `NOT_ADMITTED` naming the bound. A question its solver could not answer (§7.5) records `NOT_ADMITTED`
-with why. A replay that states no verdict fails EXPLORE.
+answer is `NOT_ADMITTED` naming the bound. A question no solver could answer is a BLOCKING gap (§7.5). A replay that states no verdict fails EXPLORE.
 
 ### 7.7 The work pool
 
