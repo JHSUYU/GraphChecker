@@ -326,28 +326,50 @@ order:
   the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
   slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
   scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
-  wait is missed). The watchdog lets held waits go when the run idles; a released timed wait still
-  waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an order whose
-  run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
+  wait is missed). The watchdog lets held waits go when the order stalls; a released timed wait
+  still waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an
+  order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
   order's end, not its cut, until every non-`WAKE` slot is settled (`ScheduleLog#line`; CONFIRM's
   unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
   follows a cause the order holds, and runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
-  not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog
-  acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled and no
-  workload thread computing, or after eight timeouts (`CEILING`) whatever they do. Every
-  non-waiting thread counts except the engine's own (`causynth-*`: the result publication, the
-  trace parse), since which thread owes a slot cannot be seen between two of its events
-  (`ScheduleLog#computingLocked`). The watchdog first lets the waits held without a slot go; a
-  grace (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter
-  that waits for a slot. A poll held past its count stands at a due slot and waits for no slot's
-  event, so it bounds no give-up; when only such polls wait, they are let go again, a grace
-  apart. A let-go does not restart the stall's clock: a wait for a slot is held at most
-  `CEILING` timeouts and a grace, and an event that never comes, with nothing computing, costs a
-  timeout and a grace. After two give-ups past the cut the rest is released. Each let-go and
-  give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row;
+  not do; a waiter gives up what its own occurrence did not make before its slot. The watchdog
+  watches the order's frontier (`ScheduleLog#firstBlocking`: the first open slot that is no
+  `WAKE`), which every wait for a slot or for the line waits on. It acts once the frontier has
+  stood `causynth.schedule.timeout.ms` (default 15 s) with no thread computing toward it, or eight
+  timeouts (`CEILING`) whatever threads do, both counted from the frontier's last move or its
+  earliest current waiter's arrival, whichever is later (`ScheduleLog#stallSinceLocked`): the
+  frontier owes nothing to a wait that has not begun. A slot taken past the frontier (past the cut
+  a non-`WAKE` slot is taken at once) or an event run free moves no wait for a slot or the line,
+  so it does not restart the stall (hdfs-17899-bug2 w4d1 CONFIRM: the test thread's polls took
+  their later slots, then ran free, for the whole of its 30 s wait while a BPServiceActor, held at
+  the order's end in a wait the recording never timed out, owed the frontier, its turn's `END`); a
+  poll past its recorded count goes on any move, but it waits for no slot's event. The CPU is
+  looked at once a second (`ScheduleLog#lookLocked`), the first look of a stall measuring from its
+  start. Something computes toward the frontier when its owner was seen at work: an event in the
+  frontier's own context or occurrence (where `#slotOf` and `#passedLocked` place a thread's own
+  events) since the last look, whatever CPU share the owner gets (the VM's arena mutex, a
+  collection, a busy host), except a poll past its recorded count that went only because the order
+  moved or it was let go (a loop reading a CLOCK root, or a `WAKE` taking its slot, is at work).
+  Otherwise which thread owes the frontier cannot be seen between two of its events, so any thread
+  may, except one waiting for a turn, the engine's own (`causynth-*`: the result publication, the
+  trace parse), and one seen at an event away from the frontier since the last look (run free or
+  into a slot past it, in neither its context nor its occurrence; a thread the watchdog let go
+  since the frontier moved is never away): it runs on elsewhere (`ScheduleLog#ELSEWHERE`). An
+  unseen owner is one thread, so one such thread's CPU plus the collectors' time over half the
+  look's span defers the give-up, not a sum: the traffic a free-running loop drives through threads
+  that make no event (an IPC reader, a connection's receiver) is no one computing. The watchdog
+  first lets the waits held without a slot go; a grace (`LET_GO_GRACE_MS`, 2 s) later it gives up
+  every open slot before the earliest waiter that waits for a slot. That is one let-go per
+  frontier: a slot taken past it earns the held waits no second one, which would hold the give-up
+  off for as long as anything ran elsewhere. A poll held past its count stands at a due slot and
+  waits for no slot's event, so it bounds no give-up; when only such polls wait, they are let go
+  again, a grace apart. A let-go does not restart the stall's clock for the waits that remain: a
+  wait for a slot is held at most `CEILING` timeouts and a grace, and an event that never comes,
+  with nothing computing toward it, costs a timeout and a grace. After two give-ups past the cut
+  the rest is released. Each let-go and give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row;
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that
   session's world (its flips and planted values); flips are cut only from ADMITTED sessions
