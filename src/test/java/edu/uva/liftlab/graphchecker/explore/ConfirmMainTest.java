@@ -674,6 +674,44 @@ public class ConfirmMainTest {
         }
         assertEquals(1, held);
 
+        // A pinned join to a container's INITIAL holds nothing: its version
+        // is the members the VM read where it first observed the map, which
+        // no occurrence wrote (SOLR-18413 stream7b: the leader's first
+        // lookup of the cluster state).  A write above its members is a
+        // write.  Every STATE row names its reader at any turn too.
+        for (int members : new int[]{1, 0}) {
+            JsonObject base = JsonParser.parseString("{\"_type\":"
+                    + "\"ContainerRelation\",\"shape\":\"ASSOCIATIVE\","
+                    + "\"operation\":\"SNAPSHOT_BASE\",\"members\":"
+                    + members + ",\"arguments\":[],\"receiver\":{"
+                    + "\"_type\":\"ContainerRelation\",\"operation\":"
+                    + "\"STATE\",\"receiver\":{\"_type\":"
+                    + "\"SymbolExpression\",\"_exp\":\"M_L_9\"}}}")
+                    .getAsJsonObject();
+            JsonObject put = JsonParser.parseString("{\"_type\":"
+                    + "\"ContainerRelation\",\"shape\":\"ASSOCIATIVE\","
+                    + "\"operation\":\"PUT\",\"arguments\":[{\"_type\":"
+                    + "\"ConstExpr\",\"_exp\":\"Y_I_1\"},{\"_type\":"
+                    + "\"ConstExpr\",\"_exp\":\"Y_I_1\"}]}")
+                    .getAsJsonObject();
+            put.add("receiver", base);
+            RowCodec.writeExpressions(sel.expressions(), ExpressionTable.of(
+                    Collections.singletonMap("EXPR.w", put)));
+            Path snapshot = folder.newFolder("snapshot" + members).toPath();
+            ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
+                    snapshot);
+            int stated = 0;
+            for (JsonObject edge : RowCodec.readJsonl(
+                    snapshot.resolve(Confirmation.FILE))) {
+                if (!"STATE".equals(edge.get("kind").getAsString())) continue;
+                stated++;
+                assertEquals(Confirmation.anyTurn(reader),
+                        edge.get("readerAnyTurn").getAsString());
+            }
+            assertEquals("members " + members, members == 1 ? 0 : 1,
+                    stated);
+        }
+
         // A join at a location the fatal does not rest on is no edge: under
         // the moved root the run may read it elsewhere or not at all.
         Path unheld = folder.newFolder("unheld").toPath();

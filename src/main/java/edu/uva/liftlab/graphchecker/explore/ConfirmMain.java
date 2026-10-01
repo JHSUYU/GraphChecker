@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
@@ -29,6 +30,7 @@ import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -869,6 +871,8 @@ public final class ConfirmMain {
                 new LinkedHashMap<String, WriteRow>();
         /** The reads of a reached occurrence at or past its cutoff. */
         private final Set<String> past = new LinkedHashSet<String>();
+        /** The session's expressions, for {@link #initial}. */
+        private final ExpressionTable expressions;
         /** Occurrence id -> where its events sat: activation frames, seq. */
         private final Map<String, List<Placed>> placed =
                 new LinkedHashMap<String, List<Placed>>();
@@ -936,8 +940,40 @@ public final class ConfirmMain {
                     ExecutionIndex.of(hold));
         }
 
+        /**
+         * Whether a write row is a container's INITIAL: the members the VM
+         * read when it began tracking the container, stated at whichever
+         * access first observed it -- a version no occurrence wrote, as a
+         * scalar's INITIAL is no row at all (runtime.SharedStateCapture
+         * #scalarInitial).  Its expression is the snapshot alone, its
+         * SNAPSHOT_BASE's {@code members} PUTs and nothing above them;
+         * a base stating no {@code members} (an image before it) is read
+         * as a write.
+         */
+        private boolean initial(WriteRow write) {
+            JsonElement at = expressions.expression(write.expressionRef());
+            int above = 0;
+            while (at != null && at.isJsonObject()) {
+                JsonObject relation = at.getAsJsonObject();
+                if (!"ContainerRelation".equals(
+                        optionalString(relation, "_type"))) {
+                    return false;
+                }
+                String operation = optionalString(relation, "operation");
+                if ("SNAPSHOT_BASE".equals(operation)) {
+                    return JsonFields.optionalInteger(relation, "members", -1)
+                            == above;
+                }
+                if (!"PUT".equals(operation)) return false;
+                above++;
+                at = relation.get("receiver");
+            }
+            return false;
+        }
+
         private StateClosure(SessionReader session, OccurrenceAddress anchor,
                              long cutoff) {
+            expressions = session.expressions();
             for (ReadRow read : session.reads()) {
                 place(read.endpoint(), read.seq());
             }
@@ -1102,7 +1138,8 @@ public final class ConfirmMain {
      * may make it at another endpoint or not at all (r7 hdfs-17960: the
      * fsimage's name maps, re-serialized after the flip).  A read no row
      * answers is held only where the model chose a writer for it; otherwise
-     * its outside store is the run's own.  Endpoints and activations are
+     * its outside store is the run's own -- and so is a container's INITIAL
+     * ({@link StateClosure#initial}).  Endpoints and activations are
      * named as every delivery of their stored message is
      * ({@link Confirmation#id}).
      */
@@ -1119,11 +1156,19 @@ public final class ConfirmMain {
             WriteRow held = chosen.containsKey(reader.getKey())
                     ? chosen.get(reader.getKey())
                     : closure.joined.get(reader.getKey());
-            if (held == null) continue;
+            // A pinned join to a container's INITIAL holds nothing: no
+            // occurrence wrote it, only whichever access first observed the
+            // container, which is the run's own history.
+            if (held == null || !chosen.containsKey(reader.getKey())
+                    && closure.initial(held)) {
+                continue;
+            }
             String location = SmtLowering.locationKey(held.location());
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", Confirmation.id(read.endpoint()));
+            edge.addProperty("readerAnyTurn",
+                    Confirmation.anyTurn(read.endpoint()));
             // A mint read lands on whichever racing occurrence reads the cell
             // first, so it is held by the writer (runtime/Confirmation), not
             // the reader.
@@ -1140,7 +1185,10 @@ public final class ConfirmMain {
             // recorded before the write goes before it, any other after the
             // read.
             for (WriteRow other : closure.byLocation.get(location)) {
-                if (other.endpoint().equals(held.endpoint())) continue;
+                if (other.endpoint().equals(held.endpoint())
+                        || closure.initial(other)) {
+                    continue;
+                }
                 if (other.seq() < held.seq()) {
                     closure.order(orders, other.endpoint(), held.endpoint(),
                             held.seq());

@@ -5,6 +5,7 @@ import static org.junit.Assert.assertTrue;
 
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -126,6 +127,10 @@ public class ConfirmationTest {
         Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
         Endpoint absent = endpoint(ANCHOR, "a.Handler#handle()#99:READ");
         Endpoint hole = endpoint(ANCHOR, "kv:expireAt");
+        // A read in a loop that polls for its write: the model's at turn 2,
+        // this run's at turn 1 (SOLR-18413 stream7b: MigrateCmd's poll saw
+        // the routing rule one turn sooner).
+        Endpoint polled = turn(2);
         String state = "SOLR_ZK /collections/c/state.json@5";
         handed("{\"schemaVersion\":1,\"kind\":\"FOCUSED_TASK\","
                 + "\"taskId\":\"CONFIRM\",\"obligationId\":\"CONFIRM\","
@@ -148,6 +153,11 @@ public class ConfirmationTest {
                         "{\"kind\":\"STATE\",\"reader\":\"" + absent.id()
                                 + "\",\"writer\":\"" + writer.id()
                                 + "\",\"version\":\"122\"}",
+                        "{\"kind\":\"STATE\",\"reader\":\"" + polled.id()
+                                + "\",\"readerAnyTurn\":\""
+                                + Confirmation.anyTurn(polled)
+                                + "\",\"writer\":\"" + writer.id()
+                                + "\",\"version\":\"123\"}",
                         "{\"kind\":\"MARKER\",\"root\":\"FAULT:IPC\","
                                 + "\"value\":true}"));
         LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
@@ -174,6 +184,9 @@ public class ConfirmationTest {
         Confirmation.read(reader, cell, 121L,
                 edu.uva.liftlab.graphchecker.contract.ReadRow.UNKNOWN_VERSION);
         Confirmation.wrote(cell, 121L, other);
+        Confirmation.read(turn(1), cell, 123L,
+                edu.uva.liftlab.graphchecker.contract.ReadRow.UNKNOWN_VERSION);
+        Confirmation.wrote(cell, 123L, writer);
         List<String> close = Confirmation.close();
         assertEquals(close.toString(), 2, close.size());
         assertTrue(close.get(0), close.get(0).startsWith("STATE "
@@ -183,6 +196,14 @@ public class ConfirmationTest {
                 + other.id()));
         assertTrue(close.get(1), close.get(1).contains(absent.id())
                 && close.get(1).endsWith("the run never read here"));
+    }
+
+    /** The poll's read at one turn of its loop. */
+    private static Endpoint turn(int k) {
+        return Endpoint.of(OccurrenceAddress.parse(ANCHOR),
+                "a.Handler#poll()#5:READ", ExecutionIndex.of(Arrays.asList(
+                        Frame.of("<a.Handler: java.util.Map rules()>", k),
+                        Frame.of("a.Handler#poll()#5:READ", 0))), 0);
     }
 
     /** A CONFIRM run that cannot read the edges the model chose compared

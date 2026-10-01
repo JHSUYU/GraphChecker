@@ -209,7 +209,14 @@ See Acceptance above. What remains (the branches are in README §0.3):
   delivery of one version alike, `OccurrenceAddress#anyDelivery`: 32 of the 38 offline; the other
   6 follow the poll iteration the stalled entry shifted). Its PLAN
   refused `OCCURRENCE_ADDRESS_SHARED` for two ZooKeeper callback tasks under a Lost context, which
-  the R1-ROOTS branch's unnamed-work rule opens no occurrence for. The store
+  the R1-ROOTS unnamed-work rule opens no occurrence for. Live `stream7b` (vm-w4e) claimed it again
+  (both clocks to one instant: the rule unexpired at the leader, which leastClocks did not pin) and
+  reproduced the fatal, and 17 STATE edges failed: 15 joined reads to a container's INITIAL, whose
+  writer is whichever access first observed the map -- in that run a later one, since `migrateKey`
+  happened not to register the first watch that refreshes the cluster state on its own thread
+  (fixed: such a join is no edge, `StateClosure#initial`); 2 were MigrateCmd's poll, which saw the
+  rule a turn sooner (fixed: a STATE edge is taken at any turn of the loops on its path,
+  `readerAnyTurn`). Offline, that run's own reads take all 222 edges. The store
   door files what a write carried after the schedule's SEND lets the queue's consumer run
   (`gc/runtime/MessageDoors#stored`, open defect 28), which can leave the Overseer queue's attach
   unpaired.

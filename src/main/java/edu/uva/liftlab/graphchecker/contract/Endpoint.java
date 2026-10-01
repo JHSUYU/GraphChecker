@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -112,6 +113,20 @@ public final class Endpoint extends Value {
         boolean eventFrame = last >= 0 && frames.get(last).callSite()
                 .equals(site.replace('/', '.'));
         return eventFrame ? frames.subList(0, last) : frames;
+    }
+
+    /**
+     * This endpoint at any turn of the loops on its path: its frames'
+     * iteration counts dropped.  How many turns a loop that polls for a
+     * write takes before the write lands is that write's timing.
+     */
+    public Endpoint anyTurn() {
+        List<Frame> turned = new ArrayList<Frame>();
+        for (Frame frame : siteIndex.frames()) {
+            turned.add(Frame.of(frame.callSite(), 0));
+        }
+        return new Endpoint(occurrence, site, ExecutionIndex.of(turned),
+                attempt);
     }
 
     /** This endpoint as every delivery of its occurrence's stored message
