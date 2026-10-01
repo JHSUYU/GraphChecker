@@ -1285,8 +1285,20 @@ final class ComposedFamilies {
                     }
                 }
             }
-            // One arm is the run's own interleaving: the join says it.
-            if (found.size() + (observedPin.isEmpty() ? 0 : 1) < 2) continue;
+            // One arm is the run's own interleaving: the join says it.  An
+            // alternative is an HB-concurrent writer: arms that are each the
+            // run's own pairing of some read (the writer one read saw, the
+            // pins of another whose version no row wrote) re-pair nothing,
+            // and their location is none Composer#repaired names.
+            boolean alternative = false;
+            for (Arms.Arm arm : found) {
+                alternative |= arms.concurrent(reads.get(0).endpoint()
+                        .occurrence(), arm.producer(), session);
+            }
+            if (!alternative
+                    || found.size() + (observedPin.isEmpty() ? 0 : 1) < 2) {
+                continue;
+            }
             if (observedPin.isEmpty()) {
                 observedWrites.put(entry.getKey(), observed);
             } else {

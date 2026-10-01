@@ -4907,13 +4907,20 @@ public class ComposerTest {
      *       phi reads the projection, never the pinned constant;</li>
      *   <li>H2b: the write joins and a STATE family may re-pair the read,
      *       while the node's projection refuses: phi gets no literal the
-     *       family cannot move, so the path is refused.</li>
+     *       family cannot move, so the path is refused;</li>
+     *   <li>bound: the write refuses over a read of a field the reader
+     *       alone writes, one of whose versions no row wrote (the VM's
+     *       version bound dropped it): no read of it has another writer,
+     *       so nothing moves and the pin binds (hdfs-17960 e1c);</li>
+     *   <li>own: phi reads a version the reader wrote and one no row
+     *       wrote: each arm would be one read's own pairing, with no
+     *       HB-concurrent writer among them, so there is no family.</li>
      * </ul>
      */
     @Test
     public void theOneBindingRule() throws Exception {
         for (String name : new String[]{"pin", "unstated", "H1", "H2a",
-                "H2b"}) {
+                "H2b", "bound", "own"}) {
             Path iteration = folder.newFolder("bind-" + name).toPath();
             OccurrenceAddress reader = occurrence("case/nn0", "REGION.commit",
                     CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
@@ -4947,11 +4954,30 @@ public class ComposerTest {
             arguments.add(vmString("toString", symbol(SERIAL, "I")));
             parsed.add("_param_list", arguments);
             parsed.add("_res_exp", symbol("M_I_return7", "I"));
+            LocationId field = LocationId.of(LocationKind.INSTANCE, "11",
+                    "name");
+            if ("bound".equals(name)) {
+                // The reader parsed it: wrote v6, read it, then read v7,
+                // whose write the bound dropped.
+                refused = binary("+", read("INSTANCE_FIELD", field.owner(),
+                        "name", 7L, "I"), unmodeled);
+                session.expression("EXPR.00000000000000b4",
+                        integer("I", 6L));
+                session.write(Endpoint.of(reader, "Parser#end#7:WRITE",
+                        at("w#3", 0), 0), field, 6L, "EXPR.00000000000000b4");
+                for (long seen : new long[]{6L, 7L}) {
+                    session.read(Endpoint.of(reader, "Parser#get#8:READ",
+                                    at("r#" + seen, 0), 0), field, seen,
+                            SmtLowering.locationKey(field) + "@v" + seen
+                                    + "@s0", "I", Long.toString(seen));
+                }
+            }
             session.expression("EXPR.00000000000000b1", "H1".equals(name)
-                    ? parsed : "H2b".equals(name) ? integer("I", 2L)
-                    : refused);
-            session.write(Endpoint.of(first, "TickA#set#4:WRITE",
-                    at("w#1", 0), 0), stamp, 2L, "EXPR.00000000000000b1");
+                    ? parsed : "H2b".equals(name) || "own".equals(name)
+                    ? integer("I", 2L) : refused);
+            session.write(Endpoint.of("own".equals(name) ? reader : first,
+                    "TickA#set#4:WRITE", at("w#1", 0), 0), stamp, 2L,
+                    "EXPR.00000000000000b1");
             if ("H2b".equals(name)) {
                 // A concurrent writer: the read's STATE family re-pairs it.
                 OccurrenceAddress second = occurrence("case/nn0",
@@ -4966,9 +4992,19 @@ public class ComposerTest {
             session.read(Endpoint.of(reader, "Block#getStamp#29:READ",
                             at("r#1", 0), 0), stamp, 2L, symbol, "I",
                     "unstated".equals(name) ? null : "H1".equals(name) ? "3"
-                            : "H2b".equals(name) ? "2" : "1001");
+                            : "H2b".equals(name) || "own".equals(name) ? "2"
+                            : "1001");
             JsonObject node = read("INSTANCE_FIELD", stamp.owner(), "value",
                     2L, "I");
+            // own: then a version no row wrote, which phi compares with it.
+            JsonObject later = read("INSTANCE_FIELD", stamp.owner(), "value",
+                    9L, "I");
+            later.add("concreteValue", integer("I", 9L));
+            if ("own".equals(name)) {
+                session.read(Endpoint.of(reader, "Block#getStamp#31:READ",
+                                at("r#9", 0), 0), stamp, 9L,
+                        key + "@v9@s0", "I", "9");
+            }
             if ("H2a".equals(name) || "H2b".equals(name)) {
                 // The node's own projection of the version it observed.
                 node.getAsJsonObject("observedVersion").add("expression",
@@ -4979,11 +5015,12 @@ public class ComposerTest {
             if (!"unstated".equals(name) && !"H1".equals(name)) {
                 // What it returned: a literal no family moves.
                 node.add("concreteValue", integer("I",
-                        "H2b".equals(name) ? 2L : 1001L));
+                        "H2b".equals(name) || "own".equals(name) ? 2L
+                                : 1001L));
             }
             session.expression("EXPR.00000000000000b3", binary(
-                    "H1".equals(name) ? "!=" : "<", node,
-                    symbol(SERIAL, "I")));
+                    "H1".equals(name) ? "!=" : "<", node, "own".equals(name)
+                            ? later : symbol(SERIAL, "I")));
             session.target("EXPR.00000000000000b3", false, true);
             session.write();
 
@@ -5047,6 +5084,24 @@ public class ComposerTest {
                                     + SERIAL + ")"))
                                     && !arm.contains(SmtNames.legalSymbols(
                                     symbol)));
+                    break;
+                case "bound":
+                    assertEquals(name + ": no read of the field has another "
+                                    + "writer, so the pin binds", 1,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": phi reads the pinned symbol: " + arm,
+                            arm.contains(SmtNames.legalSymbols(
+                                    "(= " + symbol + " 1001)")));
+                    break;
+                case "own":
+                    assertEquals(name + ": the path stands", 1,
+                            composition.disjuncts().size());
+                    assertFalse(name + ": arms that are each a read's own "
+                                    + "pairing are no family: "
+                                    + composition.body(),
+                            composition.body().contains("state_family__")
+                                    || composition.body().contains(
+                                    "observed_arm__"));
                     break;
                 default:
                     assertEquals(name + ": a read a family re-pairs is no "

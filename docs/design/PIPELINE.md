@@ -901,10 +901,17 @@ one `writer_arm__` selector per writer occurrence of the same session (`Arms.sta
 observed writer's arm is the write the read observed, any other writer's its last write of the
 location, and only attested HB-concurrent ones), plus an `observed_arm__` holding each read to its
 own join or pin when a version one of the reads observed has no writing row; exactly one per
-location that has two arms or more, else the reads keep their own joins. The arm the run took (the
-observed arm, else the one writer every read observed) is part of the path's recorded pairing; a
-location where no arm is that pairing (the reads saw two writes, or the write they saw has no arm)
-is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formula.
+location that has two arms or more, one of them an HB-concurrent writer's, else the reads keep their
+own joins: arms that are each some read's own pairing (the writer one read saw, the pins of another
+whose version no row wrote) re-pair nothing. The read rule's "an anchor location a STATE family may
+re-pair" (`Composer#repaired`) is the same alternative: a read of it at the anchor could have seen
+a writer occurrence besides the one it did (`Corpus#eligibleWrites`; a version no row wrote has none
+of its own). A hot field the reader's own occurrence alone writes, whose earliest versions the VM's
+64-version bound dropped, is none (hdfs-17960 e1c: the checkpoint saver's configuration parse,
+whose `Hashtable` entries' hashes, a `String.hashCode` no lowering models, are pinned). The arm the
+run took (the observed arm, else the one writer every read observed) is part of the path's recorded
+pairing; a location where no arm is that pairing (the reads saw two writes, or the write they saw
+has no arm) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formula.
 
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
