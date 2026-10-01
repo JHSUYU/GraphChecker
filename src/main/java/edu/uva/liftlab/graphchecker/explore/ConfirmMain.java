@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -59,8 +60,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *   --output &lt;dir&gt;      the worker directory the replay is run from
  *
  *   or, with --iteration and --claim, a native reproduction's plant
- *   ({@link #plant}):
- *   --plant &lt;file&gt;      the markers the confirmation's world plants
+ *   ({@link #writePlant}):
+ *   --plant &lt;file&gt;      the markers the confirmation's world plants, and
+ *                        the target's fatal arms at the claim's anchor
+ *   --static-scope-map &lt;file&gt;   the campaign's, whose TARGET_SITE guards
+ *                        state those arms
  *
  *   once the replay has published, the decision ({@link #decide}), printed
  *   as final/confirm.json:
@@ -129,19 +133,23 @@ public final class ConfirmMain {
         Path out = options.path("output");
         Path sessions = options.path("sessions");
         Path plant = options.path("plant");
+        Path scopeMap = options.path("static-scope-map");
         if (sessions != null && claim != null && out != null) {
             System.out.println(ExploreMain.pretty(
                     decide(claim, out, sessions)));
             return;
         }
         if (iteration == null || claim == null
-                || (plant == null && (manifest == null || out == null))) {
+                || (plant == null && (manifest == null || out == null))
+                || (plant != null && scopeMap == null)) {
             throw new IllegalArgumentException("--iteration, --claim, and "
-                    + "--plant or --manifest and --output are required");
+                    + "--plant with --static-scope-map, or --manifest and "
+                    + "--output are required");
         }
         JsonObject summary;
         try {
-            summary = plant != null ? writePlant(iteration, claim, plant)
+            summary = plant != null
+                    ? writePlant(iteration, claim, scopeMap, plant)
                     : write(iteration, claim, manifest, out);
         } catch (Refused refused) {
             System.err.println("CONFIRM refused: " + refused.getMessage());
@@ -344,13 +352,17 @@ public final class ConfirmMain {
     /**
      * A native reproduction's plant (ADHOC-INFRA WP5.D; {@code
      * runtime.RecordingPlant}): the confirmation's world ({@link #world}), one
-     * row per root at the site its plan input action calls and the id of the
-     * occurrence it is minted at.  The recording weave plants only fault
-     * markers: a world that also moves a clock, answers an attach or assigns
-     * any other root is refused by name.  Whatever CONFIRM decided, and
-     * whether or not it replayed.
+     * MARKER row per root at the site its plan input action calls and the id
+     * of the occurrence it is minted at, and one TARGET row per guard of the
+     * scope map's TARGET_SITE rows, its fatal arm at the claim's anchor -- the
+     * one question a native run answers.  The recording weave plants only
+     * fault markers: a world that also moves a clock, answers an attach or
+     * assigns any other root is refused by name, and so is a scope map that
+     * states no fatal arm.  Whatever CONFIRM decided, and whether or not it
+     * replayed.
      */
-    static JsonObject writePlant(Path iteration, Path claimFile, Path out)
+    static JsonObject writePlant(Path iteration, Path claimFile,
+                                 Path scopeMap, Path out)
             throws IOException {
         JsonObject claim = ExploreCodec.readObject(claimFile);
         JsonObject decided = claim.getAsJsonObject("claim");
@@ -411,10 +423,33 @@ public final class ConfirmMain {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: the world plants no "
                     + "root, so a native run would repeat the recording");
         }
+        int markers = rows.size();
+        String anchor = OccurrenceAddress.parse(
+                optionalString(claim, "anchor")).id();
+        for (StaticScopeMap.Site target
+                : StaticScopeMap.read(scopeMap).targetSites()) {
+            for (int index = 0; index < target.guards.size()
+                    && index < target.guardOutcomes.size(); index++) {
+                if (target.guardOutcomes.get(index) == null) continue;
+                JsonObject row = new JsonObject();
+                row.addProperty(RecordingPlant.KIND, RecordingPlant.TARGET);
+                row.addProperty(RecordingPlant.OCCURRENCE, anchor);
+                row.addProperty(RecordingPlant.SITE, target.guards.get(index));
+                row.addProperty(RecordingPlant.VALUE,
+                        target.guardOutcomes.get(index));
+                rows.add(row);
+            }
+        }
+        if (rows.size() == markers) {
+            throw new Refused("NATIVE_PLANT_UNSUPPORTED: " + scopeMap
+                    + " states no fatal arm of a TARGET_SITE guard, so a "
+                    + "native run could not tell whether it reproduced");
+        }
         RowCodec.writeJsonl(out, rows);
         JsonObject summary = new JsonObject();
         summary.addProperty("sessionId", sessionId);
-        summary.addProperty("markers", rows.size());
+        summary.addProperty("markers", markers);
+        summary.addProperty("fatalArms", rows.size() - markers);
         return summary;
     }
 

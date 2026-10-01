@@ -114,8 +114,7 @@ public final class CausynthTraceRecorder {
      * <static-scope-map>,<region-skeletons>,<output-dir>} per target (its
      * static slice, and where its runtime region plan goes), and optionally
      * {@code --summary <file>}, where each target's {@link TargetOutcome} is
-     * written beside how many marker answers the run's plant gave ({@link
-     * RecordingPlant}).  A target the recording does not serve fails alone,
+     * written.  A target the recording does not serve fails alone,
      * named on stderr; the run exits 1 when no target was served, or when the
      * trace itself cannot be read.
      */
@@ -131,12 +130,10 @@ public final class CausynthTraceRecorder {
             throw new IllegalArgumentException("--target is required");
         }
         Map<String, TargetOutcome> outcomes = new LinkedHashMap<>();
-        int plantsApplied = 0;
         Throwable unread = null;
         try {
-            TraceData trace = readStateTrace(directory, test);
-            plantsApplied = trace.plantsApplied;
-            outcomes = aggregateTargets(trace, targets);
+            outcomes = aggregateTargets(readStateTrace(directory, test),
+                    targets);
         } catch (Throwable throwable) {
             // The trace itself: every target's outcome.
             unread = throwable;
@@ -152,7 +149,6 @@ public final class CausynthTraceRecorder {
                 rows.add(outcome.name, outcome.json());
             }
             JsonObject json = new JsonObject();
-            json.addProperty("plantsApplied", plantsApplied);
             json.add("targets", rows);
             try {
                 writeFile(new File(summary.trim()), json + "\n");
@@ -521,6 +517,7 @@ public final class CausynthTraceRecorder {
         ExecutionEvent event = branchEvent(callId, method, unitIndex);
         event.outcome = outcome;
         emitExecutionEvent(event);
+        RecordingPlant.decided(event.siteId, event.outcome);
     }
 
     /** One branch row at the exact unit of the method that executed it. */
@@ -548,6 +545,7 @@ public final class CausynthTraceRecorder {
         event.outcome = event.successorIndex == null ? null
                 : successorIndex < caseCount;
         emitExecutionEvent(event);
+        RecordingPlant.decided(event.siteId, event.outcome);
     }
 
     /** Normal exit resolved from the current thread-local call stack. */
@@ -1069,6 +1067,22 @@ public final class CausynthTraceRecorder {
                     "siteId", siteId,
                     "occurrenceAddress", occurrence,
                     "value", value);
+        }
+    }
+
+    /** One decision of the planted world's fatal arm at a target guard
+     *  ({@link RecordingPlant#decided}), as a trace row: the occurrence it
+     *  was decided in -- the anchor's when {@code atAnchor} -- or "". */
+    static void plantFatal(String siteId, String occurrence,
+                           boolean atAnchor) {
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", RecordingPlant.FATAL,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "siteId", siteId,
+                    "occurrenceAddress", occurrence,
+                    "atAnchor", atAnchor);
         }
     }
 
@@ -1864,7 +1878,6 @@ public final class CausynthTraceRecorder {
             trace.sources.addAll(part.sources);
             // Every list the parse fills, gaps included.
             trace.lineageGaps.addAll(part.lineageGaps);
-            trace.plantsApplied += part.plantsApplied;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("trace parse interrupted", interrupted);
@@ -1964,8 +1977,6 @@ public final class CausynthTraceRecorder {
                     row.stringValue("requestApi"),
                     row.stringValue("producerEndpointId"),
                     row.stringValue("producerEndpoint")));
-        } else if (RecordingPlant.APPLIED.equals(eventKind)) {
-            trace.plantsApplied++;
         } else if (GAP_EVENT.equals(eventKind)) {
             Map<String, Object> gap = new LinkedHashMap<>();
             gap.put("schemaVersion", 1);
@@ -2262,8 +2273,6 @@ public final class CausynthTraceRecorder {
         final List<SourceTraceEvent> sources = new ArrayList<>();
         /** Lineage gaps the recording stated, as plan-gap rows. */
         final List<Map<String, Object>> lineageGaps = new ArrayList<>();
-        /** How many marker answers the run's plant gave. */
-        int plantsApplied;
 
         private void sort() {
             methods.sort((left, right) -> Long.compare(left.seq, right.seq));

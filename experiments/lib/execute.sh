@@ -94,7 +94,9 @@ heap_mb=$(( ${CAUSYNTH_OBLIGATION_MEMORY_MB:-0} / 2 ))
 # here, and says so: a JVM never holds more than the ledger counts for it.
 # Its peak is said at its end, the evidence a case's obligation_memory_mb is
 # set from (i2/m1, sampled: replays peaked at 0.2-1.0 GB for hdfs-11741 and
-# HDFS cases, 1.6 GB for SOLR-18406).
+# HDFS cases, 1.6 GB for SOLR-18406).  A recording also states its peak, in
+# MB, as workload_rss_mb in its trace directory: what a native run of it is
+# charged (run_engine.sh REPRODUCE).
 reserve_mb=${CAUSYNTH_OBLIGATION_MEMORY_MB:-0}
 peak_file="${tmpdir}/workload-peak-rss-mb"
 set +e
@@ -107,30 +109,28 @@ set +e
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
   "${test_class}" "${test_method}" &
 jvm=$!
-watchdog=""
-if (( reserve_mb > 0 )); then
-  peak_mb=0
-  while kill -0 "${jvm}" 2>/dev/null; do
-    rss_kb=$(awk '/VmRSS/ {print $2}' "/proc/${jvm}/status" 2>/dev/null)
-    if (( ${rss_kb:-0} / 1024 > peak_mb )); then
-      peak_mb=$(( rss_kb / 1024 ))
-      echo "${peak_mb}" >"${peak_file}"
-    fi
-    if (( peak_mb > reserve_mb )); then
-      echo "causynth: the workload JVM's resident memory reached" \
-        "${peak_mb} MB, over the ${reserve_mb} MB its host was charged" \
-        "for it; ended" >&2
-      kill -9 "${jvm}"
-      break
-    fi
-    sleep 2
-  done &
-  watchdog=$!
-fi
+peak_mb=0
+while kill -0 "${jvm}" 2>/dev/null; do
+  rss_kb=$(awk '/VmRSS/ {print $2}' "/proc/${jvm}/status" 2>/dev/null)
+  if (( ${rss_kb:-0} / 1024 > peak_mb )); then
+    peak_mb=$(( rss_kb / 1024 ))
+    echo "${peak_mb}" >"${peak_file}"
+    [[ -z ${trace:-} ]] || echo "${peak_mb}" >"${trace}/workload_rss_mb"
+  fi
+  if (( reserve_mb > 0 && peak_mb > reserve_mb )); then
+    echo "causynth: the workload JVM's resident memory reached" \
+      "${peak_mb} MB, over the ${reserve_mb} MB its host was charged" \
+      "for it; ended" >&2
+    kill -9 "${jvm}"
+    break
+  fi
+  sleep 2
+done &
+watchdog=$!
 wait "${jvm}"
 status=$?
-if [[ -n ${watchdog} ]]; then
-  kill "${watchdog}" 2>/dev/null
+kill "${watchdog}" 2>/dev/null
+if (( reserve_mb > 0 )); then
   echo "causynth: the workload JVM's resident memory peaked at" \
     "$(cat "${peak_file}" 2>/dev/null || echo 0) MB of the ${reserve_mb} MB" \
     "its host was charged for it" >&2

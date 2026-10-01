@@ -23,8 +23,9 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
 | CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
-| REPRODUCE | `campaign_reproduce`; `explore.ConfirmMain --plant`, `reproduce_runs` recordings with the plant, `runtime.CausynthTraceRecorder` | `final/reproduce/`, `final/reproduce.json` | never (it ranks a finding, and moves no claim) |
-| EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed; exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
+| EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed |
+| REPRODUCE | `campaign_reproduce`; `explore.ConfirmMain --plant`, `reproduce_runs` native runs with the plant over the worker pool | `final/reproduce/`, `final/reproduce.json` | never (it ranks a finding, and moves no claim) |
+| — | `campaign_exit_verdict` (reads `result.json`) | — | exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
 
 There is one iteration (`iteration-0000`); what a replay learns past the recording is taken up by GROW
 inside EXPLORE. `campaign_stop_after=IMPORT` returns successfully after IMPORT (a measurement run).
@@ -83,7 +84,7 @@ marked * below.
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `concolic_worker_count`* (8), `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | slots per host, the hosts, one replay's memory at the host gate (§7.7), the head JVMs' heap and the most a host's solver is given |
 | `campaign_stop_after` | empty, or `IMPORT` |
-| `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording and of each native reproduction run; how many of those (§10b) |
+| `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10), `reproduce_time_factor`* (3) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording; how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload (§10b) |
 
 Defaults in parentheses; `solver_timeout_ms`, `schedule_max_jobs` and `obligation_memory_mb` have
 none.
@@ -163,9 +164,8 @@ by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FR
 2. PLAN, per `ACTIVATED` target (`campaign_batch_plan`, a subshell logging to
    `targets/<name>/campaign.log`): its `causynth_output_dir` is `targets/<name>/` (so it, and every
    peer of its waves, derives its slice, scope map and region plan there), its campaign root
-   `targets/<name>/schedule/`, its spec its one line, its region plan's aggregation slice the one
-   REPRODUCE reuses (`campaign_target_slice`), `first` resolved per target; PLAN is the ordinary
-   stage (`campaign_plan`).
+   `targets/<name>/schedule/`, its spec its one line, `first` resolved per target; PLAN is the
+   ordinary stage (`campaign_plan`).
 3. UNION (`campaign_batch_union`, `plan.PlanUnion`): the planned targets' plans grouped, each
    target joining the first group it agrees with -- every occurrence both plan is the same task
    there (one task id: occurrence, region content, ports and, for a target's own reach, its
@@ -1103,26 +1103,40 @@ same shape for a refusal, `realized.json` and the decision.
 
 ## 10b. REPRODUCE: the confirmed world, natively
 
-A confirmed `SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the
-concolic VM (`campaign_reproduce`; ADHOC-INFRA WP5.D). `ConfirmMain --iteration --claim --plant
-<file>` writes the plant from CONFIRM's own world (`ConfirmMain#world`: the selected session's focus
-row overlaid by `plantModel`), one row per root, `{kind MARKER, occurrence: <mint occurrence id>,
-siteId: <the call site its plan input action names>, value}`; a world that also skews a clock,
-answers an attach or assigns any other root is refused (`NATIVE_PLANT_UNSUPPORTED`), and so is an
-empty one. The recording command runs `reproduce_runs` (10) times, each under `record_timeout_s` and
-charged as a replay, with `-Dcausynth.plant` (`execute.sh`, `CAUSYNTH_PLANT`): there
-`Debug.makeSymbolicBoolean` answers a row's value when its call site is the row's and a region
-occurrence enclosing it on the thread (`CausynthTraceRecorder#enclosingOccurrences`) has the row's id,
-inside the window, and states each answer as a `PLANT_APPLIED` trace row (`runtime.RecordingPlant`).
-A planted run is not the recording's world, so the workload's checks of that world are off in it as
-in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`).
-Each run is aggregated for the target as the pre-screen aggregates (`--summary`: `plantsApplied`, and
-per target its `occurrences` and `fatalOccurrences`, those that took the fatal arm).
-`final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs, planted, fatal, atAnchor,
-reason}` -- runs whose plant answered a marker, runs where a target occurrence took the fatal arm,
-runs where the claim's own anchor did; `runs` 0 with the refusal as `reason` when nothing can be
-planted. A native run holds no schedule, so the planted occurrence may not recur: the rate ranks a
-finding (`tools/adhoc/findings.py`) and never refutes it.
+After EMIT -- the verdict is published first, and nothing REPRODUCE does moves it -- a confirmed
+`SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the concolic
+VM (`campaign_reproduce`; ADHOC-INFRA WP5.D). `ConfirmMain --iteration --claim --static-scope-map
+--plant <file>` writes the plant from CONFIRM's own world (`ConfirmMain#world`: the selected
+session's focus row overlaid by `plantModel`): one row per root, `{kind MARKER, occurrence: <mint
+occurrence id>, siteId: <the call site its plan input action names>, value}`, and one per guard of
+the scope map's TARGET_SITE rows, `{kind TARGET, occurrence: <the claim's anchor id>, siteId:
+<guard>, value: <its fatal arm>}`; a world that also skews a clock, answers an attach or assigns any
+other root is refused (`NATIVE_PLANT_UNSUPPORTED`), and so is an empty one or a scope map that
+states no fatal arm.
+
+`reproduce_runs` (10) runs go out at once over the worker pool, as a wave's obligations do
+(`campaign_reproduce_slot`: room on a slot's host, then a claim, then the run there, locally or
+through the remote worker script as `run_engine.sh --run-reproduction`), each charged the
+recording's peak resident memory (`execute.sh` states it as `workload_rss_mb` in the trace
+directory) and bounded by `reproduce_time_factor` (3) times the recording's own workload. A run
+(`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant` (`execute.sh`,
+`CAUSYNTH_PLANT`): there `Debug.makeSymbolicBoolean` answers a MARKER row's value when its call site
+is the row's and a region occurrence enclosing it on the thread
+(`CausynthTraceRecorder#enclosingOccurrences`) has the row's id, inside the window, each answer a
+`PLANT_APPLIED` trace row; and a recorded branch at a TARGET row's guard that takes its fatal arm,
+inside the window, is a `PLANT_FATAL` row stating whether an enclosing occurrence is the anchor's --
+at the anchor the run ends there (`JUnitMethodRunner.exit`, as a focused replay ends at its
+witness), its one question answered (`runtime.RecordingPlant`). A planted run is not the recording's
+world, so the workload's checks of that world are off in it as in a replay
+(`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states its answer,
+whatever the workload's exit, as `run-<n>/answer.json` `{exit, planted, fatal, atAnchor}`, read off
+its trace's plant rows. `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs,
+planted, fatal, atAnchor, reason}` -- runs whose plant answered a marker, that took the target's
+fatal arm, that took it at the claim's own anchor, and the runs that stated no answer as `reason`;
+`runs` 0 with the refusal as `reason` when nothing can be planted or the recording measured no
+memory. A native run holds no schedule, so the planted occurrence may not recur: the rate ranks a
+finding (`tools/adhoc/findings.py`, which reads `reproduce.json` beside `result.json`) and never
+refutes it. Then the campaign exits by its verdict (`campaign_exit_verdict`).
 
 ## 11. EMIT
 
@@ -1136,16 +1150,15 @@ finding (`tools/adhoc/findings.py`) and never refutes it.
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
    `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `byStage`, `byCode`.
 3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a
-   `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in, and a
-   confirmed one's `reproduction`, required then, null otherwise); `findingKind`,
+   `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in); `findingKind`,
    `polarityDecides`, `valuationOrdinal`, `movedRoots`, `blockers`, `reachability`, `finalStatus`,
    `gapCount`, `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
    `targetOccurrence`, `valuations`, `witnessFindings`.
 4. `final/run-manifest.json`: provenance, iteration manifests, the path, size and sha256 of each
    required final artifact (`candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json`,
    `result.json`; a missing or empty one fails EMIT), stage wall times, session rows and bytes.
-5. Exit 2 when the claim is not `SAT_CANDIDATE`/`UNSAT_CLOSED`; exit 3 when BLOCKING gaps remain;
-   else 0.
+5. After REPRODUCE (§10b), `campaign_exit_verdict`: exit 2 when the claim is not
+   `SAT_CANDIDATE`/`UNSAT_CLOSED`; exit 3 when BLOCKING gaps remain; else 0.
 
 ## 12. Acceptance: `experiments/accept/`
 

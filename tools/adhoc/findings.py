@@ -33,9 +33,10 @@ Weight, per witness (a signature takes its best):
                    (--static DIR: slice.sh's $GC_OUT/static/<key>, whose
                    score.json names the check's TARGET_SITE) it reaches only
                    through a field or a wire, else 0
-  reproduction     result.json's reproduction (run_engine.sh REPRODUCE): the
-                   share of its native runs that took the fatal arm at the
-                   claim's anchor; 0 when it ran none
+  reproduction     reproduce.json beside result.json (run_engine.sh
+                   REPRODUCE, after EMIT): the share of its native runs that
+                   took the fatal arm at the claim's anchor; 0 when it ran
+                   none or has not finished
   extra roots      1 per moved root beyond the first
 
 Writes <sweep-dir>/findings.tsv, best weight first, with the best case's native
@@ -204,7 +205,8 @@ def witness(final):
         weight = 2 if all(b in ("<=1s", "<=1min") for b in clocks) else 1
     else:
         weight = KIND_WEIGHT.get(kind, 0)
-    reproduction = result.get("reproduction") or {}
+    path = os.path.join(final, "reproduce.json")
+    reproduction = json.load(open(path)) if os.path.exists(path) else {}
     runs = reproduction.get("runs", 0)
     return {"target": target_site(case_dir), "kind": kind, "parts": parts,
             "weight": weight, "extra": len(parts) - 1,
