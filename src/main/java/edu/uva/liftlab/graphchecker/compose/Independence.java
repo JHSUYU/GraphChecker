@@ -38,7 +38,12 @@ import java.util.function.Function;
  * <p>A variable is a symbol a recorded expression names (never the VM's
  * built-in null or void), or a tracked location: every read of one location
  * is one variable, since a STATE family moves them together, and a read
- * carries the value its observed write stated.</p>
+ * carries the value its observed write stated.  A field projection names
+ * what its lowering reads ({@link ContainerSmtCodec#fieldOperands}), not
+ * how the VM reached its owner: walked whole, hdfs-11741 r3's
+ * {@code isIterationOver} clock test brought in every block-location list
+ * and storage-group lookup its Source had been found through, none of
+ * which the composer can state.</p>
  *
  * <p>The same closure seeded by one flipped GUARD alone ({@link #ofGuard})
  * is what an obligation is keyed by ({@code ObligationFactory#dependence}).
@@ -261,7 +266,10 @@ public final class Independence {
                         location.getAsJsonObject());
                 if (!key.isEmpty()) into.add(LOCATION + key);
             }
-            pending.addAll(object.asMap().values());
+            List<JsonElement> operands = ContainerSmtCodec.handlesField(object)
+                    ? ContainerSmtCodec.fieldOperands(object) : null;
+            pending.addAll(operands != null ? operands
+                    : object.asMap().values());
         }
     }
 

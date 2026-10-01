@@ -16,6 +16,7 @@ import soot.jimple.LongConstant;
 import soot.jimple.MulExpr;
 import soot.jimple.NegExpr;
 import soot.jimple.ReturnStmt;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 
 import java.util.Collection;
 import java.util.HashMap;
@@ -52,29 +53,46 @@ final class RootCatalog {
     private boolean cut;
     /** Nanoseconds per tick of each clock found ({@link #tick}). */
     private final Map<String, Long> ticks = new HashMap<String, Long>();
+    /** The JVM clock each wrapper found reads ({@link #source}). */
+    private final Map<String, String> sources = new HashMap<String, String>();
 
     /**
      * The clock callees among the candidate graph's call returns, each with
-     * its tick in nanoseconds: 1,000,000 for {@code currentTimeMillis}, 1
-     * for {@code nanoTime}, and a wrapper's scaled by its arithmetic ({@code
-     * Time.monotonicNow()} = {@code nanoTime / 1000000} ticks in ms).  A
-     * clock's window and margin are a span of time, so each is stated in
-     * the clock's own tick.
+     * the JVM clock it wraps and its tick in nanoseconds: 1,000,000 for
+     * {@code currentTimeMillis}, 1 for {@code nanoTime}, and a wrapper's
+     * scaled by its arithmetic ({@code Time.monotonicNow()} = {@code
+     * nanoTime / 1000000}: {@code nanoTime} in ms).  A clock's window and
+     * margin are a span of time, so each is stated in the clock's own tick;
+     * which clock it is, the wrapper's body says ({@link Clock}).
      */
-    static Map<String, Long> clockTicks(
+    static Map<String, Clock> clocks(
             Collection<Map<String, Object>> edges) {
         RootCatalog catalog = new RootCatalog();
-        Map<String, Long> found = new TreeMap<String, Long>();
+        Map<String, Clock> found = new TreeMap<String, Clock>();
         for (Map<String, Object> edge : edges) {
             if (!"call_return".equals(MapFields.text(edge.get("kind")))) {
                 continue;
             }
             String callee = MapFields.text(edge.get("invoke"));
             if (!callee.isEmpty() && catalog.clock(callee, 0)) {
-                found.put(callee, catalog.tick(callee));
+                found.put(callee, Clock.of(catalog.tick(callee),
+                        catalog.source(callee)));
             }
         }
         return found;
+    }
+
+    /** The JVM clock a found clock reads; {@code ""} for a wrapper whose
+     *  value mixes both. */
+    private String source(String signature) {
+        if ("<java.lang.System: long nanoTime()>".equals(signature)) {
+            return Clock.MONOTONIC;
+        }
+        if ("<java.lang.System: long currentTimeMillis()>".equals(signature)) {
+            return Clock.WALL;
+        }
+        String known = sources.get(signature);
+        return known == null ? "" : known;
     }
 
     /** A found clock's tick; a wrapper whose arithmetic scales it by no
@@ -134,6 +152,7 @@ final class RootCatalog {
         }
         boolean returns = false;
         Long tick = null;
+        String source = null;
         for (Unit unit : body.getUnits()) {
             if (!(unit instanceof ReturnStmt)) continue;
             returns = true;
@@ -143,9 +162,47 @@ final class RootCatalog {
             }
             Long scaled = tickOf(returned, definitions);
             tick = tick == null || tick.equals(scaled) ? scaled : null;
+            source = either(source, sourceOf(returned, definitions));
         }
         if (returns && tick != null) ticks.put(signature, tick);
+        if (returns) sources.put(signature, source == null ? "" : source);
         return returns;
+    }
+
+    /**
+     * The JVM clock a clock value reads, read like {@link #tickOf}; {@code
+     * ""} where it mixes two, null where it reads none.
+     */
+    private String sourceOf(Value value, Map<Local, Value> definitions) {
+        if (value instanceof Local) {
+            Value definition = definitions.get(value);
+            return definition == null ? null
+                    : sourceOf(definition, definitions);
+        }
+        if (value instanceof InvokeExpr) {
+            String callee = ((InvokeExpr) value).getMethodRef().getSignature();
+            return Boolean.TRUE.equals(clocks.get(callee))
+                    || JVM_CLOCKS.contains(callee) ? source(callee) : null;
+        }
+        if (value instanceof CastExpr) {
+            return sourceOf(((CastExpr) value).getOp(), definitions);
+        }
+        if (value instanceof NegExpr) {
+            return sourceOf(((NegExpr) value).getOp(), definitions);
+        }
+        if (value instanceof BinopExpr) {
+            BinopExpr binop = (BinopExpr) value;
+            return either(sourceOf(binop.getOp1(), definitions),
+                    sourceOf(binop.getOp2(), definitions));
+        }
+        return null;
+    }
+
+    /** One source of two: the one stated, or {@code ""} for two. */
+    private static String either(String one, String other) {
+        if (one == null) return other;
+        if (other == null || one.equals(other)) return one;
+        return "";
     }
 
     /**

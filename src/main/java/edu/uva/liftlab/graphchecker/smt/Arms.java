@@ -481,32 +481,6 @@ public final class Arms {
         return false;
     }
 
-    /**
-     * Whether EVENT {@code a} is causally before EVENT {@code b}: same thread
-     * by row seq, else along the causal-anchor chain.  Unstated ordering
-     * answers {@code false}.
-     *
-     * <p>The caller passes each row's seq because an endpoint is not an
-     * event: a site without a site index shares one endpoint id across all
-     * its events in the occurrence, so no single seq per id is right.</p>
-     */
-    public boolean ancestor(Endpoint a, long aSeq, Endpoint b, long bSeq,
-                            String session) {
-        if (a == null || b == null) return false;
-        OccurrenceAddress left = a.occurrence();
-        OccurrenceAddress right = b.occurrence();
-        // One thread is one order, whether or not it is one occurrence.
-        if (left.id().equals(right.id())
-                || sameThread(session, left, right)) {
-            // Seq 0 is UNNUMBERED, not "first": both must be numbered.
-            return aSeq > 0L && bSeq > 0L && aSeq < bSeq;
-        }
-        if (!chainKnown(session, left) || !chainKnown(session, right)) {
-            return false;
-        }
-        return ancestor(session, left, right);
-    }
-
     /** Whether one session ran these two occurrences on one thread. */
     private boolean sameThread(String session, OccurrenceAddress left,
                                OccurrenceAddress right) {

@@ -2,7 +2,10 @@
 """triage.py <round> [gc-out] : one row per case of a sweep (sweep.sh), from
 its summary and its final result: the case, the class of its outcome, the
 finding and moved roots, the confirmation, the elapsed seconds, and where a
-campaign failed, the stage and reason.
+campaign failed, the stage and reason.  A batch case (one recording for
+several checks, run_engine.sh causynth_static_root) is one row per check,
+"<case>/<check>", from that check's own campaign (out/<case>/targets/<check>/)
+or, for a check the recording did not activate, its record-summary state.
 
 Classes:
   CONFIRMED     a SAT witness the program agreed with (confirmation true): a
@@ -20,9 +23,9 @@ Classes:
 
 A STOPPED or DEAD case's reason is what its logs state: the campaign's own
 failure, the case timeout, a stage's Java main or trace aggregation that
-failed, a full disk or quota.  [gc-out] defaults to GC_OUT; LIFTS are the
-hosts asked whether a run is still alive (both tools/lib/gc-env.sh)."""
-import concurrent.futures
+failed, a full disk or quota.  <gc-out> defaults to tools/lib/gc-env.sh's
+GC_OUT; whether a run is still alive is asked of every lift there
+(tools/lib/alive.sh)."""
 import csv
 import glob
 import json
@@ -31,57 +34,26 @@ import re
 import subprocess
 import sys
 
+LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
 round_name = sys.argv[1]
-# GC_OUT and LIFTS as every tool states them (tools/lib/gc-env.sh), each the
-# environment's when it is set.
-gc_env = subprocess.run(
-    ["bash", "-c", 'source "$1" && printf "%s\\n%s" "$GC_OUT" "$LIFTS"', "-",
-     os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                  "..", "lib", "gc-env.sh")],
-    check=True, stdout=subprocess.PIPE, universal_newlines=True).stdout
-gc_out, lifts = gc_env.split("\n", 1)
-out = sys.argv[2] if len(sys.argv) > 2 else gc_out
-lifts = lifts.split()
+out = sys.argv[2] if len(sys.argv) > 2 else subprocess.run(
+    ["bash", "-c", 'source "$1/gc-env.sh" && printf %s "${GC_OUT}"', "_", LIB],
+    check=True, capture_output=True, text=True).stdout
 cases = dict(line.rstrip("\n").split("\t", 1)
              for line in open(os.path.join(out, "sweep-%s-cases.tsv" % round_name)))
 
-# A run is named by its output directory, the rule tools/rounds/stop-run.sh
-# stops it by: in the command line of everything below the harness, and as
-# OUT in the harness's own environment.  Printed per directory some process
-# of this user still names (never the scan's own shell, which names them all).
-SCAN = r'''
-for pid in $(pgrep -u "$(id -un)"); do
-  [[ ${pid} == $$ ]] && continue
-  args=$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null)
-  env=$(tr '\0' '\n' <"/proc/${pid}/environ" 2>/dev/null | grep -m 1 '^OUT=')
-  for dir in "$@"; do
-    [[ ${args} == *"${dir}/"* || ${env} == "OUT=${dir}" ]] && echo "${dir}"
-  done
-done | sort -u
-'''
-
 
 def alive(dirs):
-    """The directories some lift still runs, and the lifts that did not say."""
-    def ask(host):
-        try:
-            done = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host,
-                 "bash", "-s", "--"] + dirs, input=SCAN, capture_output=True,
-                text=True, timeout=120)
-        except subprocess.TimeoutExpired:
-            return host, None
-        return host, done.stdout.split() if done.returncode == 0 else None
-    running, silent = set(), []
+    """The directories some lift still runs (a run is named by its output
+    directory, the rule tools/rounds/stop-run.sh stops it by), and the lifts
+    that did not say."""
     if not dirs:
-        return running, silent
-    with concurrent.futures.ThreadPoolExecutor(len(lifts) or 1) as pool:
-        for host, named in pool.map(ask, lifts):
-            if named is None:
-                silent.append(host)
-            else:
-                running.update(named)
-    return running, silent
+        return set(), []
+    said = subprocess.run(["bash", os.path.join(LIB, "alive.sh")] + dirs,
+                          check=True, capture_output=True, text=True).stdout
+    rows = [line.split(" ", 1) for line in said.splitlines()]
+    return ({what for word, what in rows if word == "alive"},
+            [what for word, what in rows if word == "silent"])
 
 
 # What a log states about why a run ended, most specific first: the trace
@@ -114,24 +86,11 @@ def stated(root, case_text):
     return stage, ""
 
 
-rows = []
-for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
-    root = os.path.join(out, "accept-%s-%s" % (round_name, n))
-    summary = os.path.join(root, "summary.tsv")
-    row = {"n": n, "case": case,
-           "class": "RUNNING" if os.path.isdir(root) else "PENDING",
-           "elapsed": "", "finding": "", "confirmed": "", "stage": "",
-           "reason": ""}
-    lines = (list(csv.DictReader(open(summary), delimiter="\t"))
-             if os.path.exists(summary) else [])
-    if lines:
-        row["elapsed"] = lines[-1].get("elapsed", "")
-        row["finding"] = lines[-1].get("finding", "")[:160]
-    results = glob.glob(os.path.join(root, "out", "*", "schedule", "final", "result.json"))
-    logs = sorted(glob.glob(os.path.join(root, "logs", "*.log")))
-    text = "\n".join(open(path, errors="replace").read() for path in logs)
-    if results:
-        result = json.load(open(results[0]))
+def classify(row, result_path, lines, root, text):
+    """A row's class from its campaign's result.json, else from its logs:
+    stopped once the case has its summary row, else still running."""
+    if result_path is not None:
+        result = json.load(open(result_path))
         confirmation = result.get("confirmation") or {}
         row["confirmed"] = confirmation.get("confirmed", "")
         claim = result.get("claim", "")
@@ -157,7 +116,49 @@ for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
     elif row["class"] == "RUNNING":
         # Resolved below, against every lift at once.
         row["stage"], row["reason"] = stated(root, text)
-    rows.append(row)
+
+
+rows = []
+for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
+    root = os.path.join(out, "accept-%s-%s" % (round_name, n))
+    summary = os.path.join(root, "summary.tsv")
+    base = {"n": n, "case": case,
+            "class": "RUNNING" if os.path.isdir(root) else "PENDING",
+            "elapsed": "", "finding": "", "confirmed": "", "stage": "",
+            "reason": ""}
+    lines = (list(csv.DictReader(open(summary), delimiter="\t"))
+             if os.path.exists(summary) else [])
+    if lines:
+        base["elapsed"] = lines[-1].get("elapsed", "")
+        base["finding"] = lines[-1].get("finding", "")[:160]
+    logs = sorted(glob.glob(os.path.join(root, "logs", "*.log")))
+    text = "\n".join(open(path, errors="replace").read() for path in logs)
+    targets = sorted(glob.glob(os.path.join(root, "out", "*", "targets", "*", "")))
+    if not targets:
+        row = dict(base)
+        results = glob.glob(os.path.join(root, "out", "*", "schedule", "final",
+                                         "result.json"))
+        classify(row, results[0] if results else None, lines, root, text)
+        rows.append(row)
+        continue
+    states = {}
+    for path in glob.glob(os.path.join(root, "out", "*", "runtime",
+                                       "record-summary.json")):
+        states.update(json.load(open(path))["targets"])
+    for target in targets:
+        name = os.path.basename(os.path.dirname(target))
+        row = dict(base, case="%s/%s" % (case, name))
+        state = states.get(name, {}).get("state", "ACTIVATED")
+        if state != "ACTIVATED":
+            row.update({"class": "STOPPED", "stage": "SEED", "reason": (
+                state + ": " + states[name].get("detail", ""))[:200]})
+        else:
+            log = os.path.join(target, "campaign.log")
+            result = os.path.join(target, "schedule", "final", "result.json")
+            classify(row, result if os.path.exists(result) else None, lines,
+                     root, text + "\n" + (open(log, errors="replace").read()
+                                          if os.path.exists(log) else ""))
+        rows.append(row)
 
 started = [os.path.join(out, "accept-%s-%s" % (round_name, row["n"]))
            for row in rows if row["class"] == "RUNNING"]

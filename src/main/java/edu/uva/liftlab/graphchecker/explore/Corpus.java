@@ -164,6 +164,8 @@ public final class Corpus implements Arms.Rows {
     /** session|symbol -> the minting row. */
     private final Map<String, AttachRow> attachBySymbol =
             new LinkedHashMap<String, AttachRow>();
+    /** Every symbol some session's attach minted. */
+    private final Set<String> handoffSymbols = new LinkedHashSet<String>();
     private final Map<String, RootMintRow> rootBySymbol =
             new LinkedHashMap<String, RootMintRow>();
     private final Map<String, ReadRow> readBySymbol =
@@ -569,6 +571,7 @@ public final class Corpus implements Arms.Rows {
                 remember(session.sessionId(), row.producer().occurrence());
             }
             attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
+            handoffSymbols.add(row.symbol());
             Interaction interaction = row.interaction();
             if (interaction != null) {
                 interactions.put(interaction.id(), interaction);
@@ -1196,6 +1199,12 @@ public final class Corpus implements Arms.Rows {
 
     public AttachRow attach(String sessionId, String symbol) {
         return attachBySymbol.get(sessionId + "|" + symbol);
+    }
+
+    /** Whether some session's attach minted this symbol: a handoff
+     *  variable, which only that session's family binds. */
+    public boolean handoffSymbol(String symbol) {
+        return handoffSymbols.contains(symbol);
     }
 
     /** The root one session minted under one symbol, or null. */

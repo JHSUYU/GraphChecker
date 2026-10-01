@@ -221,8 +221,8 @@ final class RuntimeTraceContext {
      * Enters, on the claiming thread, the scope a start carried: the CLAIM
      * half of every handoff, in both passes; left by {@link #releaseCarried}.
      *
-     * <p>No scope START here: the work's index begins at its start frame,
-     * which tells siblings from one site apart.</p>
+     * <p>No scope START here: the work's index begins at its start, the
+     * starter's frames and the start frame, which tell siblings apart.</p>
      */
     static void claimCarried(Object carrier) {
         Seed seed = takeSeed(carrier);

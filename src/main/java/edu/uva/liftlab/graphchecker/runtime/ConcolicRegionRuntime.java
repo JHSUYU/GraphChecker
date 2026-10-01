@@ -724,13 +724,14 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * A fault marker's ({@code Debug.makeSymbolicBoolean}) recorded
-     * polarity: always {@code false}.  The wave's polarity is planted by the
+     * A fault marker's ({@code Debug.makeSymbolicBoolean}) polarity: {@code
+     * false}, as recorded, but where a native reproduction's plant names this
+     * call ({@link RecordingPlant}).  A replay's polarity is planted by the
      * local-definition mint ({@link RootMint#materializePrimitive}), not
      * here.  External caller (workload trees); keep the name.
      */
     public static boolean materializeSymbolicBoolean(String name) {
-        return false;
+        return RecordingPlant.marker(name);
     }
 
 
@@ -1213,13 +1214,35 @@ public final class ConcolicRegionRuntime {
         taskUnanswered(active.activation, detail);
     }
 
+    /**
+     * Activations the end of the run settled while their roots still ran
+     * ({@code ConcolicResultPublisher#strandWithoutTerminal}), by token.
+     */
+    private static final Map<Long, ActiveRegion> STRANDED =
+            new ConcurrentHashMap<>();
+
+    /**
+     * Takes a live activation out of the run, settled without its terminal.
+     * Its VM region is its thread's (the VM closes a region on the thread
+     * that opened it), so the terminal that thread still reaches closes it
+     * ({@link #finish}); before, it found no activation, left the region
+     * open, and the VM session's close was refused for a member remaining.
+     */
+    static void strand(ActiveRegion active) {
+        if (ACTIVE.remove(active.token, active)) {
+            STRANDED.put(active.token, active);
+        }
+    }
+
     /** Ends whichever selected occurrence owns {@code token}. */
     static void finish(long token, String exitKind,
                                String exceptionType, Throwable throwable) {
         ActiveRegion active = ownerRegion(token);
-        if (active == null || !active.finished.compareAndSet(false, true)) {
+        if (active == null) {
+            closeStranded(token);
             return;
         }
+        if (!active.finished.compareAndSet(false, true)) return;
         beginSelectedResultPublication();
         boolean publicationDeferred = false;
         // Judgement and publication are bookkeeping: muted until VM close.
@@ -1238,6 +1261,24 @@ public final class ConcolicRegionRuntime {
         } finally {
             resumeObservation();
             if (!publicationDeferred) endSelectedResultPublication();
+        }
+    }
+
+    /**
+     * A stranded activation's own terminal: its VM region closes on its
+     * thread, and nothing more publishes (the strand published its mints).
+     */
+    private static void closeStranded(long token) {
+        ActiveRegion stranded = STRANDED.get(token);
+        if (stranded == null || stranded.thread != Thread.currentThread()
+                || !STRANDED.remove(token, stranded)) {
+            return;
+        }
+        pauseObservation();
+        try {
+            closeOccurrence(stranded);
+        } finally {
+            resumeObservation();
         }
     }
 
@@ -1267,10 +1308,11 @@ public final class ConcolicRegionRuntime {
         if (active.d3Address != null
                 && !active.activation.loopBodyRoot
                 && !FocusedReplay.complete(active.d3Address)) {
+            // Not contradicted (above), so no refusal to name: it closed
+            // before reaching the decision.
             abandonOccurrence(active, "REPLAY_PREFIX_UNMATCHED: the"
-                    + " focused occurrence did not take the decision its"
-                    + " obligation flips: "
-                    + FocusedReplay.refusal(active.d3Address));
+                    + " focused occurrence closed without taking the"
+                    + " decision its obligation flips");
         }
     }
 

@@ -423,16 +423,26 @@ public final class ObligationFactory {
         return ordered;
     }
 
-    /** Why this model is the recording's own valuation, or "": every assigned
-     *  root equals its recorded mint value and no handoff is answered. A moved
-     *  clock is a counterfactual of its own and is checked FIRST (a pinned root
-     *  beside moved clocks is not the seed replay). */
-    private static String recordedValuation(Corpus corpus, Candidate candidate,
-                                            Map<String, String> roots,
-                                            Map<String, String> answers,
-                                            Map<String, String> clockDeltas) {
-        if (movesAClock(clockDeltas)) return "";
-        if (roots.isEmpty() || !answers.isEmpty()) return "";
+    /**
+     * Why this model plants nothing its path's own session did not already
+     * run, or "": no clock moved, no handoff answered, and every assigned
+     * root at the value that session minted (none assigned included).  The
+     * replay it asks for then runs the world that session ran -- its path's
+     * world, inherited whole -- and a replay can set nothing else: which
+     * writer a read observes ({@code wchoice_*}), a container's state
+     * ({@code st__*}) and a term the lowering refused ({@code
+     * unsupported__*}) are the run's, never planted.  A moved clock is a
+     * counterfactual of its own and is checked FIRST (a pinned root beside
+     * moved clocks is not that replay).  Asked of the model's own skews,
+     * roots and answers, before the parent's world is laid under them.
+     */
+    private static String plantsNothing(Corpus corpus, Candidate candidate,
+                                        FlipQuery.Built built,
+                                        Map<String, String> modelValues,
+                                        Map<String, String> roots,
+                                        Map<String, String> answers,
+                                        Map<String, String> clockDeltas) {
+        if (movesAClock(clockDeltas) || !answers.isEmpty()) return "";
         List<String> same = new ArrayList<String>();
         for (Map.Entry<String, String> assignment : roots.entrySet()) {
             String reading = corpus.rootValue(candidate.path.sessionId,
@@ -443,14 +453,39 @@ public final class ObligationFactory {
             }
             same.add(assignment.getKey() + "=" + reading);
         }
-        return "the model is the recording's own valuation ("
-                + String.join(", ", same) + ") and answers no handoff, so "
-                + "the replay it asks for is the seed replay: this is not an "
-                + "arm the seed lacks. Either the flipped decision's recorded "
-                + "polarity disagrees with the root value the same session "
-                + "minted -- DecisionRow.outcome must say whether the "
-                + "published term HELD (CONTRACT-SPEC §2.2) -- or the query "
-                + "binds a root the flip does not depend on";
+        if (!same.isEmpty()) {
+            return "the model is the recording's own valuation ("
+                    + String.join(", ", same) + ") and answers no handoff, "
+                    + "so the replay it asks for is the seed replay: this is "
+                    + "not an arm the seed lacks. Either the flipped "
+                    + "decision's recorded polarity disagrees with the root "
+                    + "value the same session minted -- DecisionRow.outcome "
+                    + "must say whether the published term HELD "
+                    + "(CONTRACT-SPEC §2.2) -- or the query binds a root the "
+                    + "flip does not depend on";
+        }
+        Set<String> planted = new LinkedHashSet<String>();
+        planted.addAll(built.rootVariables.keySet());
+        planted.addAll(built.clockVariables.keySet());
+        for (FlipQuery.Control control : built.controls) {
+            planted.add(control.variable);
+        }
+        List<String> run = new ArrayList<String>();
+        for (String symbol : built.modelSymbols) {
+            if (!planted.contains(symbol) && modelValues.containsKey(symbol)) {
+                run.add(symbol);
+            }
+        }
+        return "EMPTY_WORLD: the model assigns no root, moves no clock and "
+                + "answers no handoff, so the replay it asks for runs the "
+                + "world of " + candidate.path.sessionId + " again, where "
+                + candidate.decision.siteId() + "#"
+                + candidate.decision.ordinal() + " took "
+                + candidate.decision.outcome() + "; it takes the other arm "
+                + "only through " + run.size() + " symbol(s) no replay "
+                + "plants" + (run.isEmpty() ? "" : ": " + String.join(", ",
+                run.subList(0, Math.min(8, run.size())))
+                + (run.size() > 8 ? ", ..." : ""));
     }
 
     /** Whether any clock skew is non-zero; a non-integer delta counts as no
@@ -543,13 +578,15 @@ public final class ObligationFactory {
             if (value != null) roots.put(variable.getValue(), value);
         }
         // A clock's model is an instant of the recording's window; the replay
-        // is owed the difference.
+        // is owed the difference from the host's reading there (a skew, as
+        // the replay plants it: RootMintRow#hostReading).
         Map<String, String> clockDeltas = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> variable
                 : built.clockVariables.entrySet()) {
             String rootId = variable.getValue();
-            String recorded = corpus.rootValue(candidate.path.sessionId,
+            RootMintRow read = corpus.rootOf(candidate.path.sessionId,
                     rootId);
+            String recorded = read == null ? "" : read.hostReading();
             String delta = skew(answer.values().get(variable.getKey()),
                     recorded);
             if (delta.isEmpty()) {
@@ -603,19 +640,19 @@ public final class ObligationFactory {
                 unproducible.add(control.attachEndpointId);
             }
         }
-        // A model equal to the recording's valuation asks for the seed replay
-        // (PIPELINE §7: exploration collects arms the seed lacks): refused.
-        // DIAGNOSTIC under EXPLORATION, never BLOCKING in the recording's
-        // ledger. Asked of the model's own skews/roots/answers, before
-        // inheriting the parent's world (merged values would fake a
-        // counterfactual).
-        String recorded = recordedValuation(corpus, candidate, roots, answers,
-                clockDeltas);
-        if (!recorded.isEmpty()) {
+        // A model that plants nothing its path's session did not run asks
+        // for that session's replay again (PIPELINE §7: exploration collects
+        // arms the corpus lacks): refused before any replay.  DIAGNOSTIC
+        // under EXPLORATION, never BLOCKING in the recording's ledger.
+        // Asked of the model's own skews/roots/answers, before inheriting the
+        // parent's world (merged values would fake a counterfactual).
+        String nothing = plantsNothing(corpus, candidate, built,
+                answer.values(), roots, answers, clockDeltas);
+        if (!nothing.isEmpty()) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,
-                    recorded));
-            return refused(candidate, Verdict.NOT_ADMITTED, recorded, query,
+                    nothing));
+            return refused(candidate, Verdict.NOT_ADMITTED, nothing, query,
                     gaps);
         }
         // The world this flip extends ({@link Corpus.World}): the parent's

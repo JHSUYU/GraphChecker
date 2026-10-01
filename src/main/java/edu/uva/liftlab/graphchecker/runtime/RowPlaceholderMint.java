@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -9,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
+import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import java.util.ArrayList;
@@ -131,8 +133,12 @@ final class RowPlaceholderMint {
                     kind, recorded,
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"), true,
-                    optionalLongInteger(row,
-                            InputActionCatalog.DECLARED_WALL_CLOCK, 0L));
+                    kind == RootKind.CLOCK ? Clock.of(optionalLongInteger(row,
+                            InputActionCatalog.DECLARED_WALL_CLOCK, 0L),
+                            optionalString(row,
+                                    InputActionCatalog.DECLARED_CLOCK_SOURCE))
+                            : null,
+                    optionalLongInteger(row, RootMintRow.CLOCK_SKEW, 0L));
         }
         if (!whole) return;
         // Every declared region input this activation never symbolized:

@@ -74,12 +74,15 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   in both passes (`Identity#enterFrame`, `#exitFrame`). A frame's `k` is the k-th event at that
   site in the enclosing level under the current root hop (`State#nextSiteEvent`, keyed by level,
   root-hop token and site). It is not a loop-iteration count.
-- **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, a frame
-  (site, k-th start at that site) with the carrier; the started work claims it at its first
-  identity event or at its functional method's entry (`#claimStart`), so siblings started from one
-  site differ by that frame alone. Claimed starts nest. A start under a `Lost` context files no
-  frame, captures no scope and writes no event: its k would count arrivals, which nothing
-  schedules.
+- **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, the starter's
+  index from its scope base followed by a frame (site, k-th start at that site) with the carrier;
+  the started work claims them at its first identity event or at its functional method's entry
+  (`#claimStart`). A task claimed on a pool's thread stands on all of them; a started thread
+  already stands on its creator's frames and adds the start frame alone. So siblings started from
+  one site differ by that frame's `k` or, started in two calls of the method holding the site, by
+  the frames above it. Claimed starts nest; a pool thread drops a finished task's start levels
+  before claiming the next. A start under a `Lost` context files no frame,
+  captures no scope and writes no event: its k would count arrivals, which nothing schedules.
 - **Scope base** (`Identity#scopeStart`, `Hop`): an occurrence's index starts at its context's
   origin: the inbound scope for `ANCHOR` (which pooled handler serves a request is scheduling, not
   identity), the scope start for `SCOPE_ROOT` (a request, a carried scope, a wake turn), the claimed
@@ -243,6 +246,7 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
 `CLAIM`, `SEND` (with the producer endpoint), `RECV`, `WAKE` (a timed wait's timeout; a tick's
 begin), `END` (a tick's end), `INTERRUPT`. `context` = `<node>|<ctx render>[|<start frames>]`
+(the claimed starts' levels, each start's own frame after the starter's frames it was filed with)
 (`ScheduleLog#contextOf`, `Identity#handoffs`); `k` counts events per (kind, context, site). A
 `Lost` context, and a context anchored by an unawaited receipt, make no event. `mark` rows state
 where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS, at}` states the run

@@ -68,13 +68,17 @@
 # polarity asserted and where it came from, which report.py reads back); it
 # touches only copies of the published formula and never the case directory.
 #
-# Environment: Z3_BIN (default z3, from PATH) and Z3_TIMEOUT_SECONDS
-# (default 600, z3's own -T: budget; the outer timeout is a hard backstop for
-# a z3 that wedges before it arms its own timer).
+# Environment: Z3_BIN (default z3, from PATH), Z3_TIMEOUT_SECONDS (default
+# 600, z3's own -T: budget; the outer timeout is a hard backstop for a z3 that
+# wedges before it arms its own timer) and PROBE_WHOLE_SECONDS (default 60,
+# at most Z3_TIMEOUT_SECONDS): the budget of each question asked whole before
+# it is asked one path at a time, as ClaimPolicy#byDisjunct does.
 set -uo pipefail
 
 ACCEPT_Z3=${Z3_BIN:-z3}
 ACCEPT_Z3_TIMEOUT=${Z3_TIMEOUT_SECONDS:-600}
+ACCEPT_WHOLE=${PROBE_WHOLE_SECONDS:-60}
+(( ACCEPT_WHOLE > ACCEPT_Z3_TIMEOUT )) && ACCEPT_WHOLE=$ACCEPT_Z3_TIMEOUT
 
 case_id=${1:?case}; dir=${2:?case dir}; work=${3:?work dir}
 final="$dir/schedule/final"
@@ -92,15 +96,122 @@ mkdir -p "$work/probe"
 grep -av '^(check-sat' "$C" | grep -av '^(get-value' \
   | grep -av ':named valuation__' >"$work/probe/body.smt2"
 
-run() {  # run <label> <assert-file-or-empty>
-  local label=$1 extra=${2:-} f t0 out
-  f="$work/probe/$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_').smt2"
+solve() {  # solve <file> <seconds>: z3's verdict line
+  local out
+  out=$(timeout $(($2+60)) "$ACCEPT_Z3" -T:"$2" "$1" 2>&1 | tail -1)
+  printf '%s' "${out:-NO_OUTPUT}"
+}
+
+# One path's text per path selector of the manifest, as ClaimPolicy asks a
+# disjunction z3 left undecided whole (Composition#pathQuery): the body
+# without the commands another path's selector guards -- (assert (=> <sel>
+# ...)), named or not, vacuous once the partition forces that selector
+# false -- and with its own selector asserted.  Written once, on first need.
+split_paths() {
+  [[ -e "$work/probe/paths/done" ]] && return
+  mkdir -p "$work/probe/paths"
+  python3 - "$work/probe/body.smt2" "$M" "$work/probe/paths" <<'PY'
+import json, sys
+
+body_path, manifest_path, out = sys.argv[1:4]
+body = open(body_path).read()
+try:
+    selectors = [row["selector"] for row in
+                 json.load(open(manifest_path)).get("paths") or []
+                 if row.get("selector")]
+except Exception:
+    selectors = []
+known = set(selectors)
+
+
+def guard(command):
+    for head in ("(assert (! (=> ", "(assert (=> "):
+        if command.startswith(head):
+            token = command[len(head):].split(" ", 1)[0]
+            return token if token in known else None
+    return None
+
+
+# Top-level commands, skipping bar-quoted symbols, string literals ("" is an
+# escaped quote) and comments whole, as Composer#commands does.
+commands, start, depth, index = [], 0, 0, 0
+while index < len(body):
+    at = body[index]
+    if at == "|":
+        close = body.find("|", index + 1)
+        index = len(body) if close < 0 else close + 1
+        continue
+    if at == '"':
+        close = index + 1
+        while close < len(body):
+            if body[close] == '"':
+                if close + 1 < len(body) and body[close + 1] == '"':
+                    close += 2
+                    continue
+                break
+            close += 1
+        index = close + 1
+        continue
+    if at == ";":
+        close = body.find("\n", index)
+        index = len(body) if close < 0 else close
+        continue
+    if at == "(":
+        depth += 1
+    elif at == ")":
+        depth -= 1
+        if depth == 0:
+            text = body[start:index + 1]
+            commands.append((text, guard(text.lstrip())))
+            start = index + 1
+    index += 1
+if start < len(body):
+    commands.append((body[start:], None))
+
+for number, selector in enumerate(selectors):
+    with open("%s/%d.smt2" % (out, number), "w") as handle:
+        for text, owner in commands:
+            if owner is None or owner == selector:
+                handle.write(text)
+        handle.write("\n(assert %s)\n" % selector)
+open("%s/done" % out, "w").close()
+PY
+}
+
+# run <label> <assert-file-or-empty>: the whole formula within
+# PROBE_WHOLE_SECONDS; undecided, one path at a time, each within z3's full
+# budget: the first sat path answers, else the first undecided verdict, else
+# unsat.  One row either way, as the engine's valuation asks are one answer.
+run() {
+  local label=$1 extra=${2:-} f t0 out name each verdict undecided
+  name=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')
+  f="$work/probe/$name.smt2"
   cat "$work/probe/body.smt2" >"$f"
   [[ -n "$extra" && -s "$extra" ]] && cat "$extra" >>"$f"
   echo '(check-sat)' >>"$f"
   t0=$(date +%s)
-  out=$(timeout $((ACCEPT_Z3_TIMEOUT+60)) "$ACCEPT_Z3" -T:"$ACCEPT_Z3_TIMEOUT" "$f" 2>&1 | tail -1)
-  out=${out:-NO_OUTPUT}
+  out=$(solve "$f" "$ACCEPT_WHOLE")
+  if [[ "$out" != sat && "$out" != unsat ]]; then
+    split_paths
+    undecided=""
+    verdict=""
+    for each in $(ls "$work/probe/paths" | grep '\.smt2$' | sort -n); do
+      cat "$work/probe/paths/$each" >"$work/probe/paths/$name.$each.q"
+      [[ -n "$extra" && -s "$extra" ]] \
+        && cat "$extra" >>"$work/probe/paths/$name.$each.q"
+      echo '(check-sat)' >>"$work/probe/paths/$name.$each.q"
+      verdict=$(solve "$work/probe/paths/$name.$each.q" "$ACCEPT_Z3_TIMEOUT")
+      rm -f "$work/probe/paths/$name.$each.q"
+      [[ "$verdict" == sat ]] && break
+      [[ "$verdict" != unsat && -z "$undecided" ]] && undecided=$verdict
+    done
+    if [[ -n "$verdict" ]]; then
+      if [[ "$verdict" == sat ]]; then out=sat
+      elif [[ -n "$undecided" ]]; then out=$undecided
+      else out=unsat
+      fi
+    fi
+  fi
   printf '%s\t%s\t%s\n' "$label" "$out" "$(( $(date +%s)-t0 ))" >>"$work/probe.tsv"
   printf 'PROBE %-22s %-10s %ss\n' "$label" "$out" "$(( $(date +%s)-t0 ))"
 }
