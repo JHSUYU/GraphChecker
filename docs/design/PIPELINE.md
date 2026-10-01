@@ -1333,6 +1333,10 @@ comparison.
   top time sinks (EXPLORE's planning, gates and attempts, and the rest of its wall: waiting on the
   pool). A gate or
   stage that started a head JVM includes the head's wait for memory (§7.7), which the log counts.
+- Why a check stayed concrete: `tools/analysis/rootcov.py <round-or-campaign>...` prints, per
+  campaign and over all, the anchor rows with a phi, wave-0 obligations, roots by category, PLAN
+  admissions by basis (and the basis of each occurrence that minted a root the claim moved), the
+  "decided concretely" refusals and the boundaries the fatal guards' operands stop at.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
   `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it
   re-runs by hand in z3), `focused_task.jsonl` (the world), `replay.log`, `stdout.log`/`stderr.log`.

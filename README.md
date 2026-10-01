@@ -602,7 +602,8 @@ tools/adhoc/                      ad-hoc check discovery, build key, slicing, se
                                   sweeps, the nightly, triage, findings
 tools/regress/                    offline-ab.sh: the offline merge gate
 tools/analysis/                   occurrences.py (a selector from a discovery log), timeline.py (where a
-                                  campaign's wall time went), the pairing probe,
+                                  campaign's wall time went), rootcov.py (why a check stays concrete:
+                                  R1-ROOTS §8's root coverage metrics), the pairing probe,
                                   batch_share.py (how much of a batch's per-target seed plans one
                                   replay could share)
 docs/STATUS.md                    done / partial / not done, per requirement; open defects

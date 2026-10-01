@@ -35,6 +35,10 @@ and prints the metrics of R1-ROOTS-proposal.md section 8:
   M-d  PLAN admissions by admissionBasis (none = TARGET_REACHABLE, as
        ConcolicScheduler counts) and closure size / schedule_max_jobs; when PLAN
        refused the closure over the cap, both come from the log's refusal.
+       "moved": the basis the plan admitted each occurrence under that minted a
+       root the final claim moved (claim.json movedRoots, matched by rootId or
+       symbol to roots.jsonl rows), "-" for one the seed plan does not hold (an
+       occurrence GROW exposed).
   M-e  "decided concretely" refusals in final/gaps.json; final findingKind.
   M-f  the boundary walk of proposal 2.1, statically: backward BFS over the
        candidate edges (toCell <- fromCell) from the fromCells of the
@@ -47,6 +51,9 @@ and prints the metrics of R1-ROOTS-proposal.md section 8:
        (MINTABLE_ONLY when only mintable ones were, NO_BOUNDARY when none); the
        aggregate splits it by anchor verdict, and its CONCRETE row is the
        proposal's metric.
+       "demand": the same histogram from the engine's own classification,
+       root_demand.jsonl beside the scope map (proposal 2.1: one row per
+       boundary with its `class` and `distance`), for a campaign that has one.
   static roots: DECLARED_SITE rows by inputKind, and how many sit in the fatal
        cone (backward from the throw) and the predicate cone (backward from the
        guard operands), both unbounded over every edge.
@@ -391,6 +398,51 @@ def anchor_rows(found):
     return {s: {k: c[k] for k in ('reached', 'phi', 'fatal')} for s, c in scopes.items()}
 
 
+def address(occurrence):
+    """A roots.jsonl occurrence object as OccurrenceAddress#render spells it,
+    the plan rows' occurrenceId."""
+    c = occurrence['context']
+    if c.get('form') == 'ROOT':
+        ctx = 'Root:%s%s#%d' % (c['role'], '/' + c['api'] if c.get('api') else '',
+                                c['windowIndex'])
+    elif c.get('form') == 'ANCHOR':
+        ctx = 'Anchor:%s@%s' % (c['producerEndpointId'], c['rpcSite'])
+    else:
+        ctx = 'Lost:%s' % c.get('role')
+    return '%s/region/%s/ctx:%s/idx:%s' % (
+        occurrence['node'], occurrence['regionId'], ctx,
+        '/'.join('%s@%d' % (f['callSite'], f['iteration']) for f in occurrence.get('index') or ()))
+
+
+def moved_admissions(camp, found, bases):
+    """M-d: the plan basis of each occurrence that minted a root the claim moved."""
+    path = os.path.join(camp, 'schedule', 'final', 'claim.json')
+    if not os.path.exists(path):
+        return None
+    moved = set(((load(path).get('claim') or {}).get('movedRoots') or {}))
+    minted = set()
+    for d, _, _ in found if moved else ():
+        roots = os.path.join(d, 'roots.jsonl')
+        for r in rows(roots) if os.path.exists(roots) else ():
+            if r.get('rootId') in moved or r.get('symbol') in moved:
+                minted.add(address(r['occurrence']))
+    return dict(collections.Counter(bases.get(o, '-') for o in minted))
+
+
+def root_demand(camp):
+    """M-f from the engine: root_demand.jsonl's boundaries, class -> count and
+    nearest distance."""
+    path = os.path.join(camp, 'root_demand.jsonl')
+    if not os.path.exists(path):
+        return None
+    found = {}
+    for r in rows(path):
+        b = found.setdefault(r['class'], {'count': 0, 'min': r.get('distance', 0)})
+        b['count'] += 1
+        b['min'] = min(b['min'], r.get('distance', 0))
+    return found
+
+
 def verdict(anchor):
     if anchor['reached'] == 0:
         return 'UNREACHED'
@@ -519,17 +571,21 @@ def analyze(camp):
              if os.path.exists(p)]
     out['maxJobs'] = int(log['maxJobs'] or 1024)
     out['admissions'] = out['closure'] = None
+    bases = {}
     if plans:
-        out['admissions'] = dict(collections.Counter(
-            r.get('admissionBasis') or 'TARGET_REACHABLE' for r in rows(plans[0])
-            if r.get('kind') == 'CONCOLIC_REGION_PLAN'))
-        out['closure'] = sum(out['admissions'].values())
+        bases = {r['occurrenceId']: r.get('admissionBasis') or 'TARGET_REACHABLE'
+                 for r in rows(plans[0]) if r.get('kind') == 'CONCOLIC_REGION_PLAN'}
+        out['admissions'] = dict(collections.Counter(bases.values()))
+        out['closure'] = len(bases)
     else:
         out['missing'].append('plan')
         if log['overCap']:
             out['closure'], out['maxJobs'], out['admissions'] = log['overCap']
         elif log['planned']:
             out['closure'] = int(log['planned'])
+
+    out['moved'] = moved_admissions(camp, found, bases)
+    out['demand'] = root_demand(camp)
 
     final = os.path.join(camp, 'schedule', 'final')
     result, gaps = os.path.join(final, 'result.json'), os.path.join(final, 'gaps.json')
@@ -588,20 +644,26 @@ def row(c):
         dash(c['roots'], lambda r: pairs(r, lambda v: '%d/%d' % tuple(v))),
         dash(c['admissions'], pairs),
         '%s/%d' % (dash(c['closure']), c['maxJobs']),
+        dash(c['moved'], pairs),
         dash(c['decidedConcretely']),
         dash(c['blockedBy'], '>'.join),
-        dash(c['boundaries'], lambda b: ','.join(
-            '%s:%d@%d' % (k, v['count'], v['min'])
-            for k, v in sorted(b.items(), key=lambda kv: (kv[1]['min'], kv[0]))) or '0'),
+        dash(c['boundaries'], histogram),
+        dash(c['demand'], histogram),
         dash(c['declared'], lambda d: ','.join(
             '%s:%s' % (k, '/'.join(str(v[x]) for x in ('all', 'fatalCone', 'predCone') if x in v))
             for k, v in sorted(d.items())) or '0')])
 
 
+def histogram(boundaries):
+    return ','.join('%s:%d@%d' % (k, v['count'], v['min']) for k, v in sorted(
+        boundaries.items(), key=lambda kv: (kv[1]['min'], kv[0]))) or '0'
+
+
 HEADER = ('round', 'case', 'stage', 'finding', 'anchor verdict', 'seed r/phi/fatal',
           'admitted r/phi/fatal', 'sessions adm/disk', 'wave0', 'waves',
-          'roots/mints', 'admissions', 'closure/max', 'decidedConcretely',
-          'blockedBy', 'boundaries class:n@min', 'declared all/fatal/pred')
+          'roots/mints', 'admissions', 'closure/max', 'moved', 'decidedConcretely',
+          'blockedBy', 'boundaries class:n@min', 'demand class:n@min',
+          'declared all/fatal/pred')
 
 
 def aggregate(checks):
@@ -639,6 +701,11 @@ def aggregate(checks):
     lines.append('M-d admissions (%d checks): %s; closure > maxJobs: %d of %d' % (
         len(have('admissions')), pairs(basis),
         sum(1 for c in closure if c['closure'] > c['maxJobs']), len(closure)))
+    moved = collections.Counter()
+    for c in have('moved'):
+        moved.update(c['moved'])
+    lines.append('M-d moved-root occurrences (%d claims) by plan basis: %s' % (
+        len(have('moved')), pairs(moved)))
     dc = have('decidedConcretely')
     lines.append('M-e decided concretely: %d of %d finals (%d refusals); findings: %s' % (
         sum(1 for c in dc if c['decidedConcretely']), len(dc),
@@ -661,6 +728,15 @@ def aggregate(checks):
                 cls, 'mint' if cls in MINTABLE else 'named', len(mins),
                 sum(c['boundaries'][cls]['count'] for c in walked if cls in c['boundaries']),
                 min(mins), statistics.median(mins)))
+    demanded = have('demand')
+    classes = collections.defaultdict(list)
+    for c in demanded:
+        for cls, b in c['demand'].items():
+            classes[cls].append(b)
+    lines.append('M-f root_demand.jsonl classes over %d checks (checks, rows, min): %s' % (
+        len(demanded), ','.join('%s=%d/%d@%d' % (cls, len(bs), sum(b['count'] for b in bs),
+                                                 min(b['min'] for b in bs))
+                                for cls, bs in sorted(classes.items())) or '0'))
     declared, cones = collections.Counter(), collections.defaultdict(collections.Counter)
     for c in have('declared'):
         for kind, v in c['declared'].items():
