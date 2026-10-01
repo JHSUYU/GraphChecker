@@ -479,25 +479,32 @@ public final class ClaimPolicy {
     }
 
     /**
-     * A mechanism the formula shows but the recording does not decide: the
-     * run reached the fatal arm at the recorded valuation too, so it is
-     * raised as FORMULA_SAT_AT_RECORDED_VALUATION, not published.
+     * A mechanism the formula shows but the recording does not decide, raised
+     * as FORMULA_SAT_AT_RECORDED_VALUATION, not published: the run reached
+     * the fatal arm at the recorded valuation too, or its refutation names no
+     * valuation pin.  An UNDECIDED recorded valuation is BLOCKING already
+     * ({@link #read}) and is no such statement (hdfs-11741 L1: valuation 0
+     * "unknown" was published as satisfiable).
      */
     private static void undecidedPolarity(List<GapRow> gaps,
                                           Outcome recorded, ClaimKind kind) {
+        if (recorded == null || !recorded.answer().decided()) return;
         for (GapRow gap : gaps) {
             if (gap.kind() == GapKind.FORMULA_SAT_AT_RECORDED_VALUATION) {
                 return;
             }
         }
-        gaps.add(GapRow.of(recorded == null || recorded.selected() == null
+        gaps.add(GapRow.of(recorded.selected() == null
                         ? Composer.COMPOSITION
                         : recorded.selected().path().sessionId,
                 GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
-                GapClass.BLOCKING, kind.name(),
-                "the formula shows " + kind + ", and it is satisfiable with "
-                        + "every declared root at its recorded value too, so "
-                        + "the recording does not decide the arm"));
+                GapClass.BLOCKING, kind.name(), "the formula shows " + kind
+                        + (recorded.answer().sat()
+                        ? ", and it is satisfiable with every declared root "
+                        + "at its recorded value too"
+                        : ", and the recorded valuation's refutation names "
+                        + "no valuation pin")
+                        + ", so the recording does not decide the arm"));
     }
 
     /**

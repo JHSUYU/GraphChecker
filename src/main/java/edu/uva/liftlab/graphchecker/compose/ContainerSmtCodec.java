@@ -889,7 +889,7 @@ public final class ContainerSmtCodec {
 
     /**
      * What a view's position is read through.  {@code STATED}: the chain's
-     * order ({@code assoc_key_at}, {@code assoc_position}), where it is the
+     * order ({@code assoc_key_at}, {@code assoc_position_of}), where it is the
      * order the map's class iterates in ({@link #unordered}).  {@code FREE}:
      * a bijection between the positions and the state's keys and nothing
      * more ({@code assoc_view_key}, {@code assoc_view_position},
@@ -898,20 +898,20 @@ public final class ContainerSmtCodec {
      * a set (hdfs-11741's exported block keys) keeps every key.
      */
     enum ViewOrder {
-        STATED("assoc_key_at"), FREE("assoc_view_key");
+        STATED("assoc_key_at", "assoc_position_of"),
+        FREE("assoc_view_key", "assoc_view_position");
 
         final String keyAt;
+        private final String positionOf;
 
-        ViewOrder(String keyAt) {
+        ViewOrder(String keyAt, String positionOf) {
             this.keyAt = keyAt;
+            this.positionOf = positionOf;
         }
 
         /** The position this order holds one key at. */
         Term position(Term state, Term key, Host host) {
-            return shared(new Term(this == STATED
-                    ? "(select (assoc_position " + state.text + ") "
-                    + key.text + ")"
-                    : "(assoc_view_position " + state.text + " "
+            return shared(new Term("(" + positionOf + " " + state.text + " "
                     + key.text + ")", Sort.INT), host);
         }
     }
