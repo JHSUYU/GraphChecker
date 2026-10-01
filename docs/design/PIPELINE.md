@@ -97,6 +97,10 @@ none.
 - FREEZE_TOOL copies the jar into `frozen-inputs/`, digesting before, after and the copy; a jar that
   changed while it was copied fails the stage. Every later stage, and every remote worker, runs the
   frozen copy (`--run-obligation` refuses a jar whose sha256 is not the frozen one).
+- SETUP, for the committed cases (`experiments/lib/prepare-analysis.sh`), copies the case's declared
+  scope into `<causynth_output_dir>/declared-classes/`, the run's `project_classes_dir`: on the
+  shared filesystem, so a static pass placed on any host (§7.7) reads the same classes, and the
+  run's own (`experiments/lib/case-env.sh`).
 - FREEZE digests the twelve inputs (jar, VM binary, `rt.jar`, `libjava.so`, `libjvm.so`, config,
   target spec, communication mappings, loop bounds, production classes tree, test classes tree,
   classpath string) and both checkouts' state (`campaign_checkout_state`: HEAD, branch, digest of the
@@ -176,7 +180,7 @@ by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FR
    plan is every task once, every task observing every site any target observes, under the union's
    own replay group: `groups/group-<n>/execution_task_plan.jsonl`, `groups/groups.json`.
 4. Per group, all groups at once (`campaign_batch_group`, logging to `groups/group-<n>.log`; each
-   engine JVM and replay charged to the head's host as any head's): INSTRUMENT, REPLAY and
+   engine JVM and replay placed and charged as any head step, §7.7): INSTRUMENT, REPLAY and
    IMPORT once, in `groups/group-<n>/`, under the union of its targets' scope maps (the replay's
    guarded stores, and its target coverage: any target). A target the seed replay published no
    target row of fails as a solo REPLAY does, in its own log (`campaign_target_reached`); a seed
@@ -320,8 +324,8 @@ session's. The two over the set are judged against the gated sessions still in t
 one SEED (1), and the epoch's roots (11) -- a new session against every root of the epoch, a gated
 one again only for a root (id, symbol) a new session brings. So gating the corpus a wave, or a
 session, at a time files exactly the rows one gate over all of it would, each once. One caller at a
-time (the head). The gate holds one session at a time, so its heap and its charge on the head's host
-are 512 MB plus four times the largest session's size on disk (`campaign_import_gate_heap_mb`), not
+time (the head). The gate holds one session at a time, so its heap and its charge on the host it is
+placed on (§7.7) are 512 MB plus four times the largest session's size on disk (`campaign_import_gate_heap_mb`), not
 `engine_memory_mb`, which is sized for a JVM holding the whole corpus (SOLR-18406 i1: charged
 16 GB, IMPORT waited 7 min for room on the head and a wave's gate 30 min; the gate itself ran
 seconds).
@@ -676,35 +680,57 @@ CONFIRM it is a confirmation that did not confirm.
 
 ### 7.7 The work pool
 
-One pool for the whole exploration, no slots. The head starts each queued obligation, first first,
-on the next host of `campaign_worker_hosts` (empty: this machine, no ssh), round-robin from the host
-after the last one chosen (`campaign_stream_admit_host`): a host is taken while it runs fewer of the
-campaign's obligations than it has cores (read once, `campaign_host_cores`) and its memory ledger
-admits one more start; none admitting, the head waits for a return, its step's end or the poll
-interval (`campaign_host_poll_s`). An obligation runs locally in a background subshell, or remotely through
-`ssh` running `run_engine.sh --run-obligation` with the frozen jar and its sha256; each takes the
-class tree and plan of the generation current when it starts (§7.8). The memory gate
-(`campaign_host_try_start <host> [need] [ramp]`) is a ledger shared by all campaigns and
-`tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/` (`tools/lib/gc-env.sh`): each row is
+One pool for the whole exploration, no slots. The head starts each queued obligation, and each
+GROW re-run (§7.8), first first, on the next host of `campaign_worker_hosts` (empty: this machine, no
+ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`): a host is
+taken while it runs fewer of the campaign's starts than it has cores (read once,
+`campaign_host_cores`) and its memory ledger admits one more start; none admitting, the head waits
+for a return, its step's end or the poll interval (`campaign_host_poll_s`). A start runs locally in
+a background subshell, or remotely through `ssh`: an obligation as `run_engine.sh --run-obligation`
+with the frozen jar and its sha256, a re-run as a placed step (below) (`campaign_stream_job`); each
+takes the class tree and plan of the generation current when it starts (§7.8). The memory gate
+(`campaign_host_try_start <host> <need> <ramp>`) is a ledger shared by all campaigns and
+`tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/` (`tools/lib/gc-env.sh`, handed to every
+peer with the ceiling): each row is
 `<epoch> <mb> <ramp_s> <id>`, and a start is allowed when `MemAvailable − (rows still inside their
 own ramp) ≥ need + MemTotal × (100 − p) / 100`, where `p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no
-start leaves a host more than 70 % full. An obligation needs `obligation_memory_mb` for 60 s: its
+start leaves a host more than 70 % full. Every start states its measured need and its ramp; neither
+has a default. An obligation or a re-run needs `obligation_memory_mb` for 60 s: its
 replay's, since its question goes to its host's solver (§7.5), charged at its own start; its row is
-released when it returns (`campaign_stream_ended`), as a GROW re-run's is, so an answer in seconds
-does not hold its host's room for the ramp. A replay JVM holds no more than it is charged: its
-heap is half of `obligation_memory_mb` (2 GB at least), and `experiments/lib/execute.sh` ends one
-whose resident memory passes `obligation_memory_mb` and states each one's peak at its end. The head
-(`do_campaign`, `campaign_head_charged`) charges each of its engine JVMs for 120 s at the heap each
-starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured need
+released as soon as its work returned, before the head waits to see what a peer wrote, so an answer
+in seconds does not hold its host's room for the ramp. A replay JVM is handed what its host was
+charged for it (`CAUSYNTH_CHARGED_MB`): its heap is half of it (2 GB at least), and
+`experiments/lib/execute.sh` watches it until it ends (`campaign_watch_workload`): one whose
+resident memory grows past its charge asks its host's ledger for the excess, as one more start,
+and holds what it was granted, released when it ends; one the host cannot take is ended, saying
+so; each states its peak at its end.
+
+HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room through one rule
+(`campaign_head_charged`, `campaign_head_place`): the head's own host when it fits there (its own
+room is not held against it), else the pool's host with the most room under the ceiling
+(`campaign_host_room`), charged there while it runs and released when it returns; none having room,
+it waits, saying so once. A step on a peer runs through the remote worker script as
+`run_engine.sh --run-placed` (`campaign_run_placed`) in the head's working directory, with the
+head's exported `CAUSYNTH_`/`GRAPH_CHECKER_` variables, its output passed back as its own: a
+program, or a `run_engine.sh` function whose arguments are all it reads of the head. The steps are
+every engine JVM of every stage -- SEED's static passes, scope growth and trace aggregation, PLAN,
+INSTRUMENT and its verifier, the import gate, the planner, COMPOSE, CONFIRM's and REPRODUCE's
+`ConfirmMain`, GROW's planner and weave, a batch's `PlanUnion` -- each charged for 120 s at the heap
+it starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured need
 (`campaign_engine_need_mb`: the static pass 4 GB, the planner and the composer 8 GB, the trace
-aggregation, scheduler, lineage scan and CONFIRM 2 GB; the import gate its own, §6), or
-`engine_memory_mb` (else 8192) for a main with none; a JVM that runs out of its need (exit 3 under
+aggregation, scheduler, lineage scan, scope growth, woven-class verifier and CONFIRM 2 GB; the
+import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none
+(`ExposedRegionPlanMain`, `PlanUnion`); a JVM that runs out of its need (exit 3 under
 `-XX:+ExitOnOutOfMemoryError`) runs once more at `engine_memory_mb`, charged so, saying so, and
-later starts of that main begin there (a head step's discovery is the head's, §7.9) -- and its seed
-and CONFIRM replays `obligation_memory_mb` for 300 s, and releases the row when the command returns
-(`campaign_host_release`); an obligation's replay is inside its start's charge. HEAD ROOM: a head
-runs its engine JVMs on its own host between the obligations every campaign keeps starting there,
-so it reserves room for the next one -- what its planner or composer starts at
+later starts of that main begin there (a head step's discovery is the head's, §7.9) -- the seed
+and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged for 300 s
+the recording's measured peak (`workload_rss_mb`) when above `obligation_memory_mb`, else that
+(`campaign_replay_need_mb`), and REPRODUCE's native runs (§10b). They read and write only the run's
+shared directories -- the case's scope copy among them (§1) -- so each runs alike on any host. What
+a head runs uncharged stays on its host: the setup adapter's copy and the recording, whose need is
+what it measures. HEAD ROOM: a head
+runs its engine JVMs on its own host first, between the obligations every campaign keeps starting
+there, so it reserves room for the next one -- what its planner or composer starts at
 (`campaign_head_need_mb`), not the case's engine heap -- (`campaign_head_reserve`,
 `<host>/heads/<id>` stating its need, fresh while the head lives, idle unless one of its JVMs
 runs): a start that is no head's own counts the largest idle fresh
@@ -731,7 +757,8 @@ per exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan
 `replayGroupId`), the generation's plan is the one before it plus those rows, written as a new file
 -- the iteration's plan and the seed plan are its hard links from then on, and the generation before
 keeps its own inode for whatever runs on it -- and INSTRUMENT weaves it into the generation's own
-tree. Each exposing obligation's replay is queued first, to re-run on the head in
+tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
+admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in). Until every
 re-run has returned and no obligation runs that started before them, no obligation starts and no
 round is planned; then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
@@ -749,11 +776,7 @@ obligations wherever a host admits one (§7.7) and collects each as it returns
 (`campaign_stream_wait`). Its own JVM work is one STEP at a time, in the background
 (`campaign_stream_step`, in `steps/NNNN/`), so the pool goes on starting and collecting while a step
 waits for memory or runs. A step's JVMs -- the gate, the planner, an attempt's composer -- and GROW's
-planner read and write only the shared campaign directory, so each goes wherever there is room: the
-head's own host when it fits there (its own room is not held against it), else the pool's host with
-the most room under the ceiling (`campaign_head_place`, `campaign_host_room`), charged there while
-it runs and run there through the remote worker script (`run_engine.sh --run-placed`,
-`campaign_run_placed`) in the head's working directory, its output passed back as its own. Between two steps, in the head's hands (`campaign_stream_step_start`),
+planner and weave are head steps (§7.7): each goes wherever there is room. Between two steps, in the head's hands (`campaign_stream_step_start`),
 everything that returned meanwhile lands: each verdict is appended to `obligation_results.jsonl`
 (`campaign_stream_land`), GROW's re-runs swap in once due (§7.8), and the sessions the workers
 staged move into the corpus (`campaign_stream_move`). The next step then takes them in: ONE IMPORT
@@ -1234,10 +1257,11 @@ the scope map's TARGET_SITE rows, `{kind TARGET, occurrence: <the claim's anchor
 other root is refused (`NATIVE_PLANT_UNSUPPORTED`), and so is an empty one or a scope map that
 states no fatal arm.
 
-`reproduce_runs` (10) runs go out at once, the pool's hosts in turn (`campaign_reproduce_one`:
-room on its host, then the run there, locally or through the remote worker script as
-`run_engine.sh --run-reproduction`), each charged the recording's peak resident memory
-(`execute.sh` states it as `workload_rss_mb` in the trace directory) until it returns, and bounded by `reproduce_time_factor` (3) times the recording's own workload. A run
+`reproduce_runs` (10) runs go out at once, each a head step (§7.7, `campaign_reproduce_one`)
+charged the recording's peak resident memory (`execute.sh` states it as `workload_rss_mb` in the
+trace directory, and holds each run to it as to any charge) wherever there is room until it
+returns, naming the host it ran on (`<run>/host.txt`), and bounded by `reproduce_time_factor` (3)
+times the recording's own workload. A run
 (`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant` (`execute.sh`,
 `CAUSYNTH_PLANT`): there `Debug.makeSymbolicBoolean` answers a MARKER row's value when its call site
 is the row's and a region occurrence enclosing it on the thread
@@ -1341,7 +1365,9 @@ comparison.
 - A campaign that died names its stage: `[campaign:error] stage=… component=… artifact=… reason=…`
   on stderr. A REPLAY death: `iteration-0000/seed-result/focused/replay.log` and the seed session's
   `gaps.jsonl`. A pool or a head that seems stalled logs `waiting for room: …` or `waiting for
-  memory on <host>: …`; the host ledger is `$CAUSYNTH_HOST_LEDGER/<host>/{available,starts,cores}`.
+  memory for a head step of <mb> MB on any host: …` (a host's solver: `waiting for memory on
+  <host>: …`); a replay ended past its charge says why in its `replay.log`; the host ledger is
+  `$CAUSYNTH_HOST_LEDGER/<host>/{available,starts,cores}`.
 - How EXPLORE ended: `iteration-0000/exploration.json` (the stop, every COMPOSE attempt at a
   witness, every obligation cancelled or reaped) and the log's `round N (wave W): …` lines.
 - `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.

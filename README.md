@@ -276,13 +276,22 @@ Never overwrite an image a round uses; build a new directory.
 git worktree add --detach ~/gc-run/p<N> <commit>
 (cd ~/gc-run/p<N> && /bigtemp/vnr3ne/bin/onlift.sh -g 10 mvn -q -o package -DskipTests)
 GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-w4e/j2sdk-image \
-  tools/rounds/launch-round.sh ~/gc-run/p<N> <round>              # all 11 cases, heads placed per host
-CASES="hdfs-17960 solr-18413" ... tools/rounds/launch-round.sh ... # a subset
+  tools/rounds/launch-round.sh ~/gc-run/p<N> <round>              # all 11 cases, heads chosen by room
+CASES="hdfs-17960 solr-18413" ... tools/rounds/launch-round.sh ... # a subset (or any case id)
+DRY=1 ... tools/rounds/launch-round.sh ...                         # the heads it would choose
 GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
 GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 ```
 
 - Every tool takes `GC_OUT` from `tools/lib/gc-env.sh` (default `/bigtemp/vnr3ne/gc-out`).
+- A launch must name its VM image (`CAUSYNTH_CUSTOM_JDK_HOME`; a sweep's `VM_IMAGE`): there is no
+  default image.
+- `launch-round.sh` chooses each case's head host at launch from the hosts' room in the ledger
+  (`campaign_host_room`): the heaviest case first (its `engine_memory_mb`, `tools/lib/heads.sh`),
+  each to the host with the most room among those heading the fewest cases, so no host heads two
+  before every host heads one; `lift11` heads nothing. A head only drives its campaign: every
+  engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
+  host first (PIPELINE §7.7).
 - A round name is written once (`accept-<round>-<case>` exists → refused). Names used so far:
   `v*`, `r1`–`r9`, `ra1`, `rb1`, `i1`–`i3`, `stream*`, `fast*`, `g1`, agents' `a37f*`, `ee*`, `agent-*`, `w4-*`.
 - Typical wall time alone on the cluster: HDFS cases 15–45 min, solr-18406 ~25 min, solr-18413 ~50 min
@@ -385,17 +394,22 @@ is written.
 `/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes) and the hosts
 `LIFTS` (lift06–15).
 
-Obligations of a campaign fan out over the hosts in `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`,
-round-robin, as many on a host as its ledger admits, up to its cores. Every start on a host is
-charged to the ledger first: an obligation, which is its replay (`obligation_memory_mb`, for 60 s),
-a host's solver of the exploration (its heap, for 120 s; PIPELINE §7.5), a campaign head's engine
-JVM (its main's measured need, else `engine_memory_mb`, for 120 s, and once more at
-`engine_memory_mb` if it runs out; PIPELINE §7.7), its seed and CONFIRM replays
-(`obligation_memory_mb`, for 300 s), and a `fanout.sh` job
+Obligations of a campaign, and GROW's re-runs, fan out over the hosts in
+`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, round-robin, as many on a host as its ledger admits, up to its
+cores. A head's own steps go to its host when it has room, else to the pool's host with the most
+room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
+host is charged to the ledger first, at its measured need, for its ramp: an obligation or a re-run,
+which is its replay (`obligation_memory_mb`, for 60 s), a host's solver of the exploration (its
+heap, for 120 s; PIPELINE §7.5), a campaign head's engine JVM (its main's measured need, else
+`engine_memory_mb`, for 120 s, and once more at `engine_memory_mb` if it runs out; PIPELINE §7.7),
+its seed and CONFIRM replays (the recording's measured peak when above `obligation_memory_mb`,
+else that, for 300 s), REPRODUCE's runs (the recording's peak, for 60 s), and a `fanout.sh` job
 (its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, every start
 still in its ramp there and a reserve that keeps the host at most `CAUSYNTH_HOST_MAX_USED_PCT`
-(70) percent full; a head's start, and an obligation's, is released when it returns.
-A head's "waiting for memory" line goes to stderr (its stdout is often an artifact).
+(70) percent full, and is released the moment it returns. A workload JVM that outgrows its charge
+asks its host for the excess by the same rule and is ended only when the host cannot take it
+(`campaign_watch_workload`). A head's "waiting for memory for a head step" line goes to stderr
+(its stdout is often an artifact).
 
 ## Run an ad-hoc sweep
 
@@ -469,8 +483,8 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
     now aggregated on its view of the merged skeletons).
 11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`, one batch
     case per workload with the checks it activated (at most four).
-12. `STATIC_ROOT=$GC_OUT/static/<key> sweep.sh <snapshot> <round> <sweep-dir>/cases.txt
-    [heads-per-host]`: one campaign per batch over all ten lifts, `PRUNE=1`, 5400 s per case;
+12. `VM_IMAGE=<image> STATIC_ROOT=$GC_OUT/static/<key> sweep.sh <snapshot> <round>
+    <sweep-dir>/cases.txt [heads-per-host]`: one campaign per batch over all ten lifts, `PRUNE=1`, 5400 s per case;
     restartable. A batch records once, plans each check, and seed-replays each group of checks
     whose plans agree once (`out/<batch>/schedule/groups/`); each check explores on its own.
 13. `triage.py <round> [gc-out]`: outcome class per case, and per check of a batch case
@@ -525,7 +539,8 @@ experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
 experiments/hadoop/, experiments/solr/   per-system scripts, cases, ad-hoc experiments
 tools/lib/                        gc-env.sh (GC_OUT, host ledger, LIFTS for every tool), alive.sh
-                                  (which runs a process on any lift still names)
+                                  (which runs a process on any lift still names), heads.sh (a
+                                  case's head need, and which host heads it)
 tools/rounds/                     launch, monitor and stop campaigns on the lifts; snapshot-gc.sh
 tools/adhoc/                      ad-hoc check discovery, build key, slicing, selection, pre-screen,
                                   sweeps, the nightly, triage, findings

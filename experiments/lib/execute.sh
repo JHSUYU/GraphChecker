@@ -78,27 +78,25 @@ extra=()
 [[ -z ${CAUSYNTH_WORKLOAD_JAVA_OPTS:-} ]] \
   || read -r -a extra <<<"${CAUSYNTH_WORKLOAD_JAVA_OPTS}"
 
-# The heap is half of what the campaign reserves for one replay
-# (obligation_memory_mb, which the host gate charges); the other half is the
-# VM's native symbolic state.  2 GB at least.
-heap_mb=$(( ${CAUSYNTH_OBLIGATION_MEMORY_MB:-0} / 2 ))
+# What its host was charged for this JVM (CAUSYNTH_CHARGED_MB: a replay's,
+# run_engine.sh campaign_replay; a native reproduction's; none for a
+# recording).  The heap is half of it; the other half is the VM's native
+# symbolic state.  2 GB at least.
+charged_mb=${CAUSYNTH_CHARGED_MB:-0}
+heap_mb=$(( charged_mb / 2 ))
 (( heap_mb >= 2048 )) || heap_mb=2048
 
 # noInflation: a reflective call is served by a generated accessor from its
 # first call, not by the native one for fifteen calls and a generated one
 # after, so one write through reflection names one site in every run.
-# The host's memory gate charges obligation_memory_mb for this JVM, and
-# nothing else holds it to that: a replay whose native symbolic state ran
-# away reached 27 GB, and the kernel killed what it chose on the host
-# (hdfs-17960 v96).  So one that outgrows what its host was charged is ended
-# here, and says so: a JVM never holds more than the ledger counts for it.
-# Its peak is said at its end, the evidence a case's obligation_memory_mb is
-# set from (i2/m1, sampled: replays peaked at 0.2-1.0 GB for hdfs-11741 and
-# HDFS cases, 1.6 GB for SOLR-18406).  A recording also states its peak, in
-# MB, as workload_rss_mb in its trace directory: what a native run of it is
-# charged (run_engine.sh REPRODUCE).
-reserve_mb=${CAUSYNTH_OBLIGATION_MEMORY_MB:-0}
-peak_file="${tmpdir}/workload-peak-rss-mb"
+# The JVM is watched until it ends (run_engine.sh campaign_watch_workload):
+# one that outgrows its charge asks its host's ledger for the excess, and is
+# ended only when the host cannot take it; its peak is said at its end (i2/m1,
+# sampled: replays peaked at 0.2-1.0 GB for hdfs-11741 and HDFS cases, 1.6 GB
+# for SOLR-18406), and a recording's goes to workload_rss_mb in its trace
+# directory: what a native run of it is charged (REPRODUCE).
+# shellcheck source=../../run_engine.sh
+source "${lib}/../../run_engine.sh"
 set +e
 "${jdk}/bin/java" -ea -Xmx${heap_mb}m -Djava.awt.headless=true \
   -Dsun.reflect.noInflation=true \
@@ -109,32 +107,11 @@ set +e
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
   "${test_class}" "${test_method}" &
 jvm=$!
-peak_mb=0
-while kill -0 "${jvm}" 2>/dev/null; do
-  rss_kb=$(awk '/VmRSS/ {print $2}' "/proc/${jvm}/status" 2>/dev/null)
-  if (( ${rss_kb:-0} / 1024 > peak_mb )); then
-    peak_mb=$(( rss_kb / 1024 ))
-    echo "${peak_mb}" >"${peak_file}"
-    [[ -z ${trace:-} ]] || echo "${peak_mb}" >"${trace}/workload_rss_mb"
-  fi
-  if (( reserve_mb > 0 && peak_mb > reserve_mb )); then
-    echo "causynth: the workload JVM's resident memory reached" \
-      "${peak_mb} MB, over the ${reserve_mb} MB its host was charged" \
-      "for it; ended" >&2
-    kill -9 "${jvm}"
-    break
-  fi
-  sleep 2
-done &
-watchdog=$!
+campaign_watch_workload "${jvm}" "${charged_mb}" "${trace:-}" &
+watch=$!
 wait "${jvm}"
 status=$?
-kill "${watchdog}" 2>/dev/null
-if (( reserve_mb > 0 )); then
-  echo "causynth: the workload JVM's resident memory peaked at" \
-    "$(cat "${peak_file}" 2>/dev/null || echo 0) MB of the ${reserve_mb} MB" \
-    "its host was charged for it" >&2
-fi
+wait "${watch}"
 set -e
 if [[ -n ${results:-} ]]; then
   [[ -s ${results} ]] || exit $((status == 0 ? 2 : status))
