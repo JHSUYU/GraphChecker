@@ -402,9 +402,10 @@ COMPOSE     merge all sessions into one disjunction over the anchor, solve it pe
             valuation with z3, decide the claim (compose/ComposeMain: Composer, ClaimPolicy)
 SOLVE/DECIDE  check and print the solver verdict and the claim COMPOSE published
 CONFIRM     re-run the witness world, check its edges (explore/ConfirmMain)
-REPRODUCE   run a confirmed witness natively: the recording weave on the stock JDK,
-            planting only its fault markers (runtime/RecordingPlant), N times
 EMIT        final/result.json, gaps.json, run-manifest.json
+REPRODUCE   after the verdict: run a confirmed witness natively, N runs at once over
+            the lifts, the recording weave on the stock JDK planting only its fault
+            markers, each ending at the fatal at its anchor (runtime/RecordingPlant)
 ```
 
 The stages, their gates and the claim kinds are specified in

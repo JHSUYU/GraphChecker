@@ -120,9 +120,6 @@ emit_fixture() {
   jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: true,
     reason: "every edge the model chose was taken, and the anchor observed the fatal",
     sessionId: "CONFIRM-1"}' >"${campaign_final}/confirm.json"
-  # REPRODUCE's answer for that confirmed claim, which EMIT copies beside it.
-  jq -n '{schemaVersion: 1, kind: "REPRODUCTION", runs: 10, planted: 10,
-    fatal: 7, atAnchor: 6, reason: ""}' >"${campaign_final}/reproduce.json"
   # One replay session, per kind, as the runtime publishes it.  IMPORT
   # counted these into the census EMIT requires; the fixture states both.
   for session_kind in activations decisions exports attaches writes reads \
@@ -180,7 +177,7 @@ emit_fixture_undecided_roots() {
 
 run_emit() {
   emit_status=0
-  ( campaign_emit "${emit_iteration}" ) \
+  ( campaign_emit "${emit_iteration}"; campaign_exit_verdict ) \
     >"${emit_root}/emit.log" 2>&1 || emit_status=$?
 }
 
@@ -192,8 +189,6 @@ run_emit
   || fail "a complete candidate was withheld: $(<"${emit_root}/emit.log")"
 [[ $(jq -r '.claim' "${campaign_final}/result.json") == SAT_CANDIDATE ]] \
   || fail "the accepted SAT claim was not published"
-[[ $(jq -r '.reproduction.atAnchor' "${campaign_final}/result.json") == 6 ]] \
-  || fail "the result lost the native reproduction"
 [[ $(jq -r '.provenance.loopBounds.sha256' \
       "${campaign_final}/result.json") \
     == "$(campaign_digest "${emit_bounds}")" ]] \
@@ -725,7 +720,9 @@ done
 # long its recording may run.
 # 51: `reproduce_runs` joined it with REPRODUCE: how often a confirmed
 # witness is run natively.
-[[ "$(print_normalized_config | wc -l)" -eq 51 ]] \
+# 52: `reproduce_time_factor` joined it: each native run's wall clock, as a
+# multiple of the recording's own.
+[[ "$(print_normalized_config | wc -l)" -eq 52 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -952,6 +949,7 @@ stop_after_campaign() {
   (
     campaign_stage() { printf '%s\n' "$1" >>"${labels}"; }
     campaign_publish_iteration_manifest() { :; }
+    campaign_exit_verdict() { :; }
     schedule_output_dir="${root}"
     campaign_setup_command=""
     do_campaign >/dev/null
@@ -974,9 +972,67 @@ stop_after_campaign "${stop_after_dir}/campaign-full" \
   || fail "a campaign with campaign_stop_after unset did not exit 0"
 [[ "$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")" == \
     "PREFLIGHT FREEZE_TOOL FREEZE SEED PLAN INSTRUMENT REPLAY IMPORT EXPLORE \
-COMPOSE SOLVE DECIDE CONFIRM REPRODUCE EMIT " ]] \
+COMPOSE SOLVE DECIDE CONFIRM EMIT REPRODUCE " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
+
+# REPRODUCE-1: a confirmed witness's native runs, all at once over the pool,
+# each bounded by reproduce_time_factor times the recording's workload and
+# answering for itself off its trace's plant rows; reproduce.json counts the
+# answers and names the runs that stated none.  A plant CONFIRM refuses, or a
+# recording that measured no peak memory, is no run and the reason.  Per row:
+# ConfirmMain's exit, the recording's peak MB, and the reproduction.
+repro_dir="${test_tmp}/reproduce"
+while IFS='|' read -r repro_plant repro_rss repro_expected; do
+  rm -rf -- "${repro_dir}"
+  mkdir -p "${repro_dir}/final"
+  jq -n '{solver: {campaignClaim: {claim: "SAT_CANDIDATE"}}}' \
+    >"${repro_dir}/manifest.json"
+  jq -n '{confirmed: true, reason: ""}' >"${repro_dir}/final/confirm.json"
+  (
+    campaign_final="${repro_dir}/final"
+    composition_manifest="${repro_dir}/manifest.json"
+    campaign_worker_hosts=""
+    concolic_worker_count=3
+    reproduce_runs=4
+    reproduce_time_factor=3
+    campaign_recorded_workload_s=20
+    campaign_recorded_workload_rss_mb=${repro_rss}
+    run_java_main() {
+      echo "CONFIRM refused: NATIVE_PLANT_UNSUPPORTED: a clock"
+      return "${repro_plant}"
+    }
+    campaign_await_host_memory() {
+      (( $(find "$2" -mindepth 1 -maxdepth 1 -type d | wc -l) < $3 ))
+    }
+    # Run n: 1 at the anchor, 2 fatal elsewhere, 3 planted only, 4 no trace.
+    run_configured_workload() {
+      local run=$1 n=${1##*-}
+      echo "$2" >>"${repro_dir}/bounds"
+      (( n < 4 )) || return 1
+      {
+        echo '{"event":"BRANCH"}'
+        echo '{"event":"PLANT_APPLIED"}'
+        (( n > 2 )) \
+          || jq -n -c --argjson at "$(( n == 1 ))" \
+            '{event: "PLANT_FATAL", atAnchor: ($at == 1)}'
+      } >"${run}/runtime_trace.jsonl"
+    }
+    campaign_reproduce "${repro_dir}/iteration"
+  ) >"${repro_dir}/log" 2>&1 \
+    || fail "REPRODUCE failed the campaign: $(cat "${repro_dir}/log")"
+  [[ "$(jq -c 'del(.schemaVersion, .kind)' \
+      "${repro_dir}/final/reproduce.json")" == "${repro_expected}" ]] \
+    || fail "a reproduction (plant ${repro_plant}, ${repro_rss} MB) is \
+$(cat "${repro_dir}/final/reproduce.json"): $(cat "${repro_dir}/log")"
+  [[ "${repro_expected}" != *'"runs":4'* \
+      || "$(sort -u "${repro_dir}/bounds")" == 60 ]] \
+    || fail "a native run was not bounded by 3 x the recording's 20 s"
+done <<'EOF'
+0|2048|{"runs":4,"planted":3,"fatal":2,"atAnchor":1,"reason":""}
+1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
+0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
+EOF
 
 # REACHED-1: a replay reached its target when a session published a target
 # row at a TARGET_SITE method of the scope map (any of them: a batch group's
@@ -2101,6 +2157,7 @@ chmod +x "${orphan_dir}/fake-repo/run_engine.sh"
   solver_timeout_ms=1000
   : >"${config_file}"
   campaign_write_remote_worker_script "${orphan_dir}/remote-worker.sh" \
+    "${orphan_dir}/worker" 600 --run-obligation \
     OB.1 /dev/null /dev/null "${orphan_dir}/worker" /dev/null /dev/null
 )
 bash -n "${orphan_dir}/remote-worker.sh" \

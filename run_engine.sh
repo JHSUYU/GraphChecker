@@ -49,6 +49,10 @@ Commands:
               the obligation's own worker directory, so it is not a command
               to be typed.  The six positional arguments are exactly what
               campaign_obligation_worker takes.
+  --run-reproduction
+              Execute ONE native run of a campaign's REPRODUCE on a peer,
+              generated as --run-obligation is; the four positional
+              arguments are exactly what campaign_reproduce_run takes.
 
 Environment variables matching normalized workflow keys may override values
 loaded from FILE.
@@ -153,11 +157,12 @@ workflow_config_keys=(
   # pre-screen) and a batch campaign (an ad-hoc sweep's case) weave and
   # aggregate each target on, instead of a static pass of their own.
   "causynth_static_root CAUSYNTH_STATIC_ROOT krp -"
-  # The wall clock a recording's workload may take after SEED's own: the
-  # pre-screen's, and each native reproduction run's (REPRODUCE).
+  # The wall clock a pre-screen's recording may take after SEED's own.
   "record_timeout_s CAUSYNTH_RECORD_TIMEOUT_S krp 300"
-  # How many times REPRODUCE runs a confirmed witness natively.
+  # How many times REPRODUCE runs a confirmed witness natively, and each
+  # run's wall clock: this factor times the recording's own workload.
   "reproduce_runs CAUSYNTH_REPRODUCE_RUNS krp 10"
+  "reproduce_time_factor CAUSYNTH_REPRODUCE_TIME_FACTOR krp 3"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -528,7 +533,8 @@ validate_config() {
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
       schedule_max_jobs concolic_worker_count region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound \
-      obligation_memory_mb record_timeout_s reproduce_runs; do
+      obligation_memory_mb record_timeout_s reproduce_runs \
+      reproduce_time_factor; do
     require_positive_integer "${key}"
   done
   # The one stage a campaign may be asked to stop after.  Refused here rather
@@ -838,13 +844,13 @@ do_workload() {
   (( status == 0 )) || campaign_fail SEED WORKLOAD "${trace_dir}" \
     "the recorded workload exited ${status}: the test failed, or its run" \
     "never opened a recording window (its output is above)"
+  campaign_recorded_workload_rss_mb=$(cat "${trace_dir}/workload_rss_mb" \
+    2>/dev/null) || campaign_recorded_workload_rss_mb=""
   require_file "static scope map" "${causynth_static_scope_map}"
-  campaign_target_slice="${candidate_graph},${causynth_static_scope_map},\
-${causynth_region_skeletons}"
   run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
     --trace-dir "${trace_dir}" --test "${trace_test}" \
-    --target "$(campaign_target_names | head -n 1)=${campaign_target_slice},\
-${trace_dir}"
+    --target "$(campaign_target_names | head -n 1)=${candidate_graph},\
+${causynth_static_scope_map},${causynth_region_skeletons},${trace_dir}"
 }
 
 # The names of the targets the case's target spec declares, one per line.
@@ -913,6 +919,8 @@ ${target}/runtime")
   exit_status=${status}
   wall=$(( SECONDS - started ))
   campaign_recorded_workload_s=${wall}
+  campaign_recorded_workload_rss_mb=$(cat "${trace_dir}/workload_rss_mb" \
+    2>/dev/null) || campaign_recorded_workload_rss_mb=""
   case "${exit_status}" in
     "${campaign_adapter_timeout_status}"|"${campaign_adapter_killed_status}")
       [[ -z "${bound}" ]] || timed_out=true ;;
@@ -1024,13 +1032,13 @@ campaign_root=""
 campaign_final=""
 campaign_stage_metrics=""
 campaign_provenance=""
-# How long the recording's workload ran, in seconds (do_workload): the seed
-# replay's bound is seed_replay_time_factor times it.
+# How long the recording's workload ran, in seconds, and its JVM's peak
+# resident memory, in MB, as the adapter measured it (workload_rss_mb in the
+# trace directory) -- do_workload, campaign_record_batch: the seed replay's
+# bound is seed_replay_time_factor times the first; a native reproduction
+# run is bounded by reproduce_time_factor times it and charged the second.
 campaign_recorded_workload_s=""
-# The campaign's target's static slice as the recording was aggregated on
-# it, "<candidate-graph>,<scope-map>,<region-skeletons>" (SEED): REPRODUCE
-# aggregates its runs on the same.
-campaign_target_slice=""
+campaign_recorded_workload_rss_mb=""
 # This iteration's task-set membership, decoded once by PLAN from the frozen
 # schedule index (PIPELINE §3), one owner per check.
 # IMPORT, EXPLORE, the iteration manifest and COMPOSE read these rows; they do
@@ -1596,7 +1604,9 @@ campaign_remote_env_assignments() {
   done
 }
 
-# The script one peer runs for one obligation.
+# The script one peer runs for one piece of a campaign's work: run_engine.sh
+# in a peer mode, <mode> <args...> (--run-obligation, --run-reproduction),
+# under <bound_s>, its stdout.log and stderr.log in <dir>.
 #
 # Written into the worker directory on the shared home rather than squeezed
 # through the ssh command line, which keeps the command line trivial (so the
@@ -1621,14 +1631,14 @@ campaign_remote_env_assignments() {
 # Comparing against the STARTING parent rather than against 1 on purpose: a
 # user-level subreaper would adopt the orphan and pid 1 would never arrive.
 campaign_write_remote_worker_script() {
-  local script=$1 obligation_id=$2 obligations=$3 classes=$4 worker=$5
-  local sessions=$6 seed_plan=$7
+  local script=$1 dir=$2 bound=$3 mode=$4
+  shift 4
   local jar_sha assignment
   jar_sha=$(campaign_digest "${graphchecker_jar}")
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' \
-      '# Generated by run_engine.sh for ONE obligation on ONE host.' \
+      '# Generated by run_engine.sh for ONE piece of work on ONE host.' \
       '# Read the campaign_write_remote_worker_script comment for why each' \
       '# line is here.  Regenerated per obligation; never edited by hand.' \
       'set -uo pipefail' \
@@ -1638,7 +1648,7 @@ campaign_write_remote_worker_script() {
       '  2>/dev/null || echo 1)' \
       ''
     printf 'timeout --kill-after=%ss %ss \\\n' \
-      "${campaign_adapter_kill_grace_s}" "$(campaign_remote_worker_bound_s)"
+      "${campaign_adapter_kill_grace_s}" "${bound}"
     printf '  env \\\n'
     printf '    PATH=%q \\\n' "${PATH}"
     printf '    HOME=%q \\\n' "${HOME}"
@@ -1646,14 +1656,14 @@ campaign_write_remote_worker_script() {
     while IFS= read -r assignment; do
       printf '    %q \\\n' "${assignment}"
     done < <(campaign_remote_env_assignments)
-    printf '  %q --config %q --run-obligation \\\n' \
-      "${graphchecker_dir}/run_engine.sh" "${config_file}"
+    printf '  %q --config %q %q \\\n' \
+      "${graphchecker_dir}/run_engine.sh" "${config_file}" "${mode}"
     printf '    --graphchecker-jar %q \\\n' "${graphchecker_jar}"
     printf '    --graphchecker-jar-sha256 %q \\\n' "${jar_sha}"
-    printf '    -- %q %q %q %q %q %q \\\n' \
-      "${obligation_id}" "${obligations}" "${classes}" "${worker}" \
-      "${sessions}" "${seed_plan}"
-    printf '  >%q 2>%q &\n' "${worker}/stdout.log" "${worker}/stderr.log"
+    printf '    --'
+    printf ' %q' "$@"
+    printf ' \\\n'
+    printf '  >%q 2>%q &\n' "${dir}/stdout.log" "${dir}/stderr.log"
     printf '%s\n' \
       'payload=$!' \
       '' \
@@ -1683,22 +1693,32 @@ campaign_write_remote_worker_script() {
   } >"${script}"
 }
 
+# One peer mode's work on <host>, from <dir> (campaign_write_remote_worker_
+# script): its exit.  The payload writes stdout.log and stderr.log itself,
+# on the shared home, so its logs read the same whichever machine ran it.
+# What lands in ssh.log is ssh's OWN diagnostics -- a refused connection, a
+# host key, a peer that has no /bin/bash -- which would otherwise be the one
+# part of a failed remote run that nothing recorded.
+campaign_dispatch_remote() {
+  local host=$1 dir=$2 bound=$3 status=0
+  shift 3
+  campaign_write_remote_worker_script "${dir}/remote-worker.sh" "${dir}" \
+    "${bound}" "$@"
+  run_capturing_status campaign_ssh "${campaign_ssh_options[@]}" -- \
+    "${host}" "exec /bin/bash $(printf '%q' "${dir}/remote-worker.sh")" \
+    >"${dir}/ssh.log" 2>&1
+  return "${status}"
+}
+
 # One obligation on one peer, and its files back.
 campaign_dispatch_remote_obligation() {
   local host=$1 obligation_id=$2 obligations=$3 classes=$4 worker=$5
   local sessions=$6 seed_plan=$7
-  local script="${worker}/remote-worker.sh"
   local status=0
-  campaign_write_remote_worker_script "${script}" "${obligation_id}" \
-    "${obligations}" "${classes}" "${worker}" "${sessions}" "${seed_plan}"
-  # The payload writes stdout.log and stderr.log itself, on the shared home,
-  # so the worker's own logs read the same whichever machine ran it.  What
-  # lands here is ssh's OWN diagnostics -- a refused connection, a host key,
-  # a peer that has no /bin/bash -- which would otherwise be the one part of
-  # a failed remote obligation that nothing recorded.
-  run_capturing_status campaign_ssh "${campaign_ssh_options[@]}" -- \
-    "${host}" "exec /bin/bash $(printf '%q' "${script}")" \
-    >"${worker}/ssh.log" 2>&1
+  campaign_dispatch_remote "${host}" "${worker}" \
+    "$(campaign_remote_worker_bound_s)" --run-obligation "${obligation_id}" \
+    "${obligations}" "${classes}" "${worker}" "${sessions}" "${seed_plan}" \
+    || status=$?
   if [[ "${status}" -ne 0 ]]; then
     campaign_log "obligation ${obligation_id} on ${host}: the remote worker \
 exited ${status}; ssh's own output is in ${worker}/ssh.log"
@@ -3902,23 +3922,29 @@ ${confirm_dir}/confirm.log" "" >"${campaign_final}/confirm.json"
     "${campaign_final}/confirm.json"
 }
 
-# REPRODUCE (ADHOC-INFRA WP5.D): a confirmed witness run again natively --
-# the recording weave on the stock JDK, planting only the fault markers the
-# confirmation's world plants (explore.ConfirmMain --plant, the code that
-# wrote CONFIRM's world; runtime.RecordingPlant) -- reproduce_runs times,
-# each under record_timeout_s and charged as a replay, and each aggregated
-# for the target as the pre-screen aggregates.  final/reproduce.json states
-# how many runs there were, how many planted a marker, how many took the
-# target's fatal arm and how many at the claim's own anchor occurrence.  A
-# native run holds no schedule, so the planted occurrence may not recur: the
-# rate ranks a finding (tools/adhoc/findings.py) and never refutes it, and
-# nothing here moves the claim or CONFIRM's decision.  A world a native run
-# cannot plant (a clock, an attach's answer, any root but a marker) is a
-# reproduce.json with no run and the reason.  Only a confirmed SAT_CANDIDATE
-# is reproduced.
+# REPRODUCE (ADHOC-INFRA WP5.D), after EMIT: a confirmed witness run again
+# natively -- the recording weave on the stock JDK, planting the fault
+# markers the confirmation's world plants and watching the target's guards
+# for their fatal arm at the claim's anchor (explore.ConfirmMain --plant, the
+# code that wrote CONFIRM's world; runtime.RecordingPlant).  reproduce_runs
+# runs, all at once over the worker pool (campaign_reproduce_slot), each
+# charged on its host the recording's measured peak resident memory and
+# bounded by reproduce_time_factor times the recording's own workload; a run
+# ends as soon as the planted world takes the fatal arm at the anchor, its
+# one question answered.  Each run states its answer itself
+# (campaign_reproduce_run); final/reproduce.json counts them -- runs, how
+# many planted a marker, took the target's fatal arm, took it at the claim's
+# own anchor -- and names the runs that stated none.  A native run holds no
+# schedule, so the planted occurrence may not recur: the rate ranks a finding
+# (tools/adhoc/findings.py) and never refutes it, and nothing here moves the
+# claim, CONFIRM's decision or what EMIT published.  A world a native run
+# cannot plant (a clock, an attach's answer, any root but a marker), or a
+# recording that measured no peak memory, is a reproduce.json with no run and
+# the reason.  Only a confirmed SAT_CANDIDATE is reproduced.
 campaign_reproduce() {
   local iteration_dir=$1
-  local dir="${campaign_final}/reproduce" run trace name status=0
+  local dir="${campaign_final}/reproduce" status=0 bound slot reason=""
+  local -a hosts=() pids=()
   if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       != SAT_CANDIDATE || "$(jq -r '.confirmed' \
       "${campaign_final}/confirm.json")" != true ]]; then
@@ -3927,47 +3953,115 @@ campaign_reproduce() {
   fi
   [[ ! -e "${dir}" ]] \
     || die "the reproduction directory already exists: ${dir}"
-  mkdir -p "${dir}"
+  mkdir -p "${dir}/queue"
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.explore.ConfirmMain \
     --iteration "${iteration_dir}" --claim "${campaign_final}/claim.json" \
+    --static-scope-map "${causynth_static_scope_map}" \
     --plant "${dir}/plant.jsonl" >"${dir}/plant.log" 2>&1
   if [[ "${status}" -ne 0 ]]; then
-    jq -n --arg reason "$(sed -n 's/^CONFIRM refused: //p' \
-        "${dir}/plant.log" | head -n 1)" \
-      '{schemaVersion: 1, kind: "REPRODUCTION", runs: 0, planted: 0,
-        fatal: 0, atAnchor: 0,
-        reason: ("no native run: " + $reason)}' \
+    reason="no native run: $(sed -n 's/^CONFIRM refused: //p' \
+      "${dir}/plant.log" | head -n 1)"
+  elif [[ ! "${campaign_recorded_workload_rss_mb}" =~ ^[0-9]+$ ]]; then
+    reason="no native run: the recording measured no peak resident memory \
+(workload_rss_mb) to charge one with"
+  fi
+  if [[ -n "${reason}" ]]; then
+    jq -n --arg reason "${reason}" '{schemaVersion: 1, kind: "REPRODUCTION",
+      runs: 0, planted: 0, fatal: 0, atAnchor: 0, reason: $reason}' \
       >"${campaign_final}/reproduce.json"
-    campaign_log "reproduce: $(jq -r .reason "${campaign_final}/reproduce.json")"
+    campaign_log "reproduce: ${reason}"
     return 0
   fi
-  name=$(campaign_target_names | head -n 1)
-  for (( run = 1; run <= reproduce_runs; run++ )); do
-    trace="${dir}/run-${run}"
-    # The run's own outcome is its summary: a planted fault may well fail
-    # the test.
-    campaign_head_charged "${obligation_memory_mb}" 300 \
-      run_configured_workload "${trace}" "${record_timeout_s}" \
-      "${dir}/plant.jsonl" >"${trace}.log" 2>&1 || true
-    run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
-      --trace-dir "${trace}" --test "${trace_test}" \
-      --target "${name}=${campaign_target_slice},${trace}/${name}" \
-      --summary "${trace}/summary.json" >>"${trace}.log" 2>&1 || true
+  bound=$(( reproduce_time_factor * campaign_recorded_workload_s ))
+  campaign_log "reproduce: ${reproduce_runs} native run(s) at once, each \
+charged ${campaign_recorded_workload_rss_mb} MB and bounded by ${bound}s \
+(reproduce_time_factor=${reproduce_time_factor} x the recording's \
+${campaign_recorded_workload_s}s)"
+  mapfile -t hosts < <(campaign_worker_slot_hosts \
+    "$(printf '%s' "${dir}" | cksum | cut -d ' ' -f 1)")
+  for ((slot = 0; slot < ${#hosts[@]} && slot < reproduce_runs; slot++)); do
+    campaign_reproduce_slot "${hosts[${slot}]}" "${dir}" "${bound}" &
+    pids+=("$!")
   done
-  find "${dir}" -mindepth 2 -maxdepth 2 -name summary.json -print0 \
+  campaign_wait_workers "${pids[@]}" || campaign_log "reproduce: a host's \
+memory could not be read; the runs it would have run state no answer"
+  find "${dir}" -mindepth 2 -maxdepth 2 -name answer.json -print0 \
     | xargs -0 -r cat \
-    | jq -s --argjson runs "${reproduce_runs}" --arg name "${name}" \
-      --arg anchor "$(jq -r '.anchor' "${campaign_final}/claim.json")" '
+    | jq -s --argjson runs "${reproduce_runs}" '
       {schemaVersion: 1, kind: "REPRODUCTION", runs: $runs,
-       planted: map(select(.plantsApplied > 0)) | length,
-       fatal: map(select((.targets[$name].fatalOccurrences // [])
-                         | length > 0)) | length,
-       atAnchor: map(select((.targets[$name].fatalOccurrences // [])
-                            | index($anchor) != null)) | length,
-       reason: ""}' >"${campaign_final}/reproduce.json"
+       planted: map(select(.planted)) | length,
+       fatal: map(select(.fatal)) | length,
+       atAnchor: map(select(.atAnchor)) | length,
+       reason: (if length < $runs
+         then "\($runs - length) of \($runs) run(s) stated no answer"
+         else "" end)}' >"${campaign_final}/reproduce.json"
   jq -r '"  reproduced at the anchor in \(.atAnchor) of \(.runs) native run(s) (\(.planted) planted, \(.fatal) fatal)"' \
     "${campaign_final}/reproduce.json"
+}
+
+# One slot of REPRODUCE's pool, as a wave's slot is one of its
+# (campaign_wave_slot): room on its host for the recording's peak memory,
+# then a claim of the next run, then that run there, until every run is
+# claimed.  A remote run's answer is waited for until the shared home shows
+# it (campaign_remote_visibility_wait_s); one that never shows states none.
+campaign_reproduce_slot() {
+  local host=$1 dir=$2 bound=$3 gate run waited
+  campaign_claim_cursor=0
+  while true; do
+    gate=0
+    campaign_await_host_memory "${host}" "${dir}/queue" "${reproduce_runs}" \
+      "${campaign_recorded_workload_rss_mb}" || gate=$?
+    (( gate != 1 )) || return 0
+    (( gate == 0 )) || return "${gate}"
+    campaign_claim_next_obligation "${dir}/queue" "${reproduce_runs}" \
+      || return 0
+    run="${dir}/run-$((campaign_claimed_index + 1))"
+    mkdir -p "${run}"
+    printf '%s\n' "${host}" >"${run}/host.txt"
+    if campaign_host_is_local "${host}"; then
+      (
+        set -euo pipefail
+        campaign_reproduce_run "${analysis_classes_dir}" "${run}" \
+          "${bound}" "${dir}/plant.jsonl"
+      ) >"${run}/stdout.log" 2>"${run}/stderr.log" || true
+      continue
+    fi
+    campaign_dispatch_remote "${host}" "${run}" \
+      "$((bound + campaign_remote_bound_margin_s))" --run-reproduction \
+      "${analysis_classes_dir}" "${run}" "${bound}" "${dir}/plant.jsonl" \
+      || campaign_log "reproduce: $(basename "${run}") on ${host} exited \
+nonzero; its logs, and ssh's, are in ${run}"
+    waited=0
+    while [[ ! -s "${run}/answer.json" ]] \
+        && (( waited < campaign_remote_visibility_wait_s )); do
+      ls "${run}" >/dev/null 2>&1 || true
+      sleep 1
+      waited=$((waited + 1))
+    done
+  done
+}
+
+# One native run, on this host: the workload in the recording weave
+# <classes> with <plant>, its trace into <run>, under <seconds>.  Whatever
+# the workload's exit -- a planted fault may well fail the test, and a run
+# that answered ends early -- its answer is <run>/answer.json, read off its
+# trace's plant rows (a run killed mid-row loses only that row): {exit,
+# planted, fatal, atAnchor}.
+campaign_reproduce_run() {
+  local analysis_classes_dir=$1 run=$2 bound=$3 plant=$4 status=0
+  local trace="${run}/runtime_trace.jsonl"
+  run_capturing_status run_configured_workload "${run}" "${bound}" "${plant}"
+  [[ -s "${trace}" ]] || trace=/dev/null
+  jq -n -c -R --argjson exit "${status}" '
+    reduce (inputs | select(contains("\"event\":\"PLANT_")) | fromjson?)
+        as $row ({exit: $exit, planted: false, fatal: false,
+                  atAnchor: false};
+      if $row.event == "PLANT_APPLIED" then .planted = true
+      elif $row.event == "PLANT_FATAL"
+      then .fatal = true | .atAnchor = (.atAnchor or $row.atAnchor)
+      else . end)' "${trace}" >"${run}/answer.json.part"
+  mv -f -- "${run}/answer.json.part" "${run}/answer.json"
 }
 
 # The one shape of final/confirm.json.
@@ -4208,20 +4302,9 @@ campaign_emit() {
         "the confirmation states no boolean confirmed and string reason"
     confirmation=$(cat "${campaign_final}/confirm.json")
   fi
-  # REPRODUCE's answer for a confirmed candidate, beside the confirmation it
-  # never changes; null for every other claim.
-  local reproduction=null
-  if [[ "$(jq -r '.confirmed' <<<"${confirmation}")" == true ]]; then
-    require_nonempty "reproduction" "${campaign_final}/reproduce.json"
-    campaign_require_json "reproduction" "${campaign_final}/reproduce.json" \
-      || campaign_fail EMIT REPRODUCE "${campaign_final}/reproduce.json" \
-        "the reproduction is malformed"
-    reproduction=$(cat "${campaign_final}/reproduce.json")
-  fi
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --argjson confirmation "${confirmation}" \
-    --argjson reproduction "${reproduction}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
     $composedDocuments[0] as $c | ($c.solver // {}) as $r |
@@ -4253,8 +4336,6 @@ campaign_emit() {
      # The confirmation itself, so a reader of result.json sees which
      # session answered and why, not only that the claim was downgraded.
      confirmation: $confirmation,
-     # How often the confirmed world reproduced natively (REPRODUCE).
-     reproduction: $reproduction,
      # WHICH mechanism the formula supports, beside WHETHER the run is
      # accepted.  Two questions, and a reader of result.json alone could
      # answer only the second: the ClaimKind, the valuation that carried it
@@ -4379,9 +4460,15 @@ campaign_emit() {
   # the acceptance answer.
   jq -r 'select((.whyNotAccepted // "") != "") | .whyNotAccepted' \
     "${campaign_final}/result.json"
-  # A published artifact set is not an accepted candidate. A run that reached
-  # no witness and no closed refutation exits nonzero with its own named
-  # reason, because a top-level zero exit is not completion.
+}
+
+# The campaign's exit, read off the result EMIT published.  A published
+# artifact set is not an accepted candidate: a run that reached no witness
+# and no closed refutation exits 2 with its own named reason, because a
+# top-level zero exit is not completion; one that names BLOCKING gaps, 3.
+campaign_exit_verdict() {
+  local gapCount
+  gapCount=$(jq -r '.gapCount' "${campaign_final}/gaps.json")
   case "$(jq -r '.claim' "${campaign_final}/result.json")" in
     SAT_CANDIDATE|UNSAT_CLOSED) ;;
     *)
@@ -4603,16 +4690,13 @@ campaign_batch_verdict() {
 # One target of a batch campaign as its own campaign, in targets/<name>/:
 # its causynth_output_dir (so every stage -- and every peer of its waves,
 # which derive their paths from it -- reads its slice and its region plan
-# there), its spec that one target's line, its region plan aggregated on its
-# view of the merged skeletons (campaign_target_slice), and its campaign
-# root targets/<name>/schedule/.  In a subshell of its own.
+# there), its spec that one target's line, and its campaign root
+# targets/<name>/schedule/.  In a subshell of its own.
 campaign_batch_enter() {
   local name=$1
   causynth_output_dir="${causynth_output_dir}/targets/${name}"
   derive_output_paths
   causynth_target_spec="${causynth_output_dir}/target.yaml"
-  campaign_target_slice="${candidate_graph},${causynth_static_scope_map},\
-${causynth_output_dir}/view_region_skeletons.jsonl.gz"
   campaign_root="${schedule_output_dir}"
   campaign_final="${campaign_root}/final"
   campaign_stage_metrics="${campaign_root}/stage_metrics.tsv"
@@ -4654,7 +4738,8 @@ ${group}"
   campaign_iteration_explore "${iteration_dir}" iteration-0000
 }
 
-# ONE obligation of somebody else's wave, on this machine.
+# What every peer entry (--run-obligation, --run-reproduction) checks
+# before its work, on this machine.
 #
 # The peer loads the same configuration file the campaign loaded, from the
 # same shared home, and every path in it resolves identically -- but two
@@ -4672,7 +4757,9 @@ ${group}"
 #   the workflow key values, forwarded by campaign_remote_env_assignments as
 #     environment overrides.  They win over the file, so an edit to the file
 #     while the wave is in flight cannot reach a worker.
-do_run_obligation() {
+# The positional arguments after "--" are left in campaign_peer_args.
+campaign_peer_args=()
+campaign_peer_enter() {
   local jar="" jar_sha="" actual_sha
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -4693,12 +4780,9 @@ do_run_obligation() {
       *) break ;;
     esac
   done
-  [[ -n "${jar}" ]] || die "--run-obligation requires --graphchecker-jar: \
+  [[ -n "${jar}" ]] || die "a peer requires --graphchecker-jar: \
 the campaign's frozen jar is not derivable from the configuration"
-  [[ -n "${jar_sha}" ]] || die "--run-obligation requires \
---graphchecker-jar-sha256"
-  [[ $# -eq 6 ]] || die "--run-obligation takes six positional arguments \
-(id obligations classes worker sessions seed-plan), got $#"
+  [[ -n "${jar_sha}" ]] || die "a peer requires --graphchecker-jar-sha256"
   graphchecker_jar=${jar}
   require_file "GraphChecker jar" "${graphchecker_jar}"
   actual_sha=$(campaign_digest "${graphchecker_jar}")
@@ -4706,17 +4790,36 @@ the campaign's frozen jar is not derivable from the configuration"
 worker was handed is not the one the campaign froze: ${graphchecker_jar} is \
 ${actual_sha}, the campaign says ${jar_sha}"
   # The same gate the head's PREFLIGHT ran, so a peer that resolved a
-  # nonsense configuration says so here rather than inside a replay JVM.
+  # nonsense configuration says so here rather than inside a workload JVM.
   validate_config >/dev/null
   require_command_available jq
   require_command_available sha256sum
   # Set from the CAUSYNTH_LOCAL_SCRATCH the campaign forwarded, so this
-  # worker's replay scratch lands on THIS machine's local disk under the same
+  # worker's scratch lands on THIS machine's local disk under the same
   # per-run root every other worker of the run uses.
   campaign_init_local_scratch_root
-  campaign_log "obligation $1 on $(hostname): jar ${graphchecker_jar} \
-(${actual_sha}), scratch ${campaign_local_scratch_root:-<shared home>}"
+  campaign_log "peer $(hostname): jar ${graphchecker_jar} (${actual_sha}), \
+scratch ${campaign_local_scratch_root:-<shared home>}"
+  campaign_peer_args=("$@")
+}
+
+# ONE obligation of somebody else's wave, on this machine.
+do_run_obligation() {
+  campaign_peer_enter "$@"
+  set -- "${campaign_peer_args[@]}"
+  [[ $# -eq 6 ]] || die "--run-obligation takes six positional arguments \
+(id obligations classes worker sessions seed-plan), got $#"
   campaign_obligation_worker "$@"
+}
+
+# ONE native run of somebody else's REPRODUCE, on this machine
+# (campaign_reproduce_slot).
+do_run_reproduction() {
+  campaign_peer_enter "$@"
+  set -- "${campaign_peer_args[@]}"
+  [[ $# -eq 4 ]] || die "--run-reproduction takes four positional \
+arguments (classes run-dir seconds plant), got $#"
+  campaign_reproduce_run "$@"
 }
 
 # One campaign, one iteration.  What a replay learns past the recording's
@@ -4795,8 +4898,11 @@ campaign_iteration_explore() {
   campaign_stage SOLVE campaign_solve
   campaign_stage DECIDE campaign_decide
   campaign_stage CONFIRM campaign_confirm "${iteration_dir}"
-  campaign_stage REPRODUCE campaign_reproduce "${iteration_dir}"
   campaign_stage EMIT campaign_emit "${iteration_dir}"
+  # After the verdict is published, never before it: REPRODUCE ranks a
+  # confirmed finding and moves no claim.
+  campaign_stage REPRODUCE campaign_reproduce "${iteration_dir}"
+  campaign_exit_verdict
 }
 
 # Shell-level contract tests source the helpers without dispatching a workflow.
@@ -4827,7 +4933,7 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|slice|record|config|validate|--run-obligation)
+  campaign|slice|record|config|validate|--run-obligation|--run-reproduction)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
@@ -4838,6 +4944,7 @@ case "${command_name}" in
       config) print_normalized_config ;;
       validate) validate_config ;;
       --run-obligation) do_run_obligation "$@" ;;
+      --run-reproduction) do_run_reproduction "$@" ;;
     esac
     ;;
   *)
