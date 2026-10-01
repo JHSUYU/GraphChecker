@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
+import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
 import org.junit.Test;
 
 import java.lang.reflect.InvocationTargetException;
@@ -473,6 +474,8 @@ public class ConcolicHookAbiTest {
             case "string": return String.class;
             case "object": return Object.class;
             case "ArrayType.v(object, 1)": return Object[].class;
+            case "byte[]": return byte[].class;
+            case "doors.Outbound": return MessageDoors.Outbound.class;
             case "RefType.v(\"java.lang.Throwable\")": return Throwable.class;
             default: throw new IllegalStateException(
                     "unmapped type: " + name);

@@ -195,6 +195,14 @@ JVM_AttachExpression(JNIEnv *env, jclass ignored, jobject owner,
                      jstring descriptor, jlong handle);
 
 JNIEXPORT jstring JNICALL
+JVM_ExportLeaf(JNIEnv *env, jclass ignored, jobject parent, jint slot_kind,
+               jobject slot);
+
+JNIEXPORT jstring JNICALL
+JVM_MintLeaf(JNIEnv *env, jclass ignored, jobject parent, jint slot_kind,
+             jobject slot, jstring template_json);
+
+JNIEXPORT jstring JNICALL
 JVM_GetConcolicPathConditionRange(JNIEnv *env, jclass ignored,
                                   jint start_index, jint end_index);
 

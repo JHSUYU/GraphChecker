@@ -273,6 +273,7 @@ public final class ConcolicRegionRuntime {
                     + api.workloadSessionStatus();
         }
         SymbolicMessageEnvelope.clear();
+        CodecRuntime.clear();
         workloadExpressionStore = new VmExpressionTable.Store();
         workloadSessionId = status;
         return "";
@@ -306,6 +307,7 @@ public final class ConcolicRegionRuntime {
                     + api.workloadSessionStatus();
         }
         SymbolicMessageEnvelope.clear();
+        CodecRuntime.clear();
         workloadSessionId = 0L;
         workloadExpressionStore = new VmExpressionTable.Store();
         return "";
@@ -318,6 +320,11 @@ public final class ConcolicRegionRuntime {
         if (status == -3L) return "MEMBERS_REMAIN";
         if (status == -4L) return "CLOSING";
         return "UNNAMED_STATUS(" + status + ")";
+    }
+
+    /** Whether a workload session is open: codec crossings run inside one. */
+    static boolean sessionOpen() {
+        return workloadSessionId != 0L;
     }
 
     /** Set once the run has ended ({@link #endAdmission}). */
@@ -949,6 +956,41 @@ public final class ConcolicRegionRuntime {
                                                String field,
                                                String descriptor) {
         WireExport.attachLeaf(portId, carrier, field, descriptor);
+    }
+
+    /**
+     * Enters a declared codec method (WIRE-CODEC §4.1): the depth its codec's
+     * declared methods ran at before, which its action hooks pass back.
+     */
+    public static int enterCodec(String codec) {
+        return CodecRuntime.enter(codec);
+    }
+
+    /** Leaves a declared codec method, on every exit. */
+    public static void exitCodec(String codec, int depth) {
+        CodecRuntime.exit(codec, depth);
+    }
+
+    /** An encoder's exit: {@code graph} encoded into {@code encoded}. */
+    public static void encodedByCodec(String codec, int depth, Object graph,
+                                      Object encoded, boolean exchange) {
+        CodecRuntime.encoded(codec, depth, graph, encoded, exchange);
+    }
+
+    /** A decoder's graph, its holes minted; the graph to go on with. */
+    public static Object decodedByCodec(String codec, int depth,
+                                        Object encoded, Object graph) {
+        return CodecRuntime.decoded(codec, depth, encoded, graph);
+    }
+
+    /** A declared EXCHANGE bracket opens. */
+    public static long beginCodecExchange(String transport) {
+        return MessageDoors.beginExchange(transport);
+    }
+
+    /** It closes, on every exit. */
+    public static void endCodecExchange(long token) {
+        MessageDoors.endExchange(token);
     }
 
     /**

@@ -7,6 +7,7 @@
 #include "classfile/javaClasses.hpp"
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
+#include "prims/jvm.h"
 #include "runtime/fieldDescriptor.hpp"
 #include "runtime/orderAccess.inline.hpp"
 #include "concolic/globalSymbolicSession.hpp"
@@ -348,28 +349,43 @@ int static_offset(Klass *klass, const char *name, const char *signature) {
   return fd.offset();
 }
 
-bool cached_box(oop box, BasicType type, jlong value) {
-  BoxCache *cache = cache_of(type);
-  if (cache == NULL) return false;
+// A cache's array of entries, or NULL while its holder class is not loaded
+// (then no entry of it exists yet either).
+objArrayOop cache_entries(BoxCache *cache) {
   if (cache->klass == NULL) {
-    // Not loaded yet means no entry of it exists yet either.
     Symbol *name = SymbolTable::probe(cache->holder,
                                       (int) strlen(cache->holder));
-    if (name == NULL) return false;
+    if (name == NULL) return NULL;
     Thread *thread = Thread::current();
     Klass *klass = SystemDictionary::find(name, Handle(), Handle(), thread);
-    if (klass == NULL || thread->has_pending_exception()) return false;
+    if (klass == NULL || thread->has_pending_exception()) return NULL;
     const int offset = static_offset(klass, "cache", cache->signature);
-    if (offset < 0) return false;
+    if (offset < 0) return NULL;
     cache->offset = offset;
     OrderAccess::release_store_ptr(&cache->klass, klass);
   }
   oop entries = cache->klass->java_mirror()->obj_field(cache->offset);
-  if (entries == NULL || !entries->is_objArray()) return false;
+  return entries == NULL || !entries->is_objArray() ? (objArrayOop) NULL
+                                                    : objArrayOop(entries);
+}
+
+bool cached_box(oop box, BasicType type, jlong value) {
+  BoxCache *cache = cache_of(type);
+  objArrayOop array = cache == NULL ? (objArrayOop) NULL
+                                    : cache_entries(cache);
+  if (array == NULL) return false;
   const jlong index = value - cache->low;
-  objArrayOop array = objArrayOop(entries);
   return index >= 0 && index < array->length()
       && array->obj_at((int) index) == box;
+}
+
+// One of the caches' own arrays: an element minted there is every valueOf's.
+bool cache_array(oop array) {
+  for (size_t index = 0; index < sizeof(BOX_CACHES) / sizeof(BOX_CACHES[0]);
+       ++index) {
+    if (cache_entries(&BOX_CACHES[index]) == array) return true;
+  }
+  return false;
 }
 
 bool shared_boolean(oop box) {
@@ -386,10 +402,20 @@ bool shared_boolean(oop box) {
       || mirror->obj_field(false_offset) == box;
 }
 
+// An enum constant: its class is ACC_ENUM, or (a constant with a body) a
+// subclass of one.  Every `switch` and `==` in the JVM reads the constant.
+bool enum_constant(oop obj) {
+  for (Klass *klass = obj->klass(); klass != NULL; klass = klass->super()) {
+    if ((klass->access_flags().get_flags() & JVM_ACC_ENUM) != 0) return true;
+  }
+  return false;
+}
+
 } // anonymous namespace
 
 bool jvm_shared_object(oop obj) {
-  if (obj == NULL || obj->is_array()) return false;
+  if (obj == NULL) return false;
+  if (obj->is_array()) return cache_array(obj);
   if (obj->klass() == SystemDictionary::String_klass()) {
     return OopUtils::is_java_string_interned(obj);
   }
@@ -402,6 +428,7 @@ bool jvm_shared_object(oop obj) {
     case T_SHORT:   return cached_box(obj, type, value.s);
     case T_INT:     return cached_box(obj, type, value.i);
     case T_LONG:    return cached_box(obj, type, value.j);
+    case T_ILLEGAL: return enum_constant(obj);
     default:        return false;
   }
 }
@@ -440,10 +467,26 @@ bool SymPrimitive<T>::match_callee_and_do_sym(MethodSymbolizerHandle &handle, co
   return false;
 }
 
-static bool is_supported_decimal_integer_to_string(
-    MethodSymbolizerHandle &handle) {
-    if (handle.get_callee_holder_name() != SymPrimitive<jint>::TYPE_NAME ||
-        handle.get_callee_name() != "toString") {
+// Java's decimal rendering of a Byte, Short, Integer or Long, and its
+// "true"/"false" of a Boolean: the holder's static toString of its own
+// primitive, or the instance toString().  All of them are one `toString` op
+// of the value.  A radix, a hexadecimal, a char or a floating rendering is
+// none of these.
+static bool is_decimal_or_boolean_rendering(MethodSymbolizerHandle &handle) {
+    if (handle.get_callee_name() != "toString") return false;
+    const std::string &holder = handle.get_callee_holder_name();
+    const char *own = NULL;
+    if (holder == SymPrimitive<jint>::TYPE_NAME) {
+      own = "(I)Ljava/lang/String;";
+    } else if (holder == SymPrimitive<jlong>::TYPE_NAME) {
+      own = "(J)Ljava/lang/String;";
+    } else if (holder == SymPrimitive<jshort>::TYPE_NAME) {
+      own = "(S)Ljava/lang/String;";
+    } else if (holder == SymPrimitive<jbyte>::TYPE_NAME) {
+      own = "(B)Ljava/lang/String;";
+    } else if (holder == SymPrimitive<jboolean>::TYPE_NAME) {
+      own = "(Z)Ljava/lang/String;";
+    } else {
       return false;
     }
 
@@ -451,7 +494,7 @@ static bool is_supported_decimal_integer_to_string(
     const char *signature =
         handle.get_callee_method()->signature()->as_C_string();
     if (handle.get_callee_method()->is_static()) {
-      return strcmp(signature, "(I)Ljava/lang/String;") == 0;
+      return strcmp(signature, own) == 0;
     }
     return strcmp(signature, "()Ljava/lang/String;") == 0;
 }
@@ -507,20 +550,19 @@ Expression *primitive_finish_method_helper(MethodSymbolizerHandle &handle, Basic
         guarantee(res_obj != NULL,
                   "primitive string conversion returned null");
         Expression *string_exp;
-        if (is_supported_decimal_integer_to_string(handle)) {
-          // These are the only two conversions whose current downstream model
-          // proves Java decimal semantics: Integer.toString(int) and the
-          // equivalent Integer instance method.  Both have exactly one
-          // provenance expression (the primitive int value).
+        if (is_decimal_or_boolean_rendering(handle)) {
+          // One provenance expression, the value (the argument, or the
+          // receiver's value for the instance form), rendered the one way
+          // COMPOSE lowers by the value's sort.
           guarantee(params.size() == 1,
-                    "decimal Integer.toString has one symbolic parameter");
+                    "a decimal or boolean rendering has one parameter");
           string_exp = OpStrExpression::to_string(params[0]);
         } else {
           // Keep every receiver/argument and the exact holder+descriptor.  A
           // downstream encoder must reject this operation unless it adds and
           // validates the corresponding Java conversion semantics.  In
           // particular, radix and hexadecimal conversions must never be
-          // mistaken for decimal Integer.toString.
+          // mistaken for a decimal rendering.
           string_exp = new OpStrExpression(
               unsupported_primitive_string_operation(handle), params);
         }

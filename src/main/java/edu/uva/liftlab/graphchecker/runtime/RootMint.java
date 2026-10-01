@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -11,6 +12,7 @@ import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.FieldAccess.MissingValue;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
@@ -32,6 +34,7 @@ import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.resolveFieldPathL
 import static edu.uva.liftlab.graphchecker.runtime.ModelValues.isPrimitiveBox;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
  * Root minting (SYMBOL-SCOPE §4): where a root's value comes from, at every
@@ -450,11 +453,16 @@ final class RootMint {
                 api.symbolizeExactField(owner, exactFieldSignature(field),
                         declaring(symbol));
             }
-            active.pathRecordingStarted = true;
             Object value = field.get(owner);
             JsonElement expression = ConcolicRegionRuntime.engineExpression(api.fieldExpression(
                     owner, declaringClass, field.getName(), descriptor,
                     value));
+            if (!reused && mintRefused(expression, symbol,
+                    jvmShared(api, owner), "the configured source field "
+                            + safe(fieldSignature), safe(sourceId))) {
+                return false;
+            }
+            active.pathRecordingStarted = true;
             // A mint that PLANTED states what it ran at, or the root is
             // stated twice and differently and Composer refuses the path.
             // A CLOCK states its reading: FlipQuery bounds the cell by it.
@@ -627,14 +635,19 @@ final class RootMint {
         // one it holds what was read, so no plant flag is needed.
         Object held = readExactField(owner, leafFieldSignature);
         if (held == MissingValue.INSTANCE) held = value;
-        api.symbolizeExactField(owner, leafFieldSignature,
-                declaring(manualMintLabel(symbol,
-                        active.activation.occurrenceId,
-                        JavaPrimitiveSmtSemantics.primitive(
-                                field.type()))));
+        String label = declaring(manualMintLabel(symbol,
+                active.activation.occurrenceId,
+                JavaPrimitiveSmtSemantics.primitive(field.type())));
+        api.symbolizeExactField(owner, leafFieldSignature, label);
+        JsonElement expression = ConcolicRegionRuntime.engineExpression(
+                api.fieldExpression(owner, field.owner(), field.name(),
+                        descriptor, held));
+        if (mintRefused(expression, label, jvmShared(api, owner),
+                "the declared field " + leafFieldSignature, symbol)) {
+            return null;
+        }
         active.pathRecordingStarted = true;
-        return new MintedLeaf(ConcolicRegionRuntime.engineExpression(api.fieldExpression(owner,
-                field.owner(), field.name(), descriptor, held)), recorded);
+        return new MintedLeaf(expression, recorded);
     }
 
     /** One field leaf's mint: what the VM carries, and what the row may say. */
@@ -863,12 +876,18 @@ final class RootMint {
                     "declared input at " + action.cell)) {
                 return;
             }
-            api.symbolize(value, declaring(manualMintLabel(action.symbol,
-                    active.activation.occurrenceId,
-                    isPrimitiveBox(value))));
-            active.pathRecordingStarted = true;
+            String label = declaring(manualMintLabel(action.symbol,
+                    active.activation.occurrenceId, isPrimitiveBox(value)));
+            api.symbolize(value, label);
             JsonElement expression = value == null ? null
                     : ConcolicRegionRuntime.engineExpression(api.expression(value));
+            if (value != null && mintRefused(expression, label,
+                    jvmShared(api, value), "this declared input (a "
+                            + value.getClass().getName() + ")",
+                    firstNonBlank(action.symbol, action.actionDigest))) {
+                return;
+            }
+            active.pathRecordingStarted = true;
             active.recordManualSymbolization(action, action.symbol,
                     Collections.<String>emptyList(), "", expression,
                     true, false, "", 0L);
@@ -878,6 +897,46 @@ final class RootMint {
                     "this declared input was not minted, so the region reads"
                             + " it concretely and no row states a value for"
                             + " it: " + ConcolicRegionRuntime.rootCause(throwable));
+        }
+    }
+
+    /**
+     * Whether a mint asked for under {@code label} did not happen: no symbol
+     * {@code expression} names carries the label.  The VM mints nothing on a
+     * JVM-wide object and never replaces an expression a value or a
+     * reference field already carries; the refusal is named by which one,
+     * and no row claims the mint.
+     */
+    private static boolean mintRefused(JsonElement expression, String label,
+                                       boolean jvmShared, String what,
+                                       String subject) {
+        if (expression != null) {
+            for (ExpressionWalk walk = ExpressionWalk.of(expression);
+                 walk.hasNext(); ) {
+                if (optionalString(walk.next(), "_exp").contains(label)) {
+                    return false;
+                }
+            }
+        }
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, subject,
+                "the VM minted no symbol on " + what + ": " + (jvmShared
+                        ? "a JVM-wide object carries none"
+                        : "it keeps the expression it already carried, which"
+                        + " a mint never replaces") + "; the region reads it"
+                        + " as it was and no row states a mint of it");
+        return true;
+    }
+
+    /** What the VM says of {@code value}: whether it is JVM-wide. */
+    private static boolean jvmShared(ConcolicVmBroker api, Object value) {
+        try {
+            JsonElement answer = JsonParser.parseString(api.expression(value));
+            return answer.isJsonObject()
+                    && answer.getAsJsonObject().has("jvmShared")
+                    && answer.getAsJsonObject().get("jvmShared")
+                    .getAsBoolean();
+        } catch (Throwable unanswered) {
+            return false;
         }
     }
 

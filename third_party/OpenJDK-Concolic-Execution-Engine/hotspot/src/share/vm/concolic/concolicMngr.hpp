@@ -174,6 +174,14 @@ public:
   static void session_snapshot(int *members, bool *workload_open,
                                SessionState *state, jlong *session_id);
   static const char *session_state_name(SessionState state);
+  /**
+   * Whether this thread may read and write the session heap: it is inside a
+   * region, or it is outside every region while a workload session holds the
+   * open session.  Such a thread gains no ThreadContext, stack shadow or path
+   * condition by it.  exportExpression and the leaf natives (leafBroker.hpp)
+   * run under this one rule.
+   */
+  static bool may_use_session_heap();
 
   static jlong startConcolicRegion(JavaThread *thread, const char *region_id,
                                    const char *task_id);
