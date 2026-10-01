@@ -6,9 +6,14 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -226,13 +231,62 @@ public final class SessionReader {
      *  one pool: the sessions of a corpus spell the same call sites. */
     public static List<SessionReader> readAll(Path iteration)
             throws IOException {
-        RowPool pool = new RowPool();
-        List<SessionReader> sessions = new ArrayList<SessionReader>();
-        for (SessionDir dir : SessionDir.sessionsIn(iteration)) {
-            sessions.add(read(dir, pool));
-        }
-        return sessions;
+        return readAll(iteration, Collections.<SessionReader>emptyList());
     }
+
+    /**
+     * The same, each session {@code held} already read from the same
+     * directory taken as it is: a landed session's rows never change (it
+     * lands whole, in one rename), and reading them is what a corpus read
+     * costs.
+     */
+    public static List<SessionReader> readAll(Path iteration,
+                                              List<SessionReader> held)
+            throws IOException {
+        Map<SessionDir, SessionReader> read =
+                new HashMap<SessionDir, SessionReader>();
+        for (SessionReader session : held) {
+            read.put(session.directory, session);
+        }
+        RowPool pool = new RowPool();
+        List<SessionDir> dirs = SessionDir.sessionsIn(iteration);
+        ExecutorService readers = Executors.newFixedThreadPool(Math.max(1,
+                Math.min(PARALLEL_READS, dirs.size())));
+        try {
+            List<Future<SessionReader>> reading =
+                    new ArrayList<Future<SessionReader>>();
+            for (SessionDir dir : dirs) {
+                SessionReader kept = read.get(dir);
+                reading.add(readers.submit(
+                        () -> kept != null ? kept : read(dir, pool)));
+            }
+            List<SessionReader> sessions = new ArrayList<SessionReader>();
+            for (Future<SessionReader> session : reading) {
+                sessions.add(session.get());
+            }
+            return sessions;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while reading " + iteration,
+                    interrupted);
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof IOException) throw (IOException) cause;
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new IOException(cause);
+        } finally {
+            readers.shutdownNow();
+        }
+    }
+
+    /**
+     * How many sessions are read at once: parsing the rows is the read
+     * (hdfs-11741 i1, 175 sessions: 45-70 s one at a time), and a session
+     * reads alone.
+     */
+    private static final int PARALLEL_READS = 8;
 
     public String sessionId() {
         return directory.sessionId();

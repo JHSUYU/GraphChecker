@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -228,7 +229,7 @@ public final class Z3 {
      *
      * <p>The query is WRITTEN to each z3, never copied into one text per
      * run: a composition's body runs past 200 MB, asked on
-     * {@code ClaimPolicy#PARALLEL_ASKS} threads at once, and a copy per
+     * many threads at once ({@code compose.Disjunction}), and a copy per
      * ask (the text, the text with its command, its bytes) ran the
      * composer out of an 8 GB heap (hdfs-11741 m1).  What each run reads
      * back is z3's answer to the one command after it.</p>
@@ -283,22 +284,117 @@ public final class Z3 {
 
     /**
      * How far past its budget a z3 stops itself ({@code -T}, whole seconds).
-     * The driver stops z3 at the budget; z3's own clock matters only once
-     * no driver is left -- its JVM killed on a bound, stopped, or out of
-     * memory -- and an orphan ran on alone for hours (lift06: four
-     * {@code z3 -in -smt2} of 2.4 GB each, 8.5 h after their JVMs died).
-     * Past the budget, so a live driver is always the one that stops z3.
+     * The driver stops z3 at the budget; z3's own clock matters only when
+     * the driver is still there but no longer driving (a JVM that hangs);
+     * one that died takes its z3s with it ({@link #DIES_WITH_ITS_DRIVER}:
+     * lift06 once ran four {@code z3 -in -smt2} of 2.4 GB each 8.5 h past
+     * their JVMs).  Past the budget, so a live driver is always the one that
+     * stops z3.
      */
     static final long ORPHAN_MARGIN_SECONDS = 10L;
 
     /**
      * The z3 processes running now.  A JVM that ends (a bound's or a
      * stop's TERM) takes them with it at once; one killed outright runs no
-     * hook, and its z3 stops on its own clock ({@link #hardTimeout}) --
-     * budgets run to 30 minutes.
+     * hook, and the kernel kills its z3s ({@link #DIES_WITH_ITS_DRIVER}).
      */
     private static final Set<Process> LIVE = Collections.newSetFromMap(
             new ConcurrentHashMap<Process, Boolean>());
+
+    /**
+     * What every z3 is started under: the kernel sends it KILL when the
+     * thread that started it is gone ({@code PR_SET_PDEATHSIG}), so no z3
+     * outlives its JVM, however that JVM ended -- a KILL, the kernel's OOM
+     * killer -- where a shutdown hook never runs and z3's own clock
+     * ({@link #hardTimeout}) let an orphan run out a 30-minute budget.  The
+     * thread that starts a run waits for it and kills it on its way out
+     * ({@link #run}), so the signal reaches only orphans.
+     */
+    static final String[] DIES_WITH_ITS_DRIVER =
+            {"setpriv", "--pdeathsig", "KILL", "--"};
+
+    /**
+     * How full a host's memory may be, in percent, before another z3
+     * starts: the ceiling every start of a campaign keeps
+     * ({@code CAUSYNTH_HOST_MAX_USED_PCT}; tools/lib/gc-env.sh states the
+     * owner's 70 where nothing else does, and so does this where no script
+     * started the JVM).  One that is no percentage is refused.
+     */
+    static final int CEILING_PERCENT =
+            ceilingPercent(System.getenv("CAUSYNTH_HOST_MAX_USED_PCT"));
+
+    static int ceilingPercent(String stated) {
+        if (stated == null) return 70;
+        String text = stated.trim();
+        int percent = text.matches("[0-9]{1,3}") ? Integer.parseInt(text) : 0;
+        if (percent < 1 || percent > 100) {
+            throw new IllegalStateException("CAUSYNTH_HOST_MAX_USED_PCT must"
+                    + " be a percentage in 1..100: \"" + stated + "\"");
+        }
+        return percent;
+    }
+
+    /** Runs in flight in this JVM, each its two engines. */
+    private static final AtomicInteger RUNNING = new AtomicInteger();
+
+    /** What a run waiting for room waits on, and how often it looks. */
+    private static final Object ROOM = new Object();
+    private static final long ROOM_POLL_MILLIS = 500L;
+
+    /**
+     * Waits until this host has room for one more run -- its available
+     * memory at least the share {@link #CEILING_PERCENT} keeps free -- and
+     * counts the run in: true; false when interrupted first.  A JVM with
+     * no run in flight starts one anyway: it holds nothing it could give
+     * back by waiting.  A composition asks many paths at once
+     * ({@code compose.Disjunction}), each two z3s of up to a few GB.
+     */
+    private static boolean enter() {
+        synchronized (ROOM) {
+            while (RUNNING.get() > 0 && !hostHasRoom()) {
+                try {
+                    ROOM.wait(ROOM_POLL_MILLIS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            RUNNING.incrementAndGet();
+            return true;
+        }
+    }
+
+    private static void leave() {
+        RUNNING.decrementAndGet();
+        synchronized (ROOM) {
+            ROOM.notifyAll();
+        }
+    }
+
+    /** Whether MemAvailable is at least what the ceiling keeps free; a
+     *  host whose memory cannot be read is taken to have room. */
+    static boolean hostHasRoom() {
+        long total = -1L;
+        long available = -1L;
+        try {
+            for (String line : java.nio.file.Files.readAllLines(
+                    Paths.get("/proc/meminfo"), StandardCharsets.UTF_8)) {
+                if (line.startsWith("MemTotal:")) total = kilobytes(line);
+                if (line.startsWith("MemAvailable:")) {
+                    available = kilobytes(line);
+                }
+            }
+        } catch (IOException | RuntimeException unreadable) {
+            return true;
+        }
+        return total <= 0L || available < 0L
+                || available * 100L >= total * (100L - CEILING_PERCENT);
+    }
+
+    private static long kilobytes(String line) {
+        String[] words = line.trim().split("\\s+");
+        return words.length < 2 ? -1L : Long.parseLong(words[1]);
+    }
 
     static {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -317,11 +413,24 @@ public final class Z3 {
      * engine's when it decides within {@link #PREFERRED_GRACE_MILLIS} of the
      * other's -- with the other killed.  Both undecided: the preferred
      * one's answer.  Both share the budget, enforced here; z3's own
-     * ({@link #hardTimeout}) only outlives a driver that died.
+     * ({@link #hardTimeout}) only outlives a driver that hangs.  A run
+     * starts once its host has room ({@link #enter}); an interrupted one
+     * answers as a timeout, its z3s killed.
      */
     private String run(String prefix, ArtifactIO.Body query, String suffix,
                        long budgetMillis) {
         runs.incrementAndGet();
+        if (!enter()) return TIMEOUT;
+        try {
+            return raced(prefix, query, suffix, budgetMillis);
+        } finally {
+            leave();
+        }
+    }
+
+    /** {@link #run} once it has room: both engines, raced. */
+    private String raced(String prefix, ArtifactIO.Body query, String suffix,
+                         long budgetMillis) {
         long started = System.nanoTime();
         long deadline = started
                 + TimeUnit.MILLISECONDS.toNanos(budgetMillis);
@@ -499,8 +608,11 @@ public final class Z3 {
                            List<Thread> readers) {
         Process process;
         try {
-            ProcessBuilder builder = new ProcessBuilder(z3.toString(),
-                    hardTimeout(budgetMillis), "-in", "-smt2");
+            List<String> command = new ArrayList<String>(
+                    Arrays.asList(DIES_WITH_ITS_DRIVER));
+            command.addAll(Arrays.asList(z3.toString(),
+                    hardTimeout(budgetMillis), "-in", "-smt2"));
+            ProcessBuilder builder = new ProcessBuilder(command);
             builder.redirectErrorStream(true);
             process = builder.start();
         } catch (IOException notLaunched) {

@@ -4,8 +4,8 @@ import com.google.gson.stream.JsonReader;
 
 import java.io.IOException;
 import java.io.StringReader;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * What one read of rows shares: each string its lines parse to, and each
@@ -19,7 +19,10 @@ import java.util.Map;
  * identity ({@code smt.ExpressionWalk}), so a node stays its line's own.</p>
  */
 final class RowPool {
-    private final Map<Object, Object> held = new HashMap<Object, Object>();
+    /** Concurrent: a corpus's sessions are read in parallel
+     *  ({@code SessionReader#readAll}). */
+    private final Map<Object, Object> held =
+            new ConcurrentHashMap<Object, Object>();
 
     /** The instance held for a value equal to {@code value}; the first one
      *  asked for is the one held. */

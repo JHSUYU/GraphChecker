@@ -1161,11 +1161,131 @@ public class ComposerTest {
             Composer.Composition composition = compose(iteration, 4);
             assertEquals("two target rows, two paths", 2,
                     composition.disjuncts().size());
-            assertEquals("phi " + row[0], row[1],
-                    ClaimPolicy.seedDisjunctUnsat(composition, solver));
+            try (Disjunction asks = new Disjunction(composition, solver)) {
+                assertEquals("phi " + row[0], row[1],
+                        ClaimPolicy.seedDisjunctUnsat(composition, asks));
+            }
             assertTrue("z3 read every question: " + solver.errors(),
                     solver.errors().isEmpty());
         }
+    }
+
+    /**
+     * A DISJUNCTION is asked whole while that decides, else path by path,
+     * and the answer is the first sat path in order.  A path refuted under
+     * some assertions is not asked again under more of them; a refutation
+     * asked without a core answers no question that wants one, unless it
+     * was asked under no assertion at all (the self-check), where no pin can
+     * be in its core.  The fixture z3 answers the whole query
+     * {@code unknown}, path 0 unsat and path 1 sat, and logs each time it
+     * is asked path 0.  {what refuted path 0 first (null: nothing), the
+     * assertions then asked, whether a core is wanted, path 0 asked again}.
+     */
+    @Test
+    public void aRefutedPathIsNotAskedAgain() throws Exception {
+        Path iteration = folder.newFolder("refuted").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.target("true", true, true);
+        seed.target("true", true, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        String first = composition.disjuncts().get(0).selector();
+        String second = composition.disjuncts().get(1).selector();
+        Path log = folder.newFile("asked.log").toPath();
+        Path script = folder.newFile("z3-paths.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *'(assert " + first + ")'*) echo 0 >> " + log
+                        + "; echo unsat; echo '()' ;;",
+                "  *'(assert " + second + ")'*) echo sat; echo '((x 1))' ;;",
+                "  *) echo unknown ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        List<String> none = Collections.emptyList();
+        List<String> pinned = Collections.singletonList("(assert true)");
+        List<String> more = Arrays.asList("(assert true)",
+                "(assert (= 1 1))");
+        Object[][] rows = {
+                {null, none, false, true},
+                {pinned, more, false, false},
+                {pinned, more, true, true},
+                {"self-check", more, true, false},
+                {more, pinned, false, true},
+        };
+        for (Object[] row : rows) {
+            try (Disjunction asks = new Disjunction(composition,
+                    new Z3(script, 30000L))) {
+                if ("self-check".equals(row[0])) {
+                    asks.selfCheck();
+                } else if (row[0] != null) {
+                    @SuppressWarnings("unchecked")
+                    List<String> refuting = (List<String>) row[0];
+                    asks.ask(refuting, composition.selectors(), none, false);
+                }
+                long before = asked(log);
+                @SuppressWarnings("unchecked")
+                List<String> assertions = (List<String>) row[1];
+                Z3.Answer answer = asks.ask(assertions,
+                        composition.selectors(), none, (Boolean) row[2]);
+                assertEquals(Arrays.toString(row), "sat", answer.status());
+                assertEquals(Arrays.toString(row), row[3],
+                        asked(log) > before);
+            }
+        }
+    }
+
+    private static long asked(Path log) throws IOException {
+        return Files.readAllLines(log).size();
+    }
+
+    /**
+     * Two recorded keys are one key when they print one text: compared node
+     * by node ({@code ContainerSmtCodec#sameText}) exactly where their texts
+     * are equal -- a number's spelling, a string against a number, member
+     * order, null -- and a shared subterm is not walked twice.
+     */
+    @Test
+    public void twoKeysAreOneKeyWhenTheyPrintOneText() {
+        String[][] pairs = {
+                {"1", "1"}, {"1", "1.0"}, {"\"1\"", "1"}, {"true", "\"true\""},
+                {"null", "null"}, {"[1,2]", "[1,2]"}, {"[1,2]", "[2,1]"},
+                {"{\"a\":1,\"b\":[null]}", "{\"a\":1,\"b\":[null]}"},
+                {"{\"a\":1,\"b\":2}", "{\"b\":2,\"a\":1}"},
+                {"{\"a\":{\"x\":9007199254740993}}",
+                        "{\"a\":{\"x\":9007199254740992}}"},
+        };
+        for (String[] pair : pairs) {
+            com.google.gson.JsonElement left =
+                    com.google.gson.JsonParser.parseString(pair[0]);
+            com.google.gson.JsonElement right =
+                    com.google.gson.JsonParser.parseString(pair[1]);
+            assertEquals(Arrays.toString(pair),
+                    left.toString().equals(right.toString()),
+                    ContainerSmtCodec.sameText(left, right,
+                            new java.util.IdentityHashMap<com.google.gson
+                                    .JsonElement, Set<com.google.gson
+                                    .JsonElement>>()));
+        }
+        // A chain whose every node names the one below twice is 2^depth
+        // nodes spelled; compared, each pair once.
+        JsonObject one = new JsonObject();
+        JsonObject other = new JsonObject();
+        one.addProperty("leaf", 7L);
+        other.addProperty("leaf", 7L);
+        for (int depth = 0; depth < 64; depth++) {
+            JsonObject up = new JsonObject();
+            JsonObject across = new JsonObject();
+            up.add("l", one);
+            up.add("r", one);
+            across.add("l", other);
+            across.add("r", other);
+            one = up;
+            other = across;
+        }
+        assertTrue(ContainerSmtCodec.sameText(one, other,
+                new java.util.IdentityHashMap<com.google.gson.JsonElement,
+                        Set<com.google.gson.JsonElement>>()));
     }
 
     @Test

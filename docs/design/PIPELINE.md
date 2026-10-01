@@ -527,14 +527,20 @@ question.
 
 The obligations of an exploration that run on one host are answered by ONE solver JVM there
 (`campaign_solve_obligation`; `ObligationSolverMain --serve`, `explore.SolverService`): the first
-question starts it (`campaign_start_solver`, charged at the host ledger its heap, the 8 GB every
-solver has had, `campaign_solver_heap_mb`, for 120 s: a query's lowering, not the corpus, is its
-peak), and it answers the questions in the order they came, each from the corpus as it stands when
-the question is taken: read again whenever a session landed in it or left it since (its session
-listing, `ObligationSolverMain#listing`; the head lands sessions as the exploration streams), else
-the corpus as read (`Corpus#freshLowerings`) -- so each obligation's files are the ones a JVM of
-its own, reading the corpus then, writes -- into a directory on the host's disk, named by the
-corpus, that the asking worker moves into its worker directory; it ends once none has come for
+question starts it (`campaign_start_solver`: charged at the host ledger a start's worth for 120 s,
+`campaign_solver_start_mb` (1 GB) or the peak an earlier solver of its directory reached when
+larger, and what its resident memory grows past that as it grows, `campaign_watch_workload`, a host
+that cannot take the growth ending it; its heap is capped
+at `campaign_solver_heap_mb`, 8 GB: charged that at its start, a solver waited minutes for room it
+did not use, and its host's questions waited behind it), and it answers the questions in the order
+they came, each from the corpus as it stands when the question is taken: read again whenever a
+session landed in it or left it since (its session listing, `ObligationSolverMain#listing`; the
+head lands sessions as the exploration streams), each session the read before already holds taken
+from it unread (`Corpus#read(Path, Path, Corpus)`: a landed session's rows never change, and
+reading them is the read's whole cost, 45 s over hdfs-11741 i1's 175 sessions), else the corpus as
+read (`Corpus#freshLowerings`) -- so each obligation's files are the ones a JVM of its own, reading
+the corpus then, writes -- into a directory on the host's disk, named by the corpus, that the
+asking worker moves into its worker directory; it ends once none has come for
 `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the corpus. A question still
 waiting when its solver ended starts the next one. A question the host's solver could not answer
 (it ran out of heap on it, or ended while answering it) is no answer: it is asked once more of a
@@ -589,9 +595,12 @@ an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest 
 `minimize Σ|x − recorded(x)|` over bounded Int roots and clocks (`FlipQueryText`).
 
 z3 runs with `solver_timeout_ms`, which its driver (`smt.Z3`) enforces; a JVM that ends takes its
-running z3 processes with it (a shutdown hook), and each z3 also carries its own hard timeout ten
-seconds past that budget (`-T`, `Z3#hardTimeout`), so one whose JVM was killed outright stops by
-itself. Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
+running z3 processes with it (a shutdown hook), every z3 is started under `setpriv --pdeathsig
+KILL` (`Z3#DIES_WITH_ITS_DRIVER`), so the kernel kills it when the JVM thread that started it is
+gone however the JVM ended (a KILL runs no hook), and each z3 also carries its own hard timeout ten
+seconds past that budget (`-T`, `Z3#hardTimeout`), for a driver that hangs. A run starts only while
+its host's `MemAvailable` is at least the share `CAUSYNTH_HOST_MAX_USED_PCT` keeps free (`Z3#enter`;
+a JVM with no run in flight starts one anyway). Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
 (`smt.arith.solver` 2, the one the query states, and 6; `Z3#ARITHMETIC`), and answers with the
 first that decides, killing the other; the stated engine's answer wins when it decides within as
 long again as the other took (at least a second), so what it alone decides promptly answers as it
@@ -1111,24 +1120,32 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ClaimPolicy`:
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
-2. Every valuation is asked (4 asks at once, 8 z3 processes; each question is written to its z3s
-   from the one body the composition holds, never copied per ask or per arithmetic engine,
-   `Composition#query`/`#pathQuery`, `Z3#ask`) for the path selectors, arm selectors,
-   the nested state selectors a state arm's stores are chosen among (§8), clock cells and the codec
-   holes the arms bind (`Composition#holeSymbols`); a selected
-   state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →
-   `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
-   Every such ask (and each re-ask below) is `byDisjunct`: the disjunction whole, its verdict within
-   60 s (`WHOLE_BUDGET_MS`; its model and core runs keep the full budget); undecided, one path at a
-   time: the first sat path answers, else undecided if any path was, else unsat with the union of
-   the paths' cores. Whole, z3 decides in seconds where it decides at all, but can spend any budget
-   searching every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole,
-   about a second each alone). A path is asked by `Composition#pathQuery`: the body without the
+2. Each path is first asked alone with every root free (60 s, `Disjunction#selfCheck`): unsat →
+   `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. Then every valuation is asked (4 at
+   once; each question is written to its z3s from the one body the composition holds, never copied
+   per ask or per arithmetic engine, `Composition#query`/`#pathQuery`, `Z3#ask`) for the path
+   selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
+   clock cells and the codec holes the arms bind (`Composition#holeSymbols`); a selected state arm
+   keeps the states whose selector the model set. An undecided valuation is BLOCKING.
+   Every such ask (and each re-ask below) is `compose.Disjunction#ask`: the disjunction whole, its
+   verdict within 60 s (`WHOLE_BUDGET_MS`; its model and core runs keep the full budget), until a
+   whole ask of the composition runs past that budget; from then on, every ask is path by path, the
+   same disjunction under more pins (hdfs-11741 i1: about twenty whole asks in a row ran their 60 s
+   out). Whole, z3 decides in seconds where it decides at all, but can spend any budget searching
+   every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole, about a
+   second each alone). Path by path, the paths are asked 8 at a time (`PATH_ASKS`, 16 z3
+   processes), in their order, and answer in that order: the first sat path's answer (the asks
+   after it stopped, their z3s killed), else undecided if any path was, else unsat with the union of
+   the paths' cores. A path unsat under some assertions is unsat under every set containing them,
+   so it is not asked again there: its refutation answers, core and all, one asked without a core
+   only an ask that wants none, unless it was asked under no assertion at all (the self-check: its
+   core can name no pin). hdfs-11741 i1: 155 of 157 paths refute themselves, so every pinned re-ask
+   of its witness asks two paths. A path is asked by `Composition#pathQuery`: the body without the
    commands another path's selector guards (`(assert (=> <selector> ...))`, vacuous once the
    partition forces that selector false), its own selector asserted; 90-98% of a body is guarded
-   (hdfs-17899-bug2 r4: 1.7 of 93 MB shared). The self-contradiction check and `mechanism`'s pinned
-   re-asks of the selected path read the same text. Selectors are never asserted together: two
-   contradict the partition.
+   (hdfs-17899-bug2 r4: 1.7 of 93 MB shared; hdfs-11741 i1: 4.1 of 124 MB). The self-contradiction
+   check and `mechanism`'s pinned re-asks of the selected path read the same text. Selectors are
+   never asserted together: two contradict the partition.
    An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
    each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
    since tracked z3 simplifies nothing across them and still searches a disjunct whose selector the

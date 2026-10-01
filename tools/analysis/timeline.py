@@ -25,6 +25,8 @@ the sources are the files the campaign wrote:
                      = refused, an error when the replay was killed on its bound
                      (a timed-out-sessions/ directory) or stated no verdict
   CONFIRM            final/confirm/worker/replay.log
+  COMPOSE split      final/compose.log: ComposeMain's composeSeconds= (corpus read and
+                     lowering) and solveSeconds= (SOLVE and DECIDE)
 
 It prints each campaign's stages, its planner rounds and replays, and its top
 time sinks (the phases that took longest, the replays grouped by outcome).
@@ -154,6 +156,18 @@ def early_end(worker, replay_end):
     said = calendar.timegm(time.strptime(found.group(1), "%Y-%m-%dT%H:%M:%S")) \
         + float(found.group(2) or 0)
     return found.group(3), replay_end - said
+
+
+COMPOSE_SPLIT = re.compile(r"composeSeconds=(\d+) solveSeconds=(\d+)")
+
+
+def compose_split(log):
+    """(lowering, solving) seconds of one COMPOSE, off ComposeMain's summary line, or None."""
+    try:
+        found = COMPOSE_SPLIT.search(open(log, errors="replace").read())
+    except OSError:
+        return None
+    return (int(found.group(1)), int(found.group(2))) if found else None
 
 
 def round_rows(iteration):
@@ -297,6 +311,10 @@ def report(root, label):
                 sinks += [("SEED " + part, t) for part, t in split]
         elif name == "REPLAY":
             detail = "the seed replay"
+        elif name == "COMPOSE":
+            split = compose_split(os.path.join(root, "final", "compose.log"))
+            if split:
+                detail = "lowering %s, solving %s" % (dur(split[0]), dur(split[1]))
         if name not in ("SEED", "EXPLORE"):
             sinks.append((name, wall))
         print("   %-11s %s %9s  %s" % (name, clock(at), dur(wall), detail))

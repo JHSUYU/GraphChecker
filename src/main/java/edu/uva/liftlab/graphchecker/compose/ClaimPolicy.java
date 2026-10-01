@@ -149,7 +149,10 @@ public final class ClaimPolicy {
     /** Solves every valuation of one composition and reads the claim off. */
     public static Decision decide(Composer.Composition composition,
                                   Z3 solver) {
-        Decision decision = read(composition, solver);
+        Decision decision;
+        try (Disjunction asks = new Disjunction(composition, solver)) {
+            decision = read(composition, asks);
+        }
         // After every ask: a solver error means some query was never read,
         // so the claim over it is refused by name.
         List<String> errors = solver.errors();
@@ -171,7 +174,7 @@ public final class ClaimPolicy {
     }
 
     private static Decision read(Composer.Composition composition,
-                                 Z3 solver) {
+                                 Disjunction asks) {
         List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>();
         if (composition.disjuncts().isEmpty()) {
@@ -180,15 +183,15 @@ public final class ClaimPolicy {
                     Collections.<String, String>emptyMap(), false, gaps),
                     outcomes);
         }
+        // Each disjunct asked alone with every root free: unsat there is a
+        // self-contradictory path, not a statement about the roots.  Asked
+        // first: such a path is refuted for every question after it.
+        selfContradictory(composition, asks, gaps);
         outcomes.addAll(inParallel(composition.valuations(),
-                valuation -> outcome(composition, solver, valuation,
+                valuation -> outcome(composition, asks, valuation,
                         Collections.<String>emptyList(),
                         valuation.ordinal() == 0)));
         Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
-
-        // Each disjunct asked alone with every root free: unsat there is a
-        // self-contradictory path, not a statement about the roots.
-        selfContradictory(composition, solver, gaps);
 
         // An undecided valuation is named and blocks: neither a witness nor
         // a refutation is closed over it.
@@ -220,15 +223,15 @@ public final class ClaimPolicy {
         asHappened.addAll(composition.recordedPairings());
         boolean freeSat = recorded != null && recorded.witness();
         Outcome asRecorded = freeSat && !asHappened.isEmpty()
-                ? outcome(composition, solver, recorded.valuation(),
+                ? outcome(composition, asks, recorded.valuation(),
                         asHappened, false) : null;
         boolean recordingDecides = asRecorded != null
                 && asRecorded.answer().unsat();
         boolean clockDriven = recordingDecides && !cells.isEmpty()
-                && outcome(composition, solver, recorded.valuation(),
+                && outcome(composition, asks, recorded.valuation(),
                         pins(composition, cells), false).answer().unsat();
         if (clockDriven) {
-            recorded = leastClocks(composition, solver, recorded, cells);
+            recorded = leastClocks(composition, asks, recorded, cells);
             outcomes.set(0, recorded);
         }
         if (recorded != null && recorded.witness()
@@ -260,14 +263,14 @@ public final class ClaimPolicy {
                 if (free.valuation().ordinal() == 0 || !free.witness()) {
                     continue;
                 }
-                Outcome asked = outcome(composition, solver,
+                Outcome asked = outcome(composition, asks,
                         free.valuation(), held, false);
                 if (!asked.witness() || unattested(composition, asked, gaps)) {
                     continue;
                 }
                 outcomes.set(index, asked);
                 outcomes.set(0, asRecorded);
-                return new Decision(Claim.of(mechanism(composition, solver,
+                return new Decision(Claim.of(mechanism(composition, asks,
                         asked, outcomes, clockDriven),
                         asked.valuation().ordinal(),
                         movedRoots(composition, asked), true, gaps),
@@ -281,13 +284,13 @@ public final class ClaimPolicy {
                 }
                 // Publish the witness under every clock pin it can keep,
                 // and each clock it still moves moved with room.
-                Outcome outcome = withMargin(composition, solver,
-                        leastClocks(composition, solver, found, cells));
+                Outcome outcome = withMargin(composition, asks,
+                        leastClocks(composition, asks, found, cells));
                 outcomes.set(outcomes.indexOf(found), outcome);
                 if (unattested(composition, outcome, gaps)) continue;
                 // A moved root: #mechanism answers MARKER_FLIPPED or a
                 // narrower replaced slot, never NO_SUPPORTED_WITNESS.
-                ClaimKind moved = mechanism(composition, solver, outcome,
+                ClaimKind moved = mechanism(composition, asks, outcome,
                         outcomes, clockDriven);
                 if (!polarityDecides) {
                     undecidedPolarity(gaps, recorded, moved);
@@ -308,7 +311,7 @@ public final class ClaimPolicy {
                 continue;
             }
             // RECORDED_FAILURE_EXPLAINED is asked below, with the flips.
-            ClaimKind still = mechanism(composition, solver, outcome,
+            ClaimKind still = mechanism(composition, asks, outcome,
                     outcomes, clockDriven);
             if (still != ClaimKind.CLOCK_SKEW
                     && still != ClaimKind.STATE_PAIRING_FLIPPED
@@ -322,7 +325,7 @@ public final class ClaimPolicy {
                 undecidedPolarity(gaps, recorded, still);
                 break;
             }
-            Outcome roomy = withMargin(composition, solver, outcome);
+            Outcome roomy = withMargin(composition, asks, outcome);
             outcomes.set(outcomes.indexOf(outcome), roomy);
             return new Decision(Claim.of(still,
                     roomy.valuation().ordinal(),
@@ -337,7 +340,7 @@ public final class ClaimPolicy {
             String session = recorded.selected().path().sessionId;
             boolean seed = session.equals(composition.seedSessionId());
             if (seed && flipsRefuted(outcomes)) {
-                ClaimKind kind = mechanism(composition, solver, recorded,
+                ClaimKind kind = mechanism(composition, asks, recorded,
                         outcomes, clockDriven);
                 return new Decision(Claim.of(kind, 0,
                         movedRoots(composition, recorded),
@@ -346,10 +349,10 @@ public final class ClaimPolicy {
                         gaps), outcomes);
             }
             if (!seed && attestedArms(composition, recorded)
-                    && seedDisjunctUnsat(composition, solver)) {
+                    && seedDisjunctUnsat(composition, asks)) {
                 // Which mechanism differs is #mechanism's pin tests; if
                 // none fires, nothing has been established.
-                ClaimKind kind = mechanism(composition, solver, recorded,
+                ClaimKind kind = mechanism(composition, asks, recorded,
                         outcomes, clockDriven);
                 if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
                     return new Decision(Claim.of(kind, 0,
@@ -389,18 +392,12 @@ public final class ClaimPolicy {
         return false;
     }
 
-    /** Budget of one self-refutation run: decides a path, scans them all. */
-    static final long SELF_CHECK_BUDGET_MS = 60000L;
-
-    /** Budget of a disjunction's verdict asked whole (#byDisjunct). */
-    static final long WHOLE_BUDGET_MS = 60000L;
-
     /**
-     * How many independent asks run at once beside the composer's JVM on the
-     * campaign head (hdfs-17899-bug2: 128 valuations and every path's
-     * self-check, one at a time, held COMPOSE for hours while the head's
-     * other cores sat idle): eight z3 processes, two per ask (one per
-     * arithmetic engine, {@code Z3#run}).
+     * How many valuations are asked at once (hdfs-17899-bug2: 128 valuations
+     * one at a time held COMPOSE for hours while the head's other cores sat
+     * idle): four whole asks, eight z3 processes, two per ask (one per
+     * arithmetic engine, {@code Z3#run}); a valuation asked path by path
+     * asks its paths on the composition's pool ({@link Disjunction}).
      */
     static final int PARALLEL_ASKS = 4;
 
@@ -434,16 +431,13 @@ public final class ClaimPolicy {
      * valuation): such a path answers every root question the same way.
      */
     private static void selfContradictory(Composer.Composition composition,
-                                          Z3 solver, List<GapRow> gaps) {
+                                          Disjunction asks,
+                                          List<GapRow> gaps) {
         int inert = 0;
         int undecided = 0;
         // A sanity check, not the witness search: its own short budget.  An
         // undecided run leaves the path in the disjunction (safe direction).
-        List<Z3.Answer> answers = inParallel(composition.disjuncts(),
-                disjunct -> solver.ask(composition.pathQuery(
-                        disjunct.selector(), Collections.<String>emptyList()),
-                        Collections.<String>emptyList(), false,
-                        SELF_CHECK_BUDGET_MS));
+        List<Z3.Answer> answers = asks.selfCheck();
         for (int i = 0; i < answers.size(); i++) {
             Composer.Disjunct disjunct = composition.disjuncts().get(i);
             Z3.Answer answer = answers.get(i);
@@ -464,7 +458,8 @@ public final class ClaimPolicy {
             // A budget that drops a question says so: runs stay comparable.
             gaps.add(GapRow.of(Composer.COMPOSITION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                    "self-check budget " + SELF_CHECK_BUDGET_MS + "ms",
+                    "self-check budget " + Disjunction.SELF_CHECK_BUDGET_MS
+                            + "ms",
                     undecided + " of " + composition.disjuncts().size()
                             + " path(s) were not decided within the "
                             + "self-refutation budget and stay in the "
@@ -524,18 +519,17 @@ public final class ClaimPolicy {
      * </ul>
      */
     private static ClaimKind mechanism(Composer.Composition composition,
-                                       Z3 solver, Outcome outcome,
+                                       Disjunction asks, Outcome outcome,
                                        List<Outcome> outcomes,
                                        boolean clockDriven) {
         if (outcome == null || outcome.selected() == null) {
             return ClaimKind.NO_SUPPORTED_WITNESS;
         }
         String pathId = outcome.selected().path().pathId;
-        if (unsatWith(composition, solver, outcome,
-                composition.observedReads(pathId))) {
+        if (unsatWith(asks, outcome, composition.observedReads(pathId))) {
             return ClaimKind.STATE_PAIRING_FLIPPED;
         }
-        if (unsatWith(composition, solver, outcome,
+        if (unsatWith(asks, outcome,
                 composition.observedArrivals(pathId))) {
             return ClaimKind.MESSAGE_PAIRING_FLIPPED;
         }
@@ -581,16 +575,14 @@ public final class ClaimPolicy {
     }
 
     /** This valuation, this disjunct, and what the run actually paired. */
-    private static boolean unsatWith(Composer.Composition composition,
-                                     Z3 solver, Outcome outcome,
+    private static boolean unsatWith(Disjunction asks, Outcome outcome,
                                      List<String> observed) {
         if (observed.isEmpty()) return false;
         List<String> pinned =
                 new ArrayList<String>(outcome.valuation().assertions());
         pinned.addAll(outcome.pinned());
         pinned.addAll(observed);
-        return solver.ask(composition.pathQuery(
-                outcome.selected().selector(), pinned),
+        return asks.askPath(outcome.selected().selector(), pinned,
                 Collections.<String>emptyList(), false).unsat();
     }
 
@@ -659,7 +651,8 @@ public final class ClaimPolicy {
      * what each hole carried off the model.
      */
     private static Outcome outcome(Composer.Composition composition,
-                                   Z3 solver, Composer.Valuation valuation,
+                                   Disjunction asks,
+                                   Composer.Valuation valuation,
                                    List<String> pinned, boolean wantCore) {
         List<String> asked = new ArrayList<String>(composition.selectors());
         asked.addAll(composition.armSelectors());
@@ -673,47 +666,10 @@ public final class ClaimPolicy {
         List<String> assertions =
                 new ArrayList<String>(valuation.assertions());
         assertions.addAll(pinned);
-        Z3.Answer answer = byDisjunct(composition, solver, assertions,
-                composition.selectors(), asked, wantCore);
+        Z3.Answer answer = asks.ask(assertions, composition.selectors(),
+                asked, wantCore);
         return new Outcome(valuation, pinned, answer,
                 selectedOf(composition, answer), armsOf(composition, answer));
-    }
-
-    /**
-     * "One of these disjuncts" under these assertions (which already say
-     * one of them holds).  Asked whole first, within {@link #WHOLE_BUDGET_MS}:
-     * where z3 decides the disjunction at all it does so in seconds, one
-     * parse for every path.  Undecided, it is asked one disjunct at a time:
-     * the body asserts exactly one path selector, so it is sat iff some
-     * disjunct is and unsat iff every one is (the core is the union of
-     * theirs).  Whole, z3 can spend any budget searching every path's
-     * conjunction at once where a case split settles each path in seconds
-     * (hdfs-11741 r3's valuation 0 over 47 paths: undecided after 30
-     * minutes, about a second a path).  The first sat disjunct answers; with
-     * none sat, an undecided one leaves the question undecided.  Selectors
-     * are never asserted together: two of them contradict the partition.
-     */
-    private static Z3.Answer byDisjunct(Composer.Composition composition,
-                                        Z3 solver, List<String> assertions,
-                                        List<String> selectors,
-                                        List<String> asked, boolean wantCore) {
-        Z3.Answer whole = solver.ask(composition.query(assertions), asked,
-                wantCore, WHOLE_BUDGET_MS);
-        if (whole.decided()) return whole;
-        List<Z3.Answer> refuted = new ArrayList<Z3.Answer>();
-        Z3.Answer undecided = null;
-        for (String selector : selectors) {
-            Z3.Answer answer = solver.ask(
-                    composition.pathQuery(selector, assertions), asked,
-                    wantCore);
-            if (answer.sat()) return answer;
-            if (answer.unsat()) {
-                refuted.add(answer);
-            } else if (undecided == null) {
-                undecided = answer;
-            }
-        }
-        return undecided != null ? undecided : Z3.Answer.unsatOfAll(refuted);
     }
 
     /**
@@ -727,17 +683,17 @@ public final class ClaimPolicy {
      * on it, not on an earlier cell that would carry it along.
      */
     private static Outcome leastClocks(Composer.Composition composition,
-                                       Z3 solver, Outcome outcome,
+                                       Disjunction asks, Outcome outcome,
                                        List<String> cells) {
         if (cells.isEmpty()) return outcome;
-        Outcome all = outcome(composition, solver, outcome.valuation(),
+        Outcome all = outcome(composition, asks, outcome.valuation(),
                 runsOn(composition, cells), false);
         if (all.witness()) return all;
         List<String> kept = new ArrayList<String>();
         Outcome witness = outcome;
         for (String cell : cells) {
             kept.add(cell);
-            Outcome asked = outcome(composition, solver, outcome.valuation(),
+            Outcome asked = outcome(composition, asks, outcome.valuation(),
                     runsOn(composition, kept), false);
             if (asked.witness()) {
                 witness = asked;
@@ -761,7 +717,7 @@ public final class ClaimPolicy {
      * other jumps none of theirs.
      */
     private static Outcome withMargin(Composer.Composition composition,
-                                      Z3 solver, Outcome witness) {
+                                      Disjunction asks, Outcome witness) {
         Map<String, String> model = witness.answer().values();
         List<String> margins = new ArrayList<String>();
         for (String cell : composition.clockCells()) {
@@ -780,7 +736,7 @@ public final class ClaimPolicy {
         if (margins.isEmpty()) return witness;
         List<String> room = new ArrayList<String>(witness.pinned());
         room.addAll(margins);
-        Outcome all = outcome(composition, solver, witness.valuation(),
+        Outcome all = outcome(composition, asks, witness.valuation(),
                 room, false);
         if (all.witness() || margins.size() == 1) {
             return all.witness() ? all : witness;
@@ -789,7 +745,7 @@ public final class ClaimPolicy {
         Outcome roomy = witness;
         for (String margin : margins) {
             kept.add(margin);
-            Outcome asked = outcome(composition, solver, witness.valuation(),
+            Outcome asked = outcome(composition, asks, witness.valuation(),
                     kept, false);
             if (asked.witness()) {
                 roomy = asked;
@@ -904,7 +860,7 @@ public final class ClaimPolicy {
      * path: false.
      */
     static boolean seedDisjunctUnsat(
-            Composer.Composition composition, Z3 solver) {
+            Composer.Composition composition, Disjunction asks) {
         String seed = composition.seedSessionId();
         if (seed == null) return false;
         List<String> selectors = new ArrayList<String>();
@@ -919,7 +875,7 @@ public final class ClaimPolicy {
             pinned.addAll(composition.valuations().get(0).assertions());
         }
         pinned.add("(assert " + VmTermLowering.or(selectors) + ")");
-        return byDisjunct(composition, solver, pinned, selectors,
-                Collections.<String>emptyList(), false).unsat();
+        return asks.ask(pinned, selectors, Collections.<String>emptyList(),
+                false).unsat();
     }
 }

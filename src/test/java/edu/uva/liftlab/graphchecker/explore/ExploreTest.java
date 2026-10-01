@@ -4392,6 +4392,36 @@ public class ExploreTest {
     }
 
     /** One session of a synthetic corpus, written in the contract's layout. */
+    /**
+     * A corpus read again (a host's solver, after a landing) takes each
+     * session the read before holds and the iteration still lists as it
+     * is, unread: a landed session never changes.  A session that landed is
+     * read; one that left is gone.
+     */
+    @Test
+    public void aCorpusReadAgainKeepsTheSessionsItHolds() throws Exception {
+        Path iteration = tree.newFolder("reread").toPath();
+        for (String id : new String[] {"s-seed", "s-left"}) {
+            Session session = new Session(iteration, id);
+            session.activation(TARGET, false);
+            session.flush();
+        }
+        Corpus before = Corpus.read(iteration, null);
+        Session landed = new Session(iteration, "s-landed");
+        landed.activation(TARGET, true);
+        landed.flush();
+        try (java.util.stream.Stream<Path> files = Files.walk(
+                SessionDir.of(iteration, "s-left").dir())) {
+            files.sorted(Collections.reverseOrder())
+                    .forEach(path -> path.toFile().delete());
+        }
+        Corpus after = Corpus.read(iteration, null, before);
+        assertTrue("kept, unread",
+                before.session("s-seed") == after.session("s-seed"));
+        assertNotNull("read", after.session("s-landed"));
+        assertNull("gone", after.session("s-left"));
+    }
+
     private static final class Session {
         private final SessionDir dir;
         private final String sessionId;

@@ -1502,9 +1502,10 @@ EOF
 
 # SOLVER-SERVICE: an obligation's question goes to ONE solver JVM of its host
 # and corpus (ObligationSolverMain --serve), started by the first question
-# and charged its heap at the host's ledger; a question it could not answer
-# is its worker's failure, by name; and it ends once idle, naming no solver,
-# its charge given back as its JVM returns.
+# and charged at the host's ledger what it holds as it grows; a question it
+# could not answer is its worker's failure, by name; and it ends once idle,
+# naming no solver, its charges given back as its JVM returns and its peak
+# left for the next solver of its directory to start at.
 # Two questions at once, over a corpus whose round holds neither obligation.
 solver_test=${test_tmp}/solver-service
 solver_wave=${solver_test}/iteration/obligations-0000
@@ -1560,6 +1561,8 @@ $(cat "${solver_test}/${question}.err")"
   [[ -z "$(cat "${solver_test}/hosts/"*/starts)" ]] \
     || fail "an ended solver is still charged: \
 $(cat "${solver_test}/hosts/"*/starts)"
+  [[ "$(cat "${solver_home}/workload_rss_mb" 2>/dev/null)" =~ ^[0-9]+$ ]] \
+    || fail "an ended solver left no peak for the next one to start at"
 )
 
 # A question its host's solver could not answer (out of heap, died) is no

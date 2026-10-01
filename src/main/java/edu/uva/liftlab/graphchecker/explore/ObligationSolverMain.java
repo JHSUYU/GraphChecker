@@ -97,10 +97,12 @@ public final class ObligationSolverMain {
      * A host's answers for one exploration.  The corpus is read when the
      * first question is taken, and again before one whenever a session
      * landed in it or left it since (its {@link #listing}: the head lands
-     * sessions while the exploration streams); otherwise the question starts
-     * from the corpus as read ({@link Corpus#freshLowerings}).  Either way
-     * its files are the ones a JVM of its own, reading the corpus then,
-     * would write, whatever was asked before.
+     * sessions while the exploration streams), the sessions it still lists
+     * taken from the read before, unread ({@link Corpus#read(Path, Path,
+     * Corpus)}); otherwise the question starts from the corpus as read
+     * ({@link Corpus#freshLowerings}).  Either way its files are the ones a
+     * JVM of its own, reading the corpus then, would write, whatever was
+     * asked before.
      */
     private static SolverService.Answerer answerer(Path sessions,
                                                    Path rootDomains, Path z3,
@@ -117,7 +119,7 @@ public final class ObligationSolverMain {
                 if (now.equals(read)) {
                     corpus.freshLowerings();
                 } else {
-                    corpus = Corpus.read(iteration, rootDomains);
+                    corpus = Corpus.read(iteration, rootDomains, corpus);
                     read = now;
                 }
                 solve(corpus, iteration, Paths.get(JsonFields

@@ -7,12 +7,15 @@ import edu.uva.liftlab.graphchecker.smt.VmRows;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -1006,9 +1009,7 @@ public final class ContainerSmtCodec {
      */
     private static String unordered(JsonElement state, Host host,
                                     List<JsonElement> put) {
-        Set<String> distinct = new HashSet<String>();
-        for (JsonElement key : put) distinct.add(String.valueOf(key));
-        if (distinct.size() <= 1) return "";
+        if (oneKey(put)) return "";
         List<Mutation> above = new ArrayList<Mutation>();
         JsonElement chain = state;
         JsonObject base = null;
@@ -1061,6 +1062,73 @@ public final class ContainerSmtCodec {
             }
         }
         return "";
+    }
+
+    /**
+     * Whether every key a view puts is one key: one text.  Compared, never
+     * spelled: a key is a recorded expression, whose text spells each shared
+     * subterm once per path through it (hdfs-11741 i1: spelling every key
+     * of every view lowered was 45 s of a 4-minute composition).
+     */
+    private static boolean oneKey(List<JsonElement> put) {
+        Map<JsonElement, Set<JsonElement>> same =
+                new IdentityHashMap<JsonElement, Set<JsonElement>>();
+        for (JsonElement key : put) {
+            if (!sameText(put.get(0), key, same)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Whether two JSON values print one text ({@code String.valueOf}), each
+     * pair of nodes compared once ({@code same}: the pairs found equal).
+     */
+    static boolean sameText(JsonElement left, JsonElement right,
+                            Map<JsonElement, Set<JsonElement>> same) {
+        JsonElement x = left == null ? JsonNull.INSTANCE : left;
+        JsonElement y = right == null ? JsonNull.INSTANCE : right;
+        if (x == y) return true;
+        if (x.isJsonNull() || y.isJsonNull()) {
+            return x.isJsonNull() && y.isJsonNull();
+        }
+        if (x.isJsonPrimitive() || y.isJsonPrimitive()) {
+            if (!x.isJsonPrimitive() || !y.isJsonPrimitive()) return false;
+            JsonPrimitive one = x.getAsJsonPrimitive();
+            JsonPrimitive other = y.getAsJsonPrimitive();
+            return one.isString() == other.isString()
+                    && one.isBoolean() == other.isBoolean()
+                    && one.getAsString().equals(other.getAsString());
+        }
+        Set<JsonElement> known = same.get(x);
+        if (known != null && known.contains(y)) return true;
+        boolean equal;
+        if (x.isJsonArray() && y.isJsonArray()) {
+            JsonArray one = x.getAsJsonArray();
+            JsonArray other = y.getAsJsonArray();
+            equal = one.size() == other.size();
+            for (int at = 0; equal && at < one.size(); at++) {
+                equal = sameText(one.get(at), other.get(at), same);
+            }
+        } else if (x.isJsonObject() && y.isJsonObject()) {
+            JsonObject one = x.getAsJsonObject();
+            JsonObject other = y.getAsJsonObject();
+            equal = one.size() == other.size();
+            Iterator<Map.Entry<String, JsonElement>> those =
+                    other.entrySet().iterator();
+            for (Map.Entry<String, JsonElement> member : one.entrySet()) {
+                if (!equal) break;
+                Map.Entry<String, JsonElement> that = those.next();
+                equal = member.getKey().equals(that.getKey())
+                        && sameText(member.getValue(), that.getValue(), same);
+            }
+        } else {
+            equal = false;
+        }
+        if (equal) {
+            same.computeIfAbsent(x, key -> Collections.newSetFromMap(
+                    new IdentityHashMap<JsonElement, Boolean>())).add(y);
+        }
+        return equal;
     }
 
     /**

@@ -2816,10 +2816,13 @@ names it; nothing withdrawn"
 # (explore.SolverService states the layout); its log, solver-<host>.log, is
 # beside the corpus.
 #
-# The service is charged to the host ledger at its start: its heap, which is
-# its -Xmx (campaign_solver_heap_mb), for the time it takes to read the
-# corpus.  An obligation's own charge (obligation_memory_mb) is then its
-# replay's alone.
+# The service is charged to the host ledger what it holds: a start's worth
+# at its start (campaign_solver_start_mb, or what the last solver of its
+# directory grew to), and as its resident memory grows past that, the
+# growth, as a replay JVM is (campaign_watch_workload); a host that cannot
+# take the growth ends it, and its question is asked again of a solver of
+# its own.  An obligation's own charge (obligation_memory_mb)
+# is then its replay's alone.
 # ---------------------------------------------------------------------------
 
 # How long a host's solver waits for another question before it ends: about
@@ -2829,12 +2832,19 @@ names it; nothing withdrawn"
 campaign_solver_idle_s=300
 
 # The solver's heap, in MB: the 8 GB every solver JVM has had, which no
-# solver of the i1 rounds outgrew (their solvers peaked at 7.0 GB RSS).  It
-# is not the corpus's size: a query's lowering over large terms is the peak
-# (hdfs-17960, one session: served at 1 GB, 29 of 35 questions ran out of
-# heap, fast1).  A question it cannot answer is asked once more of a solver
-# of its own at the case's engine heap (campaign_obligation_worker).
+# solver of the i1 rounds outgrew (their solvers peaked at 7.0 GB RSS).  A
+# question it cannot answer is asked once more of a solver of its own at the
+# case's engine heap (campaign_obligation_worker).
 campaign_solver_heap_mb=8192
+
+# What a solver is charged at its start, in MB; the rest of what it holds is
+# charged as it grows (campaign_start_solver).  Its heap is the corpus it
+# reads and the query it lowers: 0.2 GB over hdfs-17897's three sessions,
+# 5 GB over hdfs-11741 i1's 175.  Charged its 8 GB heap at its start,
+# a solver waited minutes for room it did not use, and every question of its
+# host waited behind it (e2: the first question of a host answered after 1-5
+# minutes, the rest in a second; "one needs 8192 MB and 9474 MB stay free").
+campaign_solver_start_mb=1024
 
 # The solver directory of the corpus ${1} (an iteration's sessions), on this
 # host: named by the host too, since a pid means something on one host only.
@@ -2919,27 +2929,45 @@ campaign_solver_log() {
 }
 
 # Starts the host's solver of the corpus <sessions> in <dir> once the host
-# has room for its heap, and names it in <dir>/server: the pid of the shell that runs the
-# JVM, which ends with it, its charge released as the JVM returns.  Returns
-# without waiting for it; 1 when the host's
-# memory could not be read.  The root domains are the declaration EXPLORE
-# and COMPOSE read: an answer is only as free as the root domains behind the
-# arm that produces it.
+# has room for its start -- campaign_solver_start_mb, or the peak an earlier
+# solver of <dir> reached when larger (<dir>/workload_rss_mb), so one ended
+# for room it could not have waits for that room the next time -- and names
+# it in <dir>/server: the pid of the shell that runs the JVM, which ends
+# with it.  The JVM is watched until it ends (campaign_watch_workload): what
+# it grows past its start is charged as it grows, its peak goes to
+# <dir>/workload_rss_mb, and every charge is released as it returns.
+# Returns without waiting for it; 1 when the host's memory could not be
+# read.  The root domains are the declaration EXPLORE and COMPOSE read: an
+# answer is only as free as the root domains behind the arm that produces
+# it.
 campaign_start_solver() {
-  local dir=$1 sessions=$2 charge
-  campaign_await_host_memory localhost "${campaign_solver_heap_mb}" 120 \
-    || return 1
+  local dir=$1 sessions=$2 charge jvm log start peak
+  start=${campaign_solver_start_mb}
+  peak=$(cat "${dir}/workload_rss_mb" 2>/dev/null) || peak=""
+  [[ ! "${peak}" =~ ^[0-9]+$ ]] || (( peak <= start )) || start=${peak}
+  campaign_await_host_memory localhost "${start}" 120 || return 1
   charge=${campaign_host_charge_id}
+  log=$(campaign_solver_log "${sessions}")
   {
-    engine_memory_mb=${campaign_solver_heap_mb} run_capturing_status \
-      run_java_main edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
-      --serve "${dir}" \
-      --sessions "${sessions}" \
-      --z3 "${z3_bin}" \
-      --solver-timeout-ms "${solver_timeout_ms}" \
-      --idle-seconds "${campaign_solver_idle_s}" \
-      ${causynth_root_domains:+--root-domains "${causynth_root_domains}"} \
-      </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1
+    # run_java_main's JVM, started here so its pid is the JVM's own
+    # (java_bin execs java): the one the watch reads.
+    (cd "${graphchecker_work_dir}" \
+      && exec env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${campaign_solver_heap_mb}" \
+        "${java_bin}" \
+        "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
+        "-Dcausynth.system.doors=${causynth_system_doors}" \
+        -cp "${graphchecker_jar}" \
+        edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
+        --serve "${dir}" \
+        --sessions "${sessions}" \
+        --z3 "${z3_bin}" \
+        --solver-timeout-ms "${solver_timeout_ms}" \
+        --idle-seconds "${campaign_solver_idle_s}" \
+        ${causynth_root_domains:+--root-domains "${causynth_root_domains}"}) \
+      </dev/null >>"${log}" 2>&1 &
+    jvm=$!
+    campaign_watch_workload "${jvm}" "${start}" "${dir}" 2>>"${log}"
+    wait "${jvm}" || true
     campaign_host_release localhost "${charge}"
   } &
   printf '%s\n' "$!" >"${dir}/server.part"

@@ -246,7 +246,7 @@ public final class Composer {
         /**
          * One question: the body plus these assertions, written out to its
          * reader, never copied (a body runs past 200 MB and is asked on
-         * {@code ClaimPolicy#PARALLEL_ASKS} threads at once).  The body is
+         * many threads at once, {@link Disjunction}).  The body is
          * spelled legally once ({@link SmtLowering#body}); the assertions
          * are spelled here, since pins name raw symbols such as
          * {@code CLOCK/...#...} and a bare {@code #} is a bit-vector literal

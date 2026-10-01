@@ -274,8 +274,23 @@ public final class Corpus implements Arms.Rows {
     /** Reads an iteration and its case-declared root domains. */
     public static Corpus read(Path iteration, Path rootDomains)
             throws IOException {
-        Corpus corpus = new Corpus(iteration,
-                SessionReader.readAll(iteration));
+        return read(iteration, rootDomains, null);
+    }
+
+    /**
+     * The same read, the sessions {@code previous} (a read of the same
+     * iteration, or null) holds and the iteration still lists taken from
+     * it unread ({@link SessionReader#readAll(Path, List)}); every index is
+     * built anew.  The rows are most of a read: hdfs-11741 i1, 45 s for 175
+     * sessions, every time one landed while a host's solver served
+     * ({@code ObligationSolverMain#answerer}).
+     */
+    static Corpus read(Path iteration, Path rootDomains, Corpus previous)
+            throws IOException {
+        Corpus corpus = new Corpus(iteration, SessionReader.readAll(
+                iteration, previous == null
+                        ? Collections.<SessionReader>emptyList()
+                        : previous.sessions));
         if (rootDomains != null && Files.isRegularFile(rootDomains)) {
             corpus.declaredDomains.putAll(
                     RootDomain.declared(rootDomains));

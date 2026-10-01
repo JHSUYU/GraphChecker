@@ -63,6 +63,7 @@ public final class ComposeMain {
 
     /** Writes the query, the manifest and the claim; answers one summary line. */
     static String run(Arguments arguments) throws IOException {
+        long started = System.nanoTime();
         // Root domains are read once, here, and handed to the composer only.
         Corpus corpus = Corpus.read(arguments.iteration, null);
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
@@ -70,9 +71,11 @@ public final class ComposeMain {
                 RootDomain.declared(arguments.rootDomains),
                 arguments.maxValuations,
                 StaticScopeMap.read(arguments.scopeMap));
+        long lowered = System.nanoTime();
         Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
+        long decided = System.nanoTime();
 
         ArtifactIO.atomicReplace(arguments.output,
                 candidate(composition, decision));
@@ -84,7 +87,15 @@ public final class ComposeMain {
                 manifest(composed, composition, decision, solver));
         write(arguments.manifest.resolveSibling("claim.json"),
                 claim(composition, decision, solver));
-        return summary(anchor, composition, decision, solver);
+        return summary(anchor, composition, decision, solver)
+                + " composeSeconds=" + seconds(lowered - started)
+                + " solveSeconds=" + seconds(decided - lowered);
+    }
+
+    /** Where COMPOSE's time went, for the summary line ({@code
+     *  tools/analysis/timeline.py}). */
+    private static long seconds(long nanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toSeconds(nanos);
     }
 
     /**
