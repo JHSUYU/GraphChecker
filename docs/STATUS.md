@@ -277,6 +277,18 @@ Scale and robustness:
     (`gc/contract/SessionReader#read`): a40h2 DataStreamer-638's 70 sessions (5.7 GB on disk, 0.9 GB
     of it expressions) planned round 4 at 9.5 GB resident. Past `engine_memory_mb` the exploration
     ends (`PLANNER_HEAP_EXCEEDED`); a composer past it fails COMPOSE.
+38. An activation's tracked-location read-out asks the VM for every location the session tracked
+    at or after the activation's entry event, from any thread, and holds every page as a String
+    until the publication thread decodes it (`gc/runtime/SharedStateCapture`
+    `#captureRecordedSharedStateRaw`, 64 MB pages): solr-adhoc SplitShardCmd-658's seed replay read
+    pages of 50-61 MB (one: 14,413 locations and a 139,094-node expression table of 45 MB), its
+    4 GB heap filled, and it collected until the seed bound killed it. Asking for the locations
+    the activation itself read or wrote, in small pages decoded as they come, needs the VM.
+39. An ad-hoc HDFS seed replay loses most of its time to schedule stalls: a request whose run took
+    another path than the recording's never makes the request-scoped events the order holds for it
+    (a NameNode handler answers a DataNode's RPC without the `BlockReportProcessingThread#enqueue`
+    the recorded RPC of that anchor made: the DataNode's RPCs follow its clock), and each costs a
+    timeout and a grace (adhoc FileChecksumHelper-496 on main: 68 stalls, 1171 of its 1348 s).
 
 Fallbacks and dead code:
 
