@@ -101,8 +101,8 @@ public final class VmExpressionTable {
             extends SharedExpressionTable.Expansion<RawKey> {
         /** The importing envelope's definitions. */
         private final Map<RawKey, JsonObject> definitions = new HashMap<>();
-        /** Per node ever defined, its definition's hash: an envelope that
-         *  defines it again defines it alike (to the hash's 32 bits). */
+        /** Per node ever defined, its definition's {@link #fingerprint}: an
+         *  envelope that defines it again defines it alike (to 32 bits). */
         private final Map<RawKey, Integer> defined = new HashMap<>();
         private final Map<String, String> names = new HashMap<>();
         private final Map<String, JsonPrimitive> strings = new HashMap<>();
@@ -180,6 +180,37 @@ public final class VmExpressionTable {
             return value.deepCopy();
         }
 
+        /**
+         * A definition's hash, alike for definitions alike as JSON: members
+         * in any order, every primitive by its kind and text.  Gson's own
+         * hashes a number it parsed by parsing it as a double, which the
+         * concolic VM paid on every definition of every page (solr-18406
+         * seed replay, jstack: its publication thread in
+         * FloatingDecimal under JsonObject#hashCode).
+         */
+        private static int fingerprint(JsonElement value) {
+            if (value.isJsonObject()) {
+                int hash = 0;
+                for (Map.Entry<String, JsonElement> member
+                        : value.getAsJsonObject().entrySet()) {
+                    hash += member.getKey().hashCode()
+                            ^ fingerprint(member.getValue());
+                }
+                return hash;
+            }
+            if (value.isJsonArray()) {
+                int hash = 1;
+                for (JsonElement item : value.getAsJsonArray()) {
+                    hash = 31 * hash + fingerprint(item);
+                }
+                return hash;
+            }
+            if (value.isJsonNull()) return 0;
+            JsonPrimitive primitive = value.getAsJsonPrimitive();
+            return 31 * (primitive.isString() ? 1 : primitive.isNumber() ? 2
+                    : 3) + primitive.getAsString().hashCode();
+        }
+
         /** Envelopes are self-contained: validate this table's closure before
          *  any cache hit, so none borrows an earlier one's definitions. */
         private void validateDefinitions(JsonElement artifact,
@@ -253,7 +284,7 @@ public final class VmExpressionTable {
                             "VM expression definition disagrees with table");
                 }
                 JsonObject definition = expression.getAsJsonObject();
-                Integer hash = definition.hashCode();
+                Integer hash = fingerprint(definition);
                 Integer before = defined.putIfAbsent(key, hash);
                 JsonObject here = definitions.putIfAbsent(key, definition);
                 if (before != null && !before.equals(hash)
