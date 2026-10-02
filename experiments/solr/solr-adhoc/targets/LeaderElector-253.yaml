@@ -1,0 +1,1 @@
+exception_target: adhoc-LeaderElector-253 org.apache.solr.cloud.LeaderElector 253

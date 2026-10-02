@@ -1,0 +1,1 @@
+exception_target: adhoc-DistributedZkUpdateProcessor-1245 org.apache.solr.update.processor.DistributedZkUpdateProcessor 1245
