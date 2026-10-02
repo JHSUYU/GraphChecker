@@ -1188,8 +1188,11 @@ void frame::nmethods_do(CodeBlobClosure* cf) {
 
 // call f() on the interpreted Method*s in the stack.
 // Have to walk the entire code cache for the compiled frames Yuck.
+// Asked of the frame, not of its pc (as JDK 9 does): a Zero interpreter frame
+// has neither pc nor code blob, so MetadataOnStackMark would mark no running
+// method and a class-unloading GC would free a redefined method under it.
 void frame::metadata_do(void f(Metadata*)) {
-  if (_cb != NULL && Interpreter::contains(pc())) {
+  if (is_interpreted_frame()) {
     Method* m = this->interpreter_frame_method();
     assert(m != NULL, "huh?");
     f(m);

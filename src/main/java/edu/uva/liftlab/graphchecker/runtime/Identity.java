@@ -35,14 +35,14 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class Identity {
     private static final ThreadLocal<State> CURRENT =
-            new InheritableThreadLocal<State>() {
+            new InheritedState<State>() {
                 @Override
                 protected State initialValue() {
                     return new State();
                 }
 
                 @Override
-                protected State childValue(State parent) {
+                protected State inherit(State parent) {
                     // A thread starts where it was created, but for a pool's
                     // worker: every task carries its own start explicitly.
                     return parent == null || PoolWorkers.constructing()
@@ -976,6 +976,32 @@ public final class Identity {
             }
         }
         return address;
+    }
+
+    /**
+     * Gives the occurrence the innermost region entry opened the address
+     * {@code declared}, which it answers by its question's rule (IDENTITY
+     * §9, {@code ConcolicTaskPlan#select}): from here its rows, endpoints,
+     * decision ordinals, schedule mark and close state the declared address,
+     * as the recording's did, and so does every endpoint minted under it.
+     *
+     * @return the address this run computed for it, or null when the entry
+     *         opened no occurrence of its own (a fold, unnamed work)
+     */
+    public static OccurrenceAddress answer(OccurrenceAddress declared) {
+        Region entered = state().region();
+        if (declared == null || entered == null
+                || entered.occurrence == null) {
+            return null;
+        }
+        OccurrenceAddress ran = entered.occurrence;
+        entered.occurrence = declared;
+        ScheduleLog.mark(declared.id());
+        if (Confirmation.ordering()) {
+            Confirmation.entering(Confirmation.activation(declared,
+                    ExecutionIndex.empty()));
+        }
+        return ran;
     }
 
     /**

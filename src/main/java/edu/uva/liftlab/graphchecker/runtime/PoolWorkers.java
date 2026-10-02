@@ -22,7 +22,7 @@ final class PoolWorkers {
     private PoolWorkers() {
     }
 
-    /** From an {@code InheritableThreadLocal}'s {@code childValue}. */
+    /** From {@link InheritedState#inherit}, which {@code Thread.init} runs. */
     static boolean constructing() {
         for (StackTraceElement frame : new Throwable().getStackTrace()) {
             for (String[] growth : GROWTH) {

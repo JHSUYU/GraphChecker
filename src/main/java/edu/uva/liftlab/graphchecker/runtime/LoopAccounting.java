@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import java.util.ArrayDeque;
 import java.util.Collections;
@@ -138,28 +137,23 @@ final class LoopAccounting {
      * is counted once; body entries only consult it.
      */
     static long enterLoopRoot(
-            String instrumentationSelector, String rootMethod,
+            String loopRootHookGroup, String rootMethod,
             Object receiver, Object[] rootArguments) {
         ConcolicTaskPlan config = configuration();
-        RootHookGroup group = config.loopRootHookGroup(
-                instrumentationSelector, rootMethod);
         Deque<LoopRootInvocationContext> contexts =
                 LOOP_ROOT_INVOCATIONS.get();
-        for (LoopRootInvocationContext existing : contexts) {
-            if (existing.claimsSiblingHook(group.key)) return 0L;
-        }
         // Minted before the plan is asked: it is what a loop task binds to.
         long token = ConcolicRegionRuntime.TOKEN_COUNTER.incrementAndGet();
         // No index frame: only the campaign weaves this hook, so the
         // recording never stands on it; the REGION hook pushes the frame.
         Set<String> admittedTasks = config.addressLoopRootInvocation(
-                group.key, rootMethod, receiver, rootArguments, token);
+                loopRootHookGroup, rootMethod, receiver, rootArguments,
+                token);
         // Asked here, the only place this entry's marker is still innermost:
         // an entry that opened no occurrence addresses no bodies
         // (#bodiesAddressedHere).
-        contexts.push(new LoopRootInvocationContext(token, group.key,
-                Math.max(0, group.hookCount - 1), admittedTasks,
-                Identity.openedNone()));
+        contexts.push(new LoopRootInvocationContext(token, loopRootHookGroup,
+                admittedTasks, Identity.openedNone()));
         return token;
     }
 
@@ -186,7 +180,7 @@ final class LoopAccounting {
         if (task == null || !task.loopBodyRoot) return null;
         for (LoopRootInvocationContext context
                 : LOOP_ROOT_INVOCATIONS.get()) {
-            if (!context.groupKey.equals(task.loopRootHookGroupKey())) {
+            if (!context.groupKey.equals(task.loopRootHookGroup)) {
                 continue;
             }
             return context.offeredTaskIds.contains(task.taskId)
@@ -217,20 +211,21 @@ final class LoopAccounting {
     }
 
     /** One enclosing method invocation for bounded body activations. */
-    static final class LoopRootInvocationContext
-            extends ConcolicRegionRuntime.SiblingHookGroupEntry {
+    static final class LoopRootInvocationContext {
         /** This invocation's entry event: what a loop task is bound to. */
         final long token;
+        /** The loop root it opened ({@code ExecutionTask#loopRootHookGroup}). */
+        final String groupKey;
         /** The tasks this entry was offered to. */
         private final Set<String> offeredTaskIds;
         /** Whether the region entry at this same Java entry folded. */
         private final boolean foldedEntry;
 
         private LoopRootInvocationContext(
-                long token, String groupKey, int remainingSiblingHooks,
-                Set<String> offeredTaskIds, boolean foldedEntry) {
-            super(groupKey, remainingSiblingHooks);
+                long token, String groupKey, Set<String> offeredTaskIds,
+                boolean foldedEntry) {
             this.token = token;
+            this.groupKey = safe(groupKey);
             this.offeredTaskIds = Collections.unmodifiableSet(
                     new LinkedHashSet<>(offeredTaskIds));
             this.foldedEntry = foldedEntry;

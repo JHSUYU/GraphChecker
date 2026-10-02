@@ -3,7 +3,9 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
@@ -13,7 +15,6 @@ import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -23,6 +24,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -68,25 +70,26 @@ final class ConcolicTaskPlan {
      */
     final boolean[] candidateLive;
     final boolean[] occurrenceClaimed;
+    /** Whether a task's live candidate answers it by its question's rule
+     *  ({@link RuntimeTask#answers}), not by its address. */
+    private final boolean[] answeredByQuestion;
     /** Each task's slot in the two arrays above, by task identity. */
     private final Map<RuntimeTask, Integer> slots =
             new IdentityHashMap<RuntimeTask, Integer>();
-    /**
-     * Memo of {@link #rootHookGroup} per {@code (instrumentationSelector,
-     * rootMethod)}; the plan is immutable, and scanning it at every woven
-     * root entry blocked replay threads.
-     */
-    private final Map<String, RootHookGroup> rootHookGroups =
-            new LinkedHashMap<String, RootHookGroup>();
-    private final Map<String, RootHookGroup> loopRootHookGroups =
-            new LinkedHashMap<String, RootHookGroup>();
+    /** Each root hook group's loop root ({@link #loopRootOf}). */
+    private final Map<String, String> loopRoots =
+            new HashMap<String, String>();
     boolean unansweredAddressesPublished;
 
     ConcolicTaskPlan(Path resultFile, List<RuntimeTask> tasks) {
         this.resultFile = resultFile;
         this.tasks = Collections.unmodifiableList(tasks);
+        for (RuntimeTask task : tasks) {
+            loopRoots.put(task.rootHookGroup, task.loopRootHookGroup);
+        }
         this.candidateLive = new boolean[tasks.size()];
         this.occurrenceClaimed = new boolean[tasks.size()];
+        this.answeredByQuestion = new boolean[tasks.size()];
         for (int index = 0; index < this.tasks.size(); index++) {
             this.slots.put(this.tasks.get(index), index);
         }
@@ -204,6 +207,16 @@ final class ConcolicTaskPlan {
         }
     }
 
+    /**
+     * Whether {@code task}'s live candidate was admitted by its question's
+     * rule, so the occurrence it opened takes the task's address ({@code
+     * Identity#answer}).
+     */
+    synchronized boolean answeredByQuestion(RuntimeTask task) {
+        Integer index = slots.get(task);
+        return index != null && answeredByQuestion[index];
+    }
+
     /** Marks durable evidence without clearing a newer live candidate. */
     synchronized void markOccurrenceClaimed(RuntimeTask task) {
         Integer index = slots.get(task);
@@ -211,81 +224,14 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * Resolves an occurrence-specific hook to the region entry shared by
-     * every sibling hook at that Java method; memoized in
-     * {@link #rootHookGroups}.
+     * The enclosing method entry whose invocations address the bodies of a
+     * root hook group's loop ({@code ExecutionTask#loopRootHookGroup}), ""
+     * for a group of method roots; read at every woven root entry, so built
+     * once.
      */
-    synchronized RootHookGroup rootHookGroup(
-            String instrumentationSelector, String rootMethod) {
-        return rootHookGroups.computeIfAbsent(safe(instrumentationSelector)
-                + "\n" + safe(rootMethod), hook -> resolveRootHookGroup(
-                        instrumentationSelector, rootMethod));
-    }
-
-    private RootHookGroup resolveRootHookGroup(
-            String instrumentationSelector, String rootMethod) {
-        RuntimeTask selected = null;
-        for (RuntimeTask task : tasks) {
-            if (!task.instrumentationSelector.equals(
-                    safe(instrumentationSelector))
-                    || !Objects.equals(task.rootMethod, rootMethod)) {
-                continue;
-            }
-            if (selected != null && !selected.rootHookGroupKey().equals(
-                    task.rootHookGroupKey())) {
-                throw new IllegalStateException(
-                        "instrumentation selector addresses multiple "
-                                + "root hook groups: "
-                                + safe(instrumentationSelector));
-            }
-            selected = task;
-        }
-        if (selected == null) {
-            return new RootHookGroup("UNPLANNED\n"
-                    + safe(instrumentationSelector) + "\n"
-                    + safe(rootMethod), 1);
-        }
-        String key = selected.rootHookGroupKey();
-        int hooks = 0;
-        for (RuntimeTask task : tasks) {
-            if (key.equals(task.rootHookGroupKey())) hooks++;
-        }
-        return new RootHookGroup(key, hooks);
-    }
-
-    /** Resolves one lightweight outer hook shared by loop-body tasks. */
-    synchronized RootHookGroup loopRootHookGroup(
-            String instrumentationSelector, String rootMethod) {
-        return loopRootHookGroups.computeIfAbsent(
-                safe(instrumentationSelector) + "\n" + safe(rootMethod),
-                hook -> resolveLoopRootHookGroup(instrumentationSelector,
-                        rootMethod));
-    }
-
-    private RootHookGroup resolveLoopRootHookGroup(
-            String instrumentationSelector, String rootMethod) {
-        RuntimeTask selected = null;
-        for (RuntimeTask task : tasks) {
-            if (!task.loopBodyRoot
-                    || !task.instrumentationSelector.equals(
-                    safe(instrumentationSelector))
-                    || !Objects.equals(task.rootMethod, rootMethod)) {
-                continue;
-            }
-            selected = task;
-            break;
-        }
-        if (selected == null) {
-            return new RootHookGroup("UNPLANNED_LOOP_ROOT\n"
-                    + safe(rootMethod), 1);
-        }
-        String key = selected.loopRootHookGroupKey();
-        int hooks = 0;
-        for (RuntimeTask task : tasks) {
-            if (task.loopBodyRoot
-                    && key.equals(task.loopRootHookGroupKey())) hooks++;
-        }
-        return new RootHookGroup(key, hooks);
+    String loopRootOf(String rootHookGroup) {
+        String loopRoot = loopRoots.get(rootHookGroup);
+        return loopRoot == null ? "" : loopRoot;
     }
 
     /**
@@ -293,7 +239,7 @@ final class ConcolicTaskPlan {
      * owns all body iterations executed by that invocation.
      */
     synchronized Set<String> addressLoopRootInvocation(
-            String loopRootHookGroupKey, String rootMethod,
+            String loopRootHookGroup, String rootMethod,
             Object receiver, Object[] rootArguments,
             long enclosingInvocationEvent) {
         SourceRef registeredReceiverSource =
@@ -314,8 +260,8 @@ final class ConcolicTaskPlan {
             // Another region's enclosing root: silent, or every enclosing
             // invocation would file a refusal against every task.
             if (!task.loopBodyRoot
-                    || !task.loopRootHookGroupKey().equals(
-                    safe(loopRootHookGroupKey))) {
+                    || !task.loopRootHookGroup.equals(
+                    safe(loopRootHookGroup))) {
                 continue;
             }
             // From here this task's own hook ran, so every refusal is stated;
@@ -348,7 +294,12 @@ final class ConcolicTaskPlan {
         return admitted;
     }
 
-    /** Claims at most one open task for this root invocation. */
+    /**
+     * Claims at most one open task for this root invocation: the task whose
+     * address it ran at, else the declared occurrence when it answers that
+     * by its question's rule ({@link RuntimeTask#answers}) and no task plans
+     * the address it ran at.
+     */
     synchronized RuntimeTask select(String rootHookGroupKey,
                                             String rootMethod,
                                             Object receiver,
@@ -362,9 +313,11 @@ final class ConcolicTaskPlan {
         // Outside the recording window there is no candidate.
         if (!RecordingWindow.opened()) return null;
         ObservedAddresses observedAddresses = new ObservedAddresses();
+        int answering = -1;
+        RefusedCandidate answered = null;
         for (int index = 0; index < tasks.size(); index++) {
             RuntimeTask task = tasks.get(index);
-            if (!task.rootHookGroupKey().equals(
+            if (!task.rootHookGroup.equals(
                     safe(rootHookGroupKey))) continue;
             if (task.completedGoalReserved) continue;
             // Stated, or the run end reports ROOT_NEVER_EXECUTED.
@@ -375,14 +328,61 @@ final class ConcolicTaskPlan {
                             rootArguments, registeredReceiverSource, context,
                             activationSource, observedAddresses);
             if (refused != null) {
+                if (answering < 0 && !candidateLive[index]
+                        && task.answers(refused.observed)) {
+                    answering = index;
+                    answered = refused;
+                    continue;
+                }
                 task.noteUnaddressedCandidate(refused);
                 continue;
             }
             if (candidateLive[index]) continue;
             candidateLive[index] = true;
+            answeredByQuestion[index] = false;
+            if (answered != null) {
+                tasks.get(answering).noteUnaddressedCandidate(answered);
+            }
             return task;
         }
-        return null;
+        if (answering < 0) return null;
+        // A context a task plans an occurrence in is that task's, live,
+        // done or not, its every invocation included; and an entry that
+        // opened no occurrence of its own (a fold, unnamed work) has none to
+        // give the declared address.
+        if (occupies(rootHookGroupKey, answered.observed)
+                || Identity.openedNone()) {
+            tasks.get(answering).noteUnaddressedCandidate(answered);
+            return null;
+        }
+        candidateLive[answering] = true;
+        answeredByQuestion[answering] = true;
+        return tasks.get(answering);
+    }
+
+    /**
+     * Whether a task of this root hook plans an occurrence of {@code
+     * address}'s region and node in its very context: {@code address}
+     * itself, or another invocation under the same anchor.  That context is
+     * the planned occurrence's, and none of its invocations answers another
+     * context's question (hdfs-11741 K2: the second {@code handle()} call of
+     * one balancer handshake, under the anchor of that handshake's planned
+     * first call, answered the declared second handshake, which then ran
+     * unplanned).
+     */
+    boolean occupies(String rootHookGroupKey, OccurrenceAddress address) {
+        for (RuntimeTask task : tasks) {
+            if (task.address != null
+                    && task.rootHookGroup.equals(
+                    safe(rootHookGroupKey))
+                    && task.address.regionId().equals(address.regionId())
+                    && task.address.node().equals(address.node())
+                    && task.address.context().render().equals(
+                    address.context().render())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Why a loop body ran under no enclosing invocation admitted for it,
@@ -392,7 +392,7 @@ final class ConcolicTaskPlan {
         if (LoopAccounting.enclosingLoopRoot(task) != null) return null;
         return RefusedCandidate.stated("a body of this loop ran under no"
                 + " enclosing invocation admitted for it: the enclosing root"
-                + " hook " + task.loopRootHookGroupKey() + " either did not"
+                + " hook " + task.loopRootHookGroup + " either did not"
                 + " run on this thread or refused this task when it did",
                 activationSource);
     }
@@ -843,13 +843,24 @@ final class ConcolicTaskPlan {
 
     static final class RuntimeTask {
         final String taskId;
-        final String instrumentationSelector;
+        /** The woven entry that offers this task its candidates
+         *  ({@code ExecutionTask#rootHookGroup}). */
+        final String rootHookGroup;
+        /** The enclosing method entry a loop-body task's iterations are
+         *  addressed under ({@code ExecutionTask#loopRootHookGroup}). */
+        final String loopRootHookGroup;
         final String regionId;
         /** The activation this task is. */
         final String sourceKey;
         final String occurrenceId;
         /** The one address this task plans; every admission compares it. */
         final OccurrenceAddress address;
+        /**
+         * The declared occurrence's context shape over the recording's
+         * senders, which a run's occurrence of its question answers it by
+         * ({@link #answers}); empty on every other task.
+         */
+        final List<String> questionShape;
         final String rootMethod;
         final RootContextSelector rootContextSelector;
         /** Argument predicates evaluated at the enclosing method entry. */
@@ -919,11 +930,18 @@ final class ConcolicTaskPlan {
             }
             JsonObject rootSelector = task.rootSelector();
             this.taskId = task.taskId();
-            this.instrumentationSelector = task.instrumentationSelector();
+            this.rootHookGroup = task.rootHookGroup();
+            this.loopRootHookGroup = task.loopRootHookGroup();
             this.regionId = task.regionId();
             this.sourceKey = task.sourceKey();
             this.occurrenceId = task.occurrenceId();
             this.address = parseAddress(this.occurrenceId);
+            List<String> shape = new ArrayList<String>();
+            for (JsonElement hop : array(task.json(),
+                    RuntimeSelectedRegionFinalizer.QUESTION_SHAPE)) {
+                shape.add(hop.getAsString());
+            }
+            this.questionShape = Collections.unmodifiableList(shape);
             this.rootMethod = task.rootMethod();
             this.rootContextSelector = RootContextSelector.from(rootSelector);
             this.enclosingRootArgumentSelector =
@@ -943,8 +961,7 @@ final class ConcolicTaskPlan {
                             : RootArgumentSelector.from(rootSelector);
             this.symbolize = new ArrayList<>();
             this.loopBound = task.loopBound();
-            this.loopBodyRoot = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
-                    task.rootAuthority());
+            this.loopBodyRoot = task.loopBodyRoot();
             // A loop-body task must name its k; refused at the plan, not
             // guessed at replay.
             if (this.loopBodyRoot && this.address == null) {
@@ -1089,20 +1106,6 @@ final class ConcolicTaskPlan {
             return !targetBranchSite.isEmpty();
         }
 
-        /** Every injected hook that belongs to one physical Java entry. */
-        String rootHookGroupKey() {
-            // No source here: sibling tasks for other sources share the hook.
-            return (loopBodyRoot ? "LOOP\n" : "METHOD\n")
-                    + regionId + "\n" + rootMethod
-                    + (loopBodyRoot ? "\n" + rootLoopMethod + "\n"
-                    + rootLoopHeaderUnitIndex : "");
-        }
-
-        /** All lightweight enclosing hooks physically share this method. */
-        String loopRootHookGroupKey() {
-            return loopBodyRoot ? rootMethod : "";
-        }
-
         /**
          * The address this activation ran at, by {@code Identity.occurrence}
          * -- the function the recorder ran.  Unnamed outside the recording
@@ -1131,12 +1134,31 @@ final class ConcolicTaskPlan {
          * Whether this activation is the addressed occurrence: the whole
          * address, id against id, and nothing else -- an occurrence is its
          * address.  Trap: loosening this (e.g. ignoring an unreproducible
-         * anchor digest) admits a sibling DataNode's activation; the fix for
-         * such anchors belongs in the identity model, not here.
+         * anchor digest) admits a sibling DataNode's activation; the one
+         * other answer is the declared occurrence's question ({@link
+         * #answers}), which compares every hop's node.
          */
         boolean acceptsRootInvocation(OccurrenceAddress observed) {
             return address != null && observed != null
                     && address.id().equals(observed.id());
+        }
+
+        /**
+         * Whether {@code observed}, an address no task plans, is this run's
+         * occurrence of the declared question (IDENTITY §9): the declared
+         * task alone states a question shape, and {@link
+         * ContextShape#answers} decides over this run's senders ({@link
+         * ScheduleLog#shape}).  Which turn of a DataNode's heartbeat carries
+         * a NameNode command is the NameNode's daemons' timing, so a
+         * replay's chain may differ from the recording's in a root's or a
+         * sender's count alone (adhoc a40h: block recovery under heartbeat
+         * #4, recorded under #3).
+         */
+        boolean answers(OccurrenceAddress observed) {
+            return !questionShape.isEmpty() && address != null
+                    && observed != null
+                    && ContextShape.answers(observed, address,
+                    ScheduleLog.shape(observed.context()), questionShape);
         }
 
         /**

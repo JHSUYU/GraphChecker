@@ -74,8 +74,12 @@ public final class ConcolicInstrumentationSelections {
 
     /** One immutable view of the scheduler-selected execution task. */
     static final class InstrumentationPlan {
-        /** Exact plan selector shared by a seed task and its replays. */
-        private final String instrumentationSelector;
+        /** The woven entry this task's region opens at
+         *  ({@code ExecutionTask#rootHookGroup}). */
+        private final String rootHookGroup;
+        /** The enclosing entry a loop-body root's iterations are addressed
+         *  under, else "" ({@code ExecutionTask#loopRootHookGroup}). */
+        private final String loopRootHookGroup;
         private final String rootMethod;
         /** Methods whose conditional branches this task's weave covers. */
         private final Set<String> branchMethods;
@@ -104,7 +108,8 @@ public final class ConcolicInstrumentationSelections {
                 throw new IOException("Execution task " + task.taskId()
                         + " is not executable");
             }
-            instrumentationSelector = task.instrumentationSelector();
+            rootHookGroup = task.rootHookGroup();
+            loopRootHookGroup = task.loopRootHookGroup();
             rootMethod = task.rootMethod();
             if (rootMethod.isEmpty()) {
                 throw new IOException("Execution task " + task.taskId()
@@ -238,8 +243,12 @@ public final class ConcolicInstrumentationSelections {
             return rootMethod;
         }
 
-        String instrumentationSelector() {
-            return instrumentationSelector;
+        String rootHookGroup() {
+            return rootHookGroup;
+        }
+
+        String loopRootHookGroup() {
+            return loopRootHookGroup;
         }
 
         /**
@@ -460,13 +469,15 @@ public final class ConcolicInstrumentationSelections {
                 String cell = optionalString(site, "cell");
                 boolean read = site.has("read")
                         && site.get("read").getAsBoolean();
+                boolean staticField = site.has("static")
+                        && site.get("static").getAsBoolean();
                 if (method.isEmpty() || unitIndex < 0 || siteId.isEmpty()
                         || cell.isEmpty()
                         || !siteId.equals(SiteId.of(method, unitIndex))) {
                     throw unsupported(site);
                 }
                 if (conflicts(new ObservedSite(method, unitIndex,
-                        siteId, callee, cell, read))) {
+                        siteId, callee, cell, read, staticField))) {
                     throw new IOException(
                             "OBSERVED_SITE_CONFLICT: " + siteId);
                 }
@@ -646,23 +657,28 @@ public final class ConcolicInstrumentationSelections {
         final String siteId;
         final String declaredCallee;
         final String cell;
-        /** A read ({@code getfield}) rather than a store. */
+        /** A read ({@code getfield}/{@code getstatic}) rather than a store. */
         final boolean read;
+        /** A static cell: observed on its declaring class's mirror. */
+        final boolean staticField;
 
         ObservedSite(String method, int unitIndex, String siteId,
-                     String declaredCallee, String cell, boolean read) {
+                     String declaredCallee, String cell, boolean read,
+                     boolean staticField) {
             this.method = method;
             this.unitIndex = unitIndex;
             this.siteId = siteId;
             this.declaredCallee = declaredCallee;
             this.cell = cell;
             this.read = read;
+            this.staticField = staticField;
         }
 
         boolean sameObservation(ObservedSite other) {
             return other != null && declaredCallee.equals(
                     other.declaredCallee) && cell.equals(other.cell)
-                    && read == other.read;
+                    && read == other.read
+                    && staticField == other.staticField;
         }
     }
 

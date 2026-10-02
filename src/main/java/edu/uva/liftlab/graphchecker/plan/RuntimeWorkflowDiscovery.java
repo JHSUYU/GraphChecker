@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.plan;
 
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonArray;
@@ -17,8 +18,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** Selects the declared target and schedules the whole region plan with it. */
@@ -36,8 +39,9 @@ public final class RuntimeWorkflowDiscovery {
      * occurrence whose flip is the question, since a counterfactual writer
      * wrote nothing (hdfs-11741's {@code removeExpiredKeys}).</p>
      *
-     * <p>Fail-closed on the plan only: the case must declare its target ({@link
-     * #declaredTarget}).</p>
+     * <p>Fail-closed on the plan only: the case must declare its target, and
+     * the seed resolved the declaration ({@link #declaredOccurrence}) onto one
+     * of the plan's target rows ({@link #declaredTarget}).</p>
      */
     static Workflow workflow(List<RegionInstancePlan> plans,
                                    String declaredOccurrence)
@@ -66,9 +70,15 @@ public final class RuntimeWorkflowDiscovery {
         // The target is the one the case DECLARED, never elected from evidence.
         // Other occurrences it names also carry targetReach (read by the reach
         // query, the obligation wave and the claim); the rest are dependencies.
+        if (declaredOccurrence == null || declaredOccurrence.trim().isEmpty()) {
+            throw new IOException("DECLARED_TARGET_OCCURRENCE_MISSING: this "
+                    + "campaign states no declared_target_occurrence, and "
+                    + "which occurrence of the declared target site it is "
+                    + "about is not a question runtime evidence may answer");
+        }
         Set<String> targetReachGoals = anchorGoals(targets,
                 declaredOccurrence);
-        Target target = declaredTarget(targets, declaredOccurrence);
+        Target target = declaredTarget(targets);
         List<Selection> selections = new ArrayList<>();
         selections.add(Selection.target(target,
                 targetReachGoals.contains(target.goal.goalId())));
@@ -109,43 +119,59 @@ public final class RuntimeWorkflowDiscovery {
      * no failure to name one by, and an address read off one recording
      * need not name anything in the next.
      */
-    static final String FIRST = "first";
+    public static final String FIRST = "first";
 
-    /** The k-th occurrence the declaration names, in recorded order (the {@link
-     *  SelectorResolution} rule). No match is a named refusal, never a fallback
-     *  or a rank. */
-    private static Target declaredTarget(List<Target> targets,
-                                         String declaredOccurrence)
+    /**
+     * The occurrence a declaration names among the observed target
+     * occurrences, in recorded order: {@link #FIRST}, the first; a resolved
+     * address, itself; a selector, its k-th match (the {@link
+     * SelectorResolution} rule).  Resolved once, at the seed ({@code
+     * causynth.RuntimeSelectedRegionFinalizer}, which plans only the
+     * question's own {@code (r,c)} around it and marks it on its plan row,
+     * {@link #declaredTarget}); every later stage reads that.  No match is a
+     * named refusal, never a fallback or a rank.
+     */
+    public static String declaredOccurrence(List<String> observed,
+                                            String declaredOccurrence)
             throws IOException {
         String declared = declaredOccurrence == null ? ""
                 : declaredOccurrence.trim();
-        List<String> observed = new ArrayList<>();
-        for (Target candidate : targets) {
-            observed.add(candidate.occurrenceId);
-        }
-        if (declared.isEmpty()) {
-            throw new IOException("DECLARED_TARGET_OCCURRENCE_MISSING: this "
-                    + "campaign states no declared_target_occurrence, and "
-                    + "which occurrence of the declared target site it is "
-                    + "about is not a question runtime evidence may "
-                    + "answer; observed target occurrences: " + observed);
-        }
-        if (FIRST.equals(declared)) return targets.get(0);
+        if (FIRST.equals(declared)) return observed.get(0);
         int k = declaredK(declared);
-        Target named = SelectorResolution.kth(targets,
-                candidate -> declares(declared, candidate.occurrenceId), k);
+        String named = SelectorResolution.kth(observed,
+                candidate -> declares(declared, candidate), k);
         if (named != null) return named;
         int matched = 0;
-        for (Target candidate : targets) {
-            if (declares(declared, candidate.occurrenceId)) matched++;
+        for (String candidate : observed) {
+            if (declares(declared, candidate)) matched++;
         }
-        // The same listing as a missing declaration: a selector a region
-        // change renamed is re-derived from it (tools/analysis/occurrences.py).
+        // A selector a region change renamed is re-derived from the listing
+        // (tools/analysis/occurrences.py).
         throw new IOException("DECLARED_TARGET_OCCURRENCE_UNOBSERVED: "
                 + declared + " names " + matched + " of the "
-                + targets.size() + " observed target occurrence(s), and k="
+                + observed.size() + " observed target occurrence(s), and k="
                 + k + " selects none of them; observed target occurrences: "
                 + observed);
+    }
+
+    /** The target row the seed marked as the declared occurrence ({@link
+     *  #declaredOccurrence}); exactly one, or the plan is refused. */
+    private static Target declaredTarget(List<Target> targets)
+            throws IOException {
+        List<Target> marked = new ArrayList<>();
+        for (Target candidate : targets) {
+            if (optionalBool(candidate.plan.json(),
+                    RuntimeSelectedRegionFinalizer.DECLARED_OCCURRENCE,
+                    false)) {
+                marked.add(candidate);
+            }
+        }
+        if (marked.size() == 1) return marked.get(0);
+        throw new IOException("DECLARED_TARGET_OCCURRENCE_UNPINNED: the "
+                + "region plan marks " + marked.size() + " of its "
+                + targets.size() + " target occurrence(s) as the declared "
+                + "one; the seed's aggregation resolves the declaration "
+                + "exactly once (RuntimeSelectedRegionFinalizer)");
     }
 
     /** The {@code k} of a selector, or 1 for a resolved address. Anything else
@@ -226,15 +252,63 @@ public final class RuntimeWorkflowDiscovery {
 
     static final class Workflow {
         private final List<Selection> selections;
+        /** The dependencies {@link #nearest} left out, in plan order. */
+        private final List<Selection> cut;
+        /** The deepest demand depth {@link #nearest} kept. */
+        private final int keptDepth;
 
         private Workflow(List<Selection> selections) {
+            this(selections, Collections.<Selection>emptyList(), -1);
+        }
+
+        private Workflow(List<Selection> selections, List<Selection> cut,
+                         int keptDepth) {
             this.selections = Collections.unmodifiableList(
                     new ArrayList<>(selections));
+            this.cut = Collections.unmodifiableList(new ArrayList<>(cut));
+            this.keptDepth = keptDepth;
         }
 
         List<Selection> selections() { return selections; }
 
         int scheduledTaskCount() { return selections.size(); }
+
+        /** How many dependencies {@link #nearest} left out. */
+        int cutCount() { return cut.size(); }
+
+        int keptDepth() { return keptDepth; }
+
+        /**
+         * The nearest part of this closure that fits {@code maxJobs} tasks:
+         * the target and every dependency whose demand depth (the hops of
+         * the chain that admitted it, {@link
+         * RuntimeSelectedRegionFinalizer#DEMAND_DEPTH}) is at most the
+         * deepest level that fits whole.  Never part of a level: its
+         * occurrences are equally near, and keeping some would be an
+         * arbitrary choice.  This workflow when it fits; null when not even
+         * the target's own level does.
+         */
+        Workflow nearest(int maxJobs) {
+            if (selections.size() <= maxJobs) return this;
+            TreeMap<Integer, Integer> byDepth = new TreeMap<>();
+            for (Selection selection : selections) {
+                byDepth.merge(selection.depth, 1, Integer::sum);
+            }
+            int kept = -1;
+            int count = 0;
+            for (Map.Entry<Integer, Integer> level : byDepth.entrySet()) {
+                if (count + level.getValue() > maxJobs) break;
+                count += level.getValue();
+                kept = level.getKey();
+            }
+            if (kept < 0 || selections.get(0).depth > kept) return null;
+            List<Selection> near = new ArrayList<>();
+            List<Selection> far = new ArrayList<>();
+            for (Selection selection : selections) {
+                (selection.depth <= kept ? near : far).add(selection);
+            }
+            return new Workflow(near, far, kept);
+        }
 
         JsonObject scheduleIndex(List<ExecutionTask> tasks,
                                  JsonObject regionPlanIdentity,
@@ -275,6 +349,24 @@ public final class RuntimeWorkflowDiscovery {
             }
             index.add("target", targetEntry);
             index.add("members", members);
+            if (!cut.isEmpty()) {
+                // The closure PLAN did not plan (#nearest): the campaign
+                // names it (run_engine.sh campaign_stream_truncation).
+                JsonObject closureCut = new JsonObject();
+                closureCut.addProperty("keptDepth", keptDepth);
+                closureCut.addProperty("occurrences", cut.size());
+                TreeMap<Integer, Integer> byDepth = new TreeMap<>();
+                for (Selection selection : cut) {
+                    byDepth.merge(selection.depth, 1, Integer::sum);
+                }
+                JsonObject depths = new JsonObject();
+                for (Map.Entry<Integer, Integer> level : byDepth.entrySet()) {
+                    depths.addProperty(String.valueOf(level.getKey()),
+                            level.getValue());
+                }
+                closureCut.add("byDepth", depths);
+                index.add("closureCut", closureCut);
+            }
             return index;
         }
     }
@@ -288,6 +380,8 @@ public final class RuntimeWorkflowDiscovery {
         /** Captures the declared target's reach (the target and its sibling
          *  occurrences). */
         final boolean targetReach;
+        /** Demand hops from the target; a target occurrence states none. */
+        final int depth;
 
         private Selection(String campaignId, RegionInstancePlan plan,
                           Goal goal, boolean target, boolean targetReach) {
@@ -297,6 +391,8 @@ public final class RuntimeWorkflowDiscovery {
             this.goalId = goal.goalId();
             this.target = target;
             this.targetReach = targetReach;
+            this.depth = optionalInteger(plan.json(),
+                    RuntimeSelectedRegionFinalizer.DEMAND_DEPTH, 0);
         }
 
         static Selection target(Target target, boolean targetReach) {

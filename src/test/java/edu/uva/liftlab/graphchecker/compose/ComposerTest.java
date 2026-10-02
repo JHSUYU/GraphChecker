@@ -1161,11 +1161,131 @@ public class ComposerTest {
             Composer.Composition composition = compose(iteration, 4);
             assertEquals("two target rows, two paths", 2,
                     composition.disjuncts().size());
-            assertEquals("phi " + row[0], row[1],
-                    ClaimPolicy.seedDisjunctUnsat(composition, solver));
+            try (Disjunction asks = new Disjunction(composition, solver)) {
+                assertEquals("phi " + row[0], row[1],
+                        ClaimPolicy.seedDisjunctUnsat(composition, asks));
+            }
             assertTrue("z3 read every question: " + solver.errors(),
                     solver.errors().isEmpty());
         }
+    }
+
+    /**
+     * A DISJUNCTION is asked whole while that decides, else path by path,
+     * and the answer is the first sat path in order.  A path refuted under
+     * some assertions is not asked again under more of them; a refutation
+     * asked without a core answers no question that wants one, unless it
+     * was asked under no assertion at all (the self-check), where no pin can
+     * be in its core.  The fixture z3 answers the whole query
+     * {@code unknown}, path 0 unsat and path 1 sat, and logs each time it
+     * is asked path 0.  {what refuted path 0 first (null: nothing), the
+     * assertions then asked, whether a core is wanted, path 0 asked again}.
+     */
+    @Test
+    public void aRefutedPathIsNotAskedAgain() throws Exception {
+        Path iteration = folder.newFolder("refuted").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.target("true", true, true);
+        seed.target("true", true, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        String first = composition.disjuncts().get(0).selector();
+        String second = composition.disjuncts().get(1).selector();
+        Path log = folder.newFile("asked.log").toPath();
+        Path script = folder.newFile("z3-paths.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *'(assert " + first + ")'*) echo 0 >> " + log
+                        + "; echo unsat; echo '()' ;;",
+                "  *'(assert " + second + ")'*) echo sat; echo '((x 1))' ;;",
+                "  *) echo unknown ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        List<String> none = Collections.emptyList();
+        List<String> pinned = Collections.singletonList("(assert true)");
+        List<String> more = Arrays.asList("(assert true)",
+                "(assert (= 1 1))");
+        Object[][] rows = {
+                {null, none, false, true},
+                {pinned, more, false, false},
+                {pinned, more, true, true},
+                {"self-check", more, true, false},
+                {more, pinned, false, true},
+        };
+        for (Object[] row : rows) {
+            try (Disjunction asks = new Disjunction(composition,
+                    new Z3(script, 30000L))) {
+                if ("self-check".equals(row[0])) {
+                    asks.selfCheck();
+                } else if (row[0] != null) {
+                    @SuppressWarnings("unchecked")
+                    List<String> refuting = (List<String>) row[0];
+                    asks.ask(refuting, composition.selectors(), none, false);
+                }
+                long before = asked(log);
+                @SuppressWarnings("unchecked")
+                List<String> assertions = (List<String>) row[1];
+                Z3.Answer answer = asks.ask(assertions,
+                        composition.selectors(), none, (Boolean) row[2]);
+                assertEquals(Arrays.toString(row), "sat", answer.status());
+                assertEquals(Arrays.toString(row), row[3],
+                        asked(log) > before);
+            }
+        }
+    }
+
+    private static long asked(Path log) throws IOException {
+        return Files.readAllLines(log).size();
+    }
+
+    /**
+     * Two recorded keys are one key when they print one text: compared node
+     * by node ({@code ContainerSmtCodec#sameText}) exactly where their texts
+     * are equal -- a number's spelling, a string against a number, member
+     * order, null -- and a shared subterm is not walked twice.
+     */
+    @Test
+    public void twoKeysAreOneKeyWhenTheyPrintOneText() {
+        String[][] pairs = {
+                {"1", "1"}, {"1", "1.0"}, {"\"1\"", "1"}, {"true", "\"true\""},
+                {"null", "null"}, {"[1,2]", "[1,2]"}, {"[1,2]", "[2,1]"},
+                {"{\"a\":1,\"b\":[null]}", "{\"a\":1,\"b\":[null]}"},
+                {"{\"a\":1,\"b\":2}", "{\"b\":2,\"a\":1}"},
+                {"{\"a\":{\"x\":9007199254740993}}",
+                        "{\"a\":{\"x\":9007199254740992}}"},
+        };
+        for (String[] pair : pairs) {
+            com.google.gson.JsonElement left =
+                    com.google.gson.JsonParser.parseString(pair[0]);
+            com.google.gson.JsonElement right =
+                    com.google.gson.JsonParser.parseString(pair[1]);
+            assertEquals(Arrays.toString(pair),
+                    left.toString().equals(right.toString()),
+                    ContainerSmtCodec.sameText(left, right,
+                            new java.util.IdentityHashMap<com.google.gson
+                                    .JsonElement, Set<com.google.gson
+                                    .JsonElement>>()));
+        }
+        // A chain whose every node names the one below twice is 2^depth
+        // nodes spelled; compared, each pair once.
+        JsonObject one = new JsonObject();
+        JsonObject other = new JsonObject();
+        one.addProperty("leaf", 7L);
+        other.addProperty("leaf", 7L);
+        for (int depth = 0; depth < 64; depth++) {
+            JsonObject up = new JsonObject();
+            JsonObject across = new JsonObject();
+            up.add("l", one);
+            up.add("r", one);
+            across.add("l", other);
+            across.add("r", other);
+            one = up;
+            other = across;
+        }
+        assertTrue(ContainerSmtCodec.sameText(one, other,
+                new java.util.IdentityHashMap<com.google.gson.JsonElement,
+                        Set<com.google.gson.JsonElement>>()));
     }
 
     @Test
@@ -1523,6 +1643,49 @@ public class ComposerTest {
                         + "is refused by name: " + unplaced.gaps(),
                 blocking(unplaced.gaps(), "ROOT.LONE"));
         assertFalse(unplaced.clockCells().contains("clk_lone"));
+    }
+
+    /**
+     * EVERY SESSION ON THE RECORDING'S TIMELINE (hdfs-11741 L1): a replay
+     * ran ten minutes after the recording, so the key it made at startup,
+     * outside every clock root, expires at a constant on its own clock; its
+     * plant jumped the one clock cell a second.  Compared with that cell,
+     * the constant is the same instant on the recording's timeline, and the
+     * replay's own world -- the cell at the recording's reading plus its
+     * skew -- is a world of its path.  {session, recorded clock, skew, key
+     * expiry, the expiry its path compares on the recording's timeline}.
+     */
+    @Test
+    public void aReplaysInstantsAreOnTheRecordingsTimeline() throws Exception {
+        Path iteration = folder.newFolder("timeline").toPath();
+        long[][] rows = {
+                {0L, 1_000_000L, 0L, 1_000_500L, 1_000_500L},
+                {1L, 1_601_000L, 1_000L, 1_600_500L, 1_000_500L}};
+        for (long[] row : rows) {
+            String id = "s" + row[0];
+            Session session = new Session(iteration, id, row[0] == 1L);
+            session.roots.add(RootMintRow.of(id, 1L, ANCHOR, "ROOT.NOW",
+                    "clk_now", RootKind.CLOCK, Long.toString(row[1]), null,
+                    null, true, Clock.of(1_000_000L, Clock.WALL), row[2]));
+            session.expression("EXPR.00000000000003e1", binary("<",
+                    integer("J", row[3]), symbol("clk_now", "J")));
+            session.target("EXPR.00000000000003e1", row[0] == 1L, true);
+            session.write();
+        }
+        Composer.Composition composition = compose(iteration, 4);
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            long[] row = rows[disjunct.path().sessionId.equals("s1") ? 1 : 0];
+            String own = "(assert (= clk_now " + (1_000_000L + row[2]) + "))";
+            assertEquals(disjunct.path().sessionId + " in its own world",
+                    row[0] == 1L ? "sat" : "unsat", solver().ask(
+                            composition.pathQuery(disjunct.selector(),
+                                    Collections.singletonList(own)),
+                            null, false).status());
+        }
+        assertTrue(composition.body(), composition.body().contains(
+                "(< " + rows[1][4] + " clk_now)"));
+        assertFalse(composition.body(), composition.body().contains(
+                Long.toString(rows[1][3])));
     }
 
     private static RootMintRow clockCell(String session, long seq,
@@ -2225,6 +2388,16 @@ public class ComposerTest {
                             + row[1] + ")")), null, false).status();
             assertEquals(Arrays.toString(row), row[2], answer);
         }
+        // Each path's own run is its own session's delivery of the message
+        // it received, which Disjunction asks under first.
+        for (Map.Entry<String, String> path : selectorOf.entrySet()) {
+            List<String> own = composition.ownRun(path.getValue());
+            assertEquals(path.getKey() + ": " + own, 1, own.size());
+            String arm = own.get(0).replace("(assert ", "")
+                    .replace(")", "");
+            assertEquals(path.getKey(), path.getKey(),
+                    composition.arm(arm).sessionId());
+        }
     }
 
     // ------------------------------------------------------------------
@@ -2426,7 +2599,9 @@ public class ComposerTest {
         // before the store states it or, never written, a read of it.  A
         // cell with no one value while 12 was stored -- written twice, or
         // only after the store -- answers nothing: that pairing is refused
-        // by name.
+        // by name.  So does a cell copied through the very owner asking for
+        // it ({@code new Block(b)} where b may be the copy: a40h2
+        // FsDatasetImpl-1092), which once recursed until the heap was full.
         String commit = "org/apache/Commit";
         LocationId latest = LocationId.of(LocationKind.INSTANCE, "8", "48");
         LocationId flag = LocationId.of(LocationKind.INSTANCE, "8", "56");
@@ -2437,7 +2612,8 @@ public class ComposerTest {
                 {7L, "written", ClaimKind.STATE_PAIRING_FLIPPED},
                 {7L, "read", ClaimKind.STATE_PAIRING_FLIPPED},
                 {7L, "twice", ClaimKind.NO_SUPPORTED_WITNESS},
-                {7L, "late", ClaimKind.NO_SUPPORTED_WITNESS}}) {
+                {7L, "late", ClaimKind.NO_SUPPORTED_WITNESS},
+                {7L, "copied", ClaimKind.NO_SUPPORTED_WITNESS}}) {
             long generation = (Long) each[0];
             String row = generation + " " + each[1];
             Path iteration = folder.newFolder("moved-owner-" + generation
@@ -2468,10 +2644,12 @@ public class ComposerTest {
             // The other writer first: it builds commit 12, then stores it.
             long version = 0L;
             for (int index = 0; index < ("twice".equals(each[1]) ? 2
-                    : "written".equals(each[1]) ? 1 : 0); index++) {
+                    : "written".equals(each[1]) || "copied".equals(each[1])
+                    ? 1 : 0); index++) {
                 session.write(Endpoint.of(theirs, "Commit#init#3:WRITE",
                         at("generation#" + index, 0), 0), other, ++version,
-                        "EXPR.v1.generation");
+                        "copied".equals(each[1]) ? "EXPR.v1.copied"
+                                : "EXPR.v1.generation");
             }
             if ("read".equals(each[1])) {
                 session.read(Endpoint.of(theirs, "Commit#get#2:READ",
@@ -2510,10 +2688,11 @@ public class ComposerTest {
                     "Z", null);
             // The VM's pair: concreteValue is the run's cell, 11#24.
             JsonObject owner = read("INSTANCE_FIELD", 8L, 48L, stored, "L");
+            JsonObject generationThroughOwner = fieldRead(commit, 24L, "I",
+                    owner, read("INSTANCE_FIELD", 11L, 24L, constructed, "I"));
+            session.expression("EXPR.v1.copied", generationThroughOwner);
             session.expression("EXPR.00000000000000f1", binary(">",
-                    fieldRead(commit, 24L, "I", owner, read("INSTANCE_FIELD",
-                            11L, 24L, constructed, "I")),
-                    integer("I", 4L)));
+                    generationThroughOwner, integer("I", 4L)));
             session.expression("EXPR.00000000000000f2", read("INSTANCE_FIELD",
                     8L, 56L, flagged, "Z"));
             session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
@@ -2529,7 +2708,9 @@ public class ComposerTest {
             boolean named = false;
             for (GapRow gap : composition.gaps()) {
                 named |= gap.subject().equals("CANDIDATE_UNANSWERED:"
-                        + SmtLowering.locationKey(other) + "@s0");
+                        + SmtLowering.locationKey(other) + "@s0")
+                        && gap.detail().contains("LoweringCycle")
+                        == "copied".equals(each[1]);
             }
             assertEquals(row + ": a cell with no one value is named",
                     each[2] == ClaimKind.NO_SUPPORTED_WITNESS
@@ -4985,13 +5166,20 @@ public class ComposerTest {
      *       phi reads the projection, never the pinned constant;</li>
      *   <li>H2b: the write joins and a STATE family may re-pair the read,
      *       while the node's projection refuses: phi gets no literal the
-     *       family cannot move, so the path is refused.</li>
+     *       family cannot move, so the path is refused;</li>
+     *   <li>bound: the write refuses over a read of a field the reader
+     *       alone writes, one of whose versions no row wrote (the VM's
+     *       version bound dropped it): no read of it has another writer,
+     *       so nothing moves and the pin binds (hdfs-17960 e1c);</li>
+     *   <li>own: phi reads a version the reader wrote and one no row
+     *       wrote: each arm would be one read's own pairing, with no
+     *       HB-concurrent writer among them, so there is no family.</li>
      * </ul>
      */
     @Test
     public void theOneBindingRule() throws Exception {
         for (String name : new String[]{"pin", "unstated", "H1", "H2a",
-                "H2b"}) {
+                "H2b", "bound", "own"}) {
             Path iteration = folder.newFolder("bind-" + name).toPath();
             OccurrenceAddress reader = occurrence("case/nn0", "REGION.commit",
                     CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
@@ -5025,11 +5213,30 @@ public class ComposerTest {
             arguments.add(vmString("toString", symbol(SERIAL, "I")));
             parsed.add("_param_list", arguments);
             parsed.add("_res_exp", symbol("M_I_return7", "I"));
+            LocationId field = LocationId.of(LocationKind.INSTANCE, "11",
+                    "name");
+            if ("bound".equals(name)) {
+                // The reader parsed it: wrote v6, read it, then read v7,
+                // whose write the bound dropped.
+                refused = binary("+", read("INSTANCE_FIELD", field.owner(),
+                        "name", 7L, "I"), unmodeled);
+                session.expression("EXPR.00000000000000b4",
+                        integer("I", 6L));
+                session.write(Endpoint.of(reader, "Parser#end#7:WRITE",
+                        at("w#3", 0), 0), field, 6L, "EXPR.00000000000000b4");
+                for (long seen : new long[]{6L, 7L}) {
+                    session.read(Endpoint.of(reader, "Parser#get#8:READ",
+                                    at("r#" + seen, 0), 0), field, seen,
+                            SmtLowering.locationKey(field) + "@v" + seen
+                                    + "@s0", "I", Long.toString(seen));
+                }
+            }
             session.expression("EXPR.00000000000000b1", "H1".equals(name)
-                    ? parsed : "H2b".equals(name) ? integer("I", 2L)
-                    : refused);
-            session.write(Endpoint.of(first, "TickA#set#4:WRITE",
-                    at("w#1", 0), 0), stamp, 2L, "EXPR.00000000000000b1");
+                    ? parsed : "H2b".equals(name) || "own".equals(name)
+                    ? integer("I", 2L) : refused);
+            session.write(Endpoint.of("own".equals(name) ? reader : first,
+                    "TickA#set#4:WRITE", at("w#1", 0), 0), stamp, 2L,
+                    "EXPR.00000000000000b1");
             if ("H2b".equals(name)) {
                 // A concurrent writer: the read's STATE family re-pairs it.
                 OccurrenceAddress second = occurrence("case/nn0",
@@ -5044,9 +5251,19 @@ public class ComposerTest {
             session.read(Endpoint.of(reader, "Block#getStamp#29:READ",
                             at("r#1", 0), 0), stamp, 2L, symbol, "I",
                     "unstated".equals(name) ? null : "H1".equals(name) ? "3"
-                            : "H2b".equals(name) ? "2" : "1001");
+                            : "H2b".equals(name) || "own".equals(name) ? "2"
+                            : "1001");
             JsonObject node = read("INSTANCE_FIELD", stamp.owner(), "value",
                     2L, "I");
+            // own: then a version no row wrote, which phi compares with it.
+            JsonObject later = read("INSTANCE_FIELD", stamp.owner(), "value",
+                    9L, "I");
+            later.add("concreteValue", integer("I", 9L));
+            if ("own".equals(name)) {
+                session.read(Endpoint.of(reader, "Block#getStamp#31:READ",
+                                at("r#9", 0), 0), stamp, 9L,
+                        key + "@v9@s0", "I", "9");
+            }
             if ("H2a".equals(name) || "H2b".equals(name)) {
                 // The node's own projection of the version it observed.
                 node.getAsJsonObject("observedVersion").add("expression",
@@ -5057,11 +5274,12 @@ public class ComposerTest {
             if (!"unstated".equals(name) && !"H1".equals(name)) {
                 // What it returned: a literal no family moves.
                 node.add("concreteValue", integer("I",
-                        "H2b".equals(name) ? 2L : 1001L));
+                        "H2b".equals(name) || "own".equals(name) ? 2L
+                                : 1001L));
             }
             session.expression("EXPR.00000000000000b3", binary(
-                    "H1".equals(name) ? "!=" : "<", node,
-                    symbol(SERIAL, "I")));
+                    "H1".equals(name) ? "!=" : "<", node, "own".equals(name)
+                            ? later : symbol(SERIAL, "I")));
             session.target("EXPR.00000000000000b3", false, true);
             session.write();
 
@@ -5125,6 +5343,24 @@ public class ComposerTest {
                                     + SERIAL + ")"))
                                     && !arm.contains(SmtNames.legalSymbols(
                                     symbol)));
+                    break;
+                case "bound":
+                    assertEquals(name + ": no read of the field has another "
+                                    + "writer, so the pin binds", 1,
+                            composition.disjuncts().size());
+                    assertTrue(name + ": phi reads the pinned symbol: " + arm,
+                            arm.contains(SmtNames.legalSymbols(
+                                    "(= " + symbol + " 1001)")));
+                    break;
+                case "own":
+                    assertEquals(name + ": the path stands", 1,
+                            composition.disjuncts().size());
+                    assertFalse(name + ": arms that are each a read's own "
+                                    + "pairing are no family: "
+                                    + composition.body(),
+                            composition.body().contains("state_family__")
+                                    || composition.body().contains(
+                                    "observed_arm__"));
                     break;
                 default:
                     assertEquals(name + ": a read a family re-pairs is no "
@@ -5239,7 +5475,11 @@ public class ComposerTest {
      * view only when it fires.  An array-valued ite over a lambda branch is
      * "incomplete (theory array)" for z3 4.14: hdfs-11741 v79's witness
      * paths (the balancer's removeExpiredKeys over a clock, then puts) were
-     * undecided until the guard went inside the lambdas.
+     * undecided until the guard went inside the lambdas.  And a query that
+     * reads no map's order gets maps that keep none, with no lambda at all
+     * (hdfs-11741 L1: two fatal-observing paths still undecided).  {what the
+     * state shows, the guard side that contradicts it, whether it reads the
+     * order}.
      */
     @Test
     public void aGuardedRemovalIsDecided() {
@@ -5248,27 +5488,32 @@ public class ComposerTest {
                 + " ((as const (Array Value Value)) (VRef nullRef))"
                 + " ((as const (Array Int Value)) (VRef nullRef))"
                 + " ((as const (Array Value Int)) (- 1)))";
-        String query = String.join("\n", VmTermLowering.preamble())
-                + "\n(declare-const x Int)"
+        String states = "\n(declare-const x Int)"
                 + "\n(define-fun s () AssocState (assoc_remove_if"
                 + " (assoc_put (assoc_put " + empty
                 + " (VInt 1) (VInt 10)) (VInt 2) (VInt 20))"
                 + " (VInt 1) (< x 5)))"
                 + "\n(define-fun grown () AssocState"
                 + " (assoc_put s (VInt 3) (VInt 30)))\n";
-        // What the state shows, and the guard side that contradicts it.
         String[][] cases = {
-            {"(= (assoc_key_at grown 0) (VInt 2))", "(>= x 5)"},
-            {"(= (assoc_size grown) 3)", "(< x 5)"},
+            {"(= (assoc_key_at grown 0) (VInt 2))", "(>= x 5)", "true"},
+            {"(= (assoc_position_of grown (VInt 3)) 1)", "(>= x 5)", "true"},
+            {"(= (assoc_size grown) 3)", "(< x 5)", "false"},
+            {"(not (assoc_has grown (VInt 1)))", "(>= x 5)", "false"},
         };
         for (String[] shown : cases) {
-            Z3.Answer holds = solver.ask(query + "(assert " + shown[0] + ")",
+            String asked = states + "(assert " + shown[0] + ")";
+            String query = String.join("\n", SmtNames.reachedPreamble(
+                    VmTermLowering.preamble(),
+                    Collections.singletonList(asked))) + asked;
+            assertEquals("a lambda only where the order is read: " + shown[0],
+                    Boolean.parseBoolean(shown[2]), query.contains("lambda"));
+            Z3.Answer holds = solver.ask(query,
                     Collections.<String>emptyList(), false);
             assertTrue("decided with the guard free: " + shown[0] + " "
                     + holds.status(), holds.decided() && holds.sat());
-            Z3.Answer refuted = solver.ask(query + "(assert " + shown[0]
-                    + ")\n(assert " + shown[1] + ")",
-                    Collections.<String>emptyList(), false);
+            Z3.Answer refuted = solver.ask(query + "\n(assert " + shown[1]
+                    + ")", Collections.<String>emptyList(), false);
             assertTrue("and only on its own side: " + shown[1] + " "
                     + refuted.status(), refuted.decided() && !refuted.sat());
         }

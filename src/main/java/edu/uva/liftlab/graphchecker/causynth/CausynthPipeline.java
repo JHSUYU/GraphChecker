@@ -47,6 +47,7 @@ import soot.VoidType;
 import soot.PrimType;
 import soot.jimple.AssignStmt;
 import soot.jimple.CastExpr;
+import soot.jimple.ClassConstant;
 import soot.jimple.Constant;
 import soot.jimple.DefinitionStmt;
 import soot.jimple.FieldRef;
@@ -358,6 +359,9 @@ public final class CausynthPipeline {
         /** Loop proofs frozen before any symbolic-region bridge is inserted. */
         private final Map<String, CfgLoopControl.NaturalLoop> rootLoops =
                 new LinkedHashMap<>();
+        /** ONE plan per root hook group, the entry woven for all of them. */
+        private final Map<String, InstrumentationPlan> rootHooks =
+                new LinkedHashMap<>();
         private LoopBoundPolicy loopBound;
 
         private CampaignEnvelope(List<InstrumentationPlan> campaign) {
@@ -396,6 +400,19 @@ public final class CausynthPipeline {
                 // One union tree admits one policy: the union of the plans'.
                 loopBound = loopBound == null ? plan.loopBound()
                         : loopBound.union(plan.loopBound());
+                InstrumentationPlan hook = rootHooks.putIfAbsent(
+                        plan.rootHookGroup(), plan);
+                if (hook != null && (hook.rootLoopDemandedUnitIndex()
+                        != plan.rootLoopDemandedUnitIndex()
+                        || !hook.rootLoopControlSites().equals(
+                        plan.rootLoopControlSites()))) {
+                    throw new IllegalStateException(
+                            "ROOT_HOOK_GROUP_DISAGREES: "
+                                    + plan.rootHookGroup().replace('\n', ' ')
+                                    + " is one woven entry, and two of its "
+                                    + "rows place it differently (demanded "
+                                    + "unit, loop controls)");
+                }
             }
         }
 
@@ -482,8 +499,14 @@ public final class CausynthPipeline {
         instrumentConcolicCommunicationHandoffs(campaign, refs);
         CodecWeave.apply(wireDeclarations(), refs);
         envelope.freezeRootLoops();
-        for (InstrumentationPlan plan : campaign) {
-            instrumentConcolicRegion(plan, refs, envelope);
+        // ONE entry per root hook group, however many planned occurrences
+        // share it, and one enclosing entry per loop root: the replay offers
+        // each invocation to every task of the group.
+        Set<String> loopRoots = new LinkedHashSet<>();
+        for (InstrumentationPlan plan : envelope.rootHooks.values()) {
+            instrumentConcolicRegion(plan, refs, envelope,
+                    plan.loopBodyRoot()
+                            && loopRoots.add(plan.loopRootHookGroup()));
         }
         // ONE entry hook per skeleton root owns the index frame.
         instrumentSkeletonRegions(refs);
@@ -559,10 +582,14 @@ public final class CausynthPipeline {
                 entryToken);
     }
 
-    /** Inserts region hooks at one campaign task's selected root. */
+    /**
+     * Inserts the region hooks of one root hook group at its selected root,
+     * and, with {@code enclosingInvocation}, its loop root's enclosing entry.
+     */
     private void instrumentConcolicRegion(InstrumentationPlan plan,
                                           HookCatalog refs,
-                                          CampaignEnvelope envelope) {
+                                          CampaignEnvelope envelope,
+                                          boolean enclosingInvocation) {
         String signature = plan.rootMethod();
         SootMethod replayEntry = envelope.replayEntries.get(plan);
         String replayEntrySignature = replayEntry.getSignature();
@@ -609,7 +636,7 @@ public final class CausynthPipeline {
             // Admission compares workload objects: not observed.
             Unit regionStart = refs.bracket(entry, token,
                     Hook.ENTER_REGION_FRAME,
-                    StringConstant.v(plan.instrumentationSelector()),
+                    StringConstant.v(plan.rootHookGroup()),
                     StringConstant.v(signature), receiver, rootArguments);
             for (int index = 0; index < rootArgumentCount; index++) {
                 Value parameter = parameterLocal(body, index);
@@ -623,7 +650,7 @@ public final class CausynthPipeline {
                 insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
                 bracketReturns(body, originalUnits, 0, refs,
                         Hook.EXIT_REGION_FRAME,
-                        StringConstant.v(plan.instrumentationSelector()),
+                        StringConstant.v(plan.rootHookGroup()),
                         StringConstant.v(signature));
             } else {
                 insertLoopBodyEntry(body, method,
@@ -635,9 +662,9 @@ public final class CausynthPipeline {
             }
             addThrowHandler(body, regionStart, refs,
                     Hook.THROW_REGION_FRAME, "$causynthRegionThrown",
-                    StringConstant.v(plan.instrumentationSelector()),
+                    StringConstant.v(plan.rootHookGroup()),
                     StringConstant.v(signature));
-            if (rootLoop != null) {
+            if (enclosingInvocation) {
                 instrumentLoopRootInvocationContext(plan, replayEntry, refs);
             }
         } catch (RuntimeException exception) {
@@ -683,7 +710,7 @@ public final class CausynthPipeline {
                 entry);
         Unit enter = refs.bracket(entry, contextToken,
                 Hook.ENTER_LOOP_ROOT_INVOCATION_FRAME,
-                StringConstant.v(plan.instrumentationSelector()),
+                StringConstant.v(plan.loopRootHookGroup()),
                 StringConstant.v(plan.rootMethod()),
                 receiverOrNull(body, method), rootArguments);
         insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
@@ -770,30 +797,21 @@ public final class CausynthPipeline {
                             + " does not contain a header-dominated demanded "
                             + "unit u" + demandedUnitIndex);
         }
+        // A control's body edges are an if's one in-loop successor and a
+        // switch's every case that stays in the loop; of one control's, at
+        // most one dominates the demanded unit.
         List<CfgLoopControl.Edge> demandedEntries = new ArrayList<>();
         for (Unit unit : controls.units) {
-            List<CfgLoopControl.Edge> continuations = new ArrayList<>();
             for (Unit successor : loop.stableSuccessors(unit)) {
-                if (!members.contains(successor)) continue;
-                continuations.add(currentLoopBoundaryEdge(body,
-                        new CfgLoopControl.Edge(unit, successor), loopId,
-                        false));
-            }
-            continuations = deduplicateEdges(continuations);
-            if (continuations.size() != 1) {
-                throw new IllegalStateException(
-                        "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
-                                + " control site u"
-                                + originalUnitIndex(unit)
-                                + " does not resolve through synthetic gates "
-                                + "to exactly one original in-loop body "
-                                + "successor");
-            }
-            CfgLoopControl.Edge entry = continuations.get(0);
-            if (loop.isDominatedBy(demanded, entry.target)) {
-                demandedEntries.add(entry);
+                if (members.contains(successor)
+                        && loop.isDominatedBy(demanded, successor)) {
+                    demandedEntries.add(currentLoopBoundaryEdge(body,
+                            new CfgLoopControl.Edge(unit, successor), loopId,
+                            false));
+                }
             }
         }
+        demandedEntries = deduplicateEdges(demandedEntries);
 
         if (demandedEntries.isEmpty() && !loop.backedges.isEmpty()) {
             // The demanded unit comes before every declared control of the
@@ -869,11 +887,14 @@ public final class CausynthPipeline {
         Collections.sort(planned);
 
         // Unit indices can shift between Soot lowerings of one class; branch
-        // order and CFG role are the durable anchors.
+        // order and CFG role are the durable anchors.  A control is any
+        // branch leaving the loop, as the catalog's guards are
+        // (CfgLoopControl#retainedLoops): an if, or a switch whose default
+        // throws (PBHelperClient.convertEditsResponse, sweep a40h2).
         Set<Unit> exits = Collections.newSetFromMap(
                 new IdentityHashMap<Unit, Boolean>());
         for (CfgLoopControl.Edge edge : loop.exitEdges()) {
-            if (edge.source instanceof IfStmt
+            if (CausynthBranchShape.from(body, edge.source) != null
                     && originalUnitIndex(edge.source) >= 0) {
                 exits.add(edge.source);
             }
@@ -1058,26 +1079,15 @@ public final class CausynthPipeline {
             return deduplicateEdges(closing);
         }
 
+        // Each control's exits: an if's one, a switch's every case leaving
+        // the loop (resolveLoopControls proved each control has one).
         ResolvedLoopControls controls = resolveLoopControls(body, loop,
                 controlSites, "LOOP_BODY_ROOT_EXIT_UNAVAILABLE: ");
-        for (Unit unit : controls.units) {
-            List<CfgLoopControl.Edge> exits = new ArrayList<>();
-            for (CfgLoopControl.Edge exit : loop.exitEdges()) {
-                if (exit.source != unit) continue;
-                exits.add(currentLoopBoundaryEdge(body, exit,
+        for (CfgLoopControl.Edge exit : loop.exitEdges()) {
+            if (controls.units.contains(exit.source)) {
+                closing.add(currentLoopBoundaryEdge(body, exit,
                         loop.identity(method), true));
             }
-            exits = deduplicateEdges(exits);
-            if (exits.size() != 1) {
-                throw new IllegalStateException(
-                        "LOOP_BODY_ROOT_EXIT_UNAVAILABLE: "
-                                + loop.identity(method) + " control site "
-                                + "u" + originalUnitIndex(unit)
-                                + " does not resolve through "
-                                + "synthetic gates to exactly one original "
-                                + "loop exit");
-            }
-            closing.add(exits.get(0));
         }
         return deduplicateEdges(closing);
     }
@@ -1092,7 +1102,7 @@ public final class CausynthPipeline {
                 plan.rootLoopControlSites())) {
             List<Unit> bridge = new ArrayList<>();
             refs.bracket(bridge, Hook.EXIT_REGION_FRAME,
-                    StringConstant.v(plan.instrumentationSelector()),
+                    StringConstant.v(plan.rootHookGroup()),
                     StringConstant.v(rootMethod));
             // On the current FIRST edge of the frozen boundary, so later
             // tasks' closes prepend and the activation stack stays LIFO.
@@ -1962,12 +1972,13 @@ public final class CausynthPipeline {
 
     /**
      * Observes a tracked cell before each access of it, starting its version
-     * log where none stands: before the {@code putfield}, before the call
-     * when the store is an atomic's RMW (no application {@code putfield}),
-     * and before the {@code getfield} of a read.  An access before the
-     * constructor call that makes its object has no object to observe yet,
-     * and a read site that is no {@code getfield} of its cell observes
-     * nothing.
+     * log where none stands: before the {@code putfield}/{@code putstatic},
+     * before the call when the store is an atomic's RMW (no application
+     * {@code putfield}), and before the {@code getfield}/{@code getstatic} of
+     * a read.  A static cell's owner is its declaring class's mirror, the key
+     * the VM versions it by.  An instance access before the constructor call
+     * that makes its object has no object to observe yet, and a read site
+     * that is no field read of its cell observes nothing.
      */
     private void instrumentConcolicObservedSites(
             ConcolicMaterializationSelection selection, HookCatalog refs) {
@@ -1983,8 +1994,14 @@ public final class CausynthPipeline {
                     unobserved++;
                     continue;
                 }
-                owner = accessedField((AssignStmt) selected, target.read)
-                        .getBase();
+                FieldRef field = accessedField((AssignStmt) selected,
+                        target.read);
+                // A static cell's mirror is the class its signature names, the
+                // declaring class the runtime hands the VM with it.
+                owner = field instanceof InstanceFieldRef
+                        ? ((InstanceFieldRef) field).getBase()
+                        : ClassConstant.fromType(RefType.v(CausynthStaticFacts
+                                .fieldOwner(target.cell)));
             } else {
                 selected = originalCall(body, target.unitIndex,
                         target.siteId, "OBSERVED_SITE_NOT_UNIQUE",
@@ -2015,9 +2032,10 @@ public final class CausynthPipeline {
     }
 
     /**
-     * The original {@code putfield} into, or {@code getfield} of, the
-     * target's cell; null when it runs before the constructor call that makes
-     * its object, or when a read site is no {@code getfield} of its cell.
+     * The original store into, or read of, the target's cell -- an instance
+     * field's or, for a static cell, its class's; null when an instance
+     * access runs before the constructor call that makes its object, or when
+     * a read site is no field read of its cell.
      */
     private static Stmt originalAccess(Body body, ObservedSite target) {
         tagOriginalUnits(snapshotUnits(body));
@@ -2034,16 +2052,18 @@ public final class CausynthPipeline {
                         "OBSERVED_SITE_NOT_UNIQUE: " + target.siteId);
             }
             selected = (Stmt) unit;
-            InstanceFieldRef field = accessedField((AssignStmt) unit,
-                    target.read);
-            if (field == null || !target.cell.equals(CausynthStaticFacts
-                    .declaredFieldSignature(field.getFieldRef()))) {
+            FieldRef field = accessedField((AssignStmt) unit, target.read);
+            if (field == null
+                    || (field instanceof StaticFieldRef) != target.staticField
+                    || !target.cell.equals(CausynthStaticFacts
+                            .declaredFieldSignature(field.getFieldRef()))) {
                 if (target.read) return null;
                 throw new IllegalStateException(
                         "OBSERVED_SITE_STORE_NOT_FOUND: "
                                 + target.siteId + " stores no " + target.cell);
             }
-            if (body.getMethod().isConstructor() && constructed == null) {
+            if (!target.staticField && body.getMethod().isConstructor()
+                    && constructed == null) {
                 return null;
             }
         }
@@ -2054,12 +2074,10 @@ public final class CausynthPipeline {
         return selected;
     }
 
-    /** The instance field an assignment reads or stores, or null. */
-    private static InstanceFieldRef accessedField(AssignStmt access,
-                                                  boolean read) {
+    /** The field an assignment reads or stores, or null. */
+    private static FieldRef accessedField(AssignStmt access, boolean read) {
         Value field = read ? access.getRightOp() : access.getLeftOp();
-        return field instanceof InstanceFieldRef ? (InstanceFieldRef) field
-                : null;
+        return field instanceof FieldRef ? (FieldRef) field : null;
     }
 
     /** Whether {@code unit} is a constructor's own this/super constructor

@@ -64,6 +64,27 @@ public class Z3Test {
     }
 
     /**
+     * A z3 starts only under the host's memory ceiling, the percentage the
+     * campaign states (the owner's 70 when none is); one that is no
+     * percentage is refused, never read as the default.  {stated, ceiling or
+     * null for refused}.
+     */
+    @Test
+    public void theMemoryCeilingIsAPercentageOrRefused() {
+        Object[][] rows = {{null, 70}, {"70", 70}, {" 100 ", 100}, {"1", 1},
+                {"0", null}, {"101", null}, {"seventy", null}, {"", null}};
+        for (Object[] row : rows) {
+            Integer ceiling;
+            try {
+                ceiling = Z3.ceilingPercent((String) row[0]);
+            } catch (IllegalStateException refused) {
+                ceiling = null;
+            }
+            assertEquals(Arrays.toString(row), row[1], ceiling);
+        }
+    }
+
+    /**
      * EVERY RUN RACES THE TWO ARITHMETIC ENGINES and answers with the first
      * that decides, the preferred one (2) whenever it decides within its
      * grace of the other: an undecided pair stays undecided, and a pair that

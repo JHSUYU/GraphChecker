@@ -19,6 +19,15 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   campaign_freeze` refuses a campaign without its `java`, `rt.jar`, `libjava.so` and `libjvm.so`
   and digests them into the run manifest. `execute.sh` starts replays on it.
 - The Zero C++ interpreter is the only execution engine; the smoke tests run `-Xint`.
+- Class redefinition (a JVMTI agent's retransform: mockito-inline retransforms every superclass of
+  a mocked type, `java.lang.Object` included): a Zero interpreter frame has no pc and no code blob,
+  so `frame::metadata_do` (`VM/runtime/frame.cpp`) asks the frame itself whether it is interpreted,
+  and `MetadataOnStackMark` marks the method it runs. A redefined method still running in some
+  frame (a thread parked in the old `Object.wait`) is kept as a previous version until it returns,
+  and a class-unloading GC frees only what no stack runs. A GC that frees metadata (those old
+  versions, an unloaded loader's classes) drops every cache keyed by a `Method*` or `Klass*`
+  address, which the VM reuses: the guarded-store memo (§5.3) and the container field offsets
+  (`ConcolicMngr::metadata_freed`, called from `VM/classfile/classLoaderData.cpp`).
 
 ## 2. Shadows, sessions, regions
 
@@ -57,7 +66,11 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   branch is an event even when concrete (zero conditions). `getConcolicBranchEvents` returns the
   events since the last read; `getConcolicPathConditionRange` a range of the region's conditions.
   `pauseConcolicPathCondition` / `resumeConcolicPathCondition` (nestable) mute recording around the
-  engine's own code.
+  engine's own code: every hook call the weave emits, and the engine code the JDK runs on a
+  program thread (an inheritable thread-local's `childValue` in `Thread.init`,
+  `runtime/InheritedState`). Paused, the interpreter propagates nothing and no model runs
+  (`ConcolicMngr::can_do_concolic`), so the engine's lists over program objects shadow none of
+  them.
 
 ## 3. Propagation through bytecode
 
@@ -70,7 +83,7 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 | `tableswitch`, `lookupswitch` | the taken case; the default arm is the conjunction of `sel != k` over every key |
 | array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE`; a load at a concrete position the recorded writes decide builds no READ (§6); the first symbolic store into an array starts its element's log |
 | `getfield`/`getstatic` | the field shadow, resolved through the version log where tracked (§5); a demand-minted `FieldAccessExpression` where the owner is shadowed; a box's `value` read from a box that carries no expression is the box slot's expression (the unboxing of a slot-carried value) |
-| `putfield`/`putstatic` | set the field shadow; publish a version (§5) |
+| `putfield`/`putstatic` | set the field shadow; publish a version (§5); a reference is symbolic only by what it carries (§5.1) |
 | `invoke*` | argument and return transfer; model dispatch (§4) |
 | `Method.invoke`, `Constructor.newInstance` | boxed arguments and result carried (`VM/runtime/reflection.cpp`) |
 | `checkcast`, `monitorenter`/`exit` | concrete |
@@ -172,10 +185,23 @@ Container versions carry no word: a container mutation is a Java call no lock ca
 
 Tracking is by value; nothing is declared in advance. A log starts at the first symbolic store
 (field or array element), a mint, an attach, a symbolic container operation, an admitted guarded
-store (§5.3), or `observeField` (§5.4). Once tracked, every store to it is versioned,
+store (§5.3), or `observeField` (§5.4). A log a symbolic store starts has no INITIAL: the value
+that store wrote is the first thing it knows, and a store before it is no version
+(`SFV::begin_store_locked`). Once tracked, every store to it is versioned,
 concrete ones included, with the stored operand, not a heap re-read. A mint, an attach and an
 observation read the word they state under the location's lock (`publish_held`,
 `publish_initial_held`).
+
+A stored reference is symbolic by what it carries: its slot's expression, else the expression its
+object holds as its own (`ContainerSupport::semantic_value`: a decode's mint, a model's result).
+Null, and a shadow that only names its object (an owner of a tracked field, a referent named
+once), are concrete (`putfield`/`putstatic`, `aastore`), as a model's argument is
+(`MethodSymbolizerHandle::general_check_param_symbolized`): naming an object is not making it
+symbolic. Counted symbolic, a name started a log at every location it was stored into, gave each
+owner a shadow in turn, and a load of it from such an array made the element demand-symbolic,
+every field read of it a projection; in hdfs-17960 the image's name reached the checkpoint
+savers' threads, and their context class loader 13k rows of a configuration parse. A concrete
+reference stored where a log stands is versioned as any concrete store is, naming its referent.
 
 ### 5.2 Reads
 
@@ -203,7 +229,7 @@ location's log: a container mutation (`put`, `remove`, `clear`, `add`, `offer`, 
 is given a shadow if it has none). Neither states a path guard. Another store in the same method is
 not admitted; nor is an array-element store (the scope map lists none). A method's rows are looked
 up once per thread per table (a thread-local memo keyed by the `Method*`), so the map lock is taken
-once per method, not per store.
+once per method, not per store; a GC that frees methods discards every memo (§1).
 
 ### 5.4 Observation
 
@@ -461,7 +487,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 62
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 65
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -469,12 +495,16 @@ unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither 
 `RegionCloneSmoke`, `RegionUnsafeWriteSmoke`, `RegionSharedBoxSmoke`,
 `RegionStringBuilderMutatorSmoke`, `RegionWrapperFieldSmoke`), and the versioning rules theirs
 (`RegionTrackedRaceSmoke`, `RegionReadExactnessSmoke`, `RegionLoadedValueSmoke`,
-`RegionVersionDefectsSmoke`, and for a reference carrier `RegionReferenceSwapSmoke`); the
+`RegionVersionDefectsSmoke`, for a reference carrier `RegionReferenceSwapSmoke`, and for a
+reference that only names its object `RegionNamedReferenceStoreSmoke`, §5.1, instance, static
+and element); the engine's paused bookkeeping in `Thread.init` has `RegionInheritedStateSmoke`
+(§2); the
 collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, callbacks, a
 tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
 `RegionWrapperViewSmoke` (a view or wrapper is its container) and
 `RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers); the leaf natives have
 `RegionLeafBrokerSmoke` (every slot kind with and without a region, peeks that record nothing,
 templates, `SHARED`, a region-less mint reaching a later region's path through `parseLong`, and
-the one `toString` op). No smoke test covers the
+the one `toString` op); `RegionRedefineOnStackSmoke` attaches an agent to its own JVM and
+retransforms `Object` while a thread waits in it, then collects (§1). No smoke test covers the
 collections the VM does not model, a resize caught in flight, or anything across JVMs.

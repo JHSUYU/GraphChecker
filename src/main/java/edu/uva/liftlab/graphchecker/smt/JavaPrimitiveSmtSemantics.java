@@ -566,13 +566,23 @@ public final class JavaPrimitiveSmtSemantics {
         return ">>u".equals(operator) ? ">>>" : operator;
     }
 
+    /**
+     * A bitwise operator against a constant mask, in integer arithmetic: the
+     * operand's unsigned value bound ONCE by a {@code let}, each bit the mask
+     * selects read off it.  Spelled out per bit, the operand's text was
+     * copied once per bit, and an operand that is itself such a term grew
+     * by that factor at every level: hdfs-17960 e2's flip queries were one
+     * 75 MB {@code define-fun} (a snapshot id packed by shifts and masks,
+     * one variable spelled 377,858 times) that took 60-77 s to lower and 6
+     * GB of heap before z3 parsed it.  z3 shares the bound term either way.
+     */
     private static String constantBitwise(String operator, String variable,
                                           BigInteger rawMask,
                                           IntegralWidth width) {
         int bits = bits(width);
         BigInteger modulus = BigInteger.ONE.shiftLeft(bits);
         BigInteger mask = rawMask.mod(modulus);
-        String unsigned = "(mod " + variable + " " + modulus + ")";
+        String unsigned = "java_bits_u";
         List<String> selectedBits = new ArrayList<>();
         for (int bit = 0; bit < bits; bit++) {
             if (!mask.testBit(bit)) continue;
@@ -596,7 +606,8 @@ public final class JavaPrimitiveSmtSemantics {
             throw new IllegalArgumentException(
                     "not a Java integral bitwise operator: " + operator);
         }
-        return wrap(expression, width);
+        return wrap("(let ((" + unsigned + " (mod " + variable + " "
+                + modulus + "))) " + expression + ")", width);
     }
 
     private static BigInteger integerLiteral(String expression) {

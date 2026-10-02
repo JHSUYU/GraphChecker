@@ -430,6 +430,10 @@ public final class ConcolicRegionRuntime {
             }
             active.claimActivation();
             RowRuntime.configure(configuration().resultFile);
+            if (configuration().answeredByQuestion(admitted)) {
+                RowRuntime.answered(Identity.answer(admitted.address),
+                        admitted.address);
+            }
             // The node it RAN on, by the function its admission and the
             // recording both addressed it with; never the planned node.
             active.d3Address = RowRuntime.beginActivation(active.token,
@@ -651,28 +655,19 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Instrumentation-facing root entry. */
-    public static long enterRegionFrame(String instrumentationSelector,
+    /**
+     * Instrumentation-facing root entry: ONE per root hook group
+     * ({@code ExecutionTask#rootHookGroup}), which offers each invocation to
+     * every task of the group ({@link ConcolicTaskPlan#select}).
+     */
+    public static long enterRegionFrame(String rootHookGroup,
                                         String rootMethod,
                                         Object receiver,
                                         Object[] rootArguments) {
         ConcolicTaskPlan config = configuration();
-        RootHookGroup group = config.rootHookGroup(
-                instrumentationSelector, rootMethod);
-        Deque<RootInvocationFrame> frames = ROOT_INVOCATION_FRAMES.get();
-        // One hook per plan row, one activation per invocation: the first
-        // hook dispatches the group, its siblings are transparent.
-        for (RootInvocationFrame existing : frames) {
-            if (existing.claimsSiblingHook(group.key)) {
-                frames.push(new RootInvocationFrame(instrumentationSelector,
-                        rootMethod, group.key, 0));
-                return 0L;
-            }
-        }
-        RootInvocationFrame frame = new RootInvocationFrame(
-                instrumentationSelector, rootMethod, group.key,
-                Math.max(0, group.hookCount - 1));
-        frames.push(frame);
+        RootInvocationFrame frame = new RootInvocationFrame(rootHookGroup,
+                rootMethod);
+        ROOT_INVOCATION_FRAMES.get().push(frame);
         // No index frame here: the entry hook owns it (#enterRegionEntry).
         //
         // IDENTITY §1 -- an entry that opened no occurrence starts no
@@ -682,14 +677,13 @@ public final class ConcolicRegionRuntime {
         // tokenless frame still pairs the exit.
         // Exception: a LOOP_BODY_ROOT body is an iteration of the loop-root
         // occurrence, not a region entry (LoopAccounting#bodiesAddressedHere).
-        // Trap: loop contexts are keyed by the LOOP hook-group key, not the
-        // one #rootHookGroup gives this selector.
+        // Trap: loop contexts are keyed by the group's loop root, not by
+        // the group.
         ActiveRegion active = Identity.openedNone()
                 && !LoopAccounting.bodiesAddressedHere(
-                        config.loopRootHookGroup(instrumentationSelector,
-                                rootMethod).key)
+                        config.loopRootOf(rootHookGroup))
                 ? null
-                : admitRegion(config, group.key, rootMethod, receiver,
+                : admitRegion(config, rootHookGroup, rootMethod, receiver,
                         rootArguments);
         frame.token = active == null ? 0L : active.token;
         return frame.token;
@@ -713,12 +707,16 @@ public final class ConcolicRegionRuntime {
         LoopAccounting.checkReplayBody(loopId, instrumentedMaxTraversals);
     }
 
-    /** Opens the enclosing call that addresses LOOP_BODY_ROOT iterations. */
+    /**
+     * Opens the enclosing call that addresses LOOP_BODY_ROOT iterations: ONE
+     * entry per loop root ({@code ExecutionTask#loopRootHookGroup}), for
+     * every loop-body task rooted there.
+     */
     public static long enterLoopRootInvocationFrame(
-            String instrumentationSelector, String rootMethod,
+            String loopRootHookGroup, String rootMethod,
             Object receiver, Object[] rootArguments) {
-        return LoopAccounting.enterLoopRoot(instrumentationSelector,
-                rootMethod, receiver, rootArguments);
+        return LoopAccounting.enterLoopRoot(loopRootHookGroup, rootMethod,
+                receiver, rootArguments);
     }
 
     /** Closes one enclosing LOOP_BODY_ROOT method call. */
@@ -1109,11 +1107,11 @@ public final class ConcolicRegionRuntime {
      * Normal-return cleanup of an injected root.  No-throw: a hook must not
      * turn a return into an exception.
      */
-    public static void exitRegionFrame(String instrumentationSelector,
+    public static void exitRegionFrame(String rootHookGroup,
                                        String rootMethod) {
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
-                    instrumentationSelector, rootMethod);
+                    rootHookGroup, rootMethod);
             if (frame != null && frame.token != 0L) {
                 finish(frame.token, "NORMAL", "", null);
             }
@@ -1126,12 +1124,12 @@ public final class ConcolicRegionRuntime {
      * Exceptional cleanup for the synthetic catch-all, which rethrows the
      * original; failures here are swallowed so they cannot replace it.
      */
-    public static void throwRegionFrame(String instrumentationSelector,
+    public static void throwRegionFrame(String rootHookGroup,
                                         String rootMethod,
                                         Throwable throwable) {
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
-                    instrumentationSelector, rootMethod);
+                    rootHookGroup, rootMethod);
             if (frame != null && frame.token != 0L) {
                 if (throwable instanceof LoopBoundCut) {
                     finish(frame.token, "CUT", "", throwable);
@@ -1148,7 +1146,7 @@ public final class ConcolicRegionRuntime {
     }
 
     private static RootInvocationFrame popRootInvocationFrame(
-            String instrumentationSelector, String rootMethod) {
+            String rootHookGroup, String rootMethod) {
         Deque<RootInvocationFrame> frames = ROOT_INVOCATION_FRAMES.get();
         RootInvocationFrame frame = frames.peek();
         if (frame == null) {
@@ -1156,8 +1154,8 @@ public final class ConcolicRegionRuntime {
             SILENCED.remove();
             return null;
         }
-        boolean matches = Objects.equals(frame.instrumentationSelector,
-                instrumentationSelector)
+        boolean matches = Objects.equals(frame.rootHookGroup,
+                rootHookGroup)
                 && Objects.equals(frame.rootMethod, rootMethod);
         if (!matches) {
             // Never guess ownership, never close an outer frame.
@@ -1176,50 +1174,16 @@ public final class ConcolicRegionRuntime {
         return frame;
     }
 
-    /** Sibling-hook accounting of both root stacks: first hook activates. */
-    static class SiblingHookGroupEntry {
-        final String groupKey;
-        private int remainingSiblingHooks;
-
-        SiblingHookGroupEntry(String groupKey, int remainingSiblingHooks) {
-            this.groupKey = safe(groupKey);
-            this.remainingSiblingHooks = remainingSiblingHooks;
-        }
-
-        /** Absorbs one further hook emitted at this same physical entry. */
-        final boolean claimsSiblingHook(String actualGroupKey) {
-            if (remainingSiblingHooks <= 0
-                    || !groupKey.equals(safe(actualGroupKey))) {
-                return false;
-            }
-            remainingSiblingHooks--;
-            return true;
-        }
-    }
-
-    private static final class RootInvocationFrame
-            extends SiblingHookGroupEntry {
-        private final String instrumentationSelector;
+    /** One woven root entry's invocation, and the activation it admitted
+     *  (0: none). */
+    private static final class RootInvocationFrame {
+        private final String rootHookGroup;
         private final String rootMethod;
         private long token;
 
-        private RootInvocationFrame(String instrumentationSelector,
-                                    String rootMethod, String rootHookGroupKey,
-                                    int remainingSiblingHooks) {
-            super(rootHookGroupKey, remainingSiblingHooks);
-            this.instrumentationSelector = instrumentationSelector;
+        private RootInvocationFrame(String rootHookGroup, String rootMethod) {
+            this.rootHookGroup = rootHookGroup;
             this.rootMethod = rootMethod;
-        }
-    }
-
-    /** Static hook group that instrumentation placed at one Java entry. */
-    static final class RootHookGroup {
-        final String key;
-        final int hookCount;
-
-        RootHookGroup(String key, int hookCount) {
-            this.key = safe(key);
-            this.hookCount = Math.max(1, hookCount);
         }
     }
 

@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
@@ -523,6 +524,16 @@ public final class ScheduleLog {
         Integer made = COUNTS.get(pending.key);
         int k = made == null ? 0 : made;
         COUNTS.put(pending.key, k + 1);
+        if (pending.kind == ScheduleEvent.Kind.SEND
+                && !pending.endpoint.isEmpty()) {
+            ContextShape.Stance stance =
+                    ContextShape.Stance.ofSend(pending.context);
+            if (stance != null) {
+                synchronized (SENDERS) {
+                    SENDERS.put(pending.endpoint, stance);
+                }
+            }
+        }
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
                 pending.context, pending.site, k, pending.occurrence,
                 pending.endpoint);
@@ -539,6 +550,25 @@ public final class ScheduleLog {
     }
 
     private static final Set<String> MARKED = new HashSet<String>();
+
+    /**
+     * Where each message of this run was sent from, by its producer
+     * endpoint: its SEND's stance, the run's own counterpart of the
+     * recording's ({@code causynth.RecordedMessages}), so this run's contexts
+     * are shaped by the rule PLAN shaped the recording's by ({@link
+     * #shape}).  Bounded as {@link Interactions} is: an evicted sender is
+     * unknown.  Its own monitor, a leaf: {@code ConcolicTaskPlan} asks under
+     * its own.
+     */
+    private static final Map<String, ContextShape.Stance> SENDERS =
+            Interactions.bounded();
+
+    /** The shape of {@code context} over this run's senders so far. */
+    static List<String> shape(CausalContext context) {
+        synchronized (SENDERS) {
+            return ContextShape.of(context, SENDERS::get);
+        }
+    }
 
     /**
      * Marks where one occurrence opened: not an event, but the cut of a
@@ -611,8 +641,8 @@ public final class ScheduleLog {
                     writer.flush();
                 } catch (IOException unwritable) {
                     failed = true;
-                    System.err.println("Causynth could not write the schedule"
-                            + " to " + file + ": " + unwritable);
+                    EngineConsole.println("Causynth could not write the "
+                            + "schedule to " + file + ": " + unwritable);
                 }
             }
         });
@@ -1225,7 +1255,7 @@ public final class ScheduleLog {
                     where, detail);
         } catch (Throwable unpublished) {
         }
-        System.err.println("Causynth schedule: " + detail);
+        EngineConsole.println("Causynth schedule: " + detail);
     }
 
     /** Whether the replay is held right now: in the window, a slot holds. */
@@ -1277,7 +1307,7 @@ public final class ScheduleLog {
         Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
             @Override
             public void run() {
-                System.err.println("Causynth schedule: " + progress());
+                EngineConsole.println("Causynth schedule: " + progress());
             }
         }, "causynth-schedule-progress"));
     }
@@ -1398,6 +1428,9 @@ public final class ScheduleLog {
             PENDING.clear();
             COUNTS.clear();
             MARKED.clear();
+            synchronized (SENDERS) {
+                SENDERS.clear();
+            }
             seq = 0L;
             loaded = false;
             holds = false;

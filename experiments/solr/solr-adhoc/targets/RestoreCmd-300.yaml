@@ -1,0 +1,1 @@
+exception_target: adhoc-RestoreCmd-300 org.apache.solr.cloud.api.collections.RestoreCmd 300

@@ -698,7 +698,9 @@ done
 # 51: `concolic_worker_count` and `region_path_stop_at_fatal` left with the
 # wave barrier: how many obligations run on a host is its memory, up to its
 # cores, and every campaign ends at its first accepted witness.
-[[ "$(print_normalized_config | wc -l)" -eq 51 ]] \
+# 52: `stream_max_in_flight` joined it: how many obligations the capped
+# explorations running at once keep in flight together.
+[[ "$(print_normalized_config | wc -l)" -eq 52 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -1228,6 +1230,25 @@ grep -q "artifact=${verify_dir}/woven_class_verification.log" \
 grep -q 'allowSnapshot.*Local index 2 is invalid' "${verify_dir}/error.log" \
   || fail "the verifier's failure does not name the class, method and \
 reason: $(cat "${verify_dir}/error.log")"
+# A weave that throws fails its stage by name (campaign_analyze), its
+# deepest cause the reason; under errexit it ended the campaign unnamed.
+(
+  do_analyze() {
+    echo "java.lang.IllegalStateException: Could not instrument a root"
+    echo "Caused by: java.lang.IllegalStateException: \
+LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: m#loop:u12 declares 2 controls" >&2
+    return 1
+  }
+  campaign_analyze INSTRUMENT "${verify_dir}/instrument.log" >/dev/null
+) 2>"${verify_dir}/weave-error.log" \
+  && fail "a weave that threw did not fail the campaign"
+grep -q 'stage=INSTRUMENT' "${verify_dir}/weave-error.log" \
+  && grep -q "artifact=${verify_dir}/instrument.log" \
+    "${verify_dir}/weave-error.log" \
+  && grep -q 'reason=.*exit 1: java.lang.IllegalStateException: LOOP_BODY_ROOT_ENTRY_UNAVAILABLE' \
+    "${verify_dir}/weave-error.log" \
+  || fail "a weave's failure does not name its stage, log and refusal: \
+$(cat "${verify_dir}/weave-error.log")"
 
 # COUNT: a count the campaign decides on is a decision, and an unreadable
 # count is a refusal.  `[[ "${n}" -eq 0 ]]` reads an empty string as zero, so
@@ -1394,8 +1415,9 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
   || fail "validate accepted seed_replay_time_factor=0"
 
 # REPLAY-NEED: the seed replay (and CONFIRM's) is charged the recording's
-# measured peak when it is above one obligation's replay, else that
-# (campaign_replay_need_mb), and its replay JVM is handed that charge
+# measured peak times campaign_replay_memory_factor (7) when that is above
+# one obligation's replay, else that (campaign_replay_need_mb), and its
+# replay JVM is handed that charge
 # (CAUSYNTH_CHARGED_MB, which execute.sh sizes and holds the JVM by).  Per
 # row: obligation_memory_mb, the recording's peak (- none), the need.
 while read -r need_obligation need_rss need_expected; do
@@ -1414,8 +1436,8 @@ while read -r need_obligation need_rss need_expected; do
     || fail "a seed replay with ${need_obligation} MB per obligation and a \
 '${need_rss}' MB recording is ${need_said}, not ${need_expected} MB"
 done <<'EOF'
-2500 442 2500
-2500 3000 3000
+2500 300 2500
+2500 442 3094
 2500 - 2500
 EOF
 need_dir="${bound_dir}/need"
@@ -1430,21 +1452,30 @@ grep -qx 'CAUSYNTH_CHARGED_MB=3000' "${need_dir}/adapter.args" \
   || fail "the replay JVM is not handed what its host was charged: \
 $(cat "${need_dir}/adapter.args")"
 
-# WATCH-1: a workload JVM that grows past its charge asks its host's ledger
-# for the excess -- the rule every start answers to, 3000 MB of a 10000 MB
-# host kept free -- and holds what it was granted; it is ended only when
-# the host cannot take it, and what it was granted is released when it
-# ends.  A recording (charged nothing) is only measured: its peak is the
-# trace's workload_rss_mb.  Per row: the host's MemAvailable, the charge,
-# the JVM's resident memory at each read, whether it was ended, the most
-# rows the ledger held for it, and what it says last.
+# WATCH-1: a workload JVM that grows past its charge asks its host for the
+# excess and holds what it was granted, charged on the ledger; it is ended
+# only when the host's real use -- MemTotal less MemAvailable, 10000 MB and
+# a 70% ceiling -- would pass the ceiling with it, never for what the
+# ledger promised other starts (a foreign start still in its ramp), and
+# what it was granted is released when it ends.  A recording (charged
+# nothing) is only measured: its peak is the trace's workload_rss_mb.  Per
+# row: the host's MemAvailable, the MB a foreign start in its ramp holds on
+# the ledger (0: none), the charge, the JVM's resident memory at each read,
+# whether it was ended, the most rows the ledger held for it, and what it
+# says last.
 watch_dir="${test_tmp}/watch"
-while IFS='|' read -r watch_available watch_charged watch_rss watch_ended \
-    watch_rows watch_said; do
+while IFS='|' read -r watch_available watch_foreign watch_charged watch_rss \
+    watch_ended watch_rows watch_said; do
   rm -rf -- "${watch_dir}"
-  mkdir -p "${watch_dir}/trace"
+  mkdir -p "${watch_dir}/trace" "${watch_dir}/hosts/gate-head"
   printf '%s\n' ${watch_rss//,/ } >"${watch_dir}/rss"
   : >"${watch_dir}/rows"
+  watch_foreign_row=""
+  if (( watch_foreign > 0 )); then
+    watch_foreign_row="$(date +%s) ${watch_foreign} 3600 foreign"
+    printf '%s\n' "${watch_foreign_row}" \
+      >"${watch_dir}/hosts/gate-head/starts"
+  fi
   (
     campaign_host_gate_root="${watch_dir}/hosts"
     campaign_local_host_names=" localhost gate-head "
@@ -1459,7 +1490,7 @@ while IFS='|' read -r watch_available watch_charged watch_rss watch_ended \
       local mb
       mb=$(head -n 1 "${watch_dir}/rss")
       cat "${campaign_host_gate_root}/gate-head/starts" 2>/dev/null \
-        | grep -c . >>"${watch_dir}/rows"
+        | grep -vc ' foreign$' >>"${watch_dir}/rows"
       [[ -n "${mb}" ]] || { kill "$1"; return 1; }
       sed -i 1d "${watch_dir}/rss"
       echo "${mb}"
@@ -1482,8 +1513,10 @@ $(cat "${watch_dir}/exit")): $(cat "${watch_dir}/said")"
   [[ "$(sort -n "${watch_dir}/rows" | tail -n 1)" == "${watch_rows}" ]] \
     || fail "the ledger held $(sort -n "${watch_dir}/rows" | tail -n 1) \
 rows for a JVM at ${watch_rss} MB, not ${watch_rows}"
-  [[ -z "$(cat "${watch_dir}/hosts/gate-head/starts" 2>/dev/null)" ]] \
-    || fail "what a JVM was granted outlived it"
+  [[ "$(cat "${watch_dir}/hosts/gate-head/starts" 2>/dev/null)" \
+      == "${watch_foreign_row}" ]] \
+    || fail "what a JVM was granted outlived it, or a foreign start's row \
+went with it"
   [[ "$(cat "${watch_dir}/trace/workload_rss_mb")" \
       == "$(tr ',' '\n' <<<"${watch_rss}" | sort -n | tail -n 1)" ]] \
     || fail "the trace does not state the JVM's peak"
@@ -1494,17 +1527,21 @@ rows for a JVM at ${watch_rss} MB, not ${watch_rows}"
       "${watch_dir}/said" \
     || fail "an ended JVM does not say why: $(cat "${watch_dir}/said")"
 done <<'EOF'
-28000|2500|1000,2541,2600|ran|2|causynth: the workload JVM's resident memory peaked at 2600 MB; its host was charged 2500 MB for it and took 2600 MB as it grew
-5000|2500|2541,6000|ended|1|causynth: the workload JVM's resident memory peaked at 6000 MB; its host was charged 2500 MB for it and took 2541 MB as it grew
-3000|2500|2400|ran|0|causynth: the workload JVM's resident memory peaked at 2400 MB; its host was charged 2500 MB for it
-28000|0|400,486|ran|0|
+28000|0|2500|1000,2541,2600|ran|2|causynth: the workload JVM's resident memory peaked at 2600 MB; its host was charged 2500 MB for it and took 2600 MB as it grew
+5000|0|2500|2541,6000|ended|1|causynth: the workload JVM's resident memory peaked at 6000 MB; its host was charged 2500 MB for it and took 2541 MB as it grew
+6000|5000|2500|2541,2600|ran|2|causynth: the workload JVM's resident memory peaked at 2600 MB; its host was charged 2500 MB for it and took 2600 MB as it grew
+3000|0|2500|2541|ended|0|causynth: the workload JVM's resident memory peaked at 2541 MB; its host was charged 2500 MB for it
+3000|0|2500|2400|ran|0|causynth: the workload JVM's resident memory peaked at 2400 MB; its host was charged 2500 MB for it
+28000|0|0|400,486|ran|0|
 EOF
 
 # SOLVER-SERVICE: an obligation's question goes to ONE solver JVM of its host
 # and corpus (ObligationSolverMain --serve), started by the first question
-# and charged its heap at the host's ledger; a question it could not answer
-# is its worker's failure, by name; and it ends once idle, naming no solver,
-# its charge given back as its JVM returns.
+# and charged at the host's ledger what it holds as it grows; a question it
+# could not answer is its worker's failure, by name; and it ends once idle,
+# naming no solver, its charges given back as its JVM returns.  A host with
+# no room to start one now answers 3 at once, starting nothing and holding
+# no question behind a start that waits for memory.
 # Two questions at once, over a corpus whose round holds neither obligation.
 solver_test=${test_tmp}/solver-service
 solver_wave=${solver_test}/iteration/obligations-0000
@@ -1560,6 +1597,17 @@ $(cat "${solver_test}/${question}.err")"
   [[ -z "$(cat "${solver_test}/hosts/"*/starts)" ]] \
     || fail "an ended solver is still charged: \
 $(cat "${solver_test}/hosts/"*/starts)"
+  # No room: 3 at once, no solver named, the question withdrawn.
+  campaign_host_max_used_pct=1
+  started=${SECONDS}
+  status=0
+  campaign_solve_obligation OB.c "${solver_wave}/obligations.jsonl" \
+    "${solver_test}/iteration/sessions" "${solver_test}/c" \
+    >/dev/null 2>&1 || status=$?
+  [[ "${status}" -eq 3 && $(( SECONDS - started )) -lt 10 \
+     && ! -e "${solver_home}/server" \
+     && -z "$(ls "${solver_home}/requests")" ]] \
+    || fail "a host with no room for a solver held its question (${status})"
 )
 
 # A question its host's solver could not answer (out of heap, died) is no
@@ -1567,18 +1615,23 @@ $(cat "${solver_test}/hosts/"*/starts)"
 # fails the worker -- an unfinished obligation (campaign_obligation_unfinished)
 # -- never a bare NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations
 # "answered" by an OutOfMemoryError).  Neither settles its question.
+# A question whose host had no room for its solver (3) is answered at once in
+# a solver JVM of its own, under the obligation's charge (`now`).
 retry_test=${test_tmp}/solver-retry
-for alone in answers fails; do
+for alone in answers fails noroom; do
   mkdir -p "${retry_test}/${alone}"
   retry_status=0
   (
     campaign_solve_obligation() {
+      [[ "${alone}" != noroom ]] || return 3
       : >"$4/question.asked"
       echo "ObligationSolverMain: java.lang.OutOfMemoryError: Java heap space" >&2
       return 1
     }
     campaign_solve_obligation_alone() {
-      [[ "${alone}" == answers ]] || { echo "the second one died" >&2; return 1; }
+      [[ "${alone}" != noroom || "${5:-}" == now ]] \
+        || { echo "not asked at once" >&2; return 1; }
+      [[ "${alone}" != fails ]] || { echo "the second one died" >&2; return 1; }
       printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
         >"$4/obligation_result.jsonl"
       printf '(assert false)\n' >"$4/obligation_query.smt2"
@@ -1589,9 +1642,9 @@ for alone in answers fails; do
     || retry_status=$?
   [[ ! -e "${retry_test}/${alone}/question.asked" ]] \
     || fail "a solver that failed settled a question"
-  if [[ "${alone}" == answers ]]; then
+  if [[ "${alone}" != fails ]]; then
     [[ "${retry_status}" -eq 0 && "$(jq -r .verdict \
-        "${retry_test}/answers/obligation_result.jsonl")" == UNSAT ]] \
+        "${retry_test}/${alone}/obligation_result.jsonl")" == UNSAT ]] \
       || fail "the second solver's answer is not the obligation's"
   else
     [[ "${retry_status}" -ne 0 && ! -e \
@@ -2208,6 +2261,43 @@ it left unasked"
 [[ ! -e "${stream_dir}/obligations-0001/NEVER" ]] \
   || fail "a round past the budget was dispatched"
 
+# STREAM-3b: A PLANNER OUT OF HEAP.  A round whose planner ran out of the most
+# heap a head JVM is given (exit 3) is not planned: its directory goes, what
+# runs lands, the exploration ends on the rounds before it, and the stop is
+# a BLOCKING row naming the planner's error (sweep a40h2, DataStreamer-638).
+stream_fixture stream-3b
+(
+  stream_stubs
+  run_java_main() {
+    if [[ " $* " == *" --round 1 "* ]]; then
+      echo "Terminating due to java.lang.OutOfMemoryError: Java heap space" >&2
+      return 3
+    fi
+    stream_planner "$@"
+  }
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A SLOW; }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    case "${id}" in
+      A) stream_answer "${worker}" A ADMITTED SESSION.A ;;
+      SLOW) sleep 2; stream_answer "${worker}" SLOW UNSAT ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "a planner out of heap failed the exploration: \
+$(cat "${stream_dir}/explore.log")"
+jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED" and .cls == "BLOCKING")
+  | .detail | test("obligations-0001 ran out") and test("OutOfMemoryError")' \
+  "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  && jq -e '.stop == "PLANNER_HEAP_EXCEEDED" and .rounds == 1' \
+    "${stream_dir}/exploration.json" >/dev/null \
+  && jq -e -s 'map(.obligationId) | sort == ["A","SLOW"]' \
+    "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  && [[ ! -e "${stream_dir}/obligations-0001" ]] \
+  || fail "a planner out of heap did not end the exploration by name: \
+$(cat "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/exploration.json")"
+
 # STREAM-4: a planner that states no growth file did not run to completion:
 # refused by name, never read as "nothing exposed".
 stream_fixture stream-4
@@ -2333,6 +2423,100 @@ jq -e '.stop == "FIXED_POINT" and .answered == 3' \
 $(cat "${stream_dir}/exploration.json")"
 reset_config
 
+# STREAM-CAP: an exploration under stream_max_in_flight runs no more starts
+# at once than its share of it -- the cap over the capped explorations whose
+# ledger entry is fresh, its own among them, at least one -- says so once
+# for the share it waits at, and takes its entry with it when it ends; with
+# no cap it keeps no entry and waits for nothing but room (a40: one Solr
+# case's pool held 27-32 replays on all ten lifts while the sweep's other
+# cases waited).  Per row: the cap, the fresh and the stale entries of other
+# explorations, the most of three one-second obligations that ran at once,
+# and how many explorations the wait names (- for none).
+while read -r cap_max cap_fresh cap_stale cap_peak cap_sharers; do
+  stream_fixture "stream-cap-${cap_max}-${cap_fresh}-${cap_stale}"
+  stream_max_in_flight=${cap_max}
+  cap_entries="${campaign_host_gate_root}/explorations"
+  mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+  printf '8\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+  for ((cap_index = 0; cap_index < cap_fresh + cap_stale; cap_index++)); do
+    mkdir -p "${cap_entries}"
+    : >"${cap_entries}/other.${cap_index}"
+    (( cap_index < cap_fresh )) \
+      || touch -d @1000 "${cap_entries}/other.${cap_index}"
+  done
+  (
+    stream_stubs
+    stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B C; }
+    campaign_obligation_worker() {
+      local id=$1 worker=$4
+      date +%s.%N >"${worker}/started-at"
+      sleep 1
+      date +%s.%N >"${worker}/ended-at"
+      stream_answer "${worker}" "${id}" UNSAT
+    }
+    campaign_explore "${stream_dir}" iteration-0000
+  ) >"${stream_dir}/explore.log" 2>&1 \
+    || fail "a capped exploration did not finish: \
+$(cat "${stream_dir}/explore.log")"
+  cap_ran=$(for cap_worker in "${stream_dir}"/obligations-0000/*/; do
+      echo "$(cat "${cap_worker}started-at") $(cat "${cap_worker}ended-at")"
+    done | awk '{ s[NR] = $1; e[NR] = $2 }
+      END { for (i = 1; i <= NR; i++) { n = 0
+              for (j = 1; j <= NR; j++) if (s[j] <= s[i] && s[i] < e[j]) n++
+              if (n > peak) peak = n }
+            print peak }')
+  [[ "${cap_ran}" == "${cap_peak}" ]] \
+    || fail "cap ${cap_max} with ${cap_fresh} other exploration(s) ran \
+${cap_ran} obligation(s) at once, not ${cap_peak}"
+  cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
+    || true)
+  if [[ "${cap_sharers}" == - ]]; then
+    [[ "${cap_said}" -eq 0 && ! -e "${cap_entries}" ]] \
+      || fail "an exploration with no cap waited for a slot or kept an entry"
+  else
+    [[ "${cap_said}" -eq 1 ]] && grep -q "shared by ${cap_sharers} capped" \
+      "${stream_dir}/explore.log" \
+      || fail "the wait for a slot was not said once, naming \
+${cap_sharers} exploration(s): $(grep 'slot' "${stream_dir}/explore.log")"
+    [[ "$(ls "${cap_entries}" | wc -l)" -eq $((cap_fresh + cap_stale)) ]] \
+      || fail "the exploration's entry outlived it: $(ls "${cap_entries}")"
+  fi
+done <<'EOF'
+0 0 0 3 -
+2 0 1 2 1
+2 1 0 1 2
+1 2 0 1 3
+EOF
+reset_config
+# The cap is a declared workflow key, overridden only through the table, 0
+# by default, and a non-negative integer or refused by name.
+[[ "$(grep -c 'CAUSYNTH_STREAM_MAX_IN_FLIGHT' "${repo}/run_engine.sh")" \
+    -eq 1 && "${stream_max_in_flight}" == 0 ]] && known_config_key \
+    stream_max_in_flight \
+  || fail "stream_max_in_flight is not a declared key defaulting to 0"
+CAUSYNTH_STREAM_MAX_IN_FLIGHT=30 apply_environment_overrides
+[[ "${stream_max_in_flight}" == 30 ]] \
+  || fail "CAUSYNTH_STREAM_MAX_IN_FLIGHT does not override the key"
+reset_config
+cap_validate() (
+  stop_after_config ""
+  stream_max_in_flight=$1
+  validate_config
+)
+for cap_value in "" -1 x 08 0 30; do
+  run_capturing_status cap_validate "${cap_value}" >/dev/null \
+    2>"${test_tmp}/cap-validate.err"
+  case "${cap_value}" in
+    0|30) [[ "${status}" -eq 0 ]] \
+      || fail "validate refused stream_max_in_flight='${cap_value}'" ;;
+    *) [[ "${status}" -ne 0 ]] && grep -q 'stream_max_in_flight must be' \
+        "${test_tmp}/cap-validate.err" \
+      || fail "validate did not refuse stream_max_in_flight='${cap_value}' \
+by name" ;;
+  esac
+done
+reset_config
+
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
 # exactly like `replay_timeout_s`.
 grep -q 'CAUSYNTH_CAMPAIGN_WORKER_HOSTS' "${repo}/run_engine.sh" \
@@ -2405,10 +2589,12 @@ campaign_host_is_local "" || fail "the empty host is not local"
 reset_config
 
 # HOSTS-4: the pool over two peers.  Starts go round-robin from the host
-# after the last one chosen, a peer's results and staged session come back
-# and land, and a host whose ledger has no room is given nothing while the
-# other runs everything (a10: one claim sat 30 min on a lift a planner had
-# filled while eight lifts had room).
+# after the last one chosen, an obligation first to a host where its
+# campaign's solver still serves (so the four go where the first went), a
+# peer's results and staged session come back and land, and a host whose
+# ledger has no room is given nothing while the other runs everything (a10:
+# one claim sat 30 min on a lift a planner had filled while eight lifts had
+# room).
 #
 # The stub stands where the network stands and nowhere else: the pool, the
 # host decision, the generated remote script and the bounded wait for what
@@ -2474,8 +2660,8 @@ stream_two_hosts stream-two
   || fail "four obligations did not become four remote invocations: \
 $(cat "${stream_dir}/ssh-calls.txt")"
 [[ "$(cut -f1 "${stream_dir}/ssh-calls.txt" | LC_ALL=C sort | uniq -c \
-    | awk '{print $2 "=" $1}' | paste -sd ' ' -)" == "lift12=2 lift13=2" ]] \
-  || fail "the pool did not round-robin: \
+    | awk '{print $2 "=" $1}' | paste -sd ' ' -)" == "lift12=4" ]] \
+  || fail "the obligations did not go where their solver serves: \
 $(cut -f1 "${stream_dir}/ssh-calls.txt" | paste -sd ' ' -)"
 for stream_id in A B C D; do
   [[ -f "${stream_dir}/sessions/SESSION.${stream_id}/manifest.json" ]] \
@@ -2493,6 +2679,35 @@ stream_two_hosts stream-room
   || fail "a host without room was given work: \
 $(cut -f1 "${stream_dir}/ssh-calls.txt")"
 reset_config
+
+# The pool's choice over three hosts that all admit: a re-run goes
+# round-robin; an obligation goes to a host where its campaign's solver
+# still serves (one started there within the solver's idle time), else
+# round-robin.  {kind, the host warm (- none), the hosts chosen in turn}.
+while IFS='|' read -r admit_kind admit_warm admit_want; do
+  (
+    stream_hosts=(a b c)
+    stream_next_host=0
+    stream_waiting=""
+    declare -A stream_solver_seen=() stream_host_unread=()
+    [[ "${admit_warm}" == - ]] \
+      || stream_solver_seen[${admit_warm}]=$(date +%s)
+    campaign_stream_has_cores() { return 0; }
+    campaign_host_try_charge() { status=0; campaign_host_charge_id=x; }
+    chosen=()
+    for _ in 1 2 3; do
+      campaign_stream_admit_host "${admit_kind}" || exit 1
+      chosen+=("${stream_admitted_host}")
+    done
+    [[ "${chosen[*]}" == "${admit_want}" ]] \
+      || fail "${admit_kind} with ${admit_warm} warm chose ${chosen[*]}, \
+not ${admit_want}"
+  ) || fail "the pool admitted nothing for ${admit_kind}"
+done <<'EOF'
+RERUN|b|a b c
+OBLIGATION|-|a b c
+OBLIGATION|b|b b b
+EOF
 
 # POOL-JOB: a start of the pool runs on the host that admitted it -- an
 # obligation's worker, or a GROW re-run's replay, which a peer runs as a
@@ -2985,14 +3200,15 @@ run_confirm INCONCLUSIVE_PARTIAL
 grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
   || fail "the stage did not say why it ran nothing"
 # The rule, both conditions holding.  The replay is charged as the seed's:
-# the recording's measured peak, above one obligation's replay here.
+# the recording's measured peak times the replay factor, above one
+# obligation's replay here.
 confirm_recorded_rss=3000
 run_confirm SAT_CANDIDATE
 confirm_says true "the claim's anchor observed the fatal" \
   "a clean replay was not confirmed"
-[[ "$(cat "${confirm_root}/replay-ran")" == 3000 ]] \
+[[ "$(cat "${confirm_root}/replay-ran")" == 21000 ]] \
   || fail "the CONFIRM replay was charged $(cat "${confirm_root}/replay-ran") \
-MB, not the recording's 3000 MB peak"
+MB, not seven times the recording's 3000 MB peak"
 confirm_recorded_rss=""
 [[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == CONFIRM-1 ]] \
   || fail "the confirmation does not name the session that answered"
@@ -3390,7 +3606,8 @@ EOF
 # -XX:+ExitOnOutOfMemoryError -- runs once more at the engine heap, saying
 # so; the reader of its standard output sees the finished run's alone, and
 # later starts of that main go straight to the engine heap.  A main with no
-# measured need runs at the engine heap.
+# measured need runs at the engine heap.  Every run, at the engine heap too,
+# ends at its first out-of-heap error.
 engine_test=${test_tmp}/engine-heap
 mkdir -p "${engine_test}"
 cat >"${engine_test}/java" <<'EOF'
@@ -3420,8 +3637,8 @@ chmod +x "${engine_test}/java"
   engine_java -cp jar x.Grows >/dev/null
   engine_java -cp jar x.Other >/dev/null
   engine_need_mb=6000 engine_java -cp jar x.Other >/dev/null
-  [[ "$(tr '\n' ' ' <"${engine_test}/log")" == "heap=2000 oom=y heap=8000 oom=n \
-heap=8000 oom=n heap=8000 oom=n heap=6000 oom=y " ]] \
+  [[ "$(tr '\n' ' ' <"${engine_test}/log")" == "heap=2000 oom=y heap=8000 oom=y \
+heap=8000 oom=y heap=8000 oom=y heap=6000 oom=y " ]] \
     || fail "engine JVMs did not start at their needs: \
 $(tr '\n' ' ' <"${engine_test}/log")"
 )
@@ -3476,6 +3693,84 @@ lift06:19000 lift07:-2000 lift08:20000 lift15:21000|16384:hdfs-11741 8192:hdfs-1
 EOF
 [[ -z "$(heads_choose </dev/null)" ]] && ! heads_choose </dev/null \
   || fail "cases were headed with no host to head them"
+
+# HEADS-2: launch-round.sh weighs a case's head by its engine heap; a sweep
+# admits it for the room it reserves on its host, what its planner or
+# composer starts at (campaign_head_need_mb), never more than that heap:
+# a40's Solr heads asked fanout for 16 GB they never held and waited 90 min
+# while one case's obligations filled the lifts.  Per row: the case's
+# configuration, its weight and its head's room.
+while IFS='|' read -r heads_config heads_heap heads_reserve; do
+  [[ "$(case_engine_heap_mb "${heads_config}")" == "${heads_heap}" \
+      && "$(case_head_reserve_mb "${heads_config}")" == "${heads_reserve}" ]] \
+    || fail "${heads_config} weighs $(case_engine_heap_mb "${heads_config}") \
+and reserves $(case_head_reserve_mb "${heads_config}")"
+done <<'EOF'
+engine_memory_mb=16384|16384|8192
+engine_memory_mb=|8192|8192
+engine_memory_mb=4096|4096|4096
+EOF
+
+# POOL-SLOTS: the obligation slots a sweep's cases share
+# (campaign_pool_slots): on each host as many starts of the need as fit
+# under its ceiling, at most its cores, summed; a host whose memory cannot
+# be read adds none.  Per row: the need, and the slots of two 31583 MB,
+# 48-core hosts and one unreadable.
+(
+  campaign_host_gate_root="${test_tmp}/pool-slots"
+  campaign_host_max_used_pct=70
+  campaign_host_total_mb() { return 1; }
+  for host in lift12 lift13; do
+    mkdir -p "${campaign_host_gate_root}/${host}"
+    echo 31583 >"${campaign_host_gate_root}/${host}/total"
+    echo 48 >"${campaign_host_gate_root}/${host}/cores"
+  done
+  while read -r slots_need slots_expected; do
+    [[ "$(campaign_pool_slots "${slots_need}" lift12 lift13 lift14)" \
+        == "${slots_expected}" ]] \
+      || fail "a need of ${slots_need} MB found \
+$(campaign_pool_slots "${slots_need}" lift12 lift13 lift14) slots"
+  done <<'EOF'
+6000 6
+100 96
+30000 0
+EOF
+)
+
+# SWEEP-1: sweep.sh launches every case with its head's room as its need
+# and the lifts' obligation slots for its obligation_memory_mb as its cap;
+# a case whose configuration states no obligation_memory_mb launches no case.
+sweep_dir="${test_tmp}/sweep"
+mkdir -p "${sweep_dir}/snap/experiments/x/c" "${sweep_dir}/snap/experiments/lib" \
+  "${sweep_dir}/snap/tools/rounds" "${sweep_dir}/out" \
+  "${sweep_dir}/ledger/$(hostname -s)"
+: >"${sweep_dir}/snap/experiments/x/c/case.sh"
+printf '%s\n' '[[ "$3" == config ]] || exit 2' \
+  'printf "obligation_memory_mb=6000\nengine_memory_mb=1\n"' \
+  >"${sweep_dir}/snap/experiments/lib/run.sh"
+printf 'echo "$2 ${CAUSYNTH_STREAM_MAX_IN_FLIGHT}" >%s/launched\n' \
+  "${sweep_dir}" >"${sweep_dir}/snap/tools/rounds/launch-run.sh"
+echo 31583 >"${sweep_dir}/ledger/$(hostname -s)/total"
+echo 48 >"${sweep_dir}/ledger/$(hostname -s)/cores"
+echo c-one >"${sweep_dir}/cases"
+sweep_run() {
+  LIFTS=localhost GC_OUT="${sweep_dir}/out" VM_IMAGE=vm \
+    CAUSYNTH_HOST_LEDGER="${sweep_dir}/ledger" CAUSYNTH_HOST_MAX_USED_PCT=70 \
+    bash "${repo}/tools/adhoc/sweep.sh" "${sweep_dir}/snap" "$1" \
+    "${sweep_dir}/cases" >"${sweep_dir}/$1.out" 2>&1
+}
+sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
+[[ "$(cat "${sweep_dir}/launched")" == "c-one 3" ]] \
+  && grep -q '^NEED_MB=1 .* CAUSYNTH_STREAM_MAX_IN_FLIGHT=3 ' \
+    "${sweep_dir}/out/sweep-s1-jobs.txt" \
+  || fail "the sweep's case did not launch with its head's room and the \
+lifts' slots: $(cat "${sweep_dir}/launched" \
+    "${sweep_dir}/out/sweep-s1-jobs.txt")"
+echo nothing-here >"${sweep_dir}/cases"
+! sweep_run s2 && grep -q 'nothing-here states no obligation_memory_mb' \
+    "${sweep_dir}/s2.out" && [[ ! -s "${sweep_dir}/out/sweep-s2-jobs.txt" ]] \
+  || fail "a case with no configuration was launched or not named: \
+$(cat "${sweep_dir}/s2.out")"
 
 # UNION-1: a batch's one recording weave (do_record) is woven with every
 # target's skeletons merged by root -- one region per root, whichever

@@ -80,11 +80,15 @@ extra=()
 
 # What its host was charged for this JVM (CAUSYNTH_CHARGED_MB: a replay's,
 # run_engine.sh campaign_replay; a native reproduction's; none for a
-# recording).  The heap is half of it; the other half is the VM's native
-# symbolic state.  2 GB at least.
+# recording).  The heap is half of it, the other half the VM's native
+# symbolic state -- but 4 GB at least: the charge is where a JVM starts, and
+# one that outgrows it is granted more where the host's real memory has room
+# (campaign_watch_workload), so the heap must not stop it first (Solr seed
+# replays of SplitShardTest and ReindexCollectionTest ran out of a 2 GB heap
+# at a 2500 MB charge, round a40s).
 charged_mb=${CAUSYNTH_CHARGED_MB:-0}
 heap_mb=$(( charged_mb / 2 ))
-(( heap_mb >= 2048 )) || heap_mb=2048
+(( heap_mb >= 4096 )) || heap_mb=4096
 
 # noInflation: a reflective call is served by a generated accessor from its
 # first call, not by the native one for fifteen calls and a generated one

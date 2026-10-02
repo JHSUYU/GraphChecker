@@ -957,18 +957,6 @@ public class ExploreTest {
         assertEquals(1, gaps.size());
         assertEquals("s-elsewhere", gaps.get(0).subject());
         assertEquals(GapClass.DIAGNOSTIC, gaps.get(0).cls());
-
-        assertTrue(Branches.sameContext(Arrays.asList("RPC/a@nn0",
-                "Root:CLIENT/mkdir"), Arrays.asList("RPC/a@nn0",
-                "Root:CLIENT/mkdir")));
-        assertFalse(Branches.sameContext(Arrays.asList("RPC/a@nn0",
-                "Root:CLIENT/mkdir"), Arrays.asList("RPC/a@nn1",
-                "Root:CLIENT/mkdir")));
-        assertTrue("an unnamed sender is unknown", Branches.sameContext(
-                Arrays.asList("RPC/a@nn0", Corpus.UNKNOWN_HOP),
-                Arrays.asList("RPC/a@nn0", "RPC/b@dn1", "Root:TICK")));
-        assertFalse(Branches.sameContext(Arrays.asList("Root:CLIENT"),
-                Arrays.asList("RPC/a@nn0", "Root:CLIENT")));
     }
 
     // ---- (1b) a world is what it DELIVERED to the arm's task -----------
@@ -3836,6 +3824,36 @@ public class ExploreTest {
                             + "already passed", Verdict.UNSAT,
                     refused.verdict);
         }
+
+        // And one clock of one node runs forward from cell to cell, as
+        // COMPOSE orders it: moving the earlier reading past 10000 moves the
+        // later one with it, which its own guard keeps under 6000 -- no
+        // model jumps the clock forward and back (hdfs-11741 L1).
+        {
+            Path order = tree.newFolder("clock-order").toPath();
+            Session only = new Session(order, "s-seed");
+            only.activation(TARGET, false);
+            only.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "5000",
+                    null, null, true);
+            only.root(TARGET, "CASE.LATER", "M_LATER", RootKind.CLOCK,
+                    "5004", null, null, true);
+            only.decision(TARGET, "Late#u6", 1, true,
+                    notBefore("6000", "M_LATER"));
+            only.decision(TARGET, "Now#u7", 1, true,
+                    notBefore("10000", "M_NOW"));
+            only.flush();
+            scopeMap(order, targetSite("REGION.target", "Throw#u30",
+                    "Now#u7"));
+            Path orderOut = tree.newFolder("clock-order-out").toPath();
+            Path orderWave = orderOut.resolve("obligations-0000");
+            plan(order, TARGET_SELECTOR, null,
+                    orderOut.resolve("results.jsonl"), orderWave, 0);
+            Worker ordered = solve(order, orderWave,
+                    named(obligations(orderWave), "Now#u7"), orderOut, "w0");
+            assertEquals("the later reading may not fall back behind the "
+                    + "earlier one: " + detail(ordered), Verdict.UNSAT,
+                    ordered.verdict);
+        }
     }
 
     /**
@@ -4392,6 +4410,36 @@ public class ExploreTest {
     }
 
     /** One session of a synthetic corpus, written in the contract's layout. */
+    /**
+     * A corpus read again (a host's solver, after a landing) takes each
+     * session the read before holds and the iteration still lists as it
+     * is, unread: a landed session never changes.  A session that landed is
+     * read; one that left is gone.
+     */
+    @Test
+    public void aCorpusReadAgainKeepsTheSessionsItHolds() throws Exception {
+        Path iteration = tree.newFolder("reread").toPath();
+        for (String id : new String[] {"s-seed", "s-left"}) {
+            Session session = new Session(iteration, id);
+            session.activation(TARGET, false);
+            session.flush();
+        }
+        Corpus before = Corpus.read(iteration, null);
+        Session landed = new Session(iteration, "s-landed");
+        landed.activation(TARGET, true);
+        landed.flush();
+        try (java.util.stream.Stream<Path> files = Files.walk(
+                SessionDir.of(iteration, "s-left").dir())) {
+            files.sorted(Collections.reverseOrder())
+                    .forEach(path -> path.toFile().delete());
+        }
+        Corpus after = Corpus.read(iteration, null, before);
+        assertTrue("kept, unread",
+                before.session("s-seed") == after.session("s-seed"));
+        assertNotNull("read", after.session("s-landed"));
+        assertNull("gone", after.session("s-left"));
+    }
+
     private static final class Session {
         private final SessionDir dir;
         private final String sessionId;

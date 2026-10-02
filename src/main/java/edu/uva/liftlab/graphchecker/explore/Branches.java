@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
@@ -27,8 +28,9 @@ import java.util.Set;
  * its paths are never flipped and nothing it exposes is grown; it stays in
  * the corpus as the evidence it is (its rows still attest arms), and each
  * stop is a DIAGNOSTIC gap of the round that applied it.  Contexts compare by
- * {@link Corpus#contextShape}.  COMPOSE and the claim stay on the exact
- * declared address.</p>
+ * {@link ContextShape} ({@link Corpus#contextShape}), the rule PLAN picks its
+ * walk origins by.  COMPOSE and the claim stay on the exact declared
+ * address.</p>
  */
 public final class Branches {
     private final Corpus corpus;
@@ -84,38 +86,14 @@ public final class Branches {
                                  List<OccurrenceAddress> roots,
                                  Map<CausalContext, List<String>> shapes) {
         for (ActivationRow activation : session.activations()) {
-            OccurrenceAddress ran = activation.occurrence();
             for (OccurrenceAddress root : roots) {
-                if (ran.regionId().equals(root.regionId())
-                        && ran.node().equals(root.node())
-                        && sameContext(
-                        shapes.computeIfAbsent(ran.context(),
-                                corpus::contextShape),
-                        shapes.computeIfAbsent(root.context(),
+                if (ContextShape.sameQuestion(activation.occurrence(), root,
+                        context -> shapes.computeIfAbsent(context,
                                 corpus::contextShape))) {
                     return true;
                 }
             }
         }
         return false;
-    }
-
-    /**
-     * Two context shapes agree hop by hop up to the first hop either side
-     * could not name ({@link Corpus#UNKNOWN_HOP}): an unnamed sender is not
-     * known to differ, and a branch is stopped only on a known difference.
-     */
-    static boolean sameContext(List<String> one, List<String> other) {
-        int hops = Math.min(one.size(), other.size());
-        for (int hop = 0; hop < hops; hop++) {
-            String mine = one.get(hop);
-            String theirs = other.get(hop);
-            if (Corpus.UNKNOWN_HOP.equals(mine)
-                    || Corpus.UNKNOWN_HOP.equals(theirs)) {
-                return true;
-            }
-            if (!mine.equals(theirs)) return false;
-        }
-        return one.size() == other.size();
     }
 }

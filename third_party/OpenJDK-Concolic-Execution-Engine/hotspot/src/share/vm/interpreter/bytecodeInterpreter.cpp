@@ -2776,16 +2776,11 @@ run:
             Expression *value_exp =
                 ConcolicMngr::ctx->get_stack_slot(stack_offset - 1);
             bool isElemNull = (rhsObject == NULL);
+            // Symbolic by what it carries, as putfield's value: a shadow
+            // that only names the element is a concrete store.
             if (value_exp == NULL && !isElemNull
                 && !rhsObject->is_array()) {
-              SymInstance *sym_inst =
-                  ConcolicMngr::ctx->find_sym_inst(rhsObject);
-              if (sym_inst == NULL && rhsObject->is_symbolic()) {
-                sym_inst =
-                    ConcolicMngr::ctx->get_or_alloc_sym_inst(rhsObject);
-              }
-              value_exp = sym_inst == NULL ? NULL
-                  : sym_inst->get_or_create_ref_exp(rhsObject);
+              value_exp = ContainerSupport::semantic_value(rhsObject);
             }
             // Selected after the array's shadow exists (see CONCOLIC_ASTORE).
             Expression *astore_operand = value_exp;
@@ -3491,29 +3486,24 @@ run:
                 tos_type == ltos || tos_type == dtos ? 2 : 1;
             Expression *sym_exp =
                 ConcolicMngr::ctx->get_stack_slot(stack_offset - 1);
-            SymInstance *owner_instance =
-                ConcolicMngr::ctx->find_sym_inst(obj);
-            bool shadow_relevant = sym_exp != NULL || owner_instance != NULL;
+            // A reference is symbolic by what it carries: its slot's
+            // expression, else the one its object holds as its own
+            // (ContainerSupport::semantic_value).  Null and a shadow that
+            // only names its object are concrete: counted symbolic, a name
+            // started a log at every field it was stored into, gave each
+            // owner a shadow in turn, and spread tracking along the object
+            // graph (VM.md §5.1).  Where the field is tracked anyway, the
+            // store is still versioned, naming its referent.
             if (tos_type == atos && sym_exp == NULL) {
               oop value = STACK_OBJECT(-1);
-              SymInstance *value_instance = value == NULL || value->is_array()
-                  ? NULL : ConcolicMngr::ctx->find_sym_inst(value);
-              shadow_relevant = shadow_relevant
-                  || value_instance != NULL
-                  || (value != NULL && value->is_symbolic());
-              if (shadow_relevant && value == NULL) {
-                sym_exp = SymbolExpression::get(Sym_NULL);
-              } else if (shadow_relevant && value != NULL
-                         && !value->is_array()) {
-                if (value_instance == NULL && value->is_symbolic()) {
-                  value_instance =
-                      ConcolicMngr::ctx->get_or_alloc_sym_inst(value);
-                }
-                if (value_instance != NULL) {
-                  sym_exp = value_instance->get_or_create_ref_exp(value);
-                }
+              if (value != NULL && !value->is_array()) {
+                sym_exp = ContainerSupport::semantic_value(value);
               }
             }
+            SymInstance *owner_instance =
+                ConcolicMngr::ctx->find_sym_inst(obj);
+            const bool shadow_relevant =
+                sym_exp != NULL || owner_instance != NULL;
             if (shadow_relevant) {
               SymInstance *sym_inst = owner_instance == NULL
                   ? ConcolicMngr::ctx->get_or_alloc_sym_inst(obj)

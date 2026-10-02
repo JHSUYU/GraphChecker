@@ -184,6 +184,7 @@ public final class Composer {
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
+        private final Map<String, List<String>> ownArms;
         private final String seedSessionId;
         /** Where each top-level command of the body ends, and the path
          *  selector it is guarded by (null: every path's); #pathQuery. */
@@ -222,6 +223,7 @@ public final class Composer {
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
+            this.ownArms = composed.composedFamilies.ownArms();
             this.seedSessionId = composed.seed();
             List<Integer> ends = new ArrayList<Integer>();
             List<String> guards = new ArrayList<String>();
@@ -246,7 +248,7 @@ public final class Composer {
         /**
          * One question: the body plus these assertions, written out to its
          * reader, never copied (a body runs past 200 MB and is asked on
-         * {@code ClaimPolicy#PARALLEL_ASKS} threads at once).  The body is
+         * many threads at once, {@link Disjunction}).  The body is
          * spelled legally once ({@link SmtLowering#body}); the assertions
          * are spelled here, since pins name raw symbols such as
          * {@code CLOCK/...#...} and a bare {@code #} is a bit-vector literal
@@ -435,6 +437,23 @@ public final class Composer {
          * took: each STATE family's arm the run took
          * ({@link ComposedFamilies#stateFamilies}).
          */
+        /**
+         * The path's own run: the arm its own session is of each message the
+         * path received, and the writer arm each state read observed --
+         * selectors, never the values the run's handoffs carried, which are
+         * on its own clock ({@code SmtLowering#clockBases}).
+         */
+        public List<String> ownRun(String selector) {
+            List<String> own = new ArrayList<String>();
+            Disjunct disjunct = bySelector(selector);
+            if (disjunct == null) return own;
+            List<String> arms = ownArms.get(selector);
+            if (arms != null) own.addAll(arms);
+            List<String> reads = observedReads.get(disjunct.path().pathId);
+            if (reads != null) own.addAll(reads);
+            return asserted(own);
+        }
+
         public List<String> observedReads(String pathId) {
             return asserted(observedReads.get(pathId));
         }
@@ -523,6 +542,43 @@ public final class Composer {
             return new ArrayList<String>(symbols);
         }
 
+        /**
+         * The causal cone of one path's fatal, as acceptance reads it off
+         * the formula ({@code experiments/accept/cone.py}): every name its
+         * {@code path_fatal__} names, closed over the message families
+         * asserted under its selector that name one of them.
+         */
+        public Set<String> cone(String selector) {
+            Set<String> cone = new LinkedHashSet<String>();
+            List<Set<String>> families = new ArrayList<Set<String>>();
+            int start = 0;
+            for (int index = 0; index < commandEnds.length; index++) {
+                int end = commandEnds[index];
+                if (selector.equals(commandGuards[index])) {
+                    String command = body.substring(start, end);
+                    if (command.contains(":named path_fatal__")) {
+                        SmtNames.symbols(command, cone);
+                    } else if (command.contains(":named message_family__")) {
+                        families.add(SmtNames.symbols(command,
+                                new LinkedHashSet<String>()));
+                    }
+                }
+                start = end;
+            }
+            boolean grew = true;
+            while (grew) {
+                grew = false;
+                for (Set<String> family : families) {
+                    if (!Collections.disjoint(family, cone)
+                            && !cone.containsAll(family)) {
+                        cone.addAll(family);
+                        grew = true;
+                    }
+                }
+            }
+            return cone;
+        }
+
         /** Every selector, for reading which disjunct a model selected. */
         public List<String> selectors() {
             return Composer.selectors(disjuncts);
@@ -594,6 +650,7 @@ public final class Composer {
                 : declaredDomains;
         this.maxValuations = maxValuations <= 0 ? 64 : maxValuations;
         this.lowering = new SmtLowering(corpus.declaredSymbols());
+        lowering.clockBases(clockBases());
         this.arms = new Arms(corpus);
         this.composedFamilies = new ComposedFamilies(this, corpus, arms,
                 lowering, families, unattestedRoots, replacing, gaps);
@@ -1838,35 +1895,36 @@ public final class Composer {
     /**
      * The locations a STATE family may re-pair at the anchor ({@link
      * ComposedFamilies#stateFamilies}): read there by this session, owned
-     * by a named object, with a writer the read could have seen besides the
-     * one it did ({@link Corpus#eligibleWrites}, the writers the family's
-     * arms are drawn from) or a version no row wrote.
+     * by a named object, by a read that could have seen a writer
+     * occurrence besides the one it did ({@link Corpus#eligibleWrites}, the
+     * writers the family's arms are drawn from: only an HB-concurrent one
+     * is another).  A version no row wrote has no writer of its own, so
+     * any eligible writer is another; but a read whose only eligible writer
+     * is the one it observed, or none, has no alternative: two reads that
+     * saw two ordered writers, or a hot field whose earliest versions the
+     * VM's version bound dropped and whose only writer is the reader's own
+     * occurrence (hdfs-17960 e1c: a configuration parser's fields in the
+     * checkpoint saver), stay the run's.
      */
     private Set<String> repaired(String session) {
-        Map<String, Set<String>> writers =
-                new LinkedHashMap<String, Set<String>>();
-        Set<String> unwritten = new LinkedHashSet<String>();
+        Set<String> repaired = new LinkedHashSet<String>();
         Set<String> asked = new LinkedHashSet<String>();
         for (ReadRow read : corpus.readsOn(session, anchor)) {
             long version = read.observedVersion();
             if (version < 0L || !Arms.namedOwner(read.location())) continue;
             String key = SmtLowering.locationKey(read.location());
-            Set<String> by = writers.computeIfAbsent(key,
-                    ignored -> new LinkedHashSet<String>());
-            if (!asked.add(key + "#" + version)) continue;
-            if (corpus.writeOf(session, key, version) == null) {
-                unwritten.add(key);
+            if (repaired.contains(key) || !asked.add(key + "#" + version)) {
+                continue;
             }
+            WriteRow observed = corpus.writeOf(session, key, version);
+            String seen = observed == null ? null
+                    : observed.endpoint().occurrence().id();
             for (WriteRow write : corpus.eligibleWrites(session, key,
                     version, anchor)) {
-                by.add(write.endpoint().occurrence().id());
-            }
-        }
-        Set<String> repaired = new LinkedHashSet<String>();
-        for (Map.Entry<String, Set<String>> location : writers.entrySet()) {
-            if (location.getValue().size()
-                    + (unwritten.contains(location.getKey()) ? 1 : 0) >= 2) {
-                repaired.add(location.getKey());
+                if (!write.endpoint().occurrence().id().equals(seen)) {
+                    repaired.add(key);
+                    break;
+                }
             }
         }
         return repaired;
@@ -2323,6 +2381,75 @@ public final class Composer {
                             + "has no domain and no reading");
         }
         return reading;
+    }
+
+    /**
+     * How far each session's host clock read a clock cell later than the
+     * recording read it (session -> cell symbol -> milliseconds or ticks of
+     * that clock; {@link SmtLowering#clockBases}): its host reading less the
+     * recording's, at the cell itself where the recording read it, else at
+     * the nearest cell (by seq) of the same clock of the same node that both
+     * read -- the same anchor {@link #placed} puts a cell on the recording's
+     * timeline by.  The recording's own and a cell no shared cell anchors
+     * have none.
+     */
+    private Map<String, Map<String, Long>> clockBases() {
+        String seed = seed();
+        Map<String, Map<String, Long>> bases =
+                new LinkedHashMap<String, Map<String, Long>>();
+        if (seed == null) return bases;
+        Map<String, List<RootMintRow>> bySession =
+                new LinkedHashMap<String, List<RootMintRow>>();
+        for (List<RootMintRow> rows : corpus.roots().values()) {
+            for (RootMintRow row : rows) {
+                if (row.kind() == RootKind.CLOCK
+                        && !row.sessionId().equals(seed)) {
+                    bySession.computeIfAbsent(row.sessionId(),
+                            session -> new ArrayList<RootMintRow>()).add(row);
+                }
+            }
+        }
+        for (Map.Entry<String, List<RootMintRow>> session
+                : bySession.entrySet()) {
+            // Its cells the recording read too, each with how far late.
+            Map<RootMintRow, Long> anchored =
+                    new LinkedHashMap<RootMintRow, Long>();
+            for (RootMintRow row : session.getValue()) {
+                RootMintRow recorded = corpus.rootOf(seed, row.rootId());
+                Long host = number(row.hostReading());
+                Long reading = recorded == null ? null
+                        : number(recorded.hostReading());
+                if (host != null && reading != null) {
+                    anchored.put(row, host - reading);
+                }
+            }
+            Map<String, Long> late = new LinkedHashMap<String, Long>();
+            for (RootMintRow row : session.getValue()) {
+                Long base = anchored.get(row);
+                if (base == null) {
+                    RootMintRow nearest = null;
+                    for (RootMintRow anchor : anchored.keySet()) {
+                        if (!anchor.occurrence().node().equals(
+                                row.occurrence().node())
+                                || row.clock() == null
+                                || !row.clock().same(anchor.clock())) {
+                            continue;
+                        }
+                        long distance = Math.abs(anchor.seq() - row.seq());
+                        if (nearest == null || distance
+                                < Math.abs(nearest.seq() - row.seq())
+                                || (distance == Math.abs(nearest.seq()
+                                - row.seq()) && anchor.seq() < nearest.seq())) {
+                            nearest = anchor;
+                        }
+                    }
+                    base = nearest == null ? null : anchored.get(nearest);
+                }
+                if (base != null && base != 0L) late.put(row.symbol(), base);
+            }
+            if (!late.isEmpty()) bases.put(session.getKey(), late);
+        }
+        return bases;
     }
 
     /**

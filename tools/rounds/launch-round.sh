@@ -19,8 +19,9 @@
 # cores (campaign_stream_admit_host).  So the head hosts are chosen here, at
 # launch, from the hosts' room now -- the ledger's reading every start takes
 # (campaign_host_room) -- the heaviest case first (its engine heap,
-# tools/lib/heads.sh), each to the host with the most room among those that
-# head the fewest cases: no host heads two before every host heads one.
+# tools/lib/heads.sh case_engine_heap_mb), each to the host with the most
+# room among those that head the fewest cases: no host heads two before
+# every host heads one.
 # lift11 -- the owner's interactive machine -- heads nothing but is a
 # worker, and a host whose memory cannot be read heads nothing either.
 #
@@ -72,7 +73,8 @@ done
 (( ${#heads[@]} > 0 )) \
   || { echo "no host of LIFTS but ${owner_host} could be read: no head" >&2; exit 2; }
 mapfile -t launches < <(for case_id in "${cases[@]}"; do
-    printf '%s %s\n' "$(case_head_need_mb "${snapshot}" "${case_id}")" \
+    printf '%s %s\n' \
+      "$(case_engine_heap_mb "$(case_config "${snapshot}" "${case_id}")")" \
       "${case_id}"
   done | heads_choose "${heads[@]}")
 

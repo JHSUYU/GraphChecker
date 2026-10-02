@@ -160,7 +160,7 @@ public class OccurrenceAddressIsNotARequestTest {
                 new SourceRef("CLUSTER_NODE", "NAMENODE", NN0, 1L));
         ConcolicTaskPlan.RuntimeTask unobserved = nodeTask(NN0 + "#epoch1", 1);
         assertNotNull("the address is the whole admission",
-                plan(unobserved).select(unobserved.rootHookGroupKey(),
+                plan(unobserved).select(unobserved.rootHookGroup,
                         SNAPSHOT_ROOT, node, new Object[0]));
 
         // A loop-body task whose occurrence names no k is refused at PLAN.
@@ -210,6 +210,78 @@ public class OccurrenceAddressIsNotARequestTest {
                 !deferred.claimsEnclosingInvocation(12L));
         assertEquals("and it did not take it either", 11L,
                 deferred.enclosingInvocationEvent());
+    }
+
+    /**
+     * The declared occurrence is also answered by its question (IDENTITY
+     * §9): an activation of its region on its node, under a chain of its
+     * shape, at an address no task plans, takes the declared address.  An
+     * address a task plans is that task's, whatever the plan's order.
+     */
+    @Test
+    public void theDeclaredOccurrenceIsAnsweredByItsQuestion() {
+        RecordingWindow.open();
+        Object node = new Object();
+        RuntimeTraceContext.registerSource(node,
+                new SourceRef("NAMENODE", "nn", NN0, 0L));
+        long request = RuntimeTraceContext.beginRequest(node, "check");
+        try {
+            OccurrenceAddress ran = checkAddress(1);
+            OccurrenceAddress declared = checkAddress(2);
+            JsonObject row = encoded("TASK.declared", NN0 + "#epoch0",
+                    SNAPSHOT_REGION, SNAPSHOT_ROOT, declared.render(), 1,
+                    "REGISTERED_SOURCE");
+            row.add("questionShape", json("{'s':['Root:CLIENT/check']}")
+                    .getAsJsonArray("s"));
+            ConcolicTaskPlan.RuntimeTask asked = new ConcolicTaskPlan
+                    .RuntimeTask(ExecutionTask.decode(row));
+            ConcolicTaskPlan.RuntimeTask planned = new ConcolicTaskPlan
+                    .RuntimeTask(ExecutionTask.decode(encoded("TASK.ran",
+                    NN0 + "#epoch0", SNAPSHOT_REGION, SNAPSHOT_ROOT,
+                    ran.render(), 1, "REGISTERED_SOURCE")));
+
+            assertEquals("one woven entry offers both occurrences of the root",
+                    asked.rootHookGroup, planned.rootHookGroup);
+            assertTrue("a turn of the same root answers it", asked.answers(ran));
+            assertFalse("a task stating no question answers by address only",
+                    planned.answers(declared));
+            assertEquals("the address it ran at is a planned task's",
+                    planned, new ConcolicTaskPlan(null,
+                            Arrays.asList(asked, planned)).select(
+                            asked.rootHookGroup, SNAPSHOT_ROOT, node,
+                            new Object[0]));
+            // And so is every other invocation under that task's anchor:
+            // the second call of a planned handshake answers no other
+            // handshake's question (hdfs-11741 K2).
+            OccurrenceAddress sibling = OccurrenceAddress.of(ran.node(),
+                    ran.regionId(), ran.context(), ExecutionIndex.of(
+                            singletonList(Frame.of("<a.B: void m()>", 1))));
+            assertTrue(new ConcolicTaskPlan(null, Arrays.asList(asked,
+                    planned)).occupies(asked.rootHookGroup, sibling));
+            assertFalse(plan(asked).occupies(asked.rootHookGroup,
+                    sibling));
+
+            // The region entry opens the run's own address; the admission
+            // gives it the declared one.
+            Identity.occurrence(NN0 + "#epoch0", SNAPSHOT_REGION, true);
+            ConcolicTaskPlan alone = plan(asked);
+            assertEquals(asked, alone.select(asked.rootHookGroup,
+                    SNAPSHOT_ROOT, node, new Object[0]));
+            assertTrue(alone.answeredByQuestion(asked));
+            assertEquals(ran, Identity.answer(declared));
+            assertEquals(declared,
+                    Identity.currentOccurrence(NN0 + "#epoch0"));
+        } finally {
+            RuntimeTraceContext.endRequest(request);
+            ScheduleLog.resetForTests();
+        }
+    }
+
+    /** The occurrence of the snapshot region under the k-th check. */
+    private static OccurrenceAddress checkAddress(int k) {
+        return OccurrenceAddress.of(NodeId.parse(NN0 + "#epoch0"),
+                SNAPSHOT_REGION, CausalContext.of(Role.of("CLIENT"), "check",
+                        k), ExecutionIndex.empty());
     }
 
     /**

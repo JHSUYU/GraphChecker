@@ -24,9 +24,11 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.SExpression;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 
+import java.math.BigInteger;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -34,6 +36,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -342,6 +345,9 @@ public final class SmtLowering {
     /** What the conjunction now open raised: its frame of {@link #raising}. */
     private Raised open;
     private String scope = "";
+    /** Session -> clock symbol -> its base there ({@link #clockBases}). */
+    private Map<String, Map<String, Long>> clockBases =
+            Collections.emptyMap();
     private SessionJoin join = NO_JOIN;
     /** The expression table of the session whose conjunction is open. */
     private ExpressionTable openTable;
@@ -358,6 +364,8 @@ public final class SmtLowering {
      * stand; a name newly stated clears the memo ({@link #put}).
      */
     private Map<MemoKey, Attempt<?>> memo = new HashMap<MemoKey, Attempt<?>>();
+    /** The memo keys whose lowering is in progress ({@link #memoized}). */
+    private final Set<MemoKey> lowering = new HashSet<MemoKey>();
     /**
      * The nodes a {@link #moves} walk of this conjunction found resting on
      * nothing that moves, so no later walk of it goes through them again.
@@ -739,6 +747,25 @@ public final class SmtLowering {
      * references.  Identities and side conditions are per execution: one
      * constant for two sessions' objects makes satisfiable paths unsat.
      */
+    /**
+     * EVERY SESSION ON THE RECORDING'S TIMELINE.  A replay runs on its own
+     * host's clock, started later than the recording (a plant is a skew off
+     * that host, {@code runtime.NodeClocks}), so an instant it computed
+     * outside every clock root -- a key's expiry from a startup reading --
+     * is a constant on its own clock, while every clock cell is one symbol
+     * on the recording's timeline.  {@code bases}: session -> clock symbol
+     * -> how far that session's host read it later than the recording
+     * ({@code Composer#clockBases}); a constant compared with a clock cell
+     * in that session is that much earlier on the recording's timeline
+     * ({@link #onTimeline}).  hdfs-11741 L1: dn1's first expiry check
+     * compared each replay's own startup keys, 9 to 11 minutes late, with
+     * the one dn1 clock.
+     */
+    void clockBases(Map<String, Map<String, Long>> bases) {
+        clockBases = bases == null
+                ? Collections.<String, Map<String, Long>>emptyMap() : bases;
+    }
+
     public void begin(String sessionId, SessionJoin sessionJoin,
                       ExpressionTable expressions) {
         // NESTED, not replaced: an arm is lowered in its producer's scope
@@ -941,19 +968,45 @@ public final class SmtLowering {
 
     /**
      * One node lowered once per conjunction ({@link #memo}), committed on
-     * every hit: each lowering reaching it rests on what it raised.
+     * every hit: each lowering reaching it rests on what it raised.  A node
+     * reached again while its own lowering is in progress ({@link
+     * #lowering}) is its own input: the DAG has no cycle, so the lowering
+     * came back to it through a value it asked by identity -- a candidate
+     * object's field ({@link #fieldOf}) or a state a store published ({@link
+     * #answerOf}) -- whose one write or state rests on the very node asking
+     * (hdfs a40h2 FsDatasetImpl-1092/-1424: {@code b.numBytes =
+     * f(owner.numBytes)} where the owner may be {@code b}, a recursion that
+     * filled an 8 GB heap).  That value was read before it was written, so it
+     * has no answer there: {@code cycle} refuses it by name ({@link
+     * #LOWERING_CYCLE}), and the attempt asking it drops that candidate.
      */
     @SuppressWarnings("unchecked")
     private <T> T memoized(JsonElement node, Object expected,
-                           Supplier<T> lowering) {
+                           Supplier<T> lowering, Supplier<T> cycle) {
         if (node == null || !node.isJsonObject()) return lowering.get();
         MemoKey key = new MemoKey(node, expected);
         Attempt<?> held = memo.get(key);
         if (held == null) {
-            held = attempting(lowering);
+            if (!this.lowering.add(key)) return cycle.get();
+            try {
+                held = attempting(lowering);
+            } finally {
+                this.lowering.remove(key);
+            }
             memo.put(key, held);
         }
         return (T) commit(held);
+    }
+
+    /** The refusal of a node reached inside its own lowering. */
+    private static final String LOWERING_CYCLE = "LoweringCycle";
+
+    private void cycle(String origin) {
+        refuse(LOWERING_CYCLE + ":" + origin, "this value was reached again "
+                + "inside its own lowering, through a candidate's field or "
+                + "a state asked by identity whose write rests on it: it was "
+                + "read before that write, which therefore answers nothing "
+                + "here");
     }
 
     /** What the conjunction now open refused, each cause once. */
@@ -1983,7 +2036,8 @@ public final class SmtLowering {
                     origin + ":" + cell));
             if (written.lowered()) field = commit(written);
             why = "its one write, which does not lower to the " + sort
-                    + " the projection reads";
+                    + " the projection reads" + (written.lowered() ? ""
+                    : " (" + String.join(", ", written.refusals()) + ")");
         }
         if (field != null && field.sort == sort) return field;
         top().diagnostics.put(CANDIDATE_UNANSWERED + ":" + cell + "@"
@@ -2481,15 +2535,22 @@ public final class SmtLowering {
             public ContainerSmtCodec.Term operand(
                     JsonElement expression,
                     ContainerSmtCodec.Sort expected) {
+                // A refused operand is null to the codec.
+                Supplier<ContainerSmtCodec.Term> cycle = () -> {
+                    cycle(origin);
+                    return null;
+                };
                 if (ContainerSmtCodec.handles(expression)) {
                     return memoized(expression, CONTAINER_OPERAND,
                             () -> name(ContainerSmtCodec.term(
-                                    expression.getAsJsonObject(), this)));
+                                    expression.getAsJsonObject(), this)),
+                            cycle);
                 }
                 if (ContainerSmtCodec.handlesField(expression)) {
                     return memoized(expression, CONTAINER_OPERAND,
                             () -> name(ContainerSmtCodec.field(
-                                    expression.getAsJsonObject(), this)));
+                                    expression.getAsJsonObject(), this)),
+                            cycle);
                 }
                 Term value = dispatch(expression,
                         VmTermLowering.sortOfContainer(expected),
@@ -3191,6 +3252,9 @@ public final class SmtLowering {
                 }
             }
             return value;
+        }, () -> {
+            cycle(origin);
+            return free(expected, IntegralWidth.NONE);
         });
     }
 
@@ -3279,6 +3343,65 @@ public final class SmtLowering {
     // Binary operators.
     // ------------------------------------------------------------------
 
+    /**
+     * An integral constant compared with an instant of a clock cell this
+     * session's host read off the recording's timeline, moved onto it: an
+     * instant is compared only with an instant, so the constant is one, on
+     * this session's clock ({@link #clockBases}).  Anything else as it is.
+     */
+    private static Term onTimeline(Term constant, Term other,
+                                   Map<String, Long> bases) {
+        if (constant.sort != Sort.INT || other.sort != Sort.INT) {
+            return constant;
+        }
+        String literal = constant.text.trim();
+        BigInteger value;
+        try {
+            value = literal.startsWith("(-")
+                    ? new BigInteger(literal.substring(2,
+                    literal.length() - 1).trim()).negate()
+                    : new BigInteger(literal);
+        } catch (NumberFormatException | StringIndexOutOfBoundsException
+                notAConstant) {
+            return constant;
+        }
+        Long base = bases.get(instantOf(SExpression.parse(other.text, 0)));
+        if (base == null) return constant;
+        return Term.vm(JavaPrimitiveSmtSemantics.integralLiteral(
+                value.subtract(BigInteger.valueOf(base)).toString()),
+                constant.sort, constant.integralWidth);
+    }
+
+    /**
+     * The clock cell an integral term is an instant of: the cell itself, or
+     * an instant plus or minus a constant span (a Java wrap around either
+     * keeps it); "" for anything else, a difference of two instants
+     * included.
+     */
+    private static String instantOf(SExpression term) {
+        if (term == null) return "";
+        if (term.atom()) return term.text();
+        List<SExpression> parts = term.children();
+        String head = term.head();
+        if (parts.size() == 2 && ("java_long_wrap".equals(head)
+                || "java_int_wrap".equals(head))) {
+            return instantOf(parts.get(1));
+        }
+        if (parts.size() == 3 && ("+".equals(head) || "-".equals(head))) {
+            boolean spanAfter = constantAtom(parts.get(2));
+            if (spanAfter) return instantOf(parts.get(1));
+            if ("+".equals(head) && constantAtom(parts.get(1))) {
+                return instantOf(parts.get(2));
+            }
+        }
+        return "";
+    }
+
+    private static boolean constantAtom(SExpression term) {
+        return term.atom() && !term.text().isEmpty()
+                && Character.isDigit(term.text().charAt(0));
+    }
+
     /** One recorded {@code BinaryExpression}. */
     private Term binary(JsonObject expression, String origin) {
         String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
@@ -3306,6 +3429,16 @@ public final class SmtLowering {
         } else if (left.sort != right.sort && left.isZero()
                 && right.sort == Sort.REF) {
             left = result("nullRef", Sort.REF);
+        }
+        if ("--".equals(operator) || "==".equals(operator)
+                || "!=".equals(operator)
+                || !VmExpressionIr.comparison(operator).isEmpty()) {
+            Map<String, Long> bases = clockBases.get(scope);
+            if (bases != null) {
+                Term instant = onTimeline(left, right, bases);
+                right = onTimeline(right, left, bases);
+                left = instant;
+            }
         }
         if ("--".equals(operator)) {
             // lcmp is typed long: a widthless int operand is a long.

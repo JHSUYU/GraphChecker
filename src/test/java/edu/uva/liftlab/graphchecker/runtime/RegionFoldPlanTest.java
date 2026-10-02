@@ -8,6 +8,8 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.Rule;
@@ -214,8 +216,10 @@ public class RegionFoldPlanTest {
             List<RuntimeRegionPlanner.MethodEvent> events) {
         return RuntimeRegionPlanner.planSkeletonGraph(cutSkeletons(), events,
                 cutRuntime(),
+                Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList(),
                 Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
-                Collections.<String>emptySet());
+                Collections.<String>emptySet(),
+                Collections.<String, String>emptyMap());
     }
 
     /** The fixture's finalized closure over those activations. */
@@ -224,7 +228,8 @@ public class RegionFoldPlanTest {
         return RuntimeSelectedRegionFinalizer.finalizeRegions(cutGraph(),
                 cutSkeletons(), "test", Arrays.asList(HANDLER, LEAF),
                 activations.runtimeInstances, cutObservations(),
-                cutScopeMap());
+                cutScopeMap(), RuntimeWorkflowDiscovery.FIRST,
+                Collections.<ScheduleEvent>emptyList());
     }
 
     /**
@@ -403,8 +408,10 @@ public class RegionFoldPlanTest {
         return RuntimeRegionPlanner.planSkeletonGraph(skeletons(),
                 events(folded),
                 Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList(),
                 Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
-                Collections.<String>emptySet());
+                Collections.<String>emptySet(),
+                Collections.<String, String>emptyMap());
     }
 
     /**

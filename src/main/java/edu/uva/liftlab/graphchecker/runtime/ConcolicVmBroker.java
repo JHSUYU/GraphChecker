@@ -248,6 +248,35 @@ final class ConcolicVmBroker {
         resumePathCondition.invoke(null);
     }
 
+    /**
+     * Pauses the VM's propagation on this thread for engine work the JDK runs
+     * on a program thread ({@link InheritedState}), touching no thread-local.
+     *
+     * @return false on a JVM without the native (the recording's stock JDK),
+     *         which propagates nothing; true when {@link #resumeEngineWork}
+     *         is owed
+     */
+    static boolean pauseEngineWork() {
+        Method pause = engine().pausePathCondition;
+        if (pause == null) return false;
+        invokeNative(pause);
+        return true;
+    }
+
+    /** Ends a {@link #pauseEngineWork}. */
+    static void resumeEngineWork() {
+        invokeNative(engine().resumePathCondition);
+    }
+
+    private static void invokeNative(Method method) {
+        try {
+            method.invoke(null);
+        } catch (ReflectiveOperationException failed) {
+            throw new IllegalStateException(
+                    "the VM's " + method.getName() + " failed", failed);
+        }
+    }
+
     String branchEvents() throws Exception {
         return String.valueOf(getBranchEvents.invoke(null));
     }

@@ -25,6 +25,7 @@
 #include "oops/objArrayOop.hpp"
 #include "oops/typeArrayOop.hpp"
 #include "runtime/fieldDescriptor.hpp"
+#include "runtime/safepoint.hpp"
 #include "utilities/ostream.hpp"
 #include "webridge/utils/rapidjson/stringbuffer.h"
 #include "webridge/utils/rapidjson/writer.h"
@@ -957,6 +958,14 @@ int SharedFieldVersions::install_guarded_store_sites(const char *table) {
   }
   _guarded_store_count = sites;
   return sites;
+}
+
+void SharedFieldVersions::methods_freed() {
+  // At a safepoint: no thread is inside a lookup or an install, and every
+  // lookup after it reads the epoch afresh.  No lock, as the VMThread takes
+  // none a thread stopped for the safepoint could hold.
+  assert(SafepointSynchronize::is_at_safepoint(), "only at a safepoint");
+  _guarded_store_epoch = _guarded_store_epoch + 1;
 }
 
 namespace {

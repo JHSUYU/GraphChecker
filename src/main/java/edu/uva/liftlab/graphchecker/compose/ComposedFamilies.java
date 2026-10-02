@@ -435,6 +435,28 @@ final class ComposedFamilies {
         pathUndo.add(() -> restore(families, slotId, before));
     }
 
+    /** Path selector -> the arm its own session is of each message of the
+     *  path ({@link #ownArms}). */
+    private final Map<String, List<String>> ownArms =
+            new LinkedHashMap<String, List<String>>();
+
+    /**
+     * Each path's own run's deliveries: for each message the path itself
+     * received, the arm its own session is (a merged copy's representative
+     * where its body is another's).  A model holding them is a model of the
+     * path, so a path is asked under them first ({@code Disjunction}).
+     */
+    Map<String, List<String>> ownArms() {
+        return Collections.unmodifiableMap(ownArms);
+    }
+
+    private void own(String arm) {
+        List<String> arms = ownArms.computeIfAbsent(path,
+                key -> new ArrayList<String>());
+        arms.add(arm);
+        pathUndo.add(() -> arms.remove(arms.size() - 1));
+    }
+
     /** One more thing resting on a message the path closed. */
     private void needs(Closed message, String guard) {
         message.needers.add(guard);
@@ -670,6 +692,9 @@ final class ComposedFamilies {
             // the same nested messages), states nothing.
             if (body == null || same != null) rollback(mark);
             if (body == null) continue;
+            if (family.atPath && session.equals(owner)) {
+                own(same != null ? same : selector);
+            }
             if (same != null) {
                 choose(same, armChoices.get(same).alsoBy(session));
                 continue;
@@ -1376,8 +1401,20 @@ final class ComposedFamilies {
                     }
                 }
             }
-            // One arm is the run's own interleaving: the join says it.
-            if (found.size() + (observedPin.isEmpty() ? 0 : 1) < 2) continue;
+            // One arm is the run's own interleaving: the join says it.  An
+            // alternative is an HB-concurrent writer: arms that are each the
+            // run's own pairing of some read (the writer one read saw, the
+            // pins of another whose version no row wrote) re-pair nothing,
+            // and their location is none Composer#repaired names.
+            boolean alternative = false;
+            for (Arms.Arm arm : found) {
+                alternative |= arms.concurrent(reads.get(0).endpoint()
+                        .occurrence(), arm.producer(), session);
+            }
+            if (!alternative
+                    || found.size() + (observedPin.isEmpty() ? 0 : 1) < 2) {
+                continue;
+            }
             if (observedPin.isEmpty()) {
                 observedWrites.put(entry.getKey(), observed);
             } else {

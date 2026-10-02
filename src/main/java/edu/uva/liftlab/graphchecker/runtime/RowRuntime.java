@@ -197,6 +197,21 @@ public final class RowRuntime {
     }
 
     /**
+     * States that the occurrence this run ran at {@code ran} answers the
+     * declared occurrence by its question's rule (IDENTITY §9) and states its
+     * rows at {@code declared}: never silent, since the address the run
+     * computed is gone from every row.
+     */
+    static void answered(OccurrenceAddress ran, OccurrenceAddress declared) {
+        if (ran == null) return;
+        gap(GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC, declared.render(),
+                "the declared occurrence ran at " + ran.render() + ", under"
+                        + " a chain of its question's shape whose counts"
+                        + " differ from the recording's, and answers it:"
+                        + " its rows state the declared address");
+    }
+
+    /**
      * States one unselected activation, once: an activation with no row
      * silently downgrades an arm that rests on it.
      */
@@ -1020,7 +1035,7 @@ public final class RowRuntime {
                 Files.deleteIfExists(Paths.get(worker,
                         ObligationDir.QUESTION_ASKED));
             } catch (IOException undeleted) {
-                System.err.println("Causynth could not withdraw the question"
+                EngineConsole.println("Causynth could not withdraw the question"
                         + " this unsettled replay asked: " + undeleted);
             }
         }
@@ -1035,7 +1050,7 @@ public final class RowRuntime {
         String unmoved = session.withdrawTo(
                 Paths.get(worker, REFUSED_SESSIONS));
         if (!unmoved.isEmpty()) {
-            System.err.println("Causynth could not withdraw the session of"
+            EngineConsole.println("Causynth could not withdraw the session of"
                     + " this decided replay to " + worker + "/"
                     + REFUSED_SESSIONS + " (" + unmoved + "); its worker"
                     + " withdraws what is still listed");
@@ -1062,7 +1077,7 @@ public final class RowRuntime {
                     rows.toString().getBytes(
                             StandardCharsets.UTF_8));
         } catch (IOException unwritable) {
-            System.err.println("Causynth could not write the replay's"
+            EngineConsole.println("Causynth could not write the replay's"
                     + " obligation verdict: " + unwritable);
         }
     }

@@ -3,7 +3,8 @@
 A causal graph node is one region occurrence `(r, c, i)`: the static region `r`, the causal context
 `c` that started it, and the execution index `i` locating it in its component's control structure.
 Recording and every replay compute it with the same function over the same woven hooks, so a node
-of one run is the same node in another iff the ids are equal. Java paths below are under
+of one run is the same node in another iff the ids are equal, the declared occurrence alone also by
+its question (§9). Java paths below are under
 `src/main/java/edu/uva/liftlab/graphchecker/`.
 
 ## 1. The occurrence address
@@ -180,8 +181,8 @@ the objects the node runs its work through), `registerSource`, `registerSourceAl
 registered node is attributed to `workload/unregistered` (`RuntimeRegionPlanner.UNREGISTERED_SOURCE`).
 
 PLAN refuses what the address cannot tell apart: activations of one region sharing one address are
-`OCCURRENCE_ADDRESS_SHARED` (BLOCKING when the region is in the published closure,
-`causynth/RuntimeSelectedRegionFinalizer`), and a plan row whose causal anchor or source names
+`OCCURRENCE_ADDRESS_SHARED` (BLOCKING when the published closure retains that occurrence, else
+DIAGNOSTIC, `causynth/RuntimeSelectedRegionFinalizer#stateSharedAddressClasses`), and a plan row whose causal anchor or source names
 another node than its address is `TASK_UNANSWERED` BLOCKING
 (`RuntimeRegionPlanner#stateAnchorOffAddress`).
 
@@ -203,6 +204,17 @@ A start made under a hop (§3) captures the starter's scope with the carrier
 nothing and writes no event; its work is unnamed (§1). A pool's own worker thread
 inherits no scope (`runtime/PoolWorkers`: `ThreadPoolExecutor.addWorker`,
 `ForkJoinPool.createWorker`, Jetty `QueuedThreadPool.startThread`); each task carries its own.
+
+A new thread inherits its creator's lineage, execution index and trace scope through the engine's
+inheritable thread-locals (`runtime/InheritedState`: `Lineage`, `Identity`,
+`RuntimeTraceContext`). `Thread.init` computes them on the creator, inside whatever region it
+stands in, and no weave brackets a call the JDK makes, so `InheritedState#childValue` pauses the
+VM's propagation itself (`ConcolicVmBroker#pauseEngineWork`), as every woven hook call is paused:
+the child inherits its identity, and the creator's objects get no shadow. Unpaused, the index's
+list of the creator's frame receivers named each one by a container relation, so every later read
+of their fields was symbolic: in hdfs-17960 a planned checkpoint handler's `Thread.init` read its
+own `contextClassLoader` symbolically, and the image savers' `core-default.xml` parse was tracked
+row by row.
 
 The lineage scope (`plan/LineageScan`, run by `run_engine.sh campaign_lineage_classes` over
 `causynth_lineage_roots`) weaves the start, claim and timed-wait hooks into every class of the
@@ -261,7 +273,9 @@ The library catalog's doors and the woven markers are SYMBOL-SCOPE.md §4.2. A m
 the occurrence that runs the door; `explore/ClosurePlanner#controlProducer` adds the sender and the
 receiver of the message a demanded occurrence served (found through its `Anchor`,
 `explore/Corpus#senderOf`, `#receiverOf`) as control producers, so their door faults are proposed
-as flips.
+as flips. PLAN plans the door occurrences that read a fault marker on the same relation, over the
+recording's schedule (`causynth/RecordedMessages#doorsOf`, SYMBOL-SCOPE.md §4.4), so the faults EXPLORE
+proposes are minted.
 
 ### 7.4 Captures bound to exchanges
 
@@ -404,10 +418,38 @@ order:
 A case names its target occurrence (`declared_target_occurrence`) as a selector
 (`contract/Selector`), `<node>#epoch<N>/region/REGION.x[@<src>#epoch<N>/<api>]#k`, or as `first`,
 the first observed occurrence of the declared target site in the recording (an ad-hoc sweep's default,
-`plan/RuntimeWorkflowDiscovery.FIRST`). `plan/SelectorResolution#resolve` takes the k-th seed
-activation a selector matches (region, and the anchor's api when given); an already-resolved
-address passes through. No match yields a degraded address, reported downstream as
-`DECLARATION_MISSING`.
+`plan/RuntimeWorkflowDiscovery.FIRST`, also for a case stating none). The recording's aggregation
+resolves it once, against the target occurrences it observed in recorded order
+(`RuntimeWorkflowDiscovery#declaredOccurrence`: the k-th a selector matches, by `SelectorResolution`'s
+rule), marks that occurrence's plan row, and plans only the question `(r,c)` around it: the target
+occurrences of its region and node whose context has its shape (`contract/ContextShape#sameQuestion`,
+the rule `explore/Branches` stops replays by), at any index (SYMBOL-SCOPE.md §4.4). Every stage after
+PLAN reads the resolved address. `plan/SelectorResolution#resolve` takes the k-th seed activation a
+selector matches (region, and the anchor's api when given); an already-resolved address passes
+through. No match yields a degraded address, reported downstream as `DECLARATION_MISSING`.
+
+**A replay's answer.** One woven entry per root hook group (`plan/ExecutionTask#rootHookGroup`:
+region, root method, a loop-body root's loop) offers each invocation to every task of its group, and
+a replay admits a planned task by its whole address, id against id
+(`runtime/ConcolicTaskPlan#select`), with one exception: the declared occurrence is also answered by
+its question. PLAN states its context's shape over the recording's senders on its row
+(`questionShape`, `causynth/RuntimeSelectedRegionFinalizer`, `RecordedMessages#shape`); an
+activation of its region on its node, in a context no task of that root plans an occurrence of the
+region in (`ConcolicTaskPlan#occupies`: not its address, and not another invocation under the same
+anchor, which is the planned occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer
+handshake, under the anchor of that handshake's planned first call, answered the declared second
+handshake, which then ran unplanned), in an entry that
+opened its own occurrence, answers it when its own context, shaped over this run's senders
+(`runtime/ScheduleLog#shape`: each producer endpoint's SEND stance), has that shape hop for hop and
+reaches a root (`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then
+takes the declared address (`Identity#answer`): its rows, endpoints, decision ordinals, schedule
+mark and close state it, so every later stage reads the declared address as before, and a
+DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). Which
+turn of a daemon carries another node's asynchronous work is that node's timing, which no schedule
+holds: in sweep `a40h` a NameNode command (block recovery queued by the lease monitor, replication
+after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
+so every anchor below it differed in the root's k alone and the target was never admitted; two
+recordings of one workload differ the same way.
 
 ## 10. Pass equality
 
@@ -429,6 +471,11 @@ randomness is seeded by endpoint (SYMBOL-SCOPE.md §4.5).
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
+- Only the declared occurrence is answered by its question (§9), and only at a root entry, not a
+  loop body. Every other task still needs its whole address, so the chain a replay took to the
+  declared occurrence instead of the recorded one has no planned rows, and that session sends no
+  message under the declared anchor: EXPLORE finds no door of it there
+  (`explore/ClosurePlanner#controlProducer`).
 - A codec decode on a thread no node is attributed to mints its holes under the unregistered
   address (the Solr Overseer reads its queue item before its tick opens, so the queue's holes are
   minted there, not in the tick).

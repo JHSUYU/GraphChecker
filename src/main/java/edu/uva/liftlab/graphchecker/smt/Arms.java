@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -263,6 +264,14 @@ public final class Arms {
     private final Rows rows;
     /** {@code slotId|sessionId|rootId}, in the order the arms were refused. */
     private final Set<String> refusals = new LinkedHashSet<String>();
+    /**
+     * {@code sessionId expressionRef} -> every symbol that expression names
+     * ({@link #symbolsIn}): an export is walked once, however many paths
+     * close its message (hdfs-11741 i1: re-walking the same exports, once
+     * per path and nesting level, was a quarter of a 7-minute composition).
+     */
+    private final Map<String, Set<String>> symbolsByExpression =
+            new HashMap<String, Set<String>>();
 
     public Arms(Rows rows) {
         this.rows = rows;
@@ -534,8 +543,12 @@ public final class Arms {
         List<String> pi = attested
                 ? pathCondition(decisions, deliveredAt)
                 : new ArrayList<String>();
-        Set<String> symbols = new LinkedHashSet<String>();
-        symbolsIn(expression, symbols);
+        Set<String> symbols = symbolsByExpression.computeIfAbsent(
+                session + " " + expressionRef, key -> {
+                    Set<String> named = new LinkedHashSet<String>();
+                    symbolsIn(expression, named);
+                    return Collections.unmodifiableSet(named);
+                });
         Map<String, String> guard = new LinkedHashMap<String, String>();
         Set<String> guardRoots = new LinkedHashSet<String>();
         for (Map.Entry<String, List<RootMintRow>> entry

@@ -226,8 +226,8 @@ public final class StaticScopeMap {
          *  {@code REFERENCE} ({@link SharedFieldFlow.TrackedKind}); "" on
          *  every other row. */
         public final String trackedKind;
-        /** READ_SITE: whether its cell is a static field, whose location is
-         *  its class's. */
+        /** READ_SITE, WRITE_SITE: whether its field is static, whose location
+         *  is its class's (an atomic's value never is). */
         public final boolean staticField;
         /**
          * WRITE_SITE: the local whose container this mutation builds before
@@ -476,7 +476,8 @@ public final class StaticScopeMap {
                     SiteId.of(method, unitIndex), vmSite(method),
                     leaf.isEmpty() ? field : leaf, field, "", invoke, "",
                     null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS, NO_CHAIN,
-                    NO_CALLERS, "", false, text(edge.get("publishedFrom"))));
+                    NO_CALLERS, "", leaf.isEmpty() && staticField.test(field),
+                    text(edge.get("publishedFrom"))));
         }
         markReads(found, unwoven);
         keepTrackedReads(found);
@@ -1145,7 +1146,8 @@ public final class StaticScopeMap {
 
     /**
      * Whether a site stores (or, read, starts the log of) a location of this
-     * kind: a field store, or an atomic's write of its value leaf, a field;
+     * kind: a field store, or an atomic's write of its value leaf, a field --
+     * static or instance as its field is;
      * any other mutator call the state of the container its carrier holds;
      * a read the field it reads and, of a container field, that
      * container's state.  No site of the map names an array element, so an
@@ -1153,8 +1155,10 @@ public final class StaticScopeMap {
      * stored in {@code PBHelper.convert} took a reference field's).
      */
     private static boolean stores(Site site, LocationKind kind) {
-        boolean field = kind == LocationKind.INSTANCE
-                || kind == LocationKind.STATIC;
+        // A static field's location is its class's, an instance field's its
+        // object's: one never stands for the other.
+        boolean field = kind == (site.staticField ? LocationKind.STATIC
+                : LocationKind.INSTANCE);
         if (READ_SITE.equals(site.role)) {
             return field || kind == LocationKind.MAP
                     && JavaContainerTypes.shape(descriptorOfCellType(
@@ -1245,11 +1249,11 @@ public final class StaticScopeMap {
      * the window reached still has a log -- its INITIAL -- that the read
      * states and the closure asks the cell's writers about (GreyGraph
      * §3.1's Writers_W(l), SYMBOL-SCOPE §5.5).  Each row states its cell's {@code
-     * trackedKind}.  Not observed here: a mutation of a container a local
-     * holds before its publication ({@link Site#publishedFrom}), whose
-     * receiver is that local's container, not the carrier's holder -- its
-     * log starts at its first model event; and a static cell, whose location
-     * is its class's, which no observer takes yet.
+     * trackedKind}, and a static cell's {@code static}: its location is its
+     * declaring class's, observed on the class's mirror.  Not observed here: a
+     * mutation of a container a local holds before its publication ({@link
+     * Site#publishedFrom}), whose receiver is that local's container, not the
+     * carrier's holder -- its log starts at its first model event.
      */
     public JsonArray observedSites() {
         Map<String, Site> tracked = new LinkedHashMap<String, Site>();
@@ -1262,7 +1266,7 @@ public final class StaticScopeMap {
             boolean read = READ_SITE.equals(site.role);
             Site cell = tracked.get(site.cell);
             if (!read && !WRITE_SITE.equals(site.role) || cell == null
-                    || cell.staticField || !site.publishedFrom.isEmpty()
+                    || !site.publishedFrom.isEmpty()
                     || !seen.add(site.siteId)) {
                 continue;
             }
@@ -1274,6 +1278,7 @@ public final class StaticScopeMap {
             row.addProperty("cell", site.cell);
             row.addProperty("read", read);
             row.addProperty("trackedKind", cell.trackedKind);
+            if (cell.staticField) row.addProperty("static", true);
             found.add(row);
         }
         return found;

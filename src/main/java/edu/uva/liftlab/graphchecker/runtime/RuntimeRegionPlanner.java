@@ -32,6 +32,8 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -62,14 +64,22 @@ public final class RuntimeRegionPlanner {
     private RuntimeRegionPlanner() {
     }
 
-    /** Binds static region skeletons to the activations a run performed. */
+    /**
+     * Binds static region skeletons to the activations a run performed.
+     *
+     * @param fieldReads call site -> the field a call there returns
+     *     ({@link RuntimeSelectedRegionFinalizer#fieldReadingCalls}): its
+     *     receiver owns that field ({@link #stampFieldOwners})
+     */
     static Result planSkeletonGraph(List<StaticProgram.RegionRow> skeletons,
                                     List<MethodEvent> methods,
                                     List<RuntimeEvent> runtimeEvents,
+                                    List<FieldAccessEvent> fieldEvents,
                                     List<ProtocolEvent> protocolEvents,
-                                    Set<String> declaredSites) {
+                                    Set<String> declaredSites,
+                                    Map<String, String> fieldReads) {
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
-                Collections.emptyList(), protocolEvents);
+                fieldEvents, protocolEvents);
         Result result = new Result();
         result.staticRegionCount = skeletons.size();
         Set<String> skeletonRoots = new LinkedHashSet<>();
@@ -151,9 +161,52 @@ public final class RuntimeRegionPlanner {
         stampActivationContainment(activationByCall, trace);
         stampFoldedRegionEntries(foldedRoots, foldOwners, activationByCall,
                 trace);
+        stampFieldOwners(activationByCall.values(), trace, fieldReads);
         result.runtimeInstances.addAll(activationByCall.values());
         stampRecordedExchanges(result, trace, protocolEvents);
         return result;
+    }
+
+    /**
+     * States on each activation, per field its calls read or wrote, the
+     * objects they did so on ({@link RuntimeSelectedRegionFinalizer
+     * #FIELD_OWNERS}): each field access's receiver (a static field's
+     * names none, {@code 0}) and the object a reference field held, so two
+     * holders sharing one referent share it; and the receiver of each call
+     * at a site that returns a field (an unwoven accessor).
+     */
+    private static void stampFieldOwners(
+            Collection<Map<String, Object>> activations, TraceIndex trace,
+            Map<String, String> fieldReads) {
+        for (Map<String, Object> activation : activations) {
+            Map<String, Set<Integer>> owners = new HashMap<>();
+            for (Long call : MapFields.longValues(
+                    activation.get("callIds"))) {
+                for (FieldAccessEvent event : trace.fieldsByCall.getOrDefault(
+                        call, Collections.<FieldAccessEvent>emptyList())) {
+                    Set<Integer> held = owners.computeIfAbsent(event.field,
+                            ignored -> new HashSet<>());
+                    held.add(event.receiverObjectId);
+                    if (event.valueObjectId != 0) {
+                        held.add(event.valueObjectId);
+                    }
+                }
+                for (RuntimeEvent event : trace.runtimeByCall.getOrDefault(
+                        call, Collections.<RuntimeEvent>emptyList())) {
+                    String field = fieldReads.get(event.siteId);
+                    if (field != null && event.objectId != 0
+                            && "CALL_SITE_ENTER".equals(event.kind)) {
+                        owners.computeIfAbsent(field,
+                                ignored -> new HashSet<>())
+                                .add(event.objectId);
+                    }
+                }
+            }
+            if (!owners.isEmpty()) {
+                activation.put(RuntimeSelectedRegionFinalizer.FIELD_OWNERS,
+                        owners);
+            }
+        }
     }
 
     /** One recorded entry that opens an occurrence of one region. */
@@ -1087,6 +1140,15 @@ public final class RuntimeRegionPlanner {
                 plan.put(basis, seed.get(basis));
                 if (seed.containsKey(depth)) {
                     plan.put(depth, seed.get(depth));
+                }
+            }
+            // The declaration, resolved once by the finalizer, and its
+            // question's shape; PLAN and the replay read them.
+            for (String declared : new String[] {
+                    RuntimeSelectedRegionFinalizer.DECLARED_OCCURRENCE,
+                    RuntimeSelectedRegionFinalizer.QUESTION_SHAPE}) {
+                if (seed.containsKey(declared)) {
+                    plan.put(declared, seed.get(declared));
                 }
             }
             plan.put("closureGoals", Collections.singletonList(goal));
@@ -2073,6 +2135,8 @@ public final class RuntimeRegionPlanner {
         private final Map<Long, List<Long>> children = new LinkedHashMap<>();
         private final Map<Long, List<RuntimeEvent>> runtimeByCall =
                 new LinkedHashMap<>();
+        private final Map<Long, List<FieldAccessEvent>> fieldsByCall =
+                new HashMap<>();
         /** seq -> unique owning callId, or the ambiguity sentinel. */
         private final LongLongMap eventCallIdBySeq = new LongLongMap();
 
@@ -2100,6 +2164,8 @@ public final class RuntimeRegionPlanner {
             }
             for (FieldAccessEvent event : sorted(fieldEvents,
                     value -> value.seq)) {
+                fieldsByCall.computeIfAbsent(event.callId,
+                        ignored -> new ArrayList<>()).add(event);
                 registerEventCall(event.seq, event.callId);
             }
         }

@@ -64,6 +64,9 @@
 #include "utilities/growableArray.hpp"
 #include "utilities/macros.hpp"
 #include "utilities/ostream.hpp"
+#ifdef ENABLE_CONCOLIC
+#include "concolic/concolicMngr.hpp"
+#endif
 
 ClassLoaderData * ClassLoaderData::_the_null_class_loader_data = NULL;
 
@@ -463,6 +466,9 @@ void ClassLoaderData::free_deallocate_list() {
   if (_deallocate_list == NULL) {
     return;
   }
+#ifdef ENABLE_CONCOLIC
+  const int listed = _deallocate_list->length();
+#endif
   // Go backwards because this removes entries that are freed.
   for (int i = _deallocate_list->length() - 1; i >= 0; i--) {
     Metadata* m = _deallocate_list->at(i);
@@ -481,6 +487,11 @@ void ClassLoaderData::free_deallocate_list() {
       }
     }
   }
+#ifdef ENABLE_CONCOLIC
+  if (_deallocate_list->length() < listed) {
+    ConcolicMngr::metadata_freed();
+  }
+#endif
 }
 
 // These anonymous class loaders are to contain classes used for JSR292
@@ -814,6 +825,11 @@ void ClassLoaderDataGraph::purge() {
   assert(SafepointSynchronize::is_at_safepoint(), "must be at safepoint!");
   ClassLoaderData* list = _unloading;
   _unloading = NULL;
+#ifdef ENABLE_CONCOLIC
+  if (list != NULL) {
+    ConcolicMngr::metadata_freed();
+  }
+#endif
   ClassLoaderData* next = list;
   while (next != NULL) {
     ClassLoaderData* purge_me = next;

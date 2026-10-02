@@ -66,7 +66,7 @@ final class ClockLoops {
         String named = Text.safe(System.getenv(
                 GuardedStoreSites.PATH_ENVIRONMENT));
         if (named.isEmpty()) {
-            System.err.println("Causynth schedule: $"
+            EngineConsole.println("Causynth schedule: $"
                     + GuardedStoreSites.PATH_ENVIRONMENT + " names no scope"
                     + " map: no loop is known to read a CLOCK root, and"
                     + " every poll past its recorded count is held");
@@ -79,7 +79,7 @@ final class ClockLoops {
                 if (!method.isEmpty()) found.add(method);
             }
         } catch (IOException | RuntimeException unreadable) {
-            System.err.println("Causynth schedule: the scope map " + named
+            EngineConsole.println("Causynth schedule: the scope map " + named
                     + " is unreadable (" + unreadable + "): no loop is known"
                     + " to read a CLOCK root");
             return Collections.emptySet();

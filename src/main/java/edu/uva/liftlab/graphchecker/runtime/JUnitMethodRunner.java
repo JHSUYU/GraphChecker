@@ -26,7 +26,7 @@ public final class JUnitMethodRunner {
             JUnitLifecycle.run(args);
         } catch (Throwable failure) {
             // The replay's outcome is read from stderr.
-            failure.printStackTrace(System.err);
+            EngineConsole.trace(failure);
             status = 1;
         }
         exit(status);
@@ -66,7 +66,7 @@ public final class JUnitMethodRunner {
         try {
             ConcolicResultPublisher.awaitSelectedResultPublications();
         } catch (Throwable publicationFailure) {
-            publicationFailure.printStackTrace(System.err);
+            EngineConsole.trace(publicationFailure);
             code = 1;
         }
         try {
@@ -75,7 +75,7 @@ public final class JUnitMethodRunner {
             reportWorkloadSessionClose();
         } catch (Throwable closeFailure) {
             // A failure while unwinding must not skip the exit below.
-            closeFailure.printStackTrace(System.err);
+            EngineConsole.trace(closeFailure);
             code = 1;
         }
         System.exit(code);
@@ -88,7 +88,7 @@ public final class JUnitMethodRunner {
     private static void reportWorkloadSessionClose() {
         String refusedClose = ConcolicRegionRuntime.closeWorkloadSession();
         if (!refusedClose.isEmpty()) {
-            System.err.println(refusedClose);
+            EngineConsole.println(refusedClose);
         }
     }
 }

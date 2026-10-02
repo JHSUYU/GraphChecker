@@ -5,6 +5,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -123,6 +125,23 @@ public class ScheduleLogTest {
                 events.get(0).context().equals(events.get(1).context()));
         assertEquals(events.get(0).context(), events.get(2).context());
         assertEquals("endpoint-at-receipt", events.get(2).endpoint());
+    }
+
+    /**
+     * A context's shape over this run's own senders: each anchor's SEND
+     * stance, as PLAN reads the recording's; a sender this run never sent
+     * from is unknown.
+     */
+    @Test
+    public void aContextIsShapedByThisRunsSenders() {
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST",
+                "e1");
+        assertEquals(Arrays.asList("HADOOP_IPC/check@t/dn0#epoch0",
+                "Root:CLIENT/schedule-test"), ScheduleLog.shape(
+                CausalContext.parse("Anchor:e1@HADOOP_IPC/check")));
+        assertEquals(Arrays.asList(ContextShape.UNKNOWN_HOP),
+                ScheduleLog.shape(
+                        CausalContext.parse("Anchor:e2@HADOOP_IPC/check")));
     }
 
     /** An event survives its row, and a torn last row ends the read. */

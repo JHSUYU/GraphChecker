@@ -1,22 +1,29 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.annotation.Debug;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -51,30 +58,42 @@ public final class RuntimeSelectedRegionFinalizer {
             "SHARED_LOCATION_DEMAND_V1";
     /**
      * Shared-location demand hops between this admission and the fatal target
-     * (a writer the failure closure's own port demand asked for is one hop).
-     * Published on the plan row because the retained edges cannot rebuild it.
-     * It is the shortest chain that reached the admission, not the configured
-     * bound: only {@code transitiveSharedLocationDemand} refuses a hop, so a
-     * row deeper than the bound is a first-order admission, not a leak.
+     * (a writer an admission on a rule's own authority asked for is two).
+     * Published on the plan row because the retained edges cannot rebuild it;
+     * it is the shortest chain that reached the admission.
      */
     public static final String DEMAND_DEPTH = "demandDepth";
     /** The fatal target is the origin of every shared-location demand. */
     private static final int TARGET_DEMAND_DEPTH = 0;
     /**
-     * {@code admissionBasis} of an activation carried because it read a
-     * root ({@link StaticScopeMap#clockCallees}, a fault marker).
+     * {@code admissionBasis} of an activation carried because a root it read
+     * reaches what the walk demanded ({@link RootRelevance#influence}).
      */
-    private static final String ROOT_READ_ADMISSION = "ROOT_READ_V1";
+    private static final String ROOT_RELEVANT_ADMISSION = "ROOT_RELEVANT_V1";
     /**
-     * {@code admissionBasis} of an activation carried because its region
-     * declares a communication capture.  Same rule as {@link
-     * #ROOT_READ_ADMISSION}: nothing on this node demands an
-     * export's outputs, so no demand-directed closure arrives on it, and an
-     * export outside every instrumented activation has no decision prefix,
-     * so its arm can never be attested.
+     * {@code admissionBasis} of an activation carried because it read a
+     * fault marker at a door of the message that started an admitted
+     * occurrence ({@link RecordedMessages#doorsOf}).
      */
-    private static final String DECLARED_COMMUNICATION_ADMISSION =
-            "DECLARED_COMMUNICATION_CAPTURE_V1";
+    private static final String CONTROL_PRODUCER_ADMISSION =
+            "CONTROL_PRODUCER_V1";
+    /**
+     * {@code admissionBasis} of an activation carried because it exported a
+     * value the walk demanded on the other side of a message: the recording
+     * bound its OUT capture of a port to the exchange leg the demanding
+     * occurrence's IN capture of that port was bound to
+     * ({@code RuntimeRegionPlanner#bindObservedCommunicationCaptures}).
+     */
+    private static final String WIRE_PRODUCER_ADMISSION = "WIRE_PRODUCER_V1";
+    /**
+     * Activation member, in memory only: per field the recording saw it read
+     * or write, the objects it did so on ({@code
+     * RuntimeRegionPlanner#stampFieldOwners}).  A heap location is one
+     * object's field (Writers_W(l), SYMBOL-SCOPE §4.4), so the demand walk
+     * crosses a stored field only to writers that may hold an object it was
+     * demanded on ({@link DemandWalk#holdsOthersOnly}, {@link Demanded}).
+     */
+    public static final String FIELD_OWNERS = "fieldOwners";
     /** Communication ports whose exact export/attach sites need hooks. */
     public static final String COMMUNICATION_PORTS = "communicationPorts";
 
@@ -106,13 +125,28 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String FOLDED_ENTRY_CALLERS = "foldedEntryCallers";
     /**
-     * Activation member: this occurrence is the failure the case is about.
-     * Stated on the row because under the fold rule the
+     * Activation member: this occurrence is the failure the case is about,
+     * an occurrence of the declared target site under the question's own
+     * {@code (r,c)}.  Stated on the row because under the fold rule the
      * static {@code selection} names the region the failure is in, not the
      * occurrence that ran it.
      */
     public static final String FAILURE_TARGET_OCCURRENCE =
             "failureTargetOccurrence";
+    /**
+     * Activation and plan-row member: this occurrence is the one the case
+     * declared, resolved once here ({@link
+     * RuntimeWorkflowDiscovery#declaredOccurrence}); PLAN reads it.
+     */
+    public static final String DECLARED_OCCURRENCE = "declaredOccurrence";
+    /**
+     * Plan-row member of the declared occurrence: its context's shape over
+     * the recording's senders ({@link RecordedMessages#shape}), which a
+     * replay's occurrence of the question answers it by when the declared
+     * address does not recur ({@code runtime.ConcolicTaskPlan}, IDENTITY
+     * §9).
+     */
+    public static final String QUESTION_SHAPE = "questionShape";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -120,6 +154,12 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * Finalizes the selected runtime graph.  Symbolic values cross
      * occurrences only through VM VALUE_HANDOFF edges.
+     *
+     * @param declaredOccurrence the case's declaration ({@code
+     *     declared_target_occurrence}: an address, a selector, or {@link
+     *     RuntimeWorkflowDiscovery#FIRST})
+     * @param recordedSchedule the recording's schedule: who sent and who took
+     *     in each message ({@link RecordedMessages})
      */
     public static Result finalizeRegions(
             List<Map<String, Object>> graph,
@@ -127,7 +167,8 @@ public final class RuntimeSelectedRegionFinalizer {
             String skeletonSource, Collection<String> observedMethods,
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> runtimeObservations,
-            StaticScopeMap scopeMap)
+            StaticScopeMap scopeMap, String declaredOccurrence,
+            Collection<ScheduleEvent> recordedSchedule)
             throws IOException {
         Set<String> observed = new LinkedHashSet<>();
         if (observedMethods != null) {
@@ -224,7 +265,8 @@ public final class RuntimeSelectedRegionFinalizer {
         // One index shared by the fatal-prefix pass and the closure walk.
         RegionDemandIndex demands = new RegionDemandIndex(program, scopeMap);
         applyClosure(program, failureDirectedClosure(program, demands,
-                skeletonSource, scopeMap));
+                skeletonSource, scopeMap, cutPorts, declaredOccurrence,
+                new RecordedMessages(recordedSchedule)));
         // AFTER the closure: the class of a shared address is whether the
         // kept slice holds its region.
         stateSharedAddressClasses(program, sharedAddresses);
@@ -237,10 +279,24 @@ public final class RuntimeSelectedRegionFinalizer {
     private static final class CutPort {
         private final String side;
         private final Map<String, Object> row;
+        /** The cells its capture names: an IN call return's, the locals
+         *  it assigns at its site (its callee's return cell is every call's);
+         *  any other, the cut cell. */
+        private final Set<String> cells = new LinkedHashSet<>();
 
-        private CutPort(String side, Map<String, Object> row) {
+        private CutPort(String side, Map<String, Object> row,
+                        List<Map<String, Object>> regionGraph) {
             this.side = side;
             this.row = row;
+            if ("IN".equals(side) && CommunicationCatalogContract
+                    .CAPTURE_CALL_RETURN.equals(text(row.get(
+                            CommunicationCatalogContract
+                                    .PORT_OUTPUT_CAPTURE_KIND)))) {
+                cells.addAll(callReturnValueCells(regionGraph, row));
+            } else {
+                cells.add(declaredCutPortCell(row));
+            }
+            cells.remove("");
         }
     }
 
@@ -253,11 +309,12 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, List<CutPort>> byRegion = new LinkedHashMap<>();
         for (StaticProgram.RegionRow skeleton : program.skeletons.values()) {
             List<CutPort> ports = new ArrayList<>();
+            List<Map<String, Object>> regionGraph = program.regionGraph(
+                    skeleton.regionId);
             for (Map.Entry<String, List<Map<String, Object>>> side
-                    : cutPortRows(skeleton, program.regionGraph(
-                            skeleton.regionId)).entrySet()) {
+                    : cutPortRows(skeleton, regionGraph).entrySet()) {
                 for (Map<String, Object> row : side.getValue()) {
-                    ports.add(new CutPort(side.getKey(), row));
+                    ports.add(new CutPort(side.getKey(), row, regionGraph));
                 }
             }
             if (!ports.isEmpty()) byRegion.put(skeleton.regionId, ports);
@@ -375,6 +432,23 @@ public final class RuntimeSelectedRegionFinalizer {
         return "";
     }
 
+    /**
+     * The call sites whose call returns a field (an accessor the slice does
+     * not expand, {@code accessor_field_return}), each with that field: the
+     * call's receiver owns the field ({@link #FIELD_OWNERS}).
+     */
+    public static Map<String, String> fieldReadingCalls(
+            Collection<Map<String, Object>> graph) {
+        Map<String, String> sites = new HashMap<>();
+        for (Map<String, Object> edge : graph) {
+            if ("accessor_field_return".equals(text(edge.get("kind")))) {
+                sites.put(text(edge.get("siteId")),
+                        text(edge.get("fromCell")));
+            }
+        }
+        return sites;
+    }
+
     /** Region-level capture declarations on one side, excluding
      *  occurrence-owned copies. */
     private static Set<String> declaredCaptures(
@@ -452,21 +526,22 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * States the class of every shared occurrence address (IDENTITY §5,
      * CONTRACT-SPEC §2.5).
-     * BLOCKING when the region is in the closure this plan publishes ({@code
-     * program.regions} after {@link #applyClosure}): a task addresses the
-     * occurrence.  DIAGNOSTIC otherwise: no plan row, task or session row
-     * names it.  Trap: an unstated class reads as BLOCKING downstream
+     * BLOCKING when the closure this plan publishes retains the occurrence
+     * ({@code runtimeOccurrenceIds} of {@code program.regions} after {@link
+     * #applyClosure}): a task addresses it.  DIAGNOSTIC otherwise: no plan
+     * row, task or session row names it, whatever else of its region is
+     * planned.  Trap: an unstated class reads as BLOCKING downstream
      * ({@code campaign_write_gaps}).
      */
     private static void stateSharedAddressClasses(StaticProgram program,
             List<Map<String, Object>> sharedAddresses) {
         Set<String> kept = new LinkedHashSet<>();
         for (Map<String, Object> region : program.regions) {
-            kept.add(text(region.get("regionId")));
+            kept.addAll(strings(region.get("runtimeOccurrenceIds")));
         }
         for (Map<String, Object> shared : sharedAddresses) {
             String regionId = text(shared.get("regionId"));
-            boolean member = kept.contains(regionId);
+            boolean member = kept.contains(text(shared.get("occurrenceId")));
             Object rootCalls = shared.get(SHARED_ADDRESS_ROOT_CALLS);
             int count = rootCalls instanceof Collection
                     ? ((Collection<?>) rootCalls).size() : 0;
@@ -480,15 +555,14 @@ public final class RuntimeSelectedRegionFinalizer {
                             + "; one occurrence is one plan row, so only the "
                             + "first is published"
                             + (member
-                            ? "; BLOCKING: " + regionId + " is a member of "
-                            + "the closure this plan publishes, so a task "
-                            + "addresses this occurrence and no claim may be "
+                            ? "; BLOCKING: the closure this plan publishes "
+                            + "retains this occurrence of " + regionId
+                            + ", so a task addresses it and no claim may be "
                             + "made over it"
-                            : "; DIAGNOSTIC: " + regionId + " is not a "
-                            + "member of the closure this plan publishes, so "
-                            + "no plan row, no task and no session row names "
-                            + "this occurrence and no composition can rest "
-                            + "on it"));
+                            : "; DIAGNOSTIC: the closure this plan publishes "
+                            + "does not retain this occurrence of " + regionId
+                            + ", so no plan row, no task and no session row "
+                            + "names it and no composition can rest on it"));
         }
     }
 
@@ -653,19 +727,21 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The activations the failure's demand reaches, from two authorities
-     * only: the DECLARATIONS (symbolic inputs, communication mappings, the
-     * declared target) and the static scope map, which names the regions
-     * storing a location, never the writer ({@link
-     * StaticScopeMap#writerRegionsByCell}, SYMBOL-SCOPE §3).  Nothing is
-     * discovered from recorded field accesses: an undeclared read mints no
-     * symbol ({@code ConcolicScheduler.SymbolicInputSelection}).
+     * The activations the failure's demand reaches, from three authorities
+     * only: the DECLARATIONS (communication mappings, the declared target),
+     * the static scope map, which names the regions storing a location,
+     * never the writer ({@link StaticScopeMap#writeSitesByCell}, SYMBOL-SCOPE
+     * §3), and the roots read where the demand leads ({@link
+     * #admitRelevantRoots}).  Nothing is discovered from recorded field
+     * accesses: an undeclared read mints no symbol ({@code
+     * ConcolicScheduler.SymbolicInputSelection}).
      *
      * @return the occurrences the demand reached
      */
     private static Set<String> failureDirectedClosure(
             StaticProgram program, RegionDemandIndex demands, String source,
-            StaticScopeMap scopeMap)
+            StaticScopeMap scopeMap, Map<String, List<CutPort>> cutPorts,
+            String declaredOccurrence, RecordedMessages messages)
             throws IOException {
         Map<String, Map<String, Object>> instances = program.activations;
         if (instances.isEmpty()) {
@@ -713,231 +789,612 @@ public final class RuntimeSelectedRegionFinalizer {
                     + "exception-context activation observed its explicit "
                     + "fatal target branch: " + source);
         }
-        // Hop count per admitted occurrence, seeded on the fatal target(s).
-        Map<String, Integer> demandDepths = new LinkedHashMap<>();
+        // The question is the declared occurrence's (r,c), at any index i
+        // (explore.Branches asks the same of every replay): only the target
+        // occurrences of its region, node and context shape are the walk's
+        // origins.  Another target occurrence -- the same throw reached
+        // under another request -- is not the question's: no rule plans it,
+        // so nothing only it would demand is planned either.
+        String declared = RuntimeWorkflowDiscovery.declaredOccurrence(
+                new ArrayList<>(targets), declaredOccurrence.isEmpty()
+                        ? RuntimeWorkflowDiscovery.FIRST : declaredOccurrence);
+        OccurrenceAddress question = OccurrenceAddress.parse(declared);
+        Map<CausalContext, List<String>> shapes = new HashMap<>();
+        Set<String> otherTargets = new LinkedHashSet<>();
         for (String target : targets) {
-            demandDepths.put(target, TARGET_DEMAND_DEPTH);
+            if (!ContextShape.sameQuestion(OccurrenceAddress.parse(target),
+                    question, context -> shapes.computeIfAbsent(context,
+                            messages::shape))) {
+                otherTargets.add(target);
+            }
+        }
+        targets.removeAll(otherTargets);
+        instances.get(declared).put(DECLARED_OCCURRENCE, true);
+        instances.get(declared).put(QUESTION_SHAPE,
+                messages.shape(question.context()));
+        DemandWalk walk = new DemandWalk(program, demands, scopeMap,
+                cutPorts, otherTargets);
+        List<String> seeds = new ArrayList<>();
+        for (String target : targets) {
             // Stated once here; the plan builder publishes TARGET_REACH for
             // exactly these and does not re-ask the static selection.
             instances.get(target).put(FAILURE_TARGET_OCCURRENCE, true);
-        }
-        // Occurrences that read a root (a clock, a fault marker), admitted
-        // although nothing demands their outputs: a root often decides an arm
-        // that writes nothing (an expiry check that removes nothing), and a
-        // clock's value may leave by a wire the walk does not follow back
-        // (hdfs-11741's key-rotation tick).  Their DECLARED_SITE captures
-        // seed the walk.
-        Set<String> clockCallees = scopeMap.clocks().keySet();
-        Set<String> declaredInputOccurrences = new LinkedHashSet<>();
-        for (Map.Entry<String, Map<String, Object>> entry
-                : instances.entrySet()) {
-            if (readsARoot(entry.getValue(), clockCallees)) {
-                declaredInputOccurrences.add(entry.getKey());
-            }
-        }
-        // A target is already the walk's origin and states no admissionBasis.
-        declaredInputOccurrences.removeAll(targets);
-        // Occurrences that PERFORMED a declared communication capture (see
-        // DECLARED_COMMUNICATION_ADMISSION), over every region they
-        // performed.  Only those whose recording states a capture or attach:
-        // admitting every activation of a port-declaring region blows the
-        // task cap.
-        Set<String> declaredCaptureOccurrences = new LinkedHashSet<>();
-        for (Map.Entry<String, Map<String, Object>> entry
-                : instances.entrySet()) {
-            boolean declaresACut = false;
-            boolean attached = false;
-            for (String regionId : performedRegionIds(entry.getValue())) {
-                StaticProgram.RegionRow skeleton = program.skeletons.get(
-                        regionId);
-                if (skeleton == null
-                        || skeleton.communicationPorts.isEmpty()) {
-                    continue;
-                }
-                declaresACut = true;
-                attached = attached || attachedADeclaredPort(skeleton,
-                        entry.getValue());
-            }
-            if (!declaresACut) {
-                continue;
-            }
-            if (rows(entry.getValue().get(
-                    OBSERVED_COMMUNICATION_CAPTURES)).isEmpty()
-                    && !attached) {
-                continue;
-            }
-            declaredCaptureOccurrences.add(entry.getKey());
-        }
-        declaredCaptureOccurrences.removeAll(targets);
-
-        Set<String> declaredOccurrences =
-                new LinkedHashSet<>(declaredInputOccurrences);
-        declaredOccurrences.addAll(declaredCaptureOccurrences);
-        for (String occurrence : declaredOccurrences) {
-            recordDemandDepth(demandDepths, occurrence, 1);
-        }
-
-        Set<String> reached = walkFailureClosure(targets, program, demands,
-                scopeMap, declaredOccurrences, demandDepths);
-        // Restated after the walk, so a writer the walk reached twice
-        // publishes the shortest chain that reached it.
-        for (String occurrence : reached) {
-            Map<String, Object> activation = instances.get(occurrence);
-            if (SHARED_LOCATION_DEMAND_ADMISSION.equals(
-                    text(activation.get(ADMISSION_BASIS)))) {
-                activation.put(DEMAND_DEPTH,
-                        demandDepth(demandDepths, occurrence));
-            }
-        }
-        // Stated after the walk, and only where no rule above has stated
-        // one: a declared occurrence the location demand also reached keeps
-        // that basis, which carries the demand depth the scheduler reads.
-        stateAdmissionBasis(instances, declaredInputOccurrences,
-                ROOT_READ_ADMISSION);
-        stateAdmissionBasis(instances, declaredCaptureOccurrences,
-                DECLARED_COMMUNICATION_ADMISSION);
-        return reached;
-    }
-
-    /** States {@code basis} on each occurrence that states none yet. */
-    private static void stateAdmissionBasis(
-            Map<String, Map<String, Object>> instances,
-            Collection<String> occurrences, String basis) {
-        for (String occurrence : occurrences) {
-            Map<String, Object> activation = instances.get(occurrence);
-            if (text(activation.get(ADMISSION_BASIS)).isEmpty()) {
-                activation.put(ADMISSION_BASIS, basis);
-            }
-        }
-    }
-
-    /**
-     * Hop count of one admitted occurrence.  An unknown one was reached on the
-     * closure's own authority (fault, communication, protocol producer) and
-     * counts as one hop.
-     */
-    private static int demandDepth(Map<String, Integer> demandDepths,
-                                   String occurrenceId) {
-        Integer known = demandDepths.get(occurrenceId);
-        return known == null ? 1 : known;
-    }
-
-    /** Records the shortest demand chain that reached one admission. */
-    private static void recordDemandDepth(
-            Map<String, Integer> demandDepths, String occurrenceId,
-            int depth) {
-        Integer known = demandDepths.get(occurrenceId);
-        if (known == null || depth < known) {
-            demandDepths.put(occurrenceId, depth);
-        }
-    }
-
-    /**
-     * One backward walk over the candidate graph from the failure's demand
-     * and every declaration; a demand is one cell of one occurrence.  Inside
-     * an occurrence the walk follows the candidate graph; at a cell the scope
-     * map names as stored it crosses to the activations of the storing
-     * regions on the same node (heap is node-private), while the read's
-     * guards still travel locally.  Which of them wrote the value is not
-     * decided here: each is a replay arm, and the VM's GuardedRead chooses.
-     */
-    private static Set<String> walkFailureClosure(
-            Collection<String> targets,
-            StaticProgram program,
-            RegionDemandIndex demands,
-            StaticScopeMap scopeMap,
-            Set<String> declaredOccurrences,
-            Map<String, Integer> demandDepths)
-            throws IOException {
-        Map<String, Map<String, Object>> instances = program.activations;
-        Map<String, List<StaticScopeMap.Site>> writeSites =
-                scopeMap.writeSitesByCell();
-        Set<String> reached = new LinkedHashSet<>(targets);
-        reached.addAll(declaredOccurrences);
-        List<String> seeds = new ArrayList<>();
-        for (String target : targets) {
+            walk.admit(target, TARGET_DEMAND_DEPTH);
             for (String cell : demands.targetSeedCells(instances.get(target))) {
                 seeds.add(cellDemand(target, cell));
             }
         }
-        for (String occurrence : declaredOccurrences) {
-            for (String cell : declaredCells(instances.get(occurrence),
-                    scopeMap)) {
-                seeds.add(cellDemand(occurrence, cell));
+        walk.walk(seeds);
+        admitRelevantRoots(program, walk, scopeMap, messages);
+        walk.stateUnpairedWires(program.planGaps);
+        // Restated after the walk, so an occurrence the walk reached twice
+        // publishes the shortest chain that reached it.
+        for (String occurrence : walk.reached) {
+            Map<String, Object> activation = instances.get(occurrence);
+            if (activation.containsKey(ADMISSION_BASIS)) {
+                activation.put(DEMAND_DEPTH, walk.depth(occurrence));
             }
         }
-        List<IOException> refused = new ArrayList<>();
-        StaticProgram.closure(seeds, demand -> {
-            int split = demand.indexOf('\n');
-            String occurrenceId = demand.substring(0, split);
-            String cell = demand.substring(split + 1);
-            List<String> next = new ArrayList<>();
-            List<StaticScopeMap.Site> writers = writeSites.get(cell);
-            if (writers == null || writers.isEmpty()) {
-                for (String from : demands.incomingCells(occurrenceId, cell)) {
-                    next.add(cellDemand(occurrenceId, from));
-                }
-                return next;
-            }
-            String node = activationSourceKey(instances.get(occurrenceId));
-            for (StaticScopeMap.Site site : writers) {
-                String storingMethod = SiteId.methodOf(site.siteId);
-                for (Map<String, Object> writer
-                        : program.regionActivations(site.regionId)) {
-                    String writerOccurrence = text(
-                            writer.get("occurrenceId"));
-                    if (writerOccurrence.isEmpty()
-                            || writerOccurrence.equals(occurrenceId)
-                            || !node.equals(activationSourceKey(writer))
-                            || !strings(writer.get("observedMethods"))
-                            .contains(storingMethod)) {
-                        continue;
-                    }
-                    recordDemandDepth(demandDepths, writerOccurrence,
-                            demandDepth(demandDepths, occurrenceId) + 1);
-                    if (reached.add(writerOccurrence)) {
-                        String basis = text(writer.get(ADMISSION_BASIS));
-                        if (!basis.isEmpty() && !SHARED_LOCATION_DEMAND_ADMISSION
-                                .equals(basis)) {
-                            refused.add(new IOException("conflicting runtime "
-                                    + "activation admission basis for "
-                                    + writerOccurrence + ": " + basis));
-                            return null;
-                        }
-                        writer.put(ADMISSION_BASIS,
-                                SHARED_LOCATION_DEMAND_ADMISSION);
-                    }
-                    next.add(cellDemand(writerOccurrence, cell));
-                }
-            }
-            // A stored location stops value provenance inside this
-            // occurrence, but not the guard deciding whether the read runs.
-            for (String guard : demands.guardCells(occurrenceId, cell)) {
-                next.add(cellDemand(occurrenceId, guard));
-            }
-            return next;
-        });
-        if (!refused.isEmpty()) throw refused.get(0);
-        return reached;
+        return walk.reached;
+    }
+
+    /** One root an occurrence read: a captured DECLARED_SITE of a root's
+     *  input kind. */
+    private static final class RootRead {
+        private final String dependencyCell;
+        private final boolean fault;
+
+        private RootRead(StaticScopeMap.Site site) {
+            this.dependencyCell = site.declared.dependencyCell;
+            this.fault = StaticScopeMap.FAULT_INPUT.equals(
+                    site.declared.inputKind);
+        }
+    }
+
+    /** One IN capture the recording bound to a message: its port and the
+     *  exchange leg (correlation, attempt and half) it took the value from. */
+    private static final class Attach {
+        private final String port;
+        private final String leg;
+
+        private Attach(String port, String leg) {
+            this.port = port;
+            this.leg = leg;
+        }
     }
 
     /**
-     * Whether this activation read a root: called a clock, or the {@code
-     * Debug.makeSymbolicBoolean} marker.  A root's every read is an input,
-     * so the reading activation holds it whatever the demand reaches.
+     * The roots one activation read: its captures of a clock or a fault
+     * marker.  A READ placeholder is no root: it stands for its writers'
+     * value.
      */
-    private static boolean readsARoot(
-            Map<String, Object> activation, Set<String> clockCallees) {
+    private static List<RootRead> rootReads(Map<String, Object> activation,
+                                            StaticScopeMap scopeMap) {
+        List<RootRead> reads = new ArrayList<>();
         for (Map<String, Object> capture
                 : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
-            String callee = text(capture.get(
-                    DeclaredSiteCapture.DECLARED_CALLEE));
-            if (clockCallees.contains(callee)
-                    || Debug.isBooleanMarkerSignature(callee)) {
-                return true;
+            for (StaticScopeMap.Site site : scopeMap.declaredSitesAt(
+                    text(capture.get(SiteId.MEMBER)),
+                    text(capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
+                String kind = site.declared.inputKind;
+                if (StaticScopeMap.CLOCK_INPUT.equals(kind)
+                        || StaticScopeMap.FAULT_INPUT.equals(kind)) {
+                    reads.add(new RootRead(site));
+                }
             }
         }
+        return reads;
+    }
+
+    /**
+     * Admits each occurrence that read a root the failure can depend on
+     * ({@link RootRelevance}), to a fixed point with the demand walk.
+     *
+     * <p>{@link #ROOT_RELEVANT_ADMISSION}: the root's influence in its
+     * occurrence reaches a location the walk demanded on its node -- unless
+     * the recording saw the occurrence hold only other objects of it
+     * ({@link Demanded#heldBy}) -- or a wire whose consumer the walk
+     * demanded on any node.  The influence is static, so an arm the root
+     * decides counts whether or not the recording took it (an expiry check
+     * that removed nothing), and so does a value that leaves by a wire the
+     * walk does not follow back (hdfs-11741's key-rotation tick).  Every
+     * occurrence a root of which reaches what is demanded -- admitted on this
+     * rule or on any other -- seeds the walk with the cells on the root's way
+     * there, so the values the root meets (the reservation a clock is
+     * compared with, solr-18406) are demanded in turn.</p>
+     *
+     * <p>{@link #WIRE_PRODUCER_ADMISSION}: a value an admitted occurrence
+     * attached is an input like a root.  The walk stops value provenance at
+     * a stored location, so it reaches an attach only where the attached
+     * value is itself demanded ({@link DemandWalk#crossWire}); an attach
+     * whose influence reaches what is demanded (hdfs-11741's DataNode
+     * converting the KeyUpdateCommand's keys into the map its handshake
+     * reads) crosses its message the same way ({@link
+     * DemandWalk#crossMessage}), and seeds the cells on its way.</p>
+     *
+     * <p>{@link #CONTROL_PRODUCER_ADMISSION}: the occurrence read a fault
+     * marker and holds a door of the message that started an admitted
+     * occurrence; it contributes no value.</p>
+     *
+     * <p>A root read nothing demanded is left out, its occurrence unplanned
+     * unless another rule admits it.</p>
+     */
+    private static void admitRelevantRoots(StaticProgram program,
+            DemandWalk walk, StaticScopeMap scopeMap,
+            RecordedMessages messages) throws IOException {
+        Map<String, List<RootRead>> reading = new LinkedHashMap<>();
+        Map<String, String> occurrenceById = new LinkedHashMap<>();
+        Map<String, List<String>> methodsByRegion = new LinkedHashMap<>();
+        for (StaticProgram.RegionRow skeleton : program.skeletons.values()) {
+            methodsByRegion.put(skeleton.regionId, skeleton.methods);
+        }
+        for (Map.Entry<String, Map<String, Object>> entry
+                : program.activations.entrySet()) {
+            occurrenceById.put(OccurrenceAddress.parse(entry.getKey()).id(),
+                    entry.getKey());
+            List<RootRead> reads = rootReads(entry.getValue(), scopeMap);
+            if (!reads.isEmpty()) reading.put(entry.getKey(), reads);
+        }
+        RootRelevance relevance = new RootRelevance(program.graph,
+                walk.writeSites.keySet(), methodsByRegion);
+        Set<String> served = new HashSet<>();
+        Set<String> crossed = new HashSet<>();
+        boolean progressed;
+        do {
+            progressed = false;
+            List<String> seeds = new ArrayList<>();
+            for (Map.Entry<String, List<RootRead>> entry
+                    : reading.entrySet()) {
+                String occurrence = entry.getKey();
+                if (walk.excluded.contains(occurrence)) continue;
+                List<String> regions = performedRegionIds(
+                        program.activations.get(occurrence));
+                Set<String> through = new LinkedHashSet<>();
+                for (RootRead read : entry.getValue()) {
+                    RootRelevance.Influence influence = relevance.influence(
+                            regions, read.dependencyCell);
+                    through.addAll(influence.through(
+                            walk.demandedOf(occurrence, influence)));
+                }
+                if (through.isEmpty()) continue;
+                if (!walk.reached.contains(occurrence)) {
+                    walk.admit(occurrence, 1, ROOT_RELEVANT_ADMISSION);
+                    progressed = true;
+                }
+                for (String cell : through) {
+                    String demand = cellDemand(occurrence, cell);
+                    if (!walk.visited.contains(demand)) seeds.add(demand);
+                }
+            }
+            // An attached value is an input like a root: one whose
+            // influence reaches what is demanded crosses its message.
+            for (String occurrence : new ArrayList<>(walk.reached)) {
+                List<String> regions = performedRegionIds(
+                        program.activations.get(occurrence));
+                for (Attach attach : walk.attaches(occurrence)) {
+                    String key = occurrence + "\n" + attach.port + "\n"
+                            + attach.leg;
+                    if (crossed.contains(key)) continue;
+                    Set<String> through = new LinkedHashSet<>();
+                    for (String cell : walk.attachCells.getOrDefault(
+                            attach.port, Collections.<String>emptySet())) {
+                        RootRelevance.Influence influence =
+                                relevance.influence(regions, cell);
+                        through.addAll(influence.through(
+                                walk.demandedOf(occurrence, influence)));
+                    }
+                    if (through.isEmpty()) continue;
+                    crossed.add(key);
+                    walk.crossMessage(occurrence, attach, seeds);
+                    for (String cell : through) {
+                        String demand = cellDemand(occurrence, cell);
+                        if (!walk.visited.contains(demand)) seeds.add(demand);
+                    }
+                }
+            }
+            for (String occurrence : new ArrayList<>(walk.reached)) {
+                if (!served.add(occurrence)) continue;
+                for (String door : messages.doorsOf(
+                        OccurrenceAddress.parse(occurrence))) {
+                    String held = occurrenceById.get(door);
+                    if (held == null || walk.reached.contains(held)
+                            || walk.excluded.contains(held)
+                            || !readsAFault(reading.get(held))) {
+                        continue;
+                    }
+                    walk.admit(held, walk.depth(occurrence) + 1,
+                            CONTROL_PRODUCER_ADMISSION);
+                    progressed = true;
+                }
+            }
+            progressed |= !seeds.isEmpty();
+            walk.walk(seeds);
+        } while (progressed);
+    }
+
+    private static boolean readsAFault(List<RootRead> reads) {
+        if (reads == null) return false;
+        for (RootRead read : reads) {
+            if (read.fault) return true;
+        }
         return false;
+    }
+
+    /** One activation's objects of one field ({@link #FIELD_OWNERS}); none
+     *  when the recording saw it access the field on none. */
+    @SuppressWarnings("unchecked")
+    private static Set<Integer> ownersOf(Map<String, Object> activation,
+                                         String cell) {
+        Object owners = activation.get(FIELD_OWNERS);
+        if (!(owners instanceof Map)) return Collections.emptySet();
+        Object held = ((Map<String, Object>) owners).get(cell);
+        return held instanceof Set ? (Set<Integer>) held
+                : Collections.<Integer>emptySet();
+    }
+
+    /** The objects one stored location was demanded on, on one node. */
+    private static final class Demanded {
+        private final Set<Integer> objects = new HashSet<>();
+        /** A demand of it whose reader the recording saw access it on no
+         *  object: any object's. */
+        private boolean any;
+
+        private void add(Set<Integer> owners) {
+            if (owners.isEmpty()) {
+                any = true;
+            } else {
+                objects.addAll(owners);
+            }
+        }
+
+        /** Whether an activation may hold a demanded object of this field:
+         *  unless the recording saw it access the field on others only. */
+        private boolean heldBy(Map<String, Object> activation, String cell) {
+            Set<Integer> held = ownersOf(activation, cell);
+            return any || held.isEmpty()
+                    || !Collections.disjoint(held, objects);
+        }
+    }
+
+    /**
+     * The backward walk over the candidate graph from the failure's demand,
+     * resumed with every admission's seeds; a demand is one cell of one
+     * occurrence.  Inside an occurrence the walk follows the candidate graph;
+     * at a cell the scope map names as stored it crosses to the activations
+     * on the same node (heap is node-private) that performed a storing
+     * region -- as their own, or folded into them, its text having run there
+     * -- and ran the storing method, unless the recording saw it hold only
+     * other objects of the field than the reader read ({@link
+     * #holdsOthersOnly}); there it demands the guards of the store, while
+     * the read's guards still travel locally.  Which of them wrote the value
+     * is not decided here: each is a replay arm, and the VM's GuardedRead
+     * chooses.  At the cell a declared
+     * IN port's capture names it crosses the message: to the occurrences
+     * that exported that port on the exchange leg the recording bound this
+     * occurrence's capture to ({@link #crossWire}).  It records what it
+     * demanded for {@link RootRelevance}: the stored locations per node, and
+     * the consumer cells of wires.
+     */
+    private static final class DemandWalk {
+        private final StaticProgram program;
+        private final RegionDemandIndex demands;
+        private final Map<String, List<StaticScopeMap.Site>> writeSites;
+        private final Set<String> wireConsumers = new HashSet<>();
+        /** Region -> the activations that performed it: its own, and those
+         *  it folded into, whose occurrence ran its text. */
+        private final Map<String, List<Map<String, Object>>> performers =
+                new HashMap<>();
+        /** The occurrences admitted, in admission order. */
+        private final Set<String> reached = new LinkedHashSet<>();
+        /** The occurrences no rule may plan: targets not the question's. */
+        private final Set<String> excluded;
+        /** Hop count of each admission: the shortest chain that reached it. */
+        private final Map<String, Integer> depths = new HashMap<>();
+        private final Set<String> visited = new HashSet<>();
+        /** Node -> stored location -> the objects it was demanded on. */
+        private final Map<String, Map<String, Demanded>> carriers =
+                new HashMap<>();
+        private final Set<String> consumers = new HashSet<>();
+        /** Region -> the cut ports it declares. */
+        private final Map<String, List<CutPort>> cutPorts;
+        /** IN port -> the cells its capture names. */
+        private final Map<String, Set<String>> attachCells = new HashMap<>();
+        /** OUT port -> the cells its capture hands on. */
+        private final Map<String, Set<String>> exportCells = new HashMap<>();
+        /** OUT port and exchange leg ({@link #wireKey}) -> the occurrences
+         *  whose capture of that port the recording bound to that leg. */
+        private final Map<String, List<String>> exporters = new HashMap<>();
+        /** Consumer cell -> the ports of the occurrences it was demanded in
+         *  whose recording paired no export with it. */
+        private final Map<String, Set<String>> unpaired =
+                new LinkedHashMap<>();
+
+        private DemandWalk(StaticProgram program, RegionDemandIndex demands,
+                           StaticScopeMap scopeMap,
+                           Map<String, List<CutPort>> cutPorts,
+                           Set<String> excluded) {
+            this.program = program;
+            this.demands = demands;
+            this.cutPorts = cutPorts;
+            this.excluded = excluded;
+            this.writeSites = scopeMap.writeSitesByCell();
+            for (Map<String, Object> edge : program.graph) {
+                if ("wire_handoff".equals(text(edge.get("kind")))) {
+                    wireConsumers.add(text(edge.get("toCell")));
+                }
+            }
+            for (List<CutPort> ports : cutPorts.values()) {
+                for (CutPort port : ports) {
+                    String portId = text(port.row.get("portId"));
+                    if (!"IN".equals(port.side)) {
+                        exportCells.computeIfAbsent(portId,
+                                ignored -> new LinkedHashSet<>())
+                                .addAll(port.cells);
+                        continue;
+                    }
+                    attachCells.computeIfAbsent(portId,
+                            ignored -> new LinkedHashSet<>())
+                            .addAll(port.cells);
+                }
+            }
+            for (Map.Entry<String, Map<String, Object>> entry
+                    : program.activations.entrySet()) {
+                for (String regionId : performedRegionIds(entry.getValue())) {
+                    performers.computeIfAbsent(regionId,
+                            ignored -> new ArrayList<>()).add(
+                                    entry.getValue());
+                }
+                for (Map<String, Object> capture : rows(entry.getValue().get(
+                        OBSERVED_COMMUNICATION_CAPTURES))) {
+                    String leg = text(capture.get("exchangeLeg"));
+                    if ("OUT".equals(text(capture.get("side")))
+                            && !leg.isEmpty()) {
+                        exporters.computeIfAbsent(wireKey(text(capture.get(
+                                "portId")), leg), ignored -> new ArrayList<>())
+                                .add(entry.getKey());
+                    }
+                }
+            }
+        }
+
+        /** One port on one exchange leg (a leg is one message: correlation,
+         *  attempt and half, {@code RuntimeRegionPlanner.ProtocolEvent}). */
+        private static String wireKey(String portId, String leg) {
+            return portId + "\n" + leg;
+        }
+
+        /** Admits one occurrence on a rule's authority; a target states no
+         *  basis. */
+        private void admit(String occurrence, int depth, String basis) {
+            admit(occurrence, depth);
+            program.activations.get(occurrence).put(ADMISSION_BASIS, basis);
+        }
+
+        private void admit(String occurrence, int depth) {
+            reached.add(occurrence);
+            recordDepth(occurrence, depth);
+        }
+
+        /** Reaches one occurrence by a demand of the walk: the shortest
+         *  chain is kept, the basis stated once. */
+        private void reach(String occurrence, int depth, String basis)
+                throws IOException {
+            recordDepth(occurrence, depth);
+            if (!reached.add(occurrence)) return;
+            Map<String, Object> activation = program.activations.get(
+                    occurrence);
+            String held = text(activation.get(ADMISSION_BASIS));
+            if (!held.isEmpty()) {
+                throw new IOException("conflicting runtime activation "
+                        + "admission basis for " + occurrence + ": " + held);
+            }
+            activation.put(ADMISSION_BASIS, basis);
+        }
+
+        /** Hop count of one admission; one reached on a rule's own authority
+         *  (a root) counts as one hop. */
+        private int depth(String occurrence) {
+            Integer known = depths.get(occurrence);
+            return known == null ? 1 : known;
+        }
+
+        private void recordDepth(String occurrence, int depth) {
+            Integer known = depths.get(occurrence);
+            if (known == null || depth < known) depths.put(occurrence, depth);
+        }
+
+        /** What of {@code influence} the walk demanded: the locations on the
+         *  occurrence's node, unless it holds others only of their objects
+         *  ({@link Demanded#heldBy}), and the wire consumer cells. */
+        private Set<String> demandedOf(String occurrence,
+                                       RootRelevance.Influence influence) {
+            Map<String, Object> activation = program.activations.get(
+                    occurrence);
+            Map<String, Demanded> onNode = carriers.getOrDefault(
+                    activationSourceKey(activation),
+                    Collections.<String, Demanded>emptyMap());
+            Set<String> ends = new LinkedHashSet<>();
+            for (String carrier : influence.carriers) {
+                Demanded demanded = onNode.get(carrier);
+                if (demanded != null && demanded.heldBy(activation, carrier)) {
+                    ends.add(carrier);
+                }
+            }
+            for (String consumer : influence.consumers) {
+                if (consumers.contains(consumer)) ends.add(consumer);
+            }
+            return ends;
+        }
+
+        private void walk(Collection<String> seeds) throws IOException {
+            Map<String, Map<String, Object>> instances = program.activations;
+            Deque<String> work = new ArrayDeque<>(seeds);
+            while (!work.isEmpty()) {
+                String demand = work.removeFirst();
+                if (!visited.add(demand)) continue;
+                int split = demand.indexOf('\n');
+                String occurrenceId = demand.substring(0, split);
+                String cell = demand.substring(split + 1);
+                if (wireConsumers.contains(cell)) consumers.add(cell);
+                crossWire(occurrenceId, cell, work);
+                List<StaticScopeMap.Site> writers = writeSites.get(cell);
+                if (writers == null || writers.isEmpty()) {
+                    for (String from
+                            : demands.incomingCells(occurrenceId, cell)) {
+                        work.add(cellDemand(occurrenceId, from));
+                    }
+                    continue;
+                }
+                String node = activationSourceKey(instances.get(occurrenceId));
+                carriers.computeIfAbsent(node, ignored -> new HashMap<>())
+                        .computeIfAbsent(cell, ignored -> new Demanded())
+                        .add(ownersOf(instances.get(occurrenceId), cell));
+                for (StaticScopeMap.Site site : writers) {
+                    String storingMethod = SiteId.methodOf(site.siteId);
+                    for (Map<String, Object> writer : performers.getOrDefault(
+                            site.regionId,
+                            Collections.<Map<String, Object>>emptyList())) {
+                        String writerOccurrence = text(
+                                writer.get("occurrenceId"));
+                        if (writerOccurrence.isEmpty()
+                                || writerOccurrence.equals(occurrenceId)
+                                || excluded.contains(writerOccurrence)
+                                || !node.equals(activationSourceKey(writer))
+                                || !strings(writer.get("observedMethods"))
+                                .contains(storingMethod)
+                                || holdsOthersOnly(writer, instances.get(
+                                        occurrenceId), cell)) {
+                            continue;
+                        }
+                        reach(writerOccurrence, depth(occurrenceId) + 1,
+                                SHARED_LOCATION_DEMAND_ADMISSION);
+                        // Whether it stores: its guards.  Not a read of the
+                        // cell: its other writers write what this read did
+                        // not read, or were reached from it already.
+                        for (String guard : demands.guardCells(
+                                writerOccurrence, cell)) {
+                            work.add(cellDemand(writerOccurrence, guard));
+                        }
+                    }
+                }
+                // A stored location stops value provenance inside this
+                // occurrence, but not the guard deciding whether the read
+                // runs.
+                for (String guard : demands.guardCells(occurrenceId, cell)) {
+                    work.add(cellDemand(occurrenceId, guard));
+                }
+            }
+        }
+
+        /**
+         * Whether the recording saw {@code writer} access the field {@code
+         * cell} only on objects {@code reader} never accessed it on: a
+         * store reaches only an object its occurrence holds, so it cannot
+         * have written, nor on another arm write, what the reader read.  A
+         * side the recording saw no access of the field on says nothing
+         * either way (an unwoven accessor, an atomic's or a container's
+         * state, a store on an arm it did not take).
+         */
+        private static boolean holdsOthersOnly(Map<String, Object> writer,
+                                               Map<String, Object> reader,
+                                               String cell) {
+            Set<Integer> wrote = ownersOf(writer, cell);
+            Set<Integer> read = ownersOf(reader, cell);
+            return !wrote.isEmpty() && !read.isEmpty()
+                    && Collections.disjoint(wrote, read);
+        }
+
+        /**
+         * The other side of the message a demanded consumer cell took its
+         * value from: for each capture the recording bound to an exchange
+         * leg in this occurrence, of an IN port a region it performed
+         * declares and whose capture names the cell, every occurrence that
+         * captured the port's export on the same leg, whose handed-on cells
+         * are demanded there.  A consumer no export is paired with is stated
+         * after the walk ({@link #stateUnpairedWires}).
+         */
+        private void crossWire(String occurrence, String cell,
+                               Deque<String> work) throws IOException {
+            Set<String> ports = new LinkedHashSet<>();
+            for (String regionId : performedRegionIds(
+                    program.activations.get(occurrence))) {
+                for (CutPort port : cutPorts.getOrDefault(regionId,
+                        Collections.<CutPort>emptyList())) {
+                    if ("IN".equals(port.side) && port.cells.contains(cell)) {
+                        ports.add(text(port.row.get("portId")));
+                    }
+                }
+            }
+            if (ports.isEmpty()) return;
+            boolean paired = false;
+            for (Attach attach : attaches(occurrence)) {
+                if (ports.contains(attach.port)) {
+                    paired |= crossMessage(occurrence, attach, work);
+                }
+            }
+            if (!paired) {
+                unpaired.computeIfAbsent(cell,
+                        ignored -> new LinkedHashSet<>()).addAll(ports);
+            }
+        }
+
+        /** The IN captures the recording bound to a message in one
+         *  occurrence. */
+        private List<Attach> attaches(String occurrence) {
+            List<Attach> held = new ArrayList<>();
+            for (Map<String, Object> capture : rows(program.activations.get(
+                    occurrence).get(OBSERVED_COMMUNICATION_CAPTURES))) {
+                String leg = text(capture.get("exchangeLeg"));
+                if ("IN".equals(text(capture.get("side")))
+                        && !leg.isEmpty()) {
+                    held.add(new Attach(text(capture.get("portId")), leg));
+                }
+            }
+            return held;
+        }
+
+        /**
+         * Admits the occurrences that exported {@code attach}'s port on its
+         * leg -- the sending side of the message -- and demands there the
+         * cells the export handed on; whether there was one.
+         */
+        private boolean crossMessage(String occurrence, Attach attach,
+                                     Collection<String> work)
+                throws IOException {
+            boolean paired = false;
+            for (String producer : exporters.getOrDefault(wireKey(
+                    attach.port, attach.leg),
+                    Collections.<String>emptyList())) {
+                if (producer.equals(occurrence)
+                        || excluded.contains(producer)) {
+                    continue;
+                }
+                paired = true;
+                reach(producer, depth(occurrence) + 1,
+                        WIRE_PRODUCER_ADMISSION);
+                for (String handed : exportCells.getOrDefault(attach.port,
+                        Collections.<String>emptySet())) {
+                    work.add(cellDemand(producer, handed));
+                }
+            }
+            return paired;
+        }
+
+        /** One DIAGNOSTIC row per demanded consumer cell the recording paired
+         *  with no export: no producer of it is planned, so the value it
+         *  took stays the attach as recorded. */
+        private void stateUnpairedWires(List<Map<String, Object>> gaps) {
+            for (Map.Entry<String, Set<String>> entry : unpaired.entrySet()) {
+                planGap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        entry.getKey(), "the failure's demand reached this "
+                                + "consumer cell of ports " + entry.getValue()
+                                + " where the recording bound no capture of "
+                                + "them to a message an export of them was "
+                                + "bound to, so no producer of the value is "
+                                + "planned and it stays the value the "
+                                + "recording attached");
+            }
+        }
     }
 
     /**
@@ -980,66 +1437,9 @@ public final class RuntimeSelectedRegionFinalizer {
         return "";
     }
 
-    /**
-     * Whether this activation TOOK a declared IN cut value its region
-     * attaches.  {@link #OBSERVED_COMMUNICATION_CAPTURES} covers the capture
-     * site's own frame; the declared consumer frame ({@code frameMethod}) is
-     * a region one level out that attaches the value into the object it
-     * returns, so it is asked whether it holds a DECLARED_SITE capture at
-     * the port's call site and callee.
-     */
-    private static boolean attachedADeclaredPort(
-            StaticProgram.RegionRow skeleton,
-            Map<String, Object> activation) {
-        List<Map<String, Object>> captures = rows(
-                activation.get(DeclaredSiteCapture.PLAN_FIELD));
-        if (captures.isEmpty()) return false;
-        for (Map<String, Object> port : skeleton.communicationPorts) {
-            if (!"IN".equals(text(port.get(REGION_PORT_SIDE)))
-                    || !CommunicationCatalogContract.CAPTURE_CALL_RETURN
-                    .equals(text(port.get(CommunicationCatalogContract
-                            .PORT_OUTPUT_CAPTURE_KIND)))) {
-                continue;
-            }
-            String site = text(port.get(
-                    CommunicationCatalogContract.CALL_SITE_ID));
-            String callee = text(port.get(
-                    CommunicationCatalogContract.DECLARED_CALLEE));
-            if (site.isEmpty() || callee.isEmpty()) continue;
-            for (Map<String, Object> capture : captures) {
-                if (site.equals(text(capture.get(SiteId.MEMBER)))
-                        && callee.equals(text(capture.get(
-                        DeclaredSiteCapture.DECLARED_CALLEE)))) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
     /** One demand: the cell, inside the occurrence that reads it. */
     private static String cellDemand(String occurrenceId, String cell) {
         return occurrenceId + "\n" + cell;
-    }
-
-    /**
-     * The cells one activation's DECLARED sites name: the scope map's
-     * {@code DECLARED_SITE#cell}, for the sites the recording captured.
-     */
-    private static List<String> declaredCells(Map<String, Object> activation,
-                                              StaticScopeMap scopeMap) {
-        List<String> cells = new ArrayList<>();
-        for (Map<String, Object> capture
-                : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
-            for (StaticScopeMap.Site site : scopeMap.declaredSitesAt(
-                    text(capture.get(SiteId.MEMBER)),
-                    text(capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
-                if (!site.cell.isEmpty() && !cells.contains(site.cell)) {
-                    cells.add(site.cell);
-                }
-            }
-        }
-        return cells;
     }
 
     /**

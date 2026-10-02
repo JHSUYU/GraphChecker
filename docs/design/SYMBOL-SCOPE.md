@@ -191,7 +191,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field) |
-| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2) |
+| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
 **Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
@@ -269,8 +269,7 @@ operation's, so a multi's later operations are unpaired under a fault); the `SOL
 catalog anchor already follows it). These rows are the tree adapters' hooks spelled out; they go
 when the engine finds a door's following hook itself (a hook call of the door method or of its
 caller after the anchor). There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
-`getChildren`): every packet and cluster-state read would be one, and ROOT_READ admission (§4.4)
-admits every occurrence that runs a marker.
+`getChildren`): every packet and cluster-state read would be one.
 
 A door applies where its class family (the method's outermost class with its nested classes) is
 analysed. `plan/ScopeGrowth --doors`, before the first static pass and again after every growth,
@@ -330,9 +329,76 @@ row it is pinned.
 | anything else | `CONCRETE`, `UNDECLARED_SYMBOLIC_INPUT` |
 
 At the end of SEED (the recording's aggregation, `runtime/CausynthTraceRecorder`),
-`causynth/RuntimeSelectedRegionFinalizer` admits every recorded occurrence that reads a
-clock or a fault marker, whether or not the target demands its outputs, and seeds the demand walk
-with its declared-site captures.
+`causynth/RuntimeSelectedRegionFinalizer` plans the recorded occurrences the failure's demand
+reaches, to a fixed point:
+
+- **The question** `(r,c)`: the declared occurrence, resolved once against the target occurrences
+  the recording observed (IDENTITY.md §9), and every target occurrence of its region and node whose
+  context has its shape (`contract/ContextShape#sameQuestion`, over the recording's schedule,
+  `RecordedMessages#shape`), at any index. A target occurrence outside it -- the same throw reached
+  under another request or on another node -- is not the question's: no rule below plans it, so
+  nothing only it would demand is planned either.
+- **The demand walk** (`DemandWalk`), backwards over the candidate graph, one demand per (occurrence,
+  cell), from the operands of the fatal guards the question's target occurrences decided. Inside
+  an occurrence it follows the edges of the methods its regions hold (its own and those folded into
+  it). At a cell a `WRITE_SITE` names it crosses, on the same node, to every activation that
+  performed a storing region -- as its own region or folded into it -- and ran the storing method
+  (`SHARED_LOCATION_DEMAND_V1`), and keeps the guards of the read locally; in a writer it demands
+  the guards of the store, never the store's value (value provenance stops at a stored location:
+  the values come from roots, below), nor the writer's own other writers.
+  - **A heap location is one object's field** (Writers_W(l), GreyGraph §3.1): the recording names
+    the objects each activation read or wrote a field on (`FIELD_OWNERS`, stamped by
+    `runtime/RuntimeRegionPlanner#stampFieldOwners`: a field event's receiver, a reference
+    field's referent, and the receiver of a call at a site that returns a field -- an unwoven
+    accessor, `RuntimeSelectedRegionFinalizer#fieldReadingCalls`). A writer the recording saw
+    access the field on other objects only than the reader did is not crossed to
+    (`DemandWalk#holdsOthersOnly`); a side the recording saw no access of the field on (a store on
+    an arm it did not take, an atomic's or a container's own state, a static field's one location
+    `0`) says nothing either way. hdfs ad-hoc `DataStreamer-638`: 1147 `Configuration.get`
+    occurrences ran the lazy store of `overlay`, on 10 objects; the reader read one.
+  - **A message is one exchange leg**: at a cell the capture of a declared IN port names (an IN call
+    return's assigned locals, any other's cut cell), in an occurrence performing a region that
+    declares the port, it crosses to every occurrence whose capture of the port's export the
+    recording bound to the same exchange leg (correlation, attempt and half:
+    `RuntimeRegionPlanner#bindObservedCommunicationCaptures`) -- the other side of that one
+    message -- and demands there the cells the export hands on (`WIRE_PRODUCER_V1`). A consumer the
+    recording paired with no export (no exchange bound: a ZooKeeper read, a data-transfer stream)
+    is a DIAGNOSTIC `ADMISSION_GAP` naming its cell and ports, and its value stays the one attached.
+    No capture is admitted for being one: admitting every occurrence that captured a declared port
+    planned 2673 occurrences for one ad-hoc check (`DataStreamer-1451`, round a40h).
+
+  It records, per node, the locations it demanded and the objects it demanded them on, and the wire
+  consumer cells it demanded. Every admission states its `demandDepth`: the hops of the shortest
+  chain from the question that reached it (a target 0, a root's or a door's occurrence one past
+  what it was found from).
+- **Roots by relevance** (`causynth/RootRelevance`). A root read is a capture of a `CLOCK` or
+  `FAULT` `DECLARED_SITE`. Its influence is the forward reach of its `dependencyCell` over the
+  candidate edges of the methods its occurrence performed -- value, guard and exception edges
+  alike -- ended at a stored location (a cell some `WRITE_SITE` names) and at a wire producer
+  (recording the consumer cell its `wire_handoff` names). The influence is static: the arm a root
+  decides counts whether the recording took it or not (an expiry check that removed nothing), and
+  a value leaving by a wire counts on the consumer's side. An occurrence one of whose roots reaches
+  a location the walk demanded on its node -- unless the recording saw it access that field on
+  other objects only (`Demanded#heldBy`) -- or a consumer cell it demanded anywhere, is admitted
+  (`ROOT_RELEVANT_V1`, unless another rule admitted it), and every such occurrence seeds the walk
+  with the cells on the root's way there, so what the root meets is demanded in turn (SOLR-18406:
+  the commit's reservation a checkpoint's clock is compared with, and so the clock that set it).
+- **Attached values by relevance**: an admitted occurrence's IN capture bound to an exchange leg is
+  an input like a root. When its influence (from the cells its capture names) reaches what is
+  demanded, by the same rule, it crosses its message as the walk does (`DemandWalk#crossMessage`)
+  and seeds the cells on its way: the walk reaches an attach only where the attached value itself
+  is demanded, and a value attached and then stored (hdfs-11741: the DataNode converting the
+  KeyUpdateCommand's keys into the map its handshake reads) is found from the store it reaches.
+- **Doors of a demanded message** (`RecordedMessages#doorsOf`): an occurrence that read a fault marker
+  and sent, or took in, the message that started an admitted occurrence (its `Anchor`; the
+  recorded schedule's `SEND` names the sender, a `RECV` under that anchor a receiver) is admitted
+  (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists. These are the control
+  producers EXPLORE proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS
+  `MARKER_FLIPPED` witnesses move such an IPC door.
+
+A root read none of this reaches is not planned: its occurrence runs concrete, unless another rule
+admits it. PLAN schedules what this admits up to `schedule_max_jobs`, keeping the nearest demand
+depths that fit whole (PIPELINE.md §3).
 
 ### 4.5 Randomness is not a root
 
@@ -389,9 +455,10 @@ window came first. An access before its object's constructor call, and a read si
 for a `float` or `double` field) is an `UNSTATED_VALUE` DIAGNOSTIC row naming it.
 
 Each observed row states its cell's `trackedKind`; a `REFERENCE` cell's access is observed like a
-value's. Not observed: a `publishedFrom` write site, whose receiver is the local's container, not
-the carrier's holder (its log starts at its first model event); and a static cell, whose location
-is its class's mirror: the map names it (`static: true`) and the weave passes no class owner yet.
+value's; a static cell's (`static: true`) on its declaring class's mirror, the key its location
+has (`CausynthPipeline#instrumentConcolicObservedSites`), before the `putstatic` or `getstatic`. Not
+observed: a `publishedFrom` write site, whose receiver is the local's container, not the carrier's
+holder (its log starts at its first model event).
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).
@@ -431,7 +498,8 @@ container's shape by interface, `JavaContainerTypes#shape`; a String; a box's va
 class no sort names (an application class, an interface, `Object`) holds any reference; a runtime
 class no sort names may be a container, never a String or a box, both final. A `Map` field holding
 a `ConcurrentHashMap` is that field's carrier. The site must also store the recorded location's
-kind (`#stores`): a field store, or an atomic's write of its value, a field; any other mutator call
+kind (`#stores`): a field store, or an atomic's write of its value, a field -- a static one a
+class's location, an instance one an object's; any other mutator call
 the state of the container its carrier holds; a read its field or, of a container field, that
 container's state; and no site of the map an array element, whose write joins no carrier. COMPOSE joins a store to its carriers
 by the same rule (`Composer#constructionGuards`). A read of a reference also rests on the container
@@ -530,12 +598,22 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   the scope is not recognized; configuration values and pre-window state are roots only where a
   tree hook says so.
 - The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
-  and `AtomicReference.value`) and the atomics' integral `value` from an observed access (§5.2); a
-  static cell is not observed (the weave passes no class owner). A container reached through a
+  and `AtomicReference.value`, a static one on its class's mirror) and the atomics' integral
+  `value` from an observed access (§5.2). A container reached through a
   replaced reference is the referent's state its store stated (`referentState`), which COMPOSE
   asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
   fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
-  queues are classified by interface here, modeled by R3-REFCONT WP3b/c).
+  queues are classified by interface here, modeled by R3-REFCONT WP3b/c). A `String` field's log
+  starts at its first symbolic store, with no INITIAL (VM.md §5.1), so a store before it -- a null
+  -- is no writer a read of it can be re-paired with (open defect 34).
+- Root admission (§4.4) is by field, not by object: a root whose influence stores a demanded
+  field of another object is admitted. It sees a root's effect only through the candidate edges
+  of the methods its occurrence performed: an effect that leaves through a call outside them, or
+  through a location no `WRITE_SITE` names, is not seen. A fault reaches a planned occurrence only
+  as a door of the message that started it, so a door fault whose message started no planned
+  occurrence (one EXPLORE meets only as a member of a task's state-connected factor) stays
+  unplanned. The walk does not cross a wire: a value's provenance on the sending node is walked
+  only from a declared port's capture and through a root's influence.
 - A library call's receiver enters `S` only when it is shared state in the calling method (§2.2):
   a receiver passed in as a parameter is the caller's to demand, and is not followed up.
 - Control dependence follows only door faults a handler catches; any other exception edge is

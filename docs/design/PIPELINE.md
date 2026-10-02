@@ -13,14 +13,14 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | SETUP (optional) | `campaign_setup` | whatever `campaign_setup_command` does | the command fails |
 | FREEZE | `campaign_freeze` | the provenance (published by EMIT) | an input cannot be digested |
 | SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` (a batch: `campaign_batch_seed`, §2b) | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
-| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
+| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | not even the target's demand depth fits `schedule_max_jobs`; the index does not commit the frozen plan; no target |
 | UNION (a batch) | `campaign_batch_union`; `plan.PlanUnion` | `groups/groups.json`, `groups/group-<n>/execution_task_plan.jsonl` | `PlanUnion` exits nonzero |
-| INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
+| INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/`, `instrument.log` | the weave refuses (its deepest throwable is the reason); no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `import_gated.txt`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
-| EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails; a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
+| EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
-| COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
+| COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
 | CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed |
@@ -82,7 +82,7 @@ marked * below.
 | `seed_replay_time_factor`* (40) | the seed replay's wall clock, as a multiple of the recorded workload's (§5) |
 | `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth` | EXPLORE's bounds (§7.4, §7.9) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
-| `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | the pool's hosts, one replay's memory at the host gate (§7.7), the most heap a head JVM is given and a solver asked again |
+| `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb`, `stream_max_in_flight` (0) | the pool's hosts, one replay's memory at the host gate (§7.7), the most heap a head JVM is given and a solver asked again, the obligations the capped explorations running at once keep in flight together (§7.7; 0 is no cap) |
 | `campaign_stop_after` | empty, or `IMPORT` |
 | `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10), `reproduce_time_factor`* (3) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording; how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload (§10b) |
 
@@ -141,6 +141,11 @@ none.
    (the runtime region plan) and `runtime/region_skeletons.jsonl`; the recording's
    `runtime/schedule.jsonl` sits beside them.
 3. Both skeleton views are copied to `<campaign root>/seed-skeletons/`.
+
+Every static pass and weave (`do_analyze`: SEED's passes and recording weave, INSTRUMENT's union
+weave, GROW's) runs through `campaign_analyze`: its output is shown and kept (`static-pass.log`,
+`runtime/weave.log`, `instrument.log`), and a pass that throws fails its stage with the deepest
+throwable it printed as the reason (`campaign_thrown`), never as a bare stack trace.
 
 ### 2b. A batch campaign: one recording for several targets
 
@@ -208,9 +213,18 @@ recording's schedule to `recorded_schedule.jsonl`, and runs `plan.ConcolicSchedu
 (`scheduleTargetFirst`). `RuntimeWorkflowDiscovery.workflow` schedules the declared target first, then
 every other occurrence the plan states is replayable, in recorded order; no slice is applied here
 (the closure is EXPLORE's). The declaration is `declared_target_occurrence`: a resolved address, a
-selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first`, which
-PLAN resolves against this recording and the shell then uses as the address. More tasks than
-`schedule_max_jobs` fail the stage. Outputs: `execution_task_plan.jsonl` (every row stamped with one
+selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first` (also
+when none is stated). SEED's aggregation resolves it once against the recording's target occurrences
+(`RuntimeWorkflowDiscovery#declaredOccurrence`) and marks that row `declaredOccurrence`; PLAN takes
+the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNED`), and the shell
+uses the address PLAN's index states for every later stage, whatever form the declaration had
+(`campaign_plan_read`). When the closure holds more occurrences than
+`schedule_max_jobs`, PLAN keeps the target and the nearest demand depths that fit whole (the
+seed's `demandDepth`, SYMBOL-SCOPE.md §4.4; never part of a depth, whose occurrences are equally
+near) and states the rest in the index (`closureCut`: `keptDepth`, `occurrences`, `byDepth`;
+`RuntimeWorkflowDiscovery.Workflow#nearest`); `campaign_stream_truncation` names it as a
+`PLAN_CLOSURE_CUT` row, DIAGNOSTIC when an accepted witness ended the exploration and BLOCKING
+otherwise. Only a target depth that does not fit fails the stage. Outputs: `execution_task_plan.jsonl` (every row stamped with one
 `replayGroupId` = `REPLAY.GROUP.<sha256 of the rows>`) and `runtime_workflow_schedule_index.json`
 (members TARGET/DEPENDENCY; the shell checks it commits the frozen region plan's sha256 and size and
 decodes the membership once into `campaign_member_rows`). The seed replay's plan and every worker's
@@ -222,6 +236,16 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 `CAUSYNTH_CONCOLIC_TASK_PLAN`/`_TASK_ID` set to the whole plan: one union weave of every task. The
 tree must hold a class file, and `causynth.VerifyWovenClasses` must verify every woven class against
 the replay's class path, or the stage fails naming the class. GROW re-runs this stage's function.
+The union weave opens ONE region entry per root hook group (`plan.ExecutionTask#rootHookGroup`: the
+region and its root method, and a loop-body root's loop) and one enclosing entry per loop root
+(`#loopRootHookGroup`), however many planned occurrences share it; a replay's entry offers each
+invocation to every task of its group (`runtime.ConcolicTaskPlan#select`), and two rows of one group
+that would place its entry apart are refused (`ROOT_HOOK_GROUP_DISAGREES`).
+A loop-body root's controls are the branches leaving its loop, as the catalog's guards are
+(`CfgLoopControl#retainedLoops`): an `if`, or a switch with a case that leaves (a `default` that
+throws); its frame opens on the outermost control edge into the body whose target dominates the
+demanded unit, and closes on every backedge and every exit of a control
+(`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`).
 
 The union weave also hooks the codecs and exchange brackets the wire declarations state
 (`causynth.CodecWeave`, [IDENTITY.md §7.5](IDENTITY.md)): the file the property
@@ -242,8 +266,16 @@ focus row its `manifest.json` states role `SEED`. The seed replay runs under a w
 `replay_timeout_s`. It is `required`: a replay killed on that bound or otherwise (the failure
 names what killed it; for the bound, the rule and its numbers, `campaign_adapter_timeout_rule`), a
 session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row whose `anchorSiteId`
-is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. The workload's exit
-code is not the gate (a target that throws exits nonzero by design).
+is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY; the last names why
+the declared task went unanswered, its `TASK_UNANSWERED` row (`campaign_target_unanswered`: the
+nearest activations and how each differed -- another node, an anchor the run never minted -- or that
+its root never ran). The workload's exit
+code is not the gate (a target that throws exits nonzero by design). Everything the engine prints in
+a workload JVM -- the schedule's lines, a publication's failure, the workload's terminating
+exception -- goes to the standard error the JVM started with (`runtime.EngineConsole`), never through
+the `System.err` a test may have captured and asserts on (a40h2 FSImage-851: its seed replay failed
+`TestDFSAdminWithHA#verifyUpgradeQueryOutput` on the schedule's own lines, before the declared
+occurrence ran).
 
 A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
 end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
@@ -508,12 +540,14 @@ obligation (`explore.Branches#parents`): the seed, or an admitted focused sessio
 not stop. The question is one declared occurrence `(r,c,i)`, and a focused replay whose run holds
 no activation of the declared region `r` under the declared context `c` -- at any index `i`, which a
 flip may shift (a fault's retry, a loop that runs once more) -- ran it under another chain or not at
-all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`): its BRANCH STOPS. Its world is never
+all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`; a chain of the question's shape whose counts
+alone differ answers the declared occurrence at its address, IDENTITY.md §9): its BRANCH STOPS. Its world is never
 inherited, its paths are never flipped, and nothing it exposes is grown (§7.2's `uncaptured`: one
 named only by stopped branches is DIAGNOSTIC); it stays in the corpus as evidence (its rows still
-attest arms, §7.3). Contexts compare by `Corpus#contextShape`: per anchor hop the RPC site and the
-sending node, then the root's role and api, without the per-site invocation counts; a sender no row
-names is unknown, never a difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
+attest arms, §7.3). Contexts compare by `contract/ContextShape` (`Corpus#contextShape`, the rule
+PLAN picks its walk origins by): per anchor hop the RPC site and the sending node, then the root's
+role and api, without the per-site invocation counts; a sender no row names is unknown, never a
+difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
 the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
@@ -527,21 +561,32 @@ question.
 
 The obligations of an exploration that run on one host are answered by ONE solver JVM there
 (`campaign_solve_obligation`; `ObligationSolverMain --serve`, `explore.SolverService`): the first
-question starts it (`campaign_start_solver`, charged at the host ledger its heap, the 8 GB every
-solver has had, `campaign_solver_heap_mb`, for 120 s: a query's lowering, not the corpus, is its
-peak), and it answers the questions in the order they came, each from the corpus as it stands when
-the question is taken: read again whenever a session landed in it or left it since (its session
-listing, `ObligationSolverMain#listing`; the head lands sessions as the exploration streams), else
-the corpus as read (`Corpus#freshLowerings`) -- so each obligation's files are the ones a JVM of
-its own, reading the corpus then, writes -- into a directory on the host's disk, named by the
-corpus, that the asking worker moves into its worker directory; it ends once none has come for
-`campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the corpus. A question still
-waiting when its solver ended starts the next one. A question the host's solver could not answer
-(it ran out of heap on it, or ended while answering it) is no answer: it is asked once more of a
-solver JVM of its own at `engine_memory_mb` (`campaign_solve_obligation_alone`,
-`ObligationSolverMain --obligation-id`, the offline gate's entry too); either one settles no
-question (`question.txt`/`question.asked` are removed), and a second failure fails the worker: an
-unfinished obligation (§7.7).
+question starts it if its host has room for a start's worth now (`campaign_start_solver`:
+`campaign_solve_obligation` never waits for memory to start one), charged at the host ledger
+`campaign_solver_start_mb` (1 GB) for 120 s and what its resident memory grows past that as it
+grows, by a running JVM's rule (`campaign_watch_workload`: refused only when the host's real use
+would pass the ceiling, and then the JVM is ended); its heap is capped at `campaign_solver_heap_mb`,
+8 GB. Charged that at its start, a solver waited for room it did not use, and every question of
+its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
+questions in the order they came, each from the corpus as it stands when the question is taken:
+read again whenever a session landed in it or left it since (its session listing,
+`ObligationSolverMain#listing`; the head lands sessions as the exploration streams), each session
+the read before already holds taken from it unread (`Corpus#read(Path, Path, Corpus)`: a landed
+session's rows never change, and reading them is the read's whole cost, 45 s over hdfs-11741 i1's
+175 sessions), else the corpus as read (`Corpus#freshLowerings`) -- so each obligation's files are
+the ones a JVM of its own, reading the corpus then, writes -- into a directory on the host's disk,
+named by the corpus, that the asking worker moves into its worker directory; it ends once none has
+come for `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the corpus. A
+question still waiting when its solver ended starts the next one. A question that waits for its
+solver says so after a minute and every ten minutes after (`campaign_solver_wait_said`). A host
+with no room to start a solver now answers the question in a solver JVM of its own at once
+(`campaign_solve_obligation_alone ... now`, `ObligationSolverMain --obligation-id`), under the
+obligation's own charge (its replay comes after it), what it grows past that asked of the host as
+it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it, or
+ended while answering it) is no answer: it is asked once more of a solver JVM of its own at
+`engine_memory_mb`, once the host has room for it (`campaign_solve_obligation_alone`, the offline
+gate's entry too); neither settles a question (`question.txt`/`question.asked` are removed), and
+a second failure fails the worker: an unfinished obligation (§7.7).
 
 `ObligationFactory.locate` finds the published obligation's path in the corpus under its round's id
 (a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
@@ -553,7 +598,11 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   `[host reading, host reading + 30 days]` in its own ticks (`RootMintRow#hostReading`: the mint's
   instant less the skew its node's clock ran at there; `JavaPrimitiveSmtSemantics.clockDomain`/
   `clockSkewCeiling`; no reading: `[0, Long.MAX]`; declared clock bounds are not read here), and its
-  nearest world is the instant the session ran it at; any other root takes its domain from
+  nearest world is the instant the session ran it at; within one session, a cell is no earlier
+  than the cell before it (by seq) on the same clock of the same node, giving way where the session
+  read the two the other way round (`FlipQuery#clockOrder`, COMPOSE's `clock_order__`), so no model
+  jumps a clock forward and back, which a replay would plant as asked and no composed world is
+  (hdfs-11741 L1: `be888ea2` +10 h, the next cell at the host's reading); any other root takes its domain from
   `root-domains.jsonl` (or the mint's), else is pinned to its recorded value.
 - HANDOFF: an attach of the focused occurrence (a *control*) is bound per slot by
   `OR(pi_q ∧ guard_q ∧ v_H = e_q)` over `Arms.wireArms` (nested slots closed); a paired control whose
@@ -589,9 +638,14 @@ an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest 
 `minimize Σ|x − recorded(x)|` over bounded Int roots and clocks (`FlipQueryText`).
 
 z3 runs with `solver_timeout_ms`, which its driver (`smt.Z3`) enforces; a JVM that ends takes its
-running z3 processes with it (a shutdown hook), and each z3 also carries its own hard timeout ten
-seconds past that budget (`-T`, `Z3#hardTimeout`), so one whose JVM was killed outright stops by
-itself. Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
+running z3 processes with it (a shutdown hook), every z3 is started under `setpriv --pdeathsig
+KILL` (`Z3#DIES_WITH_ITS_DRIVER`), so the kernel kills it when the JVM thread that started it is
+gone however the JVM ended (a KILL runs no hook), and each z3 also carries its own hard timeout ten
+seconds past that budget (`-T`, `Z3#hardTimeout`), for a driver that hangs. A run starts only while
+its host's `MemAvailable`, less what this JVM's running z3s may still grow to (each up to the most
+any of them has held) and two such z3s for the new run, is at least the share
+`CAUSYNTH_HOST_MAX_USED_PCT` keeps free (`Z3#enter`; a JVM with no run in flight starts one anyway):
+sixteen z3s of hdfs-11741 m1's paths, a GB each beside the composer's 15 GB, took a host to 82 %. Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
 (`smt.arith.solver` 2, the one the query states, and 6; `Z3#ARITHMETIC`), and answers with the
 first that decides, killing the other; the stated engine's answer wins when it decides within as
 long again as the other took (at least a second), so what it alone decides promptly answers as it
@@ -682,10 +736,13 @@ CONFIRM it is a confirmation that did not confirm.
 
 ### 7.7 The work pool
 
-One pool for the whole exploration, no slots. The head starts each queued obligation, and each
-GROW re-run (§7.8), first first, on the next host of `campaign_worker_hosts` (empty: this machine, no
-ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`): a host is
-taken while it runs fewer of the campaign's starts than it has cores (read once,
+One pool for the whole exploration. The head starts each queued obligation, and each GROW re-run
+(§7.8), first first, while the exploration runs fewer than its share of `stream_max_in_flight`
+(below), on the next host of `campaign_worker_hosts` (empty: this machine, no ssh), round-robin
+from the host after the last one chosen (`campaign_stream_admit_host`), an obligation first on a
+host where it started one within the solver's idle time (`campaign_stream_warm`: that host's solver
+of its corpus likely still serves, so the question needs no solver started and no corpus read): a
+host is taken while it runs fewer of the campaign's starts than it has cores (read once,
 `campaign_host_cores`) and its memory ledger admits one more start; none admitting, the head waits
 for a return, its step's end or the poll interval (`campaign_host_poll_s`). A start runs locally in
 a background subshell, or remotely through `ssh`: an obligation as `run_engine.sh --run-obligation`
@@ -707,6 +764,22 @@ resident memory grows past its charge asks its host's ledger for the excess, as 
 and holds what it was granted, released when it ends; one the host cannot take is ended, saying
 so; each states its peak at its end.
 
+THE CAP. `stream_max_in_flight` = N > 0 is how many obligations the capped explorations running
+at once keep in flight together (`campaign_stream_has_slot`, the one dispatch point): each starts
+one more only while it runs fewer than its share, N over the capped explorations whose entry in
+`$CAUSYNTH_HOST_LEDGER/explorations/` is fresh (written when the loop starts, kept fresh by the
+head's heartbeat like its room, `campaign_head_reservation_stale_s`, removed when it ends), at
+least one, read again at every start; it says once for each share it waits at. So the share
+grows as others end and shrinks as others begin (what already runs past it runs out), one
+exploration alone keeps all N, and a batch's targets (§2b) each count as one. N = 0, the default
+and a named acceptance run's, is no cap. An ad-hoc sweep (`tools/adhoc/sweep.sh`) gives every case
+N = the lifts' obligation slots for its `obligation_memory_mb` (`campaign_pool_slots`: on each
+host as many starts as fit under the ceiling above at their charge, at most its cores; ten 31.5 GB
+lifts at 70 % hold 30 of 6000 MB), and admits its head for the room it reserves on its host
+(HEAD ROOM below; `tools/lib/heads.sh` `case_head_reserve_mb`). Round a40 without it: one Solr
+case kept 27-32 replays in flight on all ten lifts, the other cases' heads waited for room, and
+20 Solr checks would have taken over 15 h.
+
 HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room through one rule
 (`campaign_head_charged`, `campaign_head_place`): the head's own host when it fits there (its own
 room is not held against it), else the pool's host with the most room under the ceiling
@@ -724,10 +797,15 @@ aggregation, scheduler, lineage scan, scope growth, woven-class verifier and CON
 import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none
 (`ExposedRegionPlanMain`, `PlanUnion`); a JVM that runs out of its need (exit 3 under
 `-XX:+ExitOnOutOfMemoryError`) runs once more at `engine_memory_mb`, charged so, saying so, and
-later starts of that main begin there (a head step's discovery is the head's, §7.9) -- the seed
+later starts of that main begin there (a head step's discovery is the head's, §7.9); every run ends
+at its first out-of-heap error, at `engine_memory_mb` too (exit 3: the most heap a head JVM is given,
+told apart from a crash) -- the seed
 and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged for 300 s
-the recording's measured peak (`workload_rss_mb`) when above `obligation_memory_mb`, else that
-(`campaign_replay_need_mb`), and REPRODUCE's native runs (§10b). They read and write only the run's
+seven times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its
+native recording, up to 6.94 times in round x1) when above `obligation_memory_mb`, else that
+(`campaign_replay_need_mb`), and REPRODUCE's native runs (§10b). A running JVM that outgrows its
+charge is ended only when the host's real use would pass the ceiling with it
+(`campaign_host_try_grow`). They read and write only the run's
 shared directories -- the case's scope copy among them (§1) -- so each runs alike on any host. What
 a head runs uncharged stays on its host: the setup adapter's copy and the recording, whose need is
 what it measures. HEAD ROOM: a head
@@ -792,7 +870,7 @@ When the step returns the head takes its round (`campaign_stream_take_round`): t
 GROW, else its proposals into the queue, where they start at once. The corpus and the ledger change
 only between two steps, so a step reads them as a landed whole, and the round's in-flight rows
 (`in_flight.jsonl`, §7.3) are what is queued or running as the step starts; the busier the head,
-the more returns one step takes in. The exploration has three ends, each stated in
+the more returns one step takes in. The exploration has four ends, each stated in
 `exploration.json` (stop, rounds, steps, generations, answers, attempts, and every obligation
 cancelled or reaped, by id):
 
@@ -818,9 +896,16 @@ cancelled or reaped, by id):
   lands, and the stop is a DIAGNOSTIC row.
 - **FIXED_POINT.** Nothing queued, running or unlanded, no step running, and the last round, over
   every answer, proposed and exposed nothing.
+- **PLANNER_HEAP_EXCEEDED.** A round's planner ran out of the most heap a head JVM is given
+  (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
+  not planned (its directory goes, its logs stay in the step), what runs lands, and the stop is a
+  BLOCKING row naming the round, the corpus's size on disk and the planner's error -- rounds were
+  still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
 
 A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
-proposed twice; the wave budget is what bounds the derivation. An end other than WITNESSED on a
+proposed twice; the wave budget is what bounds the derivation. The ad-hoc HDFS experiment gives its
+planner and composer 16 GB past their 8 GB start (`engine_memory_mb`): a40h2 DataStreamer-638's 70
+sessions (5.7 GB on disk) ran its round-4 planner out of 8 GB. An end other than WITNESSED on a
 last round whose closure was truncated (its `truncated`) is one BLOCKING
 `REGION_PATH_CLOSURE_TRUNCATED` row naming that round (`campaign_stream_truncation`): a claim over
 that closure misses arms. An accepted witness asks nothing past it, so its rounds' truncations stay
@@ -953,10 +1038,17 @@ one `writer_arm__` selector per writer occurrence of the same session (`Arms.sta
 observed writer's arm is the write the read observed, any other writer's its last write of the
 location, and only attested HB-concurrent ones), plus an `observed_arm__` holding each read to its
 own join or pin when a version one of the reads observed has no writing row; exactly one per
-location that has two arms or more, else the reads keep their own joins. The arm the run took (the
-observed arm, else the one writer every read observed) is part of the path's recorded pairing; a
-location where no arm is that pairing (the reads saw two writes, or the write they saw has no arm)
-is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formula.
+location that has two arms or more, one of them an HB-concurrent writer's, else the reads keep their
+own joins: arms that are each some read's own pairing (the writer one read saw, the pins of another
+whose version no row wrote) re-pair nothing. The read rule's "an anchor location a STATE family may
+re-pair" (`Composer#repaired`) is the same alternative: a read of it at the anchor could have seen
+a writer occurrence besides the one it did (`Corpus#eligibleWrites`; a version no row wrote has none
+of its own). A hot field the reader's own occurrence alone writes, whose earliest versions the VM's
+64-version bound dropped, is none (hdfs-17960 e1c: the checkpoint saver's configuration parse,
+whose `Hashtable` entries' hashes, a `String.hashCode` no lowering models, are pinned). The arm the
+run took (the observed arm, else the one writer every read observed) is part of the path's recorded
+pairing; a location where no arm is that pairing (the reads saw two writes, or the write they saw
+has no arm) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formula.
 
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
@@ -973,7 +1065,12 @@ objects of the projection's class that this session's writes of the owner's loca
 the reads in them. A candidate's cell (`fieldOf`) is the one write of it in the session, made
 before the location first stored the object, or, never written, the one value every read of it
 states at one version. A candidate with no such cell is no case, so the arms delivering it are
-refused, and it is named DIAGNOSTIC `CANDIDATE_UNANSWERED:<cell>@<session>`. EXPLORE lowers through
+refused, and it is named DIAGNOSTIC `CANDIDATE_UNANSWERED:<cell>@<session>`, the refusals of a
+write that did not lower in its detail. A candidate's write whose lowering reaches the very node
+asking for it (`b.numBytes = f(owner.numBytes)` where the owner may be `b`) was read before it was
+written: the memo refuses a node reached inside its own lowering (`LoweringCycle`,
+`SmtLowering#memoized`), so that candidate answers nothing there (a40h2's FsDatasetImpl-1092 and
+-1424 recursed until an 8 GB heap was full). EXPLORE lowers through
 the same rule; its owners are never movable (a joined reference read is inlined), so a projection
 there is the run's cell.
 
@@ -1048,7 +1145,13 @@ may not have had there; each such map is named DIAGNOSTIC
 `ASSOC_VIEW_UNORDERED:<why>:<map symbol (class), or the location its state was read from>@<session>`
 (`SmtLowering#diagnostics`). A view walks the state each step of its chain stands for (`Host#chain`: a
 read's joined version), so a map's `values()` a region iterates through a read of it is bounded by
-that version's keys.
+that version's keys. A query reads a map's order only through `assoc_key_at`, `assoc_position_of`,
+`assoc_view_key` or `assoc_view_position` (`ContainerStateModel.ORDER_READERS`); one that reaches
+none gets maps whose puts and removals keep no order (`ContainerStateModel#unordered`, chosen by
+`SmtNames#reachedPreamble`), the same question with no lambda: a removal's renumbering is a lambda
+over arrays, and z3 answered such queries "incomplete (theory array)" or not at all (hdfs-11741 L1:
+valuation 0 undecided on two fatal-observing paths, each sat in seconds without it). Every
+array-valued choice of a put is a `store` of a chosen element, never an `ite` over arrays.
 
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
@@ -1086,6 +1189,15 @@ same clock (`contract.Clock#same`: the JVM clock its row states and the same tic
 none is on no order, DIAGNOSTIC) (`clock_order__`); where the recording read the two the other way round, the link gives way by that
 much (`(<= (- earlier later) d)`), so the recording always satisfies it. The cells are listed in seq
 order (`Composition#clockCells`), each with its reading and the cell before it (`clockBefore`).
+Every session's instants are on that one timeline too: a replay runs on its own host's clock, started
+later (a plant is a skew off that host, `runtime.NodeClocks`), so an instant it computed outside every
+clock root -- a key's expiry from a startup reading -- is a constant on its own clock. A session's
+base at a cell is how far its host read the cell later than the recording (at the cell where the
+recording read it, else at the nearest cell both read, as a placement anchors; `Composer#clockBases`),
+and an integral constant compared with an instant of that cell (the cell, or the cell plus or minus a
+constant span) in that session's terms is lowered that much earlier (`SmtLowering#clockBases`,
+`#onTimeline`); the recording's own constants stay. hdfs-11741 L1: dn1's first expiry check compared
+each replay's startup keys, 9 to 11 minutes late on the recording's timeline, with the one dn1 clock.
 
 **Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
 moves sorted by distance, then pairs of moves, cut at
@@ -1111,24 +1223,37 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ClaimPolicy`:
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
-2. Every valuation is asked (4 asks at once, 8 z3 processes; each question is written to its z3s
-   from the one body the composition holds, never copied per ask or per arithmetic engine,
-   `Composition#query`/`#pathQuery`, `Z3#ask`) for the path selectors, arm selectors,
-   the nested state selectors a state arm's stores are chosen among (§8), clock cells and the codec
-   holes the arms bind (`Composition#holeSymbols`); a selected
-   state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →
-   `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
-   Every such ask (and each re-ask below) is `byDisjunct`: the disjunction whole, its verdict within
-   60 s (`WHOLE_BUDGET_MS`; its model and core runs keep the full budget); undecided, one path at a
-   time: the first sat path answers, else undecided if any path was, else unsat with the union of
-   the paths' cores. Whole, z3 decides in seconds where it decides at all, but can spend any budget
-   searching every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole,
-   about a second each alone). A path is asked by `Composition#pathQuery`: the body without the
+2. Each path is first asked alone with every root free (60 s, `Disjunction#selfCheck`): unsat →
+   `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. Then every valuation is asked (4 at
+   once; each question is written to its z3s from the one body the composition holds, never copied
+   per ask or per arithmetic engine, `Composition#query`/`#pathQuery`, `Z3#ask`) for the path
+   selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
+   clock cells and the codec holes the arms bind (`Composition#holeSymbols`); a selected state arm
+   keeps the states whose selector the model set. An undecided valuation is BLOCKING.
+   Every such ask (and each re-ask below) is `compose.Disjunction#ask`: the disjunction whole, its
+   verdict within 60 s (`WHOLE_BUDGET_MS`; its model and core runs keep the full budget), until a
+   whole ask of the composition runs past that budget; from then on, every ask is path by path, the
+   same disjunction under more pins (hdfs-11741 i1: 24 of its 31 whole asks ran their 60 s
+   out). Whole, z3 decides in seconds where it decides at all, but can spend any budget searching
+   every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole, about a
+   second each alone). Path by path, the paths are asked 8 at a time (`PATH_ASKS`, 16 z3
+   processes), in their order, and answer in that order: the first sat path's answer (the asks
+   after it stopped, their z3s killed), else undecided if any path was, else unsat with the union of
+   the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
+   `Composition#ownRun`): its own session's arm of each message the path received and each state
+   read's observed writer, selectors only (never the values its handoffs carried, which are on its
+   own clock), within 10 minutes at most; a model there is a model of the question, and only where
+   its own run is refuted or undecided is the path asked free (hdfs-11741 L1: two fatal-observing
+   paths sat in about 100 s in their own runs, undecided after 30 minutes free). A path unsat under some assertions is unsat under every set containing them,
+   so it is not asked again there: its refutation answers, core and all, one asked without a core
+   only an ask that wants none, unless it was asked under no assertion at all (the self-check: its
+   core can name no pin). hdfs-11741 i1: 155 of 157 paths refute themselves, so every pinned re-ask
+   of its witness asks two paths. A path is asked by `Composition#pathQuery`: the body without the
    commands another path's selector guards (`(assert (=> <selector> ...))`, vacuous once the
    partition forces that selector false), its own selector asserted; 90-98% of a body is guarded
-   (hdfs-17899-bug2 r4: 1.7 of 93 MB shared). The self-contradiction check and `mechanism`'s pinned
-   re-asks of the selected path read the same text. Selectors are never asserted together: two
-   contradict the partition.
+   (hdfs-17899-bug2 r4: 1.7 of 93 MB shared; hdfs-11741 i1: 4.1 of 124 MB). The self-contradiction
+   check and `mechanism`'s pinned re-asks of the selected path read the same text. Selectors are
+   never asserted together: two contradict the partition.
    An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
    each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
    since tracked z3 simplifies nothing across them and still searches a disjunct whose selector the
@@ -1140,14 +1265,25 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    of the cell before it on its node's clock, `clock_runs_on__`; a first cell stays at its reading;
    pinned back one cell at a time in seq order, so a jump lands as late as the witness allows, on the
    cell the fatal reads rather than an earlier one that carries it along), so the cells left free are
-   the clock's jumps. A sat ordinal 0 on a path that did not observe the fatal,
+   the clock's jumps. This refinement, and the margins after it, ask the witness's own path only
+   (`Disjunction#askPath`): another path's answer is no answer about this witness. A cell the
+   witness's model runs on already is pinned without an ask; of its jumps, those outside the path's
+   causal cone (`Composition#cone`, what `cone.py` reads) are pinned first, in one ask, else one at a
+   time, then those inside it one at a time; past the budget a jump inside the cone stands as a cause
+   of the fatal; no ask tries "no jump at all" where the recording decided the clocks are needed. Each refinement has 5 minutes
+   (`REFINE_BUDGET_MS`); past them the witness is published as far as it got, its untried cells named
+   DIAGNOSTIC `SOLVER_TIMEOUT`. Every open path is asked in its own run before any is asked free
+   (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
 4. The claim, first match:
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
      whose moved roots are in no unattested arm (else BLOCKING `UNATTESTED_ARM`): its `mechanism`;
-     without `recordingDecides` it also needs `polarityDecides` (else BLOCKING
-     `FORMULA_SAT_AT_RECORDED_VALUATION`);
+     without `recordingDecides` it also needs `polarityDecides`, checked before the witness is
+     refined (`leastClocks`, margins, `mechanism`: rounds of path asks for a witness it would refuse)
+     (else BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
+     by a core naming no valuation pin; an undecided ordinal 0 is BLOCKING already and raises no
+     second gap);
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
      `MESSAGE_PAIRING_FLIPPED`, with `recordingDecides` or `polarityDecides`;
    - ordinal 0 sat on the seed's path that observed the fatal, every moved valuation decided unsat:
@@ -1367,7 +1503,9 @@ a pure function of the recording once per jar — the static pass (after the doo
 EXPLORE round 0 and its solves, IMPORT, the closing EXPLORE round, COMPOSE with SOLVE and DECIDE,
 and CONFIRM's planning — over private iterations that link the recorded sessions, with no
 workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
-2 when one could not be checked. Every stage gates on bytes, the static pass included: it is the
+2 when one could not be checked. It runs beside live rounds, so each of its engine JVMs is placed
+through the host ledger (`ab_place`: the host of `AB_HOSTS`, default `LIFTS`, with the most room,
+charged its heap for its whole run, waited for when none has it). Every stage gates on bytes, the static pass included: it is the
 same on every host and run ([SYMBOL-SCOPE.md §2.3](SYMBOL-SCOPE.md)). A round is read as the
 current engine reads it, so the gate needs a round recorded by a build whose row contract HEAD
 still reads. Both sides run under the gate's own checkout's case declarations, unless
@@ -1396,6 +1534,10 @@ comparison.
   top time sinks (EXPLORE's planning, gates and attempts, and the rest of its wall: waiting on the
   pool). A gate or
   stage that started a head JVM includes the head's wait for memory (§7.7), which the log counts.
+- Why a check stayed concrete: `tools/analysis/rootcov.py <round-or-campaign>...` prints, per
+  campaign and over all, the anchor rows with a phi, wave-0 obligations, roots by category, PLAN
+  admissions by basis (and the basis of each occurrence that minted a root the claim moved), the
+  "decided concretely" refusals and the boundaries the fatal guards' operands stop at.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
   `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it
   re-runs by hand in z3), `focused_task.jsonl` (the world), `replay.log`, `stdout.log`/`stderr.log`.

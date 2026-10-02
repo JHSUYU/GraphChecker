@@ -39,14 +39,14 @@ final class RuntimeTraceContext {
     private static final IdentityHashMap<Object, Seed> ASYNC_SEEDS =
             new IdentityHashMap<>();
     private static final InheritableThreadLocal<State> CURRENT =
-            new InheritableThreadLocal<State>() {
+            new InheritedState<State>() {
                 @Override
                 protected State initialValue() {
                     return initialState();
                 }
 
                 @Override
-                protected State childValue(State parent) {
+                protected State inherit(State parent) {
                     return inheritedState(parent);
                 }
             };
