@@ -154,11 +154,18 @@ final class Disjunction implements AutoCloseable {
             if (whole.decided()) return whole;
             if (whole.timedOut()) pathByPath = true;
         }
+        // Every open path's own run first, all of them: a sat one answers
+        // before any path is asked free (hdfs-11741 L1: a path its own run
+        // refutes ran its free ask out for 30 minutes ahead of the next
+        // path's own run, sat in 100 s).
+        Z3.Answer ownRun = ownRuns(selectors, known, assertions, asked);
+        if (ownRun != null) return ownRun;
         List<Future<Z3.Answer>> pending = new ArrayList<Future<Z3.Answer>>();
         for (int at = 0; at < selectors.size(); at++) {
             String selector = selectors.get(at);
             pending.add(known.get(at) != null ? null : pool.submit(
-                    () -> pathAsk(selector, assertions, asked, wantCore)));
+                    () -> solver.ask(composition.pathQuery(selector,
+                            assertions), asked, wantCore)));
         }
         try {
             List<Z3.Answer> refutations = new ArrayList<Z3.Answer>();
@@ -189,14 +196,49 @@ final class Disjunction implements AutoCloseable {
         }
     }
 
+    /**
+     * The first open path, in order, its own run answers sat for
+     * ({@link #ownRun}), its asks after it stopped; null when none does.
+     */
+    private Z3.Answer ownRuns(List<String> selectors, List<Z3.Answer> known,
+                              List<String> assertions, List<String> asked) {
+        List<Future<Z3.Answer>> pending = new ArrayList<Future<Z3.Answer>>();
+        for (int at = 0; at < selectors.size(); at++) {
+            String selector = selectors.get(at);
+            pending.add(known.get(at) != null ? null : pool.submit(
+                    () -> ownRun(selector, assertions, asked,
+                            solver.timeoutMillis())));
+        }
+        try {
+            for (Future<Z3.Answer> each : pending) {
+                if (each == null) continue;
+                Z3.Answer answer = get(each);
+                if (answer != null && answer.sat()) return answer;
+            }
+            return null;
+        } finally {
+            for (Future<Z3.Answer> each : pending) {
+                if (each != null) each.cancel(true);
+            }
+        }
+    }
+
     /** One path alone under {@code assertions}, with the solver's budget,
      *  answered by its refutation where it has one. */
     Z3.Answer askPath(String selector, List<String> assertions,
                       List<String> asked, boolean wantCore) {
+        return askPath(selector, assertions, asked, wantCore, 0L);
+    }
+
+    /** The same within {@code budgetMillis} ({@code <= 0}: the solver's). */
+    Z3.Answer askPath(String selector, List<String> assertions,
+                      List<String> asked, boolean wantCore,
+                      long budgetMillis) {
         Set<String> under = new HashSet<String>(assertions);
         Z3.Answer known = refutation(selector, under, wantCore);
         if (known != null) return known;
-        Z3.Answer answer = pathAsk(selector, assertions, asked, wantCore);
+        Z3.Answer answer = pathAsk(selector, assertions, asked, wantCore,
+                budgetMillis);
         if (answer.unsat()) remember(selector, under, answer, wantCore);
         return answer;
     }
@@ -211,18 +253,30 @@ final class Disjunction implements AutoCloseable {
      * run is refuted or undecided within {@link #OWN_RUN_BUDGET_MS}.
      */
     private Z3.Answer pathAsk(String selector, List<String> assertions,
-                              List<String> asked, boolean wantCore) {
-        List<String> own = composition.ownRun(selector);
-        if (!own.isEmpty()) {
-            List<String> held = new ArrayList<String>(assertions);
-            held.addAll(own);
-            Z3.Answer ownRun = solver.ask(composition.pathQuery(selector,
-                    held), asked, false, Math.min(OWN_RUN_BUDGET_MS,
-                    solver.timeoutMillis()));
-            if (ownRun.sat()) return ownRun;
-        }
+                              List<String> asked, boolean wantCore,
+                              long budgetMillis) {
+        long budget = budgetMillis > 0L
+                ? Math.min(budgetMillis, solver.timeoutMillis())
+                : solver.timeoutMillis();
+        long deadline = System.currentTimeMillis() + budget;
+        Z3.Answer own = ownRun(selector, assertions, asked, budget);
+        if (own != null && own.sat()) return own;
         return solver.ask(composition.pathQuery(selector, assertions),
-                asked, wantCore);
+                asked, wantCore, Math.max(1L,
+                        deadline - System.currentTimeMillis()));
+    }
+
+    /** The path asked in its own run ({@code Composition#ownRun}) within
+     *  {@link #OWN_RUN_BUDGET_MS} and {@code budget}; null where it has
+     *  none. */
+    private Z3.Answer ownRun(String selector, List<String> assertions,
+                             List<String> asked, long budget) {
+        List<String> own = composition.ownRun(selector);
+        if (own.isEmpty()) return null;
+        List<String> held = new ArrayList<String>(assertions);
+        held.addAll(own);
+        return solver.ask(composition.pathQuery(selector, held), asked,
+                false, Math.min(OWN_RUN_BUDGET_MS, budget));
     }
 
     /** The answer of a refutation of {@code selector} under a subset of

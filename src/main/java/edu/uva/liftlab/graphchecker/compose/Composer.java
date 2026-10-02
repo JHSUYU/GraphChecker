@@ -542,6 +542,43 @@ public final class Composer {
             return new ArrayList<String>(symbols);
         }
 
+        /**
+         * The causal cone of one path's fatal, as acceptance reads it off
+         * the formula ({@code experiments/accept/cone.py}): every name its
+         * {@code path_fatal__} names, closed over the message families
+         * asserted under its selector that name one of them.
+         */
+        public Set<String> cone(String selector) {
+            Set<String> cone = new LinkedHashSet<String>();
+            List<Set<String>> families = new ArrayList<Set<String>>();
+            int start = 0;
+            for (int index = 0; index < commandEnds.length; index++) {
+                int end = commandEnds[index];
+                if (selector.equals(commandGuards[index])) {
+                    String command = body.substring(start, end);
+                    if (command.contains(":named path_fatal__")) {
+                        SmtNames.symbols(command, cone);
+                    } else if (command.contains(":named message_family__")) {
+                        families.add(SmtNames.symbols(command,
+                                new LinkedHashSet<String>()));
+                    }
+                }
+                start = end;
+            }
+            boolean grew = true;
+            while (grew) {
+                grew = false;
+                for (Set<String> family : families) {
+                    if (!Collections.disjoint(family, cone)
+                            && !cone.containsAll(family)) {
+                        cone.addAll(family);
+                        grew = true;
+                    }
+                }
+            }
+            return cone;
+        }
+
         /** Every selector, for reading which disjunct a model selected. */
         public List<String> selectors() {
             return Composer.selectors(disjuncts);

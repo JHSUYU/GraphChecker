@@ -231,7 +231,8 @@ public final class ClaimPolicy {
                 && outcome(composition, asks, recorded.valuation(),
                         pins(composition, cells), false).answer().unsat();
         if (clockDriven) {
-            recorded = leastClocks(composition, asks, recorded, cells);
+            recorded = leastClocks(composition, asks, recorded, cells, true,
+                    gaps);
             outcomes.set(0, recorded);
         }
         if (recorded != null && recorded.witness()
@@ -293,7 +294,9 @@ public final class ClaimPolicy {
                 // Publish the witness under every clock pin it can keep,
                 // and each clock it still moves moved with room.
                 Outcome outcome = withMargin(composition, asks,
-                        leastClocks(composition, asks, found, cells));
+                        leastClocks(composition, asks, found, cells, false,
+                                gaps),
+                        gaps);
                 outcomes.set(outcomes.indexOf(found), outcome);
                 if (unattested(composition, outcome, gaps)) continue;
                 // A moved root: #mechanism answers MARKER_FLIPPED or a
@@ -329,7 +332,7 @@ public final class ClaimPolicy {
                 undecidedPolarity(gaps, recorded, still.name());
                 break;
             }
-            Outcome roomy = withMargin(composition, asks, outcome);
+            Outcome roomy = withMargin(composition, asks, outcome, gaps);
             outcomes.set(outcomes.indexOf(outcome), roomy);
             return new Decision(Claim.of(still,
                     roomy.valuation().ordinal(),
@@ -681,6 +684,16 @@ public final class ClaimPolicy {
                                    Composer.Valuation valuation,
                                    List<String> pinned, boolean wantCore,
                                    Outcome path) {
+        return outcome(composition, asks, valuation, pinned, wantCore, path,
+                0L);
+    }
+
+    /** The same within {@code budgetMillis} ({@code <= 0}: the solver's). */
+    private static Outcome outcome(Composer.Composition composition,
+                                   Disjunction asks,
+                                   Composer.Valuation valuation,
+                                   List<String> pinned, boolean wantCore,
+                                   Outcome path, long budgetMillis) {
         List<String> asked = new ArrayList<String>(composition.selectors());
         asked.addAll(composition.armSelectors());
         asked.addAll(composition.stateSelectors());
@@ -697,34 +710,85 @@ public final class ClaimPolicy {
                 ? asks.ask(assertions, composition.selectors(), asked,
                 wantCore)
                 : asks.askPath(path.selected().selector(), assertions, asked,
-                wantCore);
+                wantCore, budgetMillis);
         return new Outcome(valuation, pinned, answer,
                 selectedOf(composition, answer), armsOf(composition, answer));
     }
 
+    /** How long one refinement of one witness may ask ({@link
+     *  #leastClocks}, {@link #withMargin}); past it the witness is published
+     *  as far as it got, named. */
+    static final long REFINE_BUDGET_MS = 300000L;
+
     /**
-     * The witness under every clock pin it can keep: every cell running on
-     * from the cell before it ({@link #runsOn}) first; otherwise pin back one
-     * at a time in the recording's seq order ({@code Composer#clocks}),
-     * keeping each pin that stays sat.  The free cells are then a minimal set
-     * of the jumps the witness needs (z3's unsat core is not: it names every
-     * pin), each as late as the witness allows: a later cell the fatal reads
-     * is pinned to run on only after the cells before it, so the jump lands
-     * on it, not on an earlier cell that would carry it along.
+     * The witness under every clock pin it can keep, each cell running on
+     * from the cell before it ({@link #runsOn}): a cell the witness's own
+     * model runs on already is pinned without an ask (the model is one
+     * under it).  Of its jumps, those outside its path's causal cone
+     * ({@code Composition#cone}, what acceptance reads: {@code cone.py}) are
+     * pinned first, in one ask, else one at a time in the recording's seq
+     * order; then those inside it, one at a time, so a jump lands as late as
+     * the witness allows.  All within {@link #REFINE_BUDGET_MS}: past it a
+     * jump inside the cone stands, a cause of the fatal by the formula,
+     * named DIAGNOSTIC (hdfs-11741 L1: 25 cells, each a round of path asks,
+     * ran past an hour).  {@code needed}:
+     * the recording already says the clocks are (clockDriven); otherwise a
+     * witness that needs no jump at all is asked for first.
      */
     private static Outcome leastClocks(Composer.Composition composition,
                                        Disjunction asks, Outcome outcome,
-                                       List<String> cells) {
+                                       List<String> cells, boolean needed,
+                                       List<GapRow> gaps) {
         if (cells.isEmpty()) return outcome;
-        Outcome all = outcome(composition, asks, outcome.valuation(),
-                runsOn(composition, cells), false, outcome);
-        if (all.witness()) return all;
+        Map<String, String> model = outcome.answer().values();
+        Set<String> cone = composition.cone(outcome.selected().selector());
         List<String> kept = new ArrayList<String>();
-        Outcome witness = outcome;
+        List<String> outside = new ArrayList<String>();
+        List<String> inside = new ArrayList<String>();
         for (String cell : cells) {
-            kept.add(cell);
+            Long jumped = jump(composition, model, cell);
+            if (jumped != null && jumped == 0L) {
+                kept.add(cell);
+            } else if (cone.contains(cell)) {
+                inside.add(cell);
+            } else {
+                outside.add(cell);
+            }
+        }
+        Outcome witness = new Outcome(outcome.valuation(),
+                runsOn(composition, kept), outcome.answer(),
+                outcome.selected(), outcome.arms);
+        long deadline = System.currentTimeMillis() + REFINE_BUDGET_MS;
+        if (!needed && kept.size() < cells.size()) {
+            Outcome all = outcome(composition, asks, outcome.valuation(),
+                    runsOn(composition, cells), false, outcome,
+                    REFINE_BUDGET_MS);
+            if (all.witness()) return all;
+        }
+        List<String> order = new ArrayList<String>(outside);
+        if (!outside.isEmpty()) {
+            List<String> tried = new ArrayList<String>(kept);
+            tried.addAll(outside);
+            Outcome within = outcome(composition, asks, outcome.valuation(),
+                    runsOn(composition, tried), false, outcome,
+                    REFINE_BUDGET_MS);
+            if (within.witness()) {
+                kept = tried;
+                witness = within;
+                order.clear();
+            }
+        }
+        order.addAll(inside);
+        for (int at = 0; at < order.size(); at++) {
+            long left = deadline - System.currentTimeMillis();
+            if (left <= 0L) {
+                refinementCut(gaps, "leastClocks", order.subList(at,
+                        order.size()));
+                break;
+            }
+            kept.add(order.get(at));
             Outcome asked = outcome(composition, asks, outcome.valuation(),
-                    runsOn(composition, kept), false, outcome);
+                    runsOn(composition, kept), false, outcome, left);
             if (asked.witness()) {
                 witness = asked;
             } else {
@@ -732,6 +796,17 @@ public final class ClaimPolicy {
             }
         }
         return witness;
+    }
+
+    /** A refinement that ran out of {@link #REFINE_BUDGET_MS}: the witness
+     *  stands as far as it got, its untried cells named. */
+    private static void refinementCut(List<GapRow> gaps, String step,
+                                      List<String> untried) {
+        gaps.add(GapRow.of(Composer.COMPOSITION, GapKind.SOLVER_TIMEOUT,
+                GapClass.DIAGNOSTIC, step, "the witness's refinement ran "
+                        + "out of its " + REFINE_BUDGET_MS / 1000L + " s "
+                        + "with " + untried.size() + " cell(s) untried, "
+                        + "which it publishes as they stand: " + untried));
     }
 
     /**
@@ -744,10 +819,11 @@ public final class ClaimPolicy {
      * (adhoc token-expired.proxy missed by 70 ms).  Every margin at once
      * first; else each jump's in seq order, kept where the witness stays: a
      * jump back that sits on its cell's floor has no room, and costs the
-     * other jumps none of theirs.
+     * other jumps none of theirs.  Within {@link #REFINE_BUDGET_MS}.
      */
     private static Outcome withMargin(Composer.Composition composition,
-                                      Disjunction asks, Outcome witness) {
+                                      Disjunction asks, Outcome witness,
+                                      List<GapRow> gaps) {
         Map<String, String> model = witness.answer().values();
         List<String> margins = new ArrayList<String>();
         for (String cell : composition.clockCells()) {
@@ -764,19 +840,26 @@ public final class ClaimPolicy {
                     + "))");
         }
         if (margins.isEmpty()) return witness;
+        long deadline = System.currentTimeMillis() + REFINE_BUDGET_MS;
         List<String> room = new ArrayList<String>(witness.pinned());
         room.addAll(margins);
         Outcome all = outcome(composition, asks, witness.valuation(),
-                room, false, witness);
+                room, false, witness, REFINE_BUDGET_MS);
         if (all.witness() || margins.size() == 1) {
             return all.witness() ? all : witness;
         }
         List<String> kept = new ArrayList<String>(witness.pinned());
         Outcome roomy = witness;
-        for (String margin : margins) {
-            kept.add(margin);
+        for (int at = 0; at < margins.size(); at++) {
+            long left = deadline - System.currentTimeMillis();
+            if (left <= 0L) {
+                refinementCut(gaps, "withMargin", margins.subList(at,
+                        margins.size()));
+                break;
+            }
+            kept.add(margins.get(at));
             Outcome asked = outcome(composition, asks, witness.valuation(),
-                    kept, false, witness);
+                    kept, false, witness, left);
             if (asked.witness()) {
                 roomy = asked;
             } else {

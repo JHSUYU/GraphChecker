@@ -3824,6 +3824,36 @@ public class ExploreTest {
                             + "already passed", Verdict.UNSAT,
                     refused.verdict);
         }
+
+        // And one clock of one node runs forward from cell to cell, as
+        // COMPOSE orders it: moving the earlier reading past 10000 moves the
+        // later one with it, which its own guard keeps under 6000 -- no
+        // model jumps the clock forward and back (hdfs-11741 L1).
+        {
+            Path order = tree.newFolder("clock-order").toPath();
+            Session only = new Session(order, "s-seed");
+            only.activation(TARGET, false);
+            only.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "5000",
+                    null, null, true);
+            only.root(TARGET, "CASE.LATER", "M_LATER", RootKind.CLOCK,
+                    "5004", null, null, true);
+            only.decision(TARGET, "Late#u6", 1, true,
+                    notBefore("6000", "M_LATER"));
+            only.decision(TARGET, "Now#u7", 1, true,
+                    notBefore("10000", "M_NOW"));
+            only.flush();
+            scopeMap(order, targetSite("REGION.target", "Throw#u30",
+                    "Now#u7"));
+            Path orderOut = tree.newFolder("clock-order-out").toPath();
+            Path orderWave = orderOut.resolve("obligations-0000");
+            plan(order, TARGET_SELECTOR, null,
+                    orderOut.resolve("results.jsonl"), orderWave, 0);
+            Worker ordered = solve(order, orderWave,
+                    named(obligations(orderWave), "Now#u7"), orderOut, "w0");
+            assertEquals("the later reading may not fall back behind the "
+                    + "earlier one: " + detail(ordered), Verdict.UNSAT,
+                    ordered.verdict);
+        }
     }
 
     /**
