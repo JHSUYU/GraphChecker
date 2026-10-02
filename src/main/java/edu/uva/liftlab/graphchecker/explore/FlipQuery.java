@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 
+import java.math.BigInteger;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -249,6 +250,10 @@ final class FlipQuery {
          *  path's own. */
         private final Map<String, Long> clockCells =
                 new LinkedHashMap<String, Long>();
+        /** Every clock variable, with the row of the execution it reads
+         *  ({@link #clockOrder}). */
+        private final Map<String, RootMintRow> clockRows =
+                new LinkedHashMap<String, RootMintRow>();
         private final List<GapRow> gaps = new ArrayList<GapRow>();
         private String refusal = "";
 
@@ -346,6 +351,7 @@ final class FlipQuery {
             Built refused = inheritedFlips(flipped);
             if (refused != null) return refused;
             drain();
+            clockOrder();
             stateFacts();
             if (!refusal.isEmpty()) return refused(refusal, flipped);
             String free = unbound();
@@ -574,6 +580,63 @@ final class FlipQuery {
             }
         }
 
+        /**
+         * ONE ORDER PER CLOCK OF A NODE, as COMPOSE states it ({@code
+         * Composer#clocks}): within one execution a cell is no earlier than
+         * the cell before it (by seq) on the same clock of the same node,
+         * giving way where that execution read the two the other way round.
+         * Without it a model jumps a clock forward at one cell and back at
+         * the next, a replay plants exactly that, and no composed world is
+         * that replay's own (hdfs-11741 L1: be888ea2 +10 h, the next cell
+         * 29a8b781 at the host's reading, in 485e5c2a and 92985f34).
+         */
+        private void clockOrder() {
+            Map<String, List<Map.Entry<String, RootMintRow>>> byClock =
+                    new LinkedHashMap<String,
+                            List<Map.Entry<String, RootMintRow>>>();
+            for (Map.Entry<String, RootMintRow> cell : clockRows.entrySet()) {
+                RootMintRow row = cell.getValue();
+                if (row.clock() == null || row.clock().source().isEmpty()) {
+                    continue;
+                }
+                byClock.computeIfAbsent(row.sessionId() + "|"
+                        + row.occurrence().node().render() + "|"
+                        + row.clock().source() + "|" + row.clock().nanos(),
+                        key -> new ArrayList<Map.Entry<String,
+                                RootMintRow>>()).add(cell);
+            }
+            for (List<Map.Entry<String, RootMintRow>> cells
+                    : byClock.values()) {
+                cells.sort((one, two) -> Long.compare(one.getValue().seq(),
+                        two.getValue().seq()));
+                for (int at = 1; at < cells.size(); at++) {
+                    String earlier = cells.get(at - 1).getKey();
+                    String later = cells.get(at).getKey();
+                    String inversion = inversion(
+                            cells.get(at - 1).getValue(),
+                            cells.get(at).getValue());
+                    rootFacts.add(inversion.isEmpty()
+                            ? "(<= " + earlier + " " + later + ")"
+                            : "(<= (- " + earlier + " " + later + ") "
+                            + inversion + ")");
+                }
+            }
+        }
+
+        /** How far the execution read {@code later} before {@code earlier},
+         *  or "" where it read them in order (or states no instant). */
+        private static String inversion(RootMintRow earlier,
+                                        RootMintRow later) {
+            try {
+                BigInteger gap = new BigInteger(
+                        earlier.recordedValue().trim()).subtract(
+                        new BigInteger(later.recordedValue().trim()));
+                return gap.signum() > 0 ? gap.toString() : "";
+            } catch (NumberFormatException noInstant) {
+                return "";
+            }
+        }
+
         // ---- the four rules ------------------------------------------
 
         private void root(RootMintRow minted) {
@@ -584,6 +647,7 @@ final class FlipQuery {
             RootMintRow own = corpus.rootOf(path.sessionId, minted.rootId());
             RootMintRow row = own == null ? minted : own;
             if (row.kind() == RootKind.CLOCK) {
+                clockRows.put(variable, minted);
                 // Read back only the flipped path's clock: another session's
                 // instant is not one this replay can be held to.
                 if (minted.sessionId().equals(path.sessionId)) {

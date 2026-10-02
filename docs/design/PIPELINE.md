@@ -575,7 +575,11 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   `[host reading, host reading + 30 days]` in its own ticks (`RootMintRow#hostReading`: the mint's
   instant less the skew its node's clock ran at there; `JavaPrimitiveSmtSemantics.clockDomain`/
   `clockSkewCeiling`; no reading: `[0, Long.MAX]`; declared clock bounds are not read here), and its
-  nearest world is the instant the session ran it at; any other root takes its domain from
+  nearest world is the instant the session ran it at; within one session, a cell is no earlier
+  than the cell before it (by seq) on the same clock of the same node, giving way where the session
+  read the two the other way round (`FlipQuery#clockOrder`, COMPOSE's `clock_order__`), so no model
+  jumps a clock forward and back, which a replay would plant as asked and no composed world is
+  (hdfs-11741 L1: `be888ea2` +10 h, the next cell at the host's reading); any other root takes its domain from
   `root-domains.jsonl` (or the mint's), else is pinned to its recorded value.
 - HANDOFF: an attach of the focused occurrence (a *control*) is bound per slot by
   `OR(pi_q ∧ guard_q ∧ v_H = e_q)` over `Arms.wireArms` (nested slots closed); a paired control whose
@@ -1225,7 +1229,14 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    pinned back one cell at a time in seq order, so a jump lands as late as the witness allows, on the
    cell the fatal reads rather than an earlier one that carries it along), so the cells left free are
    the clock's jumps. This refinement, and the margins after it, ask the witness's own path only
-   (`Disjunction#askPath`): another path's answer is no answer about this witness. A sat ordinal 0 on a path that did not observe the fatal,
+   (`Disjunction#askPath`): another path's answer is no answer about this witness. A cell the
+   witness's model runs on already is pinned without an ask; of its jumps, those outside the path's
+   causal cone (`Composition#cone`, what `cone.py` reads) are pinned first, in one ask, else one at a
+   time, then those inside it one at a time; past the budget a jump inside the cone stands as a cause
+   of the fatal; no ask tries "no jump at all" where the recording decided the clocks are needed. Each refinement has 5 minutes
+   (`REFINE_BUDGET_MS`); past them the witness is published as far as it got, its untried cells named
+   DIAGNOSTIC `SOLVER_TIMEOUT`. Every open path is asked in its own run before any is asked free
+   (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
 4. The claim, first match:
