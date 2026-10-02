@@ -358,7 +358,9 @@ order:
   the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
   slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
   scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
-  wait is missed). The watchdog lets held waits go when the order stalls; a released timed wait
+  wait is missed; the methods are installed from the rows the session reads when it opens,
+  `GuardedStoreSites#install`, never at a wait, where reading the map held a thread's first wait
+  seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
   still waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an
   order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does

@@ -35,7 +35,8 @@ import java.util.Set;
  * mutation ever starts a log, so it is refused by name.</p>
  */
 final class GuardedStoreSites {
-    /** Names this epoch's scope map; {@link ClockLoops} reads it too. */
+    /** Names this epoch's scope map, read once for this table and for
+     *  {@link ClockLoops}. */
     static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
     /** SYMBOL-SCOPE §5.3:
@@ -68,7 +69,9 @@ final class GuardedStoreSites {
         }
         final GuardedStoreSites table;
         try {
-            table = of(ArtifactIO.readJsonl(artifact));
+            List<JsonObject> rows = ArtifactIO.readJsonl(artifact);
+            table = of(rows);
+            ClockLoops.install(rows);
         } catch (IOException | RuntimeException rejected) {
             return "GUARDED_STORE_SITES_ARTIFACT_REJECTED: " + artifact
                     + ": " + rejected.getMessage();
