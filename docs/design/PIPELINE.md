@@ -1181,9 +1181,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 4. The claim, first match:
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
      whose moved roots are in no unattested arm (else BLOCKING `UNATTESTED_ARM`): its `mechanism`;
-     without `recordingDecides` it also needs `polarityDecides` (else BLOCKING
-     `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted by a core
-     naming no valuation pin; an undecided ordinal 0 is BLOCKING already and raises no second gap);
+     without `recordingDecides` it also needs `polarityDecides`, checked before the witness is
+     refined (`leastClocks`, margins, `mechanism`: rounds of path asks for a witness it would refuse)
+     (else BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
+     by a core naming no valuation pin; an undecided ordinal 0 is BLOCKING already and raises no
+     second gap);
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
      `MESSAGE_PAIRING_FLIPPED`, with `recordingDecides` or `polarityDecides`;
    - ordinal 0 sat on the seed's path that observed the fatal, every moved valuation decided unsat:
