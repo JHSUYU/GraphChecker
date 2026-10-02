@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.plan;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -22,7 +23,8 @@ public final class RegionInstancePlan extends PlanRow {
             "activationId",
             ConfiguredSourcePhaseContract.PLAN_FIELD,
             CommunicationHandoffSpec.FIELD,
-            LoopBoundPolicy.PLAN_FIELD
+            LoopBoundPolicy.PLAN_FIELD,
+            RuntimeSelectedRegionFinalizer.QUESTION_SHAPE
     };
     private final Goal goal;
 

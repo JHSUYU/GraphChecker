@@ -145,7 +145,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `DECLARATION_MISSING` | a root, port or name the case never declared; an undecided or erroring solver ask |
 | `LINEAGE_LOST` | an address degraded by an unattributable hop; an unpaired attach; a missing site index |
 | `TASK_UNANSWERED` | a planned task no activation answered (BLOCKING when PLAN states it) |
-| `ADDRESS_UNSTABLE` | one planned task answered at two addresses across the corpus |
+| `ADDRESS_UNSTABLE` | one planned task answered at two addresses across the corpus; a replay's occurrence that answered the declared one by its question, at the address the run computed ([IDENTITY.md §9](IDENTITY.md); DIAGNOSTIC) |
 | `SOLVER_TIMEOUT` | a flip query z3 did not answer in time |
 | `FRAME_UNBALANCED` | an activation closed at another execution-index depth than it opened at |
 | `BOUNDED_LOOP_BODY_BOUND_UNDECLARED`, `BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED`, `BOUNDED_LOOP_CLASSIFICATION_INCONSISTENT` | a retained loop ran under an inherited bound, an array loop declared none, a loop nest's control sites classify differently |

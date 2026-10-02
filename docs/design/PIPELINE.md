@@ -512,7 +512,8 @@ obligation (`explore.Branches#parents`): the seed, or an admitted focused sessio
 not stop. The question is one declared occurrence `(r,c,i)`, and a focused replay whose run holds
 no activation of the declared region `r` under the declared context `c` -- at any index `i`, which a
 flip may shift (a fault's retry, a loop that runs once more) -- ran it under another chain or not at
-all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`): its BRANCH STOPS. Its world is never
+all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`; a chain of the question's shape whose counts
+alone differ answers the declared occurrence at its address, IDENTITY.md §9): its BRANCH STOPS. Its world is never
 inherited, its paths are never flipped, and nothing it exposes is grown (§7.2's `uncaptured`: one
 named only by stopped branches is DIAGNOSTIC); it stays in the corpus as evidence (its rows still
 attest arms, §7.3). Contexts compare by `contract/ContextShape` (`Corpus#contextShape`, the rule
