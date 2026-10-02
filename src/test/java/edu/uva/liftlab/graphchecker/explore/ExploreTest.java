@@ -2399,6 +2399,34 @@ public class ExploreTest {
         assertEquals("the session in its place opens the slot again",
                 otherPort.id(), slotsOf(reopened).get(0).producer.id());
 
+        // An occurrence a replay answered by its question (IDENTITY §9)
+        // stands at the declared address under another chain: its pairing
+        // is that chain's, a slot beside the declared one's, no replacement.
+        Path answeredRun = tree.newFolder("closure-answered").toPath();
+        Session declared = new Session(answeredRun, "s-seed");
+        declared.activation(writer, false);
+        declared.activation(producer, false);
+        declared.constant("e.119992", "119992");
+        declared.export(exported, "e.119992", 11L, "119992");
+        declared.attach(attached, "M_HOFF_KEY", "119992", exported);
+        declared.flush();
+        Session answering = new Session(answeredRun, "s-two");
+        answering.activation(writer, false);
+        answering.activation(producer, false);
+        answering.constant("e.119993", "119993");
+        answering.export(otherPort, "e.119993", 13L, "119993");
+        answering.attach(attached, "M_HOFF_KEY", "119993", otherPort);
+        answering.gap(GapRow.of("s-two", GapKind.ADDRESS_UNSTABLE,
+                GapClass.DIAGNOSTIC, attached.occurrence().render(),
+                "the declared occurrence ran at another address"));
+        answering.flush();
+        SlotTable.Reconciliation ownChain = new SlotTable().reconcile(
+                Corpus.read(answeredRun, null), pairedMembers, 2);
+        assertFalse("an answered occurrence's pairing replaces nothing",
+                ownChain.replaced);
+        assertEquals("and opens its own slot beside the declared one's", 2,
+                slotsOf(ownChain).size());
+
         // ONLY AN ADMITTED REPLAY STATES A TOPOLOGY.  The same foreign
         // pairing, from a replay whose own result row says NOT_ADMITTED, is
         // a replay that did not run the world it was asked for: it states
@@ -4490,6 +4518,7 @@ public class ExploreTest {
         private final List<ReadRow> reads = new ArrayList<>();
         private final List<RootMintRow> roots = new ArrayList<>();
         private final List<TargetRow> targets = new ArrayList<>();
+        private final List<GapRow> gaps = new ArrayList<>();
         /** What this replay SETTLED, as its own obligations.jsonl states. */
         private final List<ObligationResult> answered = new ArrayList<>();
         private final Map<String, JsonObject> expressions =
@@ -4641,6 +4670,10 @@ public class ExploreTest {
             answered.add(result);
         }
 
+        private void gap(GapRow gap) {
+            gaps.add(gap);
+        }
+
         private void flush() throws IOException {
             dir.create();
             RowCodec.writeAll(dir.obligations(), answered,
@@ -4655,6 +4688,7 @@ public class ExploreTest {
             RowCodec.writeAll(dir.reads(), reads, RowCodec::writeRead);
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
+            RowCodec.writeAll(dir.gaps(), gaps, RowCodec::writeGap);
             RowCodec.writeExpressions(dir.expressions(),
                     ExpressionTable.of(expressions));
             // The fixture STATES the role, as a campaign's own session

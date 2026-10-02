@@ -539,7 +539,12 @@ turn of a daemon carries another node's asynchronous work is that node's timing,
 holds: in round `a40h` a NameNode command (block recovery queued by the lease monitor, replication
 after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
 so every anchor below it differed in the root's k alone and the target was never admitted; two
-recordings of one workload differ the same way.
+recordings of one workload differ the same way. A GROW does it to every replay after it: a region
+woven since the seed opens occurrences of its own, so every send under it, and every anchor below,
+has new ids, and no planned address there recurs. The answered occurrence's consumers then pair
+with that chain's producers, not the recorded chain's: the slot table takes them as growth beside
+the declared occurrence's slots, never as replacing them (PIPELINE.md §7.1 step 4; hdfs-11741 V4,
+whose declared balancer handshake was answered by the other move's).
 
 ## 10. Pass equality
 

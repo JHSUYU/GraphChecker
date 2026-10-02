@@ -350,7 +350,10 @@ schedule) and:
    the session is admitted, else DIAGNOSTIC); another
    world's pairing is a new slot. A slot stands on the session that opened it: the slots of a
    session no longer in the corpus (one a GROW swap withdrew, §7.8) are dropped first, here and
-   where COMPOSE reads the table, and the session in its place opens them again.
+   where COMPOSE reads the table, and the session in its place opens them again. An occurrence a
+   replay answered by its question (IDENTITY §9, its `ADDRESS_UNSTABLE` row) stands at the declared
+   address under another chain, so its pairings are that chain's: they open slots beside the
+   declared occurrence's and replace none.
 5. Builds the ledger (§7.3), takes the arms in flight (`--in-flight`: the obligation rows the
    campaign has queued or running), builds the candidates (§7.4) and opens the round:
    `obligations.jsonl`, nothing settled and nothing in flight.
