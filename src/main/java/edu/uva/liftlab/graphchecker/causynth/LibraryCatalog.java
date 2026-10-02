@@ -35,13 +35,17 @@ import java.util.regex.Pattern;
  * naming the row, never skipped.
  *
  * <ul>
- *   <li>{@code DOOR} ({@code transport, direction, method, before | after,
+ *   <li>{@code DOOR} ({@code transport, direction, method?, before | after,
  *       faults}): a transport's fault point ({@link DoorWeave}), at the first
  *       call of {@code before} or {@code after} in {@code method}, one
  *       marker per fault kind in order.  Rows of one door method (its
  *       transport, direction, class and name) are that method's signatures
  *       on different library lines (Hadoop IPC's response wait is a
- *       {@code CompletableFuture} on trunk, a monitor on 3.4).</li>
+ *       {@code CompletableFuture} on trunk, a monitor on 3.4).  A door with
+ *       no {@code method} is a library call whose outcome each caller reads
+ *       where it makes it (a DataTransfer op's response, parsed by every
+ *       side that sent the op): it sits at the first call of its anchor in
+ *       every analysed method making one.</li>
  *   <li>{@code CONFIG_SOURCE} ({@code method, keyArg, defaultArg?}): a
  *       configuration getter, argument {@code keyArg} (a String) its key and
  *       {@code defaultArg} its default ({@link ConfigRoots}).</li>
@@ -129,7 +133,8 @@ public final class LibraryCatalog {
     public static final class Door {
         public final String transport;
         public final String direction;
-        /** The Soot signature of the method the door is woven into. */
+        /** The Soot signature of the method the door is woven into; null
+         *  for a door at every call of its anchor ({@link #atCalls}). */
         public final String method;
         /** The call the door sits at, and on which side of it. */
         public final String anchor;
@@ -151,6 +156,12 @@ public final class LibraryCatalog {
             return "FAULT:" + transport + ":" + direction;
         }
 
+        /** Whether the door sits at every analysed call of its anchor
+         *  rather than in one door method. */
+        public boolean atCalls() {
+            return method == null;
+        }
+
         /** The outermost class of the door method: the unit a scope
          *  takes, with its nested classes. */
         public String family() {
@@ -164,6 +175,11 @@ public final class LibraryCatalog {
             Matcher member = SIGNATURE.matcher(method);
             member.matches();
             return name() + " at " + member.group(1) + "#" + member.group(2);
+        }
+
+        /** Where the door sits: its method, or every call of its anchor. */
+        String place() {
+            return atCalls() ? "every call of " + anchor : method;
         }
     }
 
@@ -250,7 +266,7 @@ public final class LibraryCatalog {
         boolean places(Door catalog) {
             return catalog.transport.equals(transport)
                     && catalog.direction.equals(direction)
-                    && catalog.method.equals(door);
+                    && door.equals(catalog.method);
         }
     }
 
@@ -355,7 +371,7 @@ public final class LibraryCatalog {
                 if (DOOR.equals(kind)) {
                     Door door = door(row);
                     doors.add(door);
-                    identity = door.name() + " " + door.method;
+                    identity = door.name() + " " + door.place();
                 } else if (CONFIG_SOURCE.equals(kind)) {
                     ConfigSource source = configSource(row);
                     configSources.add(source);
@@ -422,9 +438,10 @@ public final class LibraryCatalog {
             faults.add(matching(CLASS, string(kind, "faults"), "faults")
                     .group());
         }
+        String method = optionalText(row, "method");
         return new Door(matching(NAME, text(row, "transport"), "transport")
                 .group(), matching(NAME, text(row, "direction"), "direction")
-                .group(), signature(text(row, "method")).group(),
+                .group(), method == null ? null : signature(method).group(),
                 signature(after != null ? after : before).group(),
                 after != null, faults);
     }

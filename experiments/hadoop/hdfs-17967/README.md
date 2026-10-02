@@ -59,9 +59,11 @@ carries what is per case, including the per-case analysis scope.
 
 **Fault points.** The engine's library catalog doors (`docs/design/SYMBOL-SCOPE.md` §4.2):
 `FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest`, `FAULT:HADOOP_IPC:RESPONSE`,
-`FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake` and
-`FAULT:HDFS_DATA_TRANSFER:SEND` in `datatransfer.Sender.send`, the same code in every tree. The
-recorded polarity is false; true throws the transport's failure before the request leaves.
+`FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake`,
+`FAULT:HDFS_DATA_TRANSFER:REQUEST` in `datatransfer.Sender.send` and
+`FAULT:HDFS_DATA_TRANSFER:RESPONSE` after a response parse of a class in scope (`DFSClient` for
+A), the same code in every tree. The recorded polarity is false; true throws the transport's
+failure before the request leaves (after the response arrives).
 `ipc/Client` stays in the analysis scope: the door and the IPC message-propagation calls the
 causal context travels on live in the same file.
 

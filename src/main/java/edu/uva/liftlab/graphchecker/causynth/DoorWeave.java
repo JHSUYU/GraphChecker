@@ -26,6 +26,7 @@ import soot.jimple.StaticInvokeExpr;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
 import soot.jimple.ThrowStmt;
+import soot.tagkit.Tag;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -48,7 +49,10 @@ import java.util.Set;
  * class of this run that is not there for its lineage alone (no pass analyses
  * or weaves such a class's text).  There every row whose method and anchor
  * resolve is woven, and a door method none of whose rows resolves is refused
- * ({@code DOOR_METHOD_UNAVAILABLE}): the library moved under the catalog.</p>
+ * ({@code DOOR_METHOD_UNAVAILABLE}): the library moved under the catalog.
+ * A door at every call of its anchor ({@link LibraryCatalog.Door#atCalls})
+ * is woven in each analysed method that makes the call, at its first; a
+ * program that makes none has none.</p>
  *
  * <p>A kind is an ENVIRONMENT failure the transport can raise and a caller
  * distinguishes (e.g. {@code RetryPolicies} fails over on
@@ -67,13 +71,29 @@ final class DoorWeave {
     private DoorWeave() {
     }
 
-    /** Weaves every catalog door of an analysed family. */
+    /** Weaves every catalog door of an analysed family, and every door at
+     *  calls into the analysed methods making them. */
     static void apply() {
         Map<String, List<String>> missed = new LinkedHashMap<>();
         Set<String> doorMethods = new LinkedHashSet<>();
         List<String> woven = new ArrayList<>();
+        List<SootClass> analysed = new ArrayList<>();
+        for (SootClass type : Scene.v().getApplicationClasses()) {
+            if (analysed(type)) analysed.add(type);
+        }
+        analysed.sort((a, b) -> a.getName().compareTo(b.getName()));
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
-            if (!analysed(door.family())) continue;
+            if (door.atCalls()) {
+                for (SootMethod caller : callers(analysed, door.anchor)) {
+                    weave(door, caller);
+                    woven.add(door.name() + " at " + caller.getSignature());
+                }
+                continue;
+            }
+            if (!analysed(Scene.v().getSootClassUnsafe(door.family(),
+                    false))) {
+                continue;
+            }
             String miss = weave(door);
             if (miss.isEmpty()) {
                 doorMethods.add(door.doorMethod());
@@ -91,25 +111,50 @@ final class DoorWeave {
         LOG.info("Library doors woven: {}", woven);
     }
 
-    /** Whether a class family is this run's analysed program. */
-    private static boolean analysed(String family) {
-        SootClass type = Scene.v().getSootClassUnsafe(family, false);
+    /** Whether a class is this run's analysed program. */
+    private static boolean analysed(SootClass type) {
         return type != null && !type.isPhantom() && type.isApplicationClass()
-                && !LineageScope.lineageOnly(family);
+                && !LineageScope.lineageOnly(type.getName());
     }
 
-    /** Weaves one door; "" when woven, else why not. */
+    /** The concrete methods of the analysed classes that call
+     *  {@code anchor}, in class and then method order. */
+    private static List<SootMethod> callers(List<SootClass> analysed,
+                                            String anchor) {
+        List<SootMethod> found = new ArrayList<>();
+        for (SootClass type : analysed) {
+            List<SootMethod> methods = new ArrayList<>(type.getMethods());
+            methods.sort((a, b) -> a.getSignature().compareTo(
+                    b.getSignature()));
+            for (SootMethod method : methods) {
+                Body body = CausynthStaticFacts.activeBody(method);
+                if (body != null && firstCall(body, anchor) != null) {
+                    found.add(method);
+                }
+            }
+        }
+        return found;
+    }
+
+    /** Weaves one door into its method; "" when woven, else why not. */
     private static String weave(LibraryCatalog.Door door) {
         SootMethod method = CausynthStaticFacts.method(door.method);
         if (method == null || !method.isConcrete()
                 || !method.getDeclaringClass().isApplicationClass()) {
             return "no method " + door.method;
         }
-        Body body = method.retrieveActiveBody();
-        Stmt site = firstCall(body, door.anchor);
-        if (site == null) {
+        if (firstCall(method.retrieveActiveBody(), door.anchor) == null) {
             return door.method + " calls no " + door.anchor;
         }
+        weave(door, method);
+        return "";
+    }
+
+    /** Weaves one door at the first call of its anchor in {@code method},
+     *  which makes one. */
+    private static void weave(LibraryCatalog.Door door, SootMethod method) {
+        Body body = method.retrieveActiveBody();
+        Stmt site = firstCall(body, door.anchor);
         Unit next = door.after ? body.getUnits().getSuccOf(site) : site;
         List<Unit> units = new ArrayList<Unit>();
         if (!door.after) {
@@ -131,6 +176,7 @@ final class DoorWeave {
         units.addAll(faults);
         Unit at = site;
         for (Unit unit : units) {
+            unit.addTag(WOVEN);
             if (door.after) {
                 body.getUnits().insertAfter(unit, at);
                 at = unit;
@@ -138,8 +184,26 @@ final class DoorWeave {
                 body.getUnits().insertBeforeNoRedirect(unit, site);
             }
         }
-        return "";
     }
+
+    /** Whether the weave inserted {@code unit}: the engine's text, never
+     *  counted among the program's own (a declared throw's ordinal among
+     *  its method's constructions of its type). */
+    static boolean isWoven(Unit unit) {
+        return unit.hasTag(WOVEN.getName());
+    }
+
+    private static final Tag WOVEN = new Tag() {
+        @Override
+        public String getName() {
+            return "CausynthDoorWoven";
+        }
+
+        @Override
+        public byte[] getValue() {
+            return new byte[0];
+        }
+    };
 
     /** One woven fault's throw: the marker local its branch tests, the
      *  marker's name and the kind thrown. */

@@ -269,7 +269,8 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 | `HADOOP_IPC` | `REQUEST` | `Client$Connection#sendRpcRequest` | after the request's `RpcWritable#writeTo` (serialized, not yet queued) |
 | `HADOOP_IPC` | `RESPONSE` | `Client#getRpcResponse` | after `CompletableFuture#get` (trunk); before `Call#getRpcResponse` (3.4) |
 | `HDFS_SASL` | `REQUEST` | `SaslDataTransferClient#doSaslHandshake` | before `DataOutputStream#writeInt` |
-| `HDFS_DATA_TRANSFER` | `SEND` | `datatransfer.Sender#send` | before `DataOutputStream#flush` |
+| `HDFS_DATA_TRANSFER` | `REQUEST` | `datatransfer.Sender#send` (every op) | before `DataOutputStream#flush` |
+| `HDFS_DATA_TRANSFER` | `RESPONSE` | every analysed caller (no door method) | after `BlockOpResponseProto#parseFrom(InputStream)` (an op's response), `DNTransferAckProto#parseFrom(InputStream)` (a transfer's close ack), `PipelineAck#readFields(InputStream)` (a write pipeline's ack) |
 | `SOLR_HTTP` | `REQUEST` / `RESPONSE` | `HttpSolrClient#executeMethod` | before / after `HttpClient#execute` |
 | `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
 | `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
@@ -290,12 +291,21 @@ operation's, so a multi's later operations are unpaired under a fault); the `SOL
 `Client#getRpcResponse` after `installCausynthResponse`, the response's inbound hook (the 3.4 line's
 catalog anchor already follows it). These rows are the tree adapters' hooks spelled out; they go
 when the engine finds a door's following hook itself (a hook call of the door method or of its
-caller after the anchor). There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
-`getChildren`): every packet and cluster-state read would be one.
+caller after the anchor). There is no door on a data read (DataTransfer's `PacketReceiver`, ZooKeeper
+`getData`/`exists`/`getChildren`): every packet and cluster-state read would be one.
 
-A door applies where its class family (the method's outermost class with its nested classes) is
-analysed. `plan/ScopeGrowth --doors`, before the first static pass and again after every growth,
-outside the growth budget (§2.4, `run_engine.sh campaign_scope_doors`), copies into
+A row with no `method` is a door at calls: a library call whose outcome each caller reads where it
+makes it. DataTransfer has no response method of its own: every side that sent an op (the client's
+`DataStreamer`, a DataNode's mirror in `DataXceiver#writeBlock` and its `DataNode$DataTransfer`, the
+`Dispatcher`, a `BlockReader`) parses the response itself, so the door sits after the first call of
+the anchor in every analysed method that makes one, and its fault goes to that caller's own handler
+(`BlockReceiver$PacketResponder` tells an `EOFException` from other failures). A door at calls has
+no family: it is woven where the analysis scope already holds the caller, and a scope with no caller
+has none.
+
+A door with a method applies where its class family (the method's outermost class with its nested
+classes) is analysed. `plan/ScopeGrowth --doors`, before the first static pass and again after every
+growth, outside the growth budget (§2.4, `run_engine.sh campaign_scope_doors`), copies into
 `scope-classes/` the family of every door that a class of the analysis scope (the case's scope and
 what it grew) outside the family calls, from the first of the roots and the workload classpath
 holding it (the system's own classes or a library jar), unless the scope holds it; its `GROWN`
@@ -313,7 +323,10 @@ resolves is refused (`DOOR_METHOD_UNAVAILABLE`), as is an exception class that d
 caller tells apart (a retry policy fails over on one and retries another); a semantic server
 exception is never a kind, it must come from the causal chain. The weave runs before any analysis
 (`CausynthPipeline#run`), so every pass numbers units over the same woven body and site ids agree
-across passes; they differ from the unwoven method's.
+across passes; they differ from the unwoven method's. The woven units are tagged
+(`DoorWeave#isWoven`): a declared throw's ordinal among its method's constructions of its type is
+the class file's (`ExceptionTargetLineResolver`), so the seed counts only the program's own (a door
+at calls in the method that holds the throw, `Dispatcher$PendingMove#receiveResponse`).
 
 The catalog's rows each state `schemaVersion 1` and their `kind` and are keyed by
 `library-catalog.jsonl:<line>`, the shape `contract/WireDeclarations` reads (CONTRACT-SPEC §6.1). A
