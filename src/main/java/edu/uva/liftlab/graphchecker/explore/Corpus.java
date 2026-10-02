@@ -1026,11 +1026,13 @@ public final class Corpus implements Arms.Rows {
         Set<String> symbols = new LinkedHashSet<String>();
         SmtLowering.SessionJoin join = join(sessionId);
         Deque<JsonElement> roots = new ArrayDeque<JsonElement>();
-        roots.add(expression(sessionId, expressionRef));
+        // A ref the session states no expression for (a value the VM kept
+        // concrete) rests on no symbol; the row's gate names a dangling ref.
+        JsonElement start = expression(sessionId, expressionRef);
+        if (start != null) roots.add(start);
         Set<JsonElement> walked = ExpressionWalk.identitySet();
         while (!roots.isEmpty()) {
             JsonElement root = roots.poll();
-            if (root == null) continue;
             for (ExpressionWalk walk = ExpressionWalk.of(root, walked);
                  walk.hasNext(); ) {
                 JsonObject node = walk.next();
