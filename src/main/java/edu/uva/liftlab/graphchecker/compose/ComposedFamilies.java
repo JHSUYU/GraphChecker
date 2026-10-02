@@ -902,6 +902,8 @@ final class ComposedFamilies {
         boolean stated = true;
         // The bindings: what this run delivered at each out.
         Map<String, String> guards = new LinkedHashMap<String, String>();
+        Map<String, RootMintRow> guardMints =
+                new LinkedHashMap<String, RootMintRow>();
         for (Out out : outs) {
             Term delivered = lower(session, out.arm.expressionRef(),
                     "arm:" + out.arm.slotId(), conjuncts);
@@ -918,6 +920,7 @@ final class ComposedFamilies {
                 }
                 conjuncts.add(bound);
                 guards.putAll(out.arm.guard());
+                guardMints.putAll(out.arm.guardMints());
                 continue;
             }
             for (String symbol : out.symbols) {
@@ -932,18 +935,17 @@ final class ComposedFamilies {
                 }
             }
             guards.putAll(out.arm.guard());
+            guardMints.putAll(out.arm.guardMints());
         }
-        // The delivering replay's valuation of every varied root.
+        // The delivering replay's valuation of every root it holds under
+        // (Arms#arm), declared at its root's sort where no row of the
+        // corpus has declared the symbol yet: an arm need not mention it,
+        // and an undeclared constant makes z3 answer with an error.
         for (Map.Entry<String, String> guard : guards.entrySet()) {
-            // The guard's root must be declared: an arm need not mention
-            // it, and an undeclared constant makes z3 answer with an error.
             VmTermLowering.Sort sort = lowering.statedSort(guard.getKey());
             if (sort == null) {
-                composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        guard.getKey(), "an arm of " + subject
-                                + " is guarded by a symbol no row of this "
-                                + "corpus declares a sort for");
-                continue;
+                sort = Composer.sortOf(guardMints.get(guard.getKey()));
+                lowering.declareStated(guard.getKey(), sort);
             }
             String literal = smtLiteral(guard.getValue(), sort);
             if (literal.isEmpty()) continue;

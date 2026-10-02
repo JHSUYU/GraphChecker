@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
@@ -245,7 +246,8 @@ public class RowRuntimeTest {
      * the manifest counts every entry at the run's end.  So is a declared
      * source read where its occurrence ran concretely: the manifest states
      * the first reading at each occurrence, and nothing for a value the
-     * hook could not spell.
+     * hook could not spell, and the roots found derived; a schema-1
+     * manifest states neither.
      */
     @Test
     public void theRunsEndStatesUnnamedEntriesAndConcreteReadings()
@@ -271,6 +273,7 @@ public class RowRuntimeTest {
             RowRuntime.concreteReading("ROOT.SERIAL", "occ#1", "119529");
             RowRuntime.concreteReading("ROOT.SERIAL", "occ#2", "119529");
             RowRuntime.concreteReading("ROOT.SERIAL", "occ#3", "");
+            RowRuntime.derivedRoot("ROOT.EXPIRY");
             RowRuntime.closeSession();
         } finally {
             RecordingWindow.reset();
@@ -294,6 +297,16 @@ public class RowRuntimeTest {
         assertEquals(Collections.singletonMap("ROOT.SERIAL", read),
                 RowCodec.readManifest(session().manifest())
                         .concreteReadings());
+        SessionManifest manifest = RowCodec.readManifest(session().manifest());
+        assertEquals(Collections.singleton("ROOT.EXPIRY"),
+                manifest.derivedRoots());
+        assertTrue("schema 2 states readings", manifest.statesReadings());
+        JsonObject older = manifest.toJson();
+        older.addProperty("schemaVersion", 1);
+        older.remove("concreteReadings");
+        older.remove("derivedRoots");
+        assertFalse("a schema-1 manifest states none",
+                SessionManifest.fromJson(older).statesReadings());
     }
 
     /**

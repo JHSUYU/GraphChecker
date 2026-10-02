@@ -250,7 +250,8 @@ public final class ConfirmMain {
         if (!realized.isEmpty()) {
             RowCodec.writeJsonl(out.resolve(REALIZED),
                     Collections.singletonList(
-                            confirmation(true, realized, sessionId)));
+                            confirmation(true, false, realized,
+                                    sessionId)));
             JsonObject summary = summary(anchor, pathId, sessionId, ordinal);
             summary.addProperty("realizedBy", sessionId);
             return summary;
@@ -616,7 +617,9 @@ public final class ConfirmMain {
      * and observed the fatal.  A fatal at another occurrence of the target
      * site is another question (11741 v93's confirming session had two fatal
      * target rows), and an occurrence is named by its id, which only this
-     * address computes.
+     * address computes.  Only (a) and (b) REFUTE the model -- the replay ran
+     * it and disagreed; a replay that did not run it (not ADMITTED, no
+     * readable session) answers nothing about it.
      */
     static JsonObject decide(Path claimFile, Path worker, Path sessions)
             throws IOException {
@@ -627,15 +630,15 @@ public final class ConfirmMain {
         String verdict = optionalString(result, "verdict");
         String sessionId = optionalString(result, "sessionId");
         if (!"ADMITTED".equals(verdict)) {
-            return confirmation(false, "the confirmation replay was "
+            return confirmation(false, false, "the confirmation replay was "
                     + (verdict.isEmpty() ? "not run" : verdict) + ": "
                     + optionalString(result, "detail"), sessionId);
         }
         Path session = sessions.resolve(sessionId);
         if (sessionId.isEmpty() || !Files.isDirectory(session)) {
-            return confirmation(false, "the confirmation replay names session "
-                    + sessionId + ", which " + sessions + " does not hold",
-                    sessionId);
+            return confirmation(false, false, "the confirmation replay names "
+                    + "session " + sessionId + ", which " + sessions
+                    + " does not hold", sessionId);
         }
         List<JsonObject> gaps;
         List<TargetRow> targets;
@@ -647,15 +650,15 @@ public final class ConfirmMain {
                 targets.add(RowCodec.readTarget(row));
             }
         } catch (IOException | RuntimeException unread) {
-            return confirmation(false, "the run's session could not be read,"
-                    + " so it answers nothing: " + unread.getMessage(),
+            return confirmation(false, false, "the run's session could not be"
+                    + " read, so it answers nothing: " + unread.getMessage(),
                     sessionId);
         }
         for (JsonObject gap : gaps) {
             if ("CONFIRM_MISMATCH".equals(optionalString(gap, "kind"))) {
-                return confirmation(false, "the run took an edge the model"
-                        + " did not choose: " + optionalString(gap, "detail"),
-                        sessionId);
+                return confirmation(false, true, "the run took an edge the"
+                        + " model did not choose: "
+                        + optionalString(gap, "detail"), sessionId);
             }
         }
         OccurrenceAddress anchor;
@@ -663,21 +666,22 @@ public final class ConfirmMain {
             anchor = OccurrenceAddress.parse(optionalString(
                     ExploreCodec.readObject(claimFile), "anchor"));
         } catch (RuntimeException unparsed) {
-            return confirmation(false, "the claim states no parseable anchor: "
-                    + unparsed.getMessage(), sessionId);
+            return confirmation(false, false, "the claim states no parseable"
+                    + " anchor: " + unparsed.getMessage(), sessionId);
         }
         int elsewhere = 0;
         for (TargetRow target : targets) {
             if (!target.reachedAnchor() || !target.observedFatal()) continue;
             if (target.occurrence().id().equals(anchor.id())) {
-                return confirmation(true, "every edge the model chose was"
-                        + " taken, and the claim's anchor observed the fatal",
-                        sessionId);
+                return confirmation(true, false, "every edge the model chose"
+                        + " was taken, and the claim's anchor observed the"
+                        + " fatal", sessionId);
             }
             elsewhere++;
         }
-        return confirmation(false, "the run published no target row at the"
-                + " claim's anchor " + anchor.id() + " that reached it and"
+        return confirmation(false, true, "the run published no target row"
+                + " at the claim's anchor " + anchor.id() + " that reached it"
+                + " and"
                 + " observed the fatal" + (elsewhere == 0 ? ""
                 : " (" + elsewhere + " row(s) at other occurrences did)"),
                 sessionId);
@@ -692,13 +696,18 @@ public final class ConfirmMain {
         return RowCodec.readJsonl(file);
     }
 
-    /** The one shape of final/confirm.json. */
-    private static JsonObject confirmation(boolean confirmed, String reason,
-                                           String sessionId) {
+    /**
+     * The one shape of final/confirm.json; {@code refutes}: the program ran
+     * the model and disagreed, so the campaign excludes it
+     * ({@code compose.Refutations}).
+     */
+    private static JsonObject confirmation(boolean confirmed, boolean refutes,
+                                           String reason, String sessionId) {
         JsonObject confirmation = new JsonObject();
         confirmation.addProperty("schemaVersion", 1);
         confirmation.addProperty("kind", "CONFIRMATION");
         confirmation.addProperty("confirmed", confirmed);
+        confirmation.addProperty("refutes", refutes);
         confirmation.addProperty("reason", reason);
         confirmation.addProperty("sessionId", sessionId);
         return confirmation;

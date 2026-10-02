@@ -4150,7 +4150,7 @@ public class ExploreTest {
                 refused |= gap.cls() == GapClass.DIAGNOSTIC
                         && ExploreCodec.EXPLORATION.equals(gap.sessionId())
                         && gap.detail().contains(
-                                "the recording's own valuation");
+                                "the model is the valuation");
             }
             assertTrue("and the refusal is named, as the wave's own "
                     + "diagnostic", refused);

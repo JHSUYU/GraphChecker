@@ -45,8 +45,11 @@ The owner wants outcomes, not intermediate report files. Requirements R1–R6:
   chain checked by hand — runs and mechanisms in `docs/STATUS.md` "Acceptance" (rounds `F1`, `F1b`, `N1`).
   VM `/bigtemp/vnr3ne/vm-w4h/j2sdk-image`. Most cases take 7–13 min, 11741 22 min, the Solr cases 19–28 min.
 - **Trees**: `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741` (`gc/hdfs-11741`),
-  `~/lucene-solr-unified` (`gc/solr-unified` `b41116b`: 18413's leader off the Overseer's node). Never edit or
-  rebuild a tree a run reads; work on a new branch in a new worktree of it.
+  `~/lucene-solr-unified` (`gc/solr-unified` `b41116b`: 18413's leader off the Overseer's node). The engine of
+  `fix-confirm-flakiness` (`MessageDoors#storing(transport, location)`) needs the Solr tree
+  `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: `b41116b` plus SolrZkClient's write
+  brackets), which the Solr case files name. Never edit or rebuild a tree a run reads; work on a new branch in a
+  new worktree of it.
 - **Phase 2** (large ad-hoc runs; finishing them is the goal, no new bug is an acceptable outcome — owner): 80
   checks ran (`a40s`, `a40h2`, `b20h`; triage with `tools/adhoc/triage.py <round>`), no confirmed witness.
   Picks: `/bigtemp/vnr3ne/analysis/adhoc-pick2-{hdfs,solr}.txt` (coverage-reached, a movable root in the static
@@ -218,7 +221,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | z3 | `~/.local/bin/z3` (4.14.1) |
 | concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-w4e/j2sdk-image`** (f14 + R3 + r3-fix + WIRE-CODEC W1/W4 natives + the containers' iteration order). Others still kept: `vm-r3b` (before W4: main refuses it since W4's natives), `vm-r3c` (vm-r3b + the iteration order), `vm-w4d` (W4 without the iteration order). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME`, never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
 | HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) and the ad-hoc sweep -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
-| Solr trees | One Solr 8.11 tree, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches; solr-18406, solr-18413 and solr-adhoc all name it (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
+| Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406, solr-18413 and solr-adhoc name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
 
 ### 3.2 Helper commands (outside the repo)

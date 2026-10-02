@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """triage.py <round> [gc-out] : one row per case of a sweep (sweep.sh), from
 its summary and its final result: the case, the class of its outcome, the
-finding and moved roots, the confirmation, the elapsed seconds, and where a
-campaign failed, the stage and reason.  A batch case (one recording for
+finding and moved roots, the confirmation, how many claims CONFIRM refuted on
+the way (result.json refutedClaims), the elapsed seconds, and where a campaign
+failed, the stage and reason.  A batch case (one recording for
 several checks, run_engine.sh causynth_static_root) is one row per check,
 "<case>/<check>", from that check's own campaign (out/<case>/targets/<check>/)
 or, for a check the recording did not activate, its record-summary state.
@@ -10,9 +11,11 @@ or, for a check the recording did not activate, its record-summary state.
 Classes:
   CONFIRMED     a SAT witness the program agreed with (confirmation true): a
                 candidate bug, to read by hand
-  REFUTED       a SAT witness CONFIRM could not realize (EMIT publishes it
-                SAT_UNCONFIRMED): a false positive the engine filtered, the
-                confirmation's reason as the reason
+  REFUTED       no confirmed witness, and CONFIRM refuted a claim on the way
+                (a refuted model, which the campaign excludes and follows
+                with the next claim or more exploration), or published one
+                SAT_UNCONFIRMED: a false positive the engine filtered, the
+                last refutation's reason as the reason
   NO_ROOT       no witness, and EXPLORE ended on an anchor every admitted
                 path decided on no symbol (NO_ROOT_REACHES_ANCHOR, BLOCKING
                 at its fixed point): no root reaches the predicate; the
@@ -115,11 +118,15 @@ def classify(row, result_path, lines, root, text):
         confirmation = result.get("confirmation") or {}
         row["confirmed"] = confirmation.get("confirmed", "")
         claim = result.get("claim", "")
+        refuted = result.get("refutedClaims") or []
+        row["refuted"] = len(refuted)
         if claim == "SAT_CANDIDATE" and confirmation.get("confirmed") is True:
             row["class"] = "CONFIRMED"
-        elif claim == "SAT_UNCONFIRMED":
+        elif claim == "SAT_UNCONFIRMED" or refuted:
             row["class"] = "REFUTED"
-            row["reason"] = confirmation.get("reason", "")[:200]
+            row["reason"] = (confirmation.get("reason", "")
+                             if claim == "SAT_UNCONFIRMED"
+                             else refuted[-1].get("reason", ""))[:200]
         elif NO_ROOT in (result.get("blockingGapCodes") or {}):
             row["class"] = "NO_ROOT"
             row["reason"] = no_root(result_path)
@@ -148,8 +155,8 @@ for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
     summary = os.path.join(root, "summary.tsv")
     base = {"n": n, "case": case,
             "class": "RUNNING" if os.path.isdir(root) else "PENDING",
-            "elapsed": "", "finding": "", "confirmed": "", "stage": "",
-            "reason": ""}
+            "elapsed": "", "finding": "", "confirmed": "", "refuted": "",
+            "stage": "", "reason": ""}
     lines = (list(csv.DictReader(open(summary), delimiter="\t"))
              if os.path.exists(summary) else [])
     if lines:

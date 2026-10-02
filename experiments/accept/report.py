@@ -251,6 +251,9 @@ if withheld:
 if not confirmed:
     reasons.append("unconfirmed: %s" % (
         confirmation.get("reason") or "no confirmation published"))
+# The claims CONFIRM refuted before this one: filtered false positives,
+# reported whatever the case concluded (## Refuted claims).
+refuted = result.get("refutedClaims") or []
 if final_status != "FINAL_READY":
     reasons.append("finalStatus=%s" % final_status)
 if finding_kind == "NO_SUPPORTED_WITNESS":
@@ -518,6 +521,19 @@ if cone:
                                  len(cone.get("unbound") or [])))
     out.append("")
 
+
+if refuted:
+    out += ["## Refuted claims", "",
+            "Models CONFIRM ran and disagreed with, each excluded from every"
+            " composition after it (result.json refutedClaims).", ""]
+    for row in refuted:
+        model = row.get("model") or {}
+        out.append("* **%s** on path `%s`, moving %s -- %s"
+                   % (model.get("findingKind", "?"), model.get("pathId", "?"),
+                      ", ".join("`%s` = `%s`" % (r, v) for r, v
+                                in sorted((model.get("moved") or {}).items()))
+                      or "nothing", row.get("reason", "")))
+    out.append("")
 
 # The valuations the composer enumerated and what z3 answered for each.
 # Read off result.json, which EMIT copies from the composition manifest.

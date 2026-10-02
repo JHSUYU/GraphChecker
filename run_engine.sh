@@ -217,12 +217,15 @@ workflow_config_keys=(
   # wait this exists to end.
   "replay_timeout_s CAUSYNTH_REPLAY_TIMEOUT_S krp 2400"
   # The wall clock the whole campaign may take from its start, in seconds:
-  # the case's budget (experiments/accept/accept.sh CASE_TIMEOUT_SECONDS).
-  # Each claim CONFIRM refutes is followed by another -- more exploration, or
-  # the next composition -- only while two replay_timeout_s remain
-  # (campaign_claim_room); past that the exploration ends and the claim it
-  # has is published.
+  # the case's budget (experiments/accept/accept.sh passes what is left of
+  # CASE_TIMEOUT_SECONDS).  The exploration, and each claim CONFIRM refutes,
+  # are followed by more only while the reserve remains (campaign_reserve);
+  # past that the exploration ends and the claim it has is published.
   "campaign_budget_s CAUSYNTH_CAMPAIGN_BUDGET_S krp 21600"
+  # The least the stages after the exploration are kept of that budget, in
+  # seconds: one COMPOSE and one CONFIRM, before the campaign has measured
+  # either (campaign_reserve).
+  "campaign_reserve_s CAUSYNTH_CAMPAIGN_RESERVE_S krp 600"
   # The wall clock the SEED replay may take, as a multiple of how long the
   # recording's workload ran (SEED times it), and never less than one
   # focused replay's replay_timeout_s.  Unbounded, a seed replay that
@@ -674,9 +677,14 @@ validate_config() {
       schedule_max_jobs region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound \
       obligation_memory_mb record_timeout_s reproduce_runs \
-      reproduce_time_factor campaign_budget_s; do
+      reproduce_time_factor campaign_budget_s campaign_reserve_s; do
     require_positive_integer "${key}"
   done
+  # A budget its reserve takes whole ends the exploration before it begins.
+  (( campaign_budget_s > campaign_reserve_s )) \
+    || die "campaign_budget_s (${campaign_budget_s}) must exceed its reserve \
+campaign_reserve_s (${campaign_reserve_s}): the exploration would end before \
+it began"
   # The one stage a campaign may be asked to stop after.  Refused here rather
   # than in do_campaign so that `validate` and PREFLIGHT both name it before
   # any work starts: a value this table does not carry would otherwise match
@@ -4147,8 +4155,8 @@ campaign_explore() {
       stream_stop=CAMPAIGN_BUDGET_REACHED
       stream_stop_detail="$(( SECONDS - campaign_started_s ))s of the \
 campaign's ${campaign_budget_s}s budget (campaign_budget_s) are spent, and \
-the stages after the exploration are owed two replay_timeout_s \
-(${replay_timeout_s}s) of it"
+the stages after the exploration are owed $(campaign_reserve)s of it \
+(campaign_reserve)"
     fi
     if [[ "${stream_stop}" == WITNESSED \
         || "${stream_stop}" == CAMPAIGN_BUDGET_REACHED ]]; then
@@ -4467,15 +4475,18 @@ truncated at its task bound: ${truncated} occurrence(s) were not planned \
 # the claim is accepted as it stands and the final CONFIRM decides.
 campaign_stream_attempt() {
   local step=$1 dir status=0 claim="" kind="" polarity=false
-  local accepted=false confirmed=null reason=""
+  local accepted=false confirmed=null reason="" started compose_ms=0
+  local confirm_ms=0
   shift
   dir=$(printf '%s/witness-attempts/%04d' "${iteration_dir}" \
     "$(grep -c '' "${attempts}" || true)")
   mkdir -p "${dir}"
+  started=$(date +%s%N)
   ( compose_sessions_dir="${sessions}"
     composed_smt="${dir}/candidate.smt2"
     composition_manifest="${dir}/candidate_composition_manifest.json"
     do_compose ) >"${dir}/compose.log" 2>&1 || status=$?
+  compose_ms=$(( ($(date +%s%N) - started) / 1000000 ))
   if [[ "${status}" -eq 0 ]]; then
     claim=$(jq -r '.solver.campaignClaim.claim // ""' \
       "${dir}/candidate_composition_manifest.json" 2>/dev/null) || claim=""
@@ -4488,9 +4499,11 @@ campaign_stream_attempt() {
   [[ "${claim}" == SAT_CANDIDATE && "${polarity}" == true ]] \
     && accepted=true
   if [[ "${accepted}" == true ]] && campaign_claim_room; then
+    started=$(date +%s%N)
     campaign_confirm_claim "${iteration_dir}" "${dir}" \
       "${campaign_root}/witness-confirm/$(basename "${dir}")" \
       >>"${dir}/compose.log" 2>&1
+    confirm_ms=$(( ($(date +%s%N) - started) / 1000000 ))
     confirmed=$(jq -r '.confirmed' "${dir}/confirm.json")
     reason=$(jq -r '.reason' "${dir}/confirm.json")
     [[ "${confirmed}" == true ]] || accepted=false
@@ -4500,10 +4513,12 @@ campaign_stream_attempt() {
     --arg claim "${claim}" --arg kind "${kind}" \
     --argjson polarity "${polarity}" --argjson accepted "${accepted}" \
     --argjson exit "${status}" --argjson confirmed "${confirmed}" \
-    --arg reason "${reason}" \
+    --arg reason "${reason}" --argjson composeMillis "${compose_ms}" \
+    --argjson confirmMillis "${confirm_ms}" \
     '{step: $step, witnesses: $witnesses, dir: $dir, composeExit: $exit,
       claim: $claim, findingKind: $kind, polarityDecides: $polarity,
       confirmed: $confirmed, confirmReason: $reason,
+      composeMillis: $composeMillis, confirmMillis: $confirmMillis,
       accepted: $accepted}' >>"${attempts}"
   campaign_log "witness $*: COMPOSE over the corpus as it stands \
 (exit ${status}) claims ${claim:-nothing} ${kind} polarityDecides=${polarity} \
@@ -5328,7 +5343,10 @@ ${campaign_witness_attempt}"
 # One claim confirmed (campaign_confirm): the one <claims>/claim.json states,
 # beside its candidate_composition_manifest.json; ConfirmMain's worker, the
 # replay's sessions and the log in <dir>, the verdict <claims>/confirm.json.
-# One the program does not agree with is refuted (campaign_refute).
+# It is refuted (campaign_refute) only when the verdict refutes it: the
+# replay ran the model and disagreed, or ConfirmMain refused it by name.  A
+# replay that timed out or published no verdict, or a decision that failed,
+# leaves the model unconfirmed and open: a later attempt may claim it again.
 campaign_confirm_claim() {
   local iteration_dir=$1 claims=$2 dir=$3
   local worker sessions status=0 reason need
@@ -5347,8 +5365,12 @@ campaign_confirm_claim() {
     reason=$(grep -m 1 'CONFIRM refused:' "${dir}/confirm.log" \
       || grep -v -E '^[[:space:]]+at ' "${dir}/confirm.log" \
         | tail -n 1)
+    # A refusal ConfirmMain names is the claim's own: no run can realize
+    # it.  Any other exit says nothing about the model.
     campaign_confirm_verdict false \
-      "${reason:-ConfirmMain exited ${status}}" "" >"${claims}/confirm.json"
+      "${reason:-ConfirmMain exited ${status}}" "" \
+      "$([[ "${reason}" == *'CONFIRM refused:'* ]] && echo true \
+        || echo false)" >"${claims}/confirm.json"
   elif [[ -s "${worker}/realized.json" ]]; then
     # The selected session already took every edge the model chose, with
     # the moved roots at the model's values, and observed the fatal: that
@@ -5369,7 +5391,7 @@ campaign_confirm_claim() {
       >>"${dir}/confirm.log" 2>&1 || status=$?
     if [[ "${status}" -ne 0 ]]; then
       campaign_confirm_verdict false "the confirmation replay published no \
-verdict (exit ${status}); its log is ${dir}/confirm.log" "" \
+verdict (exit ${status}); its log is ${dir}/confirm.log" "" false \
         >"${claims}/confirm.json"
     else
       run_capturing_status run_java_main \
@@ -5379,42 +5401,62 @@ verdict (exit ${status}); its log is ${dir}/confirm.log" "" \
         2>>"${dir}/confirm.log"
       [[ "${status}" -eq 0 ]] || campaign_confirm_verdict false "the \
 confirmation decision exited ${status}; its log is ${dir}/confirm.log" "" \
-        >"${claims}/confirm.json"
+        false >"${claims}/confirm.json"
     fi
   fi
   require_nonempty "confirmation" "${claims}/confirm.json"
-  [[ "$(jq -r '.confirmed' "${claims}/confirm.json")" == true ]] \
+  [[ "$(jq -r '.refutes' "${claims}/confirm.json")" != true ]] \
     || campaign_refute "${iteration_dir}" "${claims}"
 }
 
-# A claim's model, one line: the path it selected, the arms it chose there
-# and its valuation (compose.Refutations reads the same three).
+# A claim's model, one line: its finding kind, the path it selected, the arms
+# it chose there, its valuation and its moved roots, a clock by its cell at
+# the model's instant (compose.Refutations reads the same).
 campaign_claim_model() {
-  jq -c '.claim.valuationOrdinal as $o | (.valuations // [])[]
-    | select(.ordinal == $o) | {pathId: .selectedPathId,
+  jq -c '.claim as $c | $c.valuationOrdinal as $o | (.valuations // [])[]
+    | select(.ordinal == $o) | {findingKind: $c.kind,
+      pathId: .selectedPathId,
       arms: ([(.selectedArms // [])[].selector] | sort),
-      assignment: (.assignment // {})}' "$1"
+      assignment: (.assignment // {}), moved: ($c.movedRoots // {})}' "$1"
 }
 
-# A claim the program did not agree with, refuted: its model and the
-# confirmation's reason, one row of <iteration>/refuted_claims.jsonl, which
-# every later composition of the iteration excludes (compose.Refutations).
+# A claim the program did not agree with, refuted: its model, where it was
+# claimed and the confirmation's reason, one row of
+# <iteration>/refuted_claims.jsonl, which every later composition of the
+# iteration excludes (compose.Refutations) and EMIT publishes.
 campaign_refute() {
   local iteration_dir=$1 claims=$2
   campaign_claim_model "${claims}/claim.json" \
     | jq -c --slurpfile confirmation "${claims}/confirm.json" \
-      '{schemaVersion: 1, kind: "REFUTED_CLAIM"} + .
-       + {reason: $confirmation[0].reason}' \
+      --arg claimed "${claims}" \
+      '{schemaVersion: 1, kind: "REFUTED_CLAIM", model: ., claimed: $claimed,
+        reason: $confirmation[0].reason}' \
     >>"${iteration_dir}/refuted_claims.jsonl"
   campaign_log "refuted: $(jq -r '.reason' "${claims}/confirm.json")"
 }
 
 # Whether the campaign's budget (campaign_budget_s from its start) has room
-# for one more claim: a composition and its confirmation, each held to one
-# replay_timeout_s.
+# for one more claim past the exploration: its reserve (campaign_reserve).
 campaign_claim_room() {
   (( campaign_budget_s - (SECONDS - campaign_started_s) \
-    >= 2 * replay_timeout_s ))
+    >= $(campaign_reserve) ))
+}
+
+# What the stages after the exploration are owed, in seconds: one COMPOSE and
+# one CONFIRM, each as long as the longest this campaign measured -- its
+# stage metrics and its witness attempts; the seed's REPLAY stands for a
+# CONFIRM replay none has run yet -- and never less than campaign_reserve_s.
+campaign_reserve() {
+  local measured
+  measured=$( {
+      awk -F '\t' '$1 == "COMPOSE" || $1 == "CONFIRM" || $1 == "REPLAY" {
+        print $1, $2 }' "${campaign_stage_metrics}" 2>/dev/null
+      jq -r '"COMPOSE \(.composeMillis // 0)", "CONFIRM \(.confirmMillis // 0)"' \
+        "${campaign_root}/iteration-0000/witness_attempts.jsonl" 2>/dev/null
+    } | awk '$1 == "COMPOSE" { if ($2 > c) c = $2; next }
+        { if ($2 > r) r = $2 }
+        END { printf "%d\n", (c + r) / 1000 }')
+  echo $(( measured > campaign_reserve_s ? measured : campaign_reserve_s ))
 }
 
 # Whether the final stages owe the next claim: the last was a SAT_CANDIDATE
@@ -5426,12 +5468,11 @@ campaign_next_claim() {
   local iteration_dir=$1 dir name model seen=0
   [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       == SAT_CANDIDATE && -s "${campaign_final}/confirm.json" \
-    && "$(jq -r '.confirmed' "${campaign_final}/confirm.json")" == false ]] \
+    && "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == true ]] \
     || return 1
   model=$(campaign_claim_model "${campaign_final}/claim.json")
   [[ -z "${model}" || ! -s "${iteration_dir}/refuted_claims.jsonl" ]] \
-    || seen=$(jq -c '{pathId, arms, assignment}' \
-      "${iteration_dir}/refuted_claims.jsonl" \
+    || seen=$(jq -c '.model' "${iteration_dir}/refuted_claims.jsonl" \
       | grep -c -x -F -- "${model}" || true)
   if (( seen != 1 )); then
     campaign_log "the refuted claim's model is refuted ${seen} time(s), \
@@ -5583,11 +5624,11 @@ campaign_reproduce_run() {
 
 # The one shape of final/confirm.json.
 campaign_confirm_verdict() {
-  local confirmed=$1 reason=$2 session_id=$3
+  local confirmed=$1 reason=$2 session_id=$3 refutes=$4
   jq -n --argjson confirmed "${confirmed}" --arg reason "${reason}" \
-    --arg sessionId "${session_id}" \
+    --arg sessionId "${session_id}" --argjson refutes "${refutes}" \
     '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: $confirmed,
-      reason: $reason, sessionId: $sessionId}'
+      refutes: $refutes, reason: $reason, sessionId: $sessionId}'
 }
 
 campaign_artifact_digests() {
@@ -5819,9 +5860,14 @@ campaign_emit() {
         "the confirmation states no boolean confirmed and string reason"
     confirmation=$(cat "${campaign_final}/confirm.json")
   fi
+  # Every claim CONFIRM refuted on the way, in order: the filtered false
+  # positives (tools/adhoc/triage.py), whatever the claim published.
+  local refuted="${iteration_dir}/refuted_claims.jsonl"
+  [[ -s "${refuted}" ]] || refuted=/dev/null
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --argjson confirmation "${confirmation}" \
+    --slurpfile refutedClaims "${refuted}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
     $composedDocuments[0] as $c | ($c.solver // {}) as $r |
@@ -5853,6 +5899,7 @@ campaign_emit() {
      # The confirmation itself, so a reader of result.json sees which
      # session answered and why, not only that the claim was downgraded.
      confirmation: $confirmation,
+     refutedClaims: $refutedClaims,
      # WHICH mechanism the formula supports, beside WHETHER the run is
      # accepted.  Two questions, and a reader of result.json alone could
      # answer only the second: the ClaimKind, the valuation that carried it

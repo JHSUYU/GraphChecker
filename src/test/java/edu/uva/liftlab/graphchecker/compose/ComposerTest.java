@@ -759,17 +759,19 @@ public class ComposerTest {
                 first.claim().valuationOrdinal());
         for (String path : new String[]{"elsewhere",
                 claimed.selected().path().pathId}) {
-            JsonObject row = new JsonObject();
-            row.addProperty("pathId", path);
+            JsonObject model = new JsonObject();
+            model.addProperty("pathId", path);
             JsonArray arms = new JsonArray();
             for (String arm : claimed.selectedArms().keySet()) arms.add(arm);
-            row.add("arms", arms);
+            model.add("arms", arms);
             JsonObject assignment = new JsonObject();
             for (Map.Entry<String, String> root
                     : claimed.valuation().assignment().entrySet()) {
                 assignment.addProperty(root.getKey(), root.getValue());
             }
-            row.add("assignment", assignment);
+            model.add("assignment", assignment);
+            JsonObject row = new JsonObject();
+            row.add("model", model);
             row.addProperty("reason", "the run published no target row");
             RowCodec.writeJsonl(iteration.resolve("refuted_claims.jsonl"),
                     Collections.singletonList(row));
@@ -1620,21 +1622,28 @@ public class ComposerTest {
     }
 
     /**
-     * A replay that ran the counter's occurrence concretely minted no root,
-     * and its rows there are literals computed from what it read: its path
-     * and its arms hold at that reading and at no other, whether or not the
-     * corpus varies the counter.  Unguarded, an arm of such a replay was
-     * admitted under a moved counter, and COMPOSE claimed a fatal no run
-     * reproduces (hdfs-17967-pathA F2b: the seed's path took 185a3b77's
-     * key-id arm, 119528 as a literal, with the serial moved to 119529;
-     * CONFIRM refuted it under every jar).  A replay that never read the
-     * counter stays free of it.
+     * A replay that read the counter and minted no root holds literals that
+     * may be computed from its reading, through state no row tracks: its
+     * arms and its path hold at the reading alone, varied or not.
+     * Unguarded, such an arm was admitted under a moved counter, and COMPOSE
+     * claimed a fatal no run reproduces (hdfs-17967-pathA F2b: the seed's
+     * path took 185a3b77's key-id arm, 119528 as a literal, with the serial
+     * moved to 119529; CONFIRM refuted it under every jar).  A replay that
+     * never read the counter, or a counter some replay found DERIVED (its
+     * source carried another input's expression, a clock's say), stays
+     * free.  {variant, arms, guarded, the reading replay's path pinned}
      */
     @Test
     public void aRootReadConcretelyHoldsItsReplaysPathAndArmsAtTheReading()
             throws Exception {
-        for (boolean read : new boolean[]{true, false}) {
-            Path iteration = folder.newFolder("read-" + read).toPath();
+        Object[][] table = {
+                {"read", 2, 1, true},
+                {"never read", 1, 0, false},
+                {"read, derived", 1, 0, false}};
+        for (Object[] row : table) {
+            String variant = (String) row[0];
+            Path iteration = folder.newFolder(variant.replaceAll("\\W+", "-"))
+                    .toPath();
             for (String id : new String[]{"s0", "s1", "s2"}) {
                 Session session = new Session(iteration, id,
                         !"s0".equals(id));
@@ -1642,8 +1651,11 @@ public class ComposerTest {
                         !"s0".equals(id), true);
                 if (!"s2".equals(id)) {
                     session.serial("119994", "+0", "+3");
-                } else if (read) {
+                } else if (!variant.equals("never read")) {
                     session.serialReadConcretely("119994");
+                }
+                if (variant.equals("read, derived") && "s1".equals(id)) {
+                    session.derived.add(SERIAL_ROOT);
                 }
                 session.expression("EXPR.key", integer("I", 7L));
                 session.export(Endpoint.of(PRODUCER, "PORT.key",
@@ -1656,33 +1668,28 @@ public class ComposerTest {
                 session.write();
             }
             Composer.Composition composition = compose(iteration, 8);
-            assertEquals(3, composition.disjuncts().size());
+            assertEquals(variant, 3, composition.disjuncts().size());
             // Unguarded, the three deliveries are one arm (one body); the
-            // read replay's is its own, guarded by the counter.
-            int guarded = 0;
+            // reading replay's is its own, guarded by the counter.
             List<Arm> arms = composition.families().get(0).arms();
+            int guarded = 0;
             for (Arm arm : arms) {
                 if (arm.guardRoots().contains(SERIAL_ROOT)) guarded++;
             }
-            assertEquals("read=" + read + ": " + arms, read ? 2 : 1,
-                    arms.size());
-            assertEquals("read=" + read, read ? 1 : 0, guarded);
-            // Never read, no term of the corpus names the counter at all.
-            if (!read) continue;
+            assertEquals(variant + ": " + arms, row[1], arms.size());
+            assertEquals(variant, row[2], guarded);
+            if (!composition.body().contains(SERIAL)) continue;
             Z3 solver = solver();
             for (Composer.Disjunct disjunct : composition.disjuncts()) {
                 if (!disjunct.path().sessionId.equals("s2")) continue;
-                for (String serial : new String[]{"119994", "119995"}) {
-                    List<String> pinned = new ArrayList<String>();
-                    pinned.add("(assert " + disjunct.selector() + ")");
-                    pinned.add("(assert (= " + SERIAL + " " + serial
-                            + "))");
-                    assertEquals("its path at " + serial,
-                            "119994".equals(serial) ? "sat" : "unsat",
-                            solver.ask(composition.query(pinned),
-                                    Collections.<String>emptyList(), false)
-                                    .status());
-                }
+                List<String> pinned = new ArrayList<String>();
+                pinned.add("(assert " + disjunct.selector() + ")");
+                pinned.add("(assert (= " + SERIAL + " 119995))");
+                assertEquals(variant + ": its path off the reading",
+                        (Boolean) row[3] ? "unsat" : "sat",
+                        solver.ask(composition.query(pinned),
+                                Collections.<String>emptyList(), false)
+                                .status());
             }
         }
     }
@@ -6366,7 +6373,10 @@ public class ComposerTest {
         private final Map<String, Map<String, String>> readings =
                 new LinkedHashMap<String, Map<String, String>>();
 
-        /** The counter, read at PRODUCER, which this replay ran concretely. */
+        /** The roots this replay found derived (its manifest's). */
+        private final Set<String> derived = new LinkedHashSet<String>();
+
+        /** The counter, read at PRODUCER, where this replay minted none. */
         void serialReadConcretely(String value) {
             readings.computeIfAbsent(SERIAL_ROOT,
                     root -> new LinkedHashMap<String, String>())
@@ -6528,7 +6538,7 @@ public class ComposerTest {
                     explored ? Collections.singletonList("OBL." + id)
                             : Collections.<String>emptyList())
                     .atClose(Collections.<String, Integer>emptyMap(),
-                            readings));
+                            readings, derived));
             // And the VERDICT, which the replay owns: a focused session
             // that states none settled nothing, and the composition asks
             // the session's own row rather than the wave's copy of it.

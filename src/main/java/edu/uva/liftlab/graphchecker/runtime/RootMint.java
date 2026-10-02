@@ -263,6 +263,7 @@ final class RootMint {
                 continue;
             }
             if (!active.materialized.add(action.symbol)) continue;
+            Object value = MissingValue.INSTANCE;
             try {
                 ConcolicVmBroker api = engine();
                 Field exactField = declaredInstanceField(leafOwner,
@@ -271,7 +272,7 @@ final class RootMint {
                     continue;
                 }
                 String leafFieldSignature = exactFieldSignature(exactField);
-                Object value = exactField.get(leafOwner);
+                value = exactField.get(leafOwner);
                 JsonElement carried;
                 try {
                     carried = cellExpression(api, leafOwner,
@@ -296,12 +297,16 @@ final class RootMint {
                 MintedLeaf minted = mintExactFieldLeaf(active, action,
                         api, leafOwner, leafFieldSignature, action.symbol,
                         value);
-                if (minted == null) continue;
+                if (minted == null) {
+                    readConcretely(active, action.symbol, value);
+                    continue;
+                }
                 active.recordManualSymbolization(action, action.symbol,
                         action.fieldPath, leafFieldSignature,
                         minted.expression, true, false,
                         minted.recordedValue, 0L);
             } catch (Throwable throwable) {
+                readConcretely(active, action.symbol, value);
                 // Stated, never swallowed: a failed mint and an undeclared
                 // cell otherwise read identically from the corpus.
                 RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -372,7 +377,9 @@ final class RootMint {
                 firstNonBlank(safe(rootId), safe(context)),
                 "no admitted activation of this session owns this mint ("
                         + safe(context) + "), so the declared root is read"
-                        + " concretely and no symbol is minted for it");
+                        + " concretely and no symbol is minted for it; the"
+                        + " read stands at no occurrence, so no reading of"
+                        + " it guards the arms that rest on it");
         return true;
     }
 
@@ -383,25 +390,45 @@ final class RootMint {
     }
 
     /**
-     * Mints one symbol for one entry of a declared mint site.  A field that
-     * already carries a propagated expression keeps it and the row says
-     * {@code reused}.
+     * Mints one symbol for one entry of a declared mint site, or states what
+     * the read held where none was minted ({@link #readConcretely}): an
+     * occurrence run concretely, a mint refused, unattributed or failed.  A
+     * field that already carries a propagated expression keeps it, the row
+     * says {@code reused}, and the root is derived here.
      *
      * <p>Called from outside this repository, by the workload's
      * {@code org.apache.hadoop.ipc.CausynthSymbolicSource}.</p>
      */
     static boolean configuredSource(
             String sourceId, Object owner, String fieldSignature) {
-        ActiveRegion active = ConcolicRegionRuntime.activeRegion();
         // No owner on this entry is not a gap.
         if (owner == null) return false;
-        // A region running concretely contributes literals, never a free
-        // root; asked first, as it owns no mint to refuse.  What the literals
-        // were computed from is still stated.
-        if (!ActiveRegion.mintsUnderSymbolicOccurrence(active, safe(sourceId),
+        ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+        if (mintConfiguredSource(active, safe(sourceId), owner,
                 safe(fieldSignature))) {
-            concreteReading(active, safe(sourceId), owner,
-                    safe(fieldSignature));
+            return true;
+        }
+        ConcolicRegionRuntime.pauseObservation();
+        try {
+            readConcretely(active, safe(sourceId),
+                    readExactField(owner, safe(fieldSignature)));
+        } catch (Throwable ignored) {
+            // Observation must never alter the workload's own outcome.
+        } finally {
+            ConcolicRegionRuntime.resumeObservation();
+        }
+        return false;
+    }
+
+    /** {@link #configuredSource}'s mint: whether a symbol was minted or
+     *  reused. */
+    private static boolean mintConfiguredSource(ActiveRegion active,
+                                                String sourceId, Object owner,
+                                                String fieldSignature) {
+        // A region running concretely contributes literals, never a free
+        // root; asked first, as it owns no mint to refuse.
+        if (!ActiveRegion.mintsUnderSymbolicOccurrence(active, sourceId,
+                fieldSignature)) {
             return false;
         }
         SourceSiteEntry entry = active.observeConfiguredSourceEntry(
@@ -438,6 +465,7 @@ final class RootMint {
             // is a declared primitive): a ReadFrom wrapper of constants is
             // not an expression of its own.
             boolean reused = VmExpressionIr.carriesSymbolicValue(carried);
+            if (reused) RowRuntime.derivedRoot(sourceId);
             // What the region observed, read before the plant overwrites it.
             String observed = ConcolicRegionRuntime.recordedScalar(
                     field.get(owner));
@@ -484,27 +512,20 @@ final class RootMint {
     }
 
     /**
-     * States what a declared source held where its occurrence runs
-     * concretely ({@link RowRuntime#concreteReading}), at the occurrence a
-     * mint there is addressed at ({@code ActiveRegion#mintOccurrence}), so a
+     * States what a declared root held where this replay read it and minted
+     * none ({@link RowRuntime#concreteReading}), at the occurrence a mint
+     * there is addressed at ({@code ActiveRegion#mintOccurrence}), so a
      * reading and another session's mint of one occurrence compare.  A read
-     * under no addressed activation is at no occurrence and states nothing.
+     * no addressed activation owns stands at no occurrence and states
+     * nothing: its MINT_UNATTRIBUTED gap names it ({@link #mintUnattributed}).
      */
-    private static void concreteReading(ActiveRegion active, String sourceId,
-                                        Object owner, String fieldSignature) {
+    private static void readConcretely(ActiveRegion active, String rootId,
+                                       Object value) {
         if (active == null) return;
-        String occurrence = active.rootOwner(sourceId).address();
+        String occurrence = active.rootOwner(rootId).address();
         if (occurrence.isEmpty()) return;
-        ConcolicRegionRuntime.pauseObservation();
-        try {
-            RowRuntime.concreteReading(sourceId, occurrence,
-                    ConcolicRegionRuntime.recordedScalar(
-                            readExactField(owner, fieldSignature)));
-        } catch (Throwable ignored) {
-            // Observation must never alter the workload's own outcome.
-        } finally {
-            ConcolicRegionRuntime.resumeObservation();
-        }
+        RowRuntime.concreteReading(rootId, occurrence,
+                ConcolicRegionRuntime.recordedScalar(value));
     }
 
     /**
@@ -602,10 +623,11 @@ final class RootMint {
                                        List<String> exactFieldPath,
                                        ConcolicVmBroker api) {
         String symbol = action.symbol + "." + safe(symbolicPath);
+        Object value = MissingValue.INSTANCE;
         try {
             String leafFieldSignature = action.exactLeafFieldSignature(
                     exactFieldPath);
-            Object value = readExactField(owner, leafFieldSignature);
+            value = readExactField(owner, leafFieldSignature);
             DeclaredField field = FieldPathSpec.declaredField(
                     leafFieldSignature);
             if (field == null) {
@@ -622,11 +644,15 @@ final class RootMint {
             }
             MintedLeaf minted = mintExactFieldLeaf(active, action, api,
                     owner, leafFieldSignature, symbol, value);
-            if (minted == null) return;
+            if (minted == null) {
+                readConcretely(active, action.symbol, value);
+                return;
+            }
             active.recordManualSymbolization(action, symbol, exactFieldPath,
                     leafFieldSignature, minted.expression, true, false,
                     minted.recordedValue, 0L);
         } catch (Throwable throwable) {
+            readConcretely(active, action.symbol, value);
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, symbol,
                     "this declared field input was not minted, so the region"
                             + " reads it concretely and no row states a"
@@ -912,6 +938,7 @@ final class RootMint {
                     jvmShared(api, value), "this declared input (a "
                             + value.getClass().getName() + ")",
                     firstNonBlank(action.symbol, action.actionDigest))) {
+                readConcretely(active, action.symbol, value);
                 return;
             }
             active.pathRecordingStarted = true;
@@ -919,6 +946,7 @@ final class RootMint {
                     Collections.<String>emptyList(), "", expression,
                     true, false, "", 0L);
         } catch (Throwable throwable) {
+            readConcretely(active, action.symbol, value);
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     firstNonBlank(action.symbol, action.actionDigest),
                     "this declared input was not minted, so the region reads"
@@ -975,6 +1003,7 @@ final class RootMint {
         if (!carriesInputAuthority(action, expression)) {
             return observeCutPortWithoutMinting(active, action);
         }
+        RowRuntime.derivedRoot(action.symbol);
         active.pathRecordingStarted = true;
         active.recordManualSymbolization(action, requestedSymbol, fieldPath,
                 fieldSignature, expression, false, true,

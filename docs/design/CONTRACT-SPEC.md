@@ -51,7 +51,7 @@ and `manifest.json` when the session opens, and appends and flushes each row as 
 | `obligations.jsonl` | the replay's `ObligationResult` per obligation it ran, written at close (`RowRuntime.closeSession`); the authority on its verdict; a SEED has none |
 | `schedule.jsonl` | the run's `ScheduleEvent`s in order, with `{mark, at}` rows; not a row kind, no invariant is stated over it |
 | `expressions.jsonl` | the session's expression log (§2.3) |
-| `manifest.json` | `SessionManifest`: `{schemaVersion 1, kind SESSION_MANIFEST, sessionId, role SEED\|FOCUSED, obligationIds, unnamedEntries}` — FOCUSED when the replay was handed a focus row, its obligation ids from it. The only answer to "which session is the recording"; an absent or unknown role is refused. `unnamedEntries` (`{"<node>/region/<regionId>": n}`, restated at the run's end) counts the region entries unnamed work made, which opened no occurrence (IDENTITY §1); `concreteReadings` (`{"<rootId>": {"<occurrence>": value}}`, restated at the run's end) states, per declared source, the value it held when an occurrence this replay ran concretely first read it (`RootMint#configuredSource`): no root is minted there, the occurrence's rows hold literals computed from it, and `Corpus#rootValue` answers a session that minted none with its reading at the occurrence of the corpus's mint (`Corpus#ranRoot`) |
+| `manifest.json` | `SessionManifest`: `{schemaVersion 1, kind SESSION_MANIFEST, sessionId, role SEED\|FOCUSED, obligationIds, unnamedEntries}` — FOCUSED when the replay was handed a focus row, its obligation ids from it. The only answer to "which session is the recording"; an absent or unknown role is refused. `unnamedEntries` (`{"<node>/region/<regionId>": n}`, restated at the run's end) counts the region entries unnamed work made, which opened no occurrence (IDENTITY §1). Schema 2 adds, restated at the run's end: `concreteReadings` (`{"<rootId>": {"<occurrence>": value}}`), per declared root, the value it held when this replay first read it at an occurrence and minted none -- an occurrence run concretely, a mint refused or failed (`RootMint#readConcretely`; a read no admitted activation owns stands at no occurrence and is named by its `MINT_UNATTRIBUTED` gap) -- so `Corpus#rootValue` answers a session that minted none with its reading at the occurrence of the corpus's mint (`Corpus#ranRoot`); and `derivedRoots`, the declared roots whose source already carried another input's expression where it read them (a reused mint), whose readings no session's arm or path is held to (`Corpus#derived`). A schema-1 manifest states neither; COMPOSE names such a session (DIAGNOSTIC) |
 
 IMPORT requires the ten files `activations` … `gaps` and `schedule` to exist and `expressions.jsonl`
 to be non-empty (`campaign_import_session`). The publisher writes a root once per (occurrence, root
@@ -236,14 +236,17 @@ field=<f> <subject>`.
   id and activation key as every delivery of its stored message names it (`Confirmation#id`), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation
   flips nothing (`Obligation.confirming`) owes these rows: missing or unreadable, it files a
   `CONFIRM_MISMATCH`. `final/confirm.json` is `{schemaVersion 1, kind CONFIRMATION, confirmed,
-  reason, sessionId}` ([PIPELINE.md §10](PIPELINE.md)).
+  refutes, reason, sessionId}`; a refuted claim is a row `{schemaVersion 1, kind REFUTED_CLAIM,
+  model {findingKind, pathId, arms, assignment, moved}, claimed, reason}` of
+  `<iteration>/refuted_claims.jsonl`, and EMIT copies them into `result.json` `refutedClaims`
+  ([PIPELINE.md §10](PIPELINE.md)).
 
 ## 4. Composition contract
 
 - `Arm(producerPathId, piRef, expressionRef, guardRoots, attested)`: one producer path's delivery
   `pi_q ∧ guard_q ∧ v_H = e_q`; `guardRoots` = the roots the delivery holds under (`smt.Arms`):
   those `e_q` names, every varied root, and every root the producer's replay ran concretely (its
-  manifest's `concreteReadings`), never a clock; `attested` = the
+  manifest's `concreteReadings`), never a clock nor a derived root; `attested` = the
   producer's session has an instrumented activation for it, so it states a path condition.
 - `Family(interactionId, arms)`: the arms one interaction's consumer could have received.
 - `PathEntry(pathId, sessionId, selector, fatalObserved, restsOn)`: one composed path, its selector,

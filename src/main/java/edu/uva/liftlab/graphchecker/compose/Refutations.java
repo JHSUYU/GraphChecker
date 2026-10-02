@@ -20,11 +20,13 @@ import java.util.regex.Pattern;
 /**
  * The models CONFIRM refuted in this iteration, {@code
  * <iteration>/refuted_claims.jsonl} (PIPELINE §10): one row per claim the
- * program did not agree with, appended by the campaign
- * ({@code run_engine.sh campaign_refute}) off the claim's {@code claim.json}
- * -- {@code pathId} (the selected path), {@code arms} (the arm selectors the
- * model chose on it), {@code assignment} (its valuation, root id to value)
- * and {@code reason} (the confirmation's).  The composition excludes each
+ * program ran and disagreed with, appended by the campaign
+ * ({@code run_engine.sh campaign_refute}) off the claim's {@code claim.json}:
+ * its {@code model} -- {@code findingKind}, {@code pathId} (the selected
+ * path), {@code arms} (the arm selectors the model chose on it), {@code
+ * assignment} (its valuation, root id to value) and {@code moved} (the
+ * claim's moved roots, a clock by its cell's symbol at the model's instant)
+ * -- where it was {@code claimed}, and the confirmation's {@code reason}.  The composition excludes each
  * ({@code Composer#refutations}): that path, those arms and that valuation
  * together are no model of it, so the next claim is another model, or none.
  */
@@ -37,13 +39,16 @@ final class Refutations {
         final String pathId;
         final List<String> arms;
         final Map<String, String> assignment;
+        final Map<String, String> moved;
         final String reason;
 
         private Refuted(String pathId, List<String> arms,
-                        Map<String, String> assignment, String reason) {
+                        Map<String, String> assignment,
+                        Map<String, String> moved, String reason) {
             this.pathId = pathId;
             this.arms = Collections.unmodifiableList(arms);
             this.assignment = Collections.unmodifiableMap(assignment);
+            this.moved = Collections.unmodifiableMap(moved);
             this.reason = reason;
         }
     }
@@ -61,16 +66,23 @@ final class Refutations {
     }
 
     private static Refuted row(JsonObject row) {
-        Map<String, String> assignment = new LinkedHashMap<String, String>();
-        JsonObject stated = JsonFields.object(row, "assignment");
-        if (stated != null) {
-            for (Map.Entry<String, JsonElement> root : stated.entrySet()) {
-                assignment.put(root.getKey(), root.getValue().getAsString());
-            }
+        JsonObject model = JsonFields.object(row, "model");
+        if (model == null) model = new JsonObject();
+        return new Refuted(JsonFields.optionalString(model, "pathId"),
+                new ArrayList<String>(JsonFields.strings(model, "arms")),
+                values(model, "assignment"), values(model, "moved"),
+                JsonFields.optionalString(row, "reason"));
+    }
+
+    /** One {@code {name: value}} field of a row, in its order. */
+    private static Map<String, String> values(JsonObject row, String field) {
+        Map<String, String> values = new LinkedHashMap<String, String>();
+        JsonObject stated = JsonFields.object(row, field);
+        if (stated == null) return values;
+        for (Map.Entry<String, JsonElement> value : stated.entrySet()) {
+            values.put(value.getKey(), value.getValue().getAsString());
         }
-        return new Refuted(JsonFields.optionalString(row, "pathId"),
-                new ArrayList<String>(JsonFields.strings(row, "arms")),
-                assignment, JsonFields.optionalString(row, "reason"));
+        return values;
     }
 
     /**

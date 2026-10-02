@@ -213,6 +213,8 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, Sort>();
     /** root id -> whether the corpus ran it at more than one value. */
     private final Map<String, Boolean> varied = new HashMap<String, Boolean>();
+    /** {@link #derived}, once per root. */
+    private final Map<String, Boolean> derived = new HashMap<String, Boolean>();
     /** The variables one term or read rests on, per session: a flip's
      *  dependence asks every earlier condition of its path again. */
     private final Map<String, Set<String>> leaves =
@@ -1296,7 +1298,8 @@ public final class Corpus implements Arms.Rows {
     /**
      * {@link Arms.Rows#ranRoot}: the session's own mint, else the mint --
      * the seed's first, as {@code Composer#seedRow} -- whose occurrence this
-     * session ran concretely and states a reading of the root at.
+     * session read the root at and states a reading of, unless the root is
+     * {@link #derived}.
      */
     @Override
     public RootMintRow ranRoot(String rootId, String sessionId) {
@@ -1304,12 +1307,32 @@ public final class Corpus implements Arms.Rows {
         return own != null ? own : readAt(sessionId, rootId);
     }
 
-    /** The mint whose occurrence this session states a concrete reading
-     *  of the root at, or null. */
+    /**
+     * Whether a session found this root's source carrying another input's
+     * expression where it read it ({@code SessionManifest#derivedRoots}): a
+     * value computed from a clock's reading, say, which every run reads
+     * anew, so no session's reading of it is a value its rows hold at.
+     */
+    public boolean derived(String rootId) {
+        return derived.computeIfAbsent(rootId, id -> {
+            for (SessionReader session : sessions) {
+                if (session.manifest() != null
+                        && session.manifest().derivedRoots().contains(id)) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    /** The mint whose occurrence this session states a reading of the root
+     *  at, or null. */
     private RootMintRow readAt(String sessionId, String rootId) {
         Map<String, String> readings = concreteReadings(sessionId, rootId);
         Map<String, RootMintRow> minted = rootsById.get(rootId);
-        if (readings.isEmpty() || minted == null) return null;
+        if (readings.isEmpty() || minted == null || derived(rootId)) {
+            return null;
+        }
         List<RootMintRow> order = new ArrayList<RootMintRow>();
         RootMintRow seed = minted.get(seedSessionId());
         if (seed != null) order.add(seed);

@@ -27,7 +27,10 @@ the sources are the files the campaign wrote:
   a replay's outcome its obligation_result.jsonl: ADMITTED = flipped; NOT_ADMITTED
                      = refused, an error when the replay was killed on its bound
                      (a timed-out-sessions/ directory) or stated no verdict
-  CONFIRM            final/confirm/worker/replay.log
+  CONFIRM            every confirmation replay's worker/replay.log: the final
+                     claim's (final/confirm/), the refuted ones' before it
+                     (final/refuted/NNNN/confirm/) and the witness attempts'
+                     (witness-confirm/NNNN/)
   COMPOSE split      final/compose.log: ComposeMain's composeSeconds= (corpus read and
                      lowering) and solveSeconds= (SOLVE and DECIDE)
 
@@ -408,10 +411,14 @@ def report(root, label):
         if explore is not None:
             head.append(("EXPLORE with no head JVM running", explore - busy))
         sinks += head
-    confirm = os.path.join(root, "final", "confirm", "worker", "replay.log")
-    if os.path.isfile(confirm):
-        started = mtime(os.path.join(root, "final", "confirm", "worker", "focused_task.jsonl"))
-        print("   CONFIRM replay %s" % dur(mtime(confirm) - started if started else None))
+    for confirm in sorted(glob.glob(os.path.join(root, "final", "confirm", "worker", "replay.log"))
+                          + glob.glob(os.path.join(root, "final", "refuted", "*", "confirm", "worker",
+                                                   "replay.log"))
+                          + glob.glob(os.path.join(root, "witness-confirm", "*", "worker", "replay.log"))):
+        worker = os.path.dirname(confirm)
+        started = mtime(os.path.join(worker, "focused_task.jsonl"))
+        print("   CONFIRM replay %s (%s)" % (dur(mtime(confirm) - started if started else None),
+                                         os.path.relpath(worker, root)))
     waits = len(HEAD_WAIT.findall(log_text)) + sum(1 for w in waves if w["wait"] is not None)
     if waits:
         stated = sum(int(s) for s in HEAD_ROOM.findall(log_text)) + sum(max(w["wait"] or 0, 0) for w in waves)

@@ -39,8 +39,9 @@ import java.util.Set;
  *       consumer, never every export at the endpoint.</li>
  *   <li><b>Guard (CONTRACT-SPEC §4)</b> — the delivering replay's values of
  *       the roots the expression names, of every varied root, and of every
- *       root it ran concretely ({@link Rows#ranRoot}); never a clock, never
- *       the prefix's roots (the prefix is already conjoined).</li>
+ *       root it read where it minted none ({@link Rows#ranRoot}); never a
+ *       clock, never a derived root, never the prefix's roots (the prefix
+ *       is already conjoined).</li>
  *   <li><b>Prefix</b> — the producer's decisions with {@code seq} below the
  *       export's.</li>
  *   <li><b>Attestation (IDENTITY §4)</b> — see {@link #attested}; no
@@ -81,9 +82,9 @@ public final class Arms {
 
         /**
          * The mint row naming the root this session RAN: its own, else
-         * another session's at an occurrence this one ran concretely and
-         * states a reading at ({@code SessionManifest#concreteReadings}),
-         * else null.
+         * another session's at an occurrence where this one read the root,
+         * minted none and states a reading ({@code
+         * SessionManifest#concreteReadings}), else null.
          */
         RootMintRow ranRoot(String rootId, String sessionId);
 
@@ -129,7 +130,7 @@ public final class Arms {
         private final String expressionRef;
         private final List<String> pi;
         private final Map<String, String> guard;
-        private final Set<String> guardRoots;
+        private final Map<String, RootMintRow> guardMints;
         private final boolean attested;
         private final Set<String> nested;
         private final WriteRow write;
@@ -139,7 +140,7 @@ public final class Arms {
         Arm(String slotId, String symbol, String sessionId,
             OccurrenceAddress producer, long deliveredAt,
             String producerPathId, String expressionRef, List<String> pi,
-            Map<String, String> guard, Set<String> guardRoots,
+            Map<String, String> guard, Map<String, RootMintRow> guardMints,
             boolean attested, Set<String> nested, WriteRow write,
             ExportRow export, AttachRow attach) {
             this.slotId = slotId;
@@ -151,7 +152,7 @@ public final class Arms {
             this.expressionRef = expressionRef;
             this.pi = Collections.unmodifiableList(pi);
             this.guard = Collections.unmodifiableMap(guard);
-            this.guardRoots = Collections.unmodifiableSet(guardRoots);
+            this.guardMints = Collections.unmodifiableMap(guardMints);
             this.attested = attested;
             this.nested = Collections.unmodifiableSet(nested);
             this.write = write;
@@ -210,10 +211,18 @@ public final class Arms {
             return guard;
         }
 
+        /** Root symbol -> the mint naming it: the delivering replay's own,
+         *  or the one at the occurrence it read the root at. */
+        public Map<String, RootMintRow> guardMints() {
+            return guardMints;
+        }
+
         /** The root IDS behind that guard, for the manifest and the
          *  attestation rule. */
         public Set<String> guardRoots() {
-            return guardRoots;
+            Set<String> ids = new LinkedHashSet<String>();
+            for (RootMintRow mint : guardMints.values()) ids.add(mint.rootId());
+            return ids;
         }
 
         public boolean attested() {
@@ -549,7 +558,8 @@ public final class Arms {
                     return Collections.unmodifiableSet(named);
                 });
         Map<String, String> guard = new LinkedHashMap<String, String>();
-        Set<String> guardRoots = new LinkedHashSet<String>();
+        Map<String, RootMintRow> guardMints =
+                new LinkedHashMap<String, RootMintRow>();
         for (Map.Entry<String, List<RootMintRow>> entry
                 : rows.roots().entrySet()) {
             RootMintRow row = rows.ranRoot(entry.getKey(), session);
@@ -568,17 +578,23 @@ public final class Arms {
             if (row.kind() == RootKind.CLOCK) continue;
             // Varied roots too, not only the expression's: the arm exists
             // only under the valuation its replay ran.  A root the replay
-            // ran concretely, always: its literals were computed from the
-            // reading, and no term says how they move with it.
-            boolean minted = rows.root(entry.getKey(), session) != null;
-            if (minted && !rows.varied(entry.getKey())
+            // read and minted none, varied or not, whatever the delivery's
+            // row-level closure says: the literals it delivers may be
+            // computed from the reading through state no row tracks, and no
+            // term says how they move (hdfs-17967-pathA F2b: DataNodes
+            // exported the data-encryption key's id, the serial their block
+            // keys came with, from instrumented occurrences with no read
+            // row; guarded only where the closure reached the NameNode's
+            // tick, the refuted claim came back).
+            if (rows.root(entry.getKey(), session) != null
+                    && !rows.varied(entry.getKey())
                     && !symbols.contains(row.symbol())) {
                 continue;
             }
             String value = rows.rootValue(session, entry.getKey());
             if (value == null || value.isEmpty()) continue;
             guard.put(row.symbol(), value);
-            guardRoots.add(row.rootId());
+            guardMints.put(row.symbol(), row);
         }
         Set<String> nested = new LinkedHashSet<String>();
         for (String named : symbols) {
@@ -589,7 +605,7 @@ public final class Arms {
         }
         return new Arm(slotId, symbol, session, producer, deliveredAt,
                 attested ? rows.pathIdOf(session, producer) : "",
-                expressionRef, pi, guard, guardRoots, attested, nested,
+                expressionRef, pi, guard, guardMints, attested, nested,
                 write, export, attach);
     }
 
