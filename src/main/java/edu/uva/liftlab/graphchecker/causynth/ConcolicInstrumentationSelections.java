@@ -460,13 +460,15 @@ public final class ConcolicInstrumentationSelections {
                 String cell = optionalString(site, "cell");
                 boolean read = site.has("read")
                         && site.get("read").getAsBoolean();
+                boolean staticField = site.has("static")
+                        && site.get("static").getAsBoolean();
                 if (method.isEmpty() || unitIndex < 0 || siteId.isEmpty()
                         || cell.isEmpty()
                         || !siteId.equals(SiteId.of(method, unitIndex))) {
                     throw unsupported(site);
                 }
                 if (conflicts(new ObservedSite(method, unitIndex,
-                        siteId, callee, cell, read))) {
+                        siteId, callee, cell, read, staticField))) {
                     throw new IOException(
                             "OBSERVED_SITE_CONFLICT: " + siteId);
                 }
@@ -646,23 +648,28 @@ public final class ConcolicInstrumentationSelections {
         final String siteId;
         final String declaredCallee;
         final String cell;
-        /** A read ({@code getfield}) rather than a store. */
+        /** A read ({@code getfield}/{@code getstatic}) rather than a store. */
         final boolean read;
+        /** A static cell: observed on its declaring class's mirror. */
+        final boolean staticField;
 
         ObservedSite(String method, int unitIndex, String siteId,
-                     String declaredCallee, String cell, boolean read) {
+                     String declaredCallee, String cell, boolean read,
+                     boolean staticField) {
             this.method = method;
             this.unitIndex = unitIndex;
             this.siteId = siteId;
             this.declaredCallee = declaredCallee;
             this.cell = cell;
             this.read = read;
+            this.staticField = staticField;
         }
 
         boolean sameObservation(ObservedSite other) {
             return other != null && declaredCallee.equals(
                     other.declaredCallee) && cell.equals(other.cell)
-                    && read == other.read;
+                    && read == other.read
+                    && staticField == other.staticField;
         }
     }
 

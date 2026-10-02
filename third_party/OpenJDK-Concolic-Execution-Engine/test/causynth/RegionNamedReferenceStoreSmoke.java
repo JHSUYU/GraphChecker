@@ -2,17 +2,21 @@
  * Contract smoke: a stored reference is symbolic only by what it carries.
  *
  * <p>An object whose shadow only names it -- here the owner of an observed
- * field -- stored into a field of another object, or into an array, is a
- * concrete store: it starts no log there, and null does not either.  A load
- * of it back out of that array is the plain object, so a field read of it is
- * concrete, not a projection.  Counted symbolic, such a name started a log at
- * every location it reached and made an array load of it demand-symbolic
- * (hdfs-17960: a checkpoint saver's thread, and its context class loader into
- * a whole configuration parse).  A field a log already holds still versions
- * the same store, naming its referent.</p>
+ * field -- stored into a field of another object, into a static field, or
+ * into an array, is a concrete store: it starts no log there, and null does
+ * not either.  A load of it back out of that array is the plain object, so a
+ * field read of it is concrete, not a projection.  Counted symbolic, such a
+ * name started a log at every location it reached and made an array load of
+ * it demand-symbolic (hdfs-17960: a checkpoint saver's thread, and its
+ * context class loader into a whole configuration parse).  A field a log
+ * holds -- an instance one observed on its object, a static one on its
+ * class's mirror -- still versions the same stores: the WRITE names the
+ * object stored, and a null stored there is a version a read states.</p>
  */
 public final class RegionNamedReferenceStoreSmoke {
     private static final String OBJECT = "Ljava/lang/Object;";
+    private static final String OWNER =
+            "_exp\":\"M_L'RegionNamedReferenceStoreSmoke$Owner'_";
 
     private static final class Owner {
         long count = 1L;
@@ -24,8 +28,14 @@ public final class RegionNamedReferenceStoreSmoke {
         Object observed;
     }
 
+    private static final class Registry {
+        static Object slot;
+        static Object observed;
+    }
+
     private static final class Sink {
         long value;
+        Object ref;
     }
 
     public static void main(String[] args) {
@@ -43,6 +53,10 @@ public final class RegionNamedReferenceStoreSmoke {
         holder.ref = owner;
         String field = System.getSharedFieldVersions(holder,
                 Holder.class.getName(), "ref", OBJECT);
+        Registry.slot = null;
+        Registry.slot = owner;
+        String unobservedStatic = System.getSharedFieldVersions(
+                Registry.class, Registry.class.getName(), "slot", OBJECT);
 
         Object[] array = new Object[1];
         array[0] = owner;
@@ -54,16 +68,29 @@ public final class RegionNamedReferenceStoreSmoke {
                 Sink.class.getName(), "value", "J",
                 Long.valueOf(sink.value));
 
-        // Where a log stands, the same store is a version naming the owner.
+        // Where a log stands, the same stores are versions: the WRITE names
+        // the owner, and a null stored there is read back as a version.
         require(System.observeField(holder, Holder.class.getName(),
                 "observed", OBJECT) == 0, "the second observation failed");
         holder.observed = owner;
         String observed = System.getSharedFieldVersions(holder,
                 Holder.class.getName(), "observed", OBJECT);
+        holder.observed = null;
+        sink.ref = holder.observed;
+        String nulled = System.getSymbolicFieldExpression(sink,
+                Sink.class.getName(), "ref", OBJECT, sink.ref);
+        require(System.observeField(Registry.class, Registry.class.getName(),
+                "observed", OBJECT) == 0, "the static observation failed");
+        Registry.observed = owner;
+        String observedStatic = System.getSharedFieldVersions(
+                Registry.class, Registry.class.getName(), "observed", OBJECT);
         System.endConcolic();
 
         require(field.contains("\"selected\":false"),
                 "a named reference started a field's log: " + field);
+        require(unobservedStatic.contains("\"selected\":false"),
+                "a named reference started a static's log: "
+                        + unobservedStatic);
         require(element.contains("\"selected\":false"),
                 "a named reference started an element's log: " + element);
         require(projected.contains("\"kind\":\"CONCRETE_PRIMITIVE\"")
@@ -71,8 +98,19 @@ public final class RegionNamedReferenceStoreSmoke {
                 "an array load of a named element made it symbolic: "
                         + projected);
         require(observed.contains("\"versionKind\":\"INITIAL\"")
-                        && observed.contains("\"versionKind\":\"WRITE\""),
-                "a tracked field did not version the store: " + observed);
+                        && observed.contains("\"versionKind\":\"WRITE\"")
+                        && observed.contains(OWNER),
+                "a tracked field's WRITE does not name the owner: "
+                        + observed);
+        require(nulled.contains("\"_type\":\"ReadFromExpression\"")
+                        && nulled.contains("\"concreteValue\":null"),
+                "the null stored into a tracked field is no version its"
+                        + " read states: " + nulled);
+        require(observedStatic.contains("\"versionKind\":\"INITIAL\"")
+                        && observedStatic.contains("\"versionKind\":\"WRITE\"")
+                        && observedStatic.contains(OWNER),
+                "a static observed on its class's mirror does not version"
+                        + " the store: " + observedStatic);
         System.out.println("RegionNamedReferenceStoreSmoke OK");
     }
 

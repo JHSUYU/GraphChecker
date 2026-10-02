@@ -554,7 +554,9 @@ public class RegionGraphOccurrenceKeyTest {
      * getfield} is the READ_SITE a branch decides on through the unboxing,
      * observed like its {@code putfield}; the box's own {@code value} is no
      * tracked cell; and a write row stating the value's type ({@code J}),
-     * or a null ({@code L}), names the field as its carrier.
+     * or a null ({@code L}), names the field as its carrier.  A static
+     * reference cell is observed too, as {@code static} (on its class's
+     * mirror).
      */
     @Test
     public void aWrapperFieldIsAValueCell() throws IOException {
@@ -600,9 +602,18 @@ public class RegionGraphOccurrenceKeyTest {
         String expireAt = "<example.Rule: java.lang.Long f1>";
         String value = "<java.lang.Long: long value>";
         String unbox = "<java.lang.Long: long longValue()>";
+        String registry = "<example.Rule: java.util.Map f9>";
         List<Map<String, Object>> edges = Arrays.asList(
                 row("kind", "field_write", "method", init, "unitIndex", 34,
                         "fromCell", init + "::$r16", "toCell", expireAt),
+                row("kind", "field_write", "method", init, "unitIndex", 40,
+                        "fromCell", init + "::$r20", "toCell", registry),
+                row("kind", "field_read", "method", expired, "unitIndex", 8,
+                        "fromCell", registry, "toCell", expired + "::$r3",
+                        "declaredFieldSignature", registry),
+                row("kind", "guard_dependency", "method", expired,
+                        "unitIndex", 9, "fromCell", expired + "::$r3",
+                        "toCell", expired + "#u9"),
                 row("kind", "field_read", "method", expired, "unitIndex", 1,
                         "fromCell", expireAt, "toCell", expired + "::$r1",
                         "declaredFieldSignature", expireAt),
@@ -635,15 +646,22 @@ public class RegionGraphOccurrenceKeyTest {
         Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
         StaticScopeMap map = StaticScopeMap.read(file);
 
-        JsonArray observed = map.observedSites();
-        assertEquals("the putfield and the getfield, not the box's value",
-                2, observed.size());
-        assertEquals(init + "#u34", observed.get(0).getAsJsonObject()
-                .get("siteId").getAsString());
-        assertEquals(expired + "#u1", observed.get(1).getAsJsonObject()
-                .get("siteId").getAsString());
-        assertEquals(expireAt, observed.get(1).getAsJsonObject()
-                .get("cell").getAsString());
+        Map<String, String> observed = new LinkedHashMap<>();
+        for (int index = 0; index < map.observedSites().size(); index++) {
+            JsonObject site = map.observedSites().get(index)
+                    .getAsJsonObject();
+            observed.put(site.get("siteId").getAsString(),
+                    site.get("cell").getAsString()
+                            + (site.has("static") ? " static" : ""));
+        }
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put(init + "#u34", expireAt);
+        expected.put(expired + "#u1", expireAt);
+        expected.put(init + "#u40", registry + " static");
+        expected.put(expired + "#u8", registry + " static");
+        assertEquals("the wrapper's putfield and getfield, not the box's"
+                + " value, and the static map's store and read", expected,
+                observed);
         assertEquals(Collections.singleton("REGION.update"),
                 map.trackedRegions());
         String store = "example.Rule#<init>(Ljava/util/Map;)V#376:WRITE";
@@ -653,6 +671,9 @@ public class RegionGraphOccurrenceKeyTest {
         }
         assertTrue(map.carriersAt(store, "I", LocationKind.INSTANCE)
                 .isEmpty());
+        assertEquals("a class's location joins the static map, never an"
+                        + " object's field", Collections.singleton(registry),
+                map.carriersAt(store, "L", LocationKind.STATIC));
         assertEquals("a read's INITIAL names it too",
                 Collections.singleton(expireAt),
                 map.carriersAt("example.Rule#isExpired()Z#30:READ", "J",

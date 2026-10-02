@@ -185,7 +185,9 @@ Container versions carry no word: a container mutation is a Java call no lock ca
 
 Tracking is by value; nothing is declared in advance. A log starts at the first symbolic store
 (field or array element), a mint, an attach, a symbolic container operation, an admitted guarded
-store (§5.3), or `observeField` (§5.4). Once tracked, every store to it is versioned,
+store (§5.3), or `observeField` (§5.4). A log a symbolic store starts has no INITIAL: the value
+that store wrote is the first thing it knows, and a store before it is no version
+(`SFV::begin_store_locked`). Once tracked, every store to it is versioned,
 concrete ones included, with the stored operand, not a heap re-read. A mint, an attach and an
 observation read the word they state under the location's lock (`publish_held`,
 `publish_initial_held`).
@@ -485,7 +487,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 64
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 65
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -494,7 +496,9 @@ unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither 
 `RegionStringBuilderMutatorSmoke`, `RegionWrapperFieldSmoke`), and the versioning rules theirs
 (`RegionTrackedRaceSmoke`, `RegionReadExactnessSmoke`, `RegionLoadedValueSmoke`,
 `RegionVersionDefectsSmoke`, for a reference carrier `RegionReferenceSwapSmoke`, and for a
-reference that only names its object `RegionNamedReferenceStoreSmoke`, §5.1); the
+reference that only names its object `RegionNamedReferenceStoreSmoke`, §5.1, instance, static
+and element); the engine's paused bookkeeping in `Thread.init` has `RegionInheritedStateSmoke`
+(§2); the
 collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, callbacks, a
 tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
 `RegionWrapperViewSmoke` (a view or wrapper is its container) and

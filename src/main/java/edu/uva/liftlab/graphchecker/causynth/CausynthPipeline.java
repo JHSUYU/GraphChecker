@@ -47,6 +47,7 @@ import soot.VoidType;
 import soot.PrimType;
 import soot.jimple.AssignStmt;
 import soot.jimple.CastExpr;
+import soot.jimple.ClassConstant;
 import soot.jimple.Constant;
 import soot.jimple.DefinitionStmt;
 import soot.jimple.FieldRef;
@@ -1962,12 +1963,13 @@ public final class CausynthPipeline {
 
     /**
      * Observes a tracked cell before each access of it, starting its version
-     * log where none stands: before the {@code putfield}, before the call
-     * when the store is an atomic's RMW (no application {@code putfield}),
-     * and before the {@code getfield} of a read.  An access before the
-     * constructor call that makes its object has no object to observe yet,
-     * and a read site that is no {@code getfield} of its cell observes
-     * nothing.
+     * log where none stands: before the {@code putfield}/{@code putstatic},
+     * before the call when the store is an atomic's RMW (no application
+     * {@code putfield}), and before the {@code getfield}/{@code getstatic} of
+     * a read.  A static cell's owner is its declaring class's mirror, the key
+     * the VM versions it by.  An instance access before the constructor call
+     * that makes its object has no object to observe yet, and a read site
+     * that is no field read of its cell observes nothing.
      */
     private void instrumentConcolicObservedSites(
             ConcolicMaterializationSelection selection, HookCatalog refs) {
@@ -1983,8 +1985,14 @@ public final class CausynthPipeline {
                     unobserved++;
                     continue;
                 }
-                owner = accessedField((AssignStmt) selected, target.read)
-                        .getBase();
+                FieldRef field = accessedField((AssignStmt) selected,
+                        target.read);
+                // A static cell's mirror is the class its signature names, the
+                // declaring class the runtime hands the VM with it.
+                owner = field instanceof InstanceFieldRef
+                        ? ((InstanceFieldRef) field).getBase()
+                        : ClassConstant.fromType(RefType.v(CausynthStaticFacts
+                                .fieldOwner(target.cell)));
             } else {
                 selected = originalCall(body, target.unitIndex,
                         target.siteId, "OBSERVED_SITE_NOT_UNIQUE",
@@ -2015,9 +2023,10 @@ public final class CausynthPipeline {
     }
 
     /**
-     * The original {@code putfield} into, or {@code getfield} of, the
-     * target's cell; null when it runs before the constructor call that makes
-     * its object, or when a read site is no {@code getfield} of its cell.
+     * The original store into, or read of, the target's cell -- an instance
+     * field's or, for a static cell, its class's; null when an instance
+     * access runs before the constructor call that makes its object, or when
+     * a read site is no field read of its cell.
      */
     private static Stmt originalAccess(Body body, ObservedSite target) {
         tagOriginalUnits(snapshotUnits(body));
@@ -2034,16 +2043,18 @@ public final class CausynthPipeline {
                         "OBSERVED_SITE_NOT_UNIQUE: " + target.siteId);
             }
             selected = (Stmt) unit;
-            InstanceFieldRef field = accessedField((AssignStmt) unit,
-                    target.read);
-            if (field == null || !target.cell.equals(CausynthStaticFacts
-                    .declaredFieldSignature(field.getFieldRef()))) {
+            FieldRef field = accessedField((AssignStmt) unit, target.read);
+            if (field == null
+                    || (field instanceof StaticFieldRef) != target.staticField
+                    || !target.cell.equals(CausynthStaticFacts
+                            .declaredFieldSignature(field.getFieldRef()))) {
                 if (target.read) return null;
                 throw new IllegalStateException(
                         "OBSERVED_SITE_STORE_NOT_FOUND: "
                                 + target.siteId + " stores no " + target.cell);
             }
-            if (body.getMethod().isConstructor() && constructed == null) {
+            if (!target.staticField && body.getMethod().isConstructor()
+                    && constructed == null) {
                 return null;
             }
         }
@@ -2054,12 +2065,10 @@ public final class CausynthPipeline {
         return selected;
     }
 
-    /** The instance field an assignment reads or stores, or null. */
-    private static InstanceFieldRef accessedField(AssignStmt access,
-                                                  boolean read) {
+    /** The field an assignment reads or stores, or null. */
+    private static FieldRef accessedField(AssignStmt access, boolean read) {
         Value field = read ? access.getRightOp() : access.getLeftOp();
-        return field instanceof InstanceFieldRef ? (InstanceFieldRef) field
-                : null;
+        return field instanceof FieldRef ? (FieldRef) field : null;
     }
 
     /** Whether {@code unit} is a constructor's own this/super constructor
