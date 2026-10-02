@@ -544,7 +544,10 @@ woven since the seed opens occurrences of its own, so every send under it, and e
 has new ids, and no planned address there recurs. The answered occurrence's consumers then pair
 with that chain's producers, not the recorded chain's: the slot table takes them as growth beside
 the declared occurrence's slots, never as replacing them (PIPELINE.md §7.1 step 4; hdfs-11741 V4,
-whose declared balancer handshake was answered by the other move's).
+whose declared balancer handshake was answered by the other move's), and CONFIRM takes a delivery
+into the anchor from any producer that answers the model's producer's question (PIPELINE.md §10;
+hdfs-11741 V6: which balancer dispatcher iteration carried the second move to dn1 is the balancer's
+timing).
 
 ## 10. Pass equality
 

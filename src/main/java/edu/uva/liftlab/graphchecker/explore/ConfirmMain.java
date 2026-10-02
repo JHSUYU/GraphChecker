@@ -1,11 +1,13 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
@@ -22,6 +24,7 @@ import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
@@ -295,7 +298,7 @@ public final class ConfirmMain {
 
         // The edges the model chose.
         List<JsonObject> edges = new ArrayList<JsonObject>();
-        edges.addAll(wireEdges(arms, armSessions));
+        edges.addAll(wireEdges(arms, armSessions, anchor));
         edges.addAll(stateEdges(closure, chosen, restsOn));
         edges.addAll(markers);
         JsonObject anchorRow = new JsonObject();
@@ -818,9 +821,11 @@ public final class ConfirmMain {
     /** One WIRE edge per consumer of each selected message arm, paired as that
      *  arm's session recorded; a codec hole's with its message's store
      *  version and the text the model's valuation of it decodes to
-     *  ({@code holeTexts}, COMPOSE's). */
+     *  ({@code holeTexts}, COMPOSE's); a consumer of the anchor's with its
+     *  producer's question ({@link #question}). */
     private static List<JsonObject> wireEdges(
-            List<JsonObject> arms, Map<String, SessionReader> armSessions) {
+            List<JsonObject> arms, Map<String, SessionReader> armSessions,
+            OccurrenceAddress anchor) throws IOException {
         List<JsonObject> edges = new ArrayList<JsonObject>();
         for (JsonObject arm : arms) {
             String selector = optionalString(arm, "selector");
@@ -847,6 +852,10 @@ public final class ConfirmMain {
                 edge.addProperty("producer",
                         Confirmation.id(paired.producer()));
                 edge.addProperty("selector", selector);
+                if (paired.endpoint().occurrence().id().equals(anchor.id())) {
+                    edge.add(Confirmation.PRODUCER_QUESTION,
+                            question(paired.producer(), producerSession));
+                }
                 if (paired.hole() != null) {
                     // A codec's hole (WIRE-CODEC §6.5): the version of the
                     // store its message was, and what it must decode to.
@@ -863,6 +872,42 @@ public final class ConfirmMain {
             }
         }
         return edges;
+    }
+
+    /**
+     * The question {@code producer} answers (IDENTITY §9): its occurrence,
+     * its site, and its context's shape over the SEND stances of the session
+     * that paired it, as a replay shapes its own ({@code
+     * runtime.ScheduleLog#shape}).  The anchor is answered by its question,
+     * so a delivery into it is too: which turn of a daemon or an iteration
+     * carried the message to it is the run's timing (hdfs-11741 V6: the
+     * witness's second move to dn1 rode the balancer's next dispatcher
+     * iteration, its CONFIRM run the first, as recorded).
+     */
+    private static JsonObject question(Endpoint producer,
+                                       SessionReader session)
+            throws IOException {
+        Map<String, ContextShape.Stance> senders =
+                new LinkedHashMap<String, ContextShape.Stance>();
+        for (ScheduleEvent event : session.schedule()) {
+            if (event.kind() != ScheduleEvent.Kind.SEND
+                    || event.endpoint().isEmpty()) {
+                continue;
+            }
+            ContextShape.Stance stance =
+                    ContextShape.Stance.ofSend(event.context());
+            if (stance != null) senders.put(event.endpoint(), stance);
+        }
+        JsonObject question = new JsonObject();
+        question.addProperty("occurrence", producer.occurrence().render());
+        question.addProperty("site", producer.site());
+        JsonArray shape = new JsonArray();
+        for (String hop : ContextShape.of(producer.occurrence().context(),
+                senders::get)) {
+            shape.add(hop);
+        }
+        question.add("shape", shape);
+        return question;
     }
 
     /**

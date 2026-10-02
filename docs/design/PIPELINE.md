@@ -1435,7 +1435,13 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
   `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, and for a codec
-  hole the message key and the decoded text the mint states), STATE at close (both by
+  hole the message key and the decoded text the mint states; a consumer of the anchor's is also
+  taken from a producer that answers the model's producer's question, `producerQuestion` on its
+  row, `ConfirmMain#question`: the same site of an occurrence of the same region and node under a
+  chain of the same shape over this run's senders, since the anchor is answered by its question
+  (IDENTITY §9) and which turn or iteration carried the message to it is the run's timing --
+  hdfs-11741 V6's witness took the balancer's second move to dn1 from its next dispatcher
+  iteration, its CONFIRM run from the first, as recorded), STATE at close (both by
   `Confirmation#id`; a STATE edge is taken when the model's reader observed the model's writer, or
   when a read at its site at another turn of the loops on its path did, `readerAnyTurn`,
   `Endpoint#anyTurn`: how many turns a loop that polls for a write takes is that write's timing),

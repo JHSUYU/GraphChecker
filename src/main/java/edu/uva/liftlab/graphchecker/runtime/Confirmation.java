@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -11,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -44,7 +47,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  *
  * <p>WIRE is compared at the attach, where the producer is known -- a
  * codec's hole at its mint, by the store version its message was and the
- * text it decoded too (WIRE-CODEC §6.5); STATE at the close, since a
+ * text it decoded too (WIRE-CODEC §6.5); a delivery into the anchor by its
+ * producer's question as well ({@link Wire#answeredBy}); STATE at the close, since a
  * writer's log is read out after the read that saw it.
  * An expected consumer or reader that never ran is a mismatch too, and so is
  * a CONFIRM run whose edges could not be read: it compared nothing, and the
@@ -52,6 +56,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  */
 public final class Confirmation {
     public static final String FILE = "expected_edges.jsonl";
+    /** A WIRE row's member: the question its producer answers, stated for a
+     *  consumer of the anchor ({@code explore.ConfirmMain#question}). */
+    public static final String PRODUCER_QUESTION = "producerQuestion";
     /** How long an activation waits for those ordered before it, in ms. */
     public static final String ORDER_TIMEOUT_PROPERTY =
             "causynth.confirm.order.timeout.ms";
@@ -122,11 +129,44 @@ public final class Confirmation {
         private final String producer;
         private final String messageKey;
         private final String value;
+        /** The question the model's producer answers, or null: its
+         *  occurrence, site and context shape. */
+        private final OccurrenceAddress questionOccurrence;
+        private final String questionSite;
+        private final List<String> questionShape;
 
-        private Wire(String producer, String messageKey, String value) {
+        private Wire(String producer, String messageKey, String value,
+                     JsonObject question) {
             this.producer = producer;
             this.messageKey = messageKey;
             this.value = value;
+            this.questionOccurrence = question == null ? null
+                    : OccurrenceAddress.parse(
+                            optionalString(question, "occurrence"));
+            this.questionSite = question == null ? ""
+                    : optionalString(question, "site");
+            List<String> shape = new ArrayList<String>();
+            if (question != null && question.has("shape")) {
+                for (JsonElement hop : question.getAsJsonArray("shape")) {
+                    shape.add(hop.getAsString());
+                }
+            }
+            this.questionShape = shape;
+        }
+
+        /**
+         * Whether {@code producer}, of shape {@code shape} over this run's
+         * senders, answers the model's producer's question: the anchor is
+         * answered by its question (IDENTITY §9), so a delivery into it is
+         * the model's when its producer is the same site of an occurrence
+         * of the same region and node under a chain of the same shape --
+         * which turn or iteration carried it is the run's timing.
+         */
+        private boolean answeredBy(Endpoint producer, List<String> shape) {
+            return questionOccurrence != null && producer != null
+                    && questionSite.equals(producer.site())
+                    && ContextShape.answers(producer.occurrence(),
+                    questionOccurrence, shape, questionShape);
         }
     }
 
@@ -147,12 +187,17 @@ public final class Confirmation {
                            String messageKey, String text) {
         if (!expected() || consumer == null) return "";
         String actual = producer == null ? "" : id(producer);
+        // Shaped outside the monitor: ScheduleLog's senders are a leaf.
+        List<String> shape = producer == null
+                ? Collections.<String>emptyList()
+                : ScheduleLog.shape(producer.occurrence().context());
         synchronized (LOCK) {
             ATTACHED.put(id(consumer), actual);
             Wire chosen = WIRE.get(id(consumer));
             if (chosen == null) return "";
             List<String> differs = new ArrayList<String>();
-            if (!chosen.producer.equals(actual)) {
+            if (!chosen.producer.equals(actual)
+                    && !chosen.answeredBy(producer, shape)) {
                 differs.add("the model chose producer " + chosen.producer
                         + ", the run paired "
                         + (actual.isEmpty() ? "no export" : actual));
@@ -411,7 +456,10 @@ public final class Confirmation {
                         WIRE.put(optionalString(row, "consumer"), new Wire(
                                 optionalString(row, "producer"),
                                 stated(row, "messageKey"),
-                                stated(row, "value")));
+                                stated(row, "value"),
+                                row.has(PRODUCER_QUESTION)
+                                        ? row.getAsJsonObject(
+                                        PRODUCER_QUESTION) : null));
                     } else if ("STATE".equals(kind)
                             && row.has("mint") && !row.get("mint").isJsonNull()
                             && row.get("mint").getAsBoolean()) {

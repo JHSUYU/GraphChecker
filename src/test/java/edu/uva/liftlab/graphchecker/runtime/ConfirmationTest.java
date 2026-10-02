@@ -201,6 +201,34 @@ public class ConfirmationTest {
                 && close.get(1).endsWith("the run never read here"));
     }
 
+    /** A delivery into the anchor is the model's when its producer answers
+     *  the model's producer's question: the same site of an occurrence of
+     *  the same region and node under a chain of the same shape (hdfs-11741
+     *  V6: the balancer's second move to dn1 rode its next dispatcher
+     *  iteration in the witness, its first in the CONFIRM run). */
+    @Test
+    public void aDeliveryIntoTheAnchorIsComparedByItsProducersQuestion()
+            throws Exception {
+        String site = "XCH.1.resp.key-id";
+        Endpoint consumer = endpoint(ANCHOR, site);
+        Endpoint chosen = endpoint(PRODUCER, site);
+        Endpoint nextTurn = endpoint(PRODUCER.replace("TICK#1", "TICK#2"),
+                site);
+        Endpoint otherNode = endpoint(PRODUCER.replace("nn0", "nn1")
+                .replace("TICK#1", "TICK#2"), site);
+        handed("", Arrays.asList("{\"kind\":\"WIRE\",\"consumer\":\""
+                + consumer.id() + "\",\"producer\":\"" + chosen.id()
+                + "\",\"" + Confirmation.PRODUCER_QUESTION + "\":{"
+                + "\"occurrence\":\"" + PRODUCER + "\",\"site\":\"" + site
+                + "\",\"shape\":[\"Root:TICK\"]}}"));
+        assertEquals("another turn of the producer's chain", "",
+                Confirmation.attached(consumer, nextTurn, null, null));
+        String mismatch = Confirmation.attached(consumer, otherNode, null,
+                null);
+        assertTrue("another node's is not: " + mismatch, mismatch.contains(
+                "the model chose producer " + chosen.id()));
+    }
+
     /** The poll's read at one turn of its loop. */
     private static Endpoint turn(int k) {
         return Endpoint.of(OccurrenceAddress.parse(ANCHOR),
