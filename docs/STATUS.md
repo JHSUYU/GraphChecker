@@ -14,28 +14,30 @@ Pointers are `path` plus class and method. `gc/` stands for
 
 ## Acceptance
 
-Phase 1 release: main at the merge of `d65d31a31` (lock line), VM `/bigtemp/vnr3ne/vm-w4h/j2sdk-image`,
-trees `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741` (`gc/hdfs-11741`) and
-`~/lucene-solr-unified` (`gc/solr-unified` `b41116b`). Runs under `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`,
-each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every case is PASS by `experiments/accept/report.py`
-(SAT_CANDIDATE, no BLOCKING gap, the expected mechanism, `polarityDecides`, confirmed, moved roots in `cone.py`'s
-cone), and its causal chain was checked by hand against the system's code.
+Main after the merges of `perf-slow-replays` and `fix-confirm-flakiness` (round `V8`, snapshot `p221`), VM
+`/bigtemp/vnr3ne/vm-w4h/j2sdk-image`, trees `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741`
+(`gc/hdfs-11741`) and `/bigtemp/vnr3ne/wt/lucene-solr-storing` (`gc/solr-unified-storing` `663e0ef`). Runs under
+`/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`, each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every
+case is PASS by `experiments/accept/report.py` (SAT_CANDIDATE, no BLOCKING gap, the expected mechanism,
+`polarityDecides`, confirmed, moved roots in `cone.py`'s cone), and its causal chain was checked by hand against
+the system's code (the moved roots are those of the Phase 1 release, rounds `F1`/`F1b`/`N1`).
 
 | case | run | time | mechanism (moved roots) |
 | --- | --- | --- | --- |
-| hdfs-17897 | `F1` | 7 min | MARKER_FLIPPED, IPC request door (`REGION.763d087e`) |
-| hdfs-17899-bug1 | `F1` | 8 min | MARKER_FLIPPED, IPC response door (`REGION.9ffdee3d`) |
-| hdfs-17899-bug2, bug3 | `F1b` | 9, 7 min | MARKER_FLIPPED, IPC response door |
-| hdfs-17967-pathA, B, C | `F1b` | 7 min each | MARKER_FLIPPED, IPC response door |
-| hdfs-17960 | `F1` | 13 min | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
-| hdfs-11741 | `F1` | 22 min | CLOCK_SKEW: the NameNode key-rotation clock (`REGION.08ab84c9`) sets a key's `expiryDate`, which crosses to dn1 as a handoff; dn1's `removeExpiredKeys` (`assoc_remove_if` over `allKeys`, `expiry < clock`) by its own clock (`REGION.ba3902cd`) drops the key the Balancer holds, and `retrieveDataEncryptionKey` throws |
-| solr-18406 | `F1` | 19 min | CLOCK_SKEW: the `IndexCommitWrapper.delete()` clock jumps past the commit's one-hour reservation, generation 2 is deleted and `getAndSaveCommitPoint(2)` throws |
-| solr-18413 | `N1` | 28 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
+| hdfs-17897 | `V8` | 8 min | MARKER_FLIPPED, IPC request door (`REGION.763d087e`) |
+| hdfs-17899-bug1 | `V8` | 8 min | MARKER_FLIPPED, IPC response door (`REGION.9ffdee3d`) |
+| hdfs-17899-bug2, bug3 | `V8` | 10, 8 min | MARKER_FLIPPED, IPC response door |
+| hdfs-17967-pathA, B, C | `V8` | 7, 5, 6 min | MARKER_FLIPPED, IPC response door |
+| hdfs-17960 | `V8` | 11 min | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
+| hdfs-11741 | `V8` | 27 min | CLOCK_SKEW: the NameNode key-rotation clock (`REGION.08ab84c9`) sets a key's `expiryDate`, which crosses to dn1 as a handoff; dn1's `removeExpiredKeys` (`assoc_remove_if` over `allKeys`, `expiry < clock`) by its own clock (`REGION.ba3902cd`) drops the key the Balancer holds, and `retrieveDataEncryptionKey` throws |
+| solr-18406 | `V8` | 15 min | CLOCK_SKEW: the `IndexCommitWrapper.delete()` clock jumps past the commit's one-hour reservation, generation 2 is deleted and `getAndSaveCommitPoint(2)` throws |
+| solr-18413 | `V8` | 23 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
 
 The workload of solr-18413 places the source shard's leader off the Overseer's node (tree `b41116b`): with
-both on one node, the per-node clock order leaves no witness short of the node's wall clock stepping back,
-which earlier passes (`g1`) relied on. `F1`'s own 18413 found the same claim; its CONFIRM replay exceeded
-`replay_timeout_s`. `N1` ran the same engine code (`9ea93616c` = `d65d31a31` less the case's declared address).
+both on one node, the per-node clock order leaves no witness short of the node's wall clock stepping back.
+hdfs-11741's balancer may run its second move to dn1 one dispatcher iteration later (`maxNoMoveInterval` on its
+own clock); main passes when the run takes the recorded order, and `fix-11741-pairing` (in rework) makes the other
+order pass too.
 
 ## R1. Symbols come automatically from the fatal slice
 

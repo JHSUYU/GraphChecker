@@ -41,15 +41,14 @@ The owner wants outcomes, not intermediate report files. Requirements R1–R6:
 
 ### 0.2 Where things stand (2026-10-02)
 
-- **Phase 1 is done**: all eleven cases PASS on main (the merge of the lock line `d65d31a31`), each `.smt`'s
-  chain checked by hand — runs and mechanisms in `docs/STATUS.md` "Acceptance" (rounds `F1`, `F1b`, `N1`).
-  VM `/bigtemp/vnr3ne/vm-w4h/j2sdk-image`. Most cases take 7–13 min, 11741 22 min, the Solr cases 19–28 min.
-- **Trees**: `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741` (`gc/hdfs-11741`),
-  `~/lucene-solr-unified` (`gc/solr-unified` `b41116b`: 18413's leader off the Overseer's node). The engine of
-  `fix-confirm-flakiness` (`MessageDoors#storing(transport, location)`) needs the Solr tree
-  `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: `b41116b` plus SolrZkClient's write
-  brackets), which the Solr case files name. Never edit or rebuild a tree a run reads; work on a new branch in a
-  new worktree of it.
+- **Phase 1 is done**: all eleven cases PASS on main, each `.smt`'s chain checked by hand — runs and mechanisms
+  in `docs/STATUS.md` "Acceptance" (round `V8`, main with `perf-slow-replays` and `fix-confirm-flakiness`). VM
+  `/bigtemp/vnr3ne/vm-w4h/j2sdk-image`. HDFS cases 5–11 min, 11741 27 min, the Solr cases 15 and 23 min.
+- **Trees**: `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741` (`gc/hdfs-11741`), and for Solr
+  `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing` `663e0ef`: `gc/solr-unified` `b41116b`,
+  18413's leader off the Overseer's node, plus SolrZkClient's write brackets that `MessageDoors#storing` needs),
+  which the Solr case files name. Never edit or rebuild a tree a run reads; work on a new branch in a new
+  worktree of it.
 - **Phase 2** (large ad-hoc runs; finishing them is the goal, no new bug is an acceptable outcome — owner): 80
   checks ran (`a40s`, `a40h2`, `b20h`; triage with `tools/adhoc/triage.py <round>`), no confirmed witness.
   Picks: `/bigtemp/vnr3ne/analysis/adhoc-pick2-{hdfs,solr}.txt` (coverage-reached, a movable root in the static
@@ -67,20 +66,20 @@ A head's command line does not carry its output path: tell a live run by `accept
 
 | branch | content | state |
 | --- | --- | --- |
-| `dtx-on-main` (+ tree `gc/hdfs-unified-dtx` `51f1e058380`, `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`) | DataTransfer ops are messages (op headers pair with the sender's export; a DataNode op keeps its tick identity); DataTransfer fault doors | round `V5` (p217): 8 HDFS cases and 18406 PASS; pathB fails on the claim defect below (main has it too); 11741 starved of head memory (fixed on `perf-slow-replays`), to rerun |
-| `fix-confirm-flakiness` (+ Solr tree `gc/solr-unified-storing` `990108c`, `/bigtemp/vnr3ne/wt/lucene-solr-storing`) | a root a replay ran concretely guards that replay's arms at its reading (pathA/B's unconfirmed SERIAL_NO claims); a refuted claim is followed by the next; a ZooKeeper read waits for writes in flight (open defect 28, 18413's CONFIRM) | live `CF1`: pathA, pathB, 18413 PASS; review: one blocker (the campaign budget stops ad-hoc exploration) and five medium findings, in rework |
-| `perf-slow-replays` | a waiting head step holds its host; GROW starts at 2 GB; RSA keys from a pool in the replay (Solr check 22.5 → 12.4 min); scope map read once; expression store shares definitions | needs a live round (with `dtx-on-main`: p218) |
+| `dtx-on-main` (+ tree `gc/hdfs-unified-dtx` `51f1e058380`, `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`) | DataTransfer ops are messages (op headers pair with the sender's export; a DataNode op keeps its tick identity); DataTransfer fault doors | rounds `V6`/`V7`: ten cases PASS; 11741 fails on the balancer race below, which main also has (passes by the order it gets) |
+| `fix-11741-pairing` (on the `V7` stack) | 11741's balancer may run the second move to dn1 one dispatcher iteration later; a slot stands on its session, an occurrence answered by its question opens its own slots, CONFIRM accepts the anchor's delivery from a producer of the same question | live `R5x5` PASS on the slow order; review: two blockers (CONFIRM compares no value or attempt; slots depend on landing order), in rework |
 | `fix-adhoc-crashes` | closure bloat cut (walk only what ran in the occurrence, holders of one object, atomics by cell: a40s-2 6076 → 786 occurrences); PATH_SELF_CONTRADICTORY only when a path is unsat without its fatal arm; `String.trim` lowered | offline gate identical on the 11 `.smt`; the PLAN change needs a live round |
 | `replay-random-draws` (on `dtx-on-main`) | every `Random`/`ThreadLocalRandom`/shuffle/`UUID` draw recorded and replayed by key, the workload's own classes included | ready; DataNode registration order before the window is the remaining divergence (owner: not now) |
 | `fix-replay-equivalent-context` | a root is admitted by its address alone (b20h's three target misses now reach their targets) | round `V4`: 11741 regressed (rounds diverge from round 1); author fixing |
-| (agents) `fix-no-root`, `perf-vm-readout` (VM image `vm-w4i`), `fix-hdfs-seed-stalls` | NO_ROOT classes; per-activation tracked-location read-out in the VM; seed replays that stall on their own recording | in progress |
+| (agents) `fix-no-root`, `fix-hdfs-seed-stalls`, `perf-expr-store` | NO_ROOT classes (initial value as a version-0 writer, containers in final fields, cut reads), next happens-before edges through queues and arrays; seed replays that stall on their own recording; the replay's expression store growing without bound | in progress |
+| parked: `perf-vm-readout` (VM `vm-w4i`), `vm-ref-compare` (VM `vm-nr41`) | per-activation tracked-location read-out; a reference compared with an untracked object states identity | VM changes with small payoff now; each needs a VM review before a round |
 | `worktree-agent-a49c8bf5715a00c40` | WIRE-CODEC W3/W6 + WP-D config roots | deferred |
 
 ### 0.4 TODO, in order (one large change per live round; a change that regresses a passing case does not merge)
 
-1. Merge in order, each after a passing round of the eleven cases: `dtx-on-main` + `perf-slow-replays` (p218),
-   `fix-confirm-flakiness` (after its rework), `fix-adhoc-crashes`, `replay-random-draws`,
-   `fix-replay-equivalent-context`, then the agents' branches as they land.
+1. Merge in order, each after a passing round of the eleven cases: `dtx-on-main` with `fix-11741-pairing` (after
+   its rework), `fix-adhoc-crashes`, `fix-no-root`, `replay-random-draws`, `fix-replay-equivalent-context`,
+   `fix-hdfs-seed-stalls`.
 2. Run all 40 picks to a verdict each; triage, hand-check any CONFIRMED witness.
 3. Then the deferred W6/WP-D line, one piece per round.
 
