@@ -277,6 +277,15 @@ the `System.err` a test may have captured and asserts on (a40h2 FSImage-851: its
 `TestDFSAdminWithHA#verifyUpgradeQueryOutput` on the schedule's own lines, before the declared
 occurrence ran).
 
+A replay JVM draws its RSA key pairs from a fixed pool (`runtime.ReplayKeys`, a JCA provider put
+first by `JUnitMethodRunner`; four pairs of exponent 65537 per size of 1024-4096 bits, in the jar's
+`replay-rsa-keys.txt`, one after another per size): the concolic VM has none of HotSpot's
+`BigInteger` intrinsics, so one 2048-bit prime search takes it 40-70 s, and a Solr node makes one as
+it starts (four nodes spent 220 s of a 470 s seed replay there). A key pair is `SecureRandom` bits no
+stage reads. Another size or exponent is the JDK's own search; the replay log names either once per
+size. The recording searches as always. The scope map is read once, when the workload session
+opens (`GuardedStoreSites#install`, which hands its rows to `ClockLoops`).
+
 A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
 end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
 starts after it), live activations settle, the run totals close the session's rows (a closed
