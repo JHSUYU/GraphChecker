@@ -1029,7 +1029,12 @@ objects of the projection's class that this session's writes of the owner's loca
 the reads in them. A candidate's cell (`fieldOf`) is the one write of it in the session, made
 before the location first stored the object, or, never written, the one value every read of it
 states at one version. A candidate with no such cell is no case, so the arms delivering it are
-refused, and it is named DIAGNOSTIC `CANDIDATE_UNANSWERED:<cell>@<session>`. EXPLORE lowers through
+refused, and it is named DIAGNOSTIC `CANDIDATE_UNANSWERED:<cell>@<session>`, the refusals of a
+write that did not lower in its detail. A candidate's write whose lowering reaches the very node
+asking for it (`b.numBytes = f(owner.numBytes)` where the owner may be `b`) was read before it was
+written: the memo refuses a node reached inside its own lowering (`LoweringCycle`,
+`SmtLowering#memoized`), so that candidate answers nothing there (a40h2's FsDatasetImpl-1092 and
+-1424 recursed until an 8 GB heap was full). EXPLORE lowers through
 the same rule; its owners are never movable (a joined reference read is inlined), so a projection
 there is the run's cell.
 

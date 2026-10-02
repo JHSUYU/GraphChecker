@@ -34,6 +34,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -358,6 +359,8 @@ public final class SmtLowering {
      * stand; a name newly stated clears the memo ({@link #put}).
      */
     private Map<MemoKey, Attempt<?>> memo = new HashMap<MemoKey, Attempt<?>>();
+    /** The memo keys whose lowering is in progress ({@link #memoized}). */
+    private final Set<MemoKey> lowering = new HashSet<MemoKey>();
     /**
      * The nodes a {@link #moves} walk of this conjunction found resting on
      * nothing that moves, so no later walk of it goes through them again.
@@ -941,19 +944,45 @@ public final class SmtLowering {
 
     /**
      * One node lowered once per conjunction ({@link #memo}), committed on
-     * every hit: each lowering reaching it rests on what it raised.
+     * every hit: each lowering reaching it rests on what it raised.  A node
+     * reached again while its own lowering is in progress ({@link
+     * #lowering}) is its own input: the DAG has no cycle, so the lowering
+     * came back to it through a value it asked by identity -- a candidate
+     * object's field ({@link #fieldOf}) or a state a store published ({@link
+     * #answerOf}) -- whose one write or state rests on the very node asking
+     * (hdfs a40h2 FsDatasetImpl-1092/-1424: {@code b.numBytes =
+     * f(owner.numBytes)} where the owner may be {@code b}, a recursion that
+     * filled an 8 GB heap).  That value was read before it was written, so it
+     * has no answer there: {@code cycle} refuses it by name ({@link
+     * #LOWERING_CYCLE}), and the attempt asking it drops that candidate.
      */
     @SuppressWarnings("unchecked")
     private <T> T memoized(JsonElement node, Object expected,
-                           Supplier<T> lowering) {
+                           Supplier<T> lowering, Supplier<T> cycle) {
         if (node == null || !node.isJsonObject()) return lowering.get();
         MemoKey key = new MemoKey(node, expected);
         Attempt<?> held = memo.get(key);
         if (held == null) {
-            held = attempting(lowering);
+            if (!this.lowering.add(key)) return cycle.get();
+            try {
+                held = attempting(lowering);
+            } finally {
+                this.lowering.remove(key);
+            }
             memo.put(key, held);
         }
         return (T) commit(held);
+    }
+
+    /** The refusal of a node reached inside its own lowering. */
+    private static final String LOWERING_CYCLE = "LoweringCycle";
+
+    private void cycle(String origin) {
+        refuse(LOWERING_CYCLE + ":" + origin, "this value was reached again "
+                + "inside its own lowering, through a candidate's field or "
+                + "a state asked by identity whose write rests on it: it was "
+                + "read before that write, which therefore answers nothing "
+                + "here");
     }
 
     /** What the conjunction now open refused, each cause once. */
@@ -1983,7 +2012,8 @@ public final class SmtLowering {
                     origin + ":" + cell));
             if (written.lowered()) field = commit(written);
             why = "its one write, which does not lower to the " + sort
-                    + " the projection reads";
+                    + " the projection reads" + (written.lowered() ? ""
+                    : " (" + String.join(", ", written.refusals()) + ")");
         }
         if (field != null && field.sort == sort) return field;
         top().diagnostics.put(CANDIDATE_UNANSWERED + ":" + cell + "@"
@@ -2481,15 +2511,22 @@ public final class SmtLowering {
             public ContainerSmtCodec.Term operand(
                     JsonElement expression,
                     ContainerSmtCodec.Sort expected) {
+                // A refused operand is null to the codec.
+                Supplier<ContainerSmtCodec.Term> cycle = () -> {
+                    cycle(origin);
+                    return null;
+                };
                 if (ContainerSmtCodec.handles(expression)) {
                     return memoized(expression, CONTAINER_OPERAND,
                             () -> name(ContainerSmtCodec.term(
-                                    expression.getAsJsonObject(), this)));
+                                    expression.getAsJsonObject(), this)),
+                            cycle);
                 }
                 if (ContainerSmtCodec.handlesField(expression)) {
                     return memoized(expression, CONTAINER_OPERAND,
                             () -> name(ContainerSmtCodec.field(
-                                    expression.getAsJsonObject(), this)));
+                                    expression.getAsJsonObject(), this)),
+                            cycle);
                 }
                 Term value = dispatch(expression,
                         VmTermLowering.sortOfContainer(expected),
@@ -3191,6 +3228,9 @@ public final class SmtLowering {
                 }
             }
             return value;
+        }, () -> {
+            cycle(origin);
+            return free(expected, IntegralWidth.NONE);
         });
     }
 
