@@ -66,7 +66,11 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   branch is an event even when concrete (zero conditions). `getConcolicBranchEvents` returns the
   events since the last read; `getConcolicPathConditionRange` a range of the region's conditions.
   `pauseConcolicPathCondition` / `resumeConcolicPathCondition` (nestable) mute recording around the
-  engine's own code.
+  engine's own code: every hook call the weave emits, and the engine code the JDK runs on a
+  program thread (an inheritable thread-local's `childValue` in `Thread.init`,
+  `runtime/InheritedState`). Paused, the interpreter propagates nothing and no model runs
+  (`ConcolicMngr::can_do_concolic`), so the engine's lists over program objects shadow none of
+  them.
 
 ## 3. Propagation through bytecode
 

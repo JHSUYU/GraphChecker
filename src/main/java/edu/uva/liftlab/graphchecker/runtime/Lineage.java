@@ -28,14 +28,14 @@ public final class Lineage {
             new ConcurrentHashMap<String, AtomicInteger>();
     private static final AtomicLong TOKENS = new AtomicLong(1L);
     private static final InheritableThreadLocal<List<Frame>> STACK =
-            new InheritableThreadLocal<List<Frame>>() {
+            new InheritedState<List<Frame>>() {
                 @Override
                 protected List<Frame> initialValue() {
                     return new ArrayList<Frame>();
                 }
 
                 @Override
-                protected List<Frame> childValue(List<Frame> parent) {
+                protected List<Frame> inherit(List<Frame> parent) {
                     return parent == null || PoolWorkers.constructing()
                             ? new ArrayList<Frame>()
                             : new ArrayList<Frame>(parent);
