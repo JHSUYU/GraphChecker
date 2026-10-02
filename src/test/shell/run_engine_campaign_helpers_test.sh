@@ -3516,30 +3516,40 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
   ( campaign_head_unreserve )
   [[ -n "$(ls "${campaign_host_gate_root}/gate-head/heads/")" ]] \
     || fail "a subshell of the head gave up the head's room"
-  # A head step that waits for room holds its need there while it waits: an
-  # obligation the head's usual room would admit (12300 MB available, 8192
-  # held, 3000 reserved) is refused while a 9500 MB step waits, and the
-  # placed step gives the hold up.
-  campaign_worker_hosts=gate-head
-  echo 12300 >"${memory_dir}/head-available"
-  campaign_host_available_mb() { cat "${memory_dir}/head-available"; }
-  sleep() {
-    run_capturing_status campaign_host_try_start localhost 1000 60
-    echo "${status} ${campaign_host_wait_reason}" >"${memory_dir}/head-held"
-    echo 16000 >"${memory_dir}/head-available"
+  # A head step no host has room for holds its need on the host with the
+  # most room (lift14's 12400 MB less the 3000 MB reserve, against the
+  # head's 12300 less its own 8192 held): an obligation lift14 would admit
+  # is refused while the 9500 MB step waits, the step takes lift14 once it
+  # has room, its own hold not held against it, and gives the hold up.
+  campaign_worker_hosts="gate-head lift14"
+  echo 12400 >"${memory_dir}/lift14-available"
+  campaign_host_available_mb() {
+    if [[ "$1" == lift14 ]]; then cat "${memory_dir}/lift14-available"
+    else echo 12300; fi
   }
-  rm -f -- "${campaign_host_gate_root}/gate-head/starts"
-  campaign_host_try_start localhost 1000 60 \
-    || fail "the head's usual room refused a start it has room for"
-  rm -f -- "${campaign_host_gate_root}/gate-head/starts"
-  campaign_head_place 9500 120 >/dev/null
+  sleep() {
+    # Another campaign's start: it holds no hold of its own.
+    campaign_head_hold="" run_capturing_status campaign_host_try_start \
+      lift14 1000 60
+    echo "${status} ${campaign_host_wait_reason}" >"${memory_dir}/head-held"
+    echo 13000 >"${memory_dir}/lift14-available"
+  }
+  rm -f -- "${campaign_host_gate_root}"/*/starts
+  campaign_host_try_start lift14 1000 60 \
+    || fail "lift14 refused a start it has room for"
+  rm -f -- "${campaign_host_gate_root}"/*/starts
+  campaign_head_place 9500 120 >"${memory_dir}/head-place.log"
   unset -f sleep
-  [[ "$(cat "${memory_dir}/head-held")" == "1 "*"9500 MB held for a head"* ]] \
-    || fail "a waiting head step held no room on its host: \
-$(cat "${memory_dir}/head-held")"
-  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
-    || fail "a placed head step kept holding its room: \
-$(cat "${campaign_host_gate_root}/gate-head/heads/"*)"
+  [[ "$(cat "${memory_dir}/head-held")" == "1 "*"9500 MB held for a head"* \
+     && "${campaign_placed_host}" == lift14 ]] \
+    || fail "a waiting head step held no room where it then ran \
+(${campaign_placed_host}): $(cat "${memory_dir}/head-held")"
+  grep -q 'held on lift14' "${memory_dir}/head-place.log" \
+    || fail "a waiting head step did not say where it held its need"
+  [[ -z "$(ls "${campaign_host_gate_root}/lift14/heads/")" \
+     && "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
+    || fail "a placed head step kept its hold: \
+$(ls "${campaign_host_gate_root}"/*/heads/)"
 ) || exit 1
 [[ -z "$(ls "${campaign_host_gate_root}/gate-head/heads/")" ]] \
   || fail "the head kept its room after it exited"

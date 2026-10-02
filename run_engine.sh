@@ -573,15 +573,20 @@ campaign_engine_start_mb() {
 #                                             4 GB 17960 collected for 30 min
 #   composer (ComposeMain)                    1.4-4.3 GB; hdfs-11741 9.1 GB at
 #                                             8 GB, and m1-11741 ran out of 8
+#   GROW's exposed-region planner          0.13 GB, 0.4 s (V5-11741 round 5,
+#   (ExposedRegionPlanMain)                its two rows: static inputs only)
 #   ImportGateMain sizes itself (campaign_import_gate_heap_mb).  ScopeGrowth's
-# growth step is the door step's main: measured as that.  The mains not
-# listed (ExposedRegionPlanMain, PlanUnion: GROW's and a batch's, which no
-# recorded round ran) are not measured yet and keep the engine heap.
+# growth step is the door step's main: measured as that.  A batch's PlanUnion
+# unions the scheduler's plans and starts at the scheduler's need, unmeasured
+# (no recorded round ran a batch), growing as any main does (engine_java).
+# Unmeasured, GROW's planner started at the 16 GB engine heap, which no lift
+# of a busy pool had free: V5-11741's GROW waited 40 min and more for it.
 campaign_engine_need_mb() {
   case "$1" in
     *.GraphCheckerMain) echo 4096 ;;
     *.CausynthTraceRecorder|*.ConcolicScheduler|*.ConfirmMain|*.LineageScan \
-      |*.ScopeGrowth|*.VerifyWovenClasses) echo 2048 ;;
+      |*.ScopeGrowth|*.VerifyWovenClasses|*.ExposedRegionPlanMain \
+      |*.PlanUnion) echo 2048 ;;
     *.ExploreMain|*.ComposeMain) echo 8192 ;;
   esac
 }
@@ -3413,9 +3418,11 @@ campaign_head_reservation_stale_s=600
 # without giving it up.
 campaign_head_reservation=""
 campaign_head_pid=""
-# The need, in MB, of the head step waiting for room now (campaign_head_place),
-# which its reservation holds while it waits; 0 when none waits.
-campaign_head_waiting_mb=0
+# The hold of the head step waiting for room now (campaign_head_place), or
+# empty: a file stating its need among the reservations of the host it will
+# take, which every start that is not this head's counts while it is fresh
+# (campaign_host_head_room), as a head's reservation.
+campaign_head_hold=""
 # This exploration's entry among the capped ones (campaign_stream_enroll),
 # or empty.
 campaign_stream_entry=""
@@ -3607,11 +3614,12 @@ ${campaign_host_max_used_pct}% of it in use"
 }
 
 # The largest idle, fresh head reservation of one host's ledger directory,
-# in MB (HEAD ROOM above); 0 when there is none.
+# in MB (HEAD ROOM above), this head's own hold aside; 0 when there is none.
 campaign_host_head_room() {
   local dir=$1 now=$2 file need held=0 busy
   for file in "${dir}"/heads/*; do
-    [[ -f "${file}" && "${file}" != *.busy.* ]] || continue
+    [[ -f "${file}" && "${file}" != *.busy.* \
+       && "${file}" != "${campaign_head_hold}" ]] || continue
     for busy in "${file}".busy.*; do
       [[ -e "${busy}" ]] && continue 2
     done
@@ -3637,22 +3645,23 @@ campaign_head_reserve() {
 
 # The head lives: its reservation stays fresh, and states what its next
 # planner or composer starts at now (one that outgrew its need starts
-# higher from then on), or the need of the step it waits to place when that
-# is more (campaign_head_waiting_mb); so does its capped exploration's entry.
+# higher from then on); so do the hold of a step it waits to place and its
+# capped exploration's entry.
 campaign_head_heartbeat() {
-  local need
-  if [[ -n "${campaign_head_reservation}" ]]; then
-    need=$(campaign_head_need_mb)
-    (( need >= campaign_head_waiting_mb )) || need=${campaign_head_waiting_mb}
-    printf '%s\n' "${need}" >"${campaign_head_reservation}" 2>/dev/null \
-      || true
-  fi
-  [[ -z "${campaign_stream_entry}" ]] \
-    || touch -- "${campaign_stream_entry}" 2>/dev/null || true
+  [[ -z "${campaign_head_reservation}" ]] \
+    || campaign_head_need_mb >"${campaign_head_reservation}" 2>/dev/null \
+    || true
+  local fresh
+  for fresh in "${campaign_head_hold}" "${campaign_stream_entry}"; do
+    [[ -z "${fresh}" ]] || touch -c -- "${fresh}" 2>/dev/null || true
+  done
 }
 
-# The head is done (or failed): its room is the hosts' again.
+# The head is done (or failed): its room, and a waiting step's hold, are the
+# hosts' again.
 campaign_head_unreserve() {
+  [[ -z "${campaign_head_hold}" ]] || rm -f -- "${campaign_head_hold}"
+  campaign_head_hold=""
   [[ -n "${campaign_head_reservation}" \
      && "${BASHPID}" == "${campaign_head_pid}" ]] || return 0
   rm -f -- "${campaign_head_reservation}" "${campaign_head_reservation}".busy.*
@@ -3857,11 +3866,13 @@ campaign_head_charged() {
 # (campaign_host_room), as the pool would place one more start; waited for
 # when no host has it, said once, and how long when it gets room, so a
 # step's wall time names its wait (tools/analysis/timeline.py).  While it
-# waits, the head's room holds its need (campaign_head_waiting_mb): the
-# starts that are no head's own leave the head's host as they return rather
-# than taking its room back one by one, which held a 14 GB seed replay
-# 70 min in a sweep (a40h2 BlockRecoveryWorker-530).  The host is
-# campaign_placed_host.
+# waits it holds its need on the host with the most room when it began to
+# wait (campaign_head_hold_room): every other start counts the hold there,
+# so that host drains as its starts return, within a replay's lifetime,
+# instead of being taken again one obligation at a time (a40h2
+# BlockRecoveryWorker-530's 14 GB seed replay waited 70 min, V5-11741's
+# 16 GB GROW step 40 min and more, while the pool kept every lift busy).
+# The host is campaign_placed_host.
 campaign_placed_host=""
 campaign_head_place() {
   local need=$1 ramp=$2 host room best best_room said=false status=0
@@ -3892,22 +3903,43 @@ campaign_head_place() {
       fi
     fi
     if [[ "${said}" == false ]]; then
+      campaign_head_hold_room "${need}"
       campaign_log "waiting for memory for a head step of ${need} MB on any \
-host: ${campaign_host_wait_reason}"
+host: ${campaign_host_wait_reason}; held on ${campaign_head_hold_host:-no host}"
       said=true
-      campaign_head_waiting_mb=${need}
     fi
     campaign_head_heartbeat
     sleep "${campaign_host_poll_s}"
   done
 }
 
+# campaign_head_hold_room <need_mb>: the waiting step's hold
+# (campaign_head_hold), its need among the reservations of the pool's host
+# with the most room now, campaign_head_hold_host.
+campaign_head_hold_host=""
+campaign_head_hold_room() {
+  local need=$1 host room best_room="" dir
+  campaign_head_hold_host=""
+  while IFS= read -r host; do
+    room=$(campaign_host_room "${host}") || continue
+    [[ -z "${best_room}" ]] || (( room > best_room )) || continue
+    campaign_head_hold_host=${host}
+    best_room=${room}
+  done < <(campaign_worker_host_list)
+  [[ -n "${campaign_head_hold_host}" ]] || return 0
+  dir="${campaign_host_gate_root}/$(campaign_host_key \
+    "${campaign_head_hold_host}")/heads"
+  mkdir -p "${dir}"
+  campaign_head_hold="${dir}/$(hostname -s).${BASHPID}.$(date +%s).hold"
+  printf '%s\n' "${need}" >"${campaign_head_hold}"
+}
+
 # campaign_head_placed <said> <need_mb> <since>: a head step that waited for
-# room gives up the room it held and says how long, once it has it.
+# room gives its hold up and says how long, once it has room.
 campaign_head_placed() {
   [[ "$1" == true ]] || return 0
-  campaign_head_waiting_mb=0
-  campaign_head_heartbeat
+  [[ -z "${campaign_head_hold}" ]] || rm -f -- "${campaign_head_hold}"
+  campaign_head_hold=""
   campaign_log "room for a head step of $2 MB on ${campaign_placed_host} \
 after waiting $(( SECONDS - $3 )) s"
 }
