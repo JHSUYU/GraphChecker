@@ -1147,6 +1147,15 @@ same clock (`contract.Clock#same`: the JVM clock its row states and the same tic
 none is on no order, DIAGNOSTIC) (`clock_order__`); where the recording read the two the other way round, the link gives way by that
 much (`(<= (- earlier later) d)`), so the recording always satisfies it. The cells are listed in seq
 order (`Composition#clockCells`), each with its reading and the cell before it (`clockBefore`).
+Every session's instants are on that one timeline too: a replay runs on its own host's clock, started
+later (a plant is a skew off that host, `runtime.NodeClocks`), so an instant it computed outside every
+clock root -- a key's expiry from a startup reading -- is a constant on its own clock. A session's
+base at a cell is how far its host read the cell later than the recording (at the cell where the
+recording read it, else at the nearest cell both read, as a placement anchors; `Composer#clockBases`),
+and an integral constant compared with an instant of that cell (the cell, or the cell plus or minus a
+constant span) in that session's terms is lowered that much earlier (`SmtLowering#clockBases`,
+`#onTimeline`); the recording's own constants stay. hdfs-11741 L1: dn1's first expiry check compared
+each replay's startup keys, 9 to 11 minutes late on the recording's timeline, with the one dn1 clock.
 
 **Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
 moves sorted by distance, then pairs of moves, cut at

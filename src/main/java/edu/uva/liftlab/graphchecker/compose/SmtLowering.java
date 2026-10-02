@@ -24,9 +24,11 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.SExpression;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 
+import java.math.BigInteger;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -342,6 +344,9 @@ public final class SmtLowering {
     /** What the conjunction now open raised: its frame of {@link #raising}. */
     private Raised open;
     private String scope = "";
+    /** Session -> clock symbol -> its base there ({@link #clockBases}). */
+    private Map<String, Map<String, Long>> clockBases =
+            Collections.emptyMap();
     private SessionJoin join = NO_JOIN;
     /** The expression table of the session whose conjunction is open. */
     private ExpressionTable openTable;
@@ -739,6 +744,25 @@ public final class SmtLowering {
      * references.  Identities and side conditions are per execution: one
      * constant for two sessions' objects makes satisfiable paths unsat.
      */
+    /**
+     * EVERY SESSION ON THE RECORDING'S TIMELINE.  A replay runs on its own
+     * host's clock, started later than the recording (a plant is a skew off
+     * that host, {@code runtime.NodeClocks}), so an instant it computed
+     * outside every clock root -- a key's expiry from a startup reading --
+     * is a constant on its own clock, while every clock cell is one symbol
+     * on the recording's timeline.  {@code bases}: session -> clock symbol
+     * -> how far that session's host read it later than the recording
+     * ({@code Composer#clockBases}); a constant compared with a clock cell
+     * in that session is that much earlier on the recording's timeline
+     * ({@link #onTimeline}).  hdfs-11741 L1: dn1's first expiry check
+     * compared each replay's own startup keys, 9 to 11 minutes late, with
+     * the one dn1 clock.
+     */
+    void clockBases(Map<String, Map<String, Long>> bases) {
+        clockBases = bases == null
+                ? Collections.<String, Map<String, Long>>emptyMap() : bases;
+    }
+
     public void begin(String sessionId, SessionJoin sessionJoin,
                       ExpressionTable expressions) {
         // NESTED, not replaced: an arm is lowered in its producer's scope
@@ -3279,6 +3303,65 @@ public final class SmtLowering {
     // Binary operators.
     // ------------------------------------------------------------------
 
+    /**
+     * An integral constant compared with an instant of a clock cell this
+     * session's host read off the recording's timeline, moved onto it: an
+     * instant is compared only with an instant, so the constant is one, on
+     * this session's clock ({@link #clockBases}).  Anything else as it is.
+     */
+    private static Term onTimeline(Term constant, Term other,
+                                   Map<String, Long> bases) {
+        if (constant.sort != Sort.INT || other.sort != Sort.INT) {
+            return constant;
+        }
+        String literal = constant.text.trim();
+        BigInteger value;
+        try {
+            value = literal.startsWith("(-")
+                    ? new BigInteger(literal.substring(2,
+                    literal.length() - 1).trim()).negate()
+                    : new BigInteger(literal);
+        } catch (NumberFormatException | StringIndexOutOfBoundsException
+                notAConstant) {
+            return constant;
+        }
+        Long base = bases.get(instantOf(SExpression.parse(other.text, 0)));
+        if (base == null) return constant;
+        return Term.vm(JavaPrimitiveSmtSemantics.integralLiteral(
+                value.subtract(BigInteger.valueOf(base)).toString()),
+                constant.sort, constant.integralWidth);
+    }
+
+    /**
+     * The clock cell an integral term is an instant of: the cell itself, or
+     * an instant plus or minus a constant span (a Java wrap around either
+     * keeps it); "" for anything else, a difference of two instants
+     * included.
+     */
+    private static String instantOf(SExpression term) {
+        if (term == null) return "";
+        if (term.atom()) return term.text();
+        List<SExpression> parts = term.children();
+        String head = term.head();
+        if (parts.size() == 2 && ("java_long_wrap".equals(head)
+                || "java_int_wrap".equals(head))) {
+            return instantOf(parts.get(1));
+        }
+        if (parts.size() == 3 && ("+".equals(head) || "-".equals(head))) {
+            boolean spanAfter = constantAtom(parts.get(2));
+            if (spanAfter) return instantOf(parts.get(1));
+            if ("+".equals(head) && constantAtom(parts.get(1))) {
+                return instantOf(parts.get(2));
+            }
+        }
+        return "";
+    }
+
+    private static boolean constantAtom(SExpression term) {
+        return term.atom() && !term.text().isEmpty()
+                && Character.isDigit(term.text().charAt(0));
+    }
+
     /** One recorded {@code BinaryExpression}. */
     private Term binary(JsonObject expression, String origin) {
         String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
@@ -3306,6 +3389,16 @@ public final class SmtLowering {
         } else if (left.sort != right.sort && left.isZero()
                 && right.sort == Sort.REF) {
             left = result("nullRef", Sort.REF);
+        }
+        if ("--".equals(operator) || "==".equals(operator)
+                || "!=".equals(operator)
+                || !VmExpressionIr.comparison(operator).isEmpty()) {
+            Map<String, Long> bases = clockBases.get(scope);
+            if (bases != null) {
+                Term instant = onTimeline(left, right, bases);
+                right = onTimeline(right, left, bases);
+                left = instant;
+            }
         }
         if ("--".equals(operator)) {
             // lcmp is typed long: a widthless int operand is a long.
