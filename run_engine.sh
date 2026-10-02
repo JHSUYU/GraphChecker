@@ -3798,15 +3798,19 @@ campaign_head_charged() {
 # host when it fits there (its own room is not held against it), else on
 # the host of the pool with the most room under the ceiling
 # (campaign_host_room), as the pool would place one more start; waited for
-# when no host has it, said once.  The host is campaign_placed_host.
+# when no host has it, said once, and how long when it gets room, so a
+# step's wall time names its wait (tools/analysis/timeline.py).  The host is
+# campaign_placed_host.
 campaign_placed_host=""
 campaign_head_place() {
   local need=$1 ramp=$2 host room best best_room said=false status=0
+  local since=${SECONDS}
   while true; do
     campaign_host_head_start=1 campaign_host_try_charge localhost "${need}" \
       "${ramp}"
     if (( status == 0 )); then
       campaign_placed_host=localhost
+      campaign_head_placed "${said}" "${need}" "${since}"
       return 0
     fi
     best=""
@@ -3822,6 +3826,7 @@ campaign_head_place() {
       campaign_host_try_charge "${best}" "${need}" "${ramp}"
       if (( status == 0 )); then
         campaign_placed_host=${best}
+        campaign_head_placed "${said}" "${need}" "${since}"
         return 0
       fi
     fi
@@ -3833,6 +3838,14 @@ host: ${campaign_host_wait_reason}"
     campaign_head_heartbeat
     sleep "${campaign_host_poll_s}"
   done
+}
+
+# campaign_head_placed <said> <need_mb> <since>: a head step that waited for
+# room says how long, once it has it.
+campaign_head_placed() {
+  [[ "$1" == true ]] || return 0
+  campaign_log "room for a head step of $2 MB on ${campaign_placed_host} \
+after waiting $(( SECONDS - $3 )) s"
 }
 
 # How long a head step placed on a peer may run there: the case's whole

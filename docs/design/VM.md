@@ -66,7 +66,11 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   branch is an event even when concrete (zero conditions). `getConcolicBranchEvents` returns the
   events since the last read; `getConcolicPathConditionRange` a range of the region's conditions.
   `pauseConcolicPathCondition` / `resumeConcolicPathCondition` (nestable) mute recording around the
-  engine's own code.
+  engine's own code: every hook call the weave emits, and the engine code the JDK runs on a
+  program thread (an inheritable thread-local's `childValue` in `Thread.init`,
+  `runtime/InheritedState`). Paused, the interpreter propagates nothing and no model runs
+  (`ConcolicMngr::can_do_concolic`), so the engine's lists over program objects shadow none of
+  them.
 
 ## 3. Propagation through bytecode
 
@@ -79,7 +83,7 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 | `tableswitch`, `lookupswitch` | the taken case; the default arm is the conjunction of `sel != k` over every key |
 | array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE`; a load at a concrete position the recorded writes decide builds no READ (§6); the first symbolic store into an array starts its element's log |
 | `getfield`/`getstatic` | the field shadow, resolved through the version log where tracked (§5); a demand-minted `FieldAccessExpression` where the owner is shadowed; a box's `value` read from a box that carries no expression is the box slot's expression (the unboxing of a slot-carried value) |
-| `putfield`/`putstatic` | set the field shadow; publish a version (§5) |
+| `putfield`/`putstatic` | set the field shadow; publish a version (§5); a reference is symbolic only by what it carries (§5.1) |
 | `invoke*` | argument and return transfer; model dispatch (§4) |
 | `Method.invoke`, `Constructor.newInstance` | boxed arguments and result carried (`VM/runtime/reflection.cpp`) |
 | `checkcast`, `monitorenter`/`exit` | concrete |
@@ -181,10 +185,23 @@ Container versions carry no word: a container mutation is a Java call no lock ca
 
 Tracking is by value; nothing is declared in advance. A log starts at the first symbolic store
 (field or array element), a mint, an attach, a symbolic container operation, an admitted guarded
-store (§5.3), or `observeField` (§5.4). Once tracked, every store to it is versioned,
+store (§5.3), or `observeField` (§5.4). A log a symbolic store starts has no INITIAL: the value
+that store wrote is the first thing it knows, and a store before it is no version
+(`SFV::begin_store_locked`). Once tracked, every store to it is versioned,
 concrete ones included, with the stored operand, not a heap re-read. A mint, an attach and an
 observation read the word they state under the location's lock (`publish_held`,
 `publish_initial_held`).
+
+A stored reference is symbolic by what it carries: its slot's expression, else the expression its
+object holds as its own (`ContainerSupport::semantic_value`: a decode's mint, a model's result).
+Null, and a shadow that only names its object (an owner of a tracked field, a referent named
+once), are concrete (`putfield`/`putstatic`, `aastore`), as a model's argument is
+(`MethodSymbolizerHandle::general_check_param_symbolized`): naming an object is not making it
+symbolic. Counted symbolic, a name started a log at every location it was stored into, gave each
+owner a shadow in turn, and a load of it from such an array made the element demand-symbolic,
+every field read of it a projection; in hdfs-17960 the image's name reached the checkpoint
+savers' threads, and their context class loader 13k rows of a configuration parse. A concrete
+reference stored where a log stands is versioned as any concrete store is, naming its referent.
 
 ### 5.2 Reads
 
@@ -470,7 +487,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 63
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 65
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -478,7 +495,10 @@ unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither 
 `RegionCloneSmoke`, `RegionUnsafeWriteSmoke`, `RegionSharedBoxSmoke`,
 `RegionStringBuilderMutatorSmoke`, `RegionWrapperFieldSmoke`), and the versioning rules theirs
 (`RegionTrackedRaceSmoke`, `RegionReadExactnessSmoke`, `RegionLoadedValueSmoke`,
-`RegionVersionDefectsSmoke`, and for a reference carrier `RegionReferenceSwapSmoke`); the
+`RegionVersionDefectsSmoke`, for a reference carrier `RegionReferenceSwapSmoke`, and for a
+reference that only names its object `RegionNamedReferenceStoreSmoke`, §5.1, instance, static
+and element); the engine's paused bookkeeping in `Thread.init` has `RegionInheritedStateSmoke`
+(§2); the
 collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, callbacks, a
 tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
 `RegionWrapperViewSmoke` (a view or wrapper is its container) and

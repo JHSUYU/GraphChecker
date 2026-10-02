@@ -191,7 +191,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field) |
-| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2) |
+| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
 **Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
@@ -455,9 +455,10 @@ window came first. An access before its object's constructor call, and a read si
 for a `float` or `double` field) is an `UNSTATED_VALUE` DIAGNOSTIC row naming it.
 
 Each observed row states its cell's `trackedKind`; a `REFERENCE` cell's access is observed like a
-value's. Not observed: a `publishedFrom` write site, whose receiver is the local's container, not
-the carrier's holder (its log starts at its first model event); and a static cell, whose location
-is its class's mirror: the map names it (`static: true`) and the weave passes no class owner yet.
+value's; a static cell's (`static: true`) on its declaring class's mirror, the key its location
+has (`CausynthPipeline#instrumentConcolicObservedSites`), before the `putstatic` or `getstatic`. Not
+observed: a `publishedFrom` write site, whose receiver is the local's container, not the carrier's
+holder (its log starts at its first model event).
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).
@@ -497,7 +498,8 @@ container's shape by interface, `JavaContainerTypes#shape`; a String; a box's va
 class no sort names (an application class, an interface, `Object`) holds any reference; a runtime
 class no sort names may be a container, never a String or a box, both final. A `Map` field holding
 a `ConcurrentHashMap` is that field's carrier. The site must also store the recorded location's
-kind (`#stores`): a field store, or an atomic's write of its value, a field; any other mutator call
+kind (`#stores`): a field store, or an atomic's write of its value, a field -- a static one a
+class's location, an instance one an object's; any other mutator call
 the state of the container its carrier holds; a read its field or, of a container field, that
 container's state; and no site of the map an array element, whose write joins no carrier. COMPOSE joins a store to its carriers
 by the same rule (`Composer#constructionGuards`). A read of a reference also rests on the container
@@ -596,12 +598,14 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   the scope is not recognized; configuration values and pre-window state are roots only where a
   tree hook says so.
 - The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
-  and `AtomicReference.value`) and the atomics' integral `value` from an observed access (§5.2); a
-  static cell is not observed (the weave passes no class owner). A container reached through a
+  and `AtomicReference.value`, a static one on its class's mirror) and the atomics' integral
+  `value` from an observed access (§5.2). A container reached through a
   replaced reference is the referent's state its store stated (`referentState`), which COMPOSE
   asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
   fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
-  queues are classified by interface here, modeled by R3-REFCONT WP3b/c).
+  queues are classified by interface here, modeled by R3-REFCONT WP3b/c). A `String` field's log
+  starts at its first symbolic store, with no INITIAL (VM.md §5.1), so a store before it -- a null
+  -- is no writer a read of it can be re-paired with (open defect 34).
 - Root admission (§4.4) is by field, not by object: a root whose influence stores a demanded
   field of another object is admitted. It sees a root's effect only through the candidate edges
   of the methods its occurrence performed: an effect that leaves through a call outside them, or

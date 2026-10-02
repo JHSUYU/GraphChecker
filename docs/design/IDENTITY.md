@@ -205,6 +205,17 @@ nothing and writes no event; its work is unnamed (§1). A pool's own worker thre
 inherits no scope (`runtime/PoolWorkers`: `ThreadPoolExecutor.addWorker`,
 `ForkJoinPool.createWorker`, Jetty `QueuedThreadPool.startThread`); each task carries its own.
 
+A new thread inherits its creator's lineage, execution index and trace scope through the engine's
+inheritable thread-locals (`runtime/InheritedState`: `Lineage`, `Identity`,
+`RuntimeTraceContext`). `Thread.init` computes them on the creator, inside whatever region it
+stands in, and no weave brackets a call the JDK makes, so `InheritedState#childValue` pauses the
+VM's propagation itself (`ConcolicVmBroker#pauseEngineWork`), as every woven hook call is paused:
+the child inherits its identity, and the creator's objects get no shadow. Unpaused, the index's
+list of the creator's frame receivers named each one by a container relation, so every later read
+of their fields was symbolic: in hdfs-17960 a planned checkpoint handler's `Thread.init` read its
+own `contextClassLoader` symbolically, and the image savers' `core-default.xml` parse was tracked
+row by row.
+
 The lineage scope (`plan/LineageScan`, run by `run_engine.sh campaign_lineage_classes` over
 `causynth_lineage_roots`) weaves the start, claim and timed-wait hooks into every class of the
 system's own class roots that starts, hands off, runs or waits, whether or not the case analyses

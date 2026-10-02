@@ -35,14 +35,14 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class Identity {
     private static final ThreadLocal<State> CURRENT =
-            new InheritableThreadLocal<State>() {
+            new InheritedState<State>() {
                 @Override
                 protected State initialValue() {
                     return new State();
                 }
 
                 @Override
-                protected State childValue(State parent) {
+                protected State inherit(State parent) {
                     // A thread starts where it was created, but for a pool's
                     // worker: every task carries its own start explicitly.
                     return parent == null || PoolWorkers.constructing()
