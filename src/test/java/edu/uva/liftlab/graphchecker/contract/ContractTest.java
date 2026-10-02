@@ -237,6 +237,52 @@ public class ContractTest {
         }
     }
 
+    /**
+     * A JVM's store keeps each VM node's expansion, not its definition: a
+     * node another envelope names again is the same object, two nodes'
+     * equal strings are one value, and a node defined again otherwise is
+     * refused.
+     */
+    @Test
+    public void aVmNodeIsKeptOnceAndDefinedAlike() {
+        VmExpressionTable.Store store = new VmExpressionTable.Store();
+        JsonObject first = store.importEnvelope(vmEnvelope(
+                vmReference(1), vmDefinition(1, symbol("M_I_site"))))
+                .getAsJsonObject("expression");
+        JsonObject twice = store.importEnvelope(vmEnvelope(vmReference(2),
+                vmDefinition(1, symbol("M_I_site")),
+                vmDefinition(2, binary("==", vmReference(1),
+                        symbol("M_I_site"))))).getAsJsonObject("expression");
+        assertSame(first, twice.get("_left"));
+        assertSame(first.get("_exp"),
+                twice.getAsJsonObject("_right").get("_exp"));
+        try {
+            store.importEnvelope(vmEnvelope(vmReference(1),
+                    vmDefinition(1, symbol("M_I_other"))));
+            fail("node 1 defined again otherwise");
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains("conflicting"));
+        }
+    }
+
+    private static JsonObject vmEnvelope(JsonObject expression,
+                                         JsonObject... definitions) {
+        JsonArray rows = new JsonArray();
+        for (JsonObject definition : definitions) rows.add(definition);
+        JsonObject table = new JsonObject();
+        table.addProperty("schemaVersion", 1);
+        table.addProperty("kind", VmExpressionTable.KIND);
+        table.addProperty("authority", VmExpressionTable.AUTHORITY);
+        table.addProperty("sessionId", 1L);
+        table.addProperty("definitionCount", rows.size());
+        table.add("definitions", rows);
+        JsonObject envelope = new JsonObject();
+        envelope.add(VmExpressionTable.FIELD, table);
+        envelope.add("expression", expression);
+        return envelope;
+    }
+
     private static JsonObject vmReference(long id) {
         JsonObject reference = new JsonObject();
         reference.addProperty("_type", VmExpressionTable.REFERENCE_TYPE);

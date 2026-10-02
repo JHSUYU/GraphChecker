@@ -113,7 +113,11 @@ written once per session. Reading (`SessionExpressionLog.read`) rebuilds the sha
 published: an empty table would hide it behind `UNSTATED_VALUE`), a wrong header, a node named
 before it is defined, or a node defined twice. Rows cite only this spelling (invariant 3); the
 `EXPR.v1.<sha256>` anchors of `SharedExpressionTable`/`VmExpressionTable` live inside the
-runtime's region store.
+runtime's region store. That store keeps each VM node's expansion, one object however many
+envelopes name it, and only that: a node's definition only while its envelope imports, then its
+hash (a node defined again must hash alike), and one instance of each member name and string value
+(kept whole, a SplitShardTest seed replay's 265 thousand nodes filled its 4 GB heap, 2.1 GB of it
+copies of the same site strings).
 
 ### 2.4 Reading (`SessionReader`)
 

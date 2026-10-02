@@ -6,10 +6,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -84,10 +85,27 @@ public final class VmExpressionTable {
         }
     }
 
+    /**
+     * One JVM's VM nodes, each expanded once and kept (Expansion).  What it
+     * keeps grows with every node the run makes, so it keeps no more: a
+     * node's definition only while its envelope imports (an envelope states
+     * the closure of every node it names), then its hash, and one instance
+     * of each member name and string value -- VM nodes repeat their sites'
+     * class, method, descriptor and code-position strings.  Kept whole, the
+     * definitions beside their expansions and every string a copy, they held
+     * the 4 GB heap of a Solr seed replay full for its last ten minutes
+     * (solr-adhoc SplitShardCmd-658: 265 thousand nodes, 2.1 GB of strings,
+     * 1.1 GB of definition and expansion trees; jmap -histo).
+     */
     private static final class RawResolver
             extends SharedExpressionTable.Expansion<RawKey> {
-        private final Map<RawKey, JsonObject> definitions =
-                new LinkedHashMap<>();
+        /** The importing envelope's definitions. */
+        private final Map<RawKey, JsonObject> definitions = new HashMap<>();
+        /** Per node ever defined, its definition's hash: an envelope that
+         *  defines it again defines it alike (to the hash's 32 bits). */
+        private final Map<RawKey, Integer> defined = new HashMap<>();
+        private final Map<String, String> names = new HashMap<>();
+        private final Map<String, JsonPrimitive> strings = new HashMap<>();
 
         private RawResolver() {
             super("VM expression");
@@ -101,7 +119,10 @@ public final class VmExpressionTable {
 
         @Override
         JsonObject definition(RawKey key) {
-            return definitions.get(key);
+            // Asked once per node, when it is first expanded: the copy its
+            // expansion keeps, in this store's names and strings.
+            JsonObject stated = definitions.get(key);
+            return stated == null ? null : canonical(stated).getAsJsonObject();
         }
 
         @Override
@@ -116,14 +137,47 @@ public final class VmExpressionTable {
          *  once. */
         private JsonObject importEnvelope(JsonObject artifact) {
             Set<RawKey> supplied = new LinkedHashSet<>();
-            collectTables(artifact, supplied);
-            validateDefinitions(artifact, supplied);
-            JsonElement expandedArtifact = expand(artifact);
-            if (!expandedArtifact.isJsonObject()) {
-                throw new IllegalArgumentException(
-                        "VM artifact root must be object");
+            try {
+                collectTables(artifact, supplied);
+                validateDefinitions(artifact, supplied);
+                JsonElement expandedArtifact = expand(artifact);
+                if (!expandedArtifact.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            "VM artifact root must be object");
+                }
+                return expandedArtifact.getAsJsonObject();
+            } finally {
+                definitions.clear();
             }
-            return expandedArtifact.getAsJsonObject();
+        }
+
+        /** A copy of a definition with this store's one instance of each
+         *  member name and string value (definitions are shallow: a child
+         *  node is a reference). */
+        private JsonElement canonical(JsonElement value) {
+            if (value.isJsonObject()) {
+                JsonObject copy = new JsonObject();
+                for (Map.Entry<String, JsonElement> member
+                        : value.getAsJsonObject().entrySet()) {
+                    copy.add(names.computeIfAbsent(member.getKey(),
+                            name -> name), canonical(member.getValue()));
+                }
+                return copy;
+            }
+            if (value.isJsonArray()) {
+                JsonArray copy = new JsonArray();
+                for (JsonElement item : value.getAsJsonArray()) {
+                    copy.add(canonical(item));
+                }
+                return copy;
+            }
+            if (value.isJsonPrimitive()
+                    && value.getAsJsonPrimitive().isString()) {
+                return strings.computeIfAbsent(value.getAsString(),
+                        text -> value.getAsJsonPrimitive());
+            }
+            // Numbers are mostly ids, each its own; JsonNull is one.
+            return value.deepCopy();
         }
 
         /** Envelopes are self-contained: validate this table's closure before
@@ -199,13 +253,11 @@ public final class VmExpressionTable {
                             "VM expression definition disagrees with table");
                 }
                 JsonObject definition = expression.getAsJsonObject();
-                JsonObject prior = definitions.get(key);
-                if (prior == null) {
-                    // Retain no caller-owned mutable object.
-                    JsonObject stable = definition.deepCopy();
-                    prior = definitions.putIfAbsent(key, stable);
-                }
-                if (prior != null && !prior.equals(definition)) {
+                Integer hash = definition.hashCode();
+                Integer before = defined.putIfAbsent(key, hash);
+                JsonObject here = definitions.putIfAbsent(key, definition);
+                if (before != null && !before.equals(hash)
+                        || here != null && !here.equals(definition)) {
                     throw new IllegalArgumentException(
                             "conflicting VM expression definition: " + key);
                 }
