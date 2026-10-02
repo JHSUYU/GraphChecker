@@ -257,8 +257,8 @@ public class OccurrenceAddressIsNotARequestTest {
                     ran.regionId(), ran.context(), ExecutionIndex.of(
                             singletonList(Frame.of("<a.B: void m()>", 1))));
             assertTrue(new ConcolicTaskPlan(null, Arrays.asList(asked,
-                    planned)).occupies(asked.rootHookGroupKey(), sibling));
-            assertFalse(plan(asked).occupies(asked.rootHookGroupKey(),
+                    planned)).occupies(asked.rootHookGroup, sibling));
+            assertFalse(plan(asked).occupies(asked.rootHookGroup,
                     sibling));
 
             // The region entry opens the run's own address; the admission
