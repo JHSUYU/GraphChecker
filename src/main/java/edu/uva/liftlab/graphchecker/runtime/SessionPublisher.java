@@ -263,7 +263,7 @@ public final class SessionPublisher {
      */
     private void fail(IOException unwritable) {
         failed = true;
-        System.err.println("Causynth could not write session rows to "
+        EngineConsole.println("Causynth could not write session rows to "
                 + layout.dir() + ": " + unwritable);
     }
 

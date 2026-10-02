@@ -158,7 +158,7 @@ public final class RecordingPlant {
         new Thread(root, new Runnable() {
             @Override
             public void run() {
-                System.err.println("Causynth " + java.time.Instant.now()
+                EngineConsole.println("Causynth " + java.time.Instant.now()
                         + ": the native run ends AT_ANCHOR: the planted world"
                         + " took the fatal arm of " + siteId + " at "
                         + anchor);

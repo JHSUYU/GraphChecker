@@ -4883,7 +4883,8 @@ exposure can be grown into"
     >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
   [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
     "${round_dir}/grow-stderr.log" \
-    "the exposed-region planner failed with exit ${status}"
+    "the exposed-region planner failed with exit ${status}: \
+$(campaign_thrown "${round_dir}/grow-stderr.log")"
   require_nonempty "exposed region plan rows" "${rows}"
   stream_generation=$((stream_generation + 1))
   generation="${iteration_dir}/generations/g${stream_generation}"

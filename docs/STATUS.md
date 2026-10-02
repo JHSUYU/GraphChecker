@@ -304,6 +304,18 @@ Correctness:
     (`gc/explore/Corpus#senderOf`, `#receiverOf`), so `gc/explore/ClosurePlanner#controlProducer`
     proposes no door fault of the message the run's occurrence actually ran under, and
     `gc/smt/Arms#concurrent` finds its chain unknown.
+35. A held `WAKE` is real time to the thread it holds: while the order's frontier stalls on an
+    event the replay does not make (an IPC connection's `setupIOstreams` START the recording made),
+    every later `WAKE` slot waits a timeout and a grace (17 s), and Hadoop's `JvmPauseMonitor`
+    logs that as a JVM pause into the `System.err` a test captures: a40h2 FSImage-851's seed
+    replay failed `TestDFSAdminWithHA` line 786 on it, before the declared occurrence (line 789's
+    `BootstrapStandby`) ran. (The engine's own lines no longer reach that stream,
+    `gc/runtime/EngineConsole`.)
+36. Which DataNode a block recovery's primary is, is the NameNode's most recently heartbeated
+    replica (`BlockUnderConstructionFeature#initializeBlockRecovery`, `getLastUpdateMonotonic`), a
+    timing no schedule holds: a40h2 and a live re-run of FsDatasetImpl-3171 replayed the two
+    DataNodes' roles swapped, so the declared `updateReplicaUnderRecovery` (its node, or the
+    anchor its chain began at) never ran; REPLAY names the nearest activation's difference.
 
 Scale and robustness:
 

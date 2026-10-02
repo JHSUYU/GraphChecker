@@ -265,7 +265,12 @@ is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY; t
 the declared task went unanswered, its `TASK_UNANSWERED` row (`campaign_target_unanswered`: the
 nearest activations and how each differed -- another node, an anchor the run never minted -- or that
 its root never ran). The workload's exit
-code is not the gate (a target that throws exits nonzero by design).
+code is not the gate (a target that throws exits nonzero by design). Everything the engine prints in
+a workload JVM -- the schedule's lines, a publication's failure, the workload's terminating
+exception -- goes to the standard error the JVM started with (`runtime.EngineConsole`), never through
+the `System.err` a test may have captured and asserts on (a40h2 FSImage-851: its seed replay failed
+`TestDFSAdminWithHA#verifyUpgradeQueryOutput` on the schedule's own lines, before the declared
+occurrence ran).
 
 A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
 end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region

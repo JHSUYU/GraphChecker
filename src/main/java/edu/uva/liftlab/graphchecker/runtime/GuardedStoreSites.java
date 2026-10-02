@@ -220,7 +220,7 @@ final class GuardedStoreSites {
 
     private static void log(String detail) {
         try {
-            System.err.println("CAUSYNTH-SESSION|" + detail);
+            EngineConsole.println("CAUSYNTH-SESSION|" + detail);
         } catch (Throwable ignored) {
         }
     }

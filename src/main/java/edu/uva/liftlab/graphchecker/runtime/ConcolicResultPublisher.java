@@ -309,7 +309,7 @@ final class ConcolicResultPublisher {
                 // The replay log's one line saying when and why it ended, as
                 // a UTC instant: a workload may randomize the JVM's zone
                 // (Solr's test framework does).
-                System.err.println("Causynth " + java.time.Instant.now()
+                EngineConsole.println("Causynth " + java.time.Instant.now()
                         + ": the replay ends " + end + ": " + end.when);
                 JUnitMethodRunner.exit(0);
             }
@@ -519,7 +519,7 @@ final class ConcolicResultPublisher {
                                 + " could not publish its rows: "
                                 + rootCause(failure));
             } catch (Throwable reportingFailure) {
-                System.err.println("Causynth could not publish"
+                EngineConsole.println("Causynth could not publish"
                         + " TASK_UNANSWERED for "
                         + active.activation.taskId + ": "
                         + rootCause(reportingFailure));
