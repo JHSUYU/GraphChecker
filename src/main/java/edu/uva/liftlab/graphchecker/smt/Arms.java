@@ -38,8 +38,8 @@ import java.util.Set;
  *       endpoint's exports from the runs whose OWN pairing named this
  *       consumer, never every export at the endpoint.</li>
  *   <li><b>Guard (CONTRACT-SPEC §4)</b> — the delivering replay's values of
- *       the roots the expression names and of every varied root; never a
- *       clock, never
+ *       the roots the expression names, of every varied root, and of every
+ *       root it ran concretely ({@link Rows#ranRoot}); never a clock, never
  *       the prefix's roots (the prefix is already conjoined).</li>
  *   <li><b>Prefix</b> — the producer's decisions with {@code seq} below the
  *       export's.</li>
@@ -79,32 +79,31 @@ public final class Arms {
         /** This session's mint row for this root, or null. */
         RootMintRow root(String rootId, String sessionId);
 
+        /**
+         * The mint row naming the root this session RAN: its own, else
+         * another session's at an occurrence this one ran concretely and
+         * states a reading at ({@code SessionManifest#concreteReadings}),
+         * else null.
+         */
+        RootMintRow ranRoot(String rootId, String sessionId);
+
         /** Every root the corpus minted, by root id. */
         Map<String, List<RootMintRow>> roots();
 
         /**
          * What one session RAN one root at, or {@code ""}.  Not the mint's
          * {@code recordedValue}: a planted replay states its value only in
-         * its obligation.
+         * its obligation; and a replay that ran the root's occurrence
+         * concretely states it as a reading, not a mint.
          */
         String rootValue(String sessionId, String rootId);
 
         /**
-         * Whether the corpus ran this root at more than one value.  One
-         * definition because it decides both what a PATH carries and what an
-         * ARM is guarded by, which must agree.
+         * Whether the sessions of the corpus ran this root at more than one
+         * value.  One definition because it decides both what a PATH
+         * carries and what an ARM is guarded by, which must agree.
          */
-        default boolean varied(String rootId) {
-            List<RootMintRow> minted = roots().get(rootId);
-            if (minted == null) return false;
-            Set<String> values = new LinkedHashSet<String>();
-            for (RootMintRow row : minted) {
-                String value = rootValue(row.sessionId(), rootId);
-                if (value == null || value.isEmpty()) continue;
-                values.add(value);
-            }
-            return values.size() > 1;
-        }
+        boolean varied(String rootId);
 
         /** The attach that minted this symbol in this session, or null. */
         AttachRow attachOfSymbol(String symbol, String sessionId);
@@ -553,7 +552,7 @@ public final class Arms {
         Set<String> guardRoots = new LinkedHashSet<String>();
         for (Map.Entry<String, List<RootMintRow>> entry
                 : rows.roots().entrySet()) {
-            RootMintRow row = rows.root(entry.getKey(), session);
+            RootMintRow row = rows.ranRoot(entry.getKey(), session);
             if (row == null) {
                 // Refuse, never emit unguarded -- an empty guard would
                 // admit the arm under every valuation of this root.
@@ -568,8 +567,11 @@ public final class Arms {
             // it would close every skew witness resting on this arm.
             if (row.kind() == RootKind.CLOCK) continue;
             // Varied roots too, not only the expression's: the arm exists
-            // only under the valuation its replay ran.
-            if (!rows.varied(entry.getKey())
+            // only under the valuation its replay ran.  A root the replay
+            // ran concretely, always: its literals were computed from the
+            // reading, and no term says how they move with it.
+            boolean minted = rows.root(entry.getKey(), session) != null;
+            if (minted && !rows.varied(entry.getKey())
                     && !symbols.contains(row.symbol())) {
                 continue;
             }

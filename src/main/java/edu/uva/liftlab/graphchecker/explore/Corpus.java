@@ -1274,14 +1274,65 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * {@link Arms.Rows#varied}, once per root.  This and {@link #roots} are
-     * asked per arm and per root, and a corpus does not change once read:
-     * rebuilding them per ask made COMPOSE quadratic in the sessions
-     * (hdfs-17899-bug2, 800 sessions).
+     * {@link Arms.Rows#varied}: more than one value among what every
+     * session ran the root at ({@link #rootValue}), minted or read
+     * concretely.  Once per root: this and {@link #roots} are asked per arm
+     * and per root, and a corpus does not change once read -- rebuilding
+     * them per ask made COMPOSE quadratic in the sessions (hdfs-17899-bug2,
+     * 800 sessions).
      */
     @Override
     public boolean varied(String rootId) {
-        return varied.computeIfAbsent(rootId, id -> Arms.Rows.super.varied(id));
+        return varied.computeIfAbsent(rootId, id -> {
+            Set<String> values = new LinkedHashSet<String>();
+            for (SessionReader session : sessions) {
+                String value = rootValue(session.sessionId(), id);
+                if (!value.isEmpty()) values.add(value);
+            }
+            return values.size() > 1;
+        });
+    }
+
+    /**
+     * {@link Arms.Rows#ranRoot}: the session's own mint, else the mint --
+     * the seed's first, as {@code Composer#seedRow} -- whose occurrence this
+     * session ran concretely and states a reading of the root at.
+     */
+    @Override
+    public RootMintRow ranRoot(String rootId, String sessionId) {
+        RootMintRow own = rootOf(sessionId, rootId);
+        return own != null ? own : readAt(sessionId, rootId);
+    }
+
+    /** The mint whose occurrence this session states a concrete reading
+     *  of the root at, or null. */
+    private RootMintRow readAt(String sessionId, String rootId) {
+        Map<String, String> readings = concreteReadings(sessionId, rootId);
+        Map<String, RootMintRow> minted = rootsById.get(rootId);
+        if (readings.isEmpty() || minted == null) return null;
+        List<RootMintRow> order = new ArrayList<RootMintRow>();
+        RootMintRow seed = minted.get(seedSessionId());
+        if (seed != null) order.add(seed);
+        order.addAll(minted.values());
+        for (RootMintRow mint : order) {
+            if (mint.occurrence() != null
+                    && readings.containsKey(mint.occurrence().render())) {
+                return mint;
+            }
+        }
+        return null;
+    }
+
+    /** Rendered occurrence -> what this session read the root at there
+     *  concretely ({@code SessionManifest#concreteReadings}). */
+    private Map<String, String> concreteReadings(String sessionId,
+                                                 String rootId) {
+        SessionReader session = sessionById.get(sessionId);
+        Map<String, String> readings = session == null
+                || session.manifest() == null ? null
+                : session.manifest().concreteReadings().get(rootId);
+        return readings == null ? Collections.<String, String>emptyMap()
+                : readings;
     }
 
     @Override
@@ -1370,12 +1421,18 @@ public final class Corpus implements Arms.Rows {
      *  arm guards and model comparison. A replay that PLANTED the root states
      *  no recorded value (a counterfactual is not a recording), so the ask
      *  ({@code rootAssignments}) wins; otherwise the mint's {@code
-     *  recordedValue}. */
+     *  recordedValue}; where it minted none, its concrete reading at the
+     *  occurrence of the mint {@link #ranRoot} names. */
     @Override
     public String rootValue(String sessionId, String rootId) {
         String wave = world(sessionId).rootAssignments.get(rootId);
         if (wave != null && !wave.isEmpty()) return wave;
-        return rootReading(sessionId, rootId);
+        if (rootOf(sessionId, rootId) != null) {
+            return rootReading(sessionId, rootId);
+        }
+        RootMintRow read = readAt(sessionId, rootId);
+        return read == null ? "" : concreteReadings(sessionId, rootId)
+                .get(read.occurrence().render());
     }
 
     /** The mint's own reading, or "" (unlike {@link #rootValue}, ignores the

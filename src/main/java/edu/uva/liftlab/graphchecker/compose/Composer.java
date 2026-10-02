@@ -973,9 +973,9 @@ public final class Composer {
                 joins, answered);
 
         // (1) The valuation this replay ran under, for every VARIED root
-        //     (a root may be written and never branched on).  Declared roots
-        //     this session did NOT mint are answered in (1b), once the
-        //     path's terms are whole.
+        //     (a root may be written and never branched on) and every root
+        //     it ran concretely.  Declared roots this session neither minted
+        //     nor read are answered in (1b), once the path's terms are whole.
         Map<String, Set<String>> unminted =
                 new LinkedHashMap<String, Set<String>>();
         terms.addAll(valuationOf(session, refusals, unminted));
@@ -1172,7 +1172,9 @@ public final class Composer {
     /**
      * What this replay ran every varied root at: {@link Corpus#rootValue}
      * (the mint's reading, or the obligation's assignment where the replay
-     * PLANTED it; a flip mint states no recorded value).
+     * PLANTED it; a flip mint states no recorded value) -- and every root it
+     * ran concretely, at its reading ({@link Corpus#ranRoot}), the same
+     * roots its arms are guarded by ({@code Arms#arm}).
      */
     private List<String> valuationOf(String session,
                                      List<GapRow> refusals,
@@ -1183,6 +1185,20 @@ public final class Composer {
             RootMintRow any = corpus.anyRoot(entry.getKey());
             RootMintRow row = corpus.root(entry.getKey(), session);
             if (any == null || any.kind() == RootKind.CLOCK) continue;
+            RootMintRow concrete = row == null
+                    ? corpus.ranRoot(entry.getKey(), session) : null;
+            if (concrete != null) {
+                // Ran concretely: its terms are literals computed from the
+                // reading, so the path holds at it alone -- pinned, whether
+                // or not the corpus varies the root, never a window.
+                String literal = smtLiteral(corpus.rootValue(session,
+                        concrete.rootId()), sortOf(concrete));
+                if (literal.isEmpty()) continue;
+                lowering.declareStated(concrete.symbol(), sortOf(concrete));
+                valuation.add("(= " + concrete.symbol() + " " + literal
+                        + ")");
+                continue;
+            }
             if (row == null) {
                 // Not minted here: never pin another session's reading.
                 // Collect its symbols; {@link #unstatedRoots} refuses only

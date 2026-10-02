@@ -242,10 +242,13 @@ public class RowRuntimeTest {
     /**
      * Unnamed work opens no occurrence (IDENTITY §1), and is never silent:
      * each region a node's unnamed work entered is one LINEAGE_LOST row, and
-     * the manifest counts every entry at the run's end.
+     * the manifest counts every entry at the run's end.  So is a declared
+     * source read where its occurrence ran concretely: the manifest states
+     * the first reading at each occurrence, and nothing for a value the
+     * hook could not spell.
      */
     @Test
-    public void unnamedEntriesAreNamedOnceAndCountedInTheManifest()
+    public void theRunsEndStatesUnnamedEntriesAndConcreteReadings()
             throws Exception {
         RowRuntime.configure(sessionFile());
         RecordingWindow.open();
@@ -264,6 +267,10 @@ public class RowRuntimeTest {
             handler.start();
             handler.join();
             assertEquals(Arrays.asList(null, null, null), opened);
+            RowRuntime.concreteReading("ROOT.SERIAL", "occ#1", "119528");
+            RowRuntime.concreteReading("ROOT.SERIAL", "occ#1", "119529");
+            RowRuntime.concreteReading("ROOT.SERIAL", "occ#2", "119529");
+            RowRuntime.concreteReading("ROOT.SERIAL", "occ#3", "");
             RowRuntime.closeSession();
         } finally {
             RecordingWindow.reset();
@@ -281,6 +288,12 @@ public class RowRuntimeTest {
         counted.put(node + "REGION.wrap", 1);
         assertEquals(counted, new HashMap<>(RowCodec.readManifest(
                 session().manifest()).unnamedEntries()));
+        Map<String, String> read = new HashMap<>();
+        read.put("occ#1", "119528");
+        read.put("occ#2", "119529");
+        assertEquals(Collections.singletonMap("ROOT.SERIAL", read),
+                RowCodec.readManifest(session().manifest())
+                        .concreteReadings());
     }
 
     /**

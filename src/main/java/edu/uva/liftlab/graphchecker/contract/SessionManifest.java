@@ -18,7 +18,9 @@ import java.util.TreeMap;
  * FOCUSED replay that activated nothing is still FOCUSED.  At the run's end
  * it also counts the region entries unnamed work made, by {@code
  * <node>/region/<regionId>}: each opened no occurrence (IDENTITY §1), so no
- * row of the session states what ran there.
+ * row of the session states what ran there; and it states what a declared
+ * source was read at where the replay ran its occurrence concretely
+ * ({@link #concreteReadings}).
  */
 public final class SessionManifest {
     /** What a session ran as: the recording, or one counterfactual of it. */
@@ -30,15 +32,25 @@ public final class SessionManifest {
     private final Role role;
     private final List<String> obligationIds;
     private final Map<String, Integer> unnamedEntries;
+    private final Map<String, Map<String, String>> concreteReadings;
 
     private SessionManifest(String sessionId, Role role,
                             List<String> obligationIds,
-                            Map<String, Integer> unnamedEntries) {
+                            Map<String, Integer> unnamedEntries,
+                            Map<String, Map<String, String>> readings) {
         this.sessionId = sessionId;
         this.role = role;
         this.obligationIds = Collections.unmodifiableList(obligationIds);
         this.unnamedEntries = Collections.unmodifiableMap(
                 new TreeMap<String, Integer>(unnamedEntries));
+        Map<String, Map<String, String>> sorted =
+                new TreeMap<String, Map<String, String>>();
+        for (Map.Entry<String, Map<String, String>> root
+                : readings.entrySet()) {
+            sorted.put(root.getKey(), Collections.unmodifiableMap(
+                    new TreeMap<String, String>(root.getValue())));
+        }
+        this.concreteReadings = Collections.unmodifiableMap(sorted);
     }
 
     /** Obligation ids come from the worker's {@code focused_task.jsonl}. */
@@ -53,19 +65,34 @@ public final class SessionManifest {
         }
         return new SessionManifest(Fields.text(sessionId, "sessionId"),
                 Fields.required(role, "role"), ids,
-                Collections.<String, Integer>emptyMap());
+                Collections.<String, Integer>emptyMap(),
+                Collections.<String, Map<String, String>>emptyMap());
     }
 
-    /** This manifest, counting the region entries unnamed work made. */
-    public SessionManifest withUnnamedEntries(Map<String, Integer> entries) {
+    /** This manifest, with what only the run's end can state. */
+    public SessionManifest atClose(Map<String, Integer> entries,
+                                   Map<String, Map<String, String>> readings) {
         return new SessionManifest(sessionId, role, obligationIds,
                 entries == null ? Collections.<String, Integer>emptyMap()
-                        : entries);
+                        : entries,
+                readings == null
+                        ? Collections.<String, Map<String, String>>emptyMap()
+                        : readings);
     }
 
     /** Unnamed work's region entries, by {@code <node>/region/<regionId>}. */
     public Map<String, Integer> unnamedEntries() {
         return unnamedEntries;
+    }
+
+    /**
+     * Root id -> rendered occurrence -> the value a declared source held
+     * when this replay first read it there, at an occurrence it ran
+     * concretely and so minted no root for (CONTRACT-SPEC §2.1): what that
+     * occurrence's rows were computed from, though no symbol stands for it.
+     */
+    public Map<String, Map<String, String>> concreteReadings() {
+        return concreteReadings;
     }
 
     public String sessionId() {
@@ -102,6 +129,17 @@ public final class SessionManifest {
             unnamed.addProperty(entry.getKey(), entry.getValue());
         }
         json.add("unnamedEntries", unnamed);
+        JsonObject readings = new JsonObject();
+        for (Map.Entry<String, Map<String, String>> root
+                : concreteReadings.entrySet()) {
+            JsonObject at = new JsonObject();
+            for (Map.Entry<String, String> reading
+                    : root.getValue().entrySet()) {
+                at.addProperty(reading.getKey(), reading.getValue());
+            }
+            readings.add(root.getKey(), at);
+        }
+        json.add("concreteReadings", readings);
         return json;
     }
 
@@ -124,9 +162,25 @@ public final class SessionManifest {
                 unnamed.put(entry.getKey(), entry.getValue().getAsInt());
             }
         }
+        Map<String, Map<String, String>> readings =
+                new TreeMap<String, Map<String, String>>();
+        if (json.has("concreteReadings")
+                && json.get("concreteReadings").isJsonObject()) {
+            for (Map.Entry<String, com.google.gson.JsonElement> root
+                    : json.getAsJsonObject("concreteReadings").entrySet()) {
+                if (!root.getValue().isJsonObject()) continue;
+                Map<String, String> at = new TreeMap<String, String>();
+                for (Map.Entry<String, com.google.gson.JsonElement> reading
+                        : root.getValue().getAsJsonObject().entrySet()) {
+                    at.put(reading.getKey(),
+                            reading.getValue().getAsString());
+                }
+                readings.put(root.getKey(), at);
+            }
+        }
         return of(JsonFields.optionalString(json, "sessionId"), parsed,
                 JsonFields.strings(json, "obligationIds"))
-                .withUnnamedEntries(unnamed);
+                .atClose(unnamed, readings);
     }
 
     @Override

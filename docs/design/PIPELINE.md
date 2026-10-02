@@ -956,11 +956,17 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   and the owner only as a boxed payload), never the owner's `concreteOwner` chain. An obligation's
   key closes over sharing (`Independence.ofGuard`): a question's identity, not a formula;
 - the valuation this session ran each non-clock root at (`valuationOf`; `Corpus.rootValue`: the
-  focus row's assignment where the replay planted it, else the mint's reading): a declared root
-  minted with no value, or a mint whose `recordedValue` differs from the assignment ("stated twice
-  and differently"), is a BLOCKING refusal; a root the sessions recorded differently is pinned to
-  this session's value, or bounded by its declared window around it; a declared root this session
-  never minted refuses the path only when the path's terms name it;
+  focus row's assignment where the replay planted it, else the mint's reading, else the reading
+  its manifest states where it ran the occurrence of the corpus's mint concretely,
+  `concreteReadings`, `Corpus#ranRoot`): a declared root minted with no value, or a mint whose
+  `recordedValue` differs from the assignment ("stated twice and differently"), is a BLOCKING
+  refusal; a root the sessions ran at different values (`Corpus#varied`, readings included) is
+  pinned to this session's value, or bounded by its declared window around it; a root this session
+  ran concretely is pinned to its reading whether varied or not -- its rows there are literals
+  computed from it, and no term says how they move with it (hdfs-17967-pathA F2b: a path whose
+  key-id arm came from a replay that ran the serial concretely, unguarded, was claimed at a serial it
+  never ran, and CONFIRM refuted it under every jar); a declared root this session neither minted nor
+  read refuses the path only when the path's terms name it;
 - anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
   an attach no session attests the producer of refuses the path (`UNATTESTED_ARM`);
@@ -996,7 +1002,9 @@ a codec hole's is its message key, so the N readers of one stored version, and o
 twice, are one message under one selector; the eligible senders are the
 sessions with an attested arm at every leaf of the message, whose world's flip set contains or is
 contained in the path's; one `message_arm__` selector per sender (identical arm bodies share one),
-exactly one, each arm closed like a path in its own session (producer prefix before the delivery, its
+exactly one, each arm guarded by its replay's value of every root it holds under (`Arms#arm`:
+those its expression names, every varied root, every root its replay ran concretely -- the
+valuation its path would carry, never a clock) and closed like a path in its own session (producer prefix before the delivery, its
 P3 closure, nested families to depth 16). The nested families bind every handoff the arm's conjunction
 names, its delivery's and those its closure's conditions and joins read
 (`ComposedFamilies#handedOn`); one its session minted no attach for, or one paired with no producer,

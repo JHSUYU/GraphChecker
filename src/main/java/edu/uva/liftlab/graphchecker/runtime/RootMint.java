@@ -396,9 +396,12 @@ final class RootMint {
         // No owner on this entry is not a gap.
         if (owner == null) return false;
         // A region running concretely contributes literals, never a free
-        // root; asked first, as it owns no mint to refuse.
+        // root; asked first, as it owns no mint to refuse.  What the literals
+        // were computed from is still stated.
         if (!ActiveRegion.mintsUnderSymbolicOccurrence(active, safe(sourceId),
                 safe(fieldSignature))) {
+            concreteReading(active, safe(sourceId), owner,
+                    safe(fieldSignature));
             return false;
         }
         SourceSiteEntry entry = active.observeConfiguredSourceEntry(
@@ -475,6 +478,30 @@ final class RootMint {
             return true;
         } catch (Throwable failure) {
             return false;
+        } finally {
+            ConcolicRegionRuntime.resumeObservation();
+        }
+    }
+
+    /**
+     * States what a declared source held where its occurrence runs
+     * concretely ({@link RowRuntime#concreteReading}), at the occurrence a
+     * mint there is addressed at ({@code ActiveRegion#mintOccurrence}), so a
+     * reading and another session's mint of one occurrence compare.  A read
+     * under no addressed activation is at no occurrence and states nothing.
+     */
+    private static void concreteReading(ActiveRegion active, String sourceId,
+                                        Object owner, String fieldSignature) {
+        if (active == null) return;
+        String occurrence = active.rootOwner(sourceId).address();
+        if (occurrence.isEmpty()) return;
+        ConcolicRegionRuntime.pauseObservation();
+        try {
+            RowRuntime.concreteReading(sourceId, occurrence,
+                    ConcolicRegionRuntime.recordedScalar(
+                            readExactField(owner, fieldSignature)));
+        } catch (Throwable ignored) {
+            // Observation must never alter the workload's own outcome.
         } finally {
             ConcolicRegionRuntime.resumeObservation();
         }

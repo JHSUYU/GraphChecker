@@ -1569,6 +1569,74 @@ public class ComposerTest {
     }
 
     /**
+     * A replay that ran the counter's occurrence concretely minted no root,
+     * and its rows there are literals computed from what it read: its path
+     * and its arms hold at that reading and at no other, whether or not the
+     * corpus varies the counter.  Unguarded, an arm of such a replay was
+     * admitted under a moved counter, and COMPOSE claimed a fatal no run
+     * reproduces (hdfs-17967-pathA F2b: the seed's path took 185a3b77's
+     * key-id arm, 119528 as a literal, with the serial moved to 119529;
+     * CONFIRM refuted it under every jar).  A replay that never read the
+     * counter stays free of it.
+     */
+    @Test
+    public void aRootReadConcretelyHoldsItsReplaysPathAndArmsAtTheReading()
+            throws Exception {
+        for (boolean read : new boolean[]{true, false}) {
+            Path iteration = folder.newFolder("read-" + read).toPath();
+            for (String id : new String[]{"s0", "s1", "s2"}) {
+                Session session = new Session(iteration, id,
+                        !"s0".equals(id));
+                session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                        !"s0".equals(id), true);
+                if (!"s2".equals(id)) {
+                    session.serial("119994", "+0", "+3");
+                } else if (read) {
+                    session.serialReadConcretely("119994");
+                }
+                session.expression("EXPR.key", integer("I", 7L));
+                session.export(Endpoint.of(PRODUCER, "PORT.key",
+                        at("export#1", 0), 0), "EXPR.key", "I", 1L, "7");
+                session.attach(Endpoint.of(ANCHOR, "PORT.key",
+                                at("attach#1", 0), 0), "vh", "I", "7",
+                        Endpoint.of(PRODUCER, "PORT.key", at("export#1", 0),
+                                0));
+                session.target("true", false, true);
+                session.write();
+            }
+            Composer.Composition composition = compose(iteration, 8);
+            assertEquals(3, composition.disjuncts().size());
+            // Unguarded, the three deliveries are one arm (one body); the
+            // read replay's is its own, guarded by the counter.
+            int guarded = 0;
+            List<Arm> arms = composition.families().get(0).arms();
+            for (Arm arm : arms) {
+                if (arm.guardRoots().contains(SERIAL_ROOT)) guarded++;
+            }
+            assertEquals("read=" + read + ": " + arms, read ? 2 : 1,
+                    arms.size());
+            assertEquals("read=" + read, read ? 1 : 0, guarded);
+            // Never read, no term of the corpus names the counter at all.
+            if (!read) continue;
+            Z3 solver = solver();
+            for (Composer.Disjunct disjunct : composition.disjuncts()) {
+                if (!disjunct.path().sessionId.equals("s2")) continue;
+                for (String serial : new String[]{"119994", "119995"}) {
+                    List<String> pinned = new ArrayList<String>();
+                    pinned.add("(assert " + disjunct.selector() + ")");
+                    pinned.add("(assert (= " + SERIAL + " " + serial
+                            + "))");
+                    assertEquals("its path at " + serial,
+                            "119994".equals(serial) ? "sat" : "unsat",
+                            solver.ask(composition.query(pinned),
+                                    Collections.<String>emptyList(), false)
+                                    .status());
+                }
+            }
+        }
+    }
+
+    /**
      * s0 and s1 mint the declared counter at two readings, so the corpus
      * VARIES it and each path carries its own valuation of it: the
      * NameNode's serial advances between replays, so "up to three rotations
@@ -6242,6 +6310,18 @@ public class ComposerTest {
                     SERIAL, RootKind.INTEGRAL, recorded, min, max, true, null, 0L));
         }
 
+        /** Root id -> occurrence -> what this replay read the root at
+         *  where it ran the occurrence concretely (its manifest's). */
+        private final Map<String, Map<String, String>> readings =
+                new LinkedHashMap<String, Map<String, String>>();
+
+        /** The counter, read at PRODUCER, which this replay ran concretely. */
+        void serialReadConcretely(String value) {
+            readings.computeIfAbsent(SERIAL_ROOT,
+                    root -> new LinkedHashMap<String, String>())
+                    .put(PRODUCER.render(), value);
+        }
+
         void expression(String ref, JsonObject node) {
             expressions.put(ref, node);
         }
@@ -6395,7 +6475,9 @@ public class ComposerTest {
                     explored ? SessionManifest.Role.FOCUSED
                             : SessionManifest.Role.SEED,
                     explored ? Collections.singletonList("OBL." + id)
-                            : Collections.<String>emptyList()));
+                            : Collections.<String>emptyList())
+                    .atClose(Collections.<String, Integer>emptyMap(),
+                            readings));
             // And the VERDICT, which the replay owns: a focused session
             // that states none settled nothing, and the composition asks
             // the session's own row rather than the wave's copy of it.

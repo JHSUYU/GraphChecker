@@ -885,13 +885,20 @@ final class FlipQuery {
                 }
                 conjuncts.add(renamed);
             }
-            for (Map.Entry<String, String> valued : arm.guard().entrySet()) {
-                RootMintRow root = corpus.rootBySymbol(arm.sessionId(),
-                        valued.getKey());
-                if (root == null || !corpus.varied(root.rootId())) continue;
-                String rootVariable = variable(arm.sessionId(),
-                        valued.getKey());
-                String literal = SmtText.literal(valued.getValue(),
+            // A varied root's guard, and a root the arm's replay ran
+            // concretely: its literals hold at that reading alone (Arms).
+            for (String rootId : arm.guardRoots()) {
+                RootMintRow root = corpus.ranRoot(rootId, arm.sessionId());
+                String value = root == null ? null
+                        : arm.guard().get(root.symbol());
+                boolean read = corpus.rootOf(arm.sessionId(), rootId) == null;
+                if (value == null || !read && !corpus.varied(rootId)) {
+                    continue;
+                }
+                // Named in the session that minted it: one variable per root.
+                String rootVariable = variable(root.sessionId(),
+                        root.symbol());
+                String literal = SmtText.literal(value,
                         sorts.get(rootVariable));
                 if (literal.isEmpty()) continue;
                 conjuncts.add("(= " + rootVariable + " " + literal + ")");
