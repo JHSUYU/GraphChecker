@@ -18,12 +18,15 @@ import java.util.function.Function;
  *
  * <p>One rule for every stage that asks whether an occurrence is the
  * question's: PLAN's walk origins ({@code
- * causynth.RuntimeSelectedRegionFinalizer}) and EXPLORE's branch stops
- * ({@code explore.Branches}).</p>
+ * causynth.RuntimeSelectedRegionFinalizer}), EXPLORE's branch stops
+ * ({@code explore.Branches}) and a replay's answer to the declared
+ * occurrence ({@link #answers}, {@code runtime.ConcolicTaskPlan}).</p>
  */
 public final class ContextShape {
     /** The hop a shape states for a sender nothing names. */
     public static final String UNKNOWN_HOP = "?";
+    /** How a shape's last hop names the root its chain began at. */
+    private static final String ROOT_HOP = "Root:";
 
     private ContextShape() {
     }
@@ -78,7 +81,7 @@ public final class ContextShape {
         }
         if (cursor instanceof CausalContext.Root) {
             CausalContext.Root root = (CausalContext.Root) cursor;
-            hops.add("Root:" + root.role().name()
+            hops.add(ROOT_HOP + root.role().name()
                     + (root.api().isEmpty() ? "" : "/" + root.api()));
         } else {
             hops.add(cursor.render());
@@ -98,6 +101,28 @@ public final class ContextShape {
                 && ran.node().equals(question.node())
                 && same(shapes.apply(ran.context()),
                         shapes.apply(question.context()));
+    }
+
+    /**
+     * Whether {@code ran}, an occurrence a replay ran at an address no task
+     * plans, answers the declared occurrence {@code declared}: the same
+     * region, on the same node, under a chain of anchors whose shape is the
+     * declared one's hop for hop ({@code ranShape}, {@code declaredShape},
+     * both off their own run's senders) and known up to the root it began
+     * at.  Stricter than {@link #sameQuestion}, which keeps an occurrence in
+     * the question unless a hop is known to differ: here the run's
+     * occurrence takes the declared address, which only a chain known end to
+     * end may do; an unnamed sender or a {@code Lost} context names none.
+     */
+    public static boolean answers(OccurrenceAddress ran,
+                                  OccurrenceAddress declared,
+                                  List<String> ranShape,
+                                  List<String> declaredShape) {
+        return ran.regionId().equals(declared.regionId())
+                && ran.node().equals(declared.node())
+                && !ranShape.isEmpty()
+                && ranShape.get(ranShape.size() - 1).startsWith(ROOT_HOP)
+                && ranShape.equals(declaredShape);
     }
 
     /**

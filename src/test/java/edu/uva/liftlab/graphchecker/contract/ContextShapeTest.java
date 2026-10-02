@@ -89,6 +89,40 @@ public class ContextShapeTest {
         }
     }
 
+    @Test
+    public void aRunsOccurrenceAnswersTheDeclaredOneOnAKnownEqualChain() {
+        OccurrenceAddress declared = address("c/dn1#epoch0", "REGION.t",
+                "Anchor:e2@HDFS_SASL/balance-block", "<a.B: void m()>@0");
+        Object[][] rows = {
+            {"another turn of the chain's root, another index", true,
+                address("c/dn1#epoch0", "REGION.t",
+                        "Anchor:e1@HDFS_SASL/balance-block",
+                        "<a.B: void m()>@4"), null},
+            {"a sender nothing names", false, address("c/dn1#epoch0",
+                    "REGION.t", "Anchor:e9@HDFS_SASL/balance-block", ""),
+                null},
+            {"a declared chain nothing names", false, address(
+                    "c/dn1#epoch0", "REGION.t",
+                    "Anchor:e9@HDFS_SASL/balance-block", ""),
+                Arrays.asList(ContextShape.UNKNOWN_HOP)},
+            {"another chain", false, address("c/dn1#epoch0", "REGION.t",
+                    "Anchor:e3@HDFS_SASL/balance-block", ""), null},
+            {"another node", false, address("c/dn0#epoch0", "REGION.t",
+                    "Anchor:e1@HDFS_SASL/balance-block", ""), null},
+            {"no chain at all", false, address("c/dn1#epoch0", "REGION.t",
+                    "Lost:CLIENT", ""), Arrays.asList("Lost:CLIENT")},
+        };
+        for (Object[] row : rows) {
+            OccurrenceAddress ran = (OccurrenceAddress) row[2];
+            List<String> declaredShape = row[3] == null
+                    ? ContextShape.of(declared.context(), SENDERS::get)
+                    : list(row[3]);
+            assertEquals((String) row[0], row[1], ContextShape.answers(ran,
+                    declared, ContextShape.of(ran.context(), SENDERS::get),
+                    declaredShape));
+        }
+    }
+
     private static OccurrenceAddress address(String node, String region,
                                              String context, String index) {
         return OccurrenceAddress.parse(node + "/region/" + region + "/ctx:"

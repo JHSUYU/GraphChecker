@@ -430,6 +430,10 @@ public final class ConcolicRegionRuntime {
             }
             active.claimActivation();
             RowRuntime.configure(configuration().resultFile);
+            if (configuration().answeredByQuestion(admitted)) {
+                RowRuntime.answered(Identity.answer(admitted.address),
+                        admitted.address);
+            }
             // The node it RAN on, by the function its admission and the
             // recording both addressed it with; never the planned node.
             active.d3Address = RowRuntime.beginActivation(active.token,

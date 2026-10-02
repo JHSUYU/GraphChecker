@@ -197,6 +197,21 @@ public final class RowRuntime {
     }
 
     /**
+     * States that the occurrence this run ran at {@code ran} answers the
+     * declared occurrence by its question's rule (IDENTITY §9) and states its
+     * rows at {@code declared}: never silent, since the address the run
+     * computed is gone from every row.
+     */
+    static void answered(OccurrenceAddress ran, OccurrenceAddress declared) {
+        if (ran == null) return;
+        gap(GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC, declared.render(),
+                "the declared occurrence ran at " + ran.render() + ", under"
+                        + " a chain of its question's shape whose counts"
+                        + " differ from the recording's, and answers it:"
+                        + " its rows state the declared address");
+    }
+
+    /**
      * States one unselected activation, once: an activation with no row
      * silently downgrades an arm that rests on it.
      */

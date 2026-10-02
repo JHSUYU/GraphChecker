@@ -139,6 +139,14 @@ public final class RuntimeSelectedRegionFinalizer {
      * RuntimeWorkflowDiscovery#declaredOccurrence}); PLAN reads it.
      */
     public static final String DECLARED_OCCURRENCE = "declaredOccurrence";
+    /**
+     * Plan-row member of the declared occurrence: its context's shape over
+     * the recording's senders ({@link RecordedMessages#shape}), which a
+     * replay's occurrence of the question answers it by when the declared
+     * address does not recur ({@code runtime.ConcolicTaskPlan}, IDENTITY
+     * §9).
+     */
+    public static final String QUESTION_SHAPE = "questionShape";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -802,6 +810,8 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         targets.removeAll(otherTargets);
         instances.get(declared).put(DECLARED_OCCURRENCE, true);
+        instances.get(declared).put(QUESTION_SHAPE,
+                messages.shape(question.context()));
         DemandWalk walk = new DemandWalk(program, demands, scopeMap,
                 cutPorts, otherTargets);
         List<String> seeds = new ArrayList<>();

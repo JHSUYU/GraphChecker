@@ -979,6 +979,32 @@ public final class Identity {
     }
 
     /**
+     * Gives the occurrence the innermost region entry opened the address
+     * {@code declared}, which it answers by its question's rule (IDENTITY
+     * §9, {@code ConcolicTaskPlan#select}): from here its rows, endpoints,
+     * decision ordinals, schedule mark and close state the declared address,
+     * as the recording's did, and so does every endpoint minted under it.
+     *
+     * @return the address this run computed for it, or null when the entry
+     *         opened no occurrence of its own (a fold, unnamed work)
+     */
+    public static OccurrenceAddress answer(OccurrenceAddress declared) {
+        Region entered = state().region();
+        if (declared == null || entered == null
+                || entered.occurrence == null) {
+            return null;
+        }
+        OccurrenceAddress ran = entered.occurrence;
+        entered.occurrence = declared;
+        ScheduleLog.mark(declared.id());
+        if (Confirmation.ordering()) {
+            Confirmation.entering(Confirmation.activation(declared,
+                    ExecutionIndex.empty()));
+        }
+        return ran;
+    }
+
+    /**
      * THE FOLD RULE (paper §3.1.2): a declared region entered synchronously
      * inside a running occurrence opens none; everything below it is an
      * event of the running occurrence.  Decided by the call stack only, so

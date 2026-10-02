@@ -3,7 +3,8 @@
 A causal graph node is one region occurrence `(r, c, i)`: the static region `r`, the causal context
 `c` that started it, and the execution index `i` locating it in its component's control structure.
 Recording and every replay compute it with the same function over the same woven hooks, so a node
-of one run is the same node in another iff the ids are equal. Java paths below are under
+of one run is the same node in another iff the ids are equal, the declared occurrence alone also by
+its question (§9). Java paths below are under
 `src/main/java/edu/uva/liftlab/graphchecker/`.
 
 ## 1. The occurrence address
@@ -416,6 +417,23 @@ PLAN reads the resolved address. `plan/SelectorResolution#resolve` takes the k-t
 selector matches (region, and the anchor's api when given); an already-resolved address passes
 through. No match yields a degraded address, reported downstream as `DECLARATION_MISSING`.
 
+**A replay's answer.** A replay admits a planned task by its whole address, id against id
+(`runtime/ConcolicTaskPlan#select`), with one exception: the declared occurrence is also answered by
+its question. PLAN states its context's shape over the recording's senders on its row
+(`questionShape`, `causynth/RuntimeSelectedRegionFinalizer`, `RecordedMessages#shape`); an
+activation of its region on its node, at an address no task of that root plans, in an entry that
+opened its own occurrence, answers it when its own context, shaped over this run's senders
+(`runtime/ScheduleLog#shape`: each producer endpoint's SEND stance), has that shape hop for hop and
+reaches a root (`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then
+takes the declared address (`Identity#answer`): its rows, endpoints, decision ordinals, schedule
+mark and close state it, so every later stage reads the declared address as before, and a
+DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). Which
+turn of a daemon carries another node's asynchronous work is that node's timing, which no schedule
+holds: in sweep `a40h` a NameNode command (block recovery queued by the lease monitor, replication
+after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
+so every anchor below it differed in the root's k alone and the target was never admitted; two
+recordings of one workload differ the same way.
+
 ## 10. Pass equality
 
 The address is one function of one input set in both passes. The hooks that push a frame or count
@@ -436,6 +454,11 @@ randomness is seeded by endpoint (SYMBOL-SCOPE.md §4.5).
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
+- Only the declared occurrence is answered by its question (§9), and only at a root entry, not a
+  loop body. Every other task still needs its whole address, so the chain a replay took to the
+  declared occurrence instead of the recorded one has no planned rows, and that session sends no
+  message under the declared anchor: EXPLORE finds no door of it there
+  (`explore/ClosurePlanner#controlProducer`).
 - A codec decode on a thread no node is attributed to mints its holes under the unregistered
   address (the Solr Overseer reads its queue item before its tick opens, so the queue's holes are
   minted there, not in the tick).
