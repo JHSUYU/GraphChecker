@@ -50,25 +50,36 @@ The owner wants outcomes, not intermediate report files. Requirements R1–R6:
 - **Phase 2** (large ad-hoc runs; finishing them is the goal, no new bug is an acceptable outcome — owner): 80
   checks ran (`a40s`, `a40h2`, `b20h`; triage with `tools/adhoc/triage.py <round>`), no confirmed witness.
   Picks: `/bigtemp/vnr3ne/analysis/adhoc-pick2-{hdfs,solr}.txt` (coverage-reached, a movable root in the static
-  slice, coordination code). What stopped them is being fixed generally (§0.3).
+  slice, coordination code). What stopped them, by class: NO_ROOT (about 20), replay and explore time (about 17:
+  schedule stalls in seed replays, head steps starved of memory, replay heap growth), engine failures (10, all
+  traced), seed replays missing the target (7), DataTransfer values (5). Each class has a branch or an agent (§0.3).
+- **Owner decisions (2026-10-02)**: the closure keeps every static writer of a demanded location (never only the
+  writes the recording made; over budget, recorded writers first and a named `PLAN_CLOSURE_CUT`); the recording
+  window is not opened before cluster start for now (DataNode registration order stays a named divergence).
 
 ### 0.3 Work in flight (branches, not on main)
 
+Validation rounds run from frozen snapshots `~/gc-run/p<N>` = main + one branch (`GC_OUT=/bigtemp/vnr3ne/gc-out`).
+A head's command line does not carry its output path: tell a live run by `accept-*/pgid` on its head host.
+
 | branch | content | state |
 | --- | --- | --- |
-| `schedule-stall-release` (+ tree `gc/solr-unified-sched`) | settle schedule slots a diverged replay proves will not come; a proxied Solr request is its own message | regressed 17967-pathA (CONFIRM) and 18413 in round `F2`; back to its author |
-| `fix-unattested-hoff-arm` (+ tree `gc/hdfs-unified-dtx` in `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`) | DataTransfer ops are messages: op-header leaves pair with the sender's export; DataNode ops keep their tick identity; the DataTransfer doors | offline/hand-seed checked; needs a live round |
-| (agent) random draws | record `ThreadLocalRandom`/`Random` draws and replay them (HDFS block placement made seed replays miss ad-hoc targets) | in progress, on top of `fix-unattested-hoff-arm` |
-| `fix-replay-equivalent-context` | a root is admitted by its address alone (3 of 7 ad-hoc target misses fixed) | needs a live round |
-| `worktree-agent-a49c8bf5715a00c40` | WIRE-CODEC W3/W6 + WP-D config roots (codec holes would also make 18413's handoff survive any re-parse) | deferred |
+| `dtx-on-main` (+ tree `gc/hdfs-unified-dtx` `51f1e058380`, `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`) | DataTransfer ops are messages (op headers pair with the sender's export; a DataNode op keeps its tick identity); DataTransfer fault doors | round `V5` (p217): 8 HDFS cases and 18406 PASS; pathB fails on the claim defect below (main has it too); 11741 starved of head memory (fixed on `perf-slow-replays`), to rerun |
+| `fix-confirm-flakiness` (+ Solr tree `gc/solr-unified-storing` `990108c`, `/bigtemp/vnr3ne/wt/lucene-solr-storing`) | a root a replay ran concretely guards that replay's arms at its reading (pathA/B's unconfirmed SERIAL_NO claims); a refuted claim is followed by the next; a ZooKeeper read waits for writes in flight (open defect 28, 18413's CONFIRM) | live `CF1`: pathA, pathB, 18413 PASS; review: one blocker (the campaign budget stops ad-hoc exploration) and five medium findings, in rework |
+| `perf-slow-replays` | a waiting head step holds its host; GROW starts at 2 GB; RSA keys from a pool in the replay (Solr check 22.5 → 12.4 min); scope map read once; expression store shares definitions | needs a live round (with `dtx-on-main`: p218) |
+| `fix-adhoc-crashes` | closure bloat cut (walk only what ran in the occurrence, holders of one object, atomics by cell: a40s-2 6076 → 786 occurrences); PATH_SELF_CONTRADICTORY only when a path is unsat without its fatal arm; `String.trim` lowered | offline gate identical on the 11 `.smt`; the PLAN change needs a live round |
+| `replay-random-draws` (on `dtx-on-main`) | every `Random`/`ThreadLocalRandom`/shuffle/`UUID` draw recorded and replayed by key, the workload's own classes included | ready; DataNode registration order before the window is the remaining divergence (owner: not now) |
+| `fix-replay-equivalent-context` | a root is admitted by its address alone (b20h's three target misses now reach their targets) | round `V4`: 11741 regressed (rounds diverge from round 1); author fixing |
+| (agents) `fix-no-root`, `perf-vm-readout` (VM image `vm-w4i`), `fix-hdfs-seed-stalls` | NO_ROOT classes; per-activation tracked-location read-out in the VM; seed replays that stall on their own recording | in progress |
+| `worktree-agent-a49c8bf5715a00c40` | WIRE-CODEC W3/W6 + WP-D config roots | deferred |
 
 ### 0.4 TODO, in order (one large change per live round; a change that regresses a passing case does not merge)
 
-1. Random-draw replay → live round on the named cases + the HDFS picks; then `fix-unattested-hoff-arm` and
-   `fix-replay-equivalent-context` the same way.
-2. Fix `schedule-stall-release`'s regressions, then its live round, then the 20 Solr picks.
-3. Run all 40 picks to a verdict each; triage, hand-check any CONFIRMED witness.
-4. Then the deferred W6/WP-D line, one piece per round.
+1. Merge in order, each after a passing round of the eleven cases: `dtx-on-main` + `perf-slow-replays` (p218),
+   `fix-confirm-flakiness` (after its rework), `fix-adhoc-crashes`, `replay-random-draws`,
+   `fix-replay-equivalent-context`, then the agents' branches as they land.
+2. Run all 40 picks to a verdict each; triage, hand-check any CONFIRMED witness.
+3. Then the deferred W6/WP-D line, one piece per round.
 
 ### 0.5 Designs and analyses (outside the repo, on `/bigtemp/vnr3ne`)
 
