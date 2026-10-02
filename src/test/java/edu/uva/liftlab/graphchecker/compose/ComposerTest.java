@@ -2599,7 +2599,9 @@ public class ComposerTest {
         // before the store states it or, never written, a read of it.  A
         // cell with no one value while 12 was stored -- written twice, or
         // only after the store -- answers nothing: that pairing is refused
-        // by name.
+        // by name.  So does a cell copied through the very owner asking for
+        // it ({@code new Block(b)} where b may be the copy: a40h2
+        // FsDatasetImpl-1092), which once recursed until the heap was full.
         String commit = "org/apache/Commit";
         LocationId latest = LocationId.of(LocationKind.INSTANCE, "8", "48");
         LocationId flag = LocationId.of(LocationKind.INSTANCE, "8", "56");
@@ -2610,7 +2612,8 @@ public class ComposerTest {
                 {7L, "written", ClaimKind.STATE_PAIRING_FLIPPED},
                 {7L, "read", ClaimKind.STATE_PAIRING_FLIPPED},
                 {7L, "twice", ClaimKind.NO_SUPPORTED_WITNESS},
-                {7L, "late", ClaimKind.NO_SUPPORTED_WITNESS}}) {
+                {7L, "late", ClaimKind.NO_SUPPORTED_WITNESS},
+                {7L, "copied", ClaimKind.NO_SUPPORTED_WITNESS}}) {
             long generation = (Long) each[0];
             String row = generation + " " + each[1];
             Path iteration = folder.newFolder("moved-owner-" + generation
@@ -2641,10 +2644,12 @@ public class ComposerTest {
             // The other writer first: it builds commit 12, then stores it.
             long version = 0L;
             for (int index = 0; index < ("twice".equals(each[1]) ? 2
-                    : "written".equals(each[1]) ? 1 : 0); index++) {
+                    : "written".equals(each[1]) || "copied".equals(each[1])
+                    ? 1 : 0); index++) {
                 session.write(Endpoint.of(theirs, "Commit#init#3:WRITE",
                         at("generation#" + index, 0), 0), other, ++version,
-                        "EXPR.v1.generation");
+                        "copied".equals(each[1]) ? "EXPR.v1.copied"
+                                : "EXPR.v1.generation");
             }
             if ("read".equals(each[1])) {
                 session.read(Endpoint.of(theirs, "Commit#get#2:READ",
@@ -2683,10 +2688,11 @@ public class ComposerTest {
                     "Z", null);
             // The VM's pair: concreteValue is the run's cell, 11#24.
             JsonObject owner = read("INSTANCE_FIELD", 8L, 48L, stored, "L");
+            JsonObject generationThroughOwner = fieldRead(commit, 24L, "I",
+                    owner, read("INSTANCE_FIELD", 11L, 24L, constructed, "I"));
+            session.expression("EXPR.v1.copied", generationThroughOwner);
             session.expression("EXPR.00000000000000f1", binary(">",
-                    fieldRead(commit, 24L, "I", owner, read("INSTANCE_FIELD",
-                            11L, 24L, constructed, "I")),
-                    integer("I", 4L)));
+                    generationThroughOwner, integer("I", 4L)));
             session.expression("EXPR.00000000000000f2", read("INSTANCE_FIELD",
                     8L, 56L, flagged, "Z"));
             session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
@@ -2702,7 +2708,9 @@ public class ComposerTest {
             boolean named = false;
             for (GapRow gap : composition.gaps()) {
                 named |= gap.subject().equals("CANDIDATE_UNANSWERED:"
-                        + SmtLowering.locationKey(other) + "@s0");
+                        + SmtLowering.locationKey(other) + "@s0")
+                        && gap.detail().contains("LoweringCycle")
+                        == "copied".equals(each[1]);
             }
             assertEquals(row + ": a cell with no one value is named",
                     each[2] == ClaimKind.NO_SUPPORTED_WITNESS

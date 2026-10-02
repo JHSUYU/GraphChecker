@@ -41,13 +41,14 @@
 # classpath is the one the run froze when it states one (its tree's report
 # may be gone).
 #
-# Each case is one task, both sides inside it, placed by
-# /bigtemp/vnr3ne/bin/onlift.sh on the lift with the most free memory for
-# its load, never one that taking AB_CASE_GB would leave more than
-# CAUSYNTH_HOST_MAX_USED_PCT (70) percent full (pick-lift.sh).  A case peaks
-# at both sides' SOLVE.0 solvers at once, each loading the whole corpus
-# (5-7 GB RSS on the HDFS rounds of 2026-09-30); the cases start
-# AB_STAGGER_S apart so each placement sees the last one.
+# Each case is one task, both sides inside it, run here.  Gates run beside
+# live rounds, so every engine JVM of a stage is placed through the host
+# ledger every campaign charges (run_engine.sh campaign_host_try_start): on
+# the host of AB_HOSTS with the most room for its heap, charged that for its
+# whole run, and waited for when none has it -- no host passes
+# CAUSYNTH_HOST_MAX_USED_PCT (70) percent, and a campaign's starts see the
+# gate's JVMs as theirs (two 16 GB composers of one case once shared a lift
+# placed for 20 GB, at 91 %).
 #
 # Prints one table (case | stage | identical/DIFFERS/ERROR | baseline vs the
 # recorded artifact | wall | summary) and writes it to $AB_OUT/report.tsv,
@@ -59,10 +60,8 @@
 # Environment
 #   AB_OUT        output root (default /bigtemp/vnr3ne/ab/<timestamp>), on a
 #                 filesystem every lift shares
-#   AB_HOSTS      "local": every case here, no onlift.sh (default: onlift.sh)
-#   AB_CASE_GB    free memory a lift needs to take a case (default 16:
-#                 two solvers of up to 8 GB)
-#   AB_STAGGER_S  seconds between two cases' placements (default 8)
+#   AB_HOSTS      the hosts an engine JVM may be placed on (default LIFTS,
+#                 tools/lib/gc-env.sh; localhost: this machine only)
 #   AB_HEAP_MB    engine JVM heap cap (default 8192; a case's engine_memory_mb
 #                 above it is lowered to it)
 #   AB_SOLVE_JOBS concurrent SOLVE.0 solvers of one side (default 1)
@@ -78,6 +77,11 @@ ab_self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOUR
 ab_self_repo=$(cd "$(dirname "${ab_self}")/../.." && pwd -P)
 # shellcheck source=../lib/gc-env.sh
 source "${ab_self_repo}/tools/lib/gc-env.sh"
+# The host ledger's helpers (campaign_host_try_start and its kin), as
+# tools/adhoc/fanout.sh takes them.
+# shellcheck source=../../run_engine.sh
+source "${ab_self_repo}/run_engine.sh"
+set +e
 
 AB_CASES=(hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17967-pathA
   hdfs-17967-pathB hdfs-17967-pathC hdfs-17960 hdfs-17897 hdfs-11741)
@@ -104,22 +108,60 @@ ab_heap() {
 
 # ab_java <stage-dir> <heap-mb> <classpath> <main> [args...]: one engine JVM
 # through the case's java_bin as run_java_main starts it (the loop bound;
-# then ab_props), in the stage directory, bounded; its exit, wall time and
-# peak RSS go to <stage-dir>/status.
+# then ab_props), in the stage directory, bounded, on the host ab_place
+# charged its heap on (every path it reads and writes is shared); its exit,
+# wall time, peak RSS and host go to <stage-dir>/status.
 ab_props=()
 ab_java() {
   local dir=$1 heap=$2 cp=$3 main=$4 code=0 wall rss
   shift 4
-  ( cd "${dir}" && GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap} \
-      timeout -k 30 "${AB_STAGE_TIMEOUT_S}" \
-      /usr/bin/time -f '%e %M' -o "${dir}/time.txt" \
-      "${ab_java_bin}" "-Dcausynth.loop.default.bound=${ab_loop_bound}" \
-      "${ab_props[@]}" -cp "${cp}" "${main}" "$@" ) \
-    >"${dir}/stdout.log" 2>"${dir}/stderr.log" || code=$?
+  local -a run=(env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}"
+    timeout -k 30 "${AB_STAGE_TIMEOUT_S}"
+    /usr/bin/time -f '%e %M' -o "${dir}/time.txt"
+    "${ab_java_bin}" "-Dcausynth.loop.default.bound=${ab_loop_bound}"
+    "${ab_props[@]}" -cp "${cp}" "${main}" "$@")
+  ab_place "${heap}"
+  if campaign_host_is_local "${ab_placed_host}"; then
+    (cd "${dir}" && "${run[@]}") \
+      >"${dir}/stdout.log" 2>"${dir}/stderr.log" </dev/null || code=$?
+  else
+    ssh -o BatchMode=yes "${ab_placed_host}" "cd $(printf '%q' "${dir}") \
+&& $(printf '%q ' "${run[@]}")" \
+      >"${dir}/stdout.log" 2>"${dir}/stderr.log" </dev/null || code=$?
+  fi
+  campaign_host_release "${ab_placed_host}" "${ab_placed_charge}"
   read -r wall rss < <(tail -n 1 "${dir}/time.txt" 2>/dev/null) || true
   printf 'exit=%s wall_s=%s rss_mb=%s host=%s\n' "${code}" "${wall:-?}" \
-    "$(( ${rss:-0} / 1024 ))" "$(hostname -s)" >"${dir}/status"
+    "$(( ${rss:-0} / 1024 ))" "${ab_placed_host}" >"${dir}/status"
   return "${code}"
+}
+
+# ab_place <need-mb>: the host of AB_HOSTS with the most room for <need-mb>
+# on the ledger (run_engine.sh campaign_host_room), charged it for a stage's
+# whole bound -- not a head step's 120 s ramp: a composer grows for minutes
+# -- until ab_java releases it; waited for while no host has it.  The host
+# is ab_placed_host, its charge ab_placed_charge.
+ab_placed_host=""
+ab_placed_charge=""
+ab_place() {
+  local need=$1 host room best best_room
+  while true; do
+    best=""
+    best_room=-1
+    for host in ${AB_HOSTS}; do
+      room=$(campaign_host_room "${host}") || continue
+      (( room >= need && room > best_room )) || continue
+      best=${host}
+      best_room=${room}
+    done
+    if [[ -n "${best}" ]] && campaign_host_try_start "${best}" "${need}" \
+        "${AB_STAGE_TIMEOUT_S}"; then
+      ab_placed_host=${best}
+      ab_placed_charge=${campaign_host_charge_id}
+      return 0
+    fi
+    sleep "${campaign_host_poll_s}"
+  done
 }
 
 # A stage that did not run, and why.
@@ -553,7 +595,7 @@ ab_main() {
 <baseline-jar> <candidate-jar> [case...]"
   shift 2
   local -a cases=("$@") pids=() override
-  local case_id dir side acc decl arg chain classpath onlift repo base_repo
+  local case_id dir side acc decl arg chain classpath repo base_repo
   AB_OUT=${AB_OUT:-/bigtemp/vnr3ne/ab/$(date +%Y%m%d-%H%M%S)}
   AB_ACCEPT_ROOT=${AB_ACCEPT_ROOT:-${GC_OUT}}
   AB_STAGES=${AB_STAGES:-${AB_CHAINS[*]}}
@@ -572,9 +614,9 @@ ab_main() {
   # Both jars, frozen, and what every task reads.
   cp "${baseline}" "${AB_OUT}/jars/baseline.jar"
   cp "${candidate}" "${AB_OUT}/jars/candidate.jar"
-  printf 'AB_HEAP_MB=%q\nAB_SOLVE_JOBS=%q\nAB_STAGE_TIMEOUT_S=%q\nAB_STAGES=%q\n' \
+  printf 'AB_HEAP_MB=%q\nAB_SOLVE_JOBS=%q\nAB_STAGE_TIMEOUT_S=%q\nAB_STAGES=%q\nAB_HOSTS=%q\n' \
     "${AB_HEAP_MB:-8192}" "${AB_SOLVE_JOBS:-1}" "${AB_STAGE_TIMEOUT_S:-1800}" \
-    "${AB_STAGES}" >"${AB_OUT}/env.sh"
+    "${AB_STAGES}" "${AB_HOSTS:-${LIFTS}}" >"${AB_OUT}/env.sh"
   [[ -z "${AB_Z3:-}" ]] || printf 'AB_Z3=%q\n' "${AB_Z3}" >>"${AB_OUT}/env.sh"
   printf '%s\n' ${AB_STAGES} >"${AB_OUT}/chains.txt"
   printf 'baseline\t%s\t%s\ncandidate\t%s\t%s\n' \
@@ -609,9 +651,8 @@ ab_main() {
     done
   done
 
-  # One task per case, heaviest corpus first, each on the lift onlift.sh
-  # picks for it; a lift it cannot place a case on yet is waited for.
-  onlift=/bigtemp/vnr3ne/bin/onlift.sh
+  # One task per case, heaviest corpus first, all here: each places its
+  # JVMs (ab_java).
   ab_log "offline A/B: ${#cases[@]} case(s) [${AB_STAGES}] from rounds \
 ${ab_rounds[*]} -> ${AB_OUT}"
   trap 'kill ${pids[*]} 2>/dev/null; exit 130' INT TERM
@@ -620,24 +661,13 @@ ${ab_rounds[*]} -> ${AB_OUT}"
         printf '%s %s\n' "$(du -sk "${acc}/schedule/iteration-0000/sessions/" \
           2>/dev/null | cut -f1)" "${case_id}"
       done | sort -rn | awk '{print $2}'); do
-    (( ${#pids[@]} == 0 )) || sleep "${AB_STAGGER_S:-8}"
-    if [[ "${AB_HOSTS:-}" == local ]]; then
-      bash "${ab_self}" --task "${AB_OUT}" "${case_id}" \
-        >"${AB_OUT}/logs/${case_id}.log" 2>&1 &
-    else
-      ( until "${onlift}" -g "${AB_CASE_GB:-16}" bash "${ab_self}" --task \
-            "${AB_OUT}" "${case_id}"; do
-          (( $? == 75 )) || exit 1
-          sleep 30
-        done ) >"${AB_OUT}/logs/${case_id}.log" 2>&1 &
-    fi
+    bash "${ab_self}" --task "${AB_OUT}" "${case_id}" \
+      >"${AB_OUT}/logs/${case_id}.log" 2>&1 &
     pids+=("$!")
   done
   wait
   trap - INT TERM
-  ab_log "stages done in $(( SECONDS - t0 )) s ($(for case_id in "${cases[@]}"; do
-      printf '%s@%s ' "${case_id}" "$(sed -n 's/^onlift: running on //p' \
-        "${AB_OUT}/logs/${case_id}.log" | tail -n 1)"; done)); comparing"
+  ab_log "stages done in $(( SECONDS - t0 )) s; comparing"
   python3 "$(dirname "${ab_self}")/ab_compare.py" "${AB_OUT}" "${cases[@]}"
   local verdict=$?
   ab_log "offline A/B finished in $(( SECONDS - t0 )) s: $(case ${verdict} in

@@ -15,7 +15,6 @@ import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +24,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -76,20 +76,17 @@ final class ConcolicTaskPlan {
     /** Each task's slot in the two arrays above, by task identity. */
     private final Map<RuntimeTask, Integer> slots =
             new IdentityHashMap<RuntimeTask, Integer>();
-    /**
-     * Memo of {@link #rootHookGroup} per {@code (instrumentationSelector,
-     * rootMethod)}; the plan is immutable, and scanning it at every woven
-     * root entry blocked replay threads.
-     */
-    private final Map<String, RootHookGroup> rootHookGroups =
-            new LinkedHashMap<String, RootHookGroup>();
-    private final Map<String, RootHookGroup> loopRootHookGroups =
-            new LinkedHashMap<String, RootHookGroup>();
+    /** Each root hook group's loop root ({@link #loopRootOf}). */
+    private final Map<String, String> loopRoots =
+            new HashMap<String, String>();
     boolean unansweredAddressesPublished;
 
     ConcolicTaskPlan(Path resultFile, List<RuntimeTask> tasks) {
         this.resultFile = resultFile;
         this.tasks = Collections.unmodifiableList(tasks);
+        for (RuntimeTask task : tasks) {
+            loopRoots.put(task.rootHookGroup, task.loopRootHookGroup);
+        }
         this.candidateLive = new boolean[tasks.size()];
         this.occurrenceClaimed = new boolean[tasks.size()];
         this.answeredByQuestion = new boolean[tasks.size()];
@@ -227,81 +224,14 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * Resolves an occurrence-specific hook to the region entry shared by
-     * every sibling hook at that Java method; memoized in
-     * {@link #rootHookGroups}.
+     * The enclosing method entry whose invocations address the bodies of a
+     * root hook group's loop ({@code ExecutionTask#loopRootHookGroup}), ""
+     * for a group of method roots; read at every woven root entry, so built
+     * once.
      */
-    synchronized RootHookGroup rootHookGroup(
-            String instrumentationSelector, String rootMethod) {
-        return rootHookGroups.computeIfAbsent(safe(instrumentationSelector)
-                + "\n" + safe(rootMethod), hook -> resolveRootHookGroup(
-                        instrumentationSelector, rootMethod));
-    }
-
-    private RootHookGroup resolveRootHookGroup(
-            String instrumentationSelector, String rootMethod) {
-        RuntimeTask selected = null;
-        for (RuntimeTask task : tasks) {
-            if (!task.instrumentationSelector.equals(
-                    safe(instrumentationSelector))
-                    || !Objects.equals(task.rootMethod, rootMethod)) {
-                continue;
-            }
-            if (selected != null && !selected.rootHookGroupKey().equals(
-                    task.rootHookGroupKey())) {
-                throw new IllegalStateException(
-                        "instrumentation selector addresses multiple "
-                                + "root hook groups: "
-                                + safe(instrumentationSelector));
-            }
-            selected = task;
-        }
-        if (selected == null) {
-            return new RootHookGroup("UNPLANNED\n"
-                    + safe(instrumentationSelector) + "\n"
-                    + safe(rootMethod), 1);
-        }
-        String key = selected.rootHookGroupKey();
-        int hooks = 0;
-        for (RuntimeTask task : tasks) {
-            if (key.equals(task.rootHookGroupKey())) hooks++;
-        }
-        return new RootHookGroup(key, hooks);
-    }
-
-    /** Resolves one lightweight outer hook shared by loop-body tasks. */
-    synchronized RootHookGroup loopRootHookGroup(
-            String instrumentationSelector, String rootMethod) {
-        return loopRootHookGroups.computeIfAbsent(
-                safe(instrumentationSelector) + "\n" + safe(rootMethod),
-                hook -> resolveLoopRootHookGroup(instrumentationSelector,
-                        rootMethod));
-    }
-
-    private RootHookGroup resolveLoopRootHookGroup(
-            String instrumentationSelector, String rootMethod) {
-        RuntimeTask selected = null;
-        for (RuntimeTask task : tasks) {
-            if (!task.loopBodyRoot
-                    || !task.instrumentationSelector.equals(
-                    safe(instrumentationSelector))
-                    || !Objects.equals(task.rootMethod, rootMethod)) {
-                continue;
-            }
-            selected = task;
-            break;
-        }
-        if (selected == null) {
-            return new RootHookGroup("UNPLANNED_LOOP_ROOT\n"
-                    + safe(rootMethod), 1);
-        }
-        String key = selected.loopRootHookGroupKey();
-        int hooks = 0;
-        for (RuntimeTask task : tasks) {
-            if (task.loopBodyRoot
-                    && key.equals(task.loopRootHookGroupKey())) hooks++;
-        }
-        return new RootHookGroup(key, hooks);
+    String loopRootOf(String rootHookGroup) {
+        String loopRoot = loopRoots.get(rootHookGroup);
+        return loopRoot == null ? "" : loopRoot;
     }
 
     /**
@@ -309,7 +239,7 @@ final class ConcolicTaskPlan {
      * owns all body iterations executed by that invocation.
      */
     synchronized Set<String> addressLoopRootInvocation(
-            String loopRootHookGroupKey, String rootMethod,
+            String loopRootHookGroup, String rootMethod,
             Object receiver, Object[] rootArguments,
             long enclosingInvocationEvent) {
         SourceRef registeredReceiverSource =
@@ -330,8 +260,8 @@ final class ConcolicTaskPlan {
             // Another region's enclosing root: silent, or every enclosing
             // invocation would file a refusal against every task.
             if (!task.loopBodyRoot
-                    || !task.loopRootHookGroupKey().equals(
-                    safe(loopRootHookGroupKey))) {
+                    || !task.loopRootHookGroup.equals(
+                    safe(loopRootHookGroup))) {
                 continue;
             }
             // From here this task's own hook ran, so every refusal is stated;
@@ -387,7 +317,7 @@ final class ConcolicTaskPlan {
         RefusedCandidate answered = null;
         for (int index = 0; index < tasks.size(); index++) {
             RuntimeTask task = tasks.get(index);
-            if (!task.rootHookGroupKey().equals(
+            if (!task.rootHookGroup.equals(
                     safe(rootHookGroupKey))) continue;
             if (task.completedGoalReserved) continue;
             // Stated, or the run end reports ROOT_NEVER_EXECUTED.
@@ -443,7 +373,7 @@ final class ConcolicTaskPlan {
     boolean occupies(String rootHookGroupKey, OccurrenceAddress address) {
         for (RuntimeTask task : tasks) {
             if (task.address != null
-                    && task.rootHookGroupKey().equals(
+                    && task.rootHookGroup.equals(
                     safe(rootHookGroupKey))
                     && task.address.regionId().equals(address.regionId())
                     && task.address.node().equals(address.node())
@@ -462,7 +392,7 @@ final class ConcolicTaskPlan {
         if (LoopAccounting.enclosingLoopRoot(task) != null) return null;
         return RefusedCandidate.stated("a body of this loop ran under no"
                 + " enclosing invocation admitted for it: the enclosing root"
-                + " hook " + task.loopRootHookGroupKey() + " either did not"
+                + " hook " + task.loopRootHookGroup + " either did not"
                 + " run on this thread or refused this task when it did",
                 activationSource);
     }
@@ -913,7 +843,12 @@ final class ConcolicTaskPlan {
 
     static final class RuntimeTask {
         final String taskId;
-        final String instrumentationSelector;
+        /** The woven entry that offers this task its candidates
+         *  ({@code ExecutionTask#rootHookGroup}). */
+        final String rootHookGroup;
+        /** The enclosing method entry a loop-body task's iterations are
+         *  addressed under ({@code ExecutionTask#loopRootHookGroup}). */
+        final String loopRootHookGroup;
         final String regionId;
         /** The activation this task is. */
         final String sourceKey;
@@ -995,7 +930,8 @@ final class ConcolicTaskPlan {
             }
             JsonObject rootSelector = task.rootSelector();
             this.taskId = task.taskId();
-            this.instrumentationSelector = task.instrumentationSelector();
+            this.rootHookGroup = task.rootHookGroup();
+            this.loopRootHookGroup = task.loopRootHookGroup();
             this.regionId = task.regionId();
             this.sourceKey = task.sourceKey();
             this.occurrenceId = task.occurrenceId();
@@ -1025,8 +961,7 @@ final class ConcolicTaskPlan {
                             : RootArgumentSelector.from(rootSelector);
             this.symbolize = new ArrayList<>();
             this.loopBound = task.loopBound();
-            this.loopBodyRoot = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
-                    task.rootAuthority());
+            this.loopBodyRoot = task.loopBodyRoot();
             // A loop-body task must name its k; refused at the plan, not
             // guessed at replay.
             if (this.loopBodyRoot && this.address == null) {
@@ -1169,20 +1104,6 @@ final class ConcolicTaskPlan {
 
         boolean declaresTargetBranch() {
             return !targetBranchSite.isEmpty();
-        }
-
-        /** Every injected hook that belongs to one physical Java entry. */
-        String rootHookGroupKey() {
-            // No source here: sibling tasks for other sources share the hook.
-            return (loopBodyRoot ? "LOOP\n" : "METHOD\n")
-                    + regionId + "\n" + rootMethod
-                    + (loopBodyRoot ? "\n" + rootLoopMethod + "\n"
-                    + rootLoopHeaderUnitIndex : "");
-        }
-
-        /** All lightweight enclosing hooks physically share this method. */
-        String loopRootHookGroupKey() {
-            return loopBodyRoot ? rootMethod : "";
         }
 
         /**

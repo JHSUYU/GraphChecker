@@ -1035,7 +1035,7 @@ public final class RowRuntime {
                 Files.deleteIfExists(Paths.get(worker,
                         ObligationDir.QUESTION_ASKED));
             } catch (IOException undeleted) {
-                System.err.println("Causynth could not withdraw the question"
+                EngineConsole.println("Causynth could not withdraw the question"
                         + " this unsettled replay asked: " + undeleted);
             }
         }
@@ -1050,7 +1050,7 @@ public final class RowRuntime {
         String unmoved = session.withdrawTo(
                 Paths.get(worker, REFUSED_SESSIONS));
         if (!unmoved.isEmpty()) {
-            System.err.println("Causynth could not withdraw the session of"
+            EngineConsole.println("Causynth could not withdraw the session of"
                     + " this decided replay to " + worker + "/"
                     + REFUSED_SESSIONS + " (" + unmoved + "); its worker"
                     + " withdraws what is still listed");
@@ -1077,7 +1077,7 @@ public final class RowRuntime {
                     rows.toString().getBytes(
                             StandardCharsets.UTF_8));
         } catch (IOException unwritable) {
-            System.err.println("Causynth could not write the replay's"
+            EngineConsole.println("Causynth could not write the replay's"
                     + " obligation verdict: " + unwritable);
         }
     }

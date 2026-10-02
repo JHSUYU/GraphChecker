@@ -488,12 +488,16 @@ run_in_directory() {
 # <classpath>, the main class, its arguments.
 #
 # A main with a measured need (campaign_engine_need_mb, or the caller's
-# engine_need_mb) runs at it with -XX:+ExitOnOutOfMemoryError; one that runs
-# out of heap there (the JVM's exit 3) runs once more at the engine heap,
-# saying so, and every later start of that main in this shell starts there.
-# Its standard output is passed on only from the run that finished, so a
-# reader of it never sees the first run's half.  A main without a need, or
-# whose need the engine heap does not exceed, runs at the engine heap.
+# engine_need_mb) runs at it; one that runs out of heap there runs once more
+# at the engine heap, saying so, and every later start of that main in this
+# shell starts there.  Its standard output is passed on only from the run
+# that finished, so a reader of it never sees the first run's half.  A main
+# without a need, or whose need the engine heap does not exceed, runs at the
+# engine heap.  Every run ends at its first out-of-heap error
+# (-XX:+ExitOnOutOfMemoryError, the JVM's exit 3): at the engine heap too,
+# where a planner left to the JVM collected for ten minutes and died with
+# exit 1 of "GC overhead limit exceeded" (sweep a40h2, DataStreamer-638),
+# so a caller can tell the most heap a head JVM is given from a crash.
 campaign_engine_outgrown=""
 campaign_jvm_out_of_heap_status=3
 engine_java() {
@@ -508,7 +512,8 @@ engine_java() {
   start=$(campaign_engine_start_mb "${main}" "${engine_need_mb:-}")
   if (( start == heap )); then
     campaign_head_charged "${heap}" 120 \
-      env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" "$@"
+      env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
+      -XX:+ExitOnOutOfMemoryError "$@"
     return
   fi
   out=$(mktemp) || return
@@ -525,7 +530,8 @@ engine_java() {
   printf '[campaign] %s ran out of its %s MB heap; run again at %s MB\n' \
     "${main##*.}" "${start}" "${heap}" >&2
   campaign_head_charged "${heap}" 120 \
-    env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" "$@"
+    env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
+    -XX:+ExitOnOutOfMemoryError "$@"
 }
 
 # The heap, in MB, <main> starts at (engine_java): its measured need
@@ -817,6 +823,21 @@ do_analyze() {
     -o "${analysis_classes_dir}"
 }
 
+# do_analyze as one step of <stage>: its output shown and kept in <log>, and
+# a pass that fails fails the stage by name, with the refusal it threw (the
+# deepest cause GraphCheckerMain printed).  Under errexit a failed pass ended
+# the campaign with no stage, component or reason (sweep a40h2: INSTRUMENT's
+# LOOP_BODY_ROOT_ENTRY_UNAVAILABLE was a bare stack trace).
+campaign_analyze() {
+  local stage=$1 log=$2 status=0
+  mkdir -p -- "$(dirname "${log}")"
+  run_capturing_status do_analyze > >(tee -- "${log}") 2>&1
+  wait "$!"
+  (( status == 0 )) && return 0
+  campaign_fail "${stage}" GraphCheckerMain "${log}" \
+    "the static pass failed with exit ${status}: $(campaign_thrown "${log}")"
+}
+
 # The lineage scope's classes, scanned once per output directory from the
 # application's own class roots (causynth_lineage_roots, colon-separated),
 # leaving out what the analysis scope already holds.  Prints the directory.
@@ -854,7 +875,7 @@ campaign_analyze_grown_scope() {
   IFS=: read -r -a roots <<<"${causynth_lineage_roots}"
   (( ${#roots[@]} == 0 )) || campaign_scope_doors "${grown}" "${roots[@]}"
   while :; do
-    do_analyze
+    campaign_analyze SEED "${causynth_output_dir}/static-pass.log"
     (( causynth_scope_growth_budget > 0 && ${#roots[@]} > 0 )) || return 0
     read -r changes summary < <(run_java_main \
       edu.uva.liftlab.graphchecker.plan.ScopeGrowth "${grown}" \
@@ -988,7 +1009,7 @@ do_workload() {
   # index exactly where the replay's weave opens it (the same candidate
   # file).  Which regions the run exercised is read off this trace by the
   # aggregation below, which writes them to ${trace_dir}/region_skeletons.jsonl.
-  CAUSYNTH_TRACE_MODE=region-state do_analyze
+  CAUSYNTH_TRACE_MODE=region-state campaign_analyze SEED "${trace_dir}/weave.log"
   # The recording runs uncharged where the head runs: what it needs is what
   # it measures (workload_rss_mb, 0.4-0.8 GB over round e1), so there is no
   # need yet to charge it with or to place it by (campaign_head_charged).
@@ -1069,7 +1090,7 @@ ${target}/runtime")
     campaign_region_view "${causynth_static_root}/${name}" \
       >"${causynth_output_dir}/targets/${name}/view_region_skeletons.jsonl.gz"
   done
-  CAUSYNTH_TRACE_MODE=region-state do_analyze
+  CAUSYNTH_TRACE_MODE=region-state campaign_analyze SEED "${trace_dir}/weave.log"
   ensure_output_directory "${trace_dir}"
   started=${SECONDS}
   run_capturing_status run_configured_workload "${trace_dir}" "${bound}"
@@ -1223,6 +1244,15 @@ campaign_fail() {
     echo "  reason=$*"
   } >&2
   exit 1
+}
+
+# The deepest throwable a failed engine JVM printed into <log> -- the root
+# cause of a stack trace, or the error -XX:+ExitOnOutOfMemoryError ended it
+# on -- or nothing: what a stage's failure names beside the JVM's exit.
+campaign_thrown() {
+  grep -E '^(Caused by: |Exception in thread "[^"]*" |Terminating due to )?[[:alnum:]_.$]+(Exception|Error)(: |$)' \
+    -- "$1" 2>/dev/null | tail -n 1 \
+    | sed -E 's/^(Caused by: |Exception in thread "[^"]*" |Terminating due to )//'
 }
 
 # A count a campaign DECIDES on, read back from an artifact.
@@ -2392,7 +2422,7 @@ campaign_instrument() {
   local analysis_classes_dir="${classes}"
   export CAUSYNTH_CONCOLIC_TASK_PLAN="${plan}"
   export CAUSYNTH_CONCOLIC_TASK_ID="${ids}"
-  do_analyze
+  campaign_analyze INSTRUMENT "$(dirname "${classes}")/instrument.log"
   unset CAUSYNTH_CONCOLIC_TASK_PLAN CAUSYNTH_CONCOLIC_TASK_ID
   [[ -n "$(find "${classes}" -name '*.class' -print -quit 2>/dev/null)" ]] \
     || campaign_fail INSTRUMENT CAMPAIGN "${classes}" \
@@ -2538,11 +2568,26 @@ a truncated run and its log is in ${worker}/replay.log"
       || campaign_fail REPLAY WORKLOAD "${sessions}" \
         "the target rows could not be read for target coverage"
     [[ -n "${reached}" ]] || campaign_fail REPLAY WORKLOAD "${sessions}" \
-      "the concolic replay ran no TARGET_REACH occurrence (exit ${status}); no session published a target row of a TARGET_SITE of ${causynth_static_scope_map}; the workload's terminating exception is in ${worker}/replay.log"
+      "the concolic replay ran no TARGET_REACH occurrence (exit ${status}); no session published a target row of a TARGET_SITE of ${causynth_static_scope_map}; the workload's terminating exception is in ${worker}/replay.log; the declared task: $(campaign_target_unanswered "${sessions}")"
   fi
   campaign_log "replay role=${role} exit=${status} sessions=${sessions}"
 }
 
+
+# Why a replay's sessions did not answer the declared occurrence: the
+# TASK_UNANSWERED row they state for PLAN's TARGET member (the activations
+# that came nearest and how each differed: another node, an anchor no
+# message of the run minted), cut to 600 characters, or nothing.
+campaign_target_unanswered() {
+  local sessions=$1 task
+  task=$(awk -F'\t' '$1 == "TARGET" {print $6; exit}' \
+    <<<"${campaign_member_rows}")
+  [[ -n "${task}" ]] || return 0
+  find "${sessions}" -mindepth 2 -maxdepth 2 -name gaps.jsonl -print0 \
+    | xargs -0 -r jq -r --arg task "${task}" \
+      'select(.kind == "TASK_UNANSWERED" and .subject == $task) | .detail' \
+    | head -n 1 | cut -c1-600
+}
 
 # The first target row a replay's sessions published at a TARGET_SITE of
 # <scope-map> (its method's; a batch group's map names every target's), or
@@ -4209,9 +4254,13 @@ campaign_stream_step_dir() {
 # the exploration; or the import gate over the sessions <dir>/gate names
 # (one call: the head's) and the round <dir>/round names, planned into
 # obligations-NNNN/.  A BLOCKING row fails the campaign at IMPORT here, and
-# a planner that fails fails it at EXPLORE.  The head takes the rest once
-# the step returns (campaign_stream_step_done), the engine mains that
-# outgrew their need in it among them (<dir>/outgrown, engine_java).
+# a planner that fails fails it at EXPLORE -- but one that ran out of the
+# most heap a head JVM is given plans no round: the corpus outgrew what the
+# head can hold, its round directory goes (its logs into the step) and
+# <dir>/heap-exceeded ends the exploration on the rounds before it.  The
+# head takes the rest once the step returns (campaign_stream_step_done), the
+# engine mains that outgrew their need in it among them (<dir>/outgrown,
+# engine_java).
 campaign_stream_step() {
   local dir=$1 round_dir status=0
   local -a gate=() witnesses=()
@@ -4235,9 +4284,18 @@ campaign_stream_step() {
         --round "$((10#${round_dir##*-}))" --output-dir "${round_dir}" \
         "${stream_round_args[@]}" \
         >"${round_dir}/stdout.log" 2>"${round_dir}/stderr.log" || status=$?
-      [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExploreMain \
-        "${round_dir}/stderr.log" "the planner of $(basename "${round_dir}") \
-failed with exit ${status}"
+      if (( status == campaign_jvm_out_of_heap_status )); then
+        mv -- "${round_dir}/stdout.log" "${round_dir}/stderr.log" "${dir}/"
+        rm -r -- "${round_dir}"
+        printf '%s\n' "the planner of $(basename "${round_dir}") ran out \
+of the most heap a head JVM is given (engine_memory_mb=${engine_memory_mb:-8192}) \
+over a corpus of $(du -s -m -- "${sessions}" | cut -f1) MB ($(campaign_thrown \
+"${dir}/stderr.log"), ${dir}/stderr.log)" >"${dir}/heap-exceeded"
+      elif (( status != 0 )); then
+        campaign_fail EXPLORE ExploreMain "${round_dir}/stderr.log" \
+          "the planner of $(basename "${round_dir}") failed with exit \
+${status}: $(campaign_thrown "${round_dir}/stderr.log")"
+      fi
     fi
   fi
   printf '%s\n' "${campaign_engine_outgrown}" >"${dir}/outgrown"
@@ -4255,6 +4313,11 @@ campaign_stream_step_done() {
   if [[ -s "${dir}/witnessed" ]]; then
     stream_stop=WITNESSED
     stream_stop_detail=$(cat "${dir}/witnessed")
+  elif [[ -s "${dir}/heap-exceeded" ]]; then
+    # The round was never planned: the last one is the round before it.
+    stream_round=$((stream_round - 1))
+    stream_stop=PLANNER_HEAP_EXCEEDED
+    stream_stop_detail=$(cat "${dir}/heap-exceeded")
   elif [[ -s "${dir}/round" ]]; then
     campaign_stream_take_round "${iteration_dir}/$(cat "${dir}/round")"
   fi
@@ -4327,9 +4390,11 @@ campaign_stream_gap() {
 
 # The closure the exploration ended on, judged.  An accepted witness ended
 # it: nothing past that point is asked, so a truncation asks nothing more
-# (each round's own row is DIAGNOSTIC, ExploreMain).  Any other end: when its
-# last round's closure was truncated at the task bound (--max-tasks, the
-# manifest's `truncated`), a claim over it misses arms, BLOCKING.  The same
+# (each round's own row is DIAGNOSTIC, ExploreMain).  A planner that could
+# not hold the corpus ended it with rounds still owed: BLOCKING.  Any other
+# end: when its last round's closure was truncated at the task bound
+# (--max-tasks, the manifest's `truncated`), a claim over it misses arms,
+# BLOCKING.  The same
 # holds for the occurrences PLAN left out to fit schedule_max_jobs (the
 # index's `closureCut`, RuntimeWorkflowDiscovery.Workflow#nearest), stated
 # whatever the end: DIAGNOSTIC under a witness, BLOCKING otherwise.
@@ -4344,6 +4409,10 @@ closure only to demand depth ${cut#* } to fit schedule_max_jobs: ${cut%% *} \
 deeper occurrence(s) were not planned, so a claim over it misses their arms \
 (the exploration ended ${stream_stop})"
   fi
+  [[ "${stream_stop}" != PLANNER_HEAP_EXCEEDED ]] \
+    || campaign_stream_gap BLOCKING "${stream_stop}" "${stream_stop_detail}: \
+the exploration ended on the rounds before it, so a claim over its corpus \
+misses the arms the rounds still owed would ask"
   [[ "${stream_stop}" != WITNESSED ]] && (( stream_round > 0 )) || return 0
   last=$(printf '%s/obligations-%04d' "${iteration_dir}" \
     "$((stream_round - 1))")
@@ -4827,7 +4896,8 @@ exposure can be grown into"
     >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
   [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
     "${round_dir}/grow-stderr.log" \
-    "the exposed-region planner failed with exit ${status}"
+    "the exposed-region planner failed with exit ${status}: \
+$(campaign_thrown "${round_dir}/grow-stderr.log")"
   require_nonempty "exposed region plan rows" "${rows}"
   stream_generation=$((stream_generation + 1))
   generation="${iteration_dir}/generations/g${stream_generation}"
@@ -5098,7 +5168,8 @@ campaign_compose() {
   millis=$(( (ended - started) / 1000000 ))
   [[ "${status}" -eq 0 ]] || campaign_fail COMPOSE ComposeMain \
     "${campaign_final}/compose.log" \
-    "the composer failed with exit ${status} on inputs it was given"
+    "the composer failed with exit ${status} on inputs it was given: \
+$(campaign_thrown "${campaign_final}/compose.log")"
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
   printf '%s\t%s\n' "COMPOSE[anchor]" "${millis}" \

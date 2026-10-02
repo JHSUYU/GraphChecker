@@ -690,7 +690,8 @@ public final class CausynthTraceRecorder {
                 producer == null ? "" : producer.id(),
                 receipt == null ? null : receipt.stance);
         if (DEBUG_PRODUCERS && producer != null) {
-            System.err.println("CAUSYNTH-PRODUCER " + transport + "#" + half
+            EngineConsole.println("CAUSYNTH-PRODUCER " + transport + "#"
+                    + half
                     + " " + correlationId + " " + producer.id() + " "
                     + producer.render());
         }

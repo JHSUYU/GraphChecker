@@ -641,8 +641,8 @@ public final class ScheduleLog {
                     writer.flush();
                 } catch (IOException unwritable) {
                     failed = true;
-                    System.err.println("Causynth could not write the schedule"
-                            + " to " + file + ": " + unwritable);
+                    EngineConsole.println("Causynth could not write the "
+                            + "schedule to " + file + ": " + unwritable);
                 }
             }
         });
@@ -1255,7 +1255,7 @@ public final class ScheduleLog {
                     where, detail);
         } catch (Throwable unpublished) {
         }
-        System.err.println("Causynth schedule: " + detail);
+        EngineConsole.println("Causynth schedule: " + detail);
     }
 
     /** Whether the replay is held right now: in the window, a slot holds. */
@@ -1307,7 +1307,7 @@ public final class ScheduleLog {
         Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
             @Override
             public void run() {
-                System.err.println("Causynth schedule: " + progress());
+                EngineConsole.println("Causynth schedule: " + progress());
             }
         }, "causynth-schedule-progress"));
     }
