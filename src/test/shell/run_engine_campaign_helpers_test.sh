@@ -1230,6 +1230,25 @@ grep -q "artifact=${verify_dir}/woven_class_verification.log" \
 grep -q 'allowSnapshot.*Local index 2 is invalid' "${verify_dir}/error.log" \
   || fail "the verifier's failure does not name the class, method and \
 reason: $(cat "${verify_dir}/error.log")"
+# A weave that throws fails its stage by name (campaign_analyze), its
+# deepest cause the reason; under errexit it ended the campaign unnamed.
+(
+  do_analyze() {
+    echo "java.lang.IllegalStateException: Could not instrument a root"
+    echo "Caused by: java.lang.IllegalStateException: \
+LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: m#loop:u12 declares 2 controls" >&2
+    return 1
+  }
+  campaign_analyze INSTRUMENT "${verify_dir}/instrument.log" >/dev/null
+) 2>"${verify_dir}/weave-error.log" \
+  && fail "a weave that threw did not fail the campaign"
+grep -q 'stage=INSTRUMENT' "${verify_dir}/weave-error.log" \
+  && grep -q "artifact=${verify_dir}/instrument.log" \
+    "${verify_dir}/weave-error.log" \
+  && grep -q 'reason=.*exit 1: java.lang.IllegalStateException: LOOP_BODY_ROOT_ENTRY_UNAVAILABLE' \
+    "${verify_dir}/weave-error.log" \
+  || fail "a weave's failure does not name its stage, log and refusal: \
+$(cat "${verify_dir}/weave-error.log")"
 
 # COUNT: a count the campaign decides on is a decision, and an unreadable
 # count is a refusal.  `[[ "${n}" -eq 0 ]]` reads an empty string as zero, so
@@ -2241,6 +2260,43 @@ jq -e '.stop == "REGION_PATH_WAVE_BUDGET_REACHED" and .rounds == 2
 it left unasked"
 [[ ! -e "${stream_dir}/obligations-0001/NEVER" ]] \
   || fail "a round past the budget was dispatched"
+
+# STREAM-3b: A PLANNER OUT OF HEAP.  A round whose planner ran out of the most
+# heap a head JVM is given (exit 3) is not planned: its directory goes, what
+# runs lands, the exploration ends on the rounds before it, and the stop is
+# a BLOCKING row naming the planner's error (sweep a40h2, DataStreamer-638).
+stream_fixture stream-3b
+(
+  stream_stubs
+  run_java_main() {
+    if [[ " $* " == *" --round 1 "* ]]; then
+      echo "Terminating due to java.lang.OutOfMemoryError: Java heap space" >&2
+      return 3
+    fi
+    stream_planner "$@"
+  }
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A SLOW; }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    case "${id}" in
+      A) stream_answer "${worker}" A ADMITTED SESSION.A ;;
+      SLOW) sleep 2; stream_answer "${worker}" SLOW UNSAT ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "a planner out of heap failed the exploration: \
+$(cat "${stream_dir}/explore.log")"
+jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED" and .cls == "BLOCKING")
+  | .detail | test("obligations-0001 ran out") and test("OutOfMemoryError")' \
+  "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  && jq -e '.stop == "PLANNER_HEAP_EXCEEDED" and .rounds == 1' \
+    "${stream_dir}/exploration.json" >/dev/null \
+  && jq -e -s 'map(.obligationId) | sort == ["A","SLOW"]' \
+    "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  && [[ ! -e "${stream_dir}/obligations-0001" ]] \
+  || fail "a planner out of heap did not end the exploration by name: \
+$(cat "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/exploration.json")"
 
 # STREAM-4: a planner that states no growth file did not run to completion:
 # refused by name, never read as "nothing exposed".
@@ -3550,7 +3606,8 @@ EOF
 # -XX:+ExitOnOutOfMemoryError -- runs once more at the engine heap, saying
 # so; the reader of its standard output sees the finished run's alone, and
 # later starts of that main go straight to the engine heap.  A main with no
-# measured need runs at the engine heap.
+# measured need runs at the engine heap.  Every run, at the engine heap too,
+# ends at its first out-of-heap error.
 engine_test=${test_tmp}/engine-heap
 mkdir -p "${engine_test}"
 cat >"${engine_test}/java" <<'EOF'
@@ -3580,8 +3637,8 @@ chmod +x "${engine_test}/java"
   engine_java -cp jar x.Grows >/dev/null
   engine_java -cp jar x.Other >/dev/null
   engine_need_mb=6000 engine_java -cp jar x.Other >/dev/null
-  [[ "$(tr '\n' ' ' <"${engine_test}/log")" == "heap=2000 oom=y heap=8000 oom=n \
-heap=8000 oom=n heap=8000 oom=n heap=6000 oom=y " ]] \
+  [[ "$(tr '\n' ' ' <"${engine_test}/log")" == "heap=2000 oom=y heap=8000 oom=y \
+heap=8000 oom=y heap=8000 oom=y heap=6000 oom=y " ]] \
     || fail "engine JVMs did not start at their needs: \
 $(tr '\n' ' ' <"${engine_test}/log")"
 )

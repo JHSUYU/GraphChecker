@@ -15,12 +15,12 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` (a batch: `campaign_batch_seed`, §2b) | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
 | PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | not even the target's demand depth fits `schedule_max_jobs`; the index does not commit the frozen plan; no target |
 | UNION (a batch) | `campaign_batch_union`; `plan.PlanUnion` | `groups/groups.json`, `groups/group-<n>/execution_task_plan.jsonl` | `PlanUnion` exits nonzero |
-| INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
+| INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/`, `instrument.log` | the weave refuses (its deepest throwable is the reason); no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `import_gated.txt`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
-| EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails; a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
+| EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
-| COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
+| COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
 | CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed |
@@ -142,6 +142,11 @@ none.
    `runtime/schedule.jsonl` sits beside them.
 3. Both skeleton views are copied to `<campaign root>/seed-skeletons/`.
 
+Every static pass and weave (`do_analyze`: SEED's passes and recording weave, INSTRUMENT's union
+weave, GROW's) runs through `campaign_analyze`: its output is shown and kept (`static-pass.log`,
+`runtime/weave.log`, `instrument.log`), and a pass that throws fails its stage with the deepest
+throwable it printed as the reason (`campaign_thrown`), never as a bare stack trace.
+
 ### 2b. A batch campaign: one recording for several targets
 
 A campaign given `causynth_static_root` (an ad-hoc sweep's batch case, `tools/adhoc/cover.py
@@ -256,7 +261,10 @@ focus row its `manifest.json` states role `SEED`. The seed replay runs under a w
 `replay_timeout_s`. It is `required`: a replay killed on that bound or otherwise (the failure
 names what killed it; for the bound, the rule and its numbers, `campaign_adapter_timeout_rule`), a
 session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row whose `anchorSiteId`
-is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. The workload's exit
+is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY; the last names why
+the declared task went unanswered, its `TASK_UNANSWERED` row (`campaign_target_unanswered`: the
+nearest activations and how each differed -- another node, an anchor the run never minted -- or that
+its root never ran). The workload's exit
 code is not the gate (a target that throws exits nonzero by design).
 
 A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
@@ -775,7 +783,9 @@ aggregation, scheduler, lineage scan, scope growth, woven-class verifier and CON
 import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none
 (`ExposedRegionPlanMain`, `PlanUnion`); a JVM that runs out of its need (exit 3 under
 `-XX:+ExitOnOutOfMemoryError`) runs once more at `engine_memory_mb`, charged so, saying so, and
-later starts of that main begin there (a head step's discovery is the head's, §7.9) -- the seed
+later starts of that main begin there (a head step's discovery is the head's, §7.9); every run ends
+at its first out-of-heap error, at `engine_memory_mb` too (exit 3: the most heap a head JVM is given,
+told apart from a crash) -- the seed
 and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged for 300 s
 seven times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its
 native recording, up to 6.94 times in round x1) when above `obligation_memory_mb`, else that
@@ -846,7 +856,7 @@ When the step returns the head takes its round (`campaign_stream_take_round`): t
 GROW, else its proposals into the queue, where they start at once. The corpus and the ledger change
 only between two steps, so a step reads them as a landed whole, and the round's in-flight rows
 (`in_flight.jsonl`, §7.3) are what is queued or running as the step starts; the busier the head,
-the more returns one step takes in. The exploration has three ends, each stated in
+the more returns one step takes in. The exploration has four ends, each stated in
 `exploration.json` (stop, rounds, steps, generations, answers, attempts, and every obligation
 cancelled or reaped, by id):
 
@@ -872,9 +882,16 @@ cancelled or reaped, by id):
   lands, and the stop is a DIAGNOSTIC row.
 - **FIXED_POINT.** Nothing queued, running or unlanded, no step running, and the last round, over
   every answer, proposed and exposed nothing.
+- **PLANNER_HEAP_EXCEEDED.** A round's planner ran out of the most heap a head JVM is given
+  (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
+  not planned (its directory goes, its logs stay in the step), what runs lands, and the stop is a
+  BLOCKING row naming the round, the corpus's size on disk and the planner's error -- rounds were
+  still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
 
 A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
-proposed twice; the wave budget is what bounds the derivation. An end other than WITNESSED on a
+proposed twice; the wave budget is what bounds the derivation. The ad-hoc HDFS experiment gives its
+planner and composer 16 GB past their 8 GB start (`engine_memory_mb`): a40h2 DataStreamer-638's 70
+sessions (5.7 GB on disk) ran its round-4 planner out of 8 GB. An end other than WITNESSED on a
 last round whose closure was truncated (its `truncated`) is one BLOCKING
 `REGION_PATH_CLOSURE_TRUNCATED` row naming that round (`campaign_stream_truncation`): a claim over
 that closure misses arms. An accepted witness asks nothing past it, so its rounds' truncations stay
