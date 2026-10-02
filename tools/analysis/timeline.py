@@ -11,7 +11,10 @@ the sources are the files the campaign wrote:
                      the weave's "GraphChecker started/ran for" log lines
   EXPLORE per round  obligations-NNNN/: in_flight.jsonl (copied as the planner
                      starts) to explore_manifest.json; the dispatch to
-                     its last obligation's end (a GROW re-run's included)
+                     its last obligation's end (a GROW re-run's included);
+                     the planner's wait for memory, off its stderr.log
+                     (campaign_head_place: "waiting for memory for a head
+                     step", then "room ... after waiting <s> s")
   EXPLORE head steps steps/NNNN/: its inputs (gate, witnesses, round; written as
                      it starts) to its last output -- the gate's
                      import_gate.json, an attempt's compose.log, the round's
@@ -170,6 +173,23 @@ def compose_split(log):
     return (int(found.group(1)), int(found.group(2))) if found else None
 
 
+HEAD_WAIT = re.compile(r"^\[campaign\] waiting for memory for a head step", re.M)
+HEAD_ROOM = re.compile(r"^\[campaign\] room for a head step of \d+ MB on \S+ after waiting (\d+) s", re.M)
+
+
+def head_wait(log):
+    """None when the head step whose stderr <log> is never waited for memory;
+    else the seconds it waited, or -1 when the run did not state how long."""
+    try:
+        text = open(log, errors="replace").read()
+    except OSError:
+        return None
+    if not HEAD_WAIT.search(text):
+        return None
+    waited = HEAD_ROOM.findall(text)
+    return sum(int(s) for s in waited) if waited else -1
+
+
 def round_rows(iteration):
     rows = []
     previous_end = mtime(os.path.join(iteration, "import_gate.json"))
@@ -215,6 +235,7 @@ def round_rows(iteration):
         ends = [t for t in (worker_times(os.path.join(wave, o["id"]))[3] for o in obligations) if t]
         dispatch_end = gate_start or (max(ends) if ends else plan_end)
         rows.append({"wave": name[-4:], "plan": (plan_end - plan_start) if plan_start and plan_end else None,
+                     "wait": head_wait(stderr),
                      "dispatch": (dispatch_end - plan_end) if plan_end and dispatch_end else None,
                      "gate": (gate_end - gate_start) if gate_start and gate_end else None,
                      "obligations": obligations})
@@ -338,6 +359,11 @@ def report(root, label):
                     and not o["solver_failed"]),
                 sum(1 for o in obl if o["solver_failed"]), len(rep), spread(o["replay"] for o in rep),
                 "%d/%d/%d" % (count("refused"), count("flipped"), count("error")), dur(longest)))
+        for w in waves:
+            if w["wait"] is not None:
+                print("   round %s's planner waited for memory %s of its %s" % (
+                    w["wave"], dur(w["wait"]) if w["wait"] >= 0 else "(how long: not stated by this run)",
+                    dur(w["plan"])))
         solves = [o["solve"] for w in waves for o in w["obligations"]]
         failed = [o["solve"] or 0 for w in waves for o in w["obligations"] if o["solver_failed"]]
         print("   solver min/med/max %s, %s of slot time%s; replays %d, %s of slot time" % (
@@ -370,7 +396,9 @@ def report(root, label):
             print("   head steps: %d, %s each; %d gate(s) over %d session(s), %s each" % (
                 len(steps), spread(t for t, _, _ in steps), len(gates), sum(n for _, n in gates),
                 spread(g for g, _ in gates)))
-        head = [("EXPLORE planning (%d rounds)" % len(waves), sum(w["plan"] or 0 for w in waves)),
+        planner_waits = sum(max(w["wait"] or 0, 0) for w in waves)
+        head = [("EXPLORE planning (%d rounds)" % len(waves), sum(w["plan"] or 0 for w in waves) - planner_waits),
+                ("EXPLORE planners waiting for memory", planner_waits),
                 ("EXPLORE import gates", sum(g or 0 for g, _ in gates)),
                 ("EXPLORE witness attempts", sum(t or 0 for t, _, _ in attempts))]
         # The head's JVM time: its steps, which run beside the pool, or --
@@ -384,9 +412,11 @@ def report(root, label):
     if os.path.isfile(confirm):
         started = mtime(os.path.join(root, "final", "confirm", "worker", "focused_task.jsonl"))
         print("   CONFIRM replay %s" % dur(mtime(confirm) - started if started else None))
-    waits = len(re.findall(r"^\[campaign\] waiting for memory for a head step", log_text, re.M))
+    waits = len(HEAD_WAIT.findall(log_text)) + sum(1 for w in waves if w["wait"] is not None)
     if waits:
-        print("   the head waited for memory %d time(s) (inside the stage or gate that started the JVM)" % waits)
+        stated = sum(int(s) for s in HEAD_ROOM.findall(log_text)) + sum(max(w["wait"] or 0, 0) for w in waves)
+        print("   the head waited for memory %d time(s), %s stated (inside the stage or gate that started the JVM)"
+              % (waits, dur(stated)))
     sinks.sort(key=lambda s: -s[1])
     print("   top sinks: " + "; ".join("%s %s" % (name, dur(t)) for name, t in sinks[:5]))
     print()
