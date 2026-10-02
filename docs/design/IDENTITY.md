@@ -417,7 +417,9 @@ PLAN reads the resolved address. `plan/SelectorResolution#resolve` takes the k-t
 selector matches (region, and the anchor's api when given); an already-resolved address passes
 through. No match yields a degraded address, reported downstream as `DECLARATION_MISSING`.
 
-**A replay's answer.** A replay admits a planned task by its whole address, id against id
+**A replay's answer.** One woven entry per root hook group (`plan/ExecutionTask#rootHookGroup`:
+region, root method, a loop-body root's loop) offers each invocation to every task of its group, and
+a replay admits a planned task by its whole address, id against id
 (`runtime/ConcolicTaskPlan#select`), with one exception: the declared occurrence is also answered by
 its question. PLAN states its context's shape over the recording's senders on its row
 (`questionShape`, `causynth/RuntimeSelectedRegionFinalizer`, `RecordedMessages#shape`); an

@@ -74,8 +74,12 @@ public final class ConcolicInstrumentationSelections {
 
     /** One immutable view of the scheduler-selected execution task. */
     static final class InstrumentationPlan {
-        /** Exact plan selector shared by a seed task and its replays. */
-        private final String instrumentationSelector;
+        /** The woven entry this task's region opens at
+         *  ({@code ExecutionTask#rootHookGroup}). */
+        private final String rootHookGroup;
+        /** The enclosing entry a loop-body root's iterations are addressed
+         *  under, else "" ({@code ExecutionTask#loopRootHookGroup}). */
+        private final String loopRootHookGroup;
         private final String rootMethod;
         /** Methods whose conditional branches this task's weave covers. */
         private final Set<String> branchMethods;
@@ -104,7 +108,8 @@ public final class ConcolicInstrumentationSelections {
                 throw new IOException("Execution task " + task.taskId()
                         + " is not executable");
             }
-            instrumentationSelector = task.instrumentationSelector();
+            rootHookGroup = task.rootHookGroup();
+            loopRootHookGroup = task.loopRootHookGroup();
             rootMethod = task.rootMethod();
             if (rootMethod.isEmpty()) {
                 throw new IOException("Execution task " + task.taskId()
@@ -238,8 +243,12 @@ public final class ConcolicInstrumentationSelections {
             return rootMethod;
         }
 
-        String instrumentationSelector() {
-            return instrumentationSelector;
+        String rootHookGroup() {
+            return rootHookGroup;
+        }
+
+        String loopRootHookGroup() {
+            return loopRootHookGroup;
         }
 
         /**

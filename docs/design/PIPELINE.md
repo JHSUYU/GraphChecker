@@ -236,6 +236,11 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 `CAUSYNTH_CONCOLIC_TASK_PLAN`/`_TASK_ID` set to the whole plan: one union weave of every task. The
 tree must hold a class file, and `causynth.VerifyWovenClasses` must verify every woven class against
 the replay's class path, or the stage fails naming the class. GROW re-runs this stage's function.
+The union weave opens ONE region entry per root hook group (`plan.ExecutionTask#rootHookGroup`: the
+region and its root method, and a loop-body root's loop) and one enclosing entry per loop root
+(`#loopRootHookGroup`), however many planned occurrences share it; a replay's entry offers each
+invocation to every task of its group (`runtime.ConcolicTaskPlan#select`), and two rows of one group
+that would place its entry apart are refused (`ROOT_HOOK_GROUP_DISAGREES`).
 A loop-body root's controls are the branches leaving its loop, as the catalog's guards are
 (`CfgLoopControl#retainedLoops`): an `if`, or a switch with a case that leaves (a `default` that
 throws); its frame opens on the outermost control edge into the body whose target dominates the

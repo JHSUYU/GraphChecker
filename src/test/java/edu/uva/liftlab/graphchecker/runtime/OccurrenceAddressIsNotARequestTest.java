@@ -160,7 +160,7 @@ public class OccurrenceAddressIsNotARequestTest {
                 new SourceRef("CLUSTER_NODE", "NAMENODE", NN0, 1L));
         ConcolicTaskPlan.RuntimeTask unobserved = nodeTask(NN0 + "#epoch1", 1);
         assertNotNull("the address is the whole admission",
-                plan(unobserved).select(unobserved.rootHookGroupKey(),
+                plan(unobserved).select(unobserved.rootHookGroup,
                         SNAPSHOT_ROOT, node, new Object[0]));
 
         // A loop-body task whose occurrence names no k is refused at PLAN.
@@ -240,20 +240,22 @@ public class OccurrenceAddressIsNotARequestTest {
                     NN0 + "#epoch0", SNAPSHOT_REGION, SNAPSHOT_ROOT,
                     ran.render(), 1, "REGISTERED_SOURCE")));
 
+            assertEquals("one woven entry offers both occurrences of the root",
+                    asked.rootHookGroup, planned.rootHookGroup);
             assertTrue("a turn of the same root answers it", asked.answers(ran));
             assertFalse("a task stating no question answers by address only",
                     planned.answers(declared));
             assertEquals("the address it ran at is a planned task's",
                     planned, new ConcolicTaskPlan(null,
                             Arrays.asList(asked, planned)).select(
-                            asked.rootHookGroupKey(), SNAPSHOT_ROOT, node,
+                            asked.rootHookGroup, SNAPSHOT_ROOT, node,
                             new Object[0]));
 
             // The region entry opens the run's own address; the admission
             // gives it the declared one.
             Identity.occurrence(NN0 + "#epoch0", SNAPSHOT_REGION, true);
             ConcolicTaskPlan alone = plan(asked);
-            assertEquals(asked, alone.select(asked.rootHookGroupKey(),
+            assertEquals(asked, alone.select(asked.rootHookGroup,
                     SNAPSHOT_ROOT, node, new Object[0]));
             assertTrue(alone.answeredByQuestion(asked));
             assertEquals(ran, Identity.answer(declared));

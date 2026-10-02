@@ -68,9 +68,8 @@ public final class ExecutionTask extends PlanRow {
         loopBound = bound == null ? LoopBoundPolicy.decode(encoded) : bound;
         // Once-only root: a region rooted on a service loop is entered once per
         // iteration, at the body.
-        JsonObject rootLoop = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
-                rootAuthority()) ? object(encoded, LoopBoundPolicy.ROOT_LOOP)
-                : new JsonObject();
+        JsonObject rootLoop = loopBodyRoot()
+                ? object(encoded, LoopBoundPolicy.ROOT_LOOP) : new JsonObject();
         rootLoopMethod = optionalString(rootLoop, LoopBoundPolicy.ROOT_LOOP_METHOD);
         rootLoopHeaderUnitIndex = rootLoopMethod.isEmpty() ? -1
                 : optionalInteger(rootLoop, LoopBoundPolicy.HEADER_UNIT_INDEX, -1);
@@ -157,20 +156,36 @@ public final class ExecutionTask extends PlanRow {
 
     public String taskId() { return optionalString(encoded, "taskId"); }
 
-    /** Stable identity of this row's instrumentation: (region, occurrence).
-     *  Task and goal ids change per replay and must not add another root hook.
+    /**
+     * THE ROOT HOOK this row's region opens at: its region and root method,
+     * and for a loop-body root that loop.  INSTRUMENT weaves ONE entry per
+     * group, however many planned occurrences share it, and a replay offers
+     * each invocation of it to every task of the group
+     * ({@code runtime.ConcolicTaskPlan#select}).  Woven once per row, sweep
+     * a40h2's 763 occurrences of {@code Configuration.get(String)} put 758
+     * entries in one body (15,980 units), which the woven-body verifier did
+     * not finish in 40 minutes.
      */
-    public String instrumentationSelector() {
-        StringBuilder selector = new StringBuilder();
-        appendSelectorPart(selector, regionId());
-        appendSelectorPart(selector, occurrenceId());
-        return selector.toString();
+    public String rootHookGroup() {
+        boolean loop = loopBodyRoot();
+        return (loop ? "LOOP\n" : "METHOD\n") + regionId() + "\n"
+                + rootMethod() + (loop ? "\n" + rootLoopMethod + "\n"
+                + rootLoopHeaderUnitIndex : "");
     }
 
-    private static void appendSelectorPart(StringBuilder selector,
-                                           String value) {
-        String part = value == null ? "" : value;
-        selector.append(part.length()).append(':').append(part);
+    /**
+     * The enclosing method entry a loop-body root's iterations are addressed
+     * under (its root method), woven once for every loop-body row rooted
+     * there; "" for any other row.
+     */
+    public String loopRootHookGroup() {
+        return loopBodyRoot() ? rootMethod() : "";
+    }
+
+    /** Whether this region is rooted at a service loop's body
+     *  ({@link LoopBoundPolicy#LOOP_BODY_ROOT}). */
+    public boolean loopBodyRoot() {
+        return LoopBoundPolicy.LOOP_BODY_ROOT.equals(rootAuthority());
     }
 
     public ClosureGoalKind goalKind() {
