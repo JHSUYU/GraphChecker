@@ -4,7 +4,8 @@ package edu.uva.liftlab.graphchecker.runtime;
  * The entry point every {@code execute.sh} launches: the workload session
  * opens before the test method and closes after it on every exit path, so
  * an exported expression can outlive its producer's thread.  The method
- * itself is run by {@link JUnitLifecycle}.
+ * itself is run by {@link JUnitLifecycle}.  A replay draws its RSA key pairs
+ * from {@link ReplayKeys}.
  */
 public final class JUnitMethodRunner {
     private static final Object ENDING = new Object();
@@ -15,6 +16,9 @@ public final class JUnitMethodRunner {
     }
 
     public static void main(String[] args) {
+        if (RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT) {
+            ReplayKeys.install();
+        }
         String refusedOpen = ConcolicRegionRuntime.openWorkloadSession();
         if (!refusedOpen.isEmpty()) {
             // Without a session every cross-thread expression is lost.

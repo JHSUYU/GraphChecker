@@ -1713,8 +1713,14 @@ public class ScheduleLogTest {
         root.addProperty("vmSite", "org.a.RoutingRule#isExpired()Z");
         assertEquals("org.a.RoutingRule#isExpired",
                 ClockLoops.clockMethod(root));
+        StackTraceElement[] atTheRule = {new StackTraceElement(
+                "org.a.RoutingRule", "isExpired", null, 0)};
+        ClockLoops.install(Collections.singletonList(root));
+        assertTrue(ClockLoops.reads(atTheRule));
         root.addProperty("inputKind", "FAULT");
         assertEquals("", ClockLoops.clockMethod(root));
+        ClockLoops.install(Collections.singletonList(root));
+        assertFalse(ClockLoops.reads(atTheRule));
         // row: released by, timeout, the loop reads a clock, the sites.
         Object[][] rows = {
             {"another context's event", "30000", false,

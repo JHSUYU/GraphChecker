@@ -3,21 +3,26 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
-import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import java.io.IOException;
-import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
  * Whether a waiting thread's loop reads a CLOCK root: the scope map
- * ({@code static_scope_map.jsonl}, named by {@link
- * GuardedStoreSites#PATH_ENVIRONMENT}) declares a CLOCK root -- a {@code
+ * ({@code static_scope_map.jsonl}) declares a CLOCK root -- a {@code
  * DECLARED_SITE} of {@code inputKind} CLOCK -- in a method on the thread's
  * stack at the wait.  Such a loop waits for time only the clock brings (a
  * rule's expiry), so {@code ScheduleLog} never holds it for the order to
  * move.
+ *
+ * <p>The methods are installed when the workload session opens, from the
+ * rows {@link GuardedStoreSites#install} reads, before the workload runs.
+ * Read at the first wait instead, the 3 MB map of an HDFS ad-hoc check held
+ * a BPServiceActor's first tick 2-3 s on the concolic VM mid-run, and every
+ * other thread's first wait behind it (hdfs ad-hoc FileChecksumHelper-496),
+ * long enough for an IPC caller's one-second hand-off to its sender thread
+ * to time out and the replay to leave the recorded order.</p>
  *
  * <p>PRECISION.  By method, along the stack.  A frame whose method reads a
  * clock root anywhere counts, inside the loop or not: the wait then runs as
@@ -30,18 +35,13 @@ import java.util.Set;
  */
 final class ClockLoops {
     /** {@code class#method} of every method declaring a CLOCK root. */
-    private static volatile Set<String> methods;
+    private static volatile Set<String> methods = Collections.emptySet();
 
     private ClockLoops() {
     }
 
-    /**
-     * Whether a frame of {@code stack} is a method declaring a CLOCK root.
-     * The map was read when the wait's event was computed ({@link #load}),
-     * before the schedule's lock was taken.
-     */
+    /** Whether a frame of {@code stack} is a method declaring a CLOCK root. */
     static boolean reads(StackTraceElement[] stack) {
-        load();
         Set<String> declared = methods;
         if (declared.isEmpty()) return false;
         for (StackTraceElement frame : stack) {
@@ -53,38 +53,14 @@ final class ClockLoops {
         return false;
     }
 
-    /** Reads the scope map's CLOCK methods once; a volatile read after. */
-    static void load() {
-        if (methods != null) return;
-        synchronized (ClockLoops.class) {
-            if (methods == null) methods = read();
-        }
-    }
-
-    /** The scope map's CLOCK methods; none, said once, when it is unread. */
-    private static Set<String> read() {
-        String named = Text.safe(System.getenv(
-                GuardedStoreSites.PATH_ENVIRONMENT));
-        if (named.isEmpty()) {
-            EngineConsole.println("Causynth schedule: $"
-                    + GuardedStoreSites.PATH_ENVIRONMENT + " names no scope"
-                    + " map: no loop is known to read a CLOCK root, and"
-                    + " every poll past its recorded count is held");
-            return Collections.emptySet();
-        }
+    /** Installs the CLOCK methods of the session's scope map rows. */
+    static void install(List<JsonObject> rows) {
         Set<String> found = new HashSet<String>();
-        try {
-            for (JsonObject row : ArtifactIO.readJsonl(Paths.get(named))) {
-                String method = clockMethod(row);
-                if (!method.isEmpty()) found.add(method);
-            }
-        } catch (IOException | RuntimeException unreadable) {
-            EngineConsole.println("Causynth schedule: the scope map " + named
-                    + " is unreadable (" + unreadable + "): no loop is known"
-                    + " to read a CLOCK root");
-            return Collections.emptySet();
+        for (JsonObject row : rows) {
+            String method = clockMethod(row);
+            if (!method.isEmpty()) found.add(method);
         }
-        return found;
+        methods = found;
     }
 
     /** {@code class#method} of a CLOCK root row's {@code vmSite}, or "". */
@@ -113,6 +89,6 @@ final class ClockLoops {
     }
 
     static void resetForTests() {
-        methods = null;
+        methods = Collections.emptySet();
     }
 }

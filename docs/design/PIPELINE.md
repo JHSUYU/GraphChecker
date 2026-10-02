@@ -277,6 +277,15 @@ the `System.err` a test may have captured and asserts on (a40h2 FSImage-851: its
 `TestDFSAdminWithHA#verifyUpgradeQueryOutput` on the schedule's own lines, before the declared
 occurrence ran).
 
+A replay JVM draws its RSA key pairs from a fixed pool (`runtime.ReplayKeys`, a JCA provider put
+first by `JUnitMethodRunner`; four pairs of exponent 65537 per size of 1024-4096 bits, in the jar's
+`replay-rsa-keys.txt`, one after another per size): the concolic VM has none of HotSpot's
+`BigInteger` intrinsics, so one 2048-bit prime search takes it 40-70 s, and a Solr node makes one as
+it starts (four nodes spent 220 s of a 470 s seed replay there). A key pair is `SecureRandom` bits no
+stage reads. Another size or exponent is the JDK's own search; the replay log names either once per
+size. The recording searches as always. The scope map is read once, when the workload session
+opens (`GuardedStoreSites#install`, which hands its rows to `ClockLoops`).
+
 A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
 end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
 starts after it), live activations settle, the run totals close the session's rows (a closed
@@ -793,11 +802,15 @@ INSTRUMENT and its verifier, the import gate, the planner, COMPOSE, CONFIRM's an
 `ConfirmMain`, GROW's planner and weave, a batch's `PlanUnion` -- each charged for 120 s at the heap
 it starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured need
 (`campaign_engine_need_mb`: the static pass 4 GB, the planner and the composer 8 GB, the trace
-aggregation, scheduler, lineage scan, scope growth, woven-class verifier and CONFIRM 2 GB; the
-import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none
-(`ExposedRegionPlanMain`, `PlanUnion`); a JVM that runs out of its need (exit 3 under
-`-XX:+ExitOnOutOfMemoryError`) runs once more at `engine_memory_mb`, charged so, saying so, and
-later starts of that main begin there (a head step's discovery is the head's, §7.9); every run ends
+aggregation, scheduler, lineage scan, scope growth, woven-class verifier, CONFIRM, GROW's
+`ExposedRegionPlanMain` (0.13 GB measured) and a batch's `PlanUnion` (the scheduler's, unmeasured)
+2 GB; the import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none; a JVM
+that runs out of its heap (exit 3 under
+`-XX:+ExitOnOutOfMemoryError`) runs again at twice it, up to `engine_memory_mb`, charged so, saying
+so each time, and later starts of that main begin at the larger heap (`campaign_engine_outgrown`;
+a head step's discovery is the head's, §7.9): a 2 GB trace aggregation or scheduler that asked for
+the 16 GB engine heap at once found no lift of a running sweep with it free and waited 75-85 min
+(a40s); every run ends
 at its first out-of-heap error, at `engine_memory_mb` too (exit 3: the most heap a head JVM is given,
 told apart from a crash) -- the seed
 and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged for 300 s
@@ -815,7 +828,13 @@ there, so it reserves room for the next one -- what its planner or composer star
 `<host>/heads/<id>` stating its need, fresh while the head lives, idle unless one of its JVMs
 runs): a start that is no head's own counts the largest idle fresh
 reservation of the host as used, a head's own start counts none (heads take turns and never
-block each other), and the head gives its room up when it exits.
+block each other), and the head gives its room up when it exits. A head step that waits for room
+holds its need on the pool's host with the most room when it began to wait (`campaign_head_hold`,
+`<host>/heads/<id>.hold`, fresh while the head lives, given up once the step is placed or the head
+exits; `campaign_head_hold_room`): every start but the head's own counts it as a reservation, so
+that host drains as its starts return instead of being taken again one obligation at a time
+(a40h2's 14 GB seed replay waited 70 min, V5-11741's 16 GB GROW step 40 min and more, while the
+pool kept every lift busy).
 An obligation whose worker does not finish (a nonzero exit, local or remote, or a result the head
 cannot see) is its own answer (`campaign_obligation_unfinished`): every process on its host whose
 command line names its worker directory is ended (a peer's replay JVM is in a process group the

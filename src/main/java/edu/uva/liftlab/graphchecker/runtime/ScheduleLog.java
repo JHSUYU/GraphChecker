@@ -511,11 +511,6 @@ public final class ScheduleLog {
         if (stable.isEmpty()) return null;
         Stance stance = at != null ? at : standing();
         if (stance == null) return null;
-        // A held poll may ask whether its loop reads a CLOCK root: the scope
-        // map is read here, off the schedule's lock, never under it.
-        if (kind == ScheduleEvent.Kind.WAKE && (holds || replay())) {
-            ClockLoops.load();
-        }
         return new Pending(kind, stance.context, stable, stance.region,
                 Text.safe(endpoint));
     }
