@@ -71,6 +71,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionStringBuilderMutatorSmoke.java \
   test/causynth/RegionVersionDefectsSmoke.java \
   test/causynth/RegionReferenceSwapSmoke.java \
+  test/causynth/RegionNamedReferenceStoreSmoke.java \
   test/causynth/RegionConcurrentHashMapSmoke.java \
   test/causynth/RegionMapIterationOrderSmoke.java \
   test/causynth/RegionWrapperViewSmoke.java \
@@ -135,6 +136,7 @@ for smoke in \
   RegionStringBuilderMutatorSmoke \
   RegionVersionDefectsSmoke \
   RegionReferenceSwapSmoke \
+  RegionNamedReferenceStoreSmoke \
   RegionConcurrentHashMapSmoke \
   RegionMapIterationOrderSmoke \
   RegionWrapperViewSmoke \
