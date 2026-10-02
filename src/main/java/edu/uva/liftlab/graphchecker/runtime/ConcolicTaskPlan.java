@@ -416,10 +416,11 @@ final class ConcolicTaskPlan {
             return task;
         }
         if (answering < 0) return null;
-        // An address a task plans is that task's occurrence, live, done or
-        // not; and an entry that opened no occurrence of its own (a fold,
-        // unnamed work) has none to give the declared address.
-        if (plans(rootHookGroupKey, answered.observed)
+        // A context a task plans an occurrence in is that task's, live,
+        // done or not, its every invocation included; and an entry that
+        // opened no occurrence of its own (a fold, unnamed work) has none to
+        // give the declared address.
+        if (occupies(rootHookGroupKey, answered.observed)
                 || Identity.openedNone()) {
             tasks.get(answering).noteUnaddressedCandidate(answered);
             return null;
@@ -429,13 +430,25 @@ final class ConcolicTaskPlan {
         return tasks.get(answering);
     }
 
-    /** Whether a task of this root hook plans {@code address}. */
-    private boolean plans(String rootHookGroupKey, OccurrenceAddress address) {
+    /**
+     * Whether a task of this root hook plans an occurrence of {@code
+     * address}'s region and node in its very context: {@code address}
+     * itself, or another invocation under the same anchor.  That context is
+     * the planned occurrence's, and none of its invocations answers another
+     * context's question (hdfs-11741 K2: the second {@code handle()} call of
+     * one balancer handshake, under the anchor of that handshake's planned
+     * first call, answered the declared second handshake, which then ran
+     * unplanned).
+     */
+    boolean occupies(String rootHookGroupKey, OccurrenceAddress address) {
         for (RuntimeTask task : tasks) {
             if (task.address != null
-                    && task.address.id().equals(address.id())
                     && task.rootHookGroupKey().equals(
-                    safe(rootHookGroupKey))) {
+                    safe(rootHookGroupKey))
+                    && task.address.regionId().equals(address.regionId())
+                    && task.address.node().equals(address.node())
+                    && task.address.context().render().equals(
+                    address.context().render())) {
                 return true;
             }
         }

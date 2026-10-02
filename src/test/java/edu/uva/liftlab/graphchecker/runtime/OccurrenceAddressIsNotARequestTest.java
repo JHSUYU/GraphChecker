@@ -248,6 +248,16 @@ public class OccurrenceAddressIsNotARequestTest {
                             Arrays.asList(asked, planned)).select(
                             asked.rootHookGroupKey(), SNAPSHOT_ROOT, node,
                             new Object[0]));
+            // And so is every other invocation under that task's anchor:
+            // the second call of a planned handshake answers no other
+            // handshake's question (hdfs-11741 K2).
+            OccurrenceAddress sibling = OccurrenceAddress.of(ran.node(),
+                    ran.regionId(), ran.context(), ExecutionIndex.of(
+                            singletonList(Frame.of("<a.B: void m()>", 1))));
+            assertTrue(new ConcolicTaskPlan(null, Arrays.asList(asked,
+                    planned)).occupies(asked.rootHookGroupKey(), sibling));
+            assertFalse(plan(asked).occupies(asked.rootHookGroupKey(),
+                    sibling));
 
             // The region entry opens the run's own address; the admission
             // gives it the declared one.
