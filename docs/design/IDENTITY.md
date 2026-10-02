@@ -432,7 +432,11 @@ through. No match yields a degraded address, reported downstream as `DECLARATION
 (`runtime/ConcolicTaskPlan#select`), with one exception: the declared occurrence is also answered by
 its question. PLAN states its context's shape over the recording's senders on its row
 (`questionShape`, `causynth/RuntimeSelectedRegionFinalizer`, `RecordedMessages#shape`); an
-activation of its region on its node, at an address no task of that root plans, in an entry that
+activation of its region on its node, in a context no task of that root plans an occurrence of the
+region in (`ConcolicTaskPlan#occupies`: not its address, and not another invocation under the same
+anchor, which is the planned occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer
+handshake, under the anchor of that handshake's planned first call, answered the declared second
+handshake, which then ran unplanned), in an entry that
 opened its own occurrence, answers it when its own context, shaped over this run's senders
 (`runtime/ScheduleLog#shape`: each producer endpoint's SEND stance), has that shape hop for hop and
 reaches a root (`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then
