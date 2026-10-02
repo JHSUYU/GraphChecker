@@ -24,19 +24,23 @@ import java.util.UUID;
 import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
 
 /**
- * THE Hadoop shim: Hadoop IPC and the SASL data-transfer exchange on {@link
- * MessageDoors}, the transport-neutral doors every system calls.
+ * THE Hadoop shim: Hadoop IPC, the SASL data-transfer exchange and the
+ * DataTransfer ops on {@link MessageDoors}, the transport-neutral doors every
+ * system calls.
  *
  * <p>Published by GraphChecker (the {@code hadoop-shim} classifier jar, and
  * inside the main jar every Hadoop tree already compiles against), so every
  * tree calls ONE version.  What is Hadoop's own here: the transport names,
- * the IPC correlation id, and the SASL exchange -- one handshake of several
+ * the IPC correlation id, the SASL exchange -- one handshake of several
  * messages on one thread, opened by a thread that may itself be serving a
- * request.  Everything else delegates.</p>
+ * request -- and the DataTransfer op, a request on a correlation of its own
+ * that no response answers through a door.  Everything else delegates.</p>
  */
 public final class CausynthMessagePropagation {
   public static final String IPC = "HADOOP_IPC";
   public static final String SASL = "HDFS_SASL";
+  /** The transport of the library catalog's DataTransfer doors. */
+  public static final String DATA_TRANSFER = "HDFS_DATA_TRANSFER";
 
   private static final ThreadLocal<String> PENDING_SASL = new ThreadLocal<>();
   /**
@@ -240,6 +244,29 @@ public final class CausynthMessagePropagation {
   }
 
   /**
+   * One DataTransfer op leaves ({@code Sender#send}): a request on a
+   * correlation of its own (its SEND names the op's producer endpoint),
+   * carrying the values its thread exported for the op, which the op's
+   * trace info takes to the receiver with the correlation.  The sender keeps
+   * serving whatever it serves: a DataNode forwards an op to its mirror
+   * inside the op it received.
+   */
+  public static Outbound outboundOp() {
+    return outbound(DATA_TRANSFER, "hdfs-dt-" + UUID.randomUUID(), "1",
+        MessageDoors.REQUEST, null);
+  }
+
+  /**
+   * A DataNode's turn received one op ({@code Receiver}, after its parse and
+   * before any of its fields is read), into the turn's own context
+   * ({@link MessageDoors#received}): the turn keeps its address, and the op
+   * is served until the turn ends ({@link #endInbound}).
+   */
+  public static void inboundOp(String symbolic, String correlationId) {
+    MessageDoors.received(symbolic, DATA_TRANSFER, correlationId, "1", null);
+  }
+
+  /**
    * Enters the scope a queued unit of work carried from where it was made:
    * the dequeue half of the IPC {@code Server.Call} transport mapping.
    */
@@ -310,7 +337,7 @@ public final class CausynthMessagePropagation {
     MessageDoors.endRequest(request, api);
   }
 
-  /** What one outbound IPC or SASL message carries. */
+  /** What one outbound message carries. */
   public static final class Outbound {
     private static final Outbound EMPTY =
         new Outbound(MessageDoors.outboundNone());

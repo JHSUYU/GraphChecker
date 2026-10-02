@@ -22,7 +22,10 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 final class SymbolicRegionPlanner {
     /** A demanded shared-state writer no enclosing task region can own. */
     static final String STATE_WRITER_ENTRY = "STATE_WRITER_ENTRY";
-    /** An explicit fault call is itself a replayable request boundary. */
+    /**
+     * An explicit fault call is itself a replayable request boundary, where
+     * no execution context already roots its method.
+     */
     static final String EXPLICIT_FAULT_ENTRY = "EXPLICIT_FAULT_ENTRY";
     /** The declared target's own method, when no entry encloses it. */
     static final String FAILURE_TARGET_ENTRY = "FAILURE_TARGET_ENTRY";
@@ -51,6 +54,8 @@ final class SymbolicRegionPlanner {
                 new LinkedHashMap<>();
         private final Map<String, String> authorities;
         private final Set<String> failure = new LinkedHashSet<>();
+        /** Methods that read an explicit fault marker (a woven door). */
+        private final Set<String> faults = new LinkedHashSet<>();
         /** Any capture of a wire value may own an occurrence. */
         private final Set<String> communication;
         private final Set<String> state = new LinkedHashSet<>();
@@ -89,18 +94,24 @@ final class SymbolicRegionPlanner {
                 }
                 outgoing.get(method).add(callee);
             }
+            // A door woven into a method that is already an execution
+            // context or the target's own method (a door at calls:
+            // PacketResponder#run parses its pipeline's ack) leaves it that
+            // region: its address and its selection stay what they were
+            // without the door.
             authorities = new LinkedHashMap<>(
                     program.executionContextAuthorities);
+            String target = text(program.targetResolved.get("method"));
+            if (!target.isEmpty()) {
+                authorities.putIfAbsent(target, FAILURE_TARGET_ENTRY);
+            }
             for (Map<String, Object> edge : program.edges) {
                 String method = text(edge.get("method"));
                 if (selected.contains(method) && Boolean.TRUE.equals(
                         edge.get("explicitSymbolicFault"))) {
-                    authorities.put(method, EXPLICIT_FAULT_ENTRY);
+                    faults.add(method);
+                    authorities.putIfAbsent(method, EXPLICIT_FAULT_ENTRY);
                 }
-            }
-            String target = text(program.targetResolved.get("method"));
-            if (!target.isEmpty()) {
-                authorities.putIfAbsent(target, FAILURE_TARGET_ENTRY);
             }
         }
 
@@ -140,7 +151,7 @@ final class SymbolicRegionPlanner {
             List<String> communicating = intersections(methods,
                     communication);
             List<String> stateful = intersections(methods, state);
-            boolean explicitFault = EXPLICIT_FAULT_ENTRY.equals(authority);
+            boolean explicitFault = faults.contains(root);
             List<String> fault = explicitFault
                     ? Collections.singletonList(root)
                     : Collections.<String>emptyList();
@@ -153,10 +164,12 @@ final class SymbolicRegionPlanner {
             row.put("anchorMethod", anchors.get(0));
             row.put("anchorMethods", anchors);
             row.put("methods", methods);
-            row.put("selection", explicitFault
-                    ? "EXPLICIT_FAULT_CONTEXT"
-                    : !failed.isEmpty()
+            // A region holding the failure is its exception context, a door
+            // in it or not: the failure closure starts from those alone.
+            row.put("selection", !failed.isEmpty()
                     ? "EXCEPTION_CONTEXT"
+                    : explicitFault
+                    ? "EXPLICIT_FAULT_CONTEXT"
                     : !communicating.isEmpty()
                     ? "COMMUNICATION_CONTEXT" : "STATE_CONTEXT");
             program.regions.add(row);

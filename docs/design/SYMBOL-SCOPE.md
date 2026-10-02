@@ -299,7 +299,12 @@ caller after the anchor). There is no door on a data read (DataTransfer's `Packe
 `getData`/`exists`/`getChildren`): every packet and cluster-state read would be one.
 
 A row with no `method` is a door at calls: a library call whose outcome each caller reads where it
-makes it. DataTransfer has no response method of its own: every side that sent an op (the client's
+makes it. A caller that an execution context or the target already roots keeps that region (its
+address and, holding the failure, its exception context; `causynth/SymbolicRegionPlanner`): rooted
+anew as an explicit fault entry and selected as a fault context, `BlockReceiver$PacketResponder#run`
+lost BlockReceiver-1448's throw (`FATAL_TARGET_NOT_IN_WINDOW`). A caller no other rule roots (a
+communication endpoint such as `DataXceiver#writeBlock`) is an explicit fault entry, so its address
+is not the one it had before its door. DataTransfer has no response method of its own: every side that sent an op (the client's
 `DataStreamer`, a DataNode's mirror in `DataXceiver#writeBlock` and its `DataNode$DataTransfer`, the
 `Dispatcher`, a `BlockReader`) parses the response itself, so the door sits after the first call of
 the anchor in every analysed method that makes one, and its fault goes to that caller's own handler
@@ -502,8 +507,9 @@ reaches, to a fixed point:
     recording bound to the same exchange leg (correlation, attempt and half:
     `RuntimeRegionPlanner#bindObservedCommunicationCaptures`) -- the other side of that one
     message -- and demands there the cells the export hands on (`WIRE_PRODUCER_V1`). A consumer the
-    recording paired with no export (no exchange bound: a ZooKeeper read, a data-transfer stream)
-    is a DIAGNOSTIC `ADMISSION_GAP` naming its cell and ports, and its value stays the one attached.
+    recording paired with no export (no exchange bound: a ZooKeeper read, a DataTransfer op on a
+    tree without the op's envelope, IDENTITY.md §7.1) is a DIAGNOSTIC `ADMISSION_GAP` naming its
+    cell and ports, and its value stays the one attached.
     No capture is admitted for being one: admitting every occurrence that captured a declared port
     planned 2673 occurrences for one ad-hoc check (`DataStreamer-1451`, round a40h).
 
@@ -531,8 +537,9 @@ reaches, to a fixed point:
   is demanded, and a value attached and then stored (hdfs-11741: the DataNode converting the
   KeyUpdateCommand's keys into the map its handshake reads) is found from the store it reaches.
 - **Doors of a demanded message** (`RecordedMessages#doorsOf`): an occurrence that read a fault marker
-  and sent, or took in, the message that started an admitted occurrence (its `Anchor`; the
-  recorded schedule's `SEND` names the sender, a `RECV` under that anchor a receiver) is admitted
+  and sent, or took in, the message that started an admitted occurrence (its `Anchor`, else the
+  message its turn took in, a DataNode's DataTransfer op; the recorded schedule's `SEND` names the
+  sender, a `RECV` of the message a receiver) is admitted
   (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists. These are the control
   producers EXPLORE proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS
   `MARKER_FLIPPED` witnesses move such an IPC door.
@@ -755,7 +762,11 @@ carries values over, and derives no port.
 
 The rule is by type. A message that an RPC carries and a stream also writes (`ExtendedBlockProto`,
 in `LocatedBlockProto` and in a DataTransfer op header) exports at every setter call, including one
-whose message never reaches a door.
+whose message never reaches a door. A DataTransfer op is itself a message (IDENTITY.md §7.1): the
+leaves of such a type in its header and fields cross with it, so the block a DataNode decodes from
+an op is paired by handle with the export of the client or the upstream DataNode that sent it, and
+the recording binds both captures to the op's leg, which the walk crosses (§4.4); the DataNode's
+turn keeps its own address. The op's own messages (`Op*Proto`) still derive no port.
 
 ### 6.3 At run time
 

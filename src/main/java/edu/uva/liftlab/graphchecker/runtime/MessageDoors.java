@@ -24,8 +24,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>A transport keeps only what is its own: where its header travels (a
  * Hadoop RPC header field, an HTTP header), how it names an exchange (its
  * correlation id) and which half a message is.  The Hadoop shim ({@code
- * org.apache.hadoop.ipc.CausynthMessagePropagation}: IPC and the SASL
- * exchange) and the Solr trees (HTTP) call this class.</p>
+ * org.apache.hadoop.ipc.CausynthMessagePropagation}: IPC, the SASL exchange
+ * and the DataTransfer ops) and the Solr trees (HTTP) call this class.</p>
  *
  * <p>One inbound exchange per thread: installing the next one ends the one
  * before it, and so does an outbound message, whose sender is no longer
@@ -241,6 +241,43 @@ public final class MessageDoors {
             SymbolicMessageEnvelope.installInbound(declared);
         }
         Inbound scope = new Inbound(token, correlationId, attemptId, half,
+                codec);
+        CURRENT.set(scope);
+        return scope;
+    }
+
+    /**
+     * One request taken into the thread's own context, which it does not
+     * anchor: a DataTransfer op a DataNode's turn received.  The turn keeps
+     * its address, so a replay that sent the op from another IPC chain still
+     * answers it; the op is a message for its values (the symbolic header's,
+     * paired with the sender's exports), for the RECEIVE that binds the
+     * receiver's captures to it, and for the RECV that names the message
+     * that made the turn ({@link CausynthTraceRecorder#receivedExchange}),
+     * which the control producers read.  Nothing answers it through a door,
+     * so no response endpoint is minted.  Served until the next message or
+     * {@link #endInbound}.
+     */
+    public static Inbound received(String symbolic, String transport,
+                                   String correlationId, String attemptId,
+                                   Object localOwner) {
+        endInbound(true);
+        SymbolicMessageEnvelope.clearInbound();
+        String declared = segment(symbolic, false);
+        CodecMessages.Message codec = CodecRuntime.inbound(
+                segment(symbolic, true), correlationId);
+        boolean correlated = !Text.safe(correlationId).isEmpty();
+        if (!correlated && declared.isEmpty() && codec == null) {
+            return Inbound.EMPTY;
+        }
+        if (correlated) {
+            CausynthTraceRecorder.receivedExchange(transport, correlationId,
+                    attemptId, REQUEST, localOwner);
+        }
+        if (!declared.isEmpty()) {
+            SymbolicMessageEnvelope.installInbound(declared);
+        }
+        Inbound scope = new Inbound(0L, correlationId, attemptId, REQUEST,
                 codec);
         CURRENT.set(scope);
         return scope;
