@@ -177,6 +177,11 @@ public final class Z3 {
                 ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis;
     }
 
+    /** The budget a question gets when its ask names none. */
+    public long timeoutMillis() {
+        return timeoutMillis;
+    }
+
     /** How many times z3 was asked; the cost of one composition. */
     public int runs() {
         return runs.get();

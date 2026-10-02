@@ -2388,6 +2388,16 @@ public class ComposerTest {
                             + row[1] + ")")), null, false).status();
             assertEquals(Arrays.toString(row), row[2], answer);
         }
+        // Each path's own run is its own session's delivery of the message
+        // it received, which Disjunction asks under first.
+        for (Map.Entry<String, String> path : selectorOf.entrySet()) {
+            List<String> own = composition.ownRun(path.getValue());
+            assertEquals(path.getKey() + ": " + own, 1, own.size());
+            String arm = own.get(0).replace("(assert ", "")
+                    .replace(")", "");
+            assertEquals(path.getKey(), path.getKey(),
+                    composition.arm(arm).sessionId());
+        }
     }
 
     // ------------------------------------------------------------------

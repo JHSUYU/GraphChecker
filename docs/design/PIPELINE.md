@@ -1197,7 +1197,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    second each alone). Path by path, the paths are asked 8 at a time (`PATH_ASKS`, 16 z3
    processes), in their order, and answer in that order: the first sat path's answer (the asks
    after it stopped, their z3s killed), else undecided if any path was, else unsat with the union of
-   the paths' cores. A path unsat under some assertions is unsat under every set containing them,
+   the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
+   `Composition#ownRun`): its own session's arm of each message the path received and each state
+   read's observed writer, selectors only (never the values its handoffs carried, which are on its
+   own clock), within 10 minutes at most; a model there is a model of the question, and only where
+   its own run is refuted or undecided is the path asked free (hdfs-11741 L1: two fatal-observing
+   paths sat in about 100 s in their own runs, undecided after 30 minutes free). A path unsat under some assertions is unsat under every set containing them,
    so it is not asked again there: its refutation answers, core and all, one asked without a core
    only an ask that wants none, unless it was asked under no assertion at all (the self-check: its
    core can name no pin). hdfs-11741 i1: 155 of 157 paths refute themselves, so every pinned re-ask
@@ -1218,7 +1223,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    of the cell before it on its node's clock, `clock_runs_on__`; a first cell stays at its reading;
    pinned back one cell at a time in seq order, so a jump lands as late as the witness allows, on the
    cell the fatal reads rather than an earlier one that carries it along), so the cells left free are
-   the clock's jumps. A sat ordinal 0 on a path that did not observe the fatal,
+   the clock's jumps. This refinement, and the margins after it, ask the witness's own path only
+   (`Disjunction#askPath`): another path's answer is no answer about this witness. A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
 4. The claim, first match:

@@ -184,6 +184,7 @@ public final class Composer {
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
+        private final Map<String, List<String>> ownArms;
         private final String seedSessionId;
         /** Where each top-level command of the body ends, and the path
          *  selector it is guarded by (null: every path's); #pathQuery. */
@@ -222,6 +223,7 @@ public final class Composer {
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
+            this.ownArms = composed.composedFamilies.ownArms();
             this.seedSessionId = composed.seed();
             List<Integer> ends = new ArrayList<Integer>();
             List<String> guards = new ArrayList<String>();
@@ -435,6 +437,23 @@ public final class Composer {
          * took: each STATE family's arm the run took
          * ({@link ComposedFamilies#stateFamilies}).
          */
+        /**
+         * The path's own run: the arm its own session is of each message the
+         * path received, and the writer arm each state read observed --
+         * selectors, never the values the run's handoffs carried, which are
+         * on its own clock ({@code SmtLowering#clockBases}).
+         */
+        public List<String> ownRun(String selector) {
+            List<String> own = new ArrayList<String>();
+            Disjunct disjunct = bySelector(selector);
+            if (disjunct == null) return own;
+            List<String> arms = ownArms.get(selector);
+            if (arms != null) own.addAll(arms);
+            List<String> reads = observedReads.get(disjunct.path().pathId);
+            if (reads != null) own.addAll(reads);
+            return asserted(own);
+        }
+
         public List<String> observedReads(String pathId) {
             return asserted(observedReads.get(pathId));
         }
