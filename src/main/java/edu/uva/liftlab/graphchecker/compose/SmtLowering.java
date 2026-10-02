@@ -3874,6 +3874,9 @@ public final class SmtLowering {
         if ("substring".equals(operation)) {
             return substring(params, origin);
         }
+        if ("trim".equals(operation)) {
+            return trim(params, origin);
+        }
         if ("toString".equals(operation)) {
             return javaToString(params, origin);
         }
@@ -3926,6 +3929,43 @@ public final class SmtLowering {
 
     private static final Set<String> DECIMAL_OR_CHAR = new LinkedHashSet<String>(
             Arrays.asList("B", "S", "I", "J", "C"));
+
+    /**
+     * String.trim(): what lies between a fresh begin and end, every
+     * character outside them at most U+0020 and, unless none is left, the
+     * first and the last inside above it -- so the cut is Java's (b20h
+     * BlockRecoveryWorker-222: the InterDatanodeProtocol proxy's URI,
+     * {@code "dummyscheme://" + (ip + ":" + port).trim()}, refused every
+     * value parsed from it).
+     */
+    private Term trim(JsonArray params, String origin) {
+        StringParameters strings = stringParameters(params, 1, "trim",
+                origin, Sort.STRING);
+        if (strings.terms == null) return strings.refusal;
+        String text = strings.terms.get(0).text;
+        String length = "(str.len " + text + ")";
+        String begin = symbols.mint("trim_begin__", scope + "#" + trims, 10);
+        String end = symbols.mint("trim_end__", scope + "#" + trims++, 10);
+        declare(begin, Sort.INT);
+        declare(end, Sort.INT);
+        String blanks = "(re.* (re.range \"\\u{0}\" \" \"))";
+        sideCondition(and(Arrays.asList("(<= 0 " + begin + ")",
+                "(<= " + begin + " " + end + ")",
+                "(<= " + end + " " + length + ")",
+                "(str.in_re (str.substr " + text + " 0 " + begin + ") "
+                        + blanks + ")",
+                "(str.in_re (str.substr " + text + " " + end + " (- "
+                        + length + " " + end + ")) " + blanks + ")",
+                "(or (= " + begin + " " + end + ") (and (< 32 (str.to_code "
+                        + "(str.at " + text + " " + begin + "))) (< 32 "
+                        + "(str.to_code (str.at " + text + " (- " + end
+                        + " 1))))))")));
+        return Term.nonNullString("(str.substr " + text + " " + begin
+                + " (- " + end + " " + begin + "))", strings.defined);
+    }
+
+    /** How many trims this lowering has named. */
+    private int trims;
 
     /** String.substring(b) and (b, e), defined where Java does not throw:
      *  0 <= b <= e <= length. */

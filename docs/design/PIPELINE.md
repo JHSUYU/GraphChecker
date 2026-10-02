@@ -628,7 +628,8 @@ conjunct it drops the conjunct (DIAGNOSTIC); a malformed lowered term likewise. 
 when the query declares it, a `let` binds it, the fixed preamble states it, or it is a theory
 operator of `compose.SmtNames.BUILTIN`, the one vocabulary every stage reads with, which lists every
 operator the lowering writes (the string operators `str.substr`, `str.indexof`, `str.at`,
-`str.from_code`, `str.to_code` among them, the floating-point operators, `to_fp`, `int2bv`, `bv2int`
+`str.from_code`, `str.to_code`, and `str.in_re`, `re.*`, `re.range` of `String.trim` among them,
+the floating-point operators, `to_fp`, `int2bv`, `bv2int`
 and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query with no variable of its own is not asked. A construct the
 lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays
@@ -1223,8 +1224,14 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ClaimPolicy`:
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
-2. Each path is first asked alone with every root free (60 s, `Disjunction#selfCheck`): unsat →
-   `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. Then every valuation is asked (4 at
+2. Each path is first asked alone with every root free (60 s, `Disjunction#selfCheck`): an unsat
+   path is refuted for every question. When every path is, each is asked once more with its fatal
+   arm left out (`Disjunction#withoutFatalArms`, `Composition#withoutFatalArm`: its `path_fatal__`
+   implication without phi), what its own run satisfied: a path unsat there (or undecided), or one
+   that observed the fatal arm, contradicts its run -- `PATH_SELF_CONTRADICTORY` DIAGNOSTIC, and
+   BLOCKING for the composition; refuted by phi alone everywhere, no root of the corpus turns any
+   path to the fatal arm, which is the claim's own answer (b20h BlockTokenSecretManager-511, a40s
+   BackupCmd-343: the null-checked read is pinned to the object the run read). Then every valuation is asked (4 at
    once; each question is written to its z3s from the one body the composition holds, never copied
    per ask or per arithmetic engine, `Composition#query`/`#pathQuery`, `Z3#ask`) for the path
    selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
