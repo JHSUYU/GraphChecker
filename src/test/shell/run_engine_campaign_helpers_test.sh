@@ -700,7 +700,9 @@ done
 # cores, and every campaign ends at its first accepted witness.
 # 52: `stream_max_in_flight` joined it: how many obligations the capped
 # explorations running at once keep in flight together.
-[[ "$(print_normalized_config | wc -l)" -eq 52 ]] \
+# 53: `campaign_budget_s` joined it: how long the campaign may take, past
+# which a refuted claim is not followed by another and EXPLORE ends.
+[[ "$(print_normalized_config | wc -l)" -eq 53 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -2049,6 +2051,13 @@ stream_stubs() {
   campaign_host_available_mb() { echo 30000; }
   campaign_host_total_mb() { echo 30000; }
   run_java_main() { stream_planner "$@"; }
+  # Where CONFIRM stands: the attempt's claim confirmed, unless
+  # stream_refute names the attempt.
+  campaign_confirm_claim() {
+    local confirmed=true
+    [[ " ${stream_refute:-} " != *" $(basename "$2") "* ]] || confirmed=false
+    campaign_confirm_verdict "${confirmed}" "stub" "" >"$2/confirm.json"
+  }
   campaign_import_gate() {
     shift 3
     local gated
@@ -2220,6 +2229,38 @@ $(cat "${stream_dir}/campaign_gaps.jsonl")"
 0001/candidate_composition_manifest.json")" == SAT_CANDIDATE ]] \
   || fail "the accepted attempt's composition is not kept"
 
+# STREAM-2b: A REFUTED WITNESS.  An attempt whose claim CONFIRM refutes is
+# not accepted: the exploration goes on, and the next witness's attempt,
+# confirmed, ends it.
+stream_fixture stream-2b
+(
+  stream_stubs
+  stream_refute=0000
+  stream_round_plan() {
+    [[ "$1" != 0 ]] || stream_propose "$2" A B
+  }
+  do_compose() {
+    jq -n '{solver: {campaignClaim: {claim: "SAT_CANDIDATE",
+      findingKind: "CLOCK_SKEW", polarityDecides: true}}}' \
+      >"${composition_manifest}"
+  }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    [[ "${id}" == A ]] || sleep 3
+    stream_answer "${worker}" "${id}" ADMITTED "SESSION.${id}" fatal
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the refuted-witness loop did not finish: \
+$(cat "${stream_dir}/explore.log")"
+jq -e '.stop == "WITNESSED"
+  and ([.witnessAttempts[] | [.accepted, .confirmed]]
+       == [[false, false], [true, true]])
+  and ([.witnessAttempts[].witnesses] == [["SESSION.A"], ["SESSION.B"]])' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "a refuted witness ended the exploration, or the next was not \
+attempted: $(cat "${stream_dir}/exploration.json")"
+
 # STREAM-3: THE WAVE BUDGET.  A wave deepens only as sessions land: round 1,
 # planned once A's session landed, is of wave 1.  A round of wave
 # region_path_max_waves that still owes work is not dispatched, the queue is
@@ -2260,6 +2301,36 @@ jq -e '.stop == "REGION_PATH_WAVE_BUDGET_REACHED" and .rounds == 2
 it left unasked"
 [[ ! -e "${stream_dir}/obligations-0001/NEVER" ]] \
   || fail "a round past the budget was dispatched"
+
+# STREAM-3c: THE CAMPAIGN BUDGET.  Between two steps, once the campaign's
+# budget has no room for the stages after the exploration (two
+# replay_timeout_s), the exploration ends as at a witness: the queue
+# cancelled, what runs reaped, and the stop a DIAGNOSTIC row.
+stream_fixture stream-3c
+(
+  stream_stubs
+  campaign_budget_s=3
+  replay_timeout_s=1
+  campaign_started_s=${SECONDS}
+  stream_round_plan() {
+    [[ "$1" != 0 ]] || stream_propose "$2" SLOW
+  }
+  campaign_obligation_worker() {
+    local worker=$4
+    sleep 60 & printf '%s\n' "$!" >"${worker}/sleep.pid"; wait
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the budgeted loop did not finish: $(cat "${stream_dir}/explore.log")"
+jq -e '.stop == "CAMPAIGN_BUDGET_REACHED" and .reaped == ["SLOW"]' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "the campaign budget did not end the exploration: \
+$(cat "${stream_dir}/exploration.json")"
+jq -e 'select(.subject == "CAMPAIGN_BUDGET_REACHED" and .cls == "DIAGNOSTIC")
+  | .detail | test("campaign_budget_s")' \
+  "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  || fail "the budget stop is not a DIAGNOSTIC row: \
+$(cat "${stream_dir}/campaign_gaps.jsonl")"
 
 # STREAM-3b: A PLANNER OUT OF HEAP.  A round whose planner ran out of the most
 # heap a head JVM is given (exit 3) is not planned: its directory goes, what
@@ -3168,8 +3239,13 @@ run_confirm() {
   rm -rf -- "${campaign_final}/confirm" "${campaign_final}/confirm.json"
   jq -n --arg claim "${claim}" \
     '{solver: {campaignClaim: {claim: $claim}}}' >"${composition_manifest}"
-  jq -n --arg anchor "${confirm_anchor}" '{anchor: $anchor}' \
-    >"${campaign_final}/claim.json"
+  jq -n --arg anchor "${confirm_anchor}" '{anchor: $anchor,
+    claim: {valuationOrdinal: 1},
+    valuations: [{ordinal: 0, selectedPathId: "P.recorded"},
+      {ordinal: 1, selectedPathId: "P.sel", selectedSessionId: "S.sel",
+       selectedArms: [{selector: "message_arm__1__b2"},
+         {selector: "message_arm__1__a1"}],
+       assignment: {"ROOT.M": "true"}}]}' >"${campaign_final}/claim.json"
   (
     run_java_main() {
       case " $* " in
@@ -3228,9 +3304,20 @@ run_confirm SAT_CANDIDATE
 confirm_says true "every edge" "a divergence past the anchor's cut was held against the claim"
 # (a) An edge the model chose that the run did not take.
 confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"CONFIRM_MISMATCH","cls":"DIAGNOSTIC","subject":"WIRE e1","detail":"WIRE e1: the model chose producer p1, the run paired p2"}'
+rm -f -- "${confirm_iteration}/refuted_claims.jsonl"
 run_confirm SAT_CANDIDATE
 confirm_says false "the model chose producer p1, the run paired p2" \
   "a mismatched edge was confirmed"
+# A claim the program did not agree with is refuted: its model -- the path,
+# the arms, the valuation -- and the reason, one row every later composition
+# of the iteration excludes (compose.Refutations).
+jq -e -s 'length == 1 and (.[0] | .kind == "REFUTED_CLAIM"
+  and .pathId == "P.sel" and .arms == ["message_arm__1__a1",
+    "message_arm__1__b2"] and .assignment == {"ROOT.M": "true"}
+  and (.reason | contains("the run paired p2")))' \
+  "${confirm_iteration}/refuted_claims.jsonl" >/dev/null \
+  || fail "the refuted claim's model is not its row: \
+$(cat "${confirm_iteration}/refuted_claims.jsonl" 2>&1)"
 confirm_stub_gaps=""
 # A session that published no gap file answers nothing about the edges.
 unset confirm_stub_gaps
@@ -3275,8 +3362,73 @@ run_confirm SAT_CANDIDATE
 confirm_says false "CONFIRM refused: the claim moves a cell nobody minted" \
   "a refused confirmation task did not name its reason"
 confirm_stub_task_status=0
+# The exploration's witness was confirmed as it was accepted: the same model,
+# composed again, takes that confirmation and is not replayed.
+campaign_witness_attempt="${confirm_root}/witness-attempt"
+mkdir -p "${campaign_witness_attempt}"
+cp -- "${campaign_final}/claim.json" "${campaign_witness_attempt}/claim.json"
+jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: true,
+  reason: "at the witness", sessionId: "W-1"}' \
+  >"${campaign_witness_attempt}/confirm.json"
+rm -f -- "${confirm_root}/replay-ran"
+run_confirm SAT_CANDIDATE
+confirm_says true "at the witness" "the witness's confirmation was not taken"
+[[ ! -e "${confirm_root}/replay-ran" ]] \
+  || fail "the model the exploration confirmed was replayed again"
+campaign_witness_attempt=""
 unset -f confirm_stub_main confirm_stub_replay run_confirm confirm_says
 unset confirm_anchor confirm_stub_target_iteration confirm_java
+
+# NEXT-CLAIM: a refuted SAT_CANDIDATE does not end the campaign while its
+# budget has room for a composition and a confirmation (two
+# replay_timeout_s): its artifacts move to final/refuted/NNNN/ and the next
+# claim is composed.  Not when the claim was confirmed, not when the
+# composition repeated a model already refuted, not past the budget.
+next_root="${test_tmp}/next-claim"
+next_iteration="${next_root}/iteration-0000"
+campaign_final="${next_root}/final"
+composition_manifest="${campaign_final}/candidate_composition_manifest.json"
+next_claim() {
+  mkdir -p "${campaign_final}/confirm" "${next_iteration}"
+  jq -n '{solver: {campaignClaim: {claim: "SAT_CANDIDATE"}}}' \
+    >"${composition_manifest}"
+  : >"${campaign_final}/candidate.smt2"
+  jq -n '{claim: {valuationOrdinal: 0}, valuations: [{ordinal: 0,
+    selectedPathId: "P", selectedArms: [{selector: "m__0__a"}],
+    assignment: {}}]}' >"${campaign_final}/claim.json"
+  jq -n --argjson confirmed "$1" '{confirmed: $confirmed, reason: "r"}' \
+    >"${campaign_final}/confirm.json"
+  printf '%s\n' "$(campaign_claim_model "${campaign_final}/claim.json")" \
+    >"${next_iteration}/refuted_claims.jsonl"
+}
+reset_config
+campaign_budget_s=100
+replay_timeout_s=10
+campaign_started_s=${SECONDS}
+next_claim true
+! campaign_next_claim "${next_iteration}" >/dev/null \
+  || fail "a confirmed claim was followed by another"
+next_claim false
+campaign_next_claim "${next_iteration}" >/dev/null \
+  || fail "a refuted claim with room in the budget was not followed"
+[[ -s "${campaign_final}/refuted/0000/claim.json" \
+    && -d "${campaign_final}/refuted/0000/confirm" \
+    && ! -e "${campaign_final}/candidate.smt2" ]] \
+  || fail "the refuted claim's artifacts did not move out of final/"
+next_claim false
+campaign_claim_model "${campaign_final}/claim.json" \
+  >>"${next_iteration}/refuted_claims.jsonl"
+! campaign_next_claim "${next_iteration}" >/dev/null \
+  || fail "a composition that repeated a refuted model was followed"
+next_claim false
+replay_timeout_s=60
+! campaign_next_claim "${next_iteration}" >/dev/null \
+  || fail "a claim past the campaign budget was followed"
+[[ -s "${campaign_final}/claim.json" \
+    && ! -e "${campaign_final}/refuted/0001" ]] \
+  || fail "a claim that ends the campaign left final/"
+unset -f next_claim
+reset_config
 
 # EMIT-CONFIRM: an unconfirmed SAT claim is published as SAT_UNCONFIRMED,
 # not accepted, with the confirmation and its reason in the result, and

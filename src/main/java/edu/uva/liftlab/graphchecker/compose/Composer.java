@@ -789,6 +789,7 @@ public final class Composer {
         Map<String, String> clockBefore = new LinkedHashMap<String, String>();
         clocks(clockCells, clockReadings, clockNanos, clockBefore);
         domains();
+        refutations(disjuncts);
         lowering.assertIdentitiesDistinct();
         // Corpus inconsistencies (one name, two sorts; one truncated name,
         // two identities) are BLOCKING gaps, not exceptions.
@@ -2534,6 +2535,67 @@ public final class Composer {
             }
         }
         return rows.get(0);
+    }
+
+    /**
+     * Every model CONFIRM refuted ({@link Refutations}), excluded: its path,
+     * the arms it chose there and its valuation are, together, no model of
+     * this formula, so a claim over it is another model or none.  A model
+     * whose path or arm this corpus no longer composes cannot recur and is
+     * not stated; a root this query does not name constrains nothing.
+     * Clocks are not part of a model: a skew one replay refuted is refuted
+     * at every instant of that path and those arms.
+     */
+    private void refutations(List<Disjunct> disjuncts) {
+        List<Refutations.Refuted> refuted;
+        try {
+            refuted = Refutations.read(corpus.iteration());
+        } catch (java.io.IOException | RuntimeException unreadable) {
+            gap(GapKind.CLAIM_REFUTED, GapClass.BLOCKING, Refutations.FILE,
+                    "this iteration's refuted claims could not be read, so "
+                            + "a claim over it may be one CONFIRM refuted: "
+                            + unreadable);
+            return;
+        }
+        int ordinal = 0;
+        for (Refutations.Refuted model : refuted) {
+            String path = null;
+            for (Disjunct disjunct : disjuncts) {
+                if (disjunct.path().pathId.equals(model.pathId)) {
+                    path = disjunct.selector();
+                }
+            }
+            if (path == null) continue;
+            List<String> conjuncts = new ArrayList<String>();
+            conjuncts.add(path);
+            boolean composed = true;
+            for (String arm : model.arms) {
+                String here = Refutations.atPath(arm,
+                        Refutations.ordinal(path));
+                composed &= lowering.declared(here);
+                conjuncts.add(here);
+            }
+            if (!composed) continue;
+            for (Map.Entry<String, String> root
+                    : model.assignment.entrySet()) {
+                List<RootMintRow> mints = corpus.roots().get(root.getKey());
+                if (mints == null) continue;
+                RootMintRow row = seedRow(mints);
+                if (row.kind() == RootKind.CLOCK
+                        || !lowering.declared(row.symbol())) {
+                    continue;
+                }
+                String literal = smtLiteral(root.getValue(), sortOf(row));
+                if (literal.isEmpty()) continue;
+                conjuncts.add("(= " + row.symbol() + " " + literal + ")");
+            }
+            lowering.assertNamed("refuted_claim__" + ordinal++,
+                    "(not " + VmTermLowering.and(conjuncts) + ")");
+            gap(GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC, model.pathId,
+                    "CONFIRM refuted the model on this path with arms "
+                            + model.arms + " at " + model.assignment
+                            + ", so it is excluded: " + model.reason);
+        }
     }
 
     /** The case's declaration where there is one, the mint's otherwise. */

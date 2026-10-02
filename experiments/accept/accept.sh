@@ -188,7 +188,12 @@ acc_run_case() {  # acc_run_case <case-id>
     echo "### ---- campaign ----" >>"$log"
     (
       cd "$dir" || exit 97
-      export CAUSYNTH_OUTPUT_DIR="$out" CAUSYNTH_CUSTOM_JDK_HOME="$IMG"
+      # The campaign's budget is what is left of the case's (SECONDS: this
+      # --run-case process, which `timeout` started), so it publishes a
+      # claim before the case timeout kills it (run_engine.sh
+      # campaign_budget_s).
+      export CAUSYNTH_OUTPUT_DIR="$out" CAUSYNTH_CUSTOM_JDK_HOME="$IMG" \
+        CAUSYNTH_CAMPAIGN_BUDGET_S=$(( CASE_TIMEOUT - SECONDS ))
       bash "$ACCEPT_LIB/run.sh" "$dir" "$arg" campaign
     ) >>"$log" 2>&1
     rc=$?

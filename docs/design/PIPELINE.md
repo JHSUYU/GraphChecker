@@ -22,7 +22,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
-| CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
+| CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json`; a refuted claim's row in `refuted_claims.jsonl` | never (a failure is "unconfirmed"; while the budget has room, COMPOSE..CONFIRM run again for the next claim, the refuted one in `final/refuted/NNNN/`, §10) |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed |
 | REPRODUCE | `campaign_reproduce`; `explore.ConfirmMain --plant`, `reproduce_runs` native runs with the plant over the worker pool | `final/reproduce/`, `final/reproduce.json` | never (it ranks a finding, and moves no claim) |
 | — | `campaign_exit_verdict` (reads `result.json`) | — | exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
@@ -870,7 +870,7 @@ When the step returns the head takes its round (`campaign_stream_take_round`): t
 GROW, else its proposals into the queue, where they start at once. The corpus and the ledger change
 only between two steps, so a step reads them as a landed whole, and the round's in-flight rows
 (`in_flight.jsonl`, §7.3) are what is queued or running as the step starts; the busier the head,
-the more returns one step takes in. The exploration has four ends, each stated in
+the more returns one step takes in. The exploration has five ends, each stated in
 `exploration.json` (stop, rounds, steps, generations, answers, attempts, and every obligation
 cancelled or reaped, by id):
 
@@ -883,14 +883,24 @@ cancelled or reaped, by id):
   (`campaign_stream_attempt`). Obligations keep starting while it runs; nothing lands, so it reads
   the corpus as it stood, and what returns meanwhile, a witness too, lands after it: one attempt at
   a time, the witnesses that come during one coalesced into the next. Each attempt is
-  a row of `witness_attempts.jsonl` (step, witnesses, claim, finding kind, polarity, accepted). An
-  attempt that publishes `SAT_CANDIDATE` with `polarityDecides` ends the exploration at once: the
-  queue is cancelled, every running obligation is reaped (its process tree here, its workers on
-  every peer) and its worker directory moves to `<campaign>/explore-reaped/`, as does every one that
-  returned after the step began, so the corpus COMPOSE reads next is exactly the one the attempt
-  read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Any other claim, and the
-  exploration goes on. This is every campaign's rule: the question is one declared occurrence (owner
-  2026-09-28). Once the exploration has stopped otherwise, no attempt is made.
+  a row of `witness_attempts.jsonl` (step, witnesses, claim, finding kind, polarity, confirmed,
+  its reason, accepted). An attempt that publishes `SAT_CANDIDATE` with `polarityDecides` is
+  confirmed in the step (`campaign_confirm_claim`, §10: its verdict `witness-attempts/NNNN/confirm.json`,
+  its replay in `<campaign>/witness-confirm/NNNN/`, out of the iteration); confirmed, it ends the
+  exploration at once: the queue is cancelled, every running obligation is reaped (its process tree
+  here, its workers on every peer) and its worker directory moves to `<campaign>/explore-reaped/`,
+  as does every one that returned after the step began, so the corpus COMPOSE reads next is exactly
+  the one the attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted, its
+  model is excluded from every later composition (§10) and the exploration goes on, as after any
+  other claim. With no room left in the campaign's budget for a confirmation
+  (`campaign_claim_room`, below), the claim is accepted unconfirmed and the final CONFIRM decides.
+  This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once
+  the exploration has stopped otherwise, no attempt is made.
+- **CAMPAIGN_BUDGET_REACHED.** Between two steps, the campaign's budget (`campaign_budget_s` from
+  the campaign's start; `accept.sh` passes what is left of the case's `CASE_TIMEOUT_SECONDS`) has
+  less than two `replay_timeout_s` left, what the stages after the exploration are owed
+  (`campaign_claim_room`): the exploration ends as at a witness (queue cancelled, what runs or
+  returned unlanded reaped), and the stop is a DIAGNOSTIC row.
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
   work is not dispatched (its proposals are named cancelled): the queue is cancelled, what runs
   lands, and the stop is a DIAGNOSTIC row.
@@ -924,6 +934,7 @@ exactly-one(path_selector_p)  and  or(path_selector_p)               over admitt
 path_fatal__p:  selector_p => pi_p ∧ phi_p ∧ reads/joins_p ∧ valuation_p ∧ closure_p
 message_family__p_*, writer_family__p_*, observed_family__p_*, state_family__p_*:  selector_p => ...
 root_domain__*, clock_domain__*, clock_order__*, identities_distinct__*
+refuted_claim__*:  not(selector_p ∧ its arms ∧ its valuation)       per model CONFIRM refuted (§10)
 ```
 
 Corpus-level BLOCKING gaps: one solver name for two roots, a session not read whole
@@ -1402,6 +1413,25 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
 
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, reason, sessionId}`, the
 same shape for a refusal, `realized.json` and the decision.
+
+**A refuted claim is followed by the next.** A claim not confirmed -- whatever the reason: a
+mismatch, no fatal, a refusal, no verdict -- is refuted (`campaign_refute`): its model, the path it
+selected, the arm selectors it chose there and its valuation (`claim.json`'s claimed valuation:
+`selectedPathId`, `selectedArms[].selector`, `assignment`), and the confirmation's reason, are one
+row of `<iteration>/refuted_claims.jsonl`. Every later composition of the iteration excludes each
+(`Composer#refutations`, `compose.Refutations`): `refuted_claim__k` asserts that the path's
+selector, those arms (an arm's selector is `<kind>__<path ordinal>__<digest>`, taken at the path's
+ordinal in this query) and the valuation's non-clock roots are not all true at once, a DIAGNOSTIC
+`CLAIM_REFUTED` gap names it, and a model whose path or arm the query no longer composes is not
+stated; clocks are not part of a model, so a skew one replay refuted is refuted at every instant on
+that path and those arms. During EXPLORE a refuted witness attempt lets the exploration go on
+(§7.9); after it, the final stages go on to the next claim (`campaign_next_claim`): while the claim
+is a refuted `SAT_CANDIDATE`, the composition did not repeat a model already refuted, and the
+campaign's budget has room (`campaign_claim_room`: two `replay_timeout_s` left of
+`campaign_budget_s`), its artifacts move to `final/refuted/NNNN/` and COMPOSE, SOLVE, DECIDE and
+CONFIRM run again. The final CONFIRM of a model the exploration's witness attempt already confirmed
+(the same `claim.json` model, `campaign_claim_model`) takes that attempt's `confirm.json` and runs
+no replay.
 
 ## 10b. REPRODUCE: the confirmed world, natively
 

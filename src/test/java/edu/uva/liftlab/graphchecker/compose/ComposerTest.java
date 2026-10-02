@@ -734,6 +734,57 @@ public class ComposerTest {
         return script;
     }
 
+    /**
+     * A model CONFIRM refuted is excluded from every later composition of
+     * the iteration ({@code refuted_claims.jsonl}): the claim over it is
+     * another model, or none.  One whose path the corpus no longer
+     * composes states nothing.
+     */
+    @Test
+    public void aRefutedModelIsNoModelOfTheNextComposition()
+            throws Exception {
+        Path iteration = folder.newFolder("refuted").toPath();
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        session(iteration, "s0", false, "false", producer, consumer,
+                "vh", "false", null, true, false, "EXPR.v1.marker");
+        session(iteration, "s1", true, "true", producer, consumer,
+                "vh", "true", null, true, true, "EXPR.v1.marker");
+        ClaimPolicy.Decision first = ClaimPolicy.decide(
+                compose(iteration, 8), solver());
+        assertEquals(ClaimKind.MARKER_FLIPPED, first.claim().kind());
+        ClaimPolicy.Outcome claimed = first.outcomes().get(
+                first.claim().valuationOrdinal());
+        for (String path : new String[]{"elsewhere",
+                claimed.selected().path().pathId}) {
+            JsonObject row = new JsonObject();
+            row.addProperty("pathId", path);
+            JsonArray arms = new JsonArray();
+            for (String arm : claimed.selectedArms().keySet()) arms.add(arm);
+            row.add("arms", arms);
+            JsonObject assignment = new JsonObject();
+            for (Map.Entry<String, String> root
+                    : claimed.valuation().assignment().entrySet()) {
+                assignment.addProperty(root.getKey(), root.getValue());
+            }
+            row.add("assignment", assignment);
+            row.addProperty("reason", "the run published no target row");
+            RowCodec.writeJsonl(iteration.resolve("refuted_claims.jsonl"),
+                    Collections.singletonList(row));
+            boolean refuted = !"elsewhere".equals(path);
+            Composer.Composition next = compose(iteration, 8);
+            assertEquals(path, refuted,
+                    next.body().contains("refuted_claim__0"));
+            assertEquals(path, refuted,
+                    named(next.gaps(), GapKind.CLAIM_REFUTED));
+            assertEquals(path, refuted ? ClaimKind.NO_SUPPORTED_WITNESS
+                            : ClaimKind.MARKER_FLIPPED,
+                    ClaimPolicy.decide(next, solver()).claim().kind());
+        }
+    }
+
     // ------------------------------------------------------------------
     // 2. Two producers on one port are two interactions, two families.
     // ------------------------------------------------------------------
