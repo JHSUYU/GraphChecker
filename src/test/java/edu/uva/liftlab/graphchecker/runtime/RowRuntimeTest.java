@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
@@ -242,10 +243,14 @@ public class RowRuntimeTest {
     /**
      * Unnamed work opens no occurrence (IDENTITY §1), and is never silent:
      * each region a node's unnamed work entered is one LINEAGE_LOST row, and
-     * the manifest counts every entry at the run's end.
+     * the manifest counts every entry at the run's end.  So is a declared
+     * source read where its occurrence ran concretely: the manifest states
+     * the first reading at each occurrence, and nothing for a value the
+     * hook could not spell, and the roots found derived; a schema-1
+     * manifest states neither.
      */
     @Test
-    public void unnamedEntriesAreNamedOnceAndCountedInTheManifest()
+    public void theRunsEndStatesUnnamedEntriesAndConcreteReadings()
             throws Exception {
         RowRuntime.configure(sessionFile());
         RecordingWindow.open();
@@ -264,6 +269,11 @@ public class RowRuntimeTest {
             handler.start();
             handler.join();
             assertEquals(Arrays.asList(null, null, null), opened);
+            RowRuntime.concreteReading("ROOT.SERIAL", "occ#1", "119528");
+            RowRuntime.concreteReading("ROOT.SERIAL", "occ#1", "119529");
+            RowRuntime.concreteReading("ROOT.SERIAL", "occ#2", "119529");
+            RowRuntime.concreteReading("ROOT.SERIAL", "occ#3", "");
+            RowRuntime.derivedRoot("ROOT.EXPIRY");
             RowRuntime.closeSession();
         } finally {
             RecordingWindow.reset();
@@ -281,6 +291,22 @@ public class RowRuntimeTest {
         counted.put(node + "REGION.wrap", 1);
         assertEquals(counted, new HashMap<>(RowCodec.readManifest(
                 session().manifest()).unnamedEntries()));
+        Map<String, String> read = new HashMap<>();
+        read.put("occ#1", "119528");
+        read.put("occ#2", "119529");
+        assertEquals(Collections.singletonMap("ROOT.SERIAL", read),
+                RowCodec.readManifest(session().manifest())
+                        .concreteReadings());
+        SessionManifest manifest = RowCodec.readManifest(session().manifest());
+        assertEquals(Collections.singleton("ROOT.EXPIRY"),
+                manifest.derivedRoots());
+        assertTrue("schema 2 states readings", manifest.statesReadings());
+        JsonObject older = manifest.toJson();
+        older.addProperty("schemaVersion", 1);
+        older.remove("concreteReadings");
+        older.remove("derivedRoots");
+        assertFalse("a schema-1 manifest states none",
+                SessionManifest.fromJson(older).statesReadings());
     }
 
     /**

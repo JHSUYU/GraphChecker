@@ -592,7 +592,9 @@ public final class ObligationFactory {
     /**
      * Why this model plants nothing its path's own session did not already
      * run, or "": no clock moved, no handoff answered, and every assigned
-     * root at the value that session minted (none assigned included).  The
+     * root at the value that session ran it at (none assigned included) --
+     * its mint's, or, where it read the root and minted none, its stated
+     * reading ({@link Corpus#rootValue}).  The
      * replay it asks for then runs the world that session ran -- its path's
      * world, inherited whole -- and a replay sets nothing else: which writer
      * a read observes ({@code wchoice_*}), a container's state ({@code
@@ -621,15 +623,16 @@ public final class ObligationFactory {
             same.add(assignment.getKey() + "=" + reading);
         }
         if (!same.isEmpty()) {
-            return "the model is the recording's own valuation ("
-                    + String.join(", ", same) + ") and answers no handoff, "
-                    + "so the replay it asks for is the seed replay: this is "
-                    + "not an arm the seed lacks. Either the flipped "
-                    + "decision's recorded polarity disagrees with the root "
-                    + "value the same session minted -- DecisionRow.outcome "
-                    + "must say whether the published term HELD "
-                    + "(CONTRACT-SPEC §2.2) -- or the query binds a root the "
-                    + "flip does not depend on";
+            return "the model is the valuation " + candidate.path.sessionId
+                    + " ran (" + String.join(", ", same) + ", each its mint's"
+                    + " or, where it minted none, the reading it states) and"
+                    + " answers no handoff, so the replay it asks for runs"
+                    + " that session's world again: this is not an arm the"
+                    + " corpus lacks. Either the flipped decision's recorded"
+                    + " polarity disagrees with the root value the same"
+                    + " session ran -- DecisionRow.outcome must say whether"
+                    + " the published term HELD (CONTRACT-SPEC §2.2) -- or"
+                    + " the query binds a root the flip does not depend on";
         }
         Set<String> plantable = new LinkedHashSet<String>();
         plantable.addAll(built.rootVariables.keySet());

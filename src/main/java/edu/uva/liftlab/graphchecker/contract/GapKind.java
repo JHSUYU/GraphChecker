@@ -119,6 +119,12 @@ public enum GapKind {
      */
     CONFIRM_MISMATCH,
     /**
+     * A model CONFIRM refuted, which the composition excludes so the next
+     * claim is another model or none ({@code compose.Refutations}).
+     * DIAGNOSTIC: the exclusion is the composition's own knowledge.
+     */
+    CLAIM_REFUTED,
+    /**
      * Every admitted path decided the declared anchor on no symbol and none
      * observed the fatal, so no root reaches its predicate in this corpus
      * (R1-ROOTS D0).  Stated by each EXPLORE round on the anchor, with the

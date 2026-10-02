@@ -789,7 +789,21 @@ public final class Composer {
         Map<String, String> clockBefore = new LinkedHashMap<String, String>();
         clocks(clockCells, clockReadings, clockNanos, clockBefore);
         domains();
+        refutations(disjuncts);
         lowering.assertIdentitiesDistinct();
+        // A manifest that predates readings (schema 1) states none: a root
+        // such a session read and minted none guards none of its arms.
+        for (SessionReader session : corpus.sessions()) {
+            if (session.manifest() == null
+                    || session.manifest().statesReadings()) {
+                continue;
+            }
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    session.sessionId(), "this session's manifest predates "
+                            + "concrete readings and derived roots (schema "
+                            + "1), so a root it read and minted none guards "
+                            + "none of its arms and pins none of its path");
+        }
         // Corpus inconsistencies (one name, two sorts; one truncated name,
         // two identities) are BLOCKING gaps, not exceptions.
         for (Map.Entry<String, String> conflict
@@ -973,9 +987,10 @@ public final class Composer {
                 joins, answered);
 
         // (1) The valuation this replay ran under, for every VARIED root
-        //     (a root may be written and never branched on).  Declared roots
-        //     this session did NOT mint are answered in (1b), once the
-        //     path's terms are whole.
+        //     (a root may be written and never branched on) and every root
+        //     it read and minted none.  Declared roots this session neither
+        //     minted nor read are answered in (1b), once the path's terms are
+        //     whole.
         Map<String, Set<String>> unminted =
                 new LinkedHashMap<String, Set<String>>();
         terms.addAll(valuationOf(session, refusals, unminted));
@@ -1172,7 +1187,9 @@ public final class Composer {
     /**
      * What this replay ran every varied root at: {@link Corpus#rootValue}
      * (the mint's reading, or the obligation's assignment where the replay
-     * PLANTED it; a flip mint states no recorded value).
+     * PLANTED it; a flip mint states no recorded value) -- and every root it
+     * read and minted none, at its reading ({@link Corpus#ranRoot}), by the
+     * rule its arms are guarded by ({@code Arms#arm}).
      */
     private List<String> valuationOf(String session,
                                      List<GapRow> refusals,
@@ -1183,6 +1200,20 @@ public final class Composer {
             RootMintRow any = corpus.anyRoot(entry.getKey());
             RootMintRow row = corpus.root(entry.getKey(), session);
             if (any == null || any.kind() == RootKind.CLOCK) continue;
+            RootMintRow concrete = row == null
+                    ? corpus.ranRoot(entry.getKey(), session) : null;
+            if (concrete != null) {
+                // Read where none was minted: its terms are literals that
+                // may be computed from the reading, so the path holds at it
+                // alone -- pinned, varied or not, never a window.
+                String literal = smtLiteral(corpus.rootValue(session,
+                        concrete.rootId()), sortOf(concrete));
+                if (literal.isEmpty()) continue;
+                lowering.declareStated(concrete.symbol(), sortOf(concrete));
+                valuation.add("(= " + concrete.symbol() + " " + literal
+                        + ")");
+                continue;
+            }
             if (row == null) {
                 // Not minted here: never pin another session's reading.
                 // Collect its symbols; {@link #unstatedRoots} refuses only
@@ -1375,7 +1406,7 @@ public final class Composer {
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
-    private static Sort sortOf(RootMintRow row) {
+    static Sort sortOf(RootMintRow row) {
         return row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT;
     }
 
@@ -2518,6 +2549,78 @@ public final class Composer {
             }
         }
         return rows.get(0);
+    }
+
+    /**
+     * Every model CONFIRM refuted ({@link Refutations}), excluded: its path,
+     * the arms it chose there, its valuation and the clock cells it moved,
+     * at the model's instants, are, together, no model of this formula, so a
+     * claim over it is another model or none.  A model whose path or arm
+     * this corpus no longer composes cannot recur and is not stated; a root
+     * or cell this query does not name constrains nothing.  Roots are named
+     * as the valuations name them ({@link Corpus#anyRoot}).
+     */
+    private void refutations(List<Disjunct> disjuncts) {
+        List<Refutations.Refuted> refuted;
+        try {
+            refuted = Refutations.read(corpus.iteration());
+        } catch (java.io.IOException | RuntimeException unreadable) {
+            gap(GapKind.CLAIM_REFUTED, GapClass.BLOCKING, Refutations.FILE,
+                    "this iteration's refuted claims could not be read, so "
+                            + "a claim over it may be one CONFIRM refuted: "
+                            + unreadable);
+            return;
+        }
+        int ordinal = 0;
+        for (Refutations.Refuted model : refuted) {
+            String path = null;
+            for (Disjunct disjunct : disjuncts) {
+                if (disjunct.path().pathId.equals(model.pathId)) {
+                    path = disjunct.selector();
+                }
+            }
+            if (path == null) continue;
+            List<String> conjuncts = new ArrayList<String>();
+            conjuncts.add(path);
+            boolean composed = true;
+            for (String arm : model.arms) {
+                String here = Refutations.atPath(arm,
+                        Refutations.ordinal(path));
+                composed &= lowering.declared(here);
+                conjuncts.add(here);
+            }
+            if (!composed) continue;
+            Map<String, String> pinned = new LinkedHashMap<String, String>();
+            for (Map.Entry<String, String> root
+                    : model.assignment.entrySet()) {
+                RootMintRow row = corpus.anyRoot(root.getKey());
+                if (row == null || row.kind() == RootKind.CLOCK) continue;
+                pinned.put(row.symbol(), smtLiteral(root.getValue(),
+                        sortOf(row)));
+            }
+            // A moved clock is named by its cell's symbol.
+            for (Map.Entry<String, String> cell : model.moved.entrySet()) {
+                if (corpus.anyRoot(cell.getKey()) != null) continue;
+                pinned.put(cell.getKey(), smtLiteral(cell.getValue(),
+                        Sort.INT));
+            }
+            for (Map.Entry<String, String> pin : pinned.entrySet()) {
+                if (pin.getValue().isEmpty()
+                        || !lowering.declared(pin.getKey())) {
+                    continue;
+                }
+                conjuncts.add("(= " + pin.getKey() + " " + pin.getValue()
+                        + ")");
+            }
+            lowering.assertNamed("refuted_claim__" + ordinal++,
+                    "(not " + VmTermLowering.and(conjuncts) + ")");
+            gap(GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC, model.pathId,
+                    "CONFIRM refuted the model on this path with arms "
+                            + model.arms + " at " + model.assignment
+                            + (model.moved.isEmpty() ? ""
+                            : " moving " + model.moved)
+                            + ", so it is excluded: " + model.reason);
+        }
     }
 
     /** The case's declaration where there is one, the mint's otherwise. */

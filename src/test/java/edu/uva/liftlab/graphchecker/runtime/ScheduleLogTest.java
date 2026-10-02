@@ -529,6 +529,75 @@ public class ScheduleLogTest {
         assertTrue(sites().toString(), sites().isEmpty());
     }
 
+    /**
+     * The store applies a write, and notifies, before its caller files the
+     * version (SOLR-18413 F2's node1 state watchers): a notification reading
+     * the version meanwhile waits for the write in flight at its location
+     * and is named by it.  A write elsewhere holds nothing; a version no
+     * other thread's write in flight files names nothing and waits for
+     * nothing, not even for the reader's own write; and a write that never
+     * files it holds the read {@link MessageDoors#FILED_WAIT_MS} at most.
+     */
+    @Test(timeout = 20000L)
+    public void aNotificationWaitsForTheWriteInFlightToFileItsVersion()
+            throws Exception {
+        final Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NODE);
+        final List<Boolean> named = Collections.synchronizedList(
+                new ArrayList<Boolean>());
+        long elsewhere = MessageDoors.storing("STORE", "/other");
+        long store = MessageDoors.storing("STORE", "/k");
+        Thread callback = reading(owner, "/k@2", named);
+        Thread.sleep(300L);
+        assertTrue("it waits for the write in flight", callback.isAlive());
+        MessageDoors.stored("STORE", "/k@2", owner);
+        MessageDoors.storeEnded("STORE", store);
+        callback.join(5000L);
+        assertEquals("and the write names its work", Arrays.asList(true),
+                named);
+        long own = MessageDoors.storing("STORE", "/k");
+        MessageDoors.notified("Watcher", new Runnable() {
+            @Override
+            public void run() {
+                MessageDoors.fetched("STORE", "/k@3", owner);
+                named.add(MessageDoors.current() != null);
+            }
+        });
+        MessageDoors.storeEnded("STORE", own);
+        assertEquals(Arrays.asList(true, false), named);
+        long unfiled = MessageDoors.storing("STORE", "/k");
+        long began = System.currentTimeMillis();
+        reading(owner, "/k@4", named).join(10000L);
+        long waited = System.currentTimeMillis() - began;
+        MessageDoors.storeEnded("STORE", unfiled);
+        MessageDoors.storeEnded("STORE", elsewhere);
+        assertEquals(Arrays.asList(true, false, false), named);
+        assertTrue("a write that never files holds the read a bound, not "
+                        + "for ever: " + waited,
+                waited >= MessageDoors.FILED_WAIT_MS - 100L
+                        && waited < MessageDoors.FILED_WAIT_MS + 3000L);
+    }
+
+    /** A notification on a thread of its own reading {@code key}: whether a
+     *  write named its work goes to {@code named}. */
+    private static Thread reading(final Object owner, final String key,
+                                  final List<Boolean> named) {
+        Thread callback = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                MessageDoors.notified("Watcher", new Runnable() {
+                    @Override
+                    public void run() {
+                        MessageDoors.fetched("STORE", key, owner);
+                        named.add(MessageDoors.current() != null);
+                    }
+                });
+            }
+        });
+        callback.start();
+        return callback;
+    }
+
     /** A WAKE or turn the recording did not make before x waits at the cut. */
     @Test(timeout = 20000L)
     public void aWakeTheRecordingDidNotMakeSleepsThroughThePrefix()

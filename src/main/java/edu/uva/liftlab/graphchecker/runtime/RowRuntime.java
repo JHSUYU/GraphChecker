@@ -662,6 +662,44 @@ public final class RowRuntime {
                         + " (unnamedEntries)");
     }
 
+    /**
+     * Root id -> rendered occurrence -> what a declared root held when this
+     * replay first read it there and minted none.
+     */
+    private static final Map<String, Map<String, String>> CONCRETE =
+            new ConcurrentHashMap<String, Map<String, String>>();
+    /** The declared roots found carrying another input's expression. */
+    private static final Set<String> DERIVED =
+            ConcurrentHashMap.<String>newKeySet();
+
+    /**
+     * One read of a declared root that minted none ({@code RootMint}: an
+     * occurrence run concretely, a mint refused or failed): the occurrence's
+     * rows hold literals computed from this value, and the session's
+     * manifest states it at the run's end ({@link #closeSession}) -- an arm
+     * or path of the session whose closure reaches the occurrence exists
+     * only at it (CONTRACT-SPEC §4).  The first read at an occurrence is the
+     * one a mint there would have stated.
+     */
+    static void concreteReading(String rootId, String occurrence,
+                                String value) {
+        if (Text.safe(occurrence).isEmpty() || Text.safe(value).isEmpty()) {
+            return;
+        }
+        CONCRETE.computeIfAbsent(Text.safe(rootId),
+                key -> new ConcurrentHashMap<String, String>())
+                .putIfAbsent(occurrence, value);
+    }
+
+    /**
+     * A declared root whose value already carried an expression where it
+     * was read, so no root was minted: its value is another input's (a
+     * clock's, say), and no reading of it is the root's own.
+     */
+    static void derivedRoot(String rootId) {
+        if (!Text.safe(rootId).isEmpty()) DERIVED.add(Text.safe(rootId));
+    }
+
     /** The labels this session's declared mints asked the VM for. */
     private static final Set<String> MINT_LABELS =
             ConcurrentHashMap.<String>newKeySet();
@@ -1000,7 +1038,7 @@ public final class RowRuntime {
         for (Map.Entry<String, AtomicInteger> entry : UNNAMED.entrySet()) {
             unnamed.put(entry.getKey(), entry.getValue().get());
         }
-        session.unnamedEntries(unnamed);
+        session.atClose(unnamed, CONCRETE, DERIVED);
         // A root the obligation assigns that no mint planted: this run did
         // not run what was asked.
         for (Map.Entry<String, String> unplanted
@@ -1089,6 +1127,8 @@ public final class RowRuntime {
             ENDPOINTS.clear();
             MINT_LABELS.clear();
             UNNAMED.clear();
+            CONCRETE.clear();
+            DERIVED.clear();
             expressions = new ExpressionRefs();
             Identity.resetForTests();
             CLOCK_CELLS.clear();

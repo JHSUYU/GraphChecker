@@ -174,14 +174,17 @@ public final class SessionPublisher {
     }
 
     /**
-     * Restates the manifest with the region entries unnamed work made, at
-     * the run's end: the count no row can state ({@link SessionManifest}).
+     * Restates the manifest at the run's end with what no row can state
+     * ({@link SessionManifest}): the region entries unnamed work made, the
+     * declared roots read where none was minted, and those found derived.
      */
-    public void unnamedEntries(Map<String, Integer> entries) {
+    public void atClose(Map<String, Integer> entries,
+                        Map<String, Map<String, String>> readings,
+                        Set<String> derived) {
         synchronized (LOCK) {
             if (failed || closed || manifest == null || withdrawn()) return;
             try {
-                manifest = manifest.withUnnamedEntries(entries);
+                manifest = manifest.atClose(entries, readings, derived);
                 RowCodec.writeManifest(layout.manifest(), manifest);
             } catch (IOException unwritable) {
                 fail(unwritable);

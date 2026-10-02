@@ -4,8 +4,9 @@ import java.util.Set;
 
 /**
  * CONTRACT-SPEC §4: one producer path's arm of a family,
- * {@code pi_q and guard_q and v_H(I) = e_q}.  {@code guardRoots} is only the
- * roots {@code e_q} depends on, else unrelated arms contradict.
+ * {@code pi_q and guard_q and v_H(I) = e_q}.  {@code guardRoots} is the
+ * roots the delivery holds under ({@code smt.Arms}): those {@code e_q}
+ * names, every varied root, every root its replay ran concretely.
  * {@code attested} (IDENTITY §4): only a run with a recorded path
  * condition may carry a root move.
  */
@@ -39,7 +40,7 @@ public final class Arm extends Value {
         return expressionRef;
     }
 
-    /** Only the roots {@code e_q} depends on. */
+    /** The roots the delivery holds under. */
     public Set<String> guardRoots() {
         return guardRoots;
     }

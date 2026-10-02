@@ -67,3 +67,7 @@ runtime.SymbolicMessageEnvelope clearInbound void
 runtime.MessageDoors stored void string string object byte[]
 runtime.MessageDoors fetched void string string object byte[]
 runtime.MessageDoors outbound doors.Outbound string string string string object object object
+# A store write's bracket: SolrZkClient's writes (gc/solr-unified-storing),
+# so a watcher notified before its write filed the version waits for it
+runtime.MessageDoors storing long string string
+runtime.MessageDoors storeEnded void string long
