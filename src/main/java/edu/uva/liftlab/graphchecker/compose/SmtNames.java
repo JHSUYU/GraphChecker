@@ -131,6 +131,7 @@ public final class SmtNames {
                     "indexed_append", "indexed_insert", "indexed_remove",
                     "indexed_contains", "indexed_size", "indexed_elements",
                     "assoc_has", "assoc_read", "assoc_key_at",
+                    "assoc_position_of",
                     "assoc_put", "assoc_remove",
                     "assoc_remove_if", "assoc_put_if",
                     "assoc_size", "assoc_present", "assoc_values",
@@ -374,9 +375,11 @@ public final class SmtNames {
     /**
      * The preamble lines one query NEEDS: all but the {@code define-fun}s its
      * texts do not reach, transitively through definition bodies (as
-     * {@link SmtLowering#reachedBy} does for declarations).  Unused lambdas
-     * are not neutral: they change the fragment z3 decides.  Sorts,
-     * datatypes and {@code declare-fun}s always stay.
+     * {@link SmtLowering#reachedBy} does for declarations), and where it
+     * reaches no reader of a map's order, the maps' definitions that keep no
+     * order ({@link ContainerStateModel#unordered}).  Unused lambdas are not
+     * neutral: they change the fragment z3 decides.  Sorts, datatypes and
+     * {@code declare-fun}s always stay.
      */
     public static List<String> reachedPreamble(List<String> preamble,
                                                Iterable<String> texts) {
@@ -386,10 +389,13 @@ public final class SmtNames {
             for (String name : declaredIn(line)) definition.put(name, line);
         }
         Set<String> reached = new LinkedHashSet<String>();
+        boolean ordered = false;
         Deque<String> pending = new ArrayDeque<String>();
         if (texts != null) {
             for (String text : texts) {
                 for (String token : names(text)) {
+                    ordered |= ContainerStateModel.ORDER_READERS
+                            .contains(token);
                     if (definition.containsKey(token)
                             && reached.add(token)) {
                         pending.push(token);
@@ -399,6 +405,7 @@ public final class SmtNames {
         }
         while (!pending.isEmpty()) {
             for (String token : names(definition.get(pending.pop()))) {
+                ordered |= ContainerStateModel.ORDER_READERS.contains(token);
                 if (definition.containsKey(token) && reached.add(token)) {
                     pending.push(token);
                 }
@@ -413,7 +420,8 @@ public final class SmtNames {
             }
             for (String name : declaredIn(line)) {
                 if (reached.contains(name)) {
-                    lines.add(line);
+                    lines.add(ordered ? line
+                            : ContainerStateModel.unordered(line));
                     break;
                 }
             }

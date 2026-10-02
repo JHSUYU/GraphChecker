@@ -282,6 +282,14 @@ public final class ClaimPolicy {
                 if (found.valuation().ordinal() == 0 || !found.witness()) {
                     continue;
                 }
+                // Unpublishable, so not refined: each clock pinned back is a
+                // round of path asks (hdfs-11741 L1: hours of leastClocks
+                // over a witness its polarity then refused).
+                if (!polarityDecides) {
+                    undecidedPolarity(gaps, recorded, "a witness moving "
+                            + found.valuation().moved().keySet());
+                    break;
+                }
                 // Publish the witness under every clock pin it can keep,
                 // and each clock it still moves moved with room.
                 Outcome outcome = withMargin(composition, asks,
@@ -292,10 +300,6 @@ public final class ClaimPolicy {
                 // narrower replaced slot, never NO_SUPPORTED_WITNESS.
                 ClaimKind moved = mechanism(composition, asks, outcome,
                         outcomes, clockDriven);
-                if (!polarityDecides) {
-                    undecidedPolarity(gaps, recorded, moved);
-                    break;
-                }
                 return new Decision(Claim.of(moved,
                         outcome.valuation().ordinal(),
                         movedRoots(composition, outcome), true, gaps),
@@ -322,7 +326,7 @@ public final class ClaimPolicy {
             // polarity (recordingDecides); recorded.answer().unsat() asks
             // with them free and so could never publish CLOCK_SKEW.
             if (!recordingDecides && !polarityDecides) {
-                undecidedPolarity(gaps, recorded, still);
+                undecidedPolarity(gaps, recorded, still.name());
                 break;
             }
             Outcome roomy = withMargin(composition, asks, outcome);
@@ -479,25 +483,32 @@ public final class ClaimPolicy {
     }
 
     /**
-     * A mechanism the formula shows but the recording does not decide: the
-     * run reached the fatal arm at the recorded valuation too, so it is
-     * raised as FORMULA_SAT_AT_RECORDED_VALUATION, not published.
+     * A mechanism the formula shows but the recording does not decide, raised
+     * as FORMULA_SAT_AT_RECORDED_VALUATION, not published: the run reached
+     * the fatal arm at the recorded valuation too, or its refutation names no
+     * valuation pin.  An UNDECIDED recorded valuation is BLOCKING already
+     * ({@link #read}) and is no such statement (hdfs-11741 L1: valuation 0
+     * "unknown" was published as satisfiable).
      */
     private static void undecidedPolarity(List<GapRow> gaps,
-                                          Outcome recorded, ClaimKind kind) {
+                                          Outcome recorded, String shown) {
+        if (recorded == null || !recorded.answer().decided()) return;
         for (GapRow gap : gaps) {
             if (gap.kind() == GapKind.FORMULA_SAT_AT_RECORDED_VALUATION) {
                 return;
             }
         }
-        gaps.add(GapRow.of(recorded == null || recorded.selected() == null
+        gaps.add(GapRow.of(recorded.selected() == null
                         ? Composer.COMPOSITION
                         : recorded.selected().path().sessionId,
                 GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
-                GapClass.BLOCKING, kind.name(),
-                "the formula shows " + kind + ", and it is satisfiable with "
-                        + "every declared root at its recorded value too, so "
-                        + "the recording does not decide the arm"));
+                GapClass.BLOCKING, shown, "the formula shows " + shown
+                        + (recorded.answer().sat()
+                        ? ", and it is satisfiable with every declared root "
+                        + "at its recorded value too"
+                        : ", and the recorded valuation's refutation names "
+                        + "no valuation pin")
+                        + ", so the recording does not decide the arm"));
     }
 
     /**

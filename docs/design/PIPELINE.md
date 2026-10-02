@@ -1103,7 +1103,13 @@ may not have had there; each such map is named DIAGNOSTIC
 `ASSOC_VIEW_UNORDERED:<why>:<map symbol (class), or the location its state was read from>@<session>`
 (`SmtLowering#diagnostics`). A view walks the state each step of its chain stands for (`Host#chain`: a
 read's joined version), so a map's `values()` a region iterates through a read of it is bounded by
-that version's keys.
+that version's keys. A query reads a map's order only through `assoc_key_at`, `assoc_position_of`,
+`assoc_view_key` or `assoc_view_position` (`ContainerStateModel.ORDER_READERS`); one that reaches
+none gets maps whose puts and removals keep no order (`ContainerStateModel#unordered`, chosen by
+`SmtNames#reachedPreamble`), the same question with no lambda: a removal's renumbering is a lambda
+over arrays, and z3 answered such queries "incomplete (theory array)" or not at all (hdfs-11741 L1:
+valuation 0 undecided on two fatal-observing paths, each sat in seconds without it). Every
+array-valued choice of a put is a `store` of a chosen element, never an `ite` over arrays.
 
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
@@ -1209,8 +1215,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 4. The claim, first match:
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
      whose moved roots are in no unattested arm (else BLOCKING `UNATTESTED_ARM`): its `mechanism`;
-     without `recordingDecides` it also needs `polarityDecides` (else BLOCKING
-     `FORMULA_SAT_AT_RECORDED_VALUATION`);
+     without `recordingDecides` it also needs `polarityDecides`, checked before the witness is
+     refined (`leastClocks`, margins, `mechanism`: rounds of path asks for a witness it would refuse)
+     (else BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
+     by a core naming no valuation pin; an undecided ordinal 0 is BLOCKING already and raises no
+     second gap);
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
      `MESSAGE_PAIRING_FLIPPED`, with `recordingDecides` or `polarityDecides`;
    - ordinal 0 sat on the seed's path that observed the fatal, every moved valuation decided unsat:
