@@ -23,7 +23,7 @@ agents in parallel, and how the servers and tools work. The capability inventory
 
 ---------------------------------------------------------------------------------------------------
 
-## 0. Handover (state at 2026-10-01 ~10:30 EDT)
+## 0. Handover (state at 2026-10-02)
 
 ### 0.1 The goal
 
@@ -39,59 +39,36 @@ check，并让我们的引擎给这样大规模的check提供更多的支持。w
 The owner wants outcomes, not intermediate report files. Requirements R1–R6:
 `/bigtemp/vnr3ne/analysis/audit/COMMON.md`; `docs/STATUS.md` is organised by them.
 
-### 0.2 Where things stand
+### 0.2 Where things stand (2026-10-02)
 
-A **PASS** is `experiments/accept/report.py`'s verdict (SAT_CANDIDATE, no BLOCKING gap, the
-expected mechanism, `polarityDecides`, confirmed, moved roots in `cone.py`'s cone) plus the
-owner's hand check of the chain. Per-case runs and mechanisms: `docs/STATUS.md` "Acceptance".
+- **Phase 1 is done**: all eleven cases PASS on main (the merge of the lock line `d65d31a31`), each `.smt`'s
+  chain checked by hand — runs and mechanisms in `docs/STATUS.md` "Acceptance" (rounds `F1`, `F1b`, `N1`).
+  VM `/bigtemp/vnr3ne/vm-w4h/j2sdk-image`. Most cases take 7–13 min, 11741 22 min, the Solr cases 19–28 min.
+- **Trees**: `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741` (`gc/hdfs-11741`),
+  `~/lucene-solr-unified` (`gc/solr-unified` `b41116b`: 18413's leader off the Overseer's node). Never edit or
+  rebuild a tree a run reads; work on a new branch in a new worktree of it.
+- **Phase 2** (large ad-hoc runs; finishing them is the goal, no new bug is an acceptable outcome — owner): 80
+  checks ran (`a40s`, `a40h2`, `b20h`; triage with `tools/adhoc/triage.py <round>`), no confirmed witness.
+  Picks: `/bigtemp/vnr3ne/analysis/adhoc-pick2-{hdfs,solr}.txt` (coverage-reached, a movable root in the static
+  slice, coordination code). What stopped them is being fixed generally (§0.3).
 
-- **10 of 11 PASS:** the eight HDFS block-key/17960 cases (round `i1`), solr-18406 (`i1`), and
-  solr-18413 (`g1`, main `3fa15f0aa`, 53 min alone on the cluster; chain checked).
-- **hdfs-11741 FAILS** on main: COMPOSE guarded nested families by the path selector instead of
-  the arm that needs them, so 234 of 235 paths were unsatisfiable. The fix is on branch
-  `agent-11741-regress` (`152d7a93f` and on), in its offline gate; next: review, merge, run
-  11741 alone on the cluster (tree `~/hadoop-hdfs-11741`, its own branch `gc/hdfs-11741`).
-- **Trees:** `~/hadoop-hdfs-unified` (`gc/hdfs-unified`: every named HDFS bug's pre-fix code
-  except 11741, all their workloads, `@CausynthExceptionTarget` markers), `~/lucene-solr-unified`
-  (`gc/solr-unified`, both Solr bugs), `~/hadoop-hdfs-11741`. Never edit or rebuild a tree a run
-  reads; work on a new branch in a new worktree of it.
-- **Main's VM:** `/bigtemp/vnr3ne/vm-w4e/j2sdk-image`.
-- **Snapshot:** `~/gc-run/p193` = main `3fa15f0aa` (round `g1`, the paused coverage below).
+### 0.3 Work in flight (branches, not on main)
 
-### 0.3 Work in flight
-
-Agents work in `.claude/worktrees/agent-*` on branches `worktree-agent-*` (`git worktree list`);
-none merges itself. Each reports in ≤ 15 lines and names the live runs it wants; the lead runs
-live campaigns one case at a time on the whole cluster.
-
-| job | branch | spec |
+| branch | content | state |
 | --- | --- | --- |
-| hdfs-11741 nested-family guard | `agent-11741-regress` | — |
-| R1-ROOTS WP-D config roots, then WP-F1 static root demand | new `worktree-agent-*` | `/bigtemp/vnr3ne/specs/R1-ROOTS-proposal.md` §2–§3 |
-| R1-ROOTS WP-E admission by relevance + WP0 `tools/analysis/rootcov.py` | new `worktree-agent-*` | same, §4, §8 |
-| R1-ROOTS D0: a concrete anchor demands its predicate reads; gap `NO_ROOT_REACHES_ANCHOR` | new `worktree-agent-*` | same, §2.3 |
-| WIRE-CODEC W3 (absorbs `worktree-agent-a2a3969b54657da82`) and W6 (declarations, no `WIRE_FLOW` rows, tree reverts) | new `worktree-agent-*` | `/bigtemp/vnr3ne/specs/WIRE-CODEC-proposal.md` |
+| `schedule-stall-release` (+ tree `gc/solr-unified-sched`) | settle schedule slots a diverged replay proves will not come; a proxied Solr request is its own message | regressed 17967-pathA (CONFIRM) and 18413 in round `F2`; back to its author |
+| `fix-unattested-hoff-arm` (+ tree `gc/hdfs-unified-dtx` in `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`) | DataTransfer ops are messages: op-header leaves pair with the sender's export; DataNode ops keep their tick identity; the DataTransfer doors | offline/hand-seed checked; needs a live round |
+| (agent) random draws | record `ThreadLocalRandom`/`Random` draws and replay them (HDFS block placement made seed replays miss ad-hoc targets) | in progress, on top of `fix-unattested-hoff-arm` |
+| `fix-replay-equivalent-context` | a root is admitted by its address alone (3 of 7 ad-hoc target misses fixed) | needs a live round |
+| `worktree-agent-a49c8bf5715a00c40` | WIRE-CODEC W3/W6 + WP-D config roots (codec holes would also make 18413's handoff survive any re-parse) | deferred |
 
-**Coverage of the unified trees (sweep steps 1–4) is paused** at 1551 of 4183 HDFS jobs
-(`$GC_OUT/coverage/adhoc-89f4c5348dfb/`): its fanout charges the host ledger and held back a live
-campaign's obligations. Resume when no critical campaign runs, with
-`GC_OUT=/bigtemp/vnr3ne/gc-out SLOTS=6 /bigtemp/vnr3ne/bin/tree-coverage.sh /u/vnr3ne/gc-run/p193 hadoop/adhoc`
-(then `solr/solr-adhoc`); the fanout skips finished jobs.
+### 0.4 TODO, in order (one large change per live round; a change that regresses a passing case does not merge)
 
-### 0.4 TODO, in order (run everything with no open dependency in parallel, §2)
-
-1. Review + merge 11741's fix; run 11741 alone; hand-check its chain (NameNode key-expiry clock →
-   `expiryDate` → export → DataNode attach → second `removeExpiredKeys` against the DataNode
-   clock → the Balancer's key gone).
-2. Review + merge the four automation branches (§0.3); one validation round of all 11 cases on
-   the merged main (cases one or two at a time on the whole cluster), every `.smt` chain checked.
-3. Finish coverage (§0.3), then sweep steps 5–14 ("Run an ad-hoc sweep") on both unified trees,
-   all ten lifts; `triage.py`, `findings.py --annotated` (the sweep must rediscover the known
-   bugs at their markers; anything else CONFIRMED and not a known mechanism is a new-bug
-   candidate to check by hand).
-4. After each merge that touches a case: re-run it and check its `.smt` causal chain (§1).
-
-Open defects with numbers are listed at the end of `docs/STATUS.md`.
+1. Random-draw replay → live round on the named cases + the HDFS picks; then `fix-unattested-hoff-arm` and
+   `fix-replay-equivalent-context` the same way.
+2. Fix `schedule-stall-release`'s regressions, then its live round, then the 20 Solr picks.
+3. Run all 40 picks to a verdict each; triage, hand-check any CONFIRMED witness.
+4. Then the deferred W6/WP-D line, one piece per round.
 
 ### 0.5 Designs and analyses (outside the repo, on `/bigtemp/vnr3ne`)
 

@@ -14,96 +14,28 @@ Pointers are `path` plus class and method. `gc/` stands for
 
 ## Acceptance
 
-Live runs, outputs under `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`. Round `i1` ran the
-clock batch, the 11741 handoff fixes, the time robustness package and ADHOC-INFRA on
-`vm-r3b`; round `i2` ran HEAD's code before the run-directory fix (adds the question ledger,
-WIRE-CODEC W1/W4 and the stall watchdog) on `vm-w4d`: the same verdicts and moved roots,
-hdfs-17899-bug3's claim found but its EMIT refused by the shared `/tmp` scope copy (fixed on
-HEAD). HEAD needs W4's natives: `vm-w4e` (README §3.1). Round `g1` ran SOLR-18413 alone on HEAD `3fa15f0aa`
-(snapshot `p193`, `vm-w4e`).
+Phase 1 release: main at the merge of `d65d31a31` (lock line), VM `/bigtemp/vnr3ne/vm-w4h/j2sdk-image`,
+trees `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741` (`gc/hdfs-11741`) and
+`~/lucene-solr-unified` (`gc/solr-unified` `b41116b`). Runs under `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`,
+each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every case is PASS by `experiments/accept/report.py`
+(SAT_CANDIDATE, no BLOCKING gap, the expected mechanism, `polarityDecides`, confirmed, moved roots in `cone.py`'s
+cone), and its causal chain was checked by hand against the system's code.
 
-| case | run | verdict | mechanism / blocker |
+| case | run | time | mechanism (moved roots) |
 | --- | --- | --- | --- |
-| hdfs-17897 | `i1` | PASS | MARKER_FLIPPED, IPC request door (`REGION.763d087e`) |
-| hdfs-17899-bug1, bug3 | `i1` | PASS | MARKER_FLIPPED, IPC request door |
-| hdfs-17899-bug2 | `i1` | PASS | MARKER_FLIPPED, IPC response door (`REGION.9ffdee3d`) |
-| hdfs-17960 | `i1` | PASS | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false`, confirmed |
-| hdfs-17967-pathA, B, C | `i1` | PASS | MARKER_FLIPPED, IPC request door |
-| hdfs-11741 | `i1` | FAIL | NO_SUPPORTED_WITNESS: all 157 composed paths are unsatisfiable with every root free (BLOCKING). An arm now binds every handoff it names, which took away the earlier CLOCK_SKEW that rested on unbound handoff values; the workload rotates the cached key inside the recording window (`gc/hdfs-11741` `5cff0e12b1f`); the remaining contradiction is under investigation. |
-| solr-18406 | `i1` | PASS | CLOCK_SKEW, one jump of the `IndexCommitWrapper.delete()` clock read in `IndexFileDeleter.checkpoint` past the commit's one-hour reservation (`reserves`), so generation 2 is deleted and `getAndSaveCommitPoint(2)` throws; confirmed, moved root in the cone. |
-| solr-18413 | `g1` | PASS | CLOCK_SKEW, polarityDecides, confirmed: the Overseer's `MigrateCmd.call` clock (`REGION.b648bde9`) makes `expireAt` = clock + 1000 (`RoutingRule.makeExpiryAt`), carried in the queue message and through `SliceMutator` into `state.json`, parsed by the leader's `RoutingRule` (handoffs `HOFF.73ab4906` → `HOFF.16e615fc`) and compared with the leader's clock in its `/update` region (`REGION.f92dbcb6`); both clocks at one instant keep the rule unexpired at the leader, which then looks up the migrated target collection and throws (`DistributedZkUpdateProcessor`). 3164 s. |
+| hdfs-17897 | `F1` | 7 min | MARKER_FLIPPED, IPC request door (`REGION.763d087e`) |
+| hdfs-17899-bug1 | `F1` | 8 min | MARKER_FLIPPED, IPC response door (`REGION.9ffdee3d`) |
+| hdfs-17899-bug2, bug3 | `F1b` | 9, 7 min | MARKER_FLIPPED, IPC response door |
+| hdfs-17967-pathA, B, C | `F1b` | 7 min each | MARKER_FLIPPED, IPC response door |
+| hdfs-17960 | `F1` | 13 min | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
+| hdfs-11741 | `F1` | 22 min | CLOCK_SKEW: the NameNode key-rotation clock (`REGION.08ab84c9`) sets a key's `expiryDate`, which crosses to dn1 as a handoff; dn1's `removeExpiredKeys` (`assoc_remove_if` over `allKeys`, `expiry < clock`) by its own clock (`REGION.ba3902cd`) drops the key the Balancer holds, and `retrieveDataEncryptionKey` throws |
+| solr-18406 | `F1` | 19 min | CLOCK_SKEW: the `IndexCommitWrapper.delete()` clock jumps past the commit's one-hour reservation, generation 2 is deleted and `getAndSaveCommitPoint(2)` throws |
+| solr-18413 | `N1` | 28 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
 
-So HDFS stands at 8 of 9 and Solr at 2 of 2 on main.
-
-hdfs-11741 fails the cone gate (`experiments/accept/cone.py`): the NameNode clock roots it
-moves lie outside the selected path's causal cone. In that formula, the DataNode's expiry
-comparison is against recorded constants. No clock value crosses the process into it as data,
-so R2's 11741 chain (the NameNode clock reaching the DataNode check) is not in the formula.
-
-Rounds r3 (VM f13), r4 and r8 (VM R3; r8 on main 8820c3129) ended hdfs-11741
-`INCONCLUSIVE_PARTIAL` on engine defects the richer recordings exposed, fixed on HEAD (r8 reached
-`CLOCK_SKEW` and was blocked by the first three):
-
-- PLAN `OCCURRENCE_ADDRESS_SHARED` (3 in each round): a pool's worker inherits no frames
-  (`gc/runtime/PoolWorkers`), so the balancer's two move tasks, each submitted from the one site of
-  an `executePendingMove` call, shared one address, and so did the two DataNode SASL handlers they
-  reached, the anchor among them. A task now stands on the frames it was submitted under
-  (`gc/runtime/Identity#startWork`). The address is recorded, so only a new recording shows it: two
-  on it (`/bigtemp/vnr3ne/gc-out/accept-agent-a0f-id1`, `accept-agent-a0f-full2`) plan no shared
-  address.
-- EXPLORE `TOPOLOGY_DIVERGENCE` (32 in r3, 36 in r4, 18 in r8's last wave): the order check ranked
-  two events by the anchor chain, so the dispatcher's later `isDelayActive` reads came before the
-  move task's `activateDelay` writes they observed. It reads the rows' seqs (`gc/explore/SlotTable`).
-- COMPOSE `UNSTATED_VALUE` (r4, r8): the second move task's export, sharing the first's endpoint
-  and stating no expression, was read as a missing table entry (`ComposedFamilies#lower`).
-- COMPOSE `UNPRODUCIBLE_ANSWER` (every SASL path in r3 and r4, 11 of 17 in r8): Independence walked
-  a field projection's owner chain, which no lowering reads, and so demanded the balancer's
-  storage-group lookups (a key built from an enum's `toString`, item 30)
-  (`gc/compose/Independence`, `ContainerSmtCodec#fieldOperands`).
-
-Offline over r8 (`tools/regress/offline-ab.sh --round r8`, `/bigtemp/vnr3ne/ab/agent-a0f-gate8-r8`)
-HEAD claims `SAT_CANDIDATE` `CLOCK_SKEW`, `polarityDecides`, on 17 paths (main: 6), moving the
-NameNode's four key-expiry clocks (`REGION.08ab84c9`) and the DataNode's (`REGION.ba3902cd`) off
-their readings, with no BLOCKING gap from COMPOSE or the last EXPLORE wave (main: 17 and 18); only
-the recording's own three shared addresses remain. Over r3's corpus (`agent-a0f-gate7`) it admits
-47 paths (main: 2) and claims the same, and valuation 0 needed `ClaimPolicy#byDisjunct` (whole,
-undecided after 30 minutes; each path alone, about a second); over r4 (`agent-a0f-gate7-r4`) it
-claims the same on 41 paths, and hdfs-17899-bug2 claims `MARKER_FLIPPED` in 486 s. `cone.py` puts the DataNode clock and the first
-NameNode clock (`in.d977bf12`) in the witness path's cone, so a NameNode clock now reaches the
-DataNode check; the other three NameNode clocks move only because `clock_order` keeps that node's
-readings ordered, which the cone does not follow, so the cone gate would still fail on them.
-That claim rested on free constants: the balancer's block-key expiry (`HOFF.9a4963b5`,
-`HOFF.3220fe99`), joined in a move task's arm closure, was bound by no family. HEAD binds it
-(`ComposedFamilies#handedOn`), and over r8 (`/bigtemp/vnr3ne/ab/r11741-exp-r8r7`) all 17 paths are
-then unsatisfiable with every root free (`PATH_SELF_CONTRADICTORY`, `NO_SUPPORTED_WITNESS`): the
-NameNode arms deliver that expiry as constants. The workload's `pinBlockKeys` rotated the keys before
-`startRecording`, so the key the Balancer fetched and cached had an expiry no recorded clock wrote, a
-different constant in every replay. The HDFS tree (`gc/hdfs-11741` `5cff0e12b1f`) now rotates once
-inside the window before the Balancer's fetch; no round has run on it yet.
-Round m1 (main `340d27914`, the workload's second key update `8113ba8ac30`) records dn1's second
-`removeExpiredKeys` pass over the in-window keys (symbolic expiries). Its COMPOSE ran out of an 8 GB
-heap; offline on HEAD (`/bigtemp/vnr3ne/ab/r11741-m1/final`) it claims `NO_SUPPORTED_WITNESS` with no
-BLOCKING gap: 234 of 235 paths, the 17 that observed the fatal among them, are unsatisfiable with
-every root free. Their core was a nested message family (another run's six-key export) asserted
-under the path selector while the path's own run exported five, so the run as it happened was no
-world of its own formula. HEAD asserts a nested family under the arms that rest on it.
-hdfs-17960, hdfs-17897, hdfs-17899-bug1 and hdfs-17967-pathB keep their claims (r3, r7).
-
-Round `rb1` (this branch before the merge of main `69edf0c06`, fresh seeds) failed hdfs-17967-pathB
-and pathC: their witness moved `HDFS.BLOCK_KEY.SERIAL_NO`, not a door. Main's `7e0d8b14e` moves a
-flip query's non-control handoffs with their own run's arms, so a wave-0 flip at
-`retrieveDataEncryptionKey#u8` moved the target DataNode's block keys with the serial, while the
-worker DataNode's SASL key id stayed: main's weave exports it as a constant (R1-ROOTS' `ra1` states
-it as the worker's heartbeat handoff). The replay was answered with key id 119532 where its producer
-sent 119533, and COMPOSE pinned the answer as a literal. HEAD binds an answered handoff by its family
-(R2). Offline over `rb1` (`/bigtemp/vnr3ne/ab/r11741-2-rb1`), both claim `MARKER_FLIPPED` on an IPC
-request door (`REGION.763d087e`), with no unbound boundary variable (`cone.py`); pathC's witness
-needs a CONFIRM replay. Over r8/r7 (`r11741-1-r8r7`, `r11741-1b-r8r7`) the other eight HDFS claims
-are main's, and hdfs-11741's and hdfs-17967-pathA's composition is the branch's before the change
-(`r11741-3-branch-vs-fix`).
-
-The ad-hoc checks have found no new bug; the only confirmed ad-hoc witnesses ever were two
-CLOCK_SKEWs on token-expiry checks, judged to be HDFS's clock-sync assumption.
+The workload of solr-18413 places the source shard's leader off the Overseer's node (tree `b41116b`): with
+both on one node, the per-node clock order leaves no witness short of the node's wall clock stepping back,
+which earlier passes (`g1`) relied on. `F1`'s own 18413 found the same claim; its CONFIRM replay exceeded
+`replay_timeout_s`. `N1` ran the same engine code (`9ea93616c` = `d65d31a31` less the case's declared address).
 
 ## R1. Symbols come automatically from the fatal slice
 
