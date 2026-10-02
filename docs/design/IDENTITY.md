@@ -517,8 +517,12 @@ through. No match yields a degraded address, reported downstream as `DECLARATION
 **A replay's answer.** One woven entry per root hook group (`plan/ExecutionTask#rootHookGroup`:
 region, root method, a loop-body root's loop) offers each invocation to every task of its group, and
 a replay admits a planned task by its whole address, id against id
-(`runtime/ConcolicTaskPlan#select`), with one exception: the declared occurrence is also answered by
-its question. PLAN states its context's shape over the recording's senders on its row
+(`runtime/ConcolicTaskPlan#select`), minted at the node the attribution rule names (§5), as the
+recording minted it; nothing else stands in for where it ran (sweep `b20h`: a test thread calling a
+NameNode's `FSNamesystem#startActiveServices` or a DataNode's `BlockPoolTokenSecretManager#get`
+runs in the test's own scope, at the client in both passes, and a second rule that took the
+receiver's registration for where it ran refused it). One exception: the declared occurrence is also
+answered by its question. PLAN states its context's shape over the recording's senders on its row
 (`questionShape`, `causynth/RuntimeSelectedRegionFinalizer`, `RecordedMessages#shape`); an
 activation of its region on its node, in a context no task of that root plans an occurrence of the
 region in (`ConcolicTaskPlan#occupies`: not its address, and not another invocation under the same

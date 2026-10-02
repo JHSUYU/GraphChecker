@@ -177,7 +177,7 @@ round.
 | `fix-no-root` | `2e931192e` + WIP `fix-no-root-hb-edges-wip.patch` and its four new files `fix-no-root-hb-edges-wip-untracked.patch` (in worktree `agent-a5fe8997…`) | NO_ROOT fixes + version-0 writer; HB-edges WIP | commits carried by `state-pairing`; the HB-edges WIP is not |
 | `fix-hdfs-seed-stalls` | `bfd7492bd` | one rule set for seed-replay stalls | needs a live round on the 11 cases and the new checks |
 | `replay-random-draws` | `d656860b2` | every random draw recorded and replayed | on `dtx-on-main` (in `pairing-port`); needs a live round |
-| `fix-replay-equivalent-context` | `71fedd858` | a root admitted by its address alone | rebase after `pairing-port` |
+| `fix-replay-equivalent-context` | `71fedd858` | a root admitted by its address alone (`2758f815d`); its other three commits are `pairing-port`'s | ported onto main + `pairing-port` as `replay-address-only` (one commit); needs a live round, then delete |
 | `perf-vm-readout`, `vm-ref-compare` | `3cbea0bee`, `bba1ee25d` | VM read-out per activation; reference compare with an enum constant | parked; each needs a VM review (images `vm-w4i`, `vm-nr41`) |
 | `worktree-agent-a49c8bf5715a00c40` | `90ca7724e` | WIRE-CODEC W3/W6 + the first WP-D integration | deferred; the source of W3/W6 when they are taken up |
 
