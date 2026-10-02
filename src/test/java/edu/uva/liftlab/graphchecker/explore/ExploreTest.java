@@ -2370,6 +2370,35 @@ public class ExploreTest {
         assertTrue("and it is BLOCKING: the campaign opens an epoch",
                 blocking);
 
+        // A slot stands on the session that opened it.  GROW withdraws the
+        // replay that exposed a region and re-runs it under the grown plan
+        // (hdfs-11741 V4): the re-run's pairing replaces nothing, since the
+        // session the old slot stood on is no longer the corpus's.
+        Path before = tree.newFolder("closure-before-grow").toPath();
+        Session exposing = new Session(before, "s-seed");
+        exposing.activation(writer, false);
+        exposing.activation(producer, false);
+        exposing.constant("e.119992", "119992");
+        exposing.export(exported, "e.119992", 11L, "119992");
+        exposing.attach(attached, "M_HOFF_KEY", "119992", exported);
+        exposing.flush();
+        Path after = tree.newFolder("closure-after-grow").toPath();
+        Session rerun = new Session(after, "s-two");
+        rerun.activation(writer, false);
+        rerun.activation(producer, false);
+        rerun.constant("e.119993", "119993");
+        rerun.export(otherPort, "e.119993", 13L, "119993");
+        rerun.attach(attached, "M_HOFF_KEY", "119993", otherPort);
+        rerun.flush();
+        SlotTable grown = new SlotTable();
+        grown.reconcile(Corpus.read(before, null), pairedMembers, 1);
+        SlotTable.Reconciliation reopened = grown.reconcile(
+                Corpus.read(after, null), pairedMembers, 2);
+        assertFalse("a withdrawn session's slot contradicts nothing",
+                reopened.replaced);
+        assertEquals("the session in its place opens the slot again",
+                otherPort.id(), slotsOf(reopened).get(0).producer.id());
+
         // ONLY AN ADMITTED REPLAY STATES A TOPOLOGY.  The same foreign
         // pairing, from a replay whose own result row says NOT_ADMITTED, is
         // a replay that did not run the world it was asked for: it states

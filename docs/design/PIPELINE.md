@@ -348,7 +348,9 @@ schedule) and:
    seqs, the VM's one event clock, whatever threads ran them; never the anchor chain, which orders
    occurrences, not their events) contradicts the order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when
    the session is admitted, else DIAGNOSTIC); another
-   world's pairing is a new slot.
+   world's pairing is a new slot. A slot stands on the session that opened it: the slots of a
+   session no longer in the corpus (one a GROW swap withdrew, §7.8) are dropped first, here and
+   where COMPOSE reads the table, and the session in its place opens them again.
 5. Builds the ledger (§7.3), takes the arms in flight (`--in-flight`: the obligation rows the
    campaign has queued or running), builds the candidates (§7.4) and opens the round:
    `obligations.jsonl`, nothing settled and nothing in flight.
@@ -819,7 +821,10 @@ round is planned; then each re-run SWAPS in (`campaign_stream_swap`): the exposi
 worker's previous files move to `<worker>/before-<round>/`, the re-run's files become the
 worker's, its session lands, and its verdict replaces the obligation's row in
 `obligation_results.jsonl`; the queue is left to the next round, since what it held may be cut from
-an exposing session. Once nothing runs, the last generation's tree is the iteration's
+an exposing session. The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
+the region's events stand in new occurrences, so its endpoints have new ids, and a slot of the old
+run would read the re-run and every later session of its world as a replacement (hdfs-11741 V4:
+two BLOCKING rows withheld the witness's composition). Once nothing runs, the last generation's tree is the iteration's
 `instrumented-classes` (CONFIRM, REPRODUCE). An exposure no obligation names (seed exposure) fails
 EXPLORE.
 

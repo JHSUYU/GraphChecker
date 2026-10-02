@@ -39,6 +39,15 @@ import java.util.Set;
  *
  * <p>Only an ADMITTED replay states a topology ({@link
  * SessionReader#admitted}); others are reported DIAGNOSTIC.</p>
+ *
+ * <p>A slot stands on the session that opened it: one whose session left the
+ * corpus holds nothing ({@link #standing}).  GROW withdraws the replay that
+ * exposed a region and re-runs it under the grown plan, whose new occurrences
+ * give the region's endpoints new ids; the withdrawn run's slots then paired
+ * its consumers with producers no session of the corpus states, and the
+ * re-run and every later session of its world read as replacing them
+ * (hdfs-11741 V4: two BLOCKING rows against a slot of the withdrawn
+ * 6b2d8a87f0ab7480-ea09d180 withheld the witness's composition).</p>
  */
 public final class SlotTable {
     public static final String FILE = "slots.jsonl";
@@ -141,10 +150,29 @@ public final class SlotTable {
         }
     }
 
+    /**
+     * Keeps the slots whose opening session is in {@code corpus}: a session
+     * that left it (a GROW swap) takes its slots with it, and the session
+     * standing in its place opens them again.
+     */
+    private void standing(Corpus corpus) {
+        Set<String> sessions = new LinkedHashSet<String>();
+        for (SessionReader session : corpus.sessions()) {
+            sessions.add(session.sessionId());
+        }
+        List<Slot> held = slots();
+        byInteraction.clear();
+        slotOfConsumer.clear();
+        for (Slot slot : held) {
+            if (sessions.contains(slot.openedBySession)) hold(slot);
+        }
+    }
+
     /** Takes every interaction the corpus states; only a consumer in {@code
      *  closure} opens a slot. */
     public Reconciliation reconcile(Corpus corpus, Set<String> closure,
                                     int round) {
+        standing(corpus);
         List<Slot> opened = new ArrayList<Slot>();
         List<GapRow> gaps = new ArrayList<GapRow>();
         Set<String> outside = new LinkedHashSet<String>();
@@ -316,6 +344,7 @@ public final class SlotTable {
     public List<Replacement> replacements(Corpus corpus) {
         List<Replacement> found = new ArrayList<Replacement>();
         if (!stated) return found;
+        standing(corpus);
         Set<String> seen = new LinkedHashSet<String>();
         for (SessionReader session : corpus.sessions()) {
             String world = ObligationFactory.worldDigest(
