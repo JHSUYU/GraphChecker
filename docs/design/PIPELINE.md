@@ -1477,7 +1477,9 @@ a pure function of the recording once per jar — the static pass (after the doo
 EXPLORE round 0 and its solves, IMPORT, the closing EXPLORE round, COMPOSE with SOLVE and DECIDE,
 and CONFIRM's planning — over private iterations that link the recorded sessions, with no
 workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
-2 when one could not be checked. Every stage gates on bytes, the static pass included: it is the
+2 when one could not be checked. It runs beside live rounds, so each of its engine JVMs is placed
+through the host ledger (`ab_place`: the host of `AB_HOSTS`, default `LIFTS`, with the most room,
+charged its heap for its whole run, waited for when none has it). Every stage gates on bytes, the static pass included: it is the
 same on every host and run ([SYMBOL-SCOPE.md §2.3](SYMBOL-SCOPE.md)). A round is read as the
 current engine reads it, so the gate needs a round recorded by a build whose row contract HEAD
 still reads. Both sides run under the gate's own checkout's case declarations, unless
