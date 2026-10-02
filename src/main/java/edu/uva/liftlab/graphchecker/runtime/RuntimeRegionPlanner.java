@@ -67,9 +67,10 @@ public final class RuntimeRegionPlanner {
     /**
      * Binds static region skeletons to the activations a run performed.
      *
-     * @param fieldReads call site -> the field a call there returns
-     *     ({@link RuntimeSelectedRegionFinalizer#fieldReadingCalls}): its
-     *     receiver owns that field ({@link #stampFieldOwners})
+     * @param fieldCalls call site -> the field a call there accesses on its
+     *     receiver ({@link RuntimeSelectedRegionFinalizer
+     *     #fieldAccessingCalls}): the receiver owns that field ({@link
+     *     #stampFieldOwners})
      */
     static Result planSkeletonGraph(List<StaticProgram.RegionRow> skeletons,
                                     List<MethodEvent> methods,
@@ -77,7 +78,7 @@ public final class RuntimeRegionPlanner {
                                     List<FieldAccessEvent> fieldEvents,
                                     List<ProtocolEvent> protocolEvents,
                                     Set<String> declaredSites,
-                                    Map<String, String> fieldReads) {
+                                    Map<String, String> fieldCalls) {
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 fieldEvents, protocolEvents);
         Result result = new Result();
@@ -161,7 +162,7 @@ public final class RuntimeRegionPlanner {
         stampActivationContainment(activationByCall, trace);
         stampFoldedRegionEntries(foldedRoots, foldOwners, activationByCall,
                 trace);
-        stampFieldOwners(activationByCall.values(), trace, fieldReads);
+        stampFieldOwners(activationByCall.values(), trace, fieldCalls);
         result.runtimeInstances.addAll(activationByCall.values());
         stampRecordedExchanges(result, trace, protocolEvents);
         return result;
@@ -171,29 +172,34 @@ public final class RuntimeRegionPlanner {
      * States on each activation, per field its calls read or wrote, the
      * objects they did so on ({@link RuntimeSelectedRegionFinalizer
      * #FIELD_OWNERS}): each field access's receiver (a static field's
-     * names none, {@code 0}) and the object a reference field held, so two
-     * holders sharing one referent share it; and the receiver of each call
-     * at a site that returns a field (an unwoven accessor).
+     * names none, {@code 0}) and the receiver of each call at a site that
+     * returns a field (an unwoven accessor) or mutates one (an atomic's
+     * value); and apart, the objects a reference field held ({@link
+     * RuntimeSelectedRegionFinalizer#FIELD_REFERENTS}), whose state a
+     * mutation through the field writes.
      */
     private static void stampFieldOwners(
             Collection<Map<String, Object>> activations, TraceIndex trace,
-            Map<String, String> fieldReads) {
+            Map<String, String> fieldCalls) {
         for (Map<String, Object> activation : activations) {
             Map<String, Set<Integer>> owners = new HashMap<>();
+            Map<String, Set<Integer>> referents = new HashMap<>();
             for (Long call : MapFields.longValues(
                     activation.get("callIds"))) {
                 for (FieldAccessEvent event : trace.fieldsByCall.getOrDefault(
                         call, Collections.<FieldAccessEvent>emptyList())) {
-                    Set<Integer> held = owners.computeIfAbsent(event.field,
-                            ignored -> new HashSet<>());
-                    held.add(event.receiverObjectId);
+                    owners.computeIfAbsent(event.field,
+                            ignored -> new HashSet<>())
+                            .add(event.receiverObjectId);
                     if (event.valueObjectId != 0) {
-                        held.add(event.valueObjectId);
+                        referents.computeIfAbsent(event.field,
+                                ignored -> new HashSet<>())
+                                .add(event.valueObjectId);
                     }
                 }
                 for (RuntimeEvent event : trace.runtimeByCall.getOrDefault(
                         call, Collections.<RuntimeEvent>emptyList())) {
-                    String field = fieldReads.get(event.siteId);
+                    String field = fieldCalls.get(event.siteId);
                     if (field != null && event.objectId != 0
                             && "CALL_SITE_ENTER".equals(event.kind)) {
                         owners.computeIfAbsent(field,
@@ -205,6 +211,11 @@ public final class RuntimeRegionPlanner {
             if (!owners.isEmpty()) {
                 activation.put(RuntimeSelectedRegionFinalizer.FIELD_OWNERS,
                         owners);
+            }
+            if (!referents.isEmpty()) {
+                activation.put(
+                        RuntimeSelectedRegionFinalizer.FIELD_REFERENTS,
+                        referents);
             }
         }
     }

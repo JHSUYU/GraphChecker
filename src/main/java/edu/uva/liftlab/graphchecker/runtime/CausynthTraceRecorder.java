@@ -1469,8 +1469,8 @@ public final class CausynthTraceRecorder {
                         skeletons, trace.methods,
                         trace.execution, trace.fields, trace.protocol,
                         declaredSites(scopeMap),
-                        RuntimeSelectedRegionFinalizer.fieldReadingCalls(
-                                graph));
+                        RuntimeSelectedRegionFinalizer.fieldAccessingCalls(
+                                graph, scopeMap));
         Set<String> observedMethods = new LinkedHashSet<>();
         for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
             observedMethods.add(event.method);
