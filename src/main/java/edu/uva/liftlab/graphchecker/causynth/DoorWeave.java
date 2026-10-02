@@ -205,15 +205,17 @@ final class DoorWeave {
         }
     };
 
-    /** One woven fault's throw: the marker local its branch tests, the
-     *  marker's name and the kind thrown. */
+    /** One woven fault's throw: the marker local its branch tests, that
+     *  branch, the marker's name and the kind thrown. */
     static final class Fault {
         final Local marker;
+        final IfStmt branch;
         final String name;
         final String kind;
 
-        private Fault(Local marker, String name, String kind) {
+        private Fault(Local marker, IfStmt branch, String name, String kind) {
             this.marker = marker;
+            this.branch = branch;
             this.name = name;
             this.kind = kind;
         }
@@ -258,7 +260,8 @@ final class DoorWeave {
             return null;
         }
         String name = ((StringConstant) marker.getArg(0)).value;
-        return name.startsWith("FAULT:") ? new Fault((Local) tested, name,
+        return name.startsWith("FAULT:") ? new Fault((Local) tested,
+                (IfStmt) test, name,
                 ((NewExpr) ((AssignStmt) allocation).getRightOp())
                         .getBaseType().getClassName()) : null;
     }

@@ -68,7 +68,10 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   what it caught (a `finally` or `synchronized` block). A kind goes to the handler of the first trap
   covering the raise that catches it, else it escapes the method; to a fixed point. A call that can
   leave a fault to a handler is a *fault branch* (§3): the sites only one of its exits reaches
-  depend on it, and its operand is `<callee>.throws` of each callee it escapes. A demanded
+  depend on it, and its operand is `<callee>.throws` of each callee it escapes. So is the marker
+  branch of a woven throw a handler of its own method catches (a door at calls): its throwing arm
+  reaches the handler only over the fault edges, and without it the handler, reached from both
+  exits of every earlier fault branch, would depend on nothing. A demanded
   `<m>.throws` (`expandThrows`) takes an `exception_flow` edge from the origin of each raise a fault
   escapes `m` from -- the woven throw's marker local, a callee's `<callee>.throws` -- under the
   raise's guards, so a handler's effects lead back to the door's marker.
@@ -221,7 +224,8 @@ some successor of `b` is post-dominated by `t` and `b` is not; the outcome names
 reaches `t`. The CFG has no exception edges (`BriefUnitGraph`), but for door faults a handler
 catches (§2.2): over the CFG with those edges, a site also depends on each fault branch (a call
 that can leave a fault to a handler) that decides it, with outcome `null` (no decision is ever
-recorded at a call; a fault flips at its marker), and on that call's own guards. A fault branch
+recorded at a call; a fault flips at its marker), and on that call's own guards; a woven marker
+branch that is a fault branch carries its arm toward the handler. A fault branch
 adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
 behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and

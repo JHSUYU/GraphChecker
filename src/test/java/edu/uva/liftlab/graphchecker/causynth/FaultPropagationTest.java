@@ -81,7 +81,8 @@ public class FaultPropagationTest {
      * SYMBOL-SCOPE §4.2: a door at calls (the catalog's DataTransfer
      * responses) is woven after the anchor in each analysed caller, its
      * kinds in row order, its units tagged as the weave's, and goes to that
-     * caller's handler; a library caller is not woven.
+     * caller's handler, which its marker branches decide; a library caller
+     * is not woven.
      */
     @Test
     public void aDoorAtCallsIsWovenInEveryAnalysedCaller() {
@@ -139,6 +140,12 @@ public class FaultPropagationTest {
                 Collections.nCopies(3, Collections.singleton(handler))
                         .toString(), handlersOf(faults,
                         analysed.getSignature(), throwsAt)},
+            {"the handler's store is decided by each marker branch, on "
+                    + "its throwing arm", "[" + analysed.getSignature()
+                    + "#u5=false, " + analysed.getSignature()
+                    + "#u10=false, " + analysed.getSignature()
+                    + "#u15=false]", SiteControlDependence.MethodGuards.of(
+                            analysed.getSignature()).at(22).toString()},
             {"the weave's units are its own, not the program's", "9 of 24",
                 program + " of " + analysed.getActiveBody().getUnits()
                         .size()},
