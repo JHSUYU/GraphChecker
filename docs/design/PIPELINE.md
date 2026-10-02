@@ -231,6 +231,11 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 `CAUSYNTH_CONCOLIC_TASK_PLAN`/`_TASK_ID` set to the whole plan: one union weave of every task. The
 tree must hold a class file, and `causynth.VerifyWovenClasses` must verify every woven class against
 the replay's class path, or the stage fails naming the class. GROW re-runs this stage's function.
+A loop-body root's controls are the branches leaving its loop, as the catalog's guards are
+(`CfgLoopControl#retainedLoops`): an `if`, or a switch with a case that leaves (a `default` that
+throws); its frame opens on the outermost control edge into the body whose target dominates the
+demanded unit, and closes on every backedge and every exit of a control
+(`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`).
 
 The union weave also hooks the codecs and exchange brackets the wire declarations state
 (`causynth.CodecWeave`, [IDENTITY.md §7.5](IDENTITY.md)): the file the property
