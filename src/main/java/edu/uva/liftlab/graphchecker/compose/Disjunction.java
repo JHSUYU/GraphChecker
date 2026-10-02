@@ -60,6 +60,10 @@ final class Disjunction implements AutoCloseable {
      *  runs keep the solver's). */
     static final long WHOLE_BUDGET_MS = 60000L;
 
+    /** Budget of a path's ask in its own run ({@link #pathAsk}), at most
+     *  the solver's. */
+    static final long OWN_RUN_BUDGET_MS = 600000L;
+
     /** Budget of a path's self-refutation run: decides a path, scans them
      *  all. */
     static final long SELF_CHECK_BUDGET_MS = 60000L;
@@ -154,8 +158,7 @@ final class Disjunction implements AutoCloseable {
         for (int at = 0; at < selectors.size(); at++) {
             String selector = selectors.get(at);
             pending.add(known.get(at) != null ? null : pool.submit(
-                    () -> solver.ask(composition.pathQuery(selector,
-                            assertions), asked, wantCore)));
+                    () -> pathAsk(selector, assertions, asked, wantCore)));
         }
         try {
             List<Z3.Answer> refutations = new ArrayList<Z3.Answer>();
@@ -193,10 +196,33 @@ final class Disjunction implements AutoCloseable {
         Set<String> under = new HashSet<String>(assertions);
         Z3.Answer known = refutation(selector, under, wantCore);
         if (known != null) return known;
-        Z3.Answer answer = solver.ask(composition.pathQuery(selector,
-                assertions), asked, wantCore);
+        Z3.Answer answer = pathAsk(selector, assertions, asked, wantCore);
         if (answer.unsat()) remember(selector, under, answer, wantCore);
         return answer;
+    }
+
+    /**
+     * One path under {@code assertions}, in its own run first: with the arm
+     * of each message its session sent it and each state read's observed
+     * writer ({@code Composition#ownRun}), a model is a model of the
+     * question, and z3 finds one where the question asked free runs its
+     * budget out (hdfs-11741 L1: two fatal-observing paths sat in about 100
+     * s so, undecided after 30 minutes free).  Asked free only where its own
+     * run is refuted or undecided within {@link #OWN_RUN_BUDGET_MS}.
+     */
+    private Z3.Answer pathAsk(String selector, List<String> assertions,
+                              List<String> asked, boolean wantCore) {
+        List<String> own = composition.ownRun(selector);
+        if (!own.isEmpty()) {
+            List<String> held = new ArrayList<String>(assertions);
+            held.addAll(own);
+            Z3.Answer ownRun = solver.ask(composition.pathQuery(selector,
+                    held), asked, false, Math.min(OWN_RUN_BUDGET_MS,
+                    solver.timeoutMillis()));
+            if (ownRun.sat()) return ownRun;
+        }
+        return solver.ask(composition.pathQuery(selector, assertions),
+                asked, wantCore);
     }
 
     /** The answer of a refutation of {@code selector} under a subset of

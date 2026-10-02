@@ -665,6 +665,22 @@ public final class ClaimPolicy {
                                    Disjunction asks,
                                    Composer.Valuation valuation,
                                    List<String> pinned, boolean wantCore) {
+        return outcome(composition, asks, valuation, pinned, wantCore, null);
+    }
+
+    /**
+     * The same, asked of one path only where {@code path} names it: the
+     * refinement of a witness ({@link #leastClocks}, {@link #withMargin})
+     * keeps the witness's path, and another path's ask (one its own run
+     * refutes, asked free for its whole budget) waits for no answer it would
+     * give (hdfs-11741 L1: each pin of the clock-driven witness waited 30
+     * minutes on a path undecided free).
+     */
+    private static Outcome outcome(Composer.Composition composition,
+                                   Disjunction asks,
+                                   Composer.Valuation valuation,
+                                   List<String> pinned, boolean wantCore,
+                                   Outcome path) {
         List<String> asked = new ArrayList<String>(composition.selectors());
         asked.addAll(composition.armSelectors());
         asked.addAll(composition.stateSelectors());
@@ -677,8 +693,11 @@ public final class ClaimPolicy {
         List<String> assertions =
                 new ArrayList<String>(valuation.assertions());
         assertions.addAll(pinned);
-        Z3.Answer answer = asks.ask(assertions, composition.selectors(),
-                asked, wantCore);
+        Z3.Answer answer = path == null
+                ? asks.ask(assertions, composition.selectors(), asked,
+                wantCore)
+                : asks.askPath(path.selected().selector(), assertions, asked,
+                wantCore);
         return new Outcome(valuation, pinned, answer,
                 selectedOf(composition, answer), armsOf(composition, answer));
     }
@@ -698,14 +717,14 @@ public final class ClaimPolicy {
                                        List<String> cells) {
         if (cells.isEmpty()) return outcome;
         Outcome all = outcome(composition, asks, outcome.valuation(),
-                runsOn(composition, cells), false);
+                runsOn(composition, cells), false, outcome);
         if (all.witness()) return all;
         List<String> kept = new ArrayList<String>();
         Outcome witness = outcome;
         for (String cell : cells) {
             kept.add(cell);
             Outcome asked = outcome(composition, asks, outcome.valuation(),
-                    runsOn(composition, kept), false);
+                    runsOn(composition, kept), false, outcome);
             if (asked.witness()) {
                 witness = asked;
             } else {
@@ -748,7 +767,7 @@ public final class ClaimPolicy {
         List<String> room = new ArrayList<String>(witness.pinned());
         room.addAll(margins);
         Outcome all = outcome(composition, asks, witness.valuation(),
-                room, false);
+                room, false, witness);
         if (all.witness() || margins.size() == 1) {
             return all.witness() ? all : witness;
         }
@@ -757,7 +776,7 @@ public final class ClaimPolicy {
         for (String margin : margins) {
             kept.add(margin);
             Outcome asked = outcome(composition, asks, witness.valuation(),
-                    kept, false);
+                    kept, false, witness);
             if (asked.witness()) {
                 roomy = asked;
             } else {

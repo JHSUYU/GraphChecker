@@ -184,6 +184,7 @@ public final class Composer {
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
+        private final Map<String, List<String>> ownArms;
         private final String seedSessionId;
         /** Where each top-level command of the body ends, and the path
          *  selector it is guarded by (null: every path's); #pathQuery. */
@@ -222,6 +223,7 @@ public final class Composer {
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
+            this.ownArms = composed.composedFamilies.ownArms();
             this.seedSessionId = composed.seed();
             List<Integer> ends = new ArrayList<Integer>();
             List<String> guards = new ArrayList<String>();
@@ -435,6 +437,23 @@ public final class Composer {
          * took: each STATE family's arm the run took
          * ({@link ComposedFamilies#stateFamilies}).
          */
+        /**
+         * The path's own run: the arm its own session is of each message the
+         * path received, and the writer arm each state read observed --
+         * selectors, never the values the run's handoffs carried, which are
+         * on its own clock ({@code SmtLowering#clockBases}).
+         */
+        public List<String> ownRun(String selector) {
+            List<String> own = new ArrayList<String>();
+            Disjunct disjunct = bySelector(selector);
+            if (disjunct == null) return own;
+            List<String> arms = ownArms.get(selector);
+            if (arms != null) own.addAll(arms);
+            List<String> reads = observedReads.get(disjunct.path().pathId);
+            if (reads != null) own.addAll(reads);
+            return asserted(own);
+        }
+
         public List<String> observedReads(String pathId) {
             return asserted(observedReads.get(pathId));
         }
@@ -594,6 +613,7 @@ public final class Composer {
                 : declaredDomains;
         this.maxValuations = maxValuations <= 0 ? 64 : maxValuations;
         this.lowering = new SmtLowering(corpus.declaredSymbols());
+        lowering.clockBases(clockBases());
         this.arms = new Arms(corpus);
         this.composedFamilies = new ComposedFamilies(this, corpus, arms,
                 lowering, families, unattestedRoots, replacing, gaps);
@@ -2324,6 +2344,75 @@ public final class Composer {
                             + "has no domain and no reading");
         }
         return reading;
+    }
+
+    /**
+     * How far each session's host clock read a clock cell later than the
+     * recording read it (session -> cell symbol -> milliseconds or ticks of
+     * that clock; {@link SmtLowering#clockBases}): its host reading less the
+     * recording's, at the cell itself where the recording read it, else at
+     * the nearest cell (by seq) of the same clock of the same node that both
+     * read -- the same anchor {@link #placed} puts a cell on the recording's
+     * timeline by.  The recording's own and a cell no shared cell anchors
+     * have none.
+     */
+    private Map<String, Map<String, Long>> clockBases() {
+        String seed = seed();
+        Map<String, Map<String, Long>> bases =
+                new LinkedHashMap<String, Map<String, Long>>();
+        if (seed == null) return bases;
+        Map<String, List<RootMintRow>> bySession =
+                new LinkedHashMap<String, List<RootMintRow>>();
+        for (List<RootMintRow> rows : corpus.roots().values()) {
+            for (RootMintRow row : rows) {
+                if (row.kind() == RootKind.CLOCK
+                        && !row.sessionId().equals(seed)) {
+                    bySession.computeIfAbsent(row.sessionId(),
+                            session -> new ArrayList<RootMintRow>()).add(row);
+                }
+            }
+        }
+        for (Map.Entry<String, List<RootMintRow>> session
+                : bySession.entrySet()) {
+            // Its cells the recording read too, each with how far late.
+            Map<RootMintRow, Long> anchored =
+                    new LinkedHashMap<RootMintRow, Long>();
+            for (RootMintRow row : session.getValue()) {
+                RootMintRow recorded = corpus.rootOf(seed, row.rootId());
+                Long host = number(row.hostReading());
+                Long reading = recorded == null ? null
+                        : number(recorded.hostReading());
+                if (host != null && reading != null) {
+                    anchored.put(row, host - reading);
+                }
+            }
+            Map<String, Long> late = new LinkedHashMap<String, Long>();
+            for (RootMintRow row : session.getValue()) {
+                Long base = anchored.get(row);
+                if (base == null) {
+                    RootMintRow nearest = null;
+                    for (RootMintRow anchor : anchored.keySet()) {
+                        if (!anchor.occurrence().node().equals(
+                                row.occurrence().node())
+                                || row.clock() == null
+                                || !row.clock().same(anchor.clock())) {
+                            continue;
+                        }
+                        long distance = Math.abs(anchor.seq() - row.seq());
+                        if (nearest == null || distance
+                                < Math.abs(nearest.seq() - row.seq())
+                                || (distance == Math.abs(nearest.seq()
+                                - row.seq()) && anchor.seq() < nearest.seq())) {
+                            nearest = anchor;
+                        }
+                    }
+                    base = nearest == null ? null : anchored.get(nearest);
+                }
+                if (base != null && base != 0L) late.put(row.symbol(), base);
+            }
+            if (!late.isEmpty()) bases.put(session.getKey(), late);
+        }
+        return bases;
     }
 
     /**

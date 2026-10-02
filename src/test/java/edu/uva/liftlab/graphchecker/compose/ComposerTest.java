@@ -1645,6 +1645,49 @@ public class ComposerTest {
         assertFalse(unplaced.clockCells().contains("clk_lone"));
     }
 
+    /**
+     * EVERY SESSION ON THE RECORDING'S TIMELINE (hdfs-11741 L1): a replay
+     * ran ten minutes after the recording, so the key it made at startup,
+     * outside every clock root, expires at a constant on its own clock; its
+     * plant jumped the one clock cell a second.  Compared with that cell,
+     * the constant is the same instant on the recording's timeline, and the
+     * replay's own world -- the cell at the recording's reading plus its
+     * skew -- is a world of its path.  {session, recorded clock, skew, key
+     * expiry, the expiry its path compares on the recording's timeline}.
+     */
+    @Test
+    public void aReplaysInstantsAreOnTheRecordingsTimeline() throws Exception {
+        Path iteration = folder.newFolder("timeline").toPath();
+        long[][] rows = {
+                {0L, 1_000_000L, 0L, 1_000_500L, 1_000_500L},
+                {1L, 1_601_000L, 1_000L, 1_600_500L, 1_000_500L}};
+        for (long[] row : rows) {
+            String id = "s" + row[0];
+            Session session = new Session(iteration, id, row[0] == 1L);
+            session.roots.add(RootMintRow.of(id, 1L, ANCHOR, "ROOT.NOW",
+                    "clk_now", RootKind.CLOCK, Long.toString(row[1]), null,
+                    null, true, Clock.of(1_000_000L, Clock.WALL), row[2]));
+            session.expression("EXPR.00000000000003e1", binary("<",
+                    integer("J", row[3]), symbol("clk_now", "J")));
+            session.target("EXPR.00000000000003e1", row[0] == 1L, true);
+            session.write();
+        }
+        Composer.Composition composition = compose(iteration, 4);
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            long[] row = rows[disjunct.path().sessionId.equals("s1") ? 1 : 0];
+            String own = "(assert (= clk_now " + (1_000_000L + row[2]) + "))";
+            assertEquals(disjunct.path().sessionId + " in its own world",
+                    row[0] == 1L ? "sat" : "unsat", solver().ask(
+                            composition.pathQuery(disjunct.selector(),
+                                    Collections.singletonList(own)),
+                            null, false).status());
+        }
+        assertTrue(composition.body(), composition.body().contains(
+                "(< " + rows[1][4] + " clk_now)"));
+        assertFalse(composition.body(), composition.body().contains(
+                Long.toString(rows[1][3])));
+    }
+
     private static RootMintRow clockCell(String session, long seq,
                                          String rootId, String symbol,
                                          String reading) {
@@ -2344,6 +2387,16 @@ public class ComposerTest {
                             : Collections.singletonList("(assert "
                             + row[1] + ")")), null, false).status();
             assertEquals(Arrays.toString(row), row[2], answer);
+        }
+        // Each path's own run is its own session's delivery of the message
+        // it received, which Disjunction asks under first.
+        for (Map.Entry<String, String> path : selectorOf.entrySet()) {
+            List<String> own = composition.ownRun(path.getValue());
+            assertEquals(path.getKey() + ": " + own, 1, own.size());
+            String arm = own.get(0).replace("(assert ", "")
+                    .replace(")", "");
+            assertEquals(path.getKey(), path.getKey(),
+                    composition.arm(arm).sessionId());
         }
     }
 

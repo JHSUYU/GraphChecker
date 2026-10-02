@@ -1148,6 +1148,15 @@ same clock (`contract.Clock#same`: the JVM clock its row states and the same tic
 none is on no order, DIAGNOSTIC) (`clock_order__`); where the recording read the two the other way round, the link gives way by that
 much (`(<= (- earlier later) d)`), so the recording always satisfies it. The cells are listed in seq
 order (`Composition#clockCells`), each with its reading and the cell before it (`clockBefore`).
+Every session's instants are on that one timeline too: a replay runs on its own host's clock, started
+later (a plant is a skew off that host, `runtime.NodeClocks`), so an instant it computed outside every
+clock root -- a key's expiry from a startup reading -- is a constant on its own clock. A session's
+base at a cell is how far its host read the cell later than the recording (at the cell where the
+recording read it, else at the nearest cell both read, as a placement anchors; `Composer#clockBases`),
+and an integral constant compared with an instant of that cell (the cell, or the cell plus or minus a
+constant span) in that session's terms is lowered that much earlier (`SmtLowering#clockBases`,
+`#onTimeline`); the recording's own constants stay. hdfs-11741 L1: dn1's first expiry check compared
+each replay's startup keys, 9 to 11 minutes late on the recording's timeline, with the one dn1 clock.
 
 **Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
 moves sorted by distance, then pairs of moves, cut at
@@ -1189,7 +1198,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    second each alone). Path by path, the paths are asked 8 at a time (`PATH_ASKS`, 16 z3
    processes), in their order, and answer in that order: the first sat path's answer (the asks
    after it stopped, their z3s killed), else undecided if any path was, else unsat with the union of
-   the paths' cores. A path unsat under some assertions is unsat under every set containing them,
+   the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
+   `Composition#ownRun`): its own session's arm of each message the path received and each state
+   read's observed writer, selectors only (never the values its handoffs carried, which are on its
+   own clock), within 10 minutes at most; a model there is a model of the question, and only where
+   its own run is refuted or undecided is the path asked free (hdfs-11741 L1: two fatal-observing
+   paths sat in about 100 s in their own runs, undecided after 30 minutes free). A path unsat under some assertions is unsat under every set containing them,
    so it is not asked again there: its refutation answers, core and all, one asked without a core
    only an ask that wants none, unless it was asked under no assertion at all (the self-check: its
    core can name no pin). hdfs-11741 i1: 155 of 157 paths refute themselves, so every pinned re-ask
@@ -1210,7 +1224,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    of the cell before it on its node's clock, `clock_runs_on__`; a first cell stays at its reading;
    pinned back one cell at a time in seq order, so a jump lands as late as the witness allows, on the
    cell the fatal reads rather than an earlier one that carries it along), so the cells left free are
-   the clock's jumps. A sat ordinal 0 on a path that did not observe the fatal,
+   the clock's jumps. This refinement, and the margins after it, ask the witness's own path only
+   (`Disjunction#askPath`): another path's answer is no answer about this witness. A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
 4. The claim, first match:
