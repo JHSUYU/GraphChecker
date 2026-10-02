@@ -266,6 +266,19 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   inside a callback or not: a value is data, a notification a cause.
 - `consumed(transport, key)`: a queue item's staged values arrive with it; the consumer keeps its
   own context.
+- `storing(transport)` ... `storeEnded(transport, token)`: a write in flight. The store applies a
+  write, and notifies the version's watchers, before the write's call returns, so another thread
+  can read the version before its writer files it (SOLR-18413 F2: node1's state watchers read the
+  routing rule's version while the Overseer's turn was still in `stored`, and their work opened
+  no occurrence). `stored` is in flight until it has filed, and files the version last, after its
+  codec holes; an adapter opens the bracket before the store's call and closes it in a `finally`
+  after `stored`, so the store's own latency is inside it too. A read that takes what its write
+  carried (`consumed`, `fetched` in a callback or with its bytes) and finds the version unfiled
+  waits for the writes other threads had in flight when it read (`MessageDoors#filed`): the one
+  that made the version files it before its bracket ends. A version no such write files was made
+  outside the window or carried nothing; its read names nothing and waits for nothing begun after
+  it. Before a replay's cut a writer may be held at its SEND while a reader waits for it; the
+  schedule's watchdog lets the order go (§8).
 
 ### 7.3 Typed faults
 

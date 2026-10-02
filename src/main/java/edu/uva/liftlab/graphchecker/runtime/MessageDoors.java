@@ -3,8 +3,12 @@ package edu.uva.liftlab.graphchecker.runtime;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * THE message doors a system's transports call, whatever the system: a
@@ -41,6 +45,15 @@ public final class MessageDoors {
      */
     private static final Map<String, Outbound> STORED =
             new ConcurrentHashMap<String, Outbound>();
+    /**
+     * The writes to a shared store in flight ({@link #storing}), by
+     * transport and token, each with the thread making it.  Guarded by
+     * itself; every {@link #storeEnded} notifies the reads waiting on it
+     * ({@link #filed}).
+     */
+    private static final Map<String, Map<Long, Thread>> STORING =
+            new HashMap<String, Map<Long, Thread>>();
+    private static final AtomicLong STORES = new AtomicLong();
 
     /**
      * While the thread runs a store's notification ({@link #notified}): its
@@ -234,9 +247,89 @@ public final class MessageDoors {
     }
 
     /**
+     * A write to a store the nodes share is about to be made.  The store
+     * applies a write, and notifies the version's watchers, before the
+     * write's call returns, so another thread can read the version before
+     * {@link #stored} files it (SOLR-18413 F2: node1's state watchers read
+     * the routing rule's version before the Overseer's turn filed it, and
+     * their work opened no occurrence).  Until {@link #storeEnded}, a read
+     * that finds its version unfiled waits for this write ({@link #filed}).
+     *
+     * @return the write's token, for {@link #storeEnded}
+     */
+    public static long storing(String transport) {
+        long store = STORES.incrementAndGet();
+        synchronized (STORING) {
+            STORING.computeIfAbsent(transport,
+                    none -> new HashMap<Long, Thread>())
+                    .put(store, Thread.currentThread());
+        }
+        return store;
+    }
+
+    /**
+     * The write {@link #storing} began has filed its version
+     * ({@link #stored}), or failed: called in a {@code finally}.
+     */
+    public static void storeEnded(String transport, long store) {
+        synchronized (STORING) {
+            Map<Long, Thread> writes = STORING.get(transport);
+            if (writes != null && writes.remove(store) != null
+                    && writes.isEmpty()) {
+                STORING.remove(transport);
+            }
+            STORING.notifyAll();
+        }
+    }
+
+    /**
+     * What the write of a stored version carried, once filed: at once if it
+     * is, else once a write another thread had in flight when this one read
+     * files it -- the store applied that write before the read saw its
+     * version, and its writer files the version before its bracket ends.
+     * {@code null} when none of those writes filed it: the version was made
+     * outside the window, or carried nothing, and the read waits for nothing
+     * begun after it read.
+     */
+    private static Outbound filed(String transport, String key) {
+        String filed = transport + "\n" + key;
+        Outbound message = STORED.get(filed);
+        if (message != null) return message;
+        Thread reader = Thread.currentThread();
+        synchronized (STORING) {
+            Set<Long> pending = inFlight(transport, reader);
+            while ((message = STORED.get(filed)) == null
+                    && !pending.isEmpty()) {
+                try {
+                    STORING.wait();
+                } catch (InterruptedException interrupted) {
+                    reader.interrupt();
+                    return STORED.get(filed);
+                }
+                pending.retainAll(inFlight(transport, reader));
+            }
+            return message;
+        }
+    }
+
+    /** The writes of {@code transport} in flight on other threads than
+     *  {@code reader}: a thread's own write in flight is behind its read. */
+    private static Set<Long> inFlight(String transport, Thread reader) {
+        Set<Long> writes = new HashSet<Long>();
+        Map<Long, Thread> storing = STORING.get(transport);
+        if (storing == null) return writes;
+        for (Map.Entry<Long, Thread> write : storing.entrySet()) {
+            if (write.getValue() != reader) writes.add(write.getKey());
+        }
+        return writes;
+    }
+
+    /**
      * A write to a store the nodes share: a message sent where it is written
      * (a schedule SEND) and received wherever a node later reads that
-     * version, any number of times.
+     * version, any number of times.  The write is in flight until its
+     * version is filed ({@link #storing}), from wherever its adapter opened
+     * the bracket: before the store's call, or here.
      *
      * @param key the location and the version this write made
      */
@@ -250,10 +343,19 @@ public final class MessageDoors {
      */
     public static void stored(String transport, String key, Object owner,
                               byte[] data) {
-        Outbound message = outbound(transport, key, "1", REQUEST, owner,
-                null);
-        if (message.active()) STORED.put(transport + "\n" + key, message);
-        CodecRuntime.stored(transport, key, data);
+        // In flight until filed, whatever bracket the adapter opened: the
+        // SEND and the producer it mints take the concolic VM milliseconds.
+        long store = storing(transport);
+        try {
+            Outbound message = outbound(transport, key, "1", REQUEST, owner,
+                    null);
+            CodecRuntime.stored(transport, key, data);
+            // Filed last: a read that finds the version filed finds its
+            // codec holes filed too.
+            if (message.active()) STORED.put(transport + "\n" + key, message);
+        } finally {
+            storeEnded(transport, store);
+        }
     }
 
     /**
@@ -285,7 +387,10 @@ public final class MessageDoors {
      * arrive before a watch is set again into one event, so how many
      * notifications a run takes is the store's timing.  Any other read is
      * data, not a cause: a loop that polls the store reads as often as its
-     * timing lets it.
+     * timing lets it.  A read that takes what its write carried -- the
+     * writer's context in a notification, the codec holes of the bytes it
+     * read -- first waits for the version to be filed, if a write in flight
+     * may file it ({@link #filed}).
      */
     public static void fetched(String transport, String key, Object owner) {
         fetched(transport, key, owner, null);
@@ -298,11 +403,11 @@ public final class MessageDoors {
      */
     public static void fetched(String transport, String key, Object owner,
                                byte[] data) {
-        CodecRuntime.fetched(transport, key, data);
         String kind = NOTIFIED.get();
-        if (kind == null) return;
-        Outbound message = STORED.get(transport + "\n" + key);
-        if (message == null) return;
+        if (kind == null && data == null) return;
+        Outbound message = filed(transport, key);
+        CodecRuntime.fetched(transport, key, data);
+        if (kind == null || message == null) return;
         NOTIFIED.remove();
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
@@ -330,11 +435,12 @@ public final class MessageDoors {
      * processes it: what its writer staged on it -- the values a {@code
      * WIRE_FLOW} carries -- arrives with it and stays until the next item.
      * The consumer's context stays its own: which turn takes an item is the
-     * queue's batching, and each turn is ordered as a tick of its own.
+     * queue's batching, and each turn is ordered as a tick of its own.  An
+     * item its writer has not yet filed is waited for ({@link #filed}).
      */
     public static void consumed(String transport, String key) {
         SymbolicMessageEnvelope.clearInbound();
-        Outbound message = STORED.get(transport + "\n" + key);
+        Outbound message = filed(transport, key);
         if (message != null && !message.symbolic.isEmpty()) {
             SymbolicMessageEnvelope.installInbound(message.symbolic);
         }
