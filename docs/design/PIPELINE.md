@@ -795,9 +795,12 @@ it starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured ne
 (`campaign_engine_need_mb`: the static pass 4 GB, the planner and the composer 8 GB, the trace
 aggregation, scheduler, lineage scan, scope growth, woven-class verifier and CONFIRM 2 GB; the
 import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none
-(`ExposedRegionPlanMain`, `PlanUnion`); a JVM that runs out of its need (exit 3 under
-`-XX:+ExitOnOutOfMemoryError`) runs once more at `engine_memory_mb`, charged so, saying so, and
-later starts of that main begin there (a head step's discovery is the head's, §7.9); every run ends
+(`ExposedRegionPlanMain`, `PlanUnion`); a JVM that runs out of its heap (exit 3 under
+`-XX:+ExitOnOutOfMemoryError`) runs again at twice it, up to `engine_memory_mb`, charged so, saying
+so each time, and later starts of that main begin at the larger heap (`campaign_engine_outgrown`;
+a head step's discovery is the head's, §7.9): a 2 GB trace aggregation or scheduler that asked for
+the 16 GB engine heap at once found no lift of a running sweep with it free and waited 75-85 min
+(a40s); every run ends
 at its first out-of-heap error, at `engine_memory_mb` too (exit 3: the most heap a head JVM is given,
 told apart from a crash) -- the seed
 and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged for 300 s
@@ -815,7 +818,10 @@ there, so it reserves room for the next one -- what its planner or composer star
 `<host>/heads/<id>` stating its need, fresh while the head lives, idle unless one of its JVMs
 runs): a start that is no head's own counts the largest idle fresh
 reservation of the host as used, a head's own start counts none (heads take turns and never
-block each other), and the head gives its room up when it exits.
+block each other), and the head gives its room up when it exits. A head step that waits for room
+holds its own need there while it waits (`campaign_head_waiting_mb`), so the obligations of every
+campaign leave the head's host as they return instead of taking its room back one by one: a40h2's
+14 GB seed replay waited 70 min for a host the sweep's obligations never left that empty.
 An obligation whose worker does not finish (a nonzero exit, local or remote, or a result the head
 cannot see) is its own answer (`campaign_obligation_unfinished`): every process on its host whose
 command line names its worker directory is ended (a peer's replay JVM is in a process group the

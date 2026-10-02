@@ -3516,6 +3516,30 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
   ( campaign_head_unreserve )
   [[ -n "$(ls "${campaign_host_gate_root}/gate-head/heads/")" ]] \
     || fail "a subshell of the head gave up the head's room"
+  # A head step that waits for room holds its need there while it waits: an
+  # obligation the head's usual room would admit (12300 MB available, 8192
+  # held, 3000 reserved) is refused while a 9500 MB step waits, and the
+  # placed step gives the hold up.
+  campaign_worker_hosts=gate-head
+  echo 12300 >"${memory_dir}/head-available"
+  campaign_host_available_mb() { cat "${memory_dir}/head-available"; }
+  sleep() {
+    run_capturing_status campaign_host_try_start localhost 1000 60
+    echo "${status} ${campaign_host_wait_reason}" >"${memory_dir}/head-held"
+    echo 16000 >"${memory_dir}/head-available"
+  }
+  rm -f -- "${campaign_host_gate_root}/gate-head/starts"
+  campaign_host_try_start localhost 1000 60 \
+    || fail "the head's usual room refused a start it has room for"
+  rm -f -- "${campaign_host_gate_root}/gate-head/starts"
+  campaign_head_place 9500 120 >/dev/null
+  unset -f sleep
+  [[ "$(cat "${memory_dir}/head-held")" == "1 "*"9500 MB held for a head"* ]] \
+    || fail "a waiting head step held no room on its host: \
+$(cat "${memory_dir}/head-held")"
+  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
+    || fail "a placed head step kept holding its room: \
+$(cat "${campaign_host_gate_root}/gate-head/heads/"*)"
 ) || exit 1
 [[ -z "$(ls "${campaign_host_gate_root}/gate-head/heads/")" ]] \
   || fail "the head kept its room after it exited"
@@ -3603,11 +3627,11 @@ EOF
 
 # ENGINE-HEAP: an engine JVM starts at what its main measurably needs, charged
 # that, and only a run that outgrows it -- the JVM's exit 3 under
-# -XX:+ExitOnOutOfMemoryError -- runs once more at the engine heap, saying
-# so; the reader of its standard output sees the finished run's alone, and
-# later starts of that main go straight to the engine heap.  A main with no
-# measured need runs at the engine heap.  Every run, at the engine heap too,
-# ends at its first out-of-heap error.
+# -XX:+ExitOnOutOfMemoryError -- runs again at twice its heap, up to the
+# engine heap, saying so each time; the reader of its standard output sees
+# the finished run's alone, and later starts of that main begin at the heap
+# it last grew to.  A main with no measured need runs at the engine heap.
+# Every run, at the engine heap too, ends at its first out-of-heap error.
 engine_test=${test_tmp}/engine-heap
 mkdir -p "${engine_test}"
 cat >"${engine_test}/java" <<'EOF'
@@ -3615,7 +3639,7 @@ cat >"${engine_test}/java" <<'EOF'
 oom=n
 [[ "$1" == -XX:+ExitOnOutOfMemoryError ]] && oom=y
 echo "heap=${GRAPH_CHECKER_ENGINE_MEMORY_MB} oom=${oom}" >>"${ENGINE_TEST_LOG}"
-if [[ "${oom}" == y && "${GRAPH_CHECKER_ENGINE_MEMORY_MB}" -lt 4000 ]]; then
+if [[ "${oom}" == y && "${GRAPH_CHECKER_ENGINE_MEMORY_MB}" -lt 5000 ]]; then
   echo "half of an artifact"
   exit 3
 fi
@@ -3625,22 +3649,28 @@ chmod +x "${engine_test}/java"
 (
   export ENGINE_TEST_LOG=${engine_test}/log
   java_bin=${engine_test}/java
-  engine_memory_mb=8000
+  engine_memory_mb=16000
   campaign_head_charging=0
   campaign_engine_need_mb() { [[ "$1" != x.Grows ]] || echo 2000; }
   engine_java -Dk=v -cp jar x.Grows a b >"${engine_test}/out" 2>"${engine_test}/err" \
     || fail "an engine JVM that outgrew its need failed"
   [[ "$(cat "${engine_test}/out")" == whole ]] \
     || fail "the outgrown run's output reached its reader: $(cat "${engine_test}/out")"
-  grep -q 'Grows ran out of its 2000 MB heap; run again at 8000 MB' \
-    "${engine_test}/err" || fail "an engine JVM outgrew its need silently"
+  [[ "$(grep -c 'Grows ran out of its 2000 MB heap; run again at 4000 MB\|Grows ran out of its 4000 MB heap; run again at 8000 MB' \
+      "${engine_test}/err")" == 2 ]] \
+    || fail "an engine JVM did not grow one step at a time, saying so: \
+$(cat "${engine_test}/err")"
   engine_java -cp jar x.Grows >/dev/null
   engine_java -cp jar x.Other >/dev/null
   engine_need_mb=6000 engine_java -cp jar x.Other >/dev/null
-  [[ "$(tr '\n' ' ' <"${engine_test}/log")" == "heap=2000 oom=y heap=8000 oom=y \
-heap=8000 oom=y heap=8000 oom=y heap=6000 oom=y " ]] \
+  [[ "$(tr '\n' ' ' <"${engine_test}/log")" == "heap=2000 oom=y heap=4000 oom=y \
+heap=8000 oom=y heap=8000 oom=y heap=16000 oom=y heap=6000 oom=y " ]] \
     || fail "engine JVMs did not start at their needs: \
 $(tr '\n' ' ' <"${engine_test}/log")"
+  engine_memory_mb=6000 engine_java -cp jar x.Grows >/dev/null
+  [[ "$(tail -n 1 "${engine_test}/log")" == "heap=6000 oom=y" ]] \
+    || fail "an engine JVM started above the engine heap: \
+$(tail -n 1 "${engine_test}/log")"
 )
 reset_config
 

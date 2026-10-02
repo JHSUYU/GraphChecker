@@ -488,12 +488,17 @@ run_in_directory() {
 # <classpath>, the main class, its arguments.
 #
 # A main with a measured need (campaign_engine_need_mb, or the caller's
-# engine_need_mb) runs at it; one that runs out of heap there runs once more
-# at the engine heap, saying so, and every later start of that main in this
-# shell starts there.  Its standard output is passed on only from the run
-# that finished, so a reader of it never sees the first run's half.  A main
-# without a need, or whose need the engine heap does not exceed, runs at the
-# engine heap.  Every run ends at its first out-of-heap error
+# engine_need_mb) runs at it; one that runs out of heap there runs again at
+# twice that heap, up to the engine heap, saying so each time, and every
+# later start of that main in this shell starts at the heap it last ran out
+# of, doubled (campaign_engine_outgrown).  One step at a time: a trace
+# aggregation or a scheduler that outgrew 2 GB asked for the 16 GB engine
+# heap at once, which no lift of a running sweep had free beside its 30 %
+# reserve, and its case waited 75-85 min for it (a40s RestoreCmd-300,
+# RequestApplyUpdatesOp-42).  Its standard output is passed on only from the
+# run that finished, so a reader of it never sees an earlier run's half.  A
+# main without a need, or whose need the engine heap does not exceed, runs
+# at the engine heap.  Every run ends at its first out-of-heap error
 # (-XX:+ExitOnOutOfMemoryError, the JVM's exit 3): at the engine heap too,
 # where a planner left to the JVM collected for ten minutes and died with
 # exit 1 of "GC overhead limit exceeded" (sweep a40h2, DataStreamer-638),
@@ -501,7 +506,7 @@ run_in_directory() {
 campaign_engine_outgrown=""
 campaign_jvm_out_of_heap_status=3
 engine_java() {
-  local heap=${engine_memory_mb:-8192} main="" start index next status=0
+  local heap=${engine_memory_mb:-8192} main="" start index next status
   local out
   for (( index = 1; index < $#; index++ )); do
     [[ "${!index}" == -cp ]] || continue
@@ -510,43 +515,42 @@ engine_java() {
     break
   done
   start=$(campaign_engine_start_mb "${main}" "${engine_need_mb:-}")
-  if (( start == heap )); then
-    campaign_head_charged "${heap}" 120 \
-      env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
-      -XX:+ExitOnOutOfMemoryError "$@"
-    return
-  fi
-  out=$(mktemp) || return
-  campaign_head_charged "${start}" 120 \
-    env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
-    -XX:+ExitOnOutOfMemoryError "$@" >"${out}" || status=$?
-  if (( status != campaign_jvm_out_of_heap_status )); then
-    cat -- "${out}"
+  while (( start < heap )); do
+    out=$(mktemp) || return
+    status=0
+    campaign_head_charged "${start}" 120 \
+      env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
+      -XX:+ExitOnOutOfMemoryError "$@" >"${out}" || status=$?
+    if (( status != campaign_jvm_out_of_heap_status )); then
+      cat -- "${out}"
+      rm -f -- "${out}"
+      return "${status}"
+    fi
     rm -f -- "${out}"
-    return "${status}"
-  fi
-  rm -f -- "${out}"
-  campaign_engine_outgrown+=" ${main}"
-  printf '[campaign] %s ran out of its %s MB heap; run again at %s MB\n' \
-    "${main##*.}" "${start}" "${heap}" >&2
+    next=$(( 2 * start < heap ? 2 * start : heap ))
+    campaign_engine_outgrown="$(sed "s| ${main}=[0-9]*||" \
+      <<<"${campaign_engine_outgrown}") ${main}=${next}"
+    printf '[campaign] %s ran out of its %s MB heap; run again at %s MB\n' \
+      "${main##*.}" "${start}" "${next}" >&2
+    start=${next}
+  done
   campaign_head_charged "${heap}" 120 \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
     -XX:+ExitOnOutOfMemoryError "$@"
 }
 
 # The heap, in MB, <main> starts at (engine_java): its measured need
-# (<need>, else campaign_engine_need_mb), or the engine heap for a main with
-# none, one whose need the engine heap does not exceed, and one that outgrew
-# its need in this shell (campaign_engine_outgrown).
+# (<need>, else campaign_engine_need_mb), or the larger heap it outgrew its
+# need to in this shell (campaign_engine_outgrown: ` <main>=<mb>` words),
+# never more than the engine heap; the engine heap for a main with no need.
 campaign_engine_start_mb() {
-  local main=$1 need=${2:-} heap=${engine_memory_mb:-8192}
+  local main=$1 need=${2:-} heap=${engine_memory_mb:-8192} grown
   [[ -n "${need}" ]] || need=$(campaign_engine_need_mb "${main}")
-  if [[ -z "${need}" ]] || (( need >= heap )) \
-      || [[ " ${campaign_engine_outgrown} " == *" ${main} "* ]]; then
-    printf '%s\n' "${heap}"
-  else
-    printf '%s\n' "${need}"
-  fi
+  [[ -n "${need}" ]] || need=${heap}
+  grown=$(sed -n "s|.* ${main}=\([0-9]*\).*|\1|p" \
+    <<<"${campaign_engine_outgrown}")
+  (( ${grown:-0} <= need )) || need=${grown}
+  printf '%s\n' "$(( need < heap ? need : heap ))"
 }
 
 # The heap, in MB, an engine main measurably needs, or nothing for the
@@ -3409,6 +3413,9 @@ campaign_head_reservation_stale_s=600
 # without giving it up.
 campaign_head_reservation=""
 campaign_head_pid=""
+# The need, in MB, of the head step waiting for room now (campaign_head_place),
+# which its reservation holds while it waits; 0 when none waits.
+campaign_head_waiting_mb=0
 # This exploration's entry among the capped ones (campaign_stream_enroll),
 # or empty.
 campaign_stream_entry=""
@@ -3629,12 +3636,17 @@ campaign_head_reserve() {
 }
 
 # The head lives: its reservation stays fresh, and states what its next
-# planner or composer starts at now (one that outgrew its need starts at
-# the engine heap from then on); so does its capped exploration's entry.
+# planner or composer starts at now (one that outgrew its need starts
+# higher from then on), or the need of the step it waits to place when that
+# is more (campaign_head_waiting_mb); so does its capped exploration's entry.
 campaign_head_heartbeat() {
-  [[ -z "${campaign_head_reservation}" ]] \
-    || campaign_head_need_mb >"${campaign_head_reservation}" 2>/dev/null \
-    || true
+  local need
+  if [[ -n "${campaign_head_reservation}" ]]; then
+    need=$(campaign_head_need_mb)
+    (( need >= campaign_head_waiting_mb )) || need=${campaign_head_waiting_mb}
+    printf '%s\n' "${need}" >"${campaign_head_reservation}" 2>/dev/null \
+      || true
+  fi
   [[ -z "${campaign_stream_entry}" ]] \
     || touch -- "${campaign_stream_entry}" 2>/dev/null || true
 }
@@ -3844,7 +3856,11 @@ campaign_head_charged() {
 # the host of the pool with the most room under the ceiling
 # (campaign_host_room), as the pool would place one more start; waited for
 # when no host has it, said once, and how long when it gets room, so a
-# step's wall time names its wait (tools/analysis/timeline.py).  The host is
+# step's wall time names its wait (tools/analysis/timeline.py).  While it
+# waits, the head's room holds its need (campaign_head_waiting_mb): the
+# starts that are no head's own leave the head's host as they return rather
+# than taking its room back one by one, which held a 14 GB seed replay
+# 70 min in a sweep (a40h2 BlockRecoveryWorker-530).  The host is
 # campaign_placed_host.
 campaign_placed_host=""
 campaign_head_place() {
@@ -3879,6 +3895,7 @@ campaign_head_place() {
       campaign_log "waiting for memory for a head step of ${need} MB on any \
 host: ${campaign_host_wait_reason}"
       said=true
+      campaign_head_waiting_mb=${need}
     fi
     campaign_head_heartbeat
     sleep "${campaign_host_poll_s}"
@@ -3886,9 +3903,11 @@ host: ${campaign_host_wait_reason}"
 }
 
 # campaign_head_placed <said> <need_mb> <since>: a head step that waited for
-# room says how long, once it has it.
+# room gives up the room it held and says how long, once it has it.
 campaign_head_placed() {
   [[ "$1" == true ]] || return 0
+  campaign_head_waiting_mb=0
+  campaign_head_heartbeat
   campaign_log "room for a head step of $2 MB on ${campaign_placed_host} \
 after waiting $(( SECONDS - $3 )) s"
 }
