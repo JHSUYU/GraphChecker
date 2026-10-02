@@ -529,6 +529,53 @@ public class ScheduleLogTest {
         assertTrue(sites().toString(), sites().isEmpty());
     }
 
+    /**
+     * The store applies a write, and notifies, before its caller files the
+     * version (SOLR-18413 F2's node1 state watchers): a notification reading
+     * the version meanwhile waits for the write in flight and is named by
+     * it.  A version no other thread's write in flight files names nothing
+     * and waits for nothing, not even for the reader's own write.
+     */
+    @Test(timeout = 20000L)
+    public void aNotificationWaitsForTheWriteInFlightToFileItsVersion()
+            throws Exception {
+        final Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NODE);
+        final List<Boolean> named = Collections.synchronizedList(
+                new ArrayList<Boolean>());
+        long store = MessageDoors.storing("STORE");
+        Thread callback = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                MessageDoors.notified("Watcher", new Runnable() {
+                    @Override
+                    public void run() {
+                        MessageDoors.fetched("STORE", "/k@2", owner);
+                        named.add(MessageDoors.current() != null);
+                    }
+                });
+            }
+        });
+        callback.start();
+        Thread.sleep(300L);
+        assertTrue("it waits for the write in flight", callback.isAlive());
+        MessageDoors.stored("STORE", "/k@2", owner);
+        MessageDoors.storeEnded("STORE", store);
+        callback.join(5000L);
+        assertEquals("and the write names its work", Arrays.asList(true),
+                named);
+        long own = MessageDoors.storing("STORE");
+        MessageDoors.notified("Watcher", new Runnable() {
+            @Override
+            public void run() {
+                MessageDoors.fetched("STORE", "/k@3", owner);
+                named.add(MessageDoors.current() != null);
+            }
+        });
+        MessageDoors.storeEnded("STORE", own);
+        assertEquals(Arrays.asList(true, false), named);
+    }
+
     /** A WAKE or turn the recording did not make before x waits at the cut. */
     @Test(timeout = 20000L)
     public void aWakeTheRecordingDidNotMakeSleepsThroughThePrefix()
