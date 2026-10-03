@@ -13,8 +13,8 @@ import java.lang.annotation.Target;
  * code reads it -- a campaign's target is a class and a source line,
  * {@code exception_target:} in its target spec
  * (causynth.ExceptionTargetLineResolver) -- but the spec of a case without a
- * target.yaml is derived from it (tools/lib/annotated.py), and an ad-hoc
- * sweep counts a finding at a marked throw as that bug found again
+ * target.yaml is derived from it (tools/lib/annotated.py), and a sweep
+ * counts a finding at a marked throw as that bug found again
  * (tools/adhoc/findings.py).  The trees compile against it
  * (external-callers.txt).  Class-retained, no runtime behavior.
  */

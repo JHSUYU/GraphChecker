@@ -1,1 +1,0 @@
-exception_target: adhoc-migrate-target org.apache.solr.cloud.api.collections.MigrateCmd 100

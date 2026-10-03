@@ -4,7 +4,7 @@ A case directory under `experiments/<system>/` holds DECLARATIONS only:
 
 | file | what it declares |
 | --- | --- |
-| `case.sh` | per case id: the system's worktree (`repo`), the workload (`test_class`, `test_method`), the declared target (`target_occurrence`), the analysis `scope`, and optionally `loop_bounds`, `target_spec`, `classpath_test`, `workload_properties` (and Hadoop's `hadoop_javac`) |
+| `case.sh` | per case id: the system's worktree (`repo`), the workload (`test_class`, `test_method`), the declared target (`target_occurrence`), the analysis `scope`, and optionally `loop_bounds`, `target_spec` (and Hadoop's `hadoop_javac`) |
 | `workflow.properties` | the campaign's budgets and inputs |
 | `target.yaml`, `*.jsonl` | the target (`exception_target: <name> <binary class name> <source line> [<thrown type>]`, no tree rebuild), communication mappings, symbolic inputs, root domains, loop bounds |
 
@@ -14,26 +14,15 @@ bug's: its tree marks the bug's target throw with
 the spec from that marker (`tools/lib/annotated.py <system dir> <tree> <case
 id>`, the case id being `<case dir name>-<case arg>`, e.g. `hdfs-17899-bug1`)
 into `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`, so no line is kept by hand.
-An ad-hoc sweep counts a confirmed finding at a marked throw as that known bug
-found again (`tools/adhoc/findings.py --annotated`).
+A bug check is such a case; a sweep of them counts a confirmed finding at a
+marked throw as that known bug found again (`tools/adhoc/findings.py
+--annotated`).
 
 Everything executable is here, one copy for every case:
 
 ```bash
-lib/run.sh <case dir> <case id> build|config|validate|slice|record|campaign
+lib/run.sh <case dir> <case id> build|config|validate|campaign
 ```
-
-`slice` runs SEED's static half alone (the case's scope copied in, the seed
-analysis with the scope grown): the static artifacts an ad-hoc selection
-scores (`tools/adhoc/slice.sh`, `score.py`), with no workload run.  `record`
-pre-screens one workload for every target of the case's spec: one recording
-woven with their slices' skeletons and grown scope, each target aggregated
-on its own slice (`CAUSYNTH_STATIC_ROOT/<target name>/`, frozen into
-`targets/<target name>/`), and `runtime/record-summary.json`
-(`tools/adhoc/prescreen.sh`).  `campaign` with `CAUSYNTH_STATIC_ROOT` set is
-a batch campaign: that recording, then one campaign per activated target from
-PLAN on, in `targets/<target name>/` (an ad-hoc sweep's case,
-`tools/adhoc/sweep.sh`'s `STATIC_ROOT`).
 
 | script | role |
 | --- | --- |

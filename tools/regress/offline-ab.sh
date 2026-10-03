@@ -467,7 +467,7 @@ ab_side_env() {
   ab_root_domains=$(ab_cfg causynth_root_domains)
   ab_z3=${AB_Z3:-$(ab_cfg z3_bin)}
   ab_declared=$(ab_cfg declared_target_occurrence)
-  # A sweep's "first" is what PLAN resolved it to (campaign_plan).
+  # A declared "first" is what PLAN resolved it to (campaign_plan).
   [[ "${ab_declared}" != first ]] || ab_declared=$(jq -r '.target.occurrenceId' \
     "${ab_acc_it}/runtime_workflow_schedule_index.json")
 }

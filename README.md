@@ -54,7 +54,7 @@ The owner's rulings of the same evening (binding; also in §1):
    selection (sites, workloads, coverage, reach, select, targets, slice, score, cover, prescreen, buildkey,
    batch, nightly, funnel), `run_engine.sh`'s batch campaign, `plan.PlanUnion`, the 155/127 sweep checks, the
    20+20 pick lists. Kept: `sweep.sh` (a list of case ids, one campaign each), `fanout.sh`, `triage.py`,
-   `findings.py`, `tools/lib/annotated.py`. Branch `retire-adhoc-pipeline` (§0.4) does it.
+   `findings.py`, `tools/lib/annotated.py`. Done on branch `retire-adhoc-pipeline` (§0.4).
 3. **A self-written cluster test may be a bug's workload** when the bug is truly high quality ("如果这个bug本身
    真的非常高质量。我允许你自己一个cluster based unit test for it…当然，bug质量要是不高就算了").
 4. **IO rule**: a bug whose causal chain crosses file or HDFS-namespace state (where symbolic propagation stops)
@@ -100,11 +100,11 @@ checks per system) is superseded by this one; Phase 1's eleven cases stay the re
 - **Cleanup done 2026-10-02**: VM images w4e/f/g; the whole home `~/gc-out` (942 old runs); every `/bigtemp`
   round output but V7/V8/V9; `ab/` gate outputs; stale analyses and the ADHOC-INFRA spec; `w5-scratch`; stale
   worktrees under `wt/` and `.claude/worktrees/`; 30 snapshots. 14 obsolete unmerged branches are archived in
-  `/bigtemp/vnr3ne/handover/archived-branches-2026-10-02.bundle` and may now be deleted (§0.4). NOT done yet:
-  deleting the merged branches and the remaining clean agent worktrees (nine: `agent-ab09dadd…`,
-  `agent-abcc5c58…`, `agent-acff2eef…`, `agent-af1a4b57…`, `agent-af53ada5…`, `agent-af77ecb5…`,
-  `agent-afab1643…`, `lock-infra`, `loopbound-scope`, all clean), and the repo-level deletion
-  (`retire-adhoc-pipeline`).
+  `/bigtemp/vnr3ne/handover/archived-branches-2026-10-02.bundle`.
+- **Cleanup done 2026-10-03**: 62 branches deleted (§0.4: 20 merged into main, 25 merged `worktree-agent-*`,
+  the 14 archived in the 2026-10-02 bundle, 2 archived in `handover/archived-branches-2026-10-03.bundle`, one
+  WIP port) and the clean worktrees of finished agents under `.claude/worktrees/`; the repo-level deletion is
+  branch `retire-adhoc-pipeline`.
 
 ### 0.3 The bug_study verdict: 60 bugs, what qualifies
 
@@ -151,43 +151,42 @@ executor (IDENTITY.md §6 claims), compare the claims' starters, not the consume
 occurrences on one consumer thread are concurrent when their starters are; CONFIRM then must hold the queue
 submission order (ORDER edges on the submitters).
 
-### 0.4 Branches (exact heads; WIP = uncommitted, saved under `/bigtemp/vnr3ne/handover/`)
+### 0.4 Branches (heads at 2026-10-03; WIP = uncommitted, saved under `/bigtemp/vnr3ne/handover/`)
 
-Branches of the 2026-10-02 night (all based on main `c2c920098` unless said):
+`main` = `770a64c8f`, fast-forwarded after round V14 (all twelve PASS): `96685608f` (`symbolic-scope`) +
+`system-zookeeper` (`df2155720`) + `fix-recorded-address` (`a43a5b312`) + `vm-streams` (`fe68c3409`). Merged and
+kept for now: `system-zookeeper`, `vm-streams` (its worktree `wt/gc-vm-streams`), `main-vs` (= main).
 
 | branch | head | content | state / next step |
 | --- | --- | --- | --- |
-| `symbolic-scope` | `95ab67bd6` + WIP `symbolic-scope-wip.patch` (12 files: ConfigRoots, StaticSymbolicSourceDiscovery, ActiveRegion, ConcolicRegionRuntime, RootMint, tests, STATUS/PIPELINE/SYMBOL-SCOPE/README) | the port of R1-ROOTS WP-D + WP-F1 without WIRE-CODEC W6, from `r1-roots-wpd-wpf1`/`gc/config-roots-soundness`: root rows state their category (a fault flip site only reaches a FAULT root; `result.json` names moved roots' categories); COMPOSE enumerates integral alternatives nearest first; configuration values are roots by category (`CONFIG:<key>`); SEED demands roots from the throw's path guards (`root_demand.jsonl`); a concrete anchor demands its pre-decision reads the root demand found; a configuration getter is a root, not a scope frontier. WIP = the soundness commit `c520f77aa`'s engine parts (one key one shape, clamps, overwritten field / unnamed key named) | finish the WIP, `mvn -q -o package` + shell test, offline gate on V8/V9 (expected: SEED.static/PLAN differ; claims and moved roots unchanged except hdfs-17960's root name `CONFIG:dfs.namenode.snapshot.deletion.ordered` if the engine mints it before the tree hook), one live round of the 11, merge. TOP PRIORITY |
-| `state-pairing` | `94e1390fc` + WIP `state-pairing-wip.patch` (experiments/hadoop/hdfs-bugs/*, report.py) | `fix-no-root`'s commits carried onto main (NO_ROOT fixes, final containers as cells, D0 by test, Writers_W(l)'s writer at version 0) as the base for the first confirmed STATE_PAIRING witness (HDFS #15) | apply WIP + the tree's WIP; build the HDFS bugs tree (`MAVEN_REPO_LOCAL=/bigtemp/vnr3ne/m2/hdfs-bugs`), run the workload 5x natively, campaign, fix generally what stands between the run and a confirmed STATE witness (is the detector iteration an occurrence -- a WAKE turn after its sleep, attributed to the DataNode; is the field a READ_SITE; does the closure demand the version-0 writer; does CONFIRM realize read-before-reconfig), hand-check the `.smt`. Supersedes branch `fix-no-root` (and its HB-edges WIP patch, not yet applied) |
-| `system-zookeeper` | `95d54763f` | ZooKeeper as the third system: `experiments/zookeeper/{system.sh,build.sh,classpath.py}`, `experiments/zookeeper/zk-bugs/` (quota-init, election-offer), report.py's expected mechanisms; the workload runner answers a Jupiter `TestInfo` parameter | tree `gc/zk-unified` built, both workloads pass; snapshot `~/gc-run/zk1` was being built. Next: campaign to IMPORT (`CAUSYNTH_CAMPAIGN_STOP_AFTER=IMPORT`) for each, then full campaigns; election-offer needs the serving-thread rule (§0.3) |
-| `solr-bug-reindex` | `4d3f0fb07` | `experiments/solr/solr-bugs/` (case `reindex-cleanup` on tree `gc/solr-bugs`), report.py | rerun SB1 (`GC_OUT=/bigtemp/vnr3ne/gc-out/solr-bugs`); the trace aggregation needs 4 GB (it re-ran itself at 4096 MB; check whether a measured need belongs in `run_engine.sh campaign_engine_need_mb`) |
-| `system-hbase` | `301fa2455` (no commit) + WIP `system-hbase-wip.patch` (experiments/hbase/*, RootCatalog's clock rule through an interface delegate + RootCatalogTest, docs, external-callers) | HBase as the fourth system | apply WIP; Phase A: build `gc/hbase-unified` on JDK 8 (`/bigtemp/vnr3ne/m2/hbase`), run `TestSplitWALProcedure#testMasterRestart` natively, then a campaign to IMPORT to measure recording and seed replay on the VM (gate ~1 h); Phase B/C per §0.3 |
-| `pairing-on-main` | `efaa032d7` + WIP `pairing-on-main-wip.patch` (ClaimPolicy, ComposeMain, ComposedFamilies, Composer, GapKind, SessionReader, SlotTable, Confirmation, RowRuntime) | main + `dtx-on-main` + `fix-11741-pairing`, with the review rework (#1 CONFIRM's substitution must compare value and attempt/site index, file a DIAGNOSTIC gap per substitution, only where the arm's session has ADDRESS_UNSTABLE; #2 an `answered` bit so the session state does not depend on landing order) half done in the WIP | finish #1/#2, offline check on `accept-V7-11741` and the gate, snapshot with the HDFS cases on the dtx tree (§3.7), ONE live round (11741 twice), merge, then move `gc/hdfs-unified` to `gc/hdfs-unified-dtx` |
-| `retire-adhoc-pipeline` | `d1045761b` | the pipeline deletion of §0.1-2 (342 files, -4199 lines) | README edits were not done; finish (README "Run an ad-hoc sweep" -> "Run the bug checks", repository map), `git grep` for dangling references, build + shell test, offline gate (solo campaigns identical), merge |
-
-Older branches (from the 2026-10-02 day handover):
-
-| branch | head | content | state |
-| --- | --- | --- | --- |
-| `dtx-on-main`, `fix-11741-pairing` | `e3b2efb1f`, `9fd01c95f` | DataTransfer messages and doors; 11741's balancer race | carried by `pairing-on-main`; delete once it merges |
-| `fix-no-root` | `2e931192e` | NO_ROOT fixes + version-0 writer | carried by `state-pairing` (its HB-edges WIP `fix-no-root-hb-edges-wip.patch` not yet) |
-| `fix-hdfs-seed-stalls` | `bfd7492bd` | one rule set for seed-replay stalls | needs a live round; its evidence (b20h) is deleted with the retired checks: validate on the 11 cases and the new checks |
+| `retire-adhoc-pipeline` | rebased onto main `770a64c8f` | the pipeline deletion of §0.1-2 (342 files, -4199 lines), README "Run the bug checks" and repository map; `experiments/zookeeper/system.sh` without the retired keys | build + shell test green, offline gate on V14 (the 11 + `zk-bugs-quota-init`) identical; merge with a live subset round (it edits `run_engine.sh`) |
+| `state-pairing` | `aa961ff78` | `fix-no-root`'s commits carried onto main (NO_ROOT fixes, final containers as cells, D0 by test, Writers_W(l)'s writer at version 0), case `hdfs-bugs-slowdisk-zero` (tree `gc/hdfs-bugs`), launch-round's `CAUSYNTH_CAMPAIGN_STOP_AFTER` | Phase A (rounds HB1/HB2, `gc-out/hdfs-bugs/`): INCONCLUSIVE on NO_ROOT_REACHES_ANCHOR and ADMISSION_GAP at `chooseVolume`; the detector's turns are occurrences already (attributed to the DataNode). Next: design `codemap-2026-10-02/08-hdfs15-design.md` Parts 1-2 |
+| `preWindow-loop-root` | `b3096d9b7` | holds `seed-functional` (`3a5978315`: java.util.stream pipelines in the SEED slice, a campaign may stop after SEED) | agent A1, live |
+| `solr-bug-reindex` | `161bdff92` | `experiments/solr/solr-bugs/` (case `reindex-cleanup`, tree `gc/solr-bugs`) | agent A2, live |
+| `zk-election-offer` | `a21d00970` | ZooKeeper #05 (`zk-bugs-election-offer`) | agent A5, live |
+| `system-hbase` | `11ddd06e1` | HBase harness (`experiments/hbase`, case `hbase-bugs-master-active-time` on `gc/hbase-unified`); an interface delegate's clock is a CLOCK root when every implementation in scope is one (`RootCatalog#dispatchesToClocks`) | Phase A done (Java 8 builds and runs, round HBA1 in `gc-out/hbase-bugs/`); parked on three blockers: the old master's activation time is written before the window (no root); a WAKE turn's k counts arrivals of every thread at one wait site (seed replay stalls); async start chains nest without bound (contexts up to 686 KB). When it resumes, its `experiments/hbase/system.sh` drops the keys the pipeline retirement retired (`system_cluster_class`, `system_roots`, `system_package`, `system_node_class`, `classpath_test`) |
+| `pairing-on-main` | `efaa032d7` + WIP `pairing-on-main-wip.patch` (in worktree `agent-aee27b43…`) | main + `dtx-on-main` + `fix-11741-pairing`, with the review rework (#1 CONFIRM's substitution must compare value and attempt/site index, file a DIAGNOSTIC gap per substitution, only where the arm's session has ADDRESS_UNSTABLE; #2 an `answered` bit so the session state does not depend on landing order) half done in the WIP | finish #1/#2, offline check on `accept-V7-11741` and the gate, snapshot with the HDFS cases on the dtx tree (§3.7), ONE live round (11741 twice), merge, then move `gc/hdfs-unified` to `gc/hdfs-unified-dtx` |
+| `dtx-on-main`, `fix-11741-pairing` | `e3b2efb1f`, `9fd01c95f` + WIP `fix-11741-pairing-review-rework-wip.patch` (in worktree `agent-a9f2c23f…`) | DataTransfer messages and doors; 11741's balancer race | both contained in `pairing-on-main`; delete once it merges |
+| `fix-no-root` | `2e931192e` + WIP `fix-no-root-hb-edges-wip.patch` and its four new files `fix-no-root-hb-edges-wip-untracked.patch` (in worktree `agent-a5fe8997…`) | NO_ROOT fixes + version-0 writer; HB-edges WIP | commits carried by `state-pairing`; the HB-edges WIP is not |
+| `fix-hdfs-seed-stalls` | `bfd7492bd` | one rule set for seed-replay stalls | needs a live round on the 11 cases and the new checks |
 | `replay-random-draws` | `d656860b2` | every random draw recorded and replayed | on `dtx-on-main`; needs a live round |
 | `fix-replay-equivalent-context` | `71fedd858` | a root admitted by its address alone | rebase after `pairing-on-main` |
 | `perf-expr-store` | `dd89bc65b` | no whole-run map keeps a replay expression alive | verify (heap, seed rows unchanged) |
 | `perf-vm-readout`, `vm-ref-compare` | `3cbea0bee`, `bba1ee25d` | VM read-out per activation; reference compare with an enum constant | parked; each needs a VM review (images `vm-w4i`, `vm-nr41`) |
 | `worktree-agent-a49c8bf5715a00c40` | `90ca7724e` | WIRE-CODEC W3/W6 + the first WP-D integration | deferred; the source of W3/W6 when they are taken up |
-| `r1-roots-wpd-wpf1`, `gc/config-roots-soundness` | `cb4a4c3e7`, `c520f77aa` | the original WP-D/WP-F1 work | source of `symbolic-scope`'s port; delete after it merges |
 
-Delete (merged into main): `admission-relevance`, `agent-11741-{L1,anchor,refine,regress,timeline}`,
-`fix-17960-unstated-value`, `fix-a40h2-stopped`, `fix-adhoc-crashes`, `fix-anchor-identity-replay`,
-`fix-confirm-flakiness`, `fix-confirm-flakiness-watch`, `loopbound-scope`, `perf-demand-tracking`,
-`perf-slow-replays`, `phase1-lock`, `r1-roots-wp0-wpe`, `stream-in-flight-cap`, `vm-bcp0-crash`, and every merged
-`worktree-agent-*`. Delete (archived in the bundle): `adhoc-pick2`, `datatransfer-doors`,
-`fix-18413-watcher-deliveries`, `fix-hdfs-seed-stalls-pre-p219`, `fix-no-root-nodtx`,
-`fix-replay-equivalent-context-r2`, `fix-solver-string-blowup`, `fix-unattested-hoff-arm`, `lock-infra`,
-`schedule-stall-planned`, `schedule-stall-release`, `worktree-agent-a2a3969b54657da82`,
-`worktree-agent-a3b05c9883ee81a4b`, `worktree-agent-a92b9448d2b627d43` (remove their worktrees first).
+Deleted 2026-10-03 (each verified merged into main, or identical to its head in
+`/bigtemp/vnr3ne/handover/archived-branches-2026-10-02.bundle`): merged -- `admission-relevance`,
+`agent-11741-{L1,anchor,refine,regress,timeline}`, `fix-17960-unstated-value`, `fix-a40h2-stopped`,
+`fix-adhoc-crashes`, `fix-anchor-identity-replay`, `fix-confirm-flakiness`, `fix-confirm-flakiness-watch`,
+`loopbound-scope`, `perf-demand-tracking`, `perf-slow-replays`, `phase1-lock`, `r1-roots-wp0-wpe`,
+`stream-in-flight-cap`, `vm-bcp0-crash`, and 25 merged `worktree-agent-*` (all but the live agents'
+`aea16c87…`, `a6cdfa85…`); bundle -- `adhoc-pick2`, `datatransfer-doors`, `fix-18413-watcher-deliveries`,
+`fix-hdfs-seed-stalls-pre-p219`, `fix-no-root-nodtx`, `fix-replay-equivalent-context-r2`,
+`fix-solver-string-blowup`, `fix-unattested-hoff-arm`, `lock-infra`, `schedule-stall-planned`,
+`schedule-stall-release`, `worktree-agent-{a2a3969b…,a3b05c98…,a92b9448…}`. Then, on the lead's word: `symbolic-scope`
+(merged), `symbolic-scope-wip-p1` (a WIP full port of `d7d7aa216`), and `r1-roots-wpd-wpf1`, `gc/config-roots-soundness`
+(the port's sources, archived in `handover/archived-branches-2026-10-03.bundle`).
 
 ### 0.5 TODO, in order
 
@@ -205,8 +204,7 @@ does not merge until fixed (§1). The new checks join the round once they pass.
    new), `zk-bugs-quota-init`, `hdfs-bugs-slowdisk-zero`, `zk-bugs-election-offer`, `hbase-bugs-master-active-time`
    (HBase first needs Phase A feasibility). Each new check: workload passes natively 5x; campaign to IMPORT; full
    campaign; read the chain against the code; add it to `experiments/accept/report.py` and STATUS "Acceptance".
-3. **Merge the pipeline retirement** (`retire-adhoc-pipeline`) and finish the repo cleanup (§0.2's NOT-done list;
-   delete the branches of §0.4).
+3. **Merge the pipeline retirement** (`retire-adhoc-pipeline`, ready; the repo cleanup is done, §0.2).
 4. **README TODO carried over**: `pairing-on-main` (the 11741 balancer race + DataTransfer doors; then move the
    HDFS tree to dtx), then one round each: `fix-hdfs-seed-stalls`, `replay-random-draws`,
    `fix-replay-equivalent-context` (rebased), `perf-expr-store`.
@@ -242,7 +240,7 @@ The owner is a PhD student doing academic research on open-source system stabili
 owner in **Chinese**, answer a direct question first (before continuing the work), keep answers
 short. The design decisions are the lead's (the agent coordinating the work), made after reading
 the code; implementers follow a written design. Decisions that change what the owner asked for
-(the pick lists, the recording window, what counts as a root) go to the owner with a
+(the bug checks, the recording window, what counts as a root) go to the owner with a
 recommendation.
 
 **The 2026-10-02 goal's rulings** (§0.1 has them verbatim)
@@ -321,7 +319,7 @@ recommendation.
   Solr/HDFS trees use `git -c user.name="Zhenyu Li" -c user.email=zhl136@ucsd.edu`.
 - Never edit the owner's dotfiles. Never rebuild a tree or edit a snapshot a campaign runs on.
   Never remove a `~/gc-run/p<N>` a running round uses: `tools/rounds/snapshot-gc.sh` removes one
-  only when no lock and no process on any lift names it.
+  only when no process on any lift names it.
 - Solr's test SecurityManager may be changed if it interferes (owner's permission); today it is
   off via `-Dtests.useSecurityManager=false`.
 
@@ -458,8 +456,8 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | z3 | `~/.local/bin/z3` (4.14.1) |
 | concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-streams2/j2sdk-image`** (vm-w4h + the java.util.stream model, branch `vm-streams` fe68c3409, merged 770a64c8f after round V14 12/12; a jar before 770a64c8f refuses its STATE_COLLECT versions by name). `vm-w4h` (the previous one: vm-w4e + the `frame::metadata_do` fix + caches cleared when metadata is freed + demand-driven tracking) serves rounds up to V13. Parked, unreviewed: `vm-w4i` (per-activation tracked-location read-out, branch `perf-vm-readout`; a jar from that branch refuses vm-w4h by name), `vm-nr41` (reference-compare identity, branch `vm-ref-compare`). Older images are deleted (2026-10-02). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
-| HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) and the ad-hoc sweep -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
-| Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406, solr-18413 and solr-adhoc name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
+| HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
+| Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406 and solr-18413 name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | ZooKeeper tree | `/bigtemp/vnr3ne/wt/zookeeper-unified` (branch `gc/zk-unified` on `branch-3.9`, a worktree of `~/zookeeper`): the adapter (`CausynthZk`, `CausynthZkCluster`), the `zk-bugs` cases' target markers and the quota workload. Maven build into its own repository `/bigtemp/vnr3ne/m2/zookeeper` (`experiments/zookeeper/build.sh`, which installs the GraphChecker jar there; never `~/.m2`). Build a case's workload before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/zookeeper/zk-bugs <case> build`. Its only remote is apache/zookeeper: never push it. |
 | HBase and bug trees | `gc/hbase-unified`, `gc/solr-bugs`, `gc/hdfs-bugs` under `/bigtemp/vnr3ne/wt/` (§0.2); clone `~/hbase`; private Maven repos `/bigtemp/vnr3ne/m2/<name>` |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
@@ -513,8 +511,8 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
   host first (PIPELINE §7.7).
 - A round's cases explore uncapped (`stream_max_in_flight=0`): each keeps as many obligations in
-  flight as the hosts admit, so one case alone may take the whole cluster. An ad-hoc sweep caps
-  them so the cases it runs at once share it: `sweep.sh` gives every case
+  flight as the hosts admit, so one case alone may take the whole cluster. A sweep ("Run the bug
+  checks") caps them so the cases it runs at once share it: `sweep.sh` gives every case
   `CAUSYNTH_STREAM_MAX_IN_FLIGHT` = the lifts' obligation slots for its `obligation_memory_mb`
   (`run_engine.sh` `campaign_pool_slots`: on each lift as many replays as fit under the 70 %
   ceiling at their charge, at most its cores; the ten lifts hold 30 of 6000 MB), and each capped
@@ -534,7 +532,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   `probe.sh` (z3 per alternative path, 600 s each) can add up to 30 min before the summary row is
   written; it is reported, not a gate.
 - **How the last lead used the servers:** one round at a time, at most ~6–8 cases at once (batch 1
-  = six cases, then the rest as cases finish); ad-hoc sweeps with 1 head per host
+  = six cases, then the rest as cases finish); sweeps with 1 head per host
   (`sweep.sh … 1`); agents' verification runs in their own `GC_OUT`; every start through the ledger
   (≤ 70 % memory per lift); `lift11` (the owner's machine, where the lead session runs) works but
   never heads; builds with `onlift.sh -g 10`.
@@ -567,8 +565,8 @@ breaks a campaign's time down by stage.
 
 ### 3.7 A snapshot for a branch that needs another tree
 
-There is no override for a case's tree: each `experiments/<system>/<case>/case.sh` names its `repo=` (and
-`experiments/hadoop/adhoc/tree` the ad-hoc HDFS tree). To validate a branch that needs a different tree
+There is no override for a case's tree: each `experiments/<system>/<case>/case.sh` names its `repo=`. To
+validate a branch that needs a different tree
 (today: `dtx-on-main` and everything on it needs `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`), edit those lines in the
 **snapshot only**, uncommitted, never on main:
 
@@ -578,7 +576,6 @@ cd ~/gc-run/p<N> && git merge --no-ff -q <branch> -m "Validation merge: <branch>
 sed -i 's#repo=/u/vnr3ne/hadoop-hdfs-unified$#repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx#' \
   experiments/hadoop/hdfs-17967/case.sh experiments/hadoop/hdfs-17899/case.sh \
   experiments/hadoop/hdfs-17960/case.sh experiments/hadoop/hdfs-17897/case.sh
-sed -i 's#^/u/vnr3ne/hadoop-hdfs-unified$#/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx#' experiments/hadoop/adhoc/tree
 /bigtemp/vnr3ne/bin/onlift.sh -g 10 bash -c 'cd ~/gc-run/p<N> && mvn -q -o package && bash src/test/shell/run_engine_campaign_helpers_test.sh'
 ```
 
@@ -658,8 +655,8 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
   its tree marks the bug's target throw with `@CausynthExceptionTarget("<case id>[,<case
   id>...]")` (the case id is `<case dir>-<case arg>`, e.g. `hdfs-17899-bug1`), and `run.sh`
   derives the spec from the marker (`tools/lib/annotated.py <system dir> <tree> <case id>`, into
-  `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`). An ad-hoc sweep counts a confirmed finding at a
-  marked throw as that known bug found again (`findings.py --annotated`, `nightly.sh`);
+  `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`). A bug check is such a case ("Run the bug
+  checks");
 - optionally `communication-mappings.jsonl` (`WIRE_FLOW` rows; the fault doors are the engine's
   library catalog, `docs/design/SYMBOL-SCOPE.md` §4.2), `root-domains.jsonl` and
   `loop-bounds*.jsonl`.
@@ -673,8 +670,8 @@ export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-streams2/j2sdk-image
 CASES=hdfs-17960 bash experiments/accept/accept.sh                  # campaign + probe + report
 ```
 
-A case id names its experiment by its longest prefix, for example `hdfs-17899-bug1`,
-`solr-18413`, `adhoc-<check>.<workload>` or `solr-adhoc-<check>.<workload>`.
+A case id names its experiment by its longest prefix, for example `hdfs-17899-bug1` or
+`solr-18413`.
 
 `accept.sh` runs the campaign, a z3 probe and `report.py`. `experiments/accept/README.md` says
 what PASS means. `report.py`'s table names the nine HDFS cases, the two Solr cases and the two
@@ -705,107 +702,38 @@ charge is granted the excess, charged on the ledger, unless the host's real use 
 `campaign_host_try_grow`): what the ledger promised other starts is no reason to end it. A head's "waiting for memory for a head step" line goes to stderr
 (its stdout is often an artifact).
 
-## Run an ad-hoc sweep
+## Run the bug checks
 
-An ad-hoc check is a guarded `throw` that a system's existing cluster test reaches and passes.
-A case is one check on one workload (`<check>.<workload>`), or a batch of checks on one workload
-(`B<n>`, a row of `batches.tsv` with its target spec `targets/B<n>.yaml`, `batch.sh`). The
-experiments are `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds
-`checks.tsv`, `batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A
-check's slice starts from the classes its experiment's communication mappings name (`system.sh`'s
-`system_mapping_scope`) and its own class, and grows the scope from there; the library doors'
-classes join it once a class of that scope calls them. A sweep runs batches:
-given `causynth_static_root` (`sweep.sh`'s `STATIC_ROOT`), a batch campaign takes each check's
-slice from the build, records its workload once for all its checks, plans each check, replays
-one seed per group of checks whose plans agree, and runs each check's campaign from EXPLORE on,
-all at once, in `out/<case>/targets/<check>/` (PIPELINE §2b).
-
-**The picks (Phase 2) are run directly, one campaign per check**, not through the nightly chain
-below. Cases are `<check>.<workload>` ids (the pick lists of §0.4):
+A bug check is a real historical bug declared like a named case: a case directory (above) without
+a `target.yaml`, whose tree marks the bug's throw with `@CausynthExceptionTarget("<case id>")`, run
+as one campaign. A list of case ids, one per line, runs through `tools/adhoc/sweep.sh`: one
+campaign per case, at most `heads-per-host` heads on each lift and every case's obligations on all
+of them, every start through `fanout.sh` and the host ledger (§3.4); each case gets
+`CASE_TIMEOUT_SECONDS` (5400 s by default) and `PRUNE=1`, and a sweep started again resumes. Give
+a sweep its own `GC_OUT`, so that `findings.py` reads that sweep's cases only (the host ledger
+stays the cluster's one):
 
 ```bash
-cd ~/gc-run/p<N>        # a built snapshot of main (for HDFS checks on another tree, §3.7)
-GC_OUT=/bigtemp/vnr3ne/gc-out VM_IMAGE=/bigtemp/vnr3ne/vm-streams2/j2sdk-image setsid nohup \
-  bash tools/adhoc/sweep.sh ~/gc-run/p<N> <round> <cases-file> 1 > /bigtemp/vnr3ne/gc-out/sweep-<round>.log 2>&1 < /dev/null &
-GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
-GC_OUT=/bigtemp/vnr3ne/gc-out python3 tools/adhoc/triage.py <round>     # class, stage, reason per check
+cd ~/gc-run/p<N>        # a built snapshot of main (§3.4; a case on another tree, §3.7)
+out=/bigtemp/vnr3ne/gc-out/checks-<round>
+GC_OUT=${out} VM_IMAGE=/bigtemp/vnr3ne/vm-streams2/j2sdk-image setsid nohup \
+  bash tools/adhoc/sweep.sh ~/gc-run/p<N> <round> <cases-file> 1 > ${out}-sweep.log 2>&1 < /dev/null &
+GC_OUT=${out} tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
+GC_OUT=${out} python3 tools/adhoc/triage.py <round>         # class, stage, reason per case
+python3 tools/adhoc/findings.py ${out} --ledger /bigtemp/vnr3ne/gc-out/findings/ledger.jsonl \
+  --annotated experiments/<system> <tree>                    # confirmed witnesses by mechanism
 ```
 
-Case `n` of the file writes `$GC_OUT/accept-<round>-<n>` (`sweep-<round>-cases.tsv` maps n to the id); each
-case has `CASE_TIMEOUT_SECONDS` (5400 s by default); the sweep waits for head room by itself (a quiet log at
-the start is the ledger, not a hang). Triage classes: CONFIRMED, REFUTED (a real false positive: keep it),
-NO_WITNESS, NO_ROOT, STOPPED (stage + reason).
-
-`tools/adhoc/nightly.sh <system>/<experiment> [date]` runs the whole chain below once per night
-(one frozen, comparable sweep, never stopped for an engine fix) into
-`$GC_OUT/nightly/<date>-<experiment>/`: it freezes the newest commit tagged `regress-pass-*` (an
-annotated tag whose message holds a line `vm=<image>`, the VM the commit passed on; placed by
-hand after an acceptance round: `git tag -a regress-pass-<date> -m vm=<image> <commit>`) as
-`~/gc-run/n<date>-<experiment>`, locks it in `$GC_OUT/snapshots-in-use/`, writes `manifest.json`
-(commit, jar, VM, tree, build key), runs steps 1–14 with the caches below, runs a case lost to the
-infrastructure once more (DEAD, or STOPPED by a full disk or quota, ssh, or the case timeout),
-and writes `triage.tsv`, `findings.tsv` and `report.md` (`funnel.py`: each step's count, and the
-kept checks' outcomes beside the calibration tail's). `tools/rounds/snapshot-gc.sh <snapshot>...`
-removes a snapshot only when no lock and no process on any lift names it (`tools/lib/alive.sh`).
-
-The build key names what a static slice and a pre-screen recording depend on:
-`tools/adhoc/buildkey.sh <experiment>` prints `<experiment>-<12 hex>`, a digest of the jar's
-entries (stable across clean rebuilds of one commit), the tree's commit (a tree with uncommitted
-tracked changes is refused) and the scope declarations (`system.sh`, `case.sh`,
-`workflow.properties`, `communication-mappings.jsonl`, `loop-bounds.jsonl`). `slice.sh` and
-`prescreen.sh` compute it: a new jar, tree or scope is a new key, under which every check is
-sliced again, and the same build finds its slices and recordings again.
-
-The steps, in order (`tools/adhoc/`; each script's header documents its arguments). Steps 1–4
-are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree commit>/`):
-
-1. `workloads.py <system-dir> <repo>`: the system's cluster tests (`workloads.tsv`): every
-   JUnit 4 or Jupiter `@Test` method, declared or inherited, that the engine's runner can call,
-   of a test class that names the system's cluster class (`system_cluster_class`). HDFS: 4176
-   tests; Solr: 606.
-2. `sites.py <system-dir> <repo>`: every guarded `throw new` in the system's sources.
-3. `coverage.sh`, fanned out by `fanout.sh`: one JaCoCo run per workload test, which writes
-   `<w>.lines` and a `.node` marker and exits with the test's own status.
-4. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
-5. `select.py <sweep-dir> <experiment> declare [tree]`: declare every reached check a sweep can
-   run in `checks.tsv` (a new one as `<Class>-<throw line>`) and print one
-   `<check>.<workload>` per check, its fastest usable workload.
-6. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
-   line. Nothing in the tree is edited or rebuilt.
-7. `slice.sh <experiment> <cases-file>`: the engine's own static slice of each check
-   (`run.sh … slice`, ~70–100 s, 3.2 GB) and its score (`score.py`), in
-   `$GC_OUT/static/<key>/<check>/` (`key.json` there says what the key digests), fanned out over
-   the lifts; a check the key has a score for is kept. A check is kept when a root (clock, fault
-   door, READ placeholder, field another region stores, wire crossing) lies within 4 edges of its
-   fatal operands.
-8. `select.py <sweep-dir> <experiment> rank $GC_OUT/static/<key> <cases-file>`: `selected.jsonl`
-   (kept checks, best score first, at most three per class, plus the calibration tail: every
-   twentieth dropped check, 5 %, the same ones every night, which measures what the selection
-   drops).
-9. `cover.py <sweep-dir> <experiment> jobs [16] [2]`: `prescreen-jobs.tsv`, a greedy cover of the
-   selected checks by the tests that reach them, at most 16 checks per recording, each recording
-   named by its workload and a digest of its checks.
-10. `prescreen.sh <experiment> <sweep-dir>/prescreen-jobs.tsv`: one recording per batch woven
-    for every check of it (`$GC_OUT/prescreen/<key>/<batch>/runtime/record-summary.json`: each
-    check's ACTIVATED or refusal; a batch the build recorded already is kept). Pairs not in the
-    recording window are dropped here instead of dying at SEED (WP2 measured ~35 %, while a check
-    whose region folds into another check's was still lost as `NOT_IN_WINDOW`; each check is
-    now aggregated on its view of the merged skeletons).
-11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`, one batch
-    case per workload with the checks it activated (at most four).
-12. `VM_IMAGE=<image> STATIC_ROOT=$GC_OUT/static/<key> sweep.sh <snapshot> <round>
-    <sweep-dir>/cases.txt [heads-per-host]`: one campaign per batch over all ten lifts, `PRUNE=1`, 5400 s per case;
-    restartable. The cases exploring at once share the lifts' obligation slots
-    (`stream_max_in_flight`, §3.4). A batch records once, plans each check, and seed-replays each group of checks
-    whose plans agree once (`out/<batch>/schedule/groups/`); each check explores on its own.
-13. `triage.py <round> [gc-out]`: outcome class per case, and per check of a batch case
-    (`<case>/<check>`): CONFIRMED, CONFIG_ONLY (confirmed, every moved root a configuration),
-    REFUTED, NO_ROOT, NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING; `gc-out` defaults to
-    `gc-env.sh`'s `GC_OUT`.
-14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
-    one row per mechanism among the confirmed witnesses (`findings.tsv`), weighted by kind,
-    mediation and (1 + the rate at which REPRODUCE reproduced it natively at its anchor), the
-    configuration-only ones last; the ledger marks each new, known or dismissed.
+Case `n` of the file writes `$GC_OUT/accept-<round>-<n>` (`sweep-<round>-cases.tsv` maps n to the
+id); the sweep waits for head room by itself (a quiet log at the start is the ledger, not a hang).
+`triage.py` classes each case: CONFIRMED, CONFIG_ONLY (confirmed, every moved root a
+configuration), REFUTED (a real false positive: keep it), NO_ROOT, NO_WITNESS, STOPPED (stage and
+reason), DEAD, RUNNING, PENDING. `findings.py` writes `findings.tsv`, one row per mechanism among
+the confirmed witnesses (the target site, the finding kind and each moved root's kind, site, node
+role and context), weighted by kind and native reproduction (REPRODUCE), the configuration-only
+ones last; the ledger marks each new, known or dismissed (`dismissed.tsv` beside it), and
+`--annotated` names the known bug whose marked throw a witness's campaign declared: a check that
+found its own bug again. Hand-check every CONFIRMED witness against the code.
 
 ## Outputs
 
@@ -819,7 +747,6 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
 | `out/<case>/schedule/iteration-0000/` | `execution_task_plan.jsonl`, `concolic_region_plan.jsonl`, `recorded_schedule.jsonl`, `sessions/<id>/`, `obligations-<NNNN>/` (per planner round: one worker directory per obligation), `obligation_results.jsonl`, `exploration.json`, `witness-attempts/` |
 | `…/sessions/<id>/` | one replay's rows: `activations`, `decisions`, `reads`, `writes`, `exports`, `attaches`, `roots`, `targets`, `gaps`, `schedule` (`.jsonl`), `expressions.jsonl`, `manifest.json` |
 | `out/<case>/schedule/final/` | `result.json`, `claim.json`, `gaps.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `reproduce.json`, `run-manifest.json` |
-| `out/<batch>/targets/<check>/` | a batch case's check: its frozen slice, its region plan (`runtime/`), `campaign.log`, and its campaign root `schedule/` laid out as above; the batch's one recording and `runtime/record-summary.json` are in `out/<batch>/` |
 
 A flip query can be re-solved by hand with `z3 -smt2 obligation_query.smt2`.
 
@@ -849,18 +776,17 @@ third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/sh
                                   interpreter/bytecodeInterpreter.cpp) and its smoke tests
 experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
-experiments/hadoop/, experiments/solr/   per-system scripts, cases, ad-hoc experiments
+experiments/hadoop/, experiments/solr/   per-system scripts and cases
 tools/lib/                        gc-env.sh (GC_OUT, host ledger, LIFTS for every tool), alive.sh
                                   (which runs a process on any lift still names), heads.sh (a
                                   case's configuration, its head's weight and
                                   room, and which host heads it)
 tools/rounds/                     launch, monitor and stop campaigns on the lifts; snapshot-gc.sh
-tools/adhoc/                      ad-hoc check discovery, build key, slicing, selection, pre-screen,
-                                  sweeps, the nightly, triage, findings
+tools/adhoc/                      sweep.sh (a list of cases over the lifts), fanout.sh, triage.py,
+                                  findings.py
 tools/regress/                    offline-ab.sh: the offline merge gate
-tools/analysis/                   occurrences.py (a selector from a discovery log), timeline.py (where a
-                                  campaign's wall time went), rootcov.py (roots and symbolic
-                                  predicates per campaign)
+tools/analysis/                   timeline.py (where a campaign's wall time went), rootcov.py (roots
+                                  and symbolic predicates per campaign)
 docs/STATUS.md                    done / partial / not done, per requirement; open defects
 docs/design/                      the design of main (index: docs/design/README.md)
 ```

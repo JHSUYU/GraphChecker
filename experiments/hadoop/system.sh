@@ -25,39 +25,19 @@ blockkey_scope=(
   hdfs:org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager
   hdfs:org/apache/hadoop/hdfs/security/token/block/ExportedBlockKeys
 )
-# The scope every ad-hoc check starts from: each class the ad-hoc
-# communication mappings name, which the static pass refuses to find out of
-# scope -- the block keys' wire flows (WIRE_FLOW rows).  The fault doors are
-# the engine's library catalog, whose classes join the scope by themselves.
-system_mapping_scope=(
-  client:org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient
-  client:org/apache/hadoop/hdfs/protocolPB/PBHelperClient
-  hdfs:org/apache/hadoop/hdfs/protocolPB/PBHelper
-  hdfs:org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager
-)
-# The class a cluster test names: tools/adhoc/workloads.py lists the tests
-# of the classes that do.
-system_cluster_class=org/apache/hadoop/hdfs/MiniDFSCluster
 # The launcher supplies the frozen GraphChecker jar ahead of the tree's
 # classpath, whose shim entry it replaces.
 system_jar_first=true
-# The tree's own code, for coverage and for the ad-hoc checks' scan: its class
-# roots (system_root names), the package JaCoCo counts, and each root's
-# sources, as "<root>:<tree-relative source dir>".
-system_roots=(common client hdfs)
-system_package=org.apache.hadoop
+# The tree's own sources, as "<root>:<tree-relative source dir>": where
+# tools/lib/annotated.py finds the throws a known bug's case is marked at.
 system_sources=(
   client:hadoop-hdfs-project/hadoop-hdfs-client/src/main/java
   hdfs:hadoop-hdfs-project/hadoop-hdfs/src/main/java
 )
-# A class a workload runs only if it starts a node of the system: a test
-# that starts none (a unit test over a mocked DataNode) opens no recording
-# window, so an ad-hoc sweep does not choose it (tools/adhoc/select.py).
-system_node_class=org/apache/hadoop/hdfs/server/namenode/NameNode
 
 system_paths() {
   module=${repo}/hadoop-hdfs-project/hadoop-hdfs
-  report=${module}/target/surefire-reports/TEST-${classpath_test:-${test_class}}.xml
+  report=${module}/target/surefire-reports/TEST-${test_class}.xml
   test_classes=${module}/target/test-classes
   # The lineage scope is the whole tree's, whatever the case analyses
   # (plan.LineageScan): a thread start or queue handoff in a class outside

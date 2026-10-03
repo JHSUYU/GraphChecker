@@ -441,8 +441,8 @@ order:
 
 A case names its target occurrence (`declared_target_occurrence`) as a selector
 (`contract/Selector`), `<node>#epoch<N>/region/REGION.x[@<src>#epoch<N>/<api>]#k`, or as `first`,
-the first observed occurrence of the declared target site in the recording (an ad-hoc sweep's default,
-`plan/RuntimeWorkflowDiscovery.FIRST`; a case stating none is refused at PLAN). The recording's aggregation
+the first observed occurrence of the declared target site in the recording
+(`plan/RuntimeWorkflowDiscovery.FIRST`; a case stating none is refused at PLAN). The recording's aggregation
 resolves it once, against the target occurrences it observed in recorded order
 (`RuntimeWorkflowDiscovery#declaredOccurrence`: the k-th a selector matches, by `SelectorResolution`'s
 rule), marks that occurrence's plan row, and plans only the question `(r,c)` around it: the target
@@ -474,7 +474,7 @@ takes the declared address (`Identity#answer`): its rows, endpoints, decision or
 mark and close state it, so every later stage reads the declared address as before, and a
 DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). Which
 turn of a daemon carries another node's asynchronous work is that node's timing, which no schedule
-holds: in sweep `a40h` a NameNode command (block recovery queued by the lease monitor, replication
+holds: in round `a40h` a NameNode command (block recovery queued by the lease monitor, replication
 after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
 so every anchor below it differed in the root's k alone and the target was never admitted; two
 recordings of one workload differ the same way.

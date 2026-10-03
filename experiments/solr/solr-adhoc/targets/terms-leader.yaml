@@ -1,1 +1,0 @@
-exception_target: adhoc-terms-leader org.apache.solr.client.solrj.cloud.ShardTerms 91

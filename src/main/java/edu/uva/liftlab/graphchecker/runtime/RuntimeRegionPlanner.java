@@ -1953,7 +1953,7 @@ public final class RuntimeRegionPlanner {
         }
 
         /** This entry with the fold cleared ({@code
-         * CausynthTraceRecorder#aggregateTargets} counts entries). */
+         * CausynthTraceRecorder#aggregateTarget} counts entries). */
         MethodEvent unfolded() {
             return new MethodEvent(seq, test, threadName, tid, method,
                     objectId, receiverType, callId, parentCallId,

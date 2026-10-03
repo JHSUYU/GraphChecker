@@ -1,1 +1,0 @@
-exception_target: adhoc-stream-offset org.apache.hadoop.hdfs.DataStreamer 765

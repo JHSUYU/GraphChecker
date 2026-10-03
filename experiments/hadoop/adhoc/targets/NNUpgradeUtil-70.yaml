@@ -1,1 +1,0 @@
-exception_target: adhoc-NNUpgradeUtil-70 org.apache.hadoop.hdfs.server.namenode.NNUpgradeUtil 70

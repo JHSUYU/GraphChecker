@@ -112,16 +112,14 @@ public final class CausynthTraceRecorder {
     }
 
     /**
-     * Aggregates one recording for every target it was made for: {@code
-     * --trace-dir --test}, one {@code --target <name>=<candidate-graph>,
-     * <static-scope-map>,<region-skeletons>,<output-dir>} per target (its
-     * static slice, and where its runtime region plan goes), optionally
-     * {@code --target-occurrence} (the case's declaration, resolved here
-     * against each target's observed occurrences; a sweep's {@code first}
-     * when not stated) and {@code --summary <file>}, where each target's
-     * {@link TargetOutcome} is written.  A target the recording does not serve fails alone,
-     * named on stderr; the run exits 1 when no target was served, or when the
-     * trace itself cannot be read.
+     * Aggregates the recording for the case's target: {@code --trace-dir
+     * --test}, {@code --target <name>=<candidate-graph>,<static-scope-map>,
+     * <region-skeletons>,<output-dir>} (its static slice, and where its
+     * runtime region plan goes) and optionally {@code --target-occurrence}
+     * (the case's declaration, resolved here against the observed target
+     * occurrences; {@code first} when not stated).  Exits 1, naming why on
+     * stderr, when the trace cannot be read or the recording does not serve
+     * the target.
      */
     public static void main(String[] args) {
         LongOptions options = LongOptions.parse(args);
@@ -129,62 +127,22 @@ public final class CausynthTraceRecorder {
         String test = required(options, "test");
         String declared = options.value("target-occurrence",
                 RuntimeWorkflowDiscovery.FIRST);
-        List<AggregationTarget> targets = new ArrayList<>();
-        for (String target : options.all("target")) {
-            targets.add(AggregationTarget.parse(target));
-        }
-        if (targets.isEmpty()) {
-            throw new IllegalArgumentException("--target is required");
-        }
-        Map<String, TargetOutcome> outcomes = new LinkedHashMap<>();
-        Throwable unread = null;
+        AggregationTarget target =
+                AggregationTarget.parse(required(options, "target"));
         try {
-            outcomes = aggregateTargets(readStateTrace(directory, test),
-                    targets, declared);
+            aggregateTarget(readStateTrace(directory, test), target, declared);
         } catch (Throwable throwable) {
-            // The trace itself: every target's outcome.
-            unread = throwable;
-            for (AggregationTarget target : targets) {
-                outcomes.put(target.name,
-                        TargetOutcome.refused(target.name, throwable));
-            }
-        }
-        String summary = options.value("summary", null);
-        if (summary != null) {
-            JsonObject rows = new JsonObject();
-            for (TargetOutcome outcome : outcomes.values()) {
-                rows.add(outcome.name, outcome.json());
-            }
-            JsonObject json = new JsonObject();
-            json.add("targets", rows);
-            try {
-                writeFile(new File(summary.trim()), json + "\n");
-            } catch (IOException failure) {
-                unread = unread == null ? failure : unread;
-            }
-        }
-        if (unread != null) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
-                    + unread);
-            unread.printStackTrace(System.err);
+                    + target.name + ": " + throwable);
+            throwable.printStackTrace(System.err);
             System.exit(1);
-            return;
         }
-        boolean served = false;
-        for (TargetOutcome outcome : outcomes.values()) {
-            served |= outcome.activated();
-            if (!outcome.activated()) {
-                System.err.println("Failed to aggregate Causynth runtime "
-                        + "trace: " + outcome.name + ": " + outcome.detail);
-            }
-        }
-        if (!served) System.exit(1);
     }
 
-    /** One target of an aggregation: its name, its static slice (candidate
+    /** The target of an aggregation: its name, its static slice (candidate
      *  graph, scope map, candidate region skeletons) and where its runtime
      *  region plan goes. */
-    static final class AggregationTarget {
+    private static final class AggregationTarget {
         final String name;
         final File graph;
         final File scopeMap;
@@ -214,90 +172,6 @@ public final class CausynthTraceRecorder {
             return new AggregationTarget(spec.substring(0, equals).trim(),
                     new File(files[0].trim()), new File(files[1].trim()),
                     new File(files[2].trim()), new File(files[3].trim()));
-        }
-    }
-
-    /**
-     * What a recording holds for one target: {@code ACTIVATED} (its plan is
-     * written), or the refusal that stopped it -- {@code NOT_IN_WINDOW} (no
-     * region of the throw ran in the window), {@code
-     * TARGET_BRANCH_NOT_OBSERVED} (one ran, and never decided the throw's
-     * branch), {@code POLICY_ABSENT} (its region declares no fatal branch),
-     * {@code NO_REGION} (no candidate region ran), {@code
-     * DECLARATION_UNRESOLVED} (the case's declaration names none of the
-     * observed target occurrences, or does not read) or {@code ERROR} -- with
-     * the target occurrences of the question's {@code (r,c)}, those of them
-     * that took the throw's fatal arm (the TARGET_SITE guards' outcomes), and
-     * the refusal's words.
-     */
-    static final class TargetOutcome {
-        /** A finalizer refusal's code -> the state it is. */
-        private static final Map<String, String> REFUSALS;
-        static {
-            Map<String, String> refusals = new LinkedHashMap<>();
-            refusals.put("FATAL_TARGET_NOT_IN_WINDOW", "NOT_IN_WINDOW");
-            refusals.put("FATAL_TARGET_OBSERVATION_GAP",
-                    "TARGET_BRANCH_NOT_OBSERVED");
-            refusals.put("FATAL_TARGET_POLICY_ABSENT", "POLICY_ABSENT");
-            refusals.put("NO_REGION_ACTIVATION", "NO_REGION");
-            refusals.put("DECLARED_TARGET_OCCURRENCE_UNOBSERVED",
-                    "DECLARATION_UNRESOLVED");
-            refusals.put("DECLARED_TARGET_OCCURRENCE_UNREADABLE",
-                    "DECLARATION_UNRESOLVED");
-            REFUSALS = Collections.unmodifiableMap(refusals);
-        }
-
-        final String name;
-        final String state;
-        final List<String> occurrences;
-        final List<String> fatalOccurrences;
-        final String detail;
-
-        private TargetOutcome(String name, String state,
-                              List<String> occurrences,
-                              List<String> fatalOccurrences, String detail) {
-            this.name = name;
-            this.state = state;
-            this.occurrences = occurrences;
-            this.fatalOccurrences = fatalOccurrences;
-            this.detail = detail;
-        }
-
-        static TargetOutcome activated(String name, List<String> occurrences,
-                                       List<String> fatalOccurrences) {
-            return new TargetOutcome(name, "ACTIVATED", occurrences,
-                    fatalOccurrences, "");
-        }
-
-        /** A refusal: its state by the code its message starts with. */
-        static TargetOutcome refused(String name, Throwable refusal) {
-            String message = String.valueOf(refusal.getMessage());
-            int colon = message.indexOf(':');
-            String state = colon < 0 ? null
-                    : REFUSALS.get(message.substring(0, colon));
-            return new TargetOutcome(name, state == null ? "ERROR" : state,
-                    Collections.<String>emptyList(),
-                    Collections.<String>emptyList(),
-                    state == null ? refusal.toString() : message);
-        }
-
-        boolean activated() {
-            return "ACTIVATED".equals(state);
-        }
-
-        JsonObject json() {
-            JsonObject json = new JsonObject();
-            json.addProperty("state", state);
-            json.add("occurrences", addresses(occurrences));
-            json.add("fatalOccurrences", addresses(fatalOccurrences));
-            json.addProperty("detail", detail);
-            return json;
-        }
-
-        private static JsonArray addresses(List<String> occurrences) {
-            JsonArray addresses = new JsonArray();
-            for (String occurrence : occurrences) addresses.add(occurrence);
-            return addresses;
         }
     }
 
@@ -1369,7 +1243,7 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** The trace, read once for every target it is aggregated for. */
+    /** The recording's trace, read and its objects named. */
     private static TraceData readStateTrace(File directory, String test)
             throws IOException {
         synchronized (LOCK) {
@@ -1389,40 +1263,11 @@ public final class CausynthTraceRecorder {
     }
 
     /**
-     * Each target aggregated over one trace on its own static slice and its
-     * own skeletons ({@link #aggregateTarget}).  A target the finalizer
-     * refuses is that target's outcome, never the others'.
+     * The target's runtime region plan, written to its output directory: the
+     * regions of its skeletons the recording exercised, then its activations,
+     * closure and plan over its slice.
      */
-    static Map<String, TargetOutcome> aggregateTargets(
-            TraceData trace, List<AggregationTarget> targets,
-            String declaredOccurrence) {
-        Map<String, TargetOutcome> outcomes = new LinkedHashMap<>();
-        for (AggregationTarget target : targets) {
-            try {
-                outcomes.put(target.name, aggregateTarget(trace, target,
-                        declaredOccurrence));
-            } catch (IOException | RuntimeException refusal) {
-                TargetOutcome outcome =
-                        TargetOutcome.refused(target.name, refusal);
-                // An unnamed failure is a defect: its stack says where.
-                if ("ERROR".equals(outcome.state)) {
-                    refusal.printStackTrace(System.err);
-                }
-                outcomes.put(target.name, outcome);
-            }
-        }
-        return outcomes;
-    }
-
-    /**
-     * One target's runtime region plan, written to its output directory: the
-     * regions of its own skeletons the recording exercised, then its
-     * activations, closure and plan over its own slice.  A recording woven
-     * for several targets opens every target's regions; asked of this
-     * target's skeletons alone, no other target's exception context is
-     * taken for its own.
-     */
-    private static TargetOutcome aggregateTarget(
+    private static void aggregateTarget(
             TraceData trace, AggregationTarget target,
             String declaredOccurrence) throws IOException {
         // Regions exercised: root entered and an anchor reached, anchors
@@ -1491,40 +1336,6 @@ public final class CausynthTraceRecorder {
         planGaps.addAll(trace.lineageGaps);
         writeRuntimeRegionPlans(target.outputDir, closure.regions, trace,
                 activationGraph.runtimeInstances, planGaps);
-        List<String> occurrences = new ArrayList<>();
-        List<String> fatal = new ArrayList<>();
-        for (Map<String, Object> activation
-                : activationGraph.runtimeInstances) {
-            if (!Boolean.TRUE.equals(MapFields.booleanValue(activation.get(
-                    RuntimeSelectedRegionFinalizer
-                            .FAILURE_TARGET_OCCURRENCE)))) {
-                continue;
-            }
-            String occurrence = String.valueOf(activation.get("occurrenceId"));
-            occurrences.add(occurrence);
-            for (Map<String, Object> evidence
-                    : MapFields.rows(activation.get("observedFatalTargets"))) {
-                if (tookFatalArm(scopeMap, evidence)) {
-                    fatal.add(occurrence);
-                    break;
-                }
-            }
-        }
-        return TargetOutcome.activated(target.name, occurrences, fatal);
-    }
-
-    /** Whether one observed decision of a TARGET_SITE guard took the arm
-     *  that reaches the throw. */
-    private static boolean tookFatalArm(StaticScopeMap scopeMap,
-                                        Map<String, Object> evidence) {
-        String site = String.valueOf(evidence.get("siteId"));
-        for (StaticScopeMap.Site target : scopeMap.targetSites()) {
-            Boolean arm = target.outcomeOf(site);
-            if (arm != null && arm.equals(evidence.get("observedOutcome"))) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /** Compact branch and primitive call-return rows used by the finalizer. */
