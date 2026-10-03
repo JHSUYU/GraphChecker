@@ -1553,8 +1553,10 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   `Confirmation#id`; a STATE edge is taken when the model's reader observed the model's writer, or
   when a read at its site at another turn of the loops on its path did, `readerAnyTurn`,
   `Endpoint#anyTurn`: how many turns a loop that polls for a write takes is that write's timing --
-  never for an INITIAL, which every read observes before the first write, so the exact reader must),
-  and holds each `ORDER` activation's
+  never for an INITIAL, which every read observes before the first write, so the exact reader must;
+  a `mint` row, a placeholder's, which lands on whichever occurrence reads the cell first, when a
+  placeholder of the run observed a version of its `location` its writer wrote, an INITIAL included,
+  and it holds no order), and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
   mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
   are not read by the runtime. A CONFIRM run (`FocusedReplay.confirming`: its obligation flips

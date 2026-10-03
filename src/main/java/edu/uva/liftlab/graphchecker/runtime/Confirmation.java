@@ -83,9 +83,11 @@ public final class Confirmation {
     private static final Map<String, Wire> WIRE =
             new LinkedHashMap<String, Wire>();
     /**
-     * Writer endpoint id -> version for a declared cell's PLACEHOLDER join;
-     * keyed by writer because the mint lands on whichever occurrence reads
-     * first.
+     * Writer endpoint id (or {@link #INITIAL}) and location, as "writer
+     * location", -> version for a declared cell's PLACEHOLDER join; keyed by
+     * writer and not by reader because the mint lands on whichever
+     * occurrence reads first, and by location because an INITIAL is every
+     * location's.
      */
     private static final Map<String, String> MINT =
             new LinkedHashMap<String, String>();
@@ -409,21 +411,23 @@ public final class Confirmation {
                         + ", the run never attached at this consumer");
             }
             for (Map.Entry<String, String> edge : MINT.entrySet()) {
+                String[] held = edge.getKey().split(" ", 2);
                 boolean taken = false;
                 List<String> observed = new ArrayList<String>();
                 for (String minted : MINTED) {
                     String writer = WROTE.get(minted);
                     observed.add(minted + (writer == null ? "" : " by "
                             + writer));
-                    taken |= edge.getKey().equals(writer);
+                    taken |= held[0].equals(writer)
+                            && minted.startsWith(held[1] + "@");
                 }
                 if (taken) continue;
                 mismatches.add("STATE mint: the model joined a declared "
-                        + "cell's placeholder to writer " + edge.getKey()
-                        + " (version " + edge.getValue() + "), and no "
-                        + "placeholder of the run observed a version that "
-                        + "writer wrote" + (observed.isEmpty() ? ""
-                        : "; the run's placeholders observed "
+                        + "cell's placeholder of " + held[1] + " to writer "
+                        + held[0] + " (version " + edge.getValue() + "), "
+                        + "and no placeholder of the run observed a version "
+                        + "of it that writer wrote" + (observed.isEmpty()
+                        ? "" : "; the run's placeholders observed "
                         + observed));
             }
             for (Map.Entry<String, String> edge : STATE.entrySet()) {
@@ -519,7 +523,8 @@ public final class Confirmation {
                     } else if ("STATE".equals(kind)
                             && row.has("mint") && !row.get("mint").isJsonNull()
                             && row.get("mint").getAsBoolean()) {
-                        MINT.put(optionalString(row, "writer"),
+                        MINT.put(optionalString(row, "writer") + " "
+                                        + optionalString(row, "location"),
                                 optionalString(row, "version"));
                     } else if ("STATE".equals(kind)) {
                         String reader = optionalString(row, "reader");

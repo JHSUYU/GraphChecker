@@ -241,7 +241,8 @@ field=<f> <subject>`.
   delivery into the anchor -- must receive, the arm's `texts` in the claim; `producerQuestion
   {occurrence, site, siteIndex, attempt, shape}`: for a delivery into the anchor where the arm's
   session answered the anchor by its question, IDENTITY §9), `STATE {reader, readerAnyTurn, mint, writer, version, location}` (`writer`
-  `INITIAL` for a location's INITIAL, `Confirmation#INITIAL`), `ORDER {before, after}`
+  `INITIAL` for a location's INITIAL, `Confirmation#INITIAL`; a `mint` row is compared by its writer
+  and location, not its reader), `ORDER {before, after}`
   (activation keys; `after` the last activation entered before the event it orders, or, for claimed
   work on a consumer thread, the send that started it, `Confirmation#submitter`), every endpoint
   id and activation key as every delivery of its stored message names it (`Confirmation#id`), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation

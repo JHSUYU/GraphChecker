@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -201,6 +202,53 @@ public class ConfirmationTest {
                 + other.id()));
         assertTrue(close.get(1), close.get(1).contains(absent.id())
                 && close.get(1).endsWith("the run never read here"));
+    }
+
+    /**
+     * A placeholder's pairing is taken where a placeholder of the run, at
+     * whichever occurrence read first, observed a version of the model's
+     * location that the model's writer wrote -- an INITIAL included, which
+     * is every location's, so another location's INITIAL is not it.
+     */
+    @Test
+    public void aPlaceholderIsComparedByItsWriterAtItsLocation()
+            throws Exception {
+        Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
+        Endpoint first = endpoint(MINT, "a.Manager#tick()#7:INITIAL");
+        LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
+        LocationId other = LocationId.of(LocationKind.INSTANCE, "1", "41");
+        // the model's writer, the placeholder's location and version, taken?
+        Object[][] table = {
+                {writer.id(), cell, 5L, true},
+                {Confirmation.INITIAL, cell, 4L, true},
+                {Confirmation.INITIAL, other, 4L, false},
+                {Confirmation.INITIAL, cell, 5L, false},
+        };
+        for (Object[] row : table) {
+            reset();
+            handed("{\"schemaVersion\":1,\"kind\":\"FOCUSED_TASK\","
+                    + "\"taskId\":\"CONFIRM\",\"obligationId\":\"CONFIRM\","
+                    + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
+                    + "\"focusedOccurrenceId\":\""
+                    + OccurrenceAddress.parse(ANCHOR).id() + "\","
+                    + "\"seedSessionId\":\"seed\",\"flip\":null,"
+                    + "\"rootAssignments\":{},\"clockDeltas\":{},"
+                    + "\"answers\":{},\"rootMints\":{}}\n",
+                    Collections.singletonList("{\"kind\":\"STATE\","
+                            + "\"reader\":\"" + endpoint(ANCHOR,
+                            "a.Handler#h()#12:READ").id() + "\",\"mint\":true,"
+                            + "\"writer\":\"" + row[0] + "\",\"version\":\"4\","
+                            + "\"location\":\"INSTANCE/1#40\"}"));
+            for (LocationId location : Arrays.asList(cell, other)) {
+                Confirmation.wrote(location, 4L, first, true);
+            }
+            Confirmation.wrote(cell, 5L, writer, false);
+            Confirmation.read(endpoint(PRODUCER, "a.Convert#c()#3:READ"),
+                    (LocationId) row[1], (Long) row[2], 9L);
+            List<String> close = Confirmation.close();
+            assertEquals(Arrays.toString(row) + ": " + close,
+                    (Boolean) row[3], close.isEmpty());
+        }
     }
 
     /**

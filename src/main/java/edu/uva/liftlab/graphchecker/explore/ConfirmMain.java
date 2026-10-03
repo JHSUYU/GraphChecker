@@ -1363,10 +1363,11 @@ public final class ConfirmMain {
             }
             String location = SmtLowering.locationKey(held.location());
             // A mint read lands on whichever racing occurrence reads the cell
-            // first, so it is held by the writer (runtime/Confirmation), not
-            // the reader; an INITIAL has none.
+            // first, so it is checked by the writer and the location
+            // (runtime/Confirmation), not the reader, and holds no order: a
+            // placeholder at the anchor joins the write it was laid over, so
+            // a family may choose the location's INITIAL for it.
             boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
-            if (mint && held.initial()) continue;
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", Confirmation.id(read.endpoint()));
