@@ -2684,12 +2684,20 @@ public final class CausynthPipeline {
                 "$causynthVmSwitchOccurrence");
         Local effectiveSuccessor = newTraceLocal(body, IntType.v(),
                 "$causynthSwitchSuccessor");
+        Local observedSuccessor = newTraceLocal(body, IntType.v(),
+                "$causynthSwitchObserved");
 
         insertExactBranchMarkerPrefix(body, method, branch, unitIndex,
                 expression, prepared, vmEvent, vmOccurrence, refs);
 
+        // Each arm asks which way to go given the observed one, then every
+        // arm goes through ONE dispatch on the answer: linear in the arms (a
+        // dispatch per arm was quadratic, and ZooKeeper's 120-entry opcode
+        // switch in FinalRequestProcessor outgrew a method's 64 KB).
+        int last = shape.successorCount() - 1;
+        Unit dispatch = Jimple.v().newNopStmt();
         List<Unit> entries = new ArrayList<>();
-        for (int observed = 0; observed < shape.successorCount(); observed++) {
+        for (int observed = 0; observed <= last; observed++) {
             Unit entry = Jimple.v().newNopStmt();
             entries.add(entry);
             body.getUnits().add(entry);
@@ -2699,18 +2707,20 @@ public final class CausynthPipeline {
                     IntConstant.v(unitIndex), StringConstant.v(expression),
                     StringConstant.v(shape.kind),
                     StringConstant.v(encodedKeys), IntConstant.v(observed));
-            for (int targetIndex = 0;
-                 targetIndex < shape.successorCount(); targetIndex++) {
-                body.getUnits().add(Jimple.v().newIfStmt(
-                        Jimple.v().newEqExpr(effectiveSuccessor,
-                                IntConstant.v(targetIndex)),
-                        shape.successors.get(targetIndex)));
-            }
-            // A malformed result keeps the concrete arm.
-            body.getUnits().add(Jimple.v().newGotoStmt(
-                    shape.successors.get(observed)));
+            body.getUnits().add(Jimple.v().newAssignStmt(observedSuccessor,
+                    IntConstant.v(observed)));
+            body.getUnits().add(Jimple.v().newGotoStmt(dispatch));
         }
-        for (int index = 0; index < shape.successorCount(); index++) {
+        // A malformed answer keeps the concrete arm.
+        Unit malformed = Jimple.v().newNopStmt();
+        body.getUnits().add(dispatch);
+        body.getUnits().add(Jimple.v().newTableSwitchStmt(effectiveSuccessor,
+                0, last, shape.successors, malformed));
+        body.getUnits().add(malformed);
+        body.getUnits().add(Jimple.v().newTableSwitchStmt(observedSuccessor,
+                0, last, shape.successors,
+                shape.successors.get(shape.defaultSuccessorIndex)));
+        for (int index = 0; index <= last; index++) {
             retargetSwitch(branch, shape, index, entries.get(index));
         }
     }
