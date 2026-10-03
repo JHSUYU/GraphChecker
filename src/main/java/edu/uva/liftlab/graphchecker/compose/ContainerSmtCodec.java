@@ -30,6 +30,19 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 /** The single SMT lowering for VM container operations. */
 public final class ContainerSmtCodec {
     private static final String EXPRESSION_TYPE = "ContainerRelation";
+    /**
+     * The relations that carry a {@code guard}: the conditional mutations,
+     * which state both arms of it (REMOVE_IF, PUT_IF, APPEND_IF), and PIN,
+     * which requires it.
+     */
+    private static final Set<String> GUARDED = Collections.unmodifiableSet(
+            new HashSet<String>(java.util.Arrays.asList("REMOVE_IF",
+                    "PUT_IF", "APPEND_IF", "PIN")));
+
+    /** Whether a relation's {@code guard} is a decision it states both ways. */
+    public static boolean conditionalMutation(String operation) {
+        return GUARDED.contains(operation) && !"PIN".equals(operation);
+    }
     private ContainerSmtCodec() {
     }
 
@@ -574,6 +587,21 @@ public final class ContainerSmtCodec {
                     + value.text + ")", Sort.INDEXED,
                     IntegralWidth.NONE, grown(receiver, 1L));
         }
+        if ("APPEND_IF".equals(operation) && arguments.size() == 1) {
+            // A stream's member under the decisions that let it through.
+            Term value = host.box(arguments.get(0));
+            Term guard = host.operand(expression.get("guard"), Sort.BOOL);
+            return value == null || guard == null ? null
+                    : new Term("(indexed_append_if " + receiver.text + " "
+                    + value.text + " " + guard.text + ")", Sort.INDEXED);
+        }
+        if ("PIN".equals(operation) && arguments.size() == 0) {
+            return pinned(receiver, expression, host);
+        }
+        if ("CONTAINS".equals(operation) && arguments.size() == 1) {
+            return indexedContains(receiverIr, receiver, arguments.get(0),
+                    host);
+        }
         if ("INSERT".equals(operation) && arguments.size() == 2) {
             Term index = integer(arguments.get(0), host);
             Term value = host.box(arguments.get(1));
@@ -585,9 +613,6 @@ public final class ContainerSmtCodec {
             if (index == null) return null;
             return shift(receiver, index, null, host);
         }
-        // CONTAINS over an indexed container is REFUSED by name: its
-        // only spelling is a quantifier over the element array, outside
-        // the fragment z3 decides ("incomplete quantifiers").
         if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
             return new Term("(= (indexed_size " + receiver.text + ") 0)",
                     Sort.BOOL);
@@ -664,7 +689,100 @@ public final class ContainerSmtCodec {
                     + key.text + " " + guard.text + ")",
                     Sort.ASSOCIATIVE);
         }
+        if ("PUT_IF".equals(operation) && arguments.size() == 2) {
+            // A stream's member collected to a set where the guard holds.
+            Term key = host.box(arguments.get(0));
+            Term value = host.box(arguments.get(1));
+            Term guard = host.operand(expression.get("guard"), Sort.BOOL);
+            return key == null || value == null || guard == null ? null
+                    : new Term("(assoc_put_if " + receiver.text + " "
+                    + key.text + " " + value.text + " " + guard.text + ")",
+                    Sort.ASSOCIATIVE);
+        }
+        if ("PIN".equals(operation) && arguments.size() == 0) {
+            return pinned(receiver, expression, host);
+        }
         return unmodeled("ASSOCIATIVE", operation, arguments, host);
+    }
+
+    /**
+     * A state that holds only where the run's own decision does: the
+     * {@code guard} of a PIN (what a stream pulled no further, or dropped
+     * before anything relations follow) is required wherever the state is
+     * used, and the state is its receiver's.
+     */
+    private static Term pinned(Term receiver, JsonObject expression,
+                               Host host) {
+        Term guard = host.operand(expression.get("guard"), Sort.BOOL);
+        if (guard == null) return null;
+        host.require(guard.text);
+        return receiver;
+    }
+
+    /**
+     * {@code contains(x)} on a list: some position below its size holds
+     * {@code x}, a disjunction over the positions its chain can fill -- the
+     * appends and insertions above an exact base ({@link #indexedBound}),
+     * as {@link #putAll} unrolls its source's keys.  Its quantified form
+     * is outside what z3 decides ("incomplete quantifiers"), so a chain
+     * with no exact base within {@link #VIEW_CHAIN_LIMIT} is refused by
+     * name.
+     */
+    private static Term indexedContains(JsonElement receiverIr,
+                                        Term receiver, JsonElement wanted,
+                                        Host host) {
+        Integer bound = indexedBound(receiverIr, host);
+        if (bound == null) {
+            host.unsupported("ContainerRelation:INDEXED:CONTAINS:"
+                    + "unbounded-chain");
+            return null;
+        }
+        Term value = host.box(wanted);
+        if (value == null) return null;
+        StringBuilder any = new StringBuilder("(let ((s ")
+                .append(receiver.text).append(") (x ").append(value.text)
+                .append(")) (or false");
+        for (int position = 0; position < bound; position++) {
+            any.append(" (and (< ").append(position)
+                    .append(" (indexed_size s)) (= (indexed_read s ")
+                    .append(position).append(") x))");
+        }
+        return shared(new Term(any.append("))").toString(), Sort.BOOL),
+                host);
+    }
+
+    /**
+     * How many positions an INDEXED chain can fill: its appends and
+     * insertions, guarded or not, down to an exact base (a stated
+     * {@code SNAPSHOT_BASE}, whose members are appends above it, or a
+     * {@code CLEAR}); writes, removals and pins fill none.  Null for a
+     * chain with no such base within {@link #VIEW_CHAIN_LIMIT}.  Each
+     * state is the one it stands for ({@link Host#chain}).
+     */
+    private static Integer indexedBound(JsonElement state, Host host) {
+        int filled = 0;
+        JsonElement chain = state;
+        for (int depth = 0; depth < VIEW_CHAIN_LIMIT; depth++) {
+            JsonElement node = host.chain(chain);
+            if (node == null || !node.isJsonObject()) return null;
+            JsonObject relation = node.getAsJsonObject();
+            if (!EXPRESSION_TYPE.equals(optionalString(relation, "_type"))
+                    || !"INDEXED".equals(optionalString(relation, "shape"))) {
+                return null;
+            }
+            String operation = optionalString(relation, "operation");
+            if (emptiesState(operation)) return filled;
+            if ("APPEND".equals(operation) || "APPEND_IF".equals(operation)
+                    || "INSERT".equals(operation)) {
+                filled++;
+            } else if (!"WRITE".equals(operation)
+                    && !"REMOVE".equals(operation)
+                    && !"PIN".equals(operation)) {
+                return null;
+            }
+            chain = relation.get("receiver");
+        }
+        return null;
     }
 
     /**
@@ -1049,12 +1167,15 @@ public final class ContainerSmtCodec {
                 String why = source == null ? "CHAIN"
                         : unordered(from, host, source);
                 if (!why.isEmpty()) return "PUT_ALL:" + why;
-            } else if ("PUT".equals(mutation.operation)) {
+            } else if ("PUT".equals(mutation.operation)
+                    || "PUT_IF".equals(mutation.operation)) {
                 if (!member && hash
                         && (key == null || !present.contains(key))) {
                     return "HASH_INSERT";
                 }
                 if (key != null) present.add(key);
+            } else if ("PIN".equals(mutation.operation)) {
+                continue;
             } else if (key == null) {
                 present.clear();
             } else {
@@ -1197,7 +1318,8 @@ public final class ContainerSmtCodec {
                 Collections.reverse(keys);
                 return keys;
             }
-            if ("PUT".equals(mutation.operation)) {
+            if ("PUT".equals(mutation.operation)
+                    || "PUT_IF".equals(mutation.operation)) {
                 keys.add(mutation.arguments.get(0));
             } else if ("PUT_ALL".equals(mutation.operation)) {
                 List<JsonElement> added = associativeViewKeys(
@@ -1251,18 +1373,18 @@ public final class ContainerSmtCodec {
         }
         String operation = optionalString(relation, "operation");
         JsonArray arguments = array(relation, "arguments");
-        int arity = emptiesState(operation) ? 0
+        int arity = emptiesState(operation) || "PIN".equals(operation) ? 0
                 : "REMOVE".equals(operation) ? 1
                 : "REMOVE_IF".equals(operation) ? 1
                 : "PUT_ALL".equals(operation) ? 1
-                : "PUT".equals(operation) ? 2 : -1;
+                : "PUT".equals(operation) || "PUT_IF".equals(operation)
+                ? 2 : -1;
         if (arity < 0 || arguments.size() != arity) return null;
-        // REMOVE_IF without a guard is malformed: refused, never dropped.
-        JsonElement guard = "REMOVE_IF".equals(operation)
-                ? relation.get("guard") : null;
-        if ("REMOVE_IF".equals(operation)
-                && (guard == null || guard.isJsonNull())) {
-            return null;
+        // A guarded node without its guard is malformed: refused, never
+        // dropped.
+        if (GUARDED.contains(operation)) {
+            JsonElement guard = relation.get("guard");
+            if (guard == null || guard.isJsonNull()) return null;
         }
         return new Mutation(operation, relation.get("receiver"), arguments);
     }

@@ -326,6 +326,43 @@ oop ContainerSupport::canonicalize(oop value) {
   return container;
 }
 
+namespace {
+
+int int_member(oop holder, const char *name) {
+  const int offset = holder == NULL ? -1
+      : field_offsets()->offset(holder, name, "I");
+  return offset < 0 ? -1 : holder->int_field(offset);
+}
+
+}  // namespace
+
+int ContainerSupport::member_count(oop container) {
+  switch (capability(container)) {
+    case CAPABILITY_HASH_MAP:
+      return int_member(container, "size");
+    case CAPABILITY_HASHTABLE:
+      return int_member(container, "count");
+    case CAPABILITY_HASH_SET:
+      return int_member(object_field(container, "map", "Ljava/util/HashMap;"),
+                        "size");
+    case CAPABILITY_INDEXED: {
+      if (klass_name_is(container, "java/util/ArrayList")) {
+        return int_member(container, "size");
+      }
+      if (!klass_name_is(container, "java/util/ArrayDeque")) return -1;
+      oop elements = object_field(container, "elements",
+                                  "[Ljava/lang/Object;");
+      const int head = int_member(container, "head");
+      const int tail = int_member(container, "tail");
+      if (elements == NULL || head < 0 || tail < 0) return -1;
+      // A power-of-two circular buffer from head to tail.
+      return (tail - head) & (arrayOop(elements)->length() - 1);
+    }
+    default:
+      return -1;
+  }
+}
+
 BasicType ContainerSupport::result_type(oop result, BasicType declared) {
   if (result == NULL || declared != T_OBJECT) return declared;
   Symbol *type = result->klass()->name();
@@ -1064,6 +1101,30 @@ bool ContainerSupport::guarded_mutation(const std::string &callee) {
   return SharedFieldVersions::guarded_store_admitted(NULL, "CALL " + callee);
 }
 
+bool ContainerSupport::mutator(const std::string &callee) {
+  static const char *const MUTATORS[] = {
+      "put", "remove", "clear", "add", "offer", "set", "poll", "putAll",
+      "putIfAbsent", "replace", "replaceAll", "compute", "computeIfAbsent",
+      "computeIfPresent", "merge", "removeIf"};
+  for (size_t index = 0; index < sizeof(MUTATORS) / sizeof(MUTATORS[0]);
+       ++index) {
+    if (callee == MUTATORS[index]) return true;
+  }
+  return false;
+}
+
+bool ContainerSupport::reenters_from_callback(oop container,
+                                              const std::string &callee) {
+  if (container == NULL || ConcolicMngr::ctx == NULL || !mutator(callee)
+      || !ConcolicMngr::ctx->get_method_symbolizer().in_callback()
+      || !ConcolicMngr::ctx->get_method_symbolizer().reenters(container,
+                                                               true)) {
+    return false;
+  }
+  abandon_state(container, "CALLBACK_REENTERS_CONTAINER");
+  return true;
+}
+
 jlong ContainerSupport::publish_state(oop container, Expression *new_state,
                                       const char *operation) {
   // A container state expression exists only because something symbolic went
@@ -1101,6 +1162,25 @@ jlong ContainerSupport::publish_state(oop container, Expression *new_state,
   return SharedFieldVersions::publish_value(
       location, new_state, SharedFieldVersions::ConcreteBits(), NULL, true,
       SharedFieldVersions::VERSION_STATE, operation);
+}
+
+void ContainerSupport::publish_filled(oop container, Expression *base,
+                                      Expression *state,
+                                      const char *operation) {
+  if (container == NULL || base == NULL || state == NULL
+      || ConcolicMngr::ctx == NULL) {
+    return;
+  }
+  ConcolicMngr::ctx->set_container_state(container, state);
+  SharedFieldVersions::Location location = state_location(container);
+  if (!location.is_valid()) return;
+  if (!SharedFieldVersions::is_tracked(location)) {
+    SharedFieldVersions::InitialSnapshot empty;
+    empty.stated = true;
+    SharedFieldVersions::publish_initial(
+        location, base, SharedFieldVersions::ConcreteBits(), empty);
+  }
+  publish_state(container, state, operation);
 }
 
 void ContainerSupport::abandon_state(oop container,

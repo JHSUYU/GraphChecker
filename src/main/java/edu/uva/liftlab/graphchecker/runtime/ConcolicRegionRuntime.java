@@ -1368,6 +1368,30 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * What a VM model ran on the run's own values though symbolic content
+     * reached it (VM.md §4: a stream pipeline it could not state), each a
+     * DIAGNOSTIC gap named by the model's reason and the call's site, so a
+     * chain missing there is diagnosable.  Its subject is no occurrence
+     * address, so it refuses nothing (Corpus#refusedIn).
+     */
+    private static void modelGaps(ActiveRegion active, JsonElement summary) {
+        if (!summary.isJsonObject()) return;
+        for (JsonElement gap : JsonFields.array(summary.getAsJsonObject(),
+                "modelGaps")) {
+            if (!gap.isJsonObject()) continue;
+            JsonObject named = gap.getAsJsonObject();
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    JsonFields.optionalString(named, "name"),
+                    "at " + JsonFields.optionalString(named, "site")
+                            + " in " + firstNonBlank(active.address(),
+                            Long.toString(active.token)) + ": the VM ran"
+                            + " this call on the run's own values though"
+                            + " symbolic content reached it, so what it"
+                            + " computed is stated only in part");
+        }
+    }
+
+    /**
      * Reads one occurrence and closes its VM region on the owner thread;
      * decoding and publication go to the daemon pool.
      *
@@ -1409,7 +1433,10 @@ public final class ConcolicRegionRuntime {
             }
             JsonElement summary = parseJson(api.finish());
             engineFinished = true;
-            if (publishRows) aborted(active, summary);
+            if (publishRows) {
+                aborted(active, summary);
+                modelGaps(active, summary);
+            }
             // Symbolic values flow back to the caller, so open its gate too.
             if (enclosingRegion != null && active.pathRecordingStarted) {
                 enclosingRegion.pathRecordingStarted = true;

@@ -1740,9 +1740,10 @@ public final class Composer {
      * included, and those leave no node in its state: an arm delivering the
      * write, or a read joined to it, conjoins them in the polarity they took
      * ({@link Independence} keeps them), and the reads they name are joined
-     * in turn.  A decision whose condition is a REMOVE_IF guard of the
-     * referent's chain stays free, as that node states it both ways.  None
-     * for a write that stored no container's state.
+     * in turn.  A decision whose condition guards a conditional mutation of
+     * the referent's chain (REMOVE_IF, PUT_IF, APPEND_IF) stays free, as
+     * that node states it both ways.  None for a write that stored no
+     * container's state.
      */
     List<DecisionRow> constructionGuards(String session, WriteRow write) {
         if (write == null || write.referentState() == null) {
@@ -1761,7 +1762,7 @@ public final class Composer {
             }
             List<DecisionRow> guards = new ArrayList<DecisionRow>();
             if (sites.isEmpty()) return guards;
-            Set<JsonElement> free = removalGuards(session,
+            Set<JsonElement> free = mutationGuards(session,
                     write.referentState());
             for (DecisionRow decision : corpus.decisionsOf(session,
                     write.endpoint().occurrence())) {
@@ -1776,12 +1777,13 @@ public final class Composer {
     }
 
     /**
-     * The guards of the REMOVE_IF nodes of one container's chain, down to
-     * its base: each version's mutation and, through the read it rests on,
-     * the version before.
+     * The guards of the conditional mutations of one container's chain
+     * ({@link ContainerSmtCodec#conditionalMutation}), down to its base:
+     * each version's mutation and, through the read it rests on, the
+     * version before.
      */
-    private Set<JsonElement> removalGuards(String session,
-                                           WriteRow.Referent state) {
+    private Set<JsonElement> mutationGuards(String session,
+                                            WriteRow.Referent state) {
         Set<JsonElement> guards = ExpressionWalk.identitySet();
         Set<JsonElement> walked = ExpressionWalk.identitySet();
         List<JsonElement> pending = new ArrayList<JsonElement>();
@@ -1795,8 +1797,9 @@ public final class Composer {
                     pending.size() - 1), walked); walk.hasNext(); ) {
                 JsonObject node = walk.next();
                 String type = JsonFields.optionalString(node, "_type");
-                if ("REMOVE_IF".equals(JsonFields.optionalString(node,
-                        "operation"))) {
+                if ("ContainerRelation".equals(type)
+                        && ContainerSmtCodec.conditionalMutation(
+                        JsonFields.optionalString(node, "operation"))) {
                     guards.add(unwrapped(node.get("guard")));
                 } else if (VmRows.GUARDED_READ_TYPE.equals(type)) {
                     WriteRow below = corpus.writeOf(session,

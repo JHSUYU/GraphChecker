@@ -37,16 +37,44 @@ struct CallbackResult {
   CallbackResult()
       : result(NULL), symbolic(false), returned_null(false), returned_int(0),
         threw(false), key(NULL), path(NULL), path_negation(NULL) {}
+
+  /**
+   * A predicate callback's answer as a condition that holds exactly where
+   * it answered true: its own boolean expression, else what its path
+   * decided in the direction it answered (`path` for true, `path_negation`
+   * for false); NULL when nothing symbolic decided it -- or when a false
+   * answer's path has no relational complement, which `undecided()` tells
+   * apart.
+   */
+  Expression *truth() const;
+  /** A symbolic decision `truth()` cannot state. */
+  bool undecided() const { return !symbolic && path != NULL && truth() == NULL; }
 };
 
 /**
  * A model's contract for its callbacks: the expressions a callback's
- * parameters carry (one per parameter, NULL for none), given the arguments
- * the muted body passes it, and the key of the element it visits, if any.
+ * parameters carry (one per parameter, NULL for none), given the session id
+ * of the functional object called back and the arguments the muted body
+ * passes it, and the key of the element it visits, if any.
  */
 typedef void (*CallbackSeeder)(MethodSymbolizerHandle &call,
+                               sym_rid_t receiver,
                                const std::vector<oop> &arguments,
                                exp_list_t *seeds, Expression **key);
+
+/**
+ * A model that reads each callback as it returns, instead of from the
+ * call's log: its result, the object it returned, and its arguments as its
+ * frame holds them then.  With one, a concrete result is not built into an
+ * expression (the model names what it needs from the object), so a call
+ * whose callbacks stay concrete allocates nothing per callback.
+ */
+typedef void (*CallbackListener)(MethodSymbolizerHandle &call,
+                                 const CallbackResult &result, oop returned,
+                                 const std::vector<oop> &arguments);
+
+/** A model's word on a call of its that unwound with an exception. */
+typedef void (*CallUnwound)(MethodSymbolizerHandle &call);
 
 class MethodSymbolizerHandle {
 private:
@@ -66,6 +94,15 @@ private:
   // session id: a frame whose receiver is one of them is a callback.
   std::vector<sym_rid_t> _functional;
   CallbackSeeder _seeder;
+  CallbackListener _listener;
+  CallUnwound _unwound;
+  // The container a call reads as its callbacks run (a stream's source), as
+  // a weak global handle its model owns: a callback mutating it marks the
+  // call reentered (MethodSymbolizer::reenters).
+  jobject _source;
+  // The first application method the muted body entered that was no
+  // callback (MethodSymbolizer::enter_callback), or empty.
+  std::string _muted_application;
   std::vector<CallbackResult> _callbacks;
   // The state the call's container held when it began, when it had one.
   Expression *_pre_state;
@@ -81,7 +118,8 @@ private:
 public:
   MethodSymbolizerHandle()
       : _caller_frame(NULL), _callee_frame(NULL), _callee_istate(NULL),
-        _recording(false), _seeder(NULL), _pre_state(NULL),
+        _recording(false), _seeder(NULL), _listener(NULL), _unwound(NULL),
+        _source(NULL), _pre_state(NULL),
         _reentered(false), _callback_refusal(NULL),
         _mutates_per_callback(false) {}
 
@@ -99,6 +137,26 @@ public:
   }
   inline void set_seeder(CallbackSeeder seeder) { _seeder = seeder; }
   inline CallbackSeeder seeder() const { return _seeder; }
+  inline void set_listener(CallbackListener listener) {
+    _listener = listener;
+  }
+  inline CallbackListener listener() const { return _listener; }
+  inline void set_unwound(CallUnwound unwound) { _unwound = unwound; }
+  inline CallUnwound unwound() const { return _unwound; }
+  inline void set_source(jobject source) { _source = source; }
+  inline jobject source() const { return _source; }
+  inline bool muted_application_noted() const {
+    return !_muted_application.empty();
+  }
+  inline void note_muted_application(const std::string &method) {
+    if (_muted_application.empty()) _muted_application = method;
+  }
+  // Takes the name: whoever reads it states it.
+  inline std::string take_muted_application() {
+    std::string method = _muted_application;
+    _muted_application.clear();
+    return method;
+  }
   inline std::vector<CallbackResult> &callbacks() { return _callbacks; }
   inline void set_pre_state(Expression *pre_state) { _pre_state = pre_state; }
   inline Expression *pre_state() const { return _pre_state; }
@@ -263,6 +321,10 @@ public:
     _recording = false;
     _functional.clear();
     _seeder = NULL;
+    _listener = NULL;
+    _unwound = NULL;
+    _source = NULL;
+    _muted_application.clear();
     _callbacks.clear();
     _pre_state = NULL;
     _reentered = false;
