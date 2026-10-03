@@ -1224,6 +1224,43 @@ public class ComposerTest {
     }
 
     /**
+     * Every path unsat with every root free is a contradiction the
+     * composition built only when it is unsat without its fatal arm too, or
+     * observed the fatal arm: refuted by phi alone, no root turns it to the
+     * fatal arm, which is the claim's answer and no gap (b20h
+     * BlockTokenSecretManager-511).  {the decision before the anchor, or
+     * null; phi; observed fatal; BLOCKING PATH_SELF_CONTRADICTORY}.
+     */
+    @Test
+    public void aPathRefutedByItsFatalArmAloneContradictsNothing()
+            throws Exception {
+        String never = "(and " + MARKER + " (not " + MARKER + "))";
+        Object[][] rows = {
+                {null, never, false, false},
+                {never, MARKER, false, true},
+                {null, never, true, true},
+        };
+        for (Object[] row : rows) {
+            Path iteration = folder.newFolder().toPath();
+            Session seed = new Session(iteration, "s0", false);
+            seed.marker("false");
+            if (row[0] != null) seed.decision(ANCHOR, "a#u1", (String) row[0]);
+            seed.target((String) row[1], (Boolean) row[2], true);
+            seed.write();
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                    compose(iteration, 4), solver());
+            boolean blocked = false;
+            for (GapRow gap : decision.claim().gaps()) {
+                blocked |= gap.kind() == GapKind.PATH_SELF_CONTRADICTORY
+                        && gap.cls() == GapClass.BLOCKING;
+            }
+            assertEquals(Arrays.toString(row), row[3], blocked);
+            assertEquals(Arrays.toString(row), ClaimKind.NO_SUPPORTED_WITNESS,
+                    decision.claim().kind());
+        }
+    }
+
+    /**
      * A DISJUNCTION is asked whole while that decides, else path by path,
      * and the answer is the first sat path in order.  A path refuted under
      * some assertions is not asked again under more of them; a refutation
@@ -5649,7 +5686,9 @@ public class ComposerTest {
      * The Strings a file name carries lower as Java computes them: a path's
      * parent is its prefix up to the last separator (File.getParent) and is
      * undefined -- Java throws -- without one; a long names itself in decimal
-     * (blk_<id>_<gs>.meta).  finalize-gs a8 lost every path to these.
+     * (blk_<id>_<gs>.meta).  finalize-gs a8 lost every path to these.  An
+     * address is trimmed as String.trim cuts it, every character up to
+     * U+0020 off both ends (b20h BlockRecoveryWorker-222's proxy URI).
      */
     @Test
     public void aPathsParentAndALongsNameLowerAsJavaComputesThem() {
@@ -5667,12 +5706,14 @@ public class ComposerTest {
                                 "I"))), VmTermLowering.Sort.STRING, "test");
         VmTermLowering.Term name = lowering.dispatch(vmString("toString",
                 vmLeaf("SymbolExpression", "n", "J")), VmTermLowering.Sort.STRING, "test");
+        VmTermLowering.Term trimmed = lowering.dispatch(vmString("trim",
+                path), VmTermLowering.Sort.STRING, "test");
         List<String> conditions = lowering.end();
         assertTrue(lowering.openRefusals().toString(),
                 lowering.openRefusals().isEmpty());
         List<String> texts = new ArrayList<String>(conditions);
         texts.addAll(Arrays.asList(parent.text, parent.precondition,
-                name.text));
+                name.text, trimmed.text));
         StringBuilder query = new StringBuilder(
                 String.join("\n", lowering.preambleLines()));
         for (SmtLowering.Declaration declaration : lowering.reachedBy(texts)) {
@@ -5686,17 +5727,27 @@ public class ComposerTest {
         }
         query.append("\n(define-fun parent () String ").append(parent.text)
                 .append(")\n(define-fun name () String ").append(name.text)
-                .append(")\n(assert ").append(parent.precondition).append(')');
+                .append(")\n(define-fun trimmed () String ")
+                .append(trimmed.text).append(')');
+        String parentDefined = "(assert " + parent.precondition + ")";
         String[][] cases = {
             {"(and (= s \"a/b/c\") (= parent \"a/b\"))", "sat"},
             {"(and (= s \"a/b/c\") (= parent \"a\"))", "unsat"},
             {"(= s \"abc\")", "unsat"},
             {"(and (= n (- 12)) (= name \"-12\"))", "sat"},
             {"(and (= n (- 12)) (= name \"12\"))", "unsat"},
+            {"(and (= s \" \\u{9}a b\\u{a}\") (= trimmed \"a b\"))", "sat", ""},
+            {"(and (= s \" \\u{9}a b\\u{a}\") (= trimmed \"\\u{9}a b\"))",
+                    "unsat", ""},
+            {"(and (= s \" \\u{0} \") (= trimmed \"\"))", "sat", ""},
+            {"(and (= s \"ab\") (not (= trimmed s)))", "unsat", ""},
         };
         for (String[] asked : cases) {
-            Z3.Answer answer = solver.ask(query + "\n(assert " + asked[0]
-                    + ")", Collections.<String>emptyList(), false);
+            // A trim is defined wherever its receiver is, a parent only
+            // where the path has a separator.
+            Z3.Answer answer = solver.ask(query + "\n"
+                    + (asked.length > 2 ? "" : parentDefined) + "\n(assert "
+                    + asked[0] + ")", Collections.<String>emptyList(), false);
             assertTrue(asked[0] + " " + answer.status(), answer.decided()
                     && answer.sat() == "sat".equals(asked[1]));
         }

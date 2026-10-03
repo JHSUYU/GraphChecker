@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.compose;
 
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import java.util.ArrayList;
@@ -14,6 +15,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.Function;
 
 /**
  * How one composition's disjunction is asked ({@link ClaimPolicy}): "one of
@@ -113,22 +115,40 @@ final class Disjunction implements AutoCloseable {
      */
     List<Z3.Answer> selfCheck() {
         List<String> none = Collections.emptyList();
+        List<Z3.Answer> answers = alone(
+                selector -> composition.pathQuery(selector, none));
+        for (int at = 0; at < answers.size(); at++) {
+            if (answers.get(at).unsat()) {
+                remember(composition.disjuncts().get(at).selector(),
+                        new HashSet<String>(), answers.get(at), true);
+            }
+        }
+        return answers;
+    }
+
+    /**
+     * Every path alone with its fatal arm left out
+     * ({@code Composition#withoutFatalArm}), within
+     * {@link #SELF_CHECK_BUDGET_MS}: what its own run satisfied, so unsat
+     * is a contradiction the composition built.  In the disjuncts' order.
+     */
+    List<Z3.Answer> withoutFatalArms() {
+        return alone(composition::withoutFatalArm);
+    }
+
+    /** One question per path, asked {@link #PATH_ASKS} at a time with no
+     *  assertion and no core, read back in the disjuncts' order. */
+    private List<Z3.Answer> alone(
+            Function<String, ArtifactIO.Body> question) {
+        List<String> none = Collections.emptyList();
         List<Future<Z3.Answer>> pending = new ArrayList<Future<Z3.Answer>>();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             String selector = disjunct.selector();
-            pending.add(pool.submit(() -> solver.ask(
-                    composition.pathQuery(selector, none), none, false,
-                    SELF_CHECK_BUDGET_MS)));
+            pending.add(pool.submit(() -> solver.ask(question.apply(selector),
+                    none, false, SELF_CHECK_BUDGET_MS)));
         }
         List<Z3.Answer> answers = new ArrayList<Z3.Answer>();
-        for (int at = 0; at < pending.size(); at++) {
-            Z3.Answer answer = get(pending.get(at));
-            answers.add(answer);
-            if (answer.unsat()) {
-                remember(composition.disjuncts().get(at).selector(),
-                        new HashSet<String>(), answer, true);
-            }
-        }
+        for (Future<Z3.Answer> each : pending) answers.add(get(each));
         return answers;
     }
 

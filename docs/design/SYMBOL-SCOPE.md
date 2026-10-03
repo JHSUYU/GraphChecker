@@ -341,21 +341,28 @@ reaches, to a fixed point:
 - **The demand walk** (`DemandWalk`), backwards over the candidate graph, one demand per (occurrence,
   cell), from the operands of the fatal guards the question's target occurrences decided. Inside
   an occurrence it follows the edges of the methods its regions hold (its own and those folded into
-  it). At a cell a `WRITE_SITE` names it crosses, on the same node, to every activation that
+  it) that ran in it (`observedMethods`): an edge of a method the occurrence never entered carried
+  nothing there (ad-hoc `ReindexCollectionCmd-369`, Solr: along every method of their regions the
+  target's 923 writers demanded 5134 more, along the methods that ran in them 244). At a cell a `WRITE_SITE` names it crosses, on the same node, to every activation that
   performed a storing region -- as its own region or folded into it -- and ran the storing method
   (`SHARED_LOCATION_DEMAND_V1`), and keeps the guards of the read locally; in a writer it demands
   the guards of the store, never the store's value (value provenance stops at a stored location:
   the values come from roots, below), nor the writer's own other writers.
   - **A heap location is one object's field** (Writers_W(l), GreyGraph §3.1): the recording names
     the objects each activation read or wrote a field on (`FIELD_OWNERS`, stamped by
-    `runtime/RuntimeRegionPlanner#stampFieldOwners`: a field event's receiver, a reference
-    field's referent, and the receiver of a call at a site that returns a field -- an unwoven
-    accessor, `RuntimeSelectedRegionFinalizer#fieldReadingCalls`). A writer the recording saw
-    access the field on other objects only than the reader did is not crossed to
-    (`DemandWalk#holdsOthersOnly`); a side the recording saw no access of the field on (a store on
-    an arm it did not take, an atomic's or a container's own state, a static field's one location
-    `0`) says nothing either way. hdfs ad-hoc `DataStreamer-638`: 1147 `Configuration.get`
-    occurrences ran the lazy store of `overlay`, on 10 objects; the reader read one.
+    `runtime/RuntimeRegionPlanner#stampFieldOwners`: a field event's receiver, and the receiver of
+    a call at a site that returns a field -- an unwoven accessor -- or mutates a field of its
+    receiver -- a `WRITE_SITE`'s `declaredCallee` whose cell is not its carrier, an atomic's
+    `value`: `RuntimeSelectedRegionFinalizer#fieldAccessingCalls`), and apart what a reference field
+    held (`FIELD_REFERENTS`). A writer the recording saw access the field on other objects only than
+    the reader did is not crossed to (`DemandWalk#holdsOthersOnly`): the holders for a store, the
+    holders and what they held for a mutation through the field (a container's or an atomic's
+    state); a referent shared by a store's holders is no shared location (Solr: every lambda
+    capturing one ZooKeeper client, every DocCollection holding one cached `Integer`). A side the
+    recording saw no access of the field on (a store on an arm it did not take, a static field's
+    one location `0`) says nothing either way. hdfs ad-hoc `DataStreamer-638`: 1147
+    `Configuration.get` occurrences ran the lazy store of `overlay`, on 10 objects; the reader read
+    one.
   - **A message is one exchange leg**: at a cell the capture of a declared IN port names (an IN call
     return's assigned locals, any other's cut cell), in an occurrence performing a region that
     declares the port, it crosses to every occurrence whose capture of the port's export the

@@ -128,15 +128,23 @@ public final class Composer {
     public static final class Disjunct {
         private final Corpus.RecordedPath path;
         private final String selector;
+        /** The name of its {@code (=> selector (and pi ... phi ...))}. */
+        private final String fatal;
+        /** That implication with phi, the fatal arm, left out: what the
+         *  path's own run satisfied ({@link Composition#withoutFatalArm}). */
+        private final String withoutFatalArm;
         private final boolean fatalObserved;
         private final Set<String> interactionIds;
         private final Set<String> restsOn;
 
         private Disjunct(Corpus.RecordedPath path, String selector,
+                         String fatal, String withoutFatalArm,
                          boolean fatalObserved, Set<String> interactionIds,
                          Set<String> restsOn) {
             this.path = path;
             this.selector = selector;
+            this.fatal = fatal;
+            this.withoutFatalArm = withoutFatalArm;
             this.fatalObserved = fatalObserved;
             this.interactionIds = Collections.unmodifiableSet(interactionIds);
             this.restsOn = Collections.unmodifiableSet(restsOn);
@@ -284,6 +292,38 @@ public final class Composer {
                     start = commandEnds[index];
                 }
                 for (String assertion : legal) output.write(assertion);
+            };
+        }
+
+        /**
+         * One path's question with its fatal arm left out ({@link
+         * #pathQuery}, its {@code path_fatal__} command replaced by the
+         * same implication without phi): what its own run satisfied, every
+         * root free.  Unsat, the composition contradicts the run itself
+         * (ClaimPolicy's self-check).
+         */
+        public ArtifactIO.Body withoutFatalArm(String selector) {
+            Disjunct disjunct = bySelector(selector);
+            String own = "\n(assert " + SmtNames.legalSymbols(
+                    disjunct.withoutFatalArm) + ")\n";
+            String named = ":named " + disjunct.fatal + "))";
+            return output -> {
+                int start = 0;
+                for (int index = 0; index < commandEnds.length; index++) {
+                    int end = commandEnds[index];
+                    if (!kept(index, selector)) {
+                        start = end;
+                        continue;
+                    }
+                    if (selector.equals(commandGuards[index])
+                            && body.startsWith(named, end - named.length())) {
+                        output.write(own);
+                    } else {
+                        output.write(body, start, end - start);
+                    }
+                    start = end;
+                }
+                output.write("\n(assert " + selector + ")\n");
             };
         }
 
@@ -1040,6 +1080,7 @@ public final class Composer {
         //     fatal arm in any world of this one; none stated is no phi.
         String subject = "phi of " + anchor.render();
         String published = target.phiTerm().trim();
+        int fatalArm = -1;
         if (published.isEmpty() || "false".equals(published)) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, subject, published.isEmpty()
@@ -1052,6 +1093,7 @@ public final class Composer {
         } else {
             String phi = lowering.statedTerm(published, "phi:" + subject);
             if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
+                fatalArm = terms.size();
                 terms.add(phi);
             }
         }
@@ -1106,14 +1148,18 @@ public final class Composer {
 
         // Nothing refuses the path from here: it is a disjunct.
         composedFamilies.commit();
-        lowering.assertNamed("path_fatal__" + ordinal,
+        String fatal = "path_fatal__" + ordinal;
+        lowering.assertNamed(fatal,
                 "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
+        List<String> withoutFatalArm = new ArrayList<String>(terms);
+        if (fatalArm >= 0) withoutFatalArm.remove(fatalArm);
         observedReads.put(path.pathId, observed);
         observedArrivals.put(path.pathId,
                 arrivals(corpus.attachesOn(session, anchor)));
         heldArrivals.put(path.pathId, arrivals(bound));
-        return new Disjunct(path, selector, target.observedFatal(),
-                interactionIds, restsOn);
+        return new Disjunct(path, selector, fatal, "(=> " + selector + " "
+                + VmTermLowering.and(withoutFatalArm) + ")",
+                target.observedFatal(), interactionIds, restsOn);
     }
 
     /**

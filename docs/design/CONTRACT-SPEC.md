@@ -162,7 +162,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `SESSION_INCOMPLETE` | a session no reader could read whole |
 | `ASSIGNMENT_UNPLANTED` | an assigned root whose mint ran without planting the value |
 | `ASSIGNMENT_UNMINTABLE` | an assigned root the recording mints nowhere (the obligation is not run) |
-| `PATH_SELF_CONTRADICTORY` | a composed path unsatisfiable with every root free (BLOCKING when every path is) |
+| `PATH_SELF_CONTRADICTORY` | when every composed path is unsatisfiable with every root free: a path that is so even without its fatal arm, or that observed the fatal arm (DIAGNOSTIC per path, BLOCKING for the composition); a path refuted by its fatal arm alone is no gap ([PIPELINE.md §9](PIPELINE.md)) |
 | `CONFIRM_MISMATCH` | the confirmation replay took an edge the model did not choose, could not hold its order, or could not read the edges it was handed (`EDGES:`) |
 | `CLAIM_REFUTED` | a model CONFIRM refuted (`<iteration>/refuted_claims.jsonl`), which the composition excludes (DIAGNOSTIC; BLOCKING when the file cannot be read), [PIPELINE.md §10](PIPELINE.md) |
 | `NO_ROOT_REACHES_ANCHOR` | every admitted path decided the declared anchor on no symbol and none observed the fatal (R1-ROOTS D0); stated by each EXPLORE round on it with the predicate reads its closure demands: DIAGNOSTIC while the exploration has work, BLOCKING at the fixed point ([PIPELINE.md §7.1, §7.2](PIPELINE.md)) |
@@ -309,6 +309,8 @@ field=<f> <subject>`.
   what cannot start with a digit, an opaque String by literals alone), is piece-wise equality.
   Otherwise a rendering is a String: `java_int_to_string` of an integral (a binary operator's
   value too), `(ite b "true" "false")` of a boolean, `str.from_code` of a char.
+- `String.trim()` is its receiver between two fresh indexes, every character outside them at most
+  U+0020 and the first and last inside above it unless none is left (`SmtLowering#trim`).
 - A recorded value is a literal of the sort it is read at (`compose.VmTermLowering#smtLiteral`,
   COMPOSE's and, through `explore.SmtText#literal`, a flip query's): a Bool `true`/`false` (the
   VM's `1`/`0`), an integral's decimal, a floating value's bits, a String's JSON string literal's
