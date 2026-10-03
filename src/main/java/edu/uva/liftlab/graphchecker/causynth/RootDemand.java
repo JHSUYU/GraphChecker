@@ -55,15 +55,18 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * only to a value-like receiver (a box, a {@code String}).
  *
  * <p>Of each class the {@value #WIDTH} boundaries nearest are CHOSEN: a
- * chosen TRACK read is tracked though its value takes more than the scope
- * map's flows to a branch, a chosen READ is a placeholder though only its own
- * region stores it, a SCOPE or PRE_WINDOW boundary ranks first in scope
- * growth ({@code plan.ScopeFrontier}).  A configuration belongs to the world, read
- * in whichever occurrence wrote what the anchor reads, beyond the boundary
+ * chosen TRACK, TRACK_IDENTITY or TRACK_CONTAINER read is tracked though its
+ * value takes more than the scope map's flows to a branch, a chosen READ is a
+ * placeholder though only its own region stores it, a chosen SCOPE or
+ * PRE_WINDOW boundary ranks first in scope growth ({@code
+ * plan.ScopeFrontier}).  A configuration belongs to the world, read in
+ * whichever occurrence wrote what the anchor reads, beyond the boundary
  * between them: its keys are measured on the whole cone (every edge, no
  * boundary stops it), and the {@value #WIDTH} nearest within {@value
  * #DISTANCE} are the ones minted.  {@value #FILE} beside the scope map lists
- * every boundary.</p>
+ * every boundary; the scope map's reads state their distance, the mark a
+ * concrete anchor's demand keeps its reads by ({@code
+ * explore.ClosurePlanner#concrete}).</p>
  */
 final class RootDemand {
     /** The file beside the scope map. */
@@ -73,18 +76,10 @@ final class RootDemand {
     /** The most boundaries of one class chosen, nearest first. */
     static final int WIDTH = 12;
 
-    /** A boundary's class; the mintable ones are a replay's to fill. */
+    /** A boundary's class. */
     enum Kind {
-        CLOCK(true), FAULT(true), CONFIG_CALL(true), CONFIG_FIELD(true),
-        READ(true), TRACK(true), TRACK_IDENTITY(false),
-        TRACK_CONTAINER(false), PRE_WINDOW(false), WIRE(false), IO(false),
-        SCOPE(false), LIBRARY(false);
-
-        final boolean mintable;
-
-        Kind(boolean mintable) {
-            this.mintable = mintable;
-        }
+        CLOCK, FAULT, CONFIG_CALL, CONFIG_FIELD, READ, TRACK, TRACK_IDENTITY,
+        TRACK_CONTAINER, PRE_WINDOW, WIRE, IO, SCOPE, LIBRARY
     }
 
     /** One boundary where one edge reaches it. */
@@ -214,7 +209,6 @@ final class RootDemand {
             row.addProperty("cell", boundary.cell);
             row.addProperty("siteId", boundary.siteId);
             row.addProperty("edgeKind", boundary.edgeKind);
-            row.addProperty("mintable", boundary.kind.mintable);
             row.addProperty("chosen", boundary.chosen);
             rows.add(row);
         }
@@ -238,11 +232,13 @@ final class RootDemand {
     }
 
     /** The frontier signatures scope growth takes first, each with its
-     *  class: the callee of each SCOPE return, the method of each SCOPE
-     *  formal, each PRE_WINDOW field (its writers may be out of scope). */
+     *  class: of the chosen boundaries, the callee of each SCOPE return,
+     *  the method of each SCOPE formal, each PRE_WINDOW field (its writers
+     *  may be out of scope). */
     Map<String, String> frontier() {
         Map<String, String> frontier = new LinkedHashMap<>();
         for (Boundary boundary : boundaries) {
+            if (!boundary.chosen) continue;
             Matcher returned = RETURN.matcher(boundary.cell);
             Matcher formal = FORMAL.matcher(boundary.cell);
             String signature = boundary.kind == Kind.PRE_WINDOW
@@ -376,12 +372,12 @@ final class RootDemand {
         return chosen;
     }
 
-    /** The {@value #WIDTH} nearest cells of each mintable class the walk
-     *  found are chosen; a configuration's choice is its key's. */
+    /** The {@value #WIDTH} nearest cells of each class the walk found are
+     *  chosen; a configuration's choice is its key's. */
     private static void choose(List<Boundary> found) {
         Map<Kind, Map<String, Integer>> cells = new HashMap<>();
         for (Boundary boundary : found) {
-            if (!boundary.kind.mintable || boundary.kind == Kind.CONFIG_FIELD
+            if (boundary.kind == Kind.CONFIG_FIELD
                     || boundary.kind == Kind.CONFIG_CALL) {
                 continue;
             }

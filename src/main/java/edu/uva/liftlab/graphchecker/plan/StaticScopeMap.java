@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -523,7 +524,7 @@ public final class StaticScopeMap {
                 // however many flows away.
                 if (tracked != SharedFieldFlow.TrackedKind.NONE
                         && (deciding.contains(text(edge.get("toCell")))
-                        || chosen(mark, "TRACK"))) {
+                        || chosen(mark, TRACKED_DEMAND))) {
                     add(found, seen, retained, new Site(READ_SITE, "",
                             siteId, vmSite(method), field, field, "", "", "",
                             null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS,
@@ -606,7 +607,8 @@ public final class StaticScopeMap {
                     Collections.<String>emptySet());
             if (regions.isEmpty() || regions.size() == 1
                     && regions.contains(site.regionId)
-                    && !chosen(demand.at(site.siteId, site.cell), "READ")) {
+                    && !chosen(demand.at(site.siteId, site.cell),
+                    Collections.singleton("READ"))) {
                 continue;
             }
             found.set(index, site.withDeclared(new Declared(declared.kind,
@@ -641,8 +643,13 @@ public final class StaticScopeMap {
     /** No demand: a map built over no root demand. */
     public static final Demand NO_DEMAND = (siteId, cell) -> null;
 
-    private static boolean chosen(Demanded mark, String kind) {
-        return mark != null && mark.chosen && kind.equals(mark.kind);
+    /** The root demand's classes of shared state a replay versions: a
+     *  chosen read of one is a {@link #READ_SITE}. */
+    private static final Set<String> TRACKED_DEMAND = new LinkedHashSet<>(
+            Arrays.asList("TRACK", "TRACK_IDENTITY", "TRACK_CONTAINER"));
+
+    private static boolean chosen(Demanded mark, Collection<String> kinds) {
+        return mark != null && mark.chosen && kinds.contains(mark.kind);
     }
 
     private static int distance(Demanded mark) {
@@ -1243,6 +1250,32 @@ public final class StaticScopeMap {
             carriersInMethod(named, site, javaType, kind, carriers);
         }
         return carriers;
+    }
+
+    /**
+     * Whether one RECORDED read is a read the root demand found on the
+     * declared throw's path guards (causynth.RootDemand: a {@link
+     * #READ_SITE} or a READ placeholder stating its {@code demandDistance}),
+     * joined as {@link #carriersAt} joins: on the shared method, the kind of
+     * location and the type.
+     */
+    public boolean demandedAt(String recordedSite, String javaType,
+                              LocationKind kind) {
+        String site = recordedSite == null ? "" : recordedSite;
+        for (Site named : sites) {
+            if (named.demandDistance < 0 || named.vmSite.isEmpty()
+                    || !site.startsWith(named.vmSite + "#")
+                    || !sameType(descriptorOfCellType(named.cell),
+                    javaType)) {
+                continue;
+            }
+            if (READ_SITE.equals(named.role) ? stores(named, kind)
+                    : named.declared != null
+                    && READ_INPUT.equals(named.declared.inputKind)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void carriersInMethod(Site named, String recordedSite,

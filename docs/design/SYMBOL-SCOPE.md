@@ -157,7 +157,7 @@ The case's `scope=(...)` class list is where `S` starts. `run_engine.sh
 campaign_analyze_grown_scope` reruns the static pass until nothing is added or the budget is spent:
 
 1. `plan/ScopeFrontier#rows` lists where `S` stops, each row with its `distance` (edges from its
-   cell back to the throw's sinks); a row the root demand names a boundary (§4.6: a `SCOPE`
+   cell back to the throw's sinks); a row the root demand chose as a boundary (§4.6: a `SCOPE`
    callee or formal, a `PRE_WINDOW` field) states its class as `demand`, and demanded rows come
    first, the rest after, each nearest first:
    - `CALLEE`: a callee whose return `S` demands but whose body is not analysed (and is no clock);
@@ -481,12 +481,12 @@ followed only to a value-like receiver (a box, a `String`). The classes:
 | `CONFIG_CALL`, `CONFIG_FIELD` | a configuration (§4.3) | the twelve nearest keys within sixteen edges are minted |
 | `READ` | a JDK atomic's value | a chosen read is a READ placeholder (§5.4) though only its own region stores it |
 | `TRACK` | an integral or boxed field a region stores | a chosen read is a READ_SITE (§5.1) however many flows from a branch |
-| `TRACK_IDENTITY` | a reference, `String` or enum field a region stores | named (R3) |
-| `TRACK_CONTAINER` | a container's state (a field of a container type, a container query's return) | named (R3) |
-| `PRE_WINDOW` | a field no region of the slice stores | first in scope growth (§2.4): a writer out of scope (a configuration holder's constructor) may store it |
+| `TRACK_IDENTITY` | a reference, `String` or enum field a region stores | a chosen read is a READ_SITE as well; its value is never freed (R3) |
+| `TRACK_CONTAINER` | a container's state (a field of a container type, a container query's return) | a chosen field read is a READ_SITE as well; its state is never freed (R3) |
+| `PRE_WINDOW` | a field no region of the slice stores | chosen, first in scope growth (§2.4): a writer out of scope (a configuration holder's constructor) may store it |
 | `WIRE` | a region root's formal: what a message or a thread start hands over | named (R2) |
 | `IO` | a stream, file, socket, channel or native result | named |
-| `SCOPE` | a call into the system's own code outside the scope, a formal no caller in scope passes | first in scope growth (§2.4) |
+| `SCOPE` | a call into the system's own code outside the scope, a formal no caller in scope passes | chosen, first in scope growth (§2.4) |
 | `LIBRARY` | any other library result | named |
 
 Of each class the twelve nearest boundaries are *chosen* (a cell per boundary). A configuration
@@ -496,8 +496,11 @@ replay that decremented it), so its keys are measured on the whole cone (every e
 stops it), a field's at the field, a getter call's one past the local it lands in. A named class
 is a row, never a freed value: freeing it would invent a value no execution produces.
 `root_demand.jsonl` lists every boundary (`class`, `distance`, `cell`, `siteId`, `edgeKind`,
-`mintable`, `chosen`); every DECLARED_SITE and READ_SITE the demand reached states its
-`demandDistance`.
+`chosen`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
+That mark is the static half of a concrete anchor's demand: an anchor every admitted path decided
+on no symbol demands the reads it made before it decided that carry it
+(`explore.ClosurePlanner#concrete`, `StaticScopeMap#demandedAt`; PIPELINE §7.2), their writers
+asked as a symbolic predicate's are.
 
 ## 5. Tracked shared state (F2)
 
@@ -521,8 +524,9 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
     constructor, so there is nothing to re-pair;
 - decides a branch: the read's value reaches a branch operand within eight flows
   (`StaticScopeMap#decidingCells`, `DECIDING_FLOWS`), never through a field and never across a
-  `wire_handoff` edge, or the root demand chose it, a `TRACK` boundary of the throw's own guards
-  however many flows away (§4.6); a read that only feeds data stays untracked;
+  `wire_handoff` edge, or the root demand chose it, a `TRACK`, `TRACK_IDENTITY` or
+  `TRACK_CONTAINER` boundary of the throw's own guards however many flows away (§4.6); a read that
+  only feeds data stays untracked;
 - is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
 
 `WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,
@@ -699,7 +703,8 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   is planted only where a symbolic occurrence reads it, a field at every read of it.
 - Root demand (§4.6) is chosen once, at SEED: no re-seed admits a boundary the seed left unminted
   or untracked. Its classes read the slice's edges, so a value the slice never reached is no
-  boundary.
+  boundary, and a concrete anchor's demand joins a read row to a demanded read by its method, kind
+  and type, not its bci (`StaticScopeMap#demandedAt`).
 - The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
   and `AtomicReference.value`, a static one on its class's mirror) and the atomics' integral
   `value` from an observed access (§5.2). A container reached through a

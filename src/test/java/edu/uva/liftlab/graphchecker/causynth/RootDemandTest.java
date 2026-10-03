@@ -77,16 +77,16 @@ public class RootDemandTest {
             {"the boundaries, nearest first; the clock past the bound is "
                     + "none, the configuration behind the tracked count is "
                     + "found on the cone", Arrays.asList(
-                    "IO 1 false <java.io.FileInputStream: int read()>.return",
-                    "PRE_WINDOW 1 false " + field("int old"),
+                    "IO 1 true <java.io.FileInputStream: int read()>.return",
+                    "PRE_WINDOW 1 true " + field("int old"),
                     "READ 1 true <java.util.concurrent.atomic.AtomicInteger:"
                             + " int value>",
-                    "SCOPE 1 false <t.Other: int app()>.return",
+                    "SCOPE 1 true <t.Other: int app()>.return",
                     "TRACK 1 true " + field("int count"),
-                    "TRACK_CONTAINER 1 false <java.util.Map: java.lang.Object"
+                    "TRACK_CONTAINER 1 true <java.util.Map: java.lang.Object"
                             + " get(java.lang.Object)>.return",
-                    "TRACK_IDENTITY 1 false " + field("java.lang.String name"),
-                    "WIRE 1 false " + HANDLE + ".param0:int",
+                    "TRACK_IDENTITY 1 true " + field("java.lang.String name"),
+                    "WIRE 1 true " + HANDLE + ".param0:int",
                     "CLOCK 2 true <java.lang.System: long currentTimeMillis()>"
                             + ".return",
                     "CONFIG_FIELD 4 true " + field("boolean flag")), found},

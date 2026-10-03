@@ -274,13 +274,14 @@ public final class ExploreMain {
 
     /**
      * NO ROOT REACHES THE ANCHOR (R1-ROOTS D0): every admitted path decided
-     * it on no symbol, so its closure starts from what it read before it
-     * decided ({@link ClosurePlanner.Concrete}).  DIAGNOSTIC while the
-     * exploration still has work; BLOCKING at the fixed point, where no flip
-     * of what wrote those reads moved the predicate onto a root and none
-     * will.  The detail says which of three ends it is: no admitted path
-     * decided a site on the way to the throw, the anchor read no shared
-     * state before it decided, or the reads its closure demands.
+     * it on no symbol, so its closure starts from what it read on its path
+     * guards' cone before it decided ({@link ClosurePlanner.Concrete}).
+     * DIAGNOSTIC while the exploration still has work; BLOCKING at the fixed
+     * point, where no flip of what wrote those reads moved the predicate
+     * onto a root and none will.  The detail says which of three ends it is:
+     * no admitted path decided a site on the way to the throw, the anchor
+     * read nothing on that cone before it decided, or the reads its closure
+     * demands.
      */
     private static GapRow noRoot(OccurrenceAddress anchor,
                                  ClosurePlanner.Concrete concrete,
@@ -294,9 +295,11 @@ public final class ExploreMain {
                 ? "none of its " + concrete.paths + " admitted paths decided "
                         + "a site on its way to the throw"
                 : concrete.reads.isEmpty()
-                ? "it read no shared state before it decided"
+                ? "it read no shared state its path guards depend on "
+                        + "before it decided"
                 : "its closure demands the " + concrete.reads.size()
-                        + " shared-state reads it made before it decided, of "
+                        + " reads its path guards depend on it made before "
+                        + "it decided, of "
                         + locations.size() + " locations ("
                         + String.join(", ", named.subList(0,
                                 Math.min(4, named.size())))

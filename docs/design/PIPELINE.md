@@ -418,8 +418,8 @@ schedule) and:
    proposed, exposed or in flight, and no witness. So is a concrete anchor (§7.2): every round on it
    states `NO_ROOT_REACHES_ANCHOR` (`ExploreMain#noRoot`), DIAGNOSTIC while the exploration has
    work, BLOCKING at the fixed point, its detail one of three ends: none of its admitted paths
-   decided a site on its way to the throw, it read no shared state before it decided, or the reads
-   (and their locations) its closure demands.
+   decided a site on its way to the throw, it read no shared state its path guards depend on before
+   it decided, or the reads (and their locations) its closure demands.
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -447,13 +447,16 @@ its healthy arm" or never reached) and nothing above names a value. An unreached
 symbolic decision on the way is not concrete, since flipping it is how a replay reaches the throw
 (SOLR-18413's leader leaves at a concrete test of the boolean its clock-decided `isExpired`
 returned). Its predicate reads are then the read rows the anchor made, in each admitted path,
-before that path's deciding event (a later read cannot reach a decision already taken; an earlier
-one may, through a value the VM kept no expression under, or through a branch). Their symbols are
-demanded like those a symbolic phi names, so their writers become tasks flipped at their own
-guards and fault sites. The reads are what the rows state: a cell the static slice does not track
-has no read row (the anchor then "read no shared state"); R1-ROOTS WP-F1's predicate cone, which
-tracks more of the cells the target's guards depend on, reaches here as rows. A non-concrete
-anchor plans as before. Each demanded boundary input grows the closure:
+before that path's deciding event, of the reads the root demand found on the throw's path guards
+(SYMBOL-SCOPE §4.6; `StaticScopeMap#demandedAt`: a READ_SITE or READ placeholder stating its
+`demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins).
+A later read cannot reach a decision already taken; an earlier one off the guards' cone reaches it
+only through a read on it, whose writers the closure then asks. Their symbols are demanded like
+those a symbolic phi names, so their writers become tasks flipped at their own guards and fault
+sites. The demand tracks the cone's nearest reads however many flows from a branch (a String, a
+reference, a container too), so they have read rows; a cell no region stores has no writer to ask
+(the anchor then "read no shared state its path guards depend on"). A non-concrete anchor plans as
+before. Each demanded boundary input grows the closure:
 
 - an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
   sites = the guards of the port's static export sites, contributed = its exports), and every activated
