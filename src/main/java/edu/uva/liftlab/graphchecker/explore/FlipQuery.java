@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
@@ -986,8 +987,8 @@ final class FlipQuery {
          * detector turn's {@code maxSlowDisksToExclude <= 0}, the
          * reconfiguration's 0, its INITIAL 1).  The text then names each,
          * and its {@code wchoice_*} selectors bind it ({@link #bind}).  A
-         * container's state stays inlined (see {@link #rename}); a
-         * placeholder's mint is a root's.
+         * container's state, and a query of one, stays inlined (see {@link
+         * #rename}); a placeholder's mint is a root's.
          */
         private void movableReads() {
             SmtLowering lowering = corpus.lowering(path.sessionId);
@@ -1000,9 +1001,14 @@ final class FlipQuery {
                     continue;
                 }
                 ownReads.putIfAbsent(row.symbol(), row);
+                // A container location's writes are states and its reads
+                // answers of a query over one: no read of it is a writer's
+                // value (solr-18413 G2: a map lookup bound to a map state).
                 VmTermLowering.Sort sort =
                         JavaSmtSorts.sortOfJava(row.javaType());
-                if (sort.containerState() || eligible(row).size() < 2) {
+                if (row.location().kind() == LocationKind.MAP
+                        || sort.containerState()
+                        || eligible(row).size() < 2) {
                     continue;
                 }
                 lowering.state(row.symbol(), sort);

@@ -3577,6 +3577,9 @@ public class ExploreTest {
      *  is given). */
     /** {@link #twoWriters}' lookup over the read node the VM writes. */
     private static final String VM_LOOKUP = "EXPR.0000000000000002";
+    /** The key id both of {@link #twoWriters}' writers store: a field. */
+    private static final LocationId KEY_ID =
+            LocationId.of(LocationKind.INSTANCE, "21", "40");
 
     private Path twoWriters(String name, String term, String limit)
             throws IOException {
@@ -3591,14 +3594,14 @@ public class ExploreTest {
         seed.activation(again, false, true, "fixture#key-updater");
         seed.constant("e.1", "1");
         seed.constant("e.2", "2");
-        seed.write(STORED, ALL_KEYS, 5L, "e.1");
+        seed.write(STORED, KEY_ID, 5L, "e.1");
         seed.write(at(again, Endpoint.stateSite("BlockTokenSecretManager",
                 "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
-                ALL_KEYS, 6L, "e.2");
-        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "1");
+                KEY_ID, 6L, "e.2");
+        seed.read(LOOKED_UP, KEY_ID, 5L, "M_READ_KEY", "1");
         // The lookup as the VM states it: the guarded read, joined to the
         // write it observed, compared.
-        seed.expression(VM_LOOKUP, binary("==", readNode(ALL_KEYS, 5L, "I",
+        seed.expression(VM_LOOKUP, binary("==", readNode(KEY_ID, 5L, "I",
                 literal(1)), literal(2)));
         if (limit != null) {
             seed.root(TARGET, "CASE.LIMIT", "M_LIMIT", RootKind.INTEGRAL,
