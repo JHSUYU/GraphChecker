@@ -1816,8 +1816,11 @@ final class SeedBackwardStaticAnalyzer {
     /**
      * A container query's result depends on its receiver and arguments
      * (library receivers are otherwise excluded), by the contract of the
-     * receiver's interface (JavaContainerTypes).  Value semantics belong to
-     * the VM's {@code ContainerRelation}.
+     * receiver's interface (JavaContainerTypes), a stream pipeline's and a
+     * static {@code Collectors} call's included; a functional argument
+     * contributes its functional method's return ({@link
+     * #enterFunctionalArguments}).  Value semantics belong to the VM's
+     * {@code ContainerRelation}.
      */
     private void processSemanticContainerOperation(
             String callerMethod, Fact fact, MethodSig callee,
@@ -1835,19 +1838,23 @@ final class SeedBackwardStaticAnalyzer {
         }
         if (relevantDefs.isEmpty()) return;
 
+        // A static call (Collectors.toList()) reads its arguments alone.
         String receiver = invokeBaseLocal(fact.unitText);
-        if (receiver == null) return;
-        String receiverNode = canonical(callerMethod, receiver);
-        if (ignoreNode(receiverNode)) return;
-        // The result is demanded, so the receiver's state is a value input.
-        for (String def : relevantDefs) {
-            Map<String, Object> edge = addEdge("container_receiver",
-                    receiverNode, def, callerMethod, fact);
-            if (edge != null) {
-                edge.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
+        if (receiver != null) {
+            String receiverNode = canonical(callerMethod, receiver);
+            if (ignoreNode(receiverNode)) return;
+            // The result is demanded, so the receiver's state is a value
+            // input.
+            for (String def : relevantDefs) {
+                Map<String, Object> edge = addEdge("container_receiver",
+                        receiverNode, def, callerMethod, fact);
+                if (edge != null) {
+                    edge.put("dependencyRole",
+                            DependencyRole.VALUE_FRONTIER);
+                }
             }
+            callerRelevant.add(receiverNode);
         }
-        callerRelevant.add(receiverNode);
 
         for (String argument : canonicalPositionList(callerMethod,
                 actualInvokeArgs(fact.unitText))) {
@@ -1858,6 +1865,128 @@ final class SeedBackwardStaticAnalyzer {
             }
             callerRelevant.add(argument);
         }
+        enterFunctionalArguments(callerMethod, fact);
+    }
+
+    /** A functional object's interfaces: java.util.function's, and a
+     *  Comparator. */
+    private static boolean functionalInterface(String name) {
+        return name.startsWith("java.util.function.")
+                || "java.util.Comparator".equals(name);
+    }
+
+    /**
+     * Each functional argument of a container or stream call the slice
+     * demands contributes its functional method's return (SYMBOL-SCOPE
+     * §2.2): one {@code functional_return} edge from that method's return to
+     * the argument, and the slice enters the method -- each method of the
+     * object's class implementing an abstract method of a functional
+     * interface it implements.  The class is the one the argument is created
+     * from: a {@code new C}, or a static factory of a functional class (the
+     * {@code bootstrap$} of Soot's desugared lambda or method reference).
+     * The values it captured reach the factory's arguments at the creation
+     * site through the constructor-object edges.  An argument read from a
+     * field or a parameter states no class and is entered nowhere.
+     */
+    private void enterFunctionalArguments(String callerMethod, Fact fact) {
+        List<Value> arguments = ((Stmt) fact.unit).getInvokeExpr().getArgs();
+        List<String> nodes = canonicalPositionList(callerMethod,
+                actualInvokeArgs(fact.unitText));
+        for (int index = 0; index < arguments.size()
+                && index < nodes.size(); index++) {
+            if (!(arguments.get(index) instanceof Local)
+                    || ignoreNode(nodes.get(index))) {
+                continue;
+            }
+            for (SootClass created : creationClasses(callerMethod,
+                    (Local) arguments.get(index))) {
+                for (SootMethod method : functionalMethods(created)) {
+                    String signature = method.getSignature();
+                    if (!isExpandableMethod(signature)) continue;
+                    loadMethod(method);
+                    String returned = signature + ".return";
+                    addEdge("functional_return", returned,
+                            nodes.get(index), callerMethod, fact);
+                    relevant(signature).add(returned);
+                    selectedMethods.add(signature);
+                }
+            }
+        }
+    }
+
+    /** The classes a local's definitions create its object of: a {@code
+     *  new C}, or a static method of a functional class C (its factory). */
+    private Set<SootClass> creationClasses(String method, Local local) {
+        Set<SootClass> classes = new LinkedHashSet<>();
+        for (Fact fact : factsByMethod.get(method)) {
+            if (!(fact.unit instanceof AssignStmt)
+                    || ((AssignStmt) fact.unit).getLeftOp() != local) {
+                continue;
+            }
+            Value created = ((AssignStmt) fact.unit).getRightOp();
+            SootClass type = created instanceof NewExpr
+                    ? ((NewExpr) created).getBaseType().getSootClass()
+                    : created instanceof soot.jimple.StaticInvokeExpr
+                    ? ((InvokeExpr) created).getMethodRef()
+                    .getDeclaringClass() : null;
+            // Only the analysed scope's classes have a method to enter.
+            if (type != null && type.isApplicationClass()
+                    && !functionalMethods(type).isEmpty()) {
+                classes.add(type);
+            }
+        }
+        return classes;
+    }
+
+    /** The methods a class (or a superclass) implements of the abstract
+     *  methods of the functional interfaces it implements. */
+    private List<SootMethod> functionalMethods(SootClass type) {
+        List<SootMethod> methods = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (SootClass owner = type; owner != null
+                && owner.resolvingLevel() >= SootClass.HIERARCHY;
+             owner = owner.hasSuperclass() ? owner.getSuperclass() : null) {
+            Deque<SootClass> interfaces = new ArrayDeque<>(
+                    owner.getInterfaces());
+            while (!interfaces.isEmpty()) {
+                SootClass contract = interfaces.removeFirst();
+                if (!seen.add(contract.getName())
+                        || contract.resolvingLevel() < SootClass.HIERARCHY) {
+                    continue;
+                }
+                interfaces.addAll(contract.getInterfaces());
+                if (!functionalInterface(contract.getName())
+                        || contract.resolvingLevel()
+                        < SootClass.SIGNATURES) {
+                    continue;
+                }
+                for (SootMethod declared : contract.getMethods()) {
+                    if (!declared.isAbstract() || declared.isStatic()) {
+                        continue;
+                    }
+                    SootMethod implementation = implementation(type,
+                            declared.getSubSignature());
+                    if (implementation != null
+                            && !methods.contains(implementation)) {
+                        methods.add(implementation);
+                    }
+                }
+            }
+        }
+        return methods;
+    }
+
+    /** The concrete method a class runs for one subsignature: its own or
+     *  its nearest superclass's; null when none states one. */
+    private static SootMethod implementation(SootClass type,
+                                             String subSignature) {
+        for (SootClass owner = type; owner != null
+                && owner.resolvingLevel() >= SootClass.SIGNATURES;
+             owner = owner.hasSuperclass() ? owner.getSuperclass() : null) {
+            SootMethod method = owner.getMethodUnsafe(subSignature);
+            if (method != null && method.isConcrete()) return method;
+        }
+        return null;
     }
 
     /**
@@ -1887,6 +2016,7 @@ final class SeedBackwardStaticAnalyzer {
                     callerMethod, fact);
             callerRelevant.add(argument);
         }
+        enterFunctionalArguments(callerMethod, fact);
         publishMutation(callerMethod, fact, receiver);
     }
 

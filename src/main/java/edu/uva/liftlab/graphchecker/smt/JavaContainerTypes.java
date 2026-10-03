@@ -21,6 +21,13 @@ import java.util.function.Function;
  * only.  A call is named by its name and parameters, never its return type,
  * which an implementation narrows ({@code ConcurrentHashMap.keySet()} returns
  * a {@code KeySetView}).
+ *
+ * <p>A stream is a query over its source: every call of a {@code
+ * java.util.stream} pipeline ({@code BaseStream} and its subtypes) and of
+ * {@code Collectors} reads its receiver and its arguments, and a collection
+ * hands its state to one by {@code stream()} or {@code parallelStream()}.
+ * A functional argument of any of these calls (a filter's predicate, a
+ * {@code computeIfAbsent}'s function) is the analyzer's to enter.</p>
  */
 public final class JavaContainerTypes {
     public enum Shape {
@@ -31,14 +38,22 @@ public final class JavaContainerTypes {
     private enum Contract {
         MAP(Shape.ASSOCIATIVE), SET(Shape.ASSOCIATIVE), LIST(Shape.INDEXED),
         QUEUE(Shape.INDEXED), DEQUE(Shape.INDEXED), ITERATOR(Shape.NONE),
-        ENTRY(Shape.NONE);
+        ENTRY(Shape.NONE), COLLECTION(Shape.NONE), ITERABLE(Shape.NONE),
+        STREAM(Shape.NONE, true);
 
         private final Shape shape;
+        /** Every call is a query: a stream pipeline's. */
+        private final boolean everyCallQueries;
         private final Set<String> queries = new LinkedHashSet<>();
         private final Set<String> mutations = new LinkedHashSet<>();
 
         Contract(Shape shape) {
+            this(shape, false);
+        }
+
+        Contract(Shape shape, boolean everyCallQueries) {
             this.shape = shape;
+            this.everyCallQueries = everyCallQueries;
         }
 
         private void state(Collection<String> read, Collection<String> write) {
@@ -50,6 +65,26 @@ public final class JavaContainerTypes {
     private static final String OBJECT = "java.lang.Object";
 
     static {
+        Contract.ITERABLE.state(calls("iterator()",
+                "forEach(java.util.function.Consumer)", "spliterator()"),
+                Collections.<String>emptySet());
+        Contract.COLLECTION.state(Contract.ITERABLE.queries,
+                Contract.ITERABLE.mutations);
+        Contract.COLLECTION.state(calls(
+                "contains(K)", "containsAll(java.util.Collection)",
+                "isEmpty()", "size()", "toArray()", "toArray(K[])",
+                "stream()", "parallelStream()"), calls(
+                "add(K)", "remove(K)", "addAll(java.util.Collection)",
+                "removeAll(java.util.Collection)",
+                "retainAll(java.util.Collection)", "clear()",
+                "removeIf(java.util.function.Predicate)"));
+        for (Contract collection : EnumSet.of(Contract.SET, Contract.LIST,
+                Contract.QUEUE, Contract.DEQUE)) {
+            collection.state(Contract.COLLECTION.queries,
+                    Contract.COLLECTION.mutations);
+        }
+        Contract.MAP.state(calls("forEach(java.util.function.BiConsumer)"),
+                Collections.<String>emptySet());
         Contract.MAP.state(calls(
                 "get(K)", "getOrDefault(K,K)", "containsKey(K)", "size()",
                 "isEmpty()", "mappingCount()", "put(K,K)", "remove(K)",
@@ -139,6 +174,13 @@ public final class JavaContainerTypes {
                 "java.util.ListIterator");
         interfaces(Contract.ENTRY, "java.util.Map$Entry",
                 "java.util.Map.Entry");
+        interfaces(Contract.COLLECTION, "java.util.Collection");
+        interfaces(Contract.ITERABLE, "java.lang.Iterable");
+        interfaces(Contract.STREAM, "java.util.stream.BaseStream",
+                "java.util.stream.Stream", "java.util.stream.IntStream",
+                "java.util.stream.LongStream",
+                "java.util.stream.DoubleStream");
+        classes(EnumSet.of(Contract.STREAM), "java.util.stream.Collectors");
         classes(EnumSet.of(Contract.MAP), "java.util.AbstractMap",
                 "java.util.HashMap", "java.util.LinkedHashMap",
                 "java.util.TreeMap", "java.util.Hashtable",
@@ -209,7 +251,10 @@ public final class JavaContainerTypes {
         Call call = Call.parse(signature);
         if (call == null) return false;
         for (Contract contract : contracts(call.owner, hierarchy)) {
-            if (contract.queries.contains(call.name)) return true;
+            if (contract.everyCallQueries
+                    || contract.queries.contains(call.name)) {
+                return true;
+            }
         }
         return false;
     }

@@ -910,6 +910,9 @@ validate_config >/dev/null \
 stop_after_config IMPORT
 validate_config >/dev/null \
   || fail "campaign_stop_after=IMPORT is refused"
+stop_after_config SEED
+validate_config >/dev/null \
+  || fail "campaign_stop_after=SEED is refused"
 # A subshell body, because validate_config refuses by `die`, which exits.
 stop_after_validate() (
   stop_after_config "$1"
@@ -919,7 +922,7 @@ run_capturing_status stop_after_validate EXPLORE \
   >/dev/null 2>"${stop_after_dir}/validate.err"
 [[ "${status}" -ne 0 ]] \
   || fail "validate accepted an undeclared campaign_stop_after value"
-grep -q 'campaign_stop_after must be empty or IMPORT: EXPLORE' \
+grep -q 'campaign_stop_after must be empty, SEED or IMPORT: EXPLORE' \
     "${stop_after_dir}/validate.err" \
   || fail "the refusal does not name the key and the value it refused: \
 $(cat "${stop_after_dir}/validate.err")"
@@ -952,6 +955,15 @@ stop_after_campaign "${stop_after_dir}/campaign-import" \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-import.tsv")"
 ! grep -q 'EXPLORE' "${stop_after_dir}/labels-import.tsv" \
   || fail "a campaign stopping after IMPORT still ran EXPLORE"
+stop_after_config SEED
+: >"${stop_after_dir}/labels-seed.tsv"
+stop_after_campaign "${stop_after_dir}/campaign-seed" \
+  "${stop_after_dir}/labels-seed.tsv" \
+  || fail "a campaign stopping after SEED did not exit 0"
+[[ "$(tr '\n' ' ' <"${stop_after_dir}/labels-seed.tsv")" == \
+    "PREFLIGHT FREEZE_TOOL FREEZE SEED " ]] \
+  || fail "a campaign stopping after SEED ran past it: \
+$(tr '\n' ' ' <"${stop_after_dir}/labels-seed.tsv")"
 stop_after_config ""
 : >"${stop_after_dir}/labels-full.tsv"
 stop_after_campaign "${stop_after_dir}/campaign-full" \
