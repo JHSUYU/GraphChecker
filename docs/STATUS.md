@@ -14,7 +14,7 @@ Pointers are `path` plus class and method. `gc/` stands for
 
 ## Acceptance
 
-Main after the merges of `perf-slow-replays` and `fix-confirm-flakiness` (round `V8`, snapshot `p221`), VM
+Main after the merges of `perf-slow-replays`, `fix-confirm-flakiness` and `fix-adhoc-crashes` (round `V9`, snapshot `p222`), VM
 `/bigtemp/vnr3ne/vm-w4h/j2sdk-image`, trees `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741`
 (`gc/hdfs-11741`) and `/bigtemp/vnr3ne/wt/lucene-solr-storing` (`gc/solr-unified-storing` `663e0ef`). Runs under
 `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`, each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every
@@ -24,14 +24,14 @@ the system's code (the moved roots are those of the Phase 1 release, rounds `F1`
 
 | case | run | time | mechanism (moved roots) |
 | --- | --- | --- | --- |
-| hdfs-17897 | `V8` | 8 min | MARKER_FLIPPED, IPC request door (`REGION.763d087e`) |
-| hdfs-17899-bug1 | `V8` | 8 min | MARKER_FLIPPED, IPC response door (`REGION.9ffdee3d`) |
-| hdfs-17899-bug2, bug3 | `V8` | 10, 8 min | MARKER_FLIPPED, IPC response door |
-| hdfs-17967-pathA, B, C | `V8` | 7, 5, 6 min | MARKER_FLIPPED, IPC response door |
-| hdfs-17960 | `V8` | 11 min | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
-| hdfs-11741 | `V8` | 27 min | CLOCK_SKEW: the NameNode key-rotation clock (`REGION.08ab84c9`) sets a key's `expiryDate`, which crosses to dn1 as a handoff; dn1's `removeExpiredKeys` (`assoc_remove_if` over `allKeys`, `expiry < clock`) by its own clock (`REGION.ba3902cd`) drops the key the Balancer holds, and `retrieveDataEncryptionKey` throws |
-| solr-18406 | `V8` | 15 min | CLOCK_SKEW: the `IndexCommitWrapper.delete()` clock jumps past the commit's one-hour reservation, generation 2 is deleted and `getAndSaveCommitPoint(2)` throws |
-| solr-18413 | `V8` | 23 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
+| hdfs-17897 | `V9` | 8 min | MARKER_FLIPPED, IPC door of the target DataNode's first in-window heartbeat (V9: response, `REGION.9ffdee3d`; V8: request, `REGION.763d087e`) |
+| hdfs-17899-bug1 | `V9` | 7 min | MARKER_FLIPPED, the same heartbeat's IPC door (V9: request, `REGION.763d087e`; V8: response) |
+| hdfs-17899-bug2, bug3 | `V9` | 10, 8 min | MARKER_FLIPPED, IPC response door |
+| hdfs-17967-pathA, B, C | `V9` | 7, 8, 6 min | MARKER_FLIPPED, IPC response door (pathB in V9: the request door of the same heartbeat) |
+| hdfs-17960 | `V9` | 10 min | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
+| hdfs-11741 | `V9` | 28 min | CLOCK_SKEW: the NameNode key-rotation clock (`REGION.08ab84c9`) sets a key's `expiryDate`, which crosses to dn1 as a handoff; dn1's `removeExpiredKeys` (`assoc_remove_if` over `allKeys`, `expiry < clock`) by its own clock (`REGION.ba3902cd`) drops the key the Balancer holds, and `retrieveDataEncryptionKey` throws |
+| solr-18406 | `V9` | 15 min | CLOCK_SKEW: the `IndexCommitWrapper.delete()` clock jumps past the commit's one-hour reservation, generation 2 is deleted and `getAndSaveCommitPoint(2)` throws |
+| solr-18413 | `V9` | 17 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
 
 The workload of solr-18413 places the source shard's leader off the Overseer's node (tree `b41116b`): with
 both on one node, the per-node clock order leaves no witness short of the node's wall clock stepping back.

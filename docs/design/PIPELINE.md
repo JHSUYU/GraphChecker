@@ -1481,7 +1481,7 @@ REFUTED, `report.py` lists them, `tools/analysis/timeline.py` times every CONFIR
 
 After EMIT -- the verdict is published first, and nothing REPRODUCE does moves it -- a confirmed
 `SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the concolic
-VM (`campaign_reproduce`; ADHOC-INFRA WP5.D). `ConfirmMain --iteration --claim --static-scope-map
+VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --static-scope-map
 --plant <file>` writes the plant from CONFIRM's own world (`ConfirmMain#world`: the selected
 session's focus row overlaid by `plantModel`): one row per root, `{kind MARKER, occurrence: <mint
 occurrence id>, siteId: <the call site its plan input action names>, value}`, and one per guard of
