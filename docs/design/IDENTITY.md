@@ -156,8 +156,9 @@ the flip solver:
   ancestor either way, both chains reaching a `Root`; a `Lost` context is never concurrent), one
   arm per writer occurrence: the observed writer's at the write the read observed, any other at
   its last write of the location. Locks are not constraints. An activation's `threadKey` is the
-  claimed start it runs inside (§6: a queue item or task claimed on a consumer thread), else its
-  thread (`RowRuntime#threadKey`): two items one consumer thread claims (a ZooKeeper server's
+  claimed start it runs inside (§6: a queue item or task claimed on a consumer thread,
+  `start:<node>|<context>|<frames>`, `ActivationRow#claimed`), else its thread (a thread's own start
+  included, `RowRuntime#threadKey`): two items one consumer thread claims (a ZooKeeper server's
   pipeline applying two clients' requests) run in the order their starters queued them, so they
   are compared by their chains, not by the thread.
 - an occurrence is attested in a session that has an instrumented activation row for it
@@ -436,7 +437,10 @@ order:
   (`explore/ObligationFactory`). CONFIRM writes the selected session's schedule unheld
   (`explore/ConfirmMain`, `SchedulePrefix#write` with `held` false): every event is rest, so only
   a `WAKE` still waits for what it followed, and the model's order is held by the `ORDER` rows of
-  its expected edges (`runtime/Confirmation`, PIPELINE.md §10);
+  its expected edges (`runtime/Confirmation`, PIPELINE.md §10): an activation held where it runs,
+  except claimed work on a consumer thread (§4's `threadKey`), which held there would hold every
+  item queued behind it: it is held at the send that started it, its anchor's producer
+  (`Confirmation#submitter`), up the chain while that send is claimed work too;
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
   runs on virtual time (it ends at a real signal or when its slot is due), and a woven notify marks
   the longest-standing wait.

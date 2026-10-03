@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
@@ -14,7 +15,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -267,5 +270,64 @@ public class ConfirmationTest {
         } finally {
             System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
         }
+    }
+
+    /**
+     * An ORDER on claimed work (a server pipeline's request) is held at the
+     * send that started it, up the chain of claimed work; on any other
+     * activation, where it runs; and refused where no send runs outside
+     * claimed work.
+     */
+    @Test
+    public void claimedWorkIsHeldAtTheSendThatStartedIt() {
+        OccurrenceAddress client = OccurrenceAddress.parse(
+                "zk/client0#epoch0/region/REGION.start/ctx:Root:CLIENT/test#1"
+                        + "/idx:<a.Election: void start()>@0");
+        Endpoint send = Endpoint.of(client, "ZOOKEEPER#REQUEST",
+                ExecutionIndex.of(Arrays.asList(Frame.of(
+                        "<a.ZooKeeper: byte[] getData()>", 0))), 0);
+        OccurrenceAddress prep = OccurrenceAddress.parse(
+                "zk/server0#epoch0/region/REGION.prep/ctx:Anchor:"
+                        + send.id() + "@ZOOKEEPER/test/idx:<a.Prep: void p()>@0");
+        Endpoint relayed = Endpoint.of(prep, "SYNC#REQUEST",
+                ExecutionIndex.empty(), 0);
+        OccurrenceAddress served = OccurrenceAddress.parse(
+                "zk/server0#epoch0/region/REGION.final/ctx:Anchor:"
+                        + relayed.id() + "@SYNC/test/idx:<a.Final: void f()>@0");
+        // row of each occurrence: claimed, its anchor's producer
+        Object[][] table = {
+                // held at the client's send, through the relaying stage
+                {served, true, relayed, prep, true, send, send},
+                // a client thread's own activation is held where it runs
+                {client, false, null, null, false, null, null},
+                // claimed work that names no send: no hold
+                {served, true, null, null, false, null, "ORDER_UNHELD"},
+        };
+        for (Object[] row : table) {
+            Map<String, ActivationRow> rows =
+                    new HashMap<String, ActivationRow>();
+            put(rows, (OccurrenceAddress) row[0], (Boolean) row[1],
+                    (Endpoint) row[2]);
+            if (row[3] != null) {
+                put(rows, (OccurrenceAddress) row[3], (Boolean) row[4],
+                        (Endpoint) row[5]);
+            }
+            Object held;
+            try {
+                held = Confirmation.submitter((OccurrenceAddress) row[0],
+                        rows::get);
+            } catch (IllegalStateException unheld) {
+                held = unheld.getMessage().split(":")[0];
+            }
+            assertEquals(String.valueOf(row[0]), row[6], held);
+        }
+    }
+
+    private static void put(Map<String, ActivationRow> rows,
+                            OccurrenceAddress at, boolean claimed,
+                            Endpoint producer) {
+        rows.put(at.id(), ActivationRow.of("s0", at, "", false, true,
+                claimed ? ActivationRow.CLAIMED + at.id() : "main#1",
+                producer));
     }
 }

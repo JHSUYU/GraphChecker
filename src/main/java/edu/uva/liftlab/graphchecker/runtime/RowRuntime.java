@@ -246,7 +246,7 @@ public final class RowRuntime {
      */
     private static String threadKey() {
         String claimed = Identity.claimedStart();
-        if (claimed != null) return "start:" + claimed;
+        if (claimed != null) return ActivationRow.CLAIMED + claimed;
         Thread thread = Thread.currentThread();
         return thread.getName() + "#" + thread.getId();
     }

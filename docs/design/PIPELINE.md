@@ -1427,8 +1427,12 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   it is the run's own history, as a scalar's INITIAL is no row: `StateClosure#initial`, the write
   whose expression is its `SNAPSHOT_BASE`'s `members` and nothing above them), `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
-  it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); every other writer of
-  the location the held write is of before the writer or after the reader, held alike), `MARKER`
+  it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); where that activation runs
+  as claimed work on a consumer thread (`ActivationRow#claimed`: a server pipeline applying one
+  request after another, the writer's among them, would deadlock held), the entry of the send that
+  started it, its anchor's producer followed up the chain while that send is claimed work too
+  (`Confirmation#submitter`; none outside one refuses the confirmation, `ORDER_UNHELD`); every other
+  writer of the location the held write is of before the writer or after the reader, held alike), `MARKER`
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
   stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
   delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where

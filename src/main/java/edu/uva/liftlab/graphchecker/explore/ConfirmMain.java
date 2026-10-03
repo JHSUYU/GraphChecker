@@ -4,6 +4,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -882,6 +883,9 @@ public final class ConfirmMain {
         private final Set<String> past = new LinkedHashSet<String>();
         /** The session's expressions, for {@link #initial}. */
         private final ExpressionTable expressions;
+        /** Occurrence id -> the session's activation of it. */
+        private final Map<String, ActivationRow> activations =
+                new LinkedHashMap<String, ActivationRow>();
         /** Occurrence id -> where its events sat: activation frames, seq. */
         private final Map<String, List<Placed>> placed =
                 new LinkedHashMap<String, List<Placed>>();
@@ -908,14 +912,36 @@ public final class ConfirmMain {
          * unless one occurrence holds both: it runs on one thread, whose
          * program order already orders them.  The hold is the last
          * activation entry before the event on its thread
-         * ({@link #holdBefore}).
+         * ({@link #holdBefore}), or the send that started claimed work
+         * ({@link #held}).
          */
         private void order(Set<String> orders, Endpoint first, Endpoint then,
                            long thenSeq) {
             if (first.occurrence().id().equals(then.occurrence().id())) return;
             orders.add(Confirmation.activation(first.occurrence(),
                     ExecutionIndex.of(first.activationFrames())) + "\n"
-                    + holdBefore(then, thenSeq));
+                    + held(then, thenSeq));
+        }
+
+        /**
+         * Where {@code event} is held: before it in its own occurrence
+         * ({@link #holdBefore}), or, where that runs as claimed work on a
+         * consumer thread, at the entry of the send that started it
+         * ({@link Confirmation#submitter}, the one rule): ZooKeeper's
+         * server applies a getData on the thread that must apply the
+         * delete ordered before it, so the client's getData is held.
+         */
+        private String held(Endpoint event, long seq) {
+            Endpoint send;
+            try {
+                send = Confirmation.submitter(event.occurrence(),
+                        activations::get);
+            } catch (IllegalStateException unheld) {
+                throw new Refused(unheld.getMessage());
+            }
+            return send == null ? holdBefore(event, seq)
+                    : Confirmation.activation(send.occurrence(),
+                    ExecutionIndex.of(send.activationFrames()));
         }
 
         /**
@@ -983,6 +1009,10 @@ public final class ConfirmMain {
         private StateClosure(SessionReader session, OccurrenceAddress anchor,
                              long cutoff) {
             expressions = session.expressions();
+            for (ActivationRow activation : session.activations()) {
+                activations.putIfAbsent(activation.occurrence().id(),
+                        activation);
+            }
             for (ReadRow read : session.reads()) {
                 place(read.endpoint(), read.seq());
             }

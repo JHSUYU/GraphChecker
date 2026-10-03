@@ -15,6 +15,10 @@ package edu.uva.liftlab.graphchecker.contract;
  * only with a producer that publishes it.</p>
  */
 public final class ActivationRow extends Value {
+    /** The {@link #threadKey} prefix of an activation that runs as claimed
+     *  work: a queue item or task a consumer thread claimed. */
+    public static final String CLAIMED = "start:";
+
     private final String sessionId;
     private final OccurrenceAddress occurrence;
     private final String taskId;
@@ -80,6 +84,12 @@ public final class ActivationRow extends Value {
      *  this activation ran on. */
     public String threadKey() {
         return threadKey;
+    }
+
+    /** Whether it ran as claimed work on a consumer thread ({@link
+     *  #CLAIMED}): what holds it holds the items queued behind it. */
+    public boolean claimed() {
+        return threadKey.startsWith(CLAIMED);
     }
 
     /**

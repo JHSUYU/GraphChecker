@@ -174,7 +174,8 @@ public final class Identity {
                 while (depth() > held) levels.remove(depth());
                 closeStartsFrom(held);
             }
-            starts.push(new Claim(depth(), start.key));
+            // A thread's own start is no claimed work: the thread orders it.
+            starts.push(new Claim(depth(), inherited ? null : start.key));
             // The frames belong to the window the start was counted in.
             for (Frame frame : inherited
                     ? Collections.singletonList(start.frame())
@@ -451,7 +452,7 @@ public final class Identity {
     }
 
     /** One claimed start standing on a thread: where its levels open, and
-     *  its start's {@link Start#key}. */
+     *  its start's {@link Start#key} -- null for the thread's own start. */
     private static final class Claim {
         private final int depth;
         private final String start;
@@ -591,8 +592,9 @@ public final class Identity {
 
     /**
      * The key of the innermost start this thread's work was claimed from (a
-     * task, a queue item, the thread's own start), or null under none: what
-     * an activation is program-ordered by ({@code RowRuntime#threadKey}).
+     * task, a queue item), or null under none or under the thread's own
+     * start: what an activation is program-ordered by ({@code
+     * RowRuntime#threadKey}).
      * Work claimed one item after another on one consumer thread runs in the
      * order its items arrived, which their starters decide, not the thread.
      */
