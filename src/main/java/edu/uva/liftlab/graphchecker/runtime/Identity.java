@@ -72,10 +72,10 @@ public final class Identity {
         private boolean claimed;
         private int scopeBase;
         /**
-         * The depths of the claimed start frames, innermost first: a task a
-         * task runs (a FutureTask inside an executor's wrapper) nests.
+         * The claimed starts, innermost first: a task a task runs (a
+         * FutureTask inside an executor's wrapper) nests.
          */
-        private final Deque<Integer> starts = new ArrayDeque<Integer>();
+        private final Deque<Claim> starts = new ArrayDeque<Claim>();
         /**
          * Whether this thread's own start was UNNAMED ({@link #startWork}
          * where no hop names the starter): for the thread's life.
@@ -174,7 +174,7 @@ public final class Identity {
                 while (depth() > held) levels.remove(depth());
                 closeStartsFrom(held);
             }
-            starts.push(depth());
+            starts.push(new Claim(depth(), start.key));
             // The frames belong to the window the start was counted in.
             for (Frame frame : inherited
                     ? Collections.singletonList(start.frame())
@@ -194,7 +194,7 @@ public final class Identity {
 
         /** The depth of the innermost claimed start frame, or -1. */
         private int innermostStart() {
-            return starts.isEmpty() ? -1 : starts.peek();
+            return starts.isEmpty() ? -1 : starts.peek().depth;
         }
 
         /** Claims an UNNAMED start: the thread's own, or a task's here. */
@@ -229,7 +229,7 @@ public final class Identity {
          * carried scope per start.
          */
         private void closeStartsFrom(int depth) {
-            while (!starts.isEmpty() && starts.peek() >= depth) {
+            while (!starts.isEmpty() && starts.peek().depth >= depth) {
                 starts.pop();
                 RuntimeTraceContext.releaseCarried();
             }
@@ -424,21 +424,41 @@ public final class Identity {
      */
     private static final class Start {
         private static final Start UNNAMED = new Start(
-                Collections.<Frame>emptyList(), null);
+                Collections.<Frame>emptyList(), null, "");
         /** The starter's frames from its scope root, then the start's. */
         private final List<Frame> frames;
         private final Attribution.Reference starter;
+        /**
+         * What tells this start apart from every other of the run, as its
+         * START event does: the starter's node and context, then {@link
+         * #frames} ({@link #claimedStart}).
+         */
+        private final String key;
         /** The window the start was counted in ({@link Level#window}). */
         private final int window = RecordingWindow.index();
 
-        private Start(List<Frame> frames, Attribution.Reference starter) {
+        private Start(List<Frame> frames, Attribution.Reference starter,
+                      String key) {
             this.frames = frames;
             this.starter = starter;
+            this.key = key;
         }
 
         /** The start's own frame: its site and k. */
         private Frame frame() {
             return frames.get(frames.size() - 1);
+        }
+    }
+
+    /** One claimed start standing on a thread: where its levels open, and
+     *  its start's {@link Start#key}. */
+    private static final class Claim {
+        private final int depth;
+        private final String start;
+
+        private Claim(int depth, String start) {
+            this.depth = depth;
+            this.start = start;
         }
     }
 
@@ -554,7 +574,10 @@ public final class Identity {
         // (RuntimeTraceContext#claimCarried takes it back).
         RuntimeTraceContext.captureAsync(carrier);
         STARTS.put(new Carrier(carrier, COLLECTED),
-                new Start(frames, Attribution.capture()));
+                new Start(frames, Attribution.capture(),
+                        RuntimeTraceContext.nodeHere() + "|"
+                                + contextHere().render() + "|"
+                                + ExecutionIndex.of(frames).render()));
         ScheduleLog.observe(ScheduleEvent.Kind.START, site);
     }
 
@@ -564,6 +587,18 @@ public final class Identity {
      */
     static Attribution.Reference starter() {
         return state().starter;
+    }
+
+    /**
+     * The key of the innermost start this thread's work was claimed from (a
+     * task, a queue item, the thread's own start), or null under none: what
+     * an activation is program-ordered by ({@code RowRuntime#threadKey}).
+     * Work claimed one item after another on one consumer thread runs in the
+     * order its items arrived, which their starters decide, not the thread.
+     */
+    static String claimedStart() {
+        State state = state();
+        return state.starts.isEmpty() ? null : state.starts.peek().start;
     }
 
     /** Whether that reference is a claimed start, not the thread's creator. */
@@ -789,8 +824,8 @@ public final class Identity {
         if (state.regions.isEmpty()) return;
         Region closed = state.regions.remove(state.regions.size() - 1);
         int claimed = -1;
-        for (int start : state.starts) {
-            if (start >= closed.base) claimed = start;
+        for (Claim start : state.starts) {
+            if (start.depth >= closed.base) claimed = start.depth;
         }
         if (closed.occurrence != null && claimed >= 0) {
             // Work the occurrence claimed ends with it: its start levels and

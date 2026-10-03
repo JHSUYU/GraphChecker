@@ -152,10 +152,14 @@ the flip solver:
 - a WIRE interaction's arms are the producer endpoint's exports from runs whose own pairing named
   this consumer;
 - a STATE read's arms are its observed writer plus every attested writer occurrence of the same
-  session that is HB-concurrent with the reader (not the same thread, not an anchor-chain
+  session that is HB-concurrent with the reader (not the same `threadKey`, not an anchor-chain
   ancestor either way, both chains reaching a `Root`; a `Lost` context is never concurrent), one
   arm per writer occurrence: the observed writer's at the write the read observed, any other at
-  its last write of the location. Locks are not constraints.
+  its last write of the location. Locks are not constraints. An activation's `threadKey` is the
+  claimed start it runs inside (§6: a queue item or task claimed on a consumer thread), else its
+  thread (`RowRuntime#threadKey`): two items one consumer thread claims (a ZooKeeper server's
+  pipeline applying two clients' requests) run in the order their starters queued them, so they
+  are compared by their chains, not by the thread.
 - an occurrence is attested in a session that has an instrumented activation row for it
   (`Arms#attested`); no witness may move a root inside an unattested arm.
 

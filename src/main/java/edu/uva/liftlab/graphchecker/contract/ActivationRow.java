@@ -4,7 +4,11 @@ package edu.uva.liftlab.graphchecker.contract;
  * CONTRACT-SPEC §2.2: one activation a replay session entered, with its address.
  * {@code focused}: ran symbolically as the task's region (others run
  * concretely).  {@code instrumented=false}: entry hook only, so "no decisions"
- * is a hole, not evidence.  {@code threadKey}: same key means program order.
+ * is a hole, not evidence.  {@code threadKey}: same key means program order
+ * -- the claimed start the activation runs inside (a queue item or a task a
+ * consumer thread claimed), else its thread: two items one consumer thread
+ * claims run in the order their starters queued them, which is no program
+ * order of theirs.
  *
  * <p>No thread-start edge: happens-before is {@code threadKey} plus the
  * {@link CausalContext.Anchor}; anything else is concurrent.  Re-add the edge
@@ -72,7 +76,8 @@ public final class ActivationRow extends Value {
         return instrumented;
     }
 
-    /** The session's stable key for the thread this activation ran on. */
+    /** The session's stable key for the claimed start, else the thread,
+     *  this activation ran on. */
     public String threadKey() {
         return threadKey;
     }
