@@ -259,7 +259,9 @@ field=<f> <subject>`.
   `RootDomain.declared(file)` is the one reader of `root-domains.jsonl` (rows `{sourceId,
   declaredDomainMin, declaredDomainMax}`, each absolute or `+k`/`-k` from the recorded value; no file
   declares nothing); `RootDomain.resolved(mint, declared)` is the one join: the case's declaration
-  if any, else the mint's bounds, with the mint's kind and recorded value.
+  if any (its `+k`/`-k` read off the reading, the only place that syntax is read), else the mint's
+  bounds, which are absolute (a configuration's `domainMin` `-2` is minus two), with the mint's
+  kind and recorded value.
 - `ClaimKind`: `MARKER_FLIPPED`, `CLOCK_SKEW`, `MESSAGE_PAIRING_FLIPPED`, `STATE_PAIRING_FLIPPED`,
   `RECORDED_FAILURE_EXPLAINED`, `NO_SUPPORTED_WITNESS` ([PIPELINE.md §9](PIPELINE.md)).
 - `Claim(kind, valuationOrdinal, movedRoots, polarityDecides, gaps)`: `valuationOrdinal` 0 is the

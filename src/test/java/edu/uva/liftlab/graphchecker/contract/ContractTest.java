@@ -298,6 +298,36 @@ public class ContractTest {
         return definition;
     }
 
+    /**
+     * A root row's bounds are absolute: a configuration whose default is -1
+     * states {@code domainMin "-2"}, minus two.  Only a case's declaration
+     * (root-domains.jsonl) spells {@code +k}/{@code -k} off the reading.
+     */
+    @Test
+    public void aRootRowsBoundsAreAbsoluteAndOnlyADeclarationIsRelative() {
+        OccurrenceAddress at = OccurrenceAddress.of(DN0, REGION,
+                CausalContext.of(PRODUCER_ID, RPC), index(frame(RUN, 0)));
+        Map<String, RootDomain> declared = new LinkedHashMap<>();
+        declared.put("CASE.K", RootDomain.of("CASE.K", RootKind.INTEGRAL, "",
+                "-2", "+3"));
+        Object[][] rows = {
+            {"a row's negative bound is a value", "CONFIG:k", "-2", "5",
+                "[-2, 5]"},
+            {"a declaration's -k is off the reading", "CASE.K", "-2", "5",
+                "[98, 103]"},
+            {"no bound is pinned", "CONFIG:k", null, null, "[null, null]"},
+            {"a bound that is no integer is none", "CONFIG:k", "x", "5",
+                "[null, 5]"}};
+        for (Object[] row : rows) {
+            RootDomain domain = RootDomain.resolved(RootMintRow.of("s", 1L,
+                    at, (String) row[1], "sym", RootKind.INTEGRAL,
+                    RootCategory.CONFIG, "100", (String) row[2],
+                    (String) row[3], true, null, 0L), declared);
+            assertEquals((String) row[0], row[4],
+                    "[" + domain.min() + ", " + domain.max() + "]");
+        }
+    }
+
     @Test
     public void rendersAndParsesEveryCausalContextAndIndex() {
         OccurrenceAddress anchored = OccurrenceAddress.of(DN0, REGION,

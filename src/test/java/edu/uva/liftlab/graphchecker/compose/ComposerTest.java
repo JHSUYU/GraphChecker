@@ -1688,7 +1688,7 @@ public class ComposerTest {
                 session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
                         !"s0".equals(id), true);
                 if (!"s2".equals(id)) {
-                    session.serial("119994", "+0", "+3");
+                    session.serial("119994", "119994", "119997");
                 } else if (!variant.equals("never read")) {
                     session.serialReadConcretely("119994");
                 }
@@ -1743,7 +1743,8 @@ public class ComposerTest {
                 {"s1", "119997", "true"}}) {
             Session session = new Session(iteration, each[0],
                     "true".equals(each[2]));
-            session.serial(each[1], "+0", "+3");
+            session.serial(each[1], each[1],
+                    String.valueOf(Long.parseLong(each[1]) + 3L));
             session.target("true", false, true);
             session.write();
         }
@@ -2001,7 +2002,7 @@ public class ComposerTest {
         Path driven = folder.newFolder("clock-driven").toPath();
         Session both = new Session(driven, "s0", false);
         both.clock("700");
-        both.serial("119994", "+0", "+3");
+        both.serial("119994", "119994", "119997");
         both.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
                 + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
         both.target("(and (> " + CLOCK + " 1000) (>= " + SERIAL
@@ -4938,7 +4939,7 @@ public class ComposerTest {
     /** One session whose decision carries the size model over {@code body}. */
     private void letCorpus(Path iteration, String body) throws IOException {
         Session session = new Session(iteration, "s0", false);
-        session.serial("5", "+0", "+3");
+        session.serial("5", "5", "8");
         session.decision(ANCHOR, "removeExpiredKeys#u7",
                 "(= " + SERIAL + " " + sizeModel(SERIAL, body) + ")");
         session.target("true", false, true);
@@ -6452,10 +6453,12 @@ public class ComposerTest {
                     Collections.singletonMap(clockRoot, reading)));
         }
 
-        /** A declared counter, with the window the CASE states around it. */
+        /** A declared counter, with its absolute window (a row's bounds
+         *  are absolute; only a case's declaration is relative). */
         void serial(String recorded, String min, String max) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
-                    SERIAL, RootKind.INTEGRAL, RootCategory.HOOK, recorded, min, max, true, null, 0L));
+                    SERIAL, RootKind.INTEGRAL, RootCategory.HOOK, recorded,
+                    min, max, true, null, 0L));
         }
 
         /** Root id -> occurrence -> what this replay read the root at
