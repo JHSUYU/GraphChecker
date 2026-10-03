@@ -167,8 +167,9 @@ submission order (ORDER edges on the submitters).
 `seed-functional`, `preWindow-loop-root`, `zk-election-offer`, `pairing-port`, `vm-model-guards`, `main-sf`, `main-pw`,
 `main-eo`, `main-pp`, `main-vg`, `main-ll`, `main-v21`, `host-ledger-lease`, `replay-address-only`, `readout-stream`
 (candidates and sources of V16-V21 and PP1). Live agents: A1 (`slowdisk-dev`: HDFS #15), A2 (`solr-bug-reindex`:
-Solr #04), A5 (`wire-codec-p1`: TODO 6), A6 (HBase engine blockers); merge order: `slowdisk-dev`'s INITIAL/ORDER work,
-`solr-bug-reindex`'s pieces, the WIRE-CODEC HDFS change (W3 + W6-HDFS, one change), one per round.
+Solr #04), A5 (`slice-matched-returns`, then `wire-codec-p1`: TODO 6), A6 (HBase engine blockers); merge order:
+`slowdisk-dev`'s INITIAL/ORDER work, `solr-bug-reindex`'s pieces, `slice-matched-returns`, the WIRE-CODEC HDFS change
+(W3 + W6-HDFS, one change), one per round.
 
 | branch | head | content | state / next step |
 | --- | --- | --- | --- |
@@ -183,6 +184,8 @@ Solr #04), A5 (`wire-codec-p1`: TODO 6), A6 (HBase engine blockers); merge order
 | `replay-random-draws` | `d656860b2` | every random draw recorded and replayed | on `dtx-on-main` (in `pairing-port`); needs a live round |
 | `perf-vm-readout`, `vm-ref-compare` | `3cbea0bee`, `bba1ee25d` | VM read-out per activation; reference compare with an enum constant | parked; each needs a VM review (images `vm-w4i`, `vm-nr41`) |
 | `worktree-agent-a49c8bf5715a00c40` | `90ca7724e` | WIRE-CODEC W3/W6 + the first WP-D integration | deferred; the source of W3/W6 when they are taken up |
+| `slice-matched-returns` | this commit | matched calls in the SEED slice (`causynth/ReturnOnlyFormals`): a formal only its method's return needs is demanded only at the calls whose result is | agent A5: offline SEED gate on V21, review, then its own live round; `wire-codec-p1` rebases onto it |
+| `wire-codec-p1` | `97494ae45` | c90ccee00 + W3 + W6-HDFS (one change): codec ports by rule, the HDFS cases cross by their codecs, the W6 trees | canary W6C1 failed (a new region over the 8 block-key targets, from the slice's unmatched calls through `getByteString`): rebase onto `slice-matched-returns`, canary again |
 
 Deleted 2026-10-03 (each verified merged into main, or identical to its head in
 `/bigtemp/vnr3ne/handover/archived-branches-2026-10-02.bundle`): merged -- `admission-relevance`,
@@ -219,7 +222,8 @@ does not merge until fixed (§1). The new checks join the round once they pass.
    (measured and dropped; `readout-stream`, V21, fixed the heap); left: `fix-hdfs-seed-stalls`' two DataTransfer-turn
    commits after `solr-bug-reindex` merges.
 5. ~~Second-tier bugs~~: dropped by the owner (2026-10-03, "second tier bugs都先不管了。不用作为你的todo").
-6. Then the deferred WIRE-CODEC W3/W6 (`worktree-agent-a49c8bf5715a00c40`), one piece per round.
+6. Then the deferred WIRE-CODEC W3/W6 (`worktree-agent-a49c8bf5715a00c40`), one piece per round: first
+   `slice-matched-returns` (its own round), then `wire-codec-p1` rebased onto it.
 
 ### 0.6 Open problems
 

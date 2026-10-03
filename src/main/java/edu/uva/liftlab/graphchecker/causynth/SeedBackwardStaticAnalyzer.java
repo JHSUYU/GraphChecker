@@ -151,6 +151,25 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<EdgeIdentity, Map<String, Object>> emittedEdgeRows =
             new LinkedHashMap<>();
     private final Set<String> expandedDemands = new LinkedHashSet<>();
+    /** Which demanded formals only their method's return needs. */
+    private final ReturnOnlyFormals returnOnly = new ReturnOnlyFormals(
+            new ReturnOnlyFormals.Slice() {
+                @Override
+                public Set<String> relevant(String method) {
+                    return relevantByMethod.getOrDefault(method,
+                            Collections.<String>emptySet());
+                }
+
+                @Override
+                public String thisCell(String method) {
+                    return methodThisNode(method);
+                }
+
+                @Override
+                public void requeue(String method) {
+                    markDirty(method);
+                }
+            });
     private int discoveredExceptionSeedCount;
     /** Structural accessor per call signature; a cached null is a negative. */
     private final Map<String, StructuralFieldAccessor>
@@ -164,6 +183,8 @@ final class SeedBackwardStaticAnalyzer {
     private final Set<String> methodsWithoutThisNode =
             new LinkedHashSet<>();
     private final Map<String, List<String>> dispatchSourcesCache =
+            new LinkedHashMap<>();
+    private final Map<String, String> declarationCache =
             new LinkedHashMap<>();
     private final Map<String, List<String>> dispatchTargetsCache =
             new LinkedHashMap<>();
@@ -1434,9 +1455,19 @@ final class SeedBackwardStaticAnalyzer {
                                         methodSignature, index, receiver,
                                         actuals));
                     } else if (!"<clinit>".equals(sig.name)) {
+                        Callsite callsite = new Callsite(methodSignature,
+                                index, receiver, actuals);
                         addIndexedCallsite(methodCallersByCallee, sig.raw,
-                                new Callsite(methodSignature, index,
-                                        receiver, actuals));
+                                callsite);
+                        // A call through a type that inherits the method
+                        // (Spi.m() of an interface Spi extends Base) is a
+                        // call of its declaration (Base.m()), the one a
+                        // dispatch source or a concrete callee names.
+                        String declared = declaration(sig);
+                        if (!declared.equals(sig.raw)) {
+                            addIndexedCallsite(methodCallersByCallee,
+                                    declared, callsite);
+                        }
                     }
                     indexedInvoke = true;
                 }
@@ -1728,7 +1759,8 @@ final class SeedBackwardStaticAnalyzer {
         if (!dynamicDispatch) {
             propagateCallArguments("call_argument",
                     callerMethod, fact, callee, actuals,
-                    callerRelevant, calleeRelevant, expandableCallee);
+                    callerRelevant, calleeRelevant, expandableCallee,
+                    exactIntersects(callerRelevant, defs));
             if (!containerQuery) {
                 propagateCallReturns("call_return",
                         callerMethod, fact, callee.raw, defs,
@@ -1773,12 +1805,16 @@ final class SeedBackwardStaticAnalyzer {
         return ((StringConstant) invoke.getArg(0)).value;
     }
 
-    /** One forward argument walk for an ordinary Java call. */
+    /**
+     * One forward argument walk for an ordinary Java call: each actual whose
+     * formal is demanded, a formal only the callee's return needs only where
+     * the call's result is demanded here ({@link ReturnOnlyFormals}).
+     */
     private boolean propagateCallArguments(
             String kind, String callerMethod, Fact fact,
             MethodSig target, List<String> actuals,
             Set<String> callerRelevant, Set<String> targetRelevant,
-            boolean targetExpandable) {
+            boolean targetExpandable, boolean resultDemanded) {
         boolean relevantFlow = false;
         int count = Math.min(actuals.size(), target.params.size());
         for (int index = 0; index < count; index++) {
@@ -1787,7 +1823,9 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             String formal = formalParam(target, index);
-            if (!targetExpandable || !targetRelevant.contains(formal)) {
+            if (!targetExpandable || !targetRelevant.contains(formal)
+                    || !returnOnly.demanded(target.raw, formal,
+                    resultDemanded, callerMethod)) {
                 continue;
             }
             relevantFlow = true;
@@ -2111,15 +2149,18 @@ final class SeedBackwardStaticAnalyzer {
                 && locals.contains(((Local) operand).getName());
     }
 
-    /** Bridges an application helper that mutates a container argument. */
+    /** Bridges an application helper that mutates a container argument or
+     *  its receiver. */
     private void processContainerCallMutationEffects(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> actuals, Set<String> callerRelevant) {
         for (Map.Entry<Integer, String> mutation :
                 directlyMutatedContainerParameters(callee).entrySet()) {
             int index = mutation.getKey();
-            if (index < 0 || index >= actuals.size()) continue;
-            String actual = actuals.get(index);
+            if (index >= actuals.size()) continue;
+            String actual = index == RECEIVER
+                    ? canonical(callerMethod, invokeBaseLocal(fact.unitText))
+                    : actuals.get(index);
             if (ignoreNode(actual) || !callerRelevant.contains(actual)) {
                 continue;
             }
@@ -2131,6 +2172,12 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
+    /** The key {@link #directlyMutatedContainerParameters} gives {@code
+     *  this}. */
+    private static final int RECEIVER = -1;
+
+    /** The parameters, by index, and {@code this} ({@link #RECEIVER}) whose
+     *  container the method mutates, each with its local. */
     private Map<Integer, String> directlyMutatedContainerParameters(
             MethodSig callee) {
         return memoized(directlyMutatedContainerParametersCache,
@@ -2147,6 +2194,8 @@ final class SeedBackwardStaticAnalyzer {
             }
 
             Map<String, Integer> parameterLocals = new LinkedHashMap<>();
+            String self = methodThisNode(callee.raw);
+            if (self != null) parameterLocals.put(self, RECEIVER);
             for (Fact fact : facts) {
                 Matcher parameter = PARAMETER_REFERENCE_PATTERN.matcher(
                         fact.unitText);
@@ -2339,6 +2388,18 @@ final class SeedBackwardStaticAnalyzer {
         edge.put("declaredFieldSignature", field.getSignature());
     }
 
+    /** The signature of the analysed method a call's owner declares or
+     *  inherits ({@link #resolveDeclaredMethod}), else the call's own: a
+     *  library's declaration is no callee the slice expands. */
+    private String declaration(MethodSig call) {
+        return memoized(declarationCache, call.raw, ignored -> {
+            SootMethod declared = resolveDeclaredMethod(call);
+            return declared == null
+                    || !declared.getDeclaringClass().isApplicationClass()
+                    ? call.raw : declared.getSignature();
+        });
+    }
+
     /** Resolves one method declaration inherited by the invocation owner. */
     private SootMethod resolveDeclaredMethod(MethodSig methodSignature) {
         if (methodSignature == null || methodSignature.owner.isEmpty()) {
@@ -2441,7 +2502,7 @@ final class SeedBackwardStaticAnalyzer {
             boolean callRelevant = exactIntersects(callerRelevant, defs);
             callRelevant |= propagateCallArguments("dispatch_argument",
                     callerMethod, fact, targetSig, actuals,
-                    callerRelevant, targetRelevant, true);
+                    callerRelevant, targetRelevant, true, callRelevant);
             propagateCallReturns("dispatch_return",
                     callerMethod, fact, targetMethod, defs,
                     callerRelevant, targetRelevant, true);
@@ -2642,9 +2703,10 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * At one call site, demands each actual whose formal is relevant.  A
-     * literal actual is a typed-literal row of {@code literalKind}, or
-     * nothing when that is null.
+     * At one call site, demands each actual whose formal is relevant -- a
+     * formal only the callee's return needs only where the call's result is
+     * demanded ({@link ReturnOnlyFormals#demanded}).  A literal actual is a
+     * typed-literal row of {@code literalKind}, or nothing when that is null.
      *
      * @return whether an actual was demanded
      */
@@ -2659,6 +2721,8 @@ final class SeedBackwardStaticAnalyzer {
         for (int index = 0; index < count; index++) {
             String formal = formalParam(target, index);
             if (!targetRelevant.contains(formal)
+                    || !returnOnly.demanded(targetMethod, formal,
+                    resultDemanded(callsite, callsiteFact), callsite.method)
                     || !expandOnce(demandKind, targetMethod, demandScope,
                     index, callsite.method, callsite.unitIndex)) {
                 continue;
@@ -2682,14 +2746,17 @@ final class SeedBackwardStaticAnalyzer {
         return expanded;
     }
 
-    /** At one call site, demands the receiver of a relevant {@code this}. */
+    /** At one call site, demands the receiver of a relevant {@code this},
+     *  as {@link #expandCallerArguments} an actual. */
     private boolean expandCallerReceiver(
             String demandKind, String edgeKind, String targetMethod,
             String targetThis, Callsite callsite, Fact callsiteFact) {
-        if (targetThis == null || ignoreNode(callsite.receiver)) {
+        if (targetThis == null || ignoreNode(callsite.receiver)
+                || !relevant(targetMethod).contains(targetThis)) {
             return false;
         }
-        if (relevant(targetMethod).contains(targetThis)
+        if (returnOnly.demanded(targetMethod, targetThis,
+                resultDemanded(callsite, callsiteFact), callsite.method)
                 && expandOnce(demandKind, targetMethod,
                 callsite.method, callsite.unitIndex)) {
             addEdge(edgeKind, callsite.receiver,
@@ -2700,6 +2767,12 @@ final class SeedBackwardStaticAnalyzer {
             return true;
         }
         return false;
+    }
+
+    /** Whether the call's result is demanded in its method. */
+    private boolean resultDemanded(Callsite callsite, Fact callsiteFact) {
+        return exactIntersects(relevant(callsite.method),
+                canonicalDefs(callsite.method, callsiteFact));
     }
 
     private List<String> resolveDispatchSources(String targetMethod) {
@@ -2715,7 +2788,11 @@ final class SeedBackwardStaticAnalyzer {
             Set<String> sources = new LinkedHashSet<>();
             String subSignature = methodSubSignature(targetSig);
             // The supertypes of every class that runs this body: its own
-            // and those of each subtype inheriting it.
+            // and those of each subtype inheriting it.  A call names the
+            // type it is made through, which may inherit the method rather
+            // than declare it (Spi.m() of an interface Spi extends a
+            // library's Probe declaring m), so such a type is a source too;
+            // not for Object's methods, which every type has.
             for (SootClass runner : inheritingSubtypes(targetClass,
                     subSignature)) {
                 for (String candidateName : hierarchyNames(runner)) {
@@ -2726,9 +2803,13 @@ final class SeedBackwardStaticAnalyzer {
                             && !candidate.isAbstract())) {
                         continue;
                     }
-                    SootMethod method =
-                            candidate.getMethodUnsafe(subSignature);
-                    if (method != null) sources.add(method.getSignature());
+                    SootMethod method = walkHierarchy(candidate,
+                            type -> type.getMethodUnsafe(subSignature));
+                    if (method != null && !"java.lang.Object".equals(
+                            method.getDeclaringClass().getName())) {
+                        sources.add("<" + candidateName + ": "
+                                + subSignature + ">");
+                    }
                 }
             }
             return sources.isEmpty() ? Collections.<String>emptyList()
@@ -2901,6 +2982,7 @@ final class SeedBackwardStaticAnalyzer {
         public boolean add(String value) {
             if (!super.add(value)) return false;
             markDirty(method == null ? value : method);
+            if (method != null) returnOnly.grew(method);
             return true;
         }
 
@@ -3236,6 +3318,7 @@ final class SeedBackwardStaticAnalyzer {
                 }
             }
             emittedEdgeRows.put(key, edge);
+            returnOnly.row(edge);
         }
         return edge;
     }

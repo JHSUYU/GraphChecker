@@ -54,7 +54,34 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   non-abstract application class that is not a structural field accessor (`isExpandableMethod`).
   Callers of a demanded formal or of a demanded `this`, constructor callers, and CHA dispatch to the
   application implementations of an interface or abstract call (`processDispatchInvoke`; owners in
-  `java.`, `javax.`, `com.google.`, `org.slf4j.` are not dispatched).
+  `java.`, `javax.`, `com.google.`, `org.slf4j.` are not dispatched). A call is indexed under the
+  type it is made through and under the analysed method that type declares or inherits (`Sub.m()`
+  is a call of `Base.m()`), and an implementation's callers are found through every interface or
+  abstract supertype that declares or inherits the method, Object's methods aside
+  (`resolveDispatchSources`: `Spi.m()` of an `interface Spi extends Probe`, whatever package declares
+  `Probe.m`). A helper that mutates the container it is passed or is (`this` of a JDK container's
+  subclass) mutates the caller's (`container_call_mutation_effect`).
+- **Matched calls** (`causynth/ReturnOnlyFormals`): a demanded formal or `this` that only its
+  method's return needs is demanded at a call only where that call's result is demanded
+  (`propagateCallArguments`, `expandCallerArguments`, `expandCallerReceiver`); one that an effect of
+  the method needs -- a field store, a store into a container or array reached from a formal, `this`
+  or a field (through copies, reads, views and call results, not through what was stored into it), a
+  container publication or argument mutation, the declared throw, a `.throws`, a wire capture, a
+  guard of another method's store or activation, a call passing it to such a formal or to a
+  constructor -- is demanded at every call, as is one flowing into both. The
+  summary is read off the slice's rows that touch the method's cells: backward from its return, and
+  backward from each effect origin, through a call inside it to a return-only formal as through the
+  call's result. A virtual call is decided per CHA target (each implementation's summary, the union at
+  the site); a call of the method itself is a flow inside it; a cycle through other methods is
+  conservative (no formal of a method whose summary is being computed is return-only); a library call
+  keeps its contract. A formal once an effect stays one, and its turning re-queues its method, whose
+  next pass demands it at every caller the call index finds, and every caller that met it while it
+  was return-only (`ReturnOnlyFormals#demanded`, the one rule the three walks ask), whose next pass
+  demands it there. Without it the slice entered a helper through its return at
+  one call and left through every caller's argument: hdfs-11741 on the W6 tree entered
+  `PBHelperClient.getByteString(byte[])` at `convert(BlockKey)` and left through its 17 other callers,
+  SASL's `convert(CipherOption)` among them, to `DNConf.encryptionAlgorithm`, and rooted a new region
+  at `SaslDataTransferServer.getEncryptedStreams` over the declared target's.
 - **Field jump**: a demanded read of an application field demands every write of that field in the
   scope (`expandFieldWriters`). Field-level, not per object.
 - **Control dependence**: a demanded definition demands the operands of every branch from which it
