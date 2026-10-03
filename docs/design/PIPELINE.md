@@ -603,8 +603,11 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   hole-arm rule (`VmTermLowering#holeArm`, §8) over the query's names, and a relay's operand, the
   upstream hole's symbol, is a nested slot.
 - READ: the eligible writers (`Arms.stateArms`, the location's INITIAL among them, the writer at
-  version 0) become one Bool selector each (`wchoice_*`, exactly one); no writer: pinned to the
-  row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A scalar read of a field or array cell
+  version 0) become one Bool selector each (`wchoice_*`, exactly one), one choice per (reader
+  occurrence, location) binding every read of it -- reads of it that saw two writes have no choice
+  that is the run's pairing and refuse the flip by name (`UNSTATED_VALUE:READS_SAW_TWO_WRITES`, as
+  COMPOSE's family does); no writer: pinned to the row's `concreteValue`; neither: refused
+  `UNSTATED_VALUE`. A scalar read of a field or array cell
   of the flipped occurrence (not a container's state or a query of one) with more than one
   eligible writer is its own symbol, as COMPOSE keeps the anchor's
   (`FlipQuery#movableReads`, `SmtLowering#rowSymbol`): inlined, the VM's guarded read is the

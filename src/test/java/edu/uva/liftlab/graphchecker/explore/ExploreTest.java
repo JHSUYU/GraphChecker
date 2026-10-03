@@ -3689,6 +3689,12 @@ public class ExploreTest {
                 "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
                 KEY_ID, 6L, "e.2");
         seed.read(LOOKED_UP, KEY_ID, 5L, "M_READ_KEY", "1");
+        // The lookup again, after the second write: the same occurrence's
+        // read of the same field.
+        seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                "retrieveDataEncryptionKey", 9, false),
+                "BlockTokenSecretManager#retrieveDataEncryptionKey#9"),
+                KEY_ID, 6L, "M_READ_AGAIN", "2");
         // The lookup as the VM states it: the guarded read, joined to the
         // write it observed, compared.
         seed.expression(VM_LOOKUP, binary("==", readNode(KEY_ID, 5L, "I",
@@ -3707,6 +3713,30 @@ public class ExploreTest {
                         "<example.Keys: int value>",
                         "<example.Manager: example.Keys allKeys>", ""));
         return iteration;
+    }
+
+    /**
+     * One writer choice binds every read one occurrence made of a location
+     * (IDENTITY §4); reads of it that saw two writes have no choice that is
+     * the run's pairing, and the flip is refused by name, as COMPOSE refuses
+     * such a family ("the reads saw two writes"), never asked with the two
+     * reads forced equal.
+     */
+    @Test
+    public void readsOfOneBlockThatSawTwoWritesAreRefusedByName()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = twoWriters("two-writes",
+                "(and (= M_READ_KEY 2) (= M_READ_AGAIN 2))", null);
+        Path out = tree.newFolder("two-writes-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Worker worker = solve(iteration, wave,
+                named(obligations(wave), "Lookup#u8"), out, "w0");
+        assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
+        assertTrue(detail(worker), detail(worker).contains(
+                "READS_SAW_TWO_WRITES"));
     }
 
     // ---- (6b) a handoff nobody can answer moves only with its own run --

@@ -1095,6 +1095,22 @@ final class FlipQuery {
                 choicesByReader.put(choiceKey, choices);
                 assertions.add(exactlyOne(choices.alternatives));
             }
+            // One choice binds every read of the block: reads that saw two
+            // writes have no choice that is the run's pairing, refused by
+            // name as COMPOSE's family is ("the reads saw two writes").
+            if (!choices.reads.isEmpty() && choices.reads.get(0)
+                    .observedVersion() != row.observedVersion()) {
+                refusal = "UNSTATED_VALUE:READS_SAW_TWO_WRITES:" + choiceKey;
+                gaps.add(GapRow.of(row.sessionId(), GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, choiceKey, "the reads occurrence "
+                                + row.endpoint().occurrence().id() + " made of "
+                                + row.location() + " saw versions "
+                                + choices.reads.get(0).observedVersion()
+                                + " and " + row.observedVersion() + " while "
+                                + "one writer choice binds every read of it:"
+                                + " no choice is the pairing the run took"));
+                return;
+            }
             choices.reads.add(row);
             List<String> bindings = new ArrayList<String>();
             for (Choice choice : choices.alternatives) {
