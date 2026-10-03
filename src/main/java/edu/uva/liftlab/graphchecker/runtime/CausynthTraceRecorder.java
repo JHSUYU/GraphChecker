@@ -757,6 +757,26 @@ public final class CausynthTraceRecorder {
         }
     }
 
+    /**
+     * A message received into the thread's own context, which it does not
+     * anchor (a DataTransfer op, taken in by its DataNode's turn): the
+     * schedule's RECV names the producer endpoint it took in, which the
+     * control producers read as the message that made the context; the
+     * trace's RECEIVE leg binds the receiver's captures to the message.  No
+     * response endpoint is minted: nothing answers it through a door.
+     */
+    public static void receivedExchange(String transport,
+                                        String correlationId,
+                                        String attemptId, String half,
+                                        Object localOwner) {
+        initialize();
+        ScheduleLog.observe(ScheduleEvent.Kind.RECV,
+                MapFields.safe(transport) + "#" + MapFields.safe(half),
+                Interactions.sender(transport, correlationId, half));
+        recordExchange("RECEIVE", transport, correlationId, attemptId, half,
+                localOwner, null, null);
+    }
+
     private static final String REQUEST = "REQUEST";
     private static final String RESPONSE = "RESPONSE";
 

@@ -241,6 +241,11 @@ public:
     return type == T_VOID || type == T_OBJECT || type == T_ARRAY;
   }
 
+  // What the finishing call returned, as a node states it (ReturnedValue):
+  // a primitive's word, else SharedFieldVersions::returned_reference of the
+  // referent; unstated for void and for a result no hook can read.
+  ReturnedValue returned_value();
+
   // A result starts in the slot just above the callee's top of stack
   // whatever its width: a long or double is one VMJavaVal64 at &stack[1],
   // exactly where the bytecodes' STACK_LONG(-1) finds it.  Reading at

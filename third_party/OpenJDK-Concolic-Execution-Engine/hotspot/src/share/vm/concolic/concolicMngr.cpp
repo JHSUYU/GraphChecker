@@ -516,8 +516,10 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   } else if (symbolic) {
     writer.Key("kind");
     writer.String("SYMBOLIC_OBJECT");
+    // A symbolized object answers by its identity, named now if nothing
+    // named it (a symbolization states its fields, never the owner).
     if (object_instance != NULL) {
-      expression = object_instance->get_ref_exp();
+      expression = object_instance->get_or_create_ref_exp(obj);
     }
   } else {
     expression = concrete_boxed_primitive_expression(obj);
@@ -735,38 +737,7 @@ std::string ConcolicMngr::getRegionSummary() {
   writer.Bool(has_active_context());
   writer.Key("pathConditionAuthority");
   writer.String(has_active_context()
-      ? "VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1" : "NONE");
-  writer.Key("auxiliaryPathCondition");
-  if (ctx != NULL) {
-    std::string auxiliary = ctx->get_auxiliary_path_conditions();
-    writer.RawValue(auxiliary.c_str(), auxiliary.length(), kObjectType);
-  } else {
-    writer.StartObject();
-    writer.Key("schemaVersion");
-    writer.Int(1);
-    writer.Key("kind");
-    writer.String("CONCOLIC_AUXILIARY_PATH_CONDITION");
-    writer.Key("active");
-    writer.Bool(false);
-    writer.Key("pathConditionWatermark");
-    writer.Int(0);
-    writer.Key("conditionCount");
-    writer.Int(0);
-    writer.Key("pathConditionIndices");
-    writer.StartArray();
-    writer.EndArray();
-    writer.Key("conditions");
-    writer.StartArray();
-    writer.EndArray();
-    // Same key as the live envelope: a reader compares conditionCount with
-    // emittedConditionCount unconditionally, and must not have to special-case
-    // the no-context shape to do it.
-    writer.Key("emittedConditionCount");
-    writer.Int(0);
-    writer.Key("authority");
-    writer.String("VM_THREAD_AUXILIARY_PATH_CONDITION_V1");
-    writer.EndObject();
-  }
+      ? "VM_SELECTED_BRANCHES_V2" : "NONE");
   writer.Key("branchEvents");
   {
     // One writer for both shapes; a null context is the no-context answer.
@@ -834,7 +805,7 @@ jlong ConcolicMngr::endConcolic() {
   }
 
   // Closing an inner region restores the enclosing frame.  The full indexed
-  // path remains thread-owned, while the inner frame's local branch/auxiliary
+  // path remains thread-owned, while the inner frame's local branch
   // wrappers and event list are released by pop_region().
   if (ctx->pop_region() > 0) return 0;
 

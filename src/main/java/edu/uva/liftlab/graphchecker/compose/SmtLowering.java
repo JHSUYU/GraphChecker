@@ -137,10 +137,14 @@ public final class SmtLowering {
         boolean moves(String symbol);
 
         /**
-         * Whether a STATE family may re-pair this read -- the read event
-         * {@code readEvent} ({@link VmRows#readEvent}, its row's seq) of this
-         * location -- with another writer ({@link #repairing}); none may in a
-         * join no composition opened.
+         * Whether the stage this join lowers for may re-pair this read --
+         * the read event {@code readEvent} ({@link VmRows#readEvent}, its
+         * row's seq) of this location -- with another writer, so a value
+         * resting on it can move ({@link #moves}): in a composition, the
+         * anchor's reads a STATE family re-pairs; in a flip query, every
+         * read of a location some write row states, each taking one of its
+         * eligible writers ({@link #repairing}).  None in a join no stage
+         * opened.
          */
         boolean repaired(String locationKey, long readEvent);
 
@@ -198,14 +202,16 @@ public final class SmtLowering {
     };
 
     /**
-     * The same join, where a STATE family may re-pair these reads (the
-     * anchor's, {@code Composer}, each {@link #readKey}) and no other --
-     * another occurrence's read of the same location keeps the run's
-     * pairing -- and where this session's occurrences are ordered as
-     * {@code concurrent} says.
+     * The same join, where the stage may re-pair the reads {@code repaired}
+     * accepts, by location and read event: a composition's, the anchor's
+     * reads a STATE family re-pairs ({@code Composer}, each {@link #readKey})
+     * and no other -- another occurrence's read of the same location keeps
+     * the run's pairing; a flip query's, every read of a location with write
+     * rows ({@link #forSession}) -- and where this session's occurrences are
+     * ordered as {@code concurrent} says.
      */
     public static SessionJoin repairing(final SessionJoin join,
-                                        final Set<String> reads,
+                                        final BiPredicate<String, Long> repaired,
                                         final BiPredicate<OccurrenceAddress,
                                                 OccurrenceAddress> concurrent) {
         return new SessionJoin() {
@@ -242,7 +248,7 @@ public final class SmtLowering {
 
             @Override
             public boolean repaired(String locationKey, long readEvent) {
-                return reads.contains(readKey(locationKey, readEvent))
+                return repaired.test(locationKey, readEvent)
                         || join.repaired(locationKey, readEvent);
             }
 
@@ -381,6 +387,12 @@ public final class SmtLowering {
      */
     private Set<JsonElement> still = identities();
     /**
+     * What {@link ContainerSmtCodec}'s walk found of each chain node of this
+     * conjunction: whether it stands on a stated base.  A chain resolves
+     * through the open join, so the answer is the conjunction's.
+     */
+    private Map<JsonElement, Boolean> statedBases = statedBases();
+    /**
      * THE FRAMES, innermost last (null while one raised nothing): what each
      * lowering in progress raised ({@link Raised}).  Anything is raised into
      * the innermost only, and reaches the one enclosing it only when
@@ -445,6 +457,9 @@ public final class SmtLowering {
     /**
      * The lowering of ONE session's expressions, by reference, with its
      * write log (the flip solver's entry; same lowering as the composer's).
+     * A flip query re-pairs every read of a location some write row states
+     * among its eligible writers ({@code FlipQuery}'s writer choice), so a
+     * value resting on such a read can move: no pin stands for it.
      */
     public static SmtLowering forSession(SessionReader session,
                                          SessionJoin join) {
@@ -452,7 +467,9 @@ public final class SmtLowering {
                 Collections.<String, Sort>emptyMap(), true,
                 session.expressions());
         lowering.scope = session.sessionId();
-        lowering.join = join;
+        lowering.join = repairing(join,
+                (location, event) -> !join.writes(location).isEmpty(),
+                join::concurrent);
         return lowering;
     }
 
@@ -780,7 +797,8 @@ public final class SmtLowering {
         // NESTED, not replaced: an arm is lowered in its producer's scope
         // mid-path; overwriting the path's frame would leave the rest of the
         // path with no join, no table and no refusal sink.
-        frames.push(new Frame(open, scope, join, openTable, memo, still));
+        frames.push(new Frame(open, scope, join, openTable, memo, still,
+                statedBases));
         this.open = new Raised();
         raising.add(open);
         this.scope = sessionId;
@@ -788,11 +806,16 @@ public final class SmtLowering {
         this.openTable = expressions;
         this.memo = new HashMap<MemoKey, Attempt<?>>();
         this.still = identities();
+        this.statedBases = statedBases();
     }
 
     private static Set<JsonElement> identities() {
         return Collections.newSetFromMap(
                 new IdentityHashMap<JsonElement, Boolean>());
+    }
+
+    private static Map<JsonElement, Boolean> statedBases() {
+        return new IdentityHashMap<JsonElement, Boolean>();
     }
 
     /**
@@ -811,6 +834,7 @@ public final class SmtLowering {
         openTable = previous.table;
         memo = previous.memo;
         still = previous.still;
+        statedBases = previous.statedBases;
         top().gaps(closed);
         return new ArrayList<String>(closed.conditions);
     }
@@ -823,16 +847,19 @@ public final class SmtLowering {
         private final ExpressionTable table;
         private final Map<MemoKey, Attempt<?>> memo;
         private final Set<JsonElement> still;
+        private final Map<JsonElement, Boolean> statedBases;
 
         private Frame(Raised open, String scope, SessionJoin join,
                       ExpressionTable table, Map<MemoKey, Attempt<?>> memo,
-                      Set<JsonElement> still) {
+                      Set<JsonElement> still,
+                      Map<JsonElement, Boolean> statedBases) {
             this.open = open;
             this.scope = scope;
             this.join = join;
             this.table = table;
             this.memo = memo;
             this.still = still;
+            this.statedBases = statedBases;
         }
     }
 
@@ -1257,6 +1284,69 @@ public final class SmtLowering {
     }
 
     /**
+     * THE PIN of a container query its chain cannot decide (no stated base
+     * under it, {@link ContainerSmtCodec#term}), as a method return's
+     * ({@link #methodReturn}): the answer its call stated it returned
+     * ({@code concreteValue}) -- a member of an opaque root, a presence a
+     * muted body tested -- named for the query's {@code answer} id and
+     * pinned by an assertion named for an unsat core, where nothing it rests
+     * on can move ({@link #moves}: its keys, positions, owner and chain).
+     * Null otherwise, and the relation stands, free over its opaque base:
+     * a pin there would cut the witnesses that move it.  Named, never
+     * silent: one DIAGNOSTIC per query kind and session.
+     */
+    private ContainerSmtCodec.Term answered(JsonObject query) {
+        String returned = ReadRow.returned(query);
+        String javaType = primitiveString(query, "_java_type");
+        long id = optionalLongInteger(query, ContainerSmtCodec.ANSWER, 0L);
+        if (returned == null || id <= 0L || moves(query)) return null;
+        Term value = statedValue(returned, javaType);
+        if (value == null) return null;
+        String name = symbols.mint("answer__", scope + SEPARATOR + id, 10);
+        if (!declared(name)) {
+            declare(name, value.sort);
+            String pin = "(= " + name + " " + value.text + ")";
+            if (symbolsDeclareThemselves) {
+                assertPlain(pin);
+            } else {
+                assertNamed("pinned_" + name, pin);
+            }
+        }
+        String kind = primitiveString(query, "shape") + ":"
+                + primitiveString(query, "operation");
+        top().diagnostics.put("ContainerAnswerPinned:" + kind + "@" + scope,
+                "a " + kind + " over a chain with no stated base answers "
+                        + "what its call returned, pinned by a named "
+                        + "assertion where nothing it rests on moves");
+        ContainerSmtCodec.Sort sort = VmTermLowering.containerSortOf(
+                value.sort);
+        return value.sort == Sort.STRING
+                ? ContainerSmtCodec.Term.string(name, "false")
+                : new ContainerSmtCodec.Term(name, sort, value.integralWidth);
+    }
+
+    /**
+     * The MINT of a cell no run stated ({@code UNKNOWN}): what a callback
+     * the run never ran would have stored -- a free {@code Value} named
+     * {@code unknown__} for its session and id, so the arm the run did not
+     * take holds any value there.  Named, never silent: one DIAGNOSTIC per
+     * session.
+     */
+    private ContainerSmtCodec.Term unknown(JsonObject cell) {
+        long id = optionalLongInteger(cell, ContainerSmtCodec.ANSWER, 0L);
+        if (id <= 0L) {
+            refuse("ContainerRelation:UNKNOWN:unnamed", "");
+            return null;
+        }
+        String name = symbols.mint("unknown__", scope + SEPARATOR + id, 10);
+        if (!declared(name)) declare(name, Sort.VALUE);
+        top().diagnostics.put("ContainerCellUnknown@" + scope, "a cell a "
+                + "callback the run never ran would have stored is free on "
+                + "the arm the run did not take (CONTAINER_PINNED)");
+        return new ContainerSmtCodec.Term(name, ContainerSmtCodec.Sort.VALUE);
+    }
+
+    /**
      * The relation of a call this lowering knows, over its lowered
      * arguments, or null when it knows none.  {@code Integer.parseInt} and
      * {@code Long.parseLong} of a String (radix 10) are its decimal reading
@@ -1493,11 +1583,15 @@ public final class SmtLowering {
     }
 
     /**
-     * Whether anything this expression rests on can move in a witness
-     * (criterion 1 of {@link #bind}): a leaf naming a symbol the open join
-     * says {@link SessionJoin#moves}, or a read a family
-     * {@link SessionJoin#repaired re-pairs}, of a version a moving mint
-     * made, or of a write that rests on one.  Each node once per
+     * THE ONE PREDICATE every pin asks -- a refused join's ({@link #bind}),
+     * a method return's ({@link #methodReturn}), a container answer's
+     * ({@link #answered}), in a composition and in a flip query alike:
+     * whether anything this expression rests on can move in a witness.  A
+     * leaf naming a symbol the open join says {@link SessionJoin#moves}, or
+     * a read the stage may {@link SessionJoin#repaired re-pair} (a
+     * composition's, the anchor's reads its STATE families re-pair; a flip
+     * query's, every read of a location with write rows), of a version a
+     * moving mint made, or of a write that rests on one.  Each node once per
      * conjunction; the nodes of a walk that found nothing are not walked
      * again ({@link #still}).
      */
@@ -1895,6 +1989,8 @@ public final class SmtLowering {
 
     /** The member a node names the reference it was reached through by. */
     private static final String OWNER = "owner";
+    /** What a node states it returned ({@link ReadRow#returned}). */
+    private static final String CONCRETE_VALUE = "concreteValue";
 
     /**
      * The row of the read a node's {@code owner} is, when a STATE family may
@@ -1955,7 +2051,7 @@ public final class SmtLowering {
      */
     private static JsonObject ownObject(JsonObject access,
                                         String ownerClass) {
-        JsonElement value = access.get("concreteValue");
+        JsonElement value = access.get(CONCRETE_VALUE);
         while (VmExpressionIr.consumerBoundary(value)) {
             value = value.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
         }
@@ -2470,11 +2566,15 @@ public final class SmtLowering {
      * The relation asked of another state: its receiver, beneath the views
      * and iterators that walk it, is that state's chain, as the run's own
      * receiver is its object's; no copy names the owner, so none of them is
-     * asked again.
+     * asked again, and none states the answer the run's object gave
+     * ({@code concreteValue}, {@code answer}): that answer is that object's
+     * alone, and pinned on another it would be every candidate's.
      */
-    private static JsonObject asOf(JsonObject relation, JsonObject state) {
+    static JsonObject asOf(JsonObject relation, JsonObject state) {
         JsonObject asked = JsonFields.shallowCopy(relation);
         asked.remove(OWNER);
+        asked.remove(CONCRETE_VALUE);
+        asked.remove(ContainerSmtCodec.ANSWER);
         JsonElement receiver = relation.get("receiver");
         asked.add("receiver", ContainerSmtCodec.handles(receiver)
                 && VIEWS.contains(optionalString(receiver.getAsJsonObject(),
@@ -2685,6 +2785,26 @@ public final class SmtLowering {
                 JsonObject read = found.getAsJsonObject();
                 return join.writeExpression(locationKey(JsonFields.object(
                         read, "location")), observedVersion(read));
+            }
+
+            @Override
+            public ContainerSmtCodec.Term answered(JsonObject query) {
+                return SmtLowering.this.answered(query);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term unknown(JsonObject cell) {
+                return SmtLowering.this.unknown(cell);
+            }
+
+            @Override
+            public Boolean statedBase(JsonElement node) {
+                return statedBases.get(node);
+            }
+
+            @Override
+            public void statedBase(JsonElement node, Boolean stated) {
+                statedBases.put(node, stated);
             }
 
             @Override
@@ -3713,23 +3833,11 @@ public final class SmtLowering {
     }
 
     /**
-     * Java {@code ==} between two Strings is reference identity.  Three
+     * Java {@code ==} between two Strings is reference identity.  Two
      * cases close it exactly and the rest stays refused.
      */
     private Term stringIdentity(JsonObject expression, String operator,
                                 Term left, Term right, String origin) {
-        if (ContainerSmtCodec.handlesFieldBinding(expression)) {
-            Term symbol = ContainerSmtCodec.handlesField(
-                    expression.get("_left")) ? right : left;
-            String materialization = ContainerSmtCodec
-                    .materializedStringEquality(left.text, right.text,
-                            symbol.stringNullness);
-            if (materialization.isEmpty()) {
-                return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
-                        "MATERIALIZATION:" + operator, Sort.BOOL);
-            }
-            return result(materialization, Sort.BOOL, left, right);
-        }
         if (!left.stringReferenceOrigin.isEmpty()
                 && left.stringReferenceOrigin.equals(
                 right.stringReferenceOrigin)) {

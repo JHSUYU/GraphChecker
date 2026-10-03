@@ -3,7 +3,6 @@
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "symbolicString.hpp"
 #include "concolic/exp/stringExpression.hpp"
-#include "concolic/exp/methodExpression.hpp"
 #include "classfile/javaClasses.hpp"
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
@@ -231,11 +230,8 @@ template <> Expression * SymPrimitive<jint>::finish_method_helper(MethodSymboliz
   if (handle.get_callee_name() == "parseInt" &&
       (!strcmp(signature, "(Ljava/lang/String;)I") ||
        !strcmp(signature, "(Ljava/lang/String;I)I"))) {
-    Expression *exp = new MethodReturnSymbolExp(handle);
-    ConcolicMngr::record_path_condition(new MethodExpression(
-        handle.get_callee_holder_name(), handle.get_callee_name(),
-        handle.get_param_list(), exp, false));
-    return exp;
+    // The node states its call, which COMPOSE lowers as the parse.
+    return new MethodReturnSymbolExp(handle);
   }
   if (handle.get_callee_name() == "valueOf" &&
       !strcmp(signature, "(I)Ljava/lang/Integer;")) {
@@ -270,11 +266,8 @@ template <> Expression * SymPrimitive<jshort>::finish_method_helper(MethodSymbol
 
 template <> Expression * SymPrimitive<jlong>::finish_method_helper(MethodSymbolizerHandle &handle) {
     if (handle.get_callee_name() == "parseLong") {
-      Expression *exp = new MethodReturnSymbolExp(handle);
-      ConcolicMngr::record_path_condition(new MethodExpression(
-          handle.get_callee_holder_name(), handle.get_callee_name(),
-          handle.get_param_list(), exp, false));
-      return exp;
+      // The node states its call, which COMPOSE lowers as the parse.
+      return new MethodReturnSymbolExp(handle);
     }
   ResourceMark rm;
   if (handle.get_callee_name() == "valueOf" &&

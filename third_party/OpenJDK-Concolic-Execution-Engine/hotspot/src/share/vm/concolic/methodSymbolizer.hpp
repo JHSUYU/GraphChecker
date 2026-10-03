@@ -133,8 +133,7 @@ private:
  * callee and argument expressions, serialized as every node's children are
  * -- so that a consumer can lower a known function as a relation, and can
  * tell a pin of the returned value that would cut a moved root (an argument
- * that names one) from one that would not.  The same relation used to live
- * only in the path condition's MethodExpression, out of reach of the node.
+ * that names one) from one that would not.
  */
 class MethodReturnSymbolExp : public SymbolExpression {
   // Minted atomically: any attached thread may symbolize a method return.

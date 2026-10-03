@@ -656,15 +656,13 @@ public final class ClosurePlanner {
 
     /** Both doors of the message a demanded occurrence served join as control
      *  producers: they contribute no value, but their fault points decide
-     *  whether the message exists (IDENTITY §7.3). Paired via the served
-     *  occurrence's ANCHOR (the producer endpoint). */
+     *  whether the message exists (IDENTITY §7.3). Paired via the message
+     *  that started the served occurrence ({@link Corpus#startedBy}: its
+     *  ANCHOR, or what its turn took in). */
     private static void controlProducer(Corpus corpus, Demand demand,
                                         List<Demand> next) {
-        if (!(demand.occurrence.context() instanceof CausalContext.Anchor)) {
-            return;
-        }
-        String endpoint = ((CausalContext.Anchor) demand.occurrence.context())
-                .producerEndpointId();
+        String endpoint = corpus.startedBy(demand.occurrence);
+        if (endpoint.isEmpty()) return;
         for (OccurrenceAddress door : new OccurrenceAddress[] {
                 corpus.senderOf(endpoint), corpus.receiverOf(endpoint)}) {
             if (door == null || door.equals(demand.occurrence)) continue;

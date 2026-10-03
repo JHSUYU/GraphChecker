@@ -119,7 +119,7 @@ public class ConfirmationTest {
         Files.write(plain, new byte[0]);
         System.setProperty(FocusedReplay.PLAN_PROPERTY, plain.toString());
         assertEquals("", Confirmation.attached(
-                endpoint(ANCHOR, "x"), endpoint(MINT, "y"), null, null));
+                endpoint(ANCHOR, "x"), endpoint(MINT, "y"), null, null).mismatch);
         assertTrue(Confirmation.close().isEmpty());
         reset();
 
@@ -165,23 +165,23 @@ public class ConfirmationTest {
                                 + "\"value\":true}"));
         LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
         assertEquals("the chosen producer is no mismatch", "",
-                Confirmation.attached(consumer, chosen, null, null));
-        String mismatch = Confirmation.attached(consumer, other, null, null);
+                Confirmation.attached(consumer, chosen, null, null).mismatch);
+        String mismatch = Confirmation.attached(consumer, other, null, null).mismatch;
         assertTrue(mismatch, mismatch.contains("the model chose producer "
                 + chosen.id() + ", the run paired " + other.id()));
         assertEquals("a consumer the model chose nothing for", "",
-                Confirmation.attached(other, chosen, null, null));
+                Confirmation.attached(other, chosen, null, null).mismatch);
         // A codec's hole: its message's store version and its text too.
         assertEquals("the chosen version, decoded as the model's value", "",
-                Confirmation.attached(hole, chosen, state, "2000"));
+                Confirmation.attached(hole, chosen, state, "2000").mismatch);
         mismatch = Confirmation.attached(hole, chosen,
-                "SOLR_ZK /collections/c/state.json@4", "2000");
+                "SOLR_ZK /collections/c/state.json@4", "2000").mismatch;
         assertTrue(mismatch, mismatch.contains("the model's arm came from "
                 + "message " + state + ", the run decoded SOLR_ZK "
                 + "/collections/c/state.json@4"));
-        mismatch = Confirmation.attached(hole, chosen, state, "1999");
+        mismatch = Confirmation.attached(hole, chosen, state, "1999").mismatch;
         assertTrue(mismatch, mismatch.endsWith("the model's value is "
-                + "\"2000\", the run decoded \"1999\""));
+                + "\"2000\", the run delivered \"1999\""));
         // The writer of a version is published after the read that saw
         // it, so the state edge is answered at the close.
         Confirmation.read(reader, cell, 121L,
@@ -237,6 +237,51 @@ public class ConfirmationTest {
             assertEquals(detail, !taken,
                     detail.startsWith("PAIRING_UNTAKEN: "));
             reset();
+        }
+    }
+
+    /** A delivery into the anchor is the model's when its producer answers
+     *  the model's producer's question: the same site, site index and
+     *  attempt of an occurrence of the same region and node under a chain of
+     *  the same shape, delivering the model's value (hdfs-11741 V6: the
+     *  balancer's second move to dn1 rode its next dispatcher iteration in
+     *  the witness, its first in the CONFIRM run).  The substitution is
+     *  named, never silent. */
+    @Test
+    public void aDeliveryIntoTheAnchorIsComparedByItsProducersQuestion()
+            throws Exception {
+        String site = "XCH.1.resp.key-id";
+        Endpoint consumer = endpoint(ANCHOR, site);
+        Endpoint chosen = endpoint(PRODUCER, site);
+        String nextTurn = PRODUCER.replace("TICK#1", "TICK#2");
+        handed("", Arrays.asList("{\"kind\":\"WIRE\",\"consumer\":\""
+                + consumer.id() + "\",\"producer\":\"" + chosen.id()
+                + "\",\"value\":\"7\",\"" + Confirmation.PRODUCER_QUESTION
+                + "\":{\"occurrence\":\"" + PRODUCER + "\",\"site\":\""
+                + site + "\",\"siteIndex\":\""
+                + ExecutionIndex.empty().hash() + "\",\"attempt\":0,"
+                + "\"shape\":[\"Root:TICK\"]}}"));
+        // producer, the value it delivered, substituted?, a mismatch?
+        Object[][] table = {
+            {endpoint(nextTurn, site), "7", true, false},
+            {endpoint(nextTurn, site), "8", true, true},
+            {Endpoint.of(OccurrenceAddress.parse(nextTurn), site,
+                    ExecutionIndex.of(Arrays.asList(Frame.of("a.X#y", 1))),
+                    0), "7", false, true},
+            {Endpoint.of(OccurrenceAddress.parse(nextTurn), site,
+                    ExecutionIndex.empty(), 1), "7", false, true},
+            {endpoint(nextTurn.replace("nn0", "nn1"), site), "7", false,
+                true},
+            {chosen, "7", false, false},
+        };
+        for (Object[] row : table) {
+            Confirmation.Compared compared = Confirmation.attached(consumer,
+                    (Endpoint) row[0], null, (String) row[1]);
+            String subject = row[0] + " delivering " + row[1];
+            assertEquals(subject + ": " + compared.substitution, row[2],
+                    !compared.substitution.isEmpty());
+            assertEquals(subject + ": " + compared.mismatch, row[3],
+                    !compared.mismatch.isEmpty());
         }
     }
 

@@ -633,6 +633,14 @@ ReturnedValue SharedFieldVersions::returned_value(const ConcreteBits &word,
   return returned;
 }
 
+ReturnedValue SharedFieldVersions::returned_reference(oop referent) {
+  const ConcreteBits boxed = boxed_word(referent);
+  if (boxed.stated() && !boxed.is_reference()) {
+    return returned_value(boxed, NULL);
+  }
+  return returned_value(ConcreteBits(T_OBJECT, 0), referent);
+}
+
 // ---------------------------------------------------------------------------
 // Words and constants.
 // ---------------------------------------------------------------------------

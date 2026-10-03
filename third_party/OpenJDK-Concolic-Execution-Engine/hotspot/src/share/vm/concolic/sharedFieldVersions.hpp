@@ -516,6 +516,13 @@ public:
                                       Expression *identity = NULL);
 
   /**
+   * What a call or a load that returned `referent` returned, as its node
+   * states it: a box's primitive (its node is typed by the box,
+   * ContainerSupport::result_type), else returned_value of the reference.
+   */
+  static ReturnedValue returned_reference(oop referent);
+
+  /**
    * The newest version's value of a tracked `location` when `cell` (another
    * object's copy of it: an Object.clone) holds what that version wrote,
    * else NULL: the word it stored, or for a reference, which loads no word,

@@ -142,9 +142,10 @@ public final class RegionShadowStackLifecycleSmoke {
         require(!events.contains("SHADOW.REJECTED.WHILE.PAUSED"), events);
         require(!events.contains("SHADOW.STALE.OWNER.FRAME"), events);
 
-        require(summary.contains("shadow_narrow")
-                        && summary.contains("shadow_wide")
-                        && summary.contains("shadow_ratio"), summary);
+        // The roots reach the marked branches' own conditions.
+        require(path.contains("shadow_narrow")
+                        && path.contains("shadow_wide")
+                        && path.contains("shadow_ratio"), path);
         require(path.contains("\"sourceJavaType\":\"I\"")
                         && path.contains("\"targetJavaType\":\"J\"")
                         && path.contains("\"sourceJavaType\":\"J\"")

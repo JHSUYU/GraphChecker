@@ -37,7 +37,10 @@ import java.util.Set;
  * handler is a fault branch over the CFG with that edge, deciding the sites
  * only one of its exits reaches, with no boolean arm (its guard's outcome is
  * null) and no decision ever recorded at it -- a fault is flipped at its
- * marker ({@link MethodGuards}).</p>
+ * marker ({@link MethodGuards}).  A door woven into the method itself (a
+ * door at calls) throws to the handler from its marker branch, which is a
+ * fault branch too, on its arm: otherwise the handler, now reached from
+ * every exit of the calls before it, would be decided by nothing.</p>
  *
  * <p>Every index is the ORIGINAL one ({@link
  * CausynthPipeline#originalUnitIndex}), the numbering of every published site
@@ -369,18 +372,24 @@ public final class SiteControlDependence {
             UnitGraph cfg = new BriefUnitGraph(body);
             FaultPropagation raised = FaultPropagation.current();
             List<Unit> branches = new ArrayList<Unit>();
-            List<Unit> calls = new ArrayList<Unit>();
+            // A call that can leave a door fault to a handler of the method,
+            // and the marker branch of a woven throw one catches: its arm
+            // reaches the handler only over the fault graph.
+            List<Unit> faultBranches = new ArrayList<Unit>();
             for (Unit unit : units) {
                 if (original.get(unit).intValue() < 0) continue;
                 if (cfg.getSuccsOf(unit).size() > 1) branches.add(unit);
-                if (!raised.handlers(method, unit).isEmpty()
-                        && unit.fallsThrough()) {
-                    calls.add(unit);
+                if (raised.handlers(method, unit).isEmpty()) continue;
+                if (unit.fallsThrough()) {
+                    faultBranches.add(unit);
+                } else {
+                    DoorWeave.Fault woven = DoorWeave.woven(body, unit);
+                    if (woven != null) faultBranches.add(woven.branch);
                 }
             }
             return new MethodGuards(method, new Relation(cfg, branches),
-                    calls.isEmpty() ? null : new Relation(
-                            new FaultGraph(body, method), calls),
+                    faultBranches.isEmpty() ? null : new Relation(
+                            new FaultGraph(body, method), faultBranches),
                     original, byIndex);
         }
 
@@ -464,11 +473,14 @@ public final class SiteControlDependence {
             List<StaticScopeMap.Guard> found =
                     new ArrayList<StaticScopeMap.Guard>();
             addGuards(site, named, found);
-            for (Unit call : faultClosure(site, null)) {
-                if (named.add(siteOf(call))) {
-                    found.add(new StaticScopeMap.Guard(siteOf(call), null));
+            for (Unit branch : faultClosure(site, null)) {
+                // A call has no arm; a marker branch its arm toward the
+                // handler, over the fault graph.
+                if (named.add(siteOf(branch))) {
+                    found.add(new StaticScopeMap.Guard(siteOf(branch),
+                            reachingArm(faults, branch, site)));
                 }
-                addGuards(call, named, found);
+                addGuards(branch, named, found);
             }
             return Collections.unmodifiableList(found);
         }
@@ -477,7 +489,7 @@ public final class SiteControlDependence {
         private void addGuards(Unit site, Set<String> named,
                                List<StaticScopeMap.Guard> found) {
             for (Unit branch : plain.deciding(site)) {
-                Boolean arm = reachingArm(branch, site);
+                Boolean arm = reachingArm(plain, branch, site);
                 if (named.add(siteOf(branch))) {
                     found.add(new StaticScopeMap.Guard(siteOf(branch), arm,
                             arm == null ? null : BooleanReturns.decider(
@@ -514,17 +526,19 @@ public final class SiteControlDependence {
             return SiteId.of(method, original.get(unit).intValue());
         }
 
-        /** The arm of an if that makes {@code site} unavoidable, or null. */
-        private Boolean reachingArm(Unit branch, Unit site) {
+        /** The arm of an if that makes {@code site} unavoidable over the
+         *  relation's graph, or null. */
+        private static Boolean reachingArm(Relation relation, Unit branch,
+                                           Unit site) {
             if (!(branch instanceof IfStmt)) return null;
             IfStmt conditional = (IfStmt) branch;
             Unit taken = conditional.getTarget();
             boolean takenForces = taken != null
-                    && plain.post.isDominatedBy(taken, site);
+                    && relation.post.isDominatedBy(taken, site);
             boolean fallsThroughForces = false;
-            for (Unit successor : plain.cfg.getSuccsOf(branch)) {
+            for (Unit successor : relation.cfg.getSuccsOf(branch)) {
                 if (successor == taken) continue;
-                fallsThroughForces |= plain.post.isDominatedBy(successor,
+                fallsThroughForces |= relation.post.isDominatedBy(successor,
                         site);
             }
             if (takenForces == fallsThroughForces) return null;

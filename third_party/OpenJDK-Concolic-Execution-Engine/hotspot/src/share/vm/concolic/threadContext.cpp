@@ -191,62 +191,6 @@ std::string ThreadContext::serialize_path_condition_range(
   return std::string(buffer.GetString(), buffer.GetLength());
 }
 
-std::string ThreadContext::get_auxiliary_path_conditions() {
-  using namespace rapidjson;
-  RegionFrame *frame = _region_stack.empty() ? NULL : _region_stack.back();
-  StringBuffer buffer;
-  Writer<StringBuffer> writer(buffer);
-  VmExpressionArtifactScope expression_artifact;
-  writer.StartObject();
-  writer.Key("schemaVersion");
-  writer.Int(1);
-  writer.Key("kind");
-  writer.String("CONCOLIC_AUXILIARY_PATH_CONDITION");
-  writer.Key("active");
-  writer.Bool(!_aborted);
-  writer.Key("aborted");
-  writer.Bool(_aborted);
-  writer.Key("abortReason");
-  writer.String(_abort_reason.c_str());
-  writer.Key("pathConditionWatermark");
-  writer.Int(_path_condition.size());
-  writer.Key("conditionCount");
-  writer.Int(frame == NULL
-      ? 0 : (int)frame->auxiliary_path_condition_indices.size());
-  writer.Key("pathConditionIndices");
-  writer.StartArray();
-  if (frame != NULL) {
-    for (size_t index = 0;
-         index < frame->auxiliary_path_condition_indices.size(); ++index) {
-      writer.Int(frame->auxiliary_path_condition_indices[index]);
-    }
-  }
-  writer.EndArray();
-  writer.Key("conditions");
-  int emitted_auxiliary_conditions = 0;
-  if (frame == NULL) {
-    writer.StartArray();
-    writer.EndArray();
-  } else {
-    emitted_auxiliary_conditions =
-        frame->auxiliary_path_condition.serialize(writer);
-  }
-  // conditionCount above is the length of pathConditionIndices; this is the
-  // length of `conditions`.  They are recorded in lockstep by
-  // record_path_condition(), and serialize() emits one entry per recorded
-  // condition even when it will not expand the expression, so the two agree
-  // by construction.  Reporting it makes that an assertion the reader can
-  // make rather than an invariant it has to trust -- the byte bound used to
-  // break it silently (240 declared, 200 emitted).
-  writer.Key("emittedConditionCount");
-  writer.Int(emitted_auxiliary_conditions);
-  writer.Key("authority");
-  writer.String("VM_THREAD_AUXILIARY_PATH_CONDITION_V1");
-  expression_artifact.write_table(writer);
-  writer.EndObject();
-  return std::string(buffer.GetString(), buffer.GetLength());
-}
-
 void ThreadContext::abort_symbolic_execution(const char *reason) {
   if (_aborted) {
     return;

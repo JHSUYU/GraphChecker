@@ -235,10 +235,12 @@ field=<f> <subject>`.
   the replay adds to its own host reading, a jump its node's clock runs on from; a root is planted only at a focused mint, so each assigned
   root's mint occurrence is focused.
 - CONFIRM's worker adds `expected_edges.jsonl` (`runtime.Confirmation.FILE`): `WIRE {consumer,
-  producer, selector, messageKey?, value?}` (a codec hole's: `messageKey` the store version its
-  arm's message was, when that key is a store's `<transport> <path>@<version>` -- an exchange's
-  correlation id is its own run's; `value` the text the hole must decode to, the claim's
-  `holeTexts`), `STATE {reader, readerAnyTurn, mint, writer, version, location}` (`writer`
+  producer, selector, messageKey?, value?, producerQuestion?}` (a codec hole's `messageKey`: the
+  store version its arm's message was, when that key is a store's `<transport> <path>@<version>` --
+  an exchange's correlation id is its own run's; `value`: the text a held leaf -- a codec hole, a
+  delivery into the anchor -- must receive, the arm's `texts` in the claim; `producerQuestion
+  {occurrence, site, siteIndex, attempt, shape}`: for a delivery into the anchor where the arm's
+  session answered the anchor by its question, IDENTITY §9), `STATE {reader, readerAnyTurn, mint, writer, version, location}` (`writer`
   `INITIAL` for a location's INITIAL, `Confirmation#INITIAL`), `ORDER {before, after}`
   (activation keys; `after` the last activation entered before the event it orders, or, for claimed
   work on a consumer thread, the send that started it, `Confirmation#submitter`), every endpoint

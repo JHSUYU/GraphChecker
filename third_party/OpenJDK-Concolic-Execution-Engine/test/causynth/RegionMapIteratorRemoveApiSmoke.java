@@ -61,9 +61,11 @@ public final class RegionMapIteratorRemoveApiSmoke {
         require(state.entries.containsKey(8), summary);
         require(relation.contains("\"operation\":\"REMOVE_AT\""), relation);
         require(summary.contains("\"pathConditionOmitted\":true"), summary);
-        // Each next() states `k < SIZE` for its concrete position k and no
-        // longer the constant `k >= 0`.
-        require(window.contains("\"pathConditionWatermark\":18"), window);
+        // The path holds the branches' own conditions only -- three
+        // hasNext() tests and two expiry tests: a next() states no bound
+        // (the codec requires its position a member) and a hasNext() its
+        // answer on its own node.
+        require(window.contains("\"pathConditionWatermark\":5"), window);
         if (args.length > 0 && "--dump".equals(args[0])) {
             System.out.println(summary);
         }

@@ -292,6 +292,12 @@ the container's log (its fault, e.g. `CONTAINER_BASE_UNSTATED` for a class the V
 a truncated envelope), or holds the version as no row (`VERSION_NOT_ROWED`) or no longer
 (`VERSION_NOT_RETAINED`).
 
+A decision row is a marked branch's own conditions (`runtime.VmBranchAttestation`, by the indices
+its event names); a region's summary states no other condition. A container model's choices and
+observations reach no row of their own: a choice is the guard of the mutation it stored, and what
+the run observed is the `concreteValue` of the query node (VM.md §6, the pin/guard discipline),
+which COMPOSE pins (§8, *A query's stated answer*).
+
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
 the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on the 0/1 a
@@ -354,7 +360,14 @@ schedule) and:
    seqs, the VM's one event clock, whatever threads ran them; never the anchor chain, which orders
    occurrences, not their events) contradicts the order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when
    the session is admitted, else DIAGNOSTIC); another
-   world's pairing is a new slot.
+   world's pairing is a new slot. A slot stands on the session that opened it: the slots of a
+   session no longer in the corpus (one a GROW swap withdrew, §7.8) are dropped first, here and
+   where COMPOSE reads the table, and the session in its place opens them again. An occurrence a
+   replay answered by its question (IDENTITY §9, its `ADDRESS_UNSTABLE` row) stands at the declared
+   address under another chain, so its pairings are that chain's: they open slots beside the
+   declared occurrence's and replace none, whichever session lands first, since each slot is
+   indexed by whether its opening session answered its consumer's occurrence; only another
+   answered pairing fills such a slot.
 5. Builds the ledger (§7.3), takes the arms in flight (`--in-flight`: the obligation rows the
    campaign has queued or running), builds the candidates (§7.4) and opens the round:
    `obligations.jsonl`, nothing settled and nothing in flight.
@@ -843,7 +856,10 @@ round is planned; then each re-run SWAPS in (`campaign_stream_swap`): the exposi
 worker's previous files move to `<worker>/before-<round>/`, the re-run's files become the
 worker's, its session lands, and its verdict replaces the obligation's row in
 `obligation_results.jsonl`; the queue is left to the next round, since what it held may be cut from
-an exposing session. Once nothing runs, the last generation's tree is the iteration's
+an exposing session. The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
+the region's events stand in new occurrences, so its endpoints have new ids, and a slot of the old
+run would read the re-run and every later session of its world as a replacement (hdfs-11741 V4:
+two BLOCKING rows withheld the witness's composition). Once nothing runs, the last generation's tree is the iteration's
 `instrumented-classes` (CONFIRM, REPRODUCE). An exposure no obligation names (seed exposure) fails
 EXPLORE.
 
@@ -995,7 +1011,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
   of that version (a placeholder), else PIN to the value the row states, else REFUSE
   (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
-  can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
+  can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair) --
+  `SmtLowering#moves`, the one predicate every pin asks, a method return's and a container
+  answer's too, and EXPLORE's flip query alike, where a read of any location with write rows
+  moves (it takes one of its eligible writers, `SmtLowering#forSession`) -- and
   dropped it raises nothing (no refusal, side condition or gap); what a read row's binding required
   (container membership and cell tags, recorded readings) is stated with its join, so only where
   the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
@@ -1054,9 +1073,10 @@ integral (`(= (java_int_to_string v) s)` within the hole's range) or a boolean h
 `CODEC_MISMATCH` `NULL_LEAF`; a String operand that may be null holds only where it is not, and one
 whose nullness nothing states is refused (`JavaStringNullnessUnknown`). A relay's operand is the
 upstream hole's symbol, closed as a nested family (SOLR-18413: the leader's `n2` is the Overseer's
-`n1`, which is the overseer's clock plus the timeout). Each hole an arm binds is noted with whether
-its value rests on a clock (`ComposedFamilies.BoundHole`: a CLOCK root the delivered value reaches,
-or a nested hole that does), for CONFIRM. A path's
+`n1`, which is the overseer's clock plus the timeout). Each leaf an arm binds (a hole, a declared
+port's delivery) is noted with the occurrence it was delivered into and whether its value rests on
+a clock (`ComposedFamilies.BoundLeaf`: a CLOCK root the delivered value reaches, or a nested
+delivery that does), for CONFIRM. A path's
 families (message and state) are all or nothing: their named assertions, arm choices and families
 are stated as they are made and taken back with a refused path (`ComposedFamilies#discard`,
 `SmtLowering#retract`), so the next path, composed at the ordinal a refused one left free, names
@@ -1171,8 +1191,16 @@ absent key answers the default. `PUT_ALL` (`putAll(m)`) puts, in the order m's c
 key m's chain names above its exact empty base, where m holds it (`assoc_put_if`, the guard inside
 each component as `assoc_remove_if`'s); a source whose chain bounds no keys is refused by name
 (`ContainerRelation:ASSOCIATIVE:PUT_ALL:source-keys-unstated`), and a view over the result counts
-the source's keys. The presence and match conditions of `putIfAbsent`, `replace` and `remove(k, v)`
-are comparisons of a `READ` with null or the argument, lowered as any comparison. A String a map
+the source's keys. `MATCHES [k, e]` (the test a conditional mutator made) is whether the cell at
+`k`, the null cell where `k` is absent, is `e`'s, tag included (`(= cell e)`): it guards the
+`PUT_IF`/`REMOVE_IF` of `putIfAbsent`, `compute*`, `merge`, `replace(k, e, u)` and `remove(k, e)`,
+and `CONTAINS` that of `replace(k, v)` and a set's `add`. An `UNKNOWN` cell -- what a callback the
+run never ran would have stored -- is the MINT of a free `Value`, `unknown__` for its session and
+`answer` id (`SmtLowering#unknown`, DIAGNOSTIC `ContainerCellUnknown@<session>`). A read at a
+literal key passes guarded mutations at other literal keys as it passes plain ones. A queue's `PEEK` is its head, the null
+cell where it is empty and no member required; `POLL` is the queue without its head, a shift at 0
+where its size is a stated nonzero literal, itself where it is 0, and refused by name over no
+stated size (`ContainerRelation:INDEXED:POLL:unstated-size`). A String a map
 answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
 (`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). An object reference is an
 opaque identity: one the VM named (`M_L'c'_rid`) is non-null and distinct from its session's other
@@ -1199,6 +1227,22 @@ none gets maps whose puts and removals keep no order (`ContainerStateModel#unord
 over arrays, and z3 answered such queries "incomplete (theory array)" or not at all (hdfs-11741 L1:
 valuation 0 undecided on two fatal-observing paths, each sat in seconds without it). Every
 array-valued choice of a put is a `store` of a chosen element, never an `ite` over arrays.
+
+**A query's stated answer** (`ContainerSmtCodec#term`, `SmtLowering#answered`). A container query
+the VM states the answer of (`concreteValue`, with its `answer` id: a member of an opaque root, the
+test a muted body made, an element of an array whose elements are the heap's) is its chain's where
+the chain stands on a stated base -- a `SNAPSHOT_BASE` or a `CLEAR` under every relation, each state
+the one it stands for (`Host#chain`), remembered per conjunction (`Host#statedBase`). Over any other
+base it is the PIN of the read rule, as a method return's: a name `answer__` for its session and id,
+equal to the stated value by an assertion named `pinned_answer__...` for an unsat core (DIAGNOSTIC
+`ContainerAnswerPinned:<shape>:<operation>@<session>`), only where nothing it rests on moves
+(`#moves`: its keys, positions, owner and chain -- a read the stage may re-pair moves); else its
+relation stands, free over the opaque
+base, and a `READ` there is refused `CONTAINER_BASE_UNSTATED` as before. A pin is never stated where
+a witness may move it -- `READ(s, k) == v` under a moving `k` would cut the witness -- and no model
+choice is a hard constraint: it is the guard its node states. The answer is the run's object's
+alone: a query asked of another object a family may re-point its owner to (`SmtLowering#asOf`)
+states none.
 
 **Stream results** (VM.md §4, `SymStream`). A collected list is an `INDEXED` chain from an exact empty
 `SNAPSHOT_BASE`: `APPEND_IF [v]` with a `guard` is `indexed_append_if`, the guard inside the store
@@ -1277,11 +1321,12 @@ ClaimPolicy held outcome 0 under (clock pins `clock_pinned__*`, recorded pairing
 with the blocker named when the claim is blocked or there is no path, and `(check-sat)`.
 `candidate_composition_manifest.json`: the `CompositionManifest` fields plus `finalStatus`
 (`FINAL_READY` | `FINAL_REFUSED`), `finalStatusRefusals`, `gaps` and `solver` (§9). `claim.json`:
-`{kind CLAIM, anchor, claim, solverRuns, seedSessionId, valuations, gaps}`, what CONFIRM reads; a
-selected arm binding codec holes states `holeTexts`, consumer endpoint id -> the model's value of
-the hole as the text it decodes to (an integral's decimal, a boolean's `true`/`false`, a String's
-characters; none for a char or a floating value), for every hole whose value rests on no clock through the valuation's selected arms
-(`ComposedFamilies#holeTexts`; a replay reads its clocks afresh).
+`{kind CLAIM, anchor, claim, solverRuns, seedSessionId, valuations, gaps}`, what CONFIRM reads; each
+selected arm states `texts`, consumer endpoint id -> the model's value of each leaf CONFIRM holds
+(`ComposedFamilies.BoundLeaf#held`: a codec hole, a delivery into the anchor) as the text that
+arrives (an integral's decimal, a boolean's `true`/`false`, a String's characters; none for a char
+or a floating value), for every such leaf whose value rests on no clock through the valuation's
+selected arms (`ComposedFamilies#texts`; a replay reads its clocks afresh).
 
 ## 9. SOLVE and DECIDE: `compose.ClaimPolicy.decide`
 
@@ -1426,7 +1471,7 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
   as that arm's session paired it; a codec hole's also with `messageKey`, the store version the arm's
   message was when its key is a store's, `<transport> <path>@<version>`, and `value`, the arm's
-  `holeTexts` entry), `STATE` per read of the anchor's join closure (each reached
+  `texts` entry, which a delivery into the anchor also states), `STATE` per read of the anchor's join closure (each reached
   occurrence's reads before its cutoff, the anchor's before its target seq) at a location the
   selected path's fatal rests on (its manifest `restsOn`: `Composer`'s constraint independence of
   what the fatal rests on -- phi, or for a concrete fatal condition the path condition before the
@@ -1455,8 +1500,16 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   read), at a read that is no read of the closure, or naming a write the session does not state
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
-  `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, and for a codec
-  hole the message key and the decoded text the mint states), STATE at close (both by
+  `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, for a codec
+  hole the message key, and the text that arrived where the arm states one; a consumer of the
+  anchor's, where the arm's session answered the anchor by its question (IDENTITY §9, its
+  `ADDRESS_UNSTABLE` row), is also taken from a producer that answers the model's producer's question, `producerQuestion` on its row,
+  `ConfirmMain#question`: the same site at the same site index and attempt of an occurrence of the
+  same region and node under a chain of the same shape over this run's senders, since which turn
+  or iteration carried the message to it is the run's timing -- hdfs-11741 V6's witness took the
+  balancer's second move to dn1 from its next dispatcher iteration, its CONFIRM run from the
+  first, as recorded; each such substitution is named, an `ADDRESS_UNSTABLE` DIAGNOSTIC row on the
+  consumer, `RowRuntime#confirm`, and the value must still arrive), STATE at close (both by
   `Confirmation#id`; a STATE edge is taken when the model's reader observed the model's writer, or
   when a read at its site at another turn of the loops on its path did, `readerAnyTurn`,
   `Endpoint#anyTurn`: how many turns a loop that polls for a write takes is that write's timing),

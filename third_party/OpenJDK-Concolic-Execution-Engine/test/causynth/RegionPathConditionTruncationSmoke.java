@@ -15,7 +15,9 @@
  * document which 40 indices lost their expression.  HDFS-11741 run 24 hit
  * exactly this on a DataNode heartbeat loop iteration (240 conditions, 33.2 MB
  * against a 32 MB bound) and the import refused the row as a cardinality
- * fault.  A condition with a NULL expression had the same effect for the same
+ * fault.  The range form (`getConcolicPathConditionRange`) is the one reader
+ * of that serializer left: a summary states no condition but a marked
+ * branch's.  A condition with a NULL expression had the same effect for the same
  * reason -- it was `continue`-d past, emitting nothing at all for that index.
  *
  * What this pins down:
@@ -29,8 +31,7 @@
  *      A reader checks cardinality against a number rather than inferring it.
  *   3. truncation is sticky and ordered -- every expression that made it into
  *      the document precedes every marker, so the prefix is a genuine prefix.
- *   4. the same holds for the range form (`getConcolicPathConditionRange`),
- *      which shares the serializer.
+ *   4. a summary carries no auxiliary channel.
  *   5. at the shipped bound this workload does not truncate at all.  240
  *      conditions of ordinary branch shape are evidence, not a pathological
  *      size, and the default must carry them whole.
@@ -76,13 +77,9 @@ public final class RegionPathConditionTruncationSmoke {
         System.symbolizeExactField(
                 in, Input.class.getName(), "v", "I", "TRUNCATION_SEED");
 
-        // The two channels are fed by different engine paths and both go
-        // through the same serializer, so the workload has to drive both.
         // A branch records into the thread path condition, which is what the
-        // range API reads.  The auxiliary vector is fed only by non-branch
-        // constraints -- container position bounds and read-value equalities
-        // -- so it needs a symbolically indexed read as well; that is also
-        // the shape the HDFS workload's key lookups have.
+        // range API reads; a symbolically indexed read beside it -- the shape
+        // the HDFS workload's key lookups have -- records nothing there.
         int[] table = new int[8];
         int taken = 0;
         int sum = 0;
@@ -109,58 +106,17 @@ public final class RegionPathConditionTruncationSmoke {
                 "every branch should have been taken: " + taken);
         require(sum == 0, "the lookup table was never written: " + sum);
 
-        String auxiliary = valueOf(summary, "auxiliaryPathCondition");
-        require(auxiliary != null,
-                "summary carries no auxiliaryPathCondition: " + head(summary));
-
-        checkAuxiliary(auxiliary, expectation);
+        require(valueOf(summary, "auxiliaryPathCondition") == null,
+                "summary carries an auxiliary channel: " + head(summary));
         checkRange(range, expectation);
 
         System.out.println("RegionPathConditionTruncationSmoke OK ("
                 + expectationName(expectation) + ")");
     }
 
-    // ---- the auxiliary envelope --------------------------------------------
-
-    /**
-     * (1) (2) (3): the shape the importer reads.
-     *
-     * `conditionCount` here is the length of `pathConditionIndices`, and the
-     * two vectors are appended in lockstep by the engine, so all three lengths
-     * -- declared, indices, emitted -- must agree unconditionally.  That is
-     * the invariant the byte bound used to break silently.
-     */
-    private static void checkAuxiliary(String auxiliary, int expectation) {
-        int declared = intValueOf(auxiliary, "conditionCount");
-        int emitted = intValueOf(auxiliary, "emittedConditionCount");
-        String[] indices = elementsOf(valueOf(auxiliary, "pathConditionIndices"));
-        String[] conditions = elementsOf(valueOf(auxiliary, "conditions"));
-
-        // Every loop iteration contributes several auxiliary constraints, so
-        // this is comfortably above BRANCHES; the exact number is an engine
-        // detail and not what is being pinned down here.
-        require(declared >= BRANCHES,
-                "expected at least " + BRANCHES + " recorded conditions, got "
-                        + declared);
-        require(emitted == declared,
-                "auxiliary emittedConditionCount " + emitted
-                        + " != conditionCount " + declared);
-        require(indices.length == declared,
-                "auxiliary pathConditionIndices holds " + indices.length
-                        + " entries, conditionCount is " + declared);
-        // The assertion the old serializer failed: the array is as long as the
-        // envelope says, however little of it survived the bound.
-        require(conditions.length == declared,
-                "auxiliary conditions holds " + conditions.length
-                        + " entries, conditionCount is " + declared);
-
-        checkPositional(conditions, 0, "auxiliary");
-        checkTruncationShape(conditions, expectation, "auxiliary");
-    }
-
     // ---- the range envelope ------------------------------------------------
 
-    /** (4): the same serializer, reached through the range API. */
+    /** (1) (2) (3): the serializer, reached through the range API. */
     private static void checkRange(String range, int expectation) {
         int declared = intValueOf(range, "conditionCount");
         int emitted = intValueOf(range, "emittedConditionCount");
@@ -192,10 +148,7 @@ public final class RegionPathConditionTruncationSmoke {
     private static void checkPositional(String[] conditions, int start,
                                         String where) {
         // `_index` names the slot within the vector being serialized, so it
-        // is `start + position`.  For the auxiliary envelope that is the
-        // position, not the value of pathConditionIndices[position] -- the
-        // auxiliary vector is a strict subset of the thread path condition
-        // and the two number their entries independently.
+        // is `start + position`.
         for (int i = 0; i < conditions.length; i++) {
             String element = conditions[i];
             if (element.indexOf(MARKER) < 0) {

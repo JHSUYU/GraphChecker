@@ -60,7 +60,8 @@ import java.util.zip.ZipFile;
  * (hadoop-common's ZooKeeper elector in every HDFS case) brings no door.  The
  * family is copied from the first of the roots and the classpath holding it
  * -- a library jar (ZooKeeper) as well as the system's own classes -- unless
- * the scope holds it.</p>
+ * the scope holds it.  A door at every call of its anchor has no family: the
+ * scope's own callers hold it.</p>
  *
  * <p>Usage: {@code ScopeGrowth <grown-dir> <frontier.jsonl> <budget>
  * <scope-dir> <class-root>...}, or {@code ScopeGrowth --doors <grown-dir>
@@ -159,6 +160,8 @@ public final class ScopeGrowth {
         Set<String> decided = new LinkedHashSet<>();
         List<String> taken = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
+            // A door at calls is woven in the scope's own callers.
+            if (door.atCalls()) continue;
             String family = door.family();
             if (!decided.add(family) || present.contains(family)
                     || !index.called(family)) {

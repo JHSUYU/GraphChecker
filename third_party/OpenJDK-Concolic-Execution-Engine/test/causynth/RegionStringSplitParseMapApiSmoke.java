@@ -6,9 +6,9 @@ import java.util.Map;
  * Integer.parseInt, boxing, and a Map consumer.
  *
  * This test proves structural provenance, not the mathematical semantics of
- * regex splitting or integer parsing.  Until a downstream encoder supplies
- * validated split/parseInt semantics, it must treat these MethodExpressions
- * as unsupported for semantic solving (fail closed), not as a proven inverse.
+ * regex splitting or integer parsing: a parse's result is a return symbol
+ * stating its call, whose argument is the split element, and it keys the
+ * map's PUT.
  */
 public final class RegionStringSplitParseMapApiSmoke {
     public static void main(String[] args) {
@@ -35,10 +35,12 @@ public final class RegionStringSplitParseMapApiSmoke {
 
         String decimalValue = values.get(decimalKey);
         String radixValue = values.get(radixKey);
-        String summary = System.finishConcolicRegion();
+        String mapRelation = System.getSymbolicExpression(values);
+        String readRelation = System.getSymbolicExpression(decimalValue);
+        System.finishConcolicRegion();
         require("decimal".equals(decimalValue), "decimal lookup");
         require("radix".equals(radixValue), "radix lookup");
-        String decimalParse = methodObjectContaining(summary,
+        String decimalParse = methodObjectContaining(mapRelation,
                 "java/lang/Integer parseInt", "split_parse_decimal");
         require(decimalParse.contains(
                 "\"_name\":\"java/lang/String splitElement\""),
@@ -48,7 +50,7 @@ public final class RegionStringSplitParseMapApiSmoke {
         require(decimalParse.contains("\"_exp\":\"Y_I_0\""),
                 decimalParse);
 
-        String radixParse = methodObjectContaining(summary,
+        String radixParse = methodObjectContaining(mapRelation,
                 "java/lang/Integer parseInt", "split_parse_radix");
         require(radixParse.contains(
                 "\"_name\":\"java/lang/String splitElement\""),
@@ -62,19 +64,23 @@ public final class RegionStringSplitParseMapApiSmoke {
         require(radixParse.contains("\"_exp\":\"Y_I_16\""),
                 radixParse);
 
-        require(summary.contains("\"operation\":\"PUT\""), summary);
-        require(summary.contains("\"operation\":\"READ\""), summary);
+        require(mapRelation.contains("\"operation\":\"PUT\""), mapRelation);
+        require(readRelation.contains("\"operation\":\"READ\""),
+                readRelation);
         System.out.println("CAUSYNTH_REGION_STRING_SPLIT_PARSE_MAP_API_SMOKE_OK");
     }
 
+    /** The call a return symbol states, of `method`, reaching `marker`. */
     private static String methodObjectContaining(String json, String method,
                                                   String marker) {
-        String needle = "\"_name\":\"" + method + "\"";
+        String[] callee = method.split(" ");
+        String needle = "\"call\":{\"holder\":\"" + callee[0]
+                + "\",\"name\":\"" + callee[1] + "\"";
         int offset = 0;
         while (offset < json.length()) {
             int name = json.indexOf(needle, offset);
             if (name < 0) break;
-            int start = json.lastIndexOf('{', name);
+            int start = name + 7;
             if (start >= 0) {
                 String object = jsonObjectAt(json, start);
                 String reachable = reachableText(json, object);

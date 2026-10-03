@@ -59,7 +59,16 @@ public final class RegionContainerRelationApiSmoke {
 
         input.queue.offer(Integer.valueOf(29));
         require(input.queue.peek() != null, "queue peek");
-        require(input.queue.poll() != null, "queue poll");
+        Integer head = input.queue.poll();
+        require(head != null, "queue poll");
+        // poll() is the head or null (PEEK), stating what it returned, and
+        // the queue without its head where it has one (POLL).
+        String polled = System.getSymbolicExpression(head);
+        require(polled.contains("\"operation\":\"PEEK\"")
+                && polled.contains("\"concreteValue\":")
+                && polled.contains("\"answer\":"), polled);
+        require(System.getSymbolicExpression(input.queue).contains(
+                "\"operation\":\"POLL\""), "queue poll relation");
 
         String arrayRelation = System.getSymbolicExpression(input.array);
         String mapRelation = System.getSymbolicExpression(input.map);
@@ -80,7 +89,7 @@ public final class RegionContainerRelationApiSmoke {
         String summary = System.finishConcolicRegion();
         require(summary.contains(
                 "\"pathConditionAuthority\":"
-                        + "\"VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1\""), summary);
+                        + "\"VM_SELECTED_BRANCHES_V2\""), summary);
         System.out.println("CAUSYNTH_REGION_CONTAINER_RELATION_API_SMOKE_OK");
     }
 
