@@ -40,12 +40,10 @@ class ContainerExpression : public Expression {
   Expression *_receiver;
   exp_list_t _arguments;
   std::string _java_type;
-  // The control-flow predicate a conditionally-recorded mutation fired under,
-  // or NULL for an unconditional one.  Today only ASSOCIATIVE/REMOVE_IF carries
-  // it: the removeExpiredKeys `if (expiry < now)` branch, recorded so that an
-  // external solver may flip the removal (the flippable-removal story).  The
-  // guard is oriented as the *removal condition* (true => the key is gone),
-  // independent of which way the concrete run branched.
+  // The condition a conditional mutation (REMOVE_IF, PUT_IF, APPEND_IF)
+  // fires under -- true => it took effect, whichever way the run went, so a
+  // solver that flips it flips the effect -- or the run's own decision a PIN
+  // requires; NULL for anything else.
   Expression *_guard;
   // The reference the receiver was read through, when the call's receiver
   // slot carried a guarded reference read (a tracked reference field, an
@@ -68,6 +66,12 @@ class ContainerExpression : public Expression {
   bool _decides_reads;
   uint _ordinal;
   ElementWrites *_writes;
+  // What the call that asked this query returned (state_returned), and the
+  // session-unique id that names its pin; unstated and 0 otherwise, and then
+  // neither is serialized.
+  ReturnedValue _returned;
+  jlong _answer;
+  static volatile intptr_t answer_count;
 
  public:
   ContainerExpression(const char *shape, const char *operation,
@@ -104,6 +108,18 @@ class ContainerExpression : public Expression {
     _order = order == NULL ? "" : order;
     _members = members;
   }
+
+  // States what the run's call answered to this query, which the chain may
+  // not decide -- a member of an opaque root, a choice a muted body made
+  // over one.  Serialized as `concreteValue` beside an `answer` id, so that
+  // COMPOSE pins the answer where nothing it rests on can move and names
+  // the pin (JOIN -> MINT -> PIN).  Called by the thread that built the
+  // node, before anything else sees it.
+  void state_returned(const ReturnedValue &returned);
+
+  // Gives this node its session-unique `answer` id and states nothing: an
+  // UNKNOWN cell's own name (ContainerSupport::unknown_cell).
+  void name_answer();
 
   const std::string &get_operation() const { return _operation; }
   const std::string &get_shape() const { return _shape; }

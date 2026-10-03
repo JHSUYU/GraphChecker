@@ -9,7 +9,6 @@
 #include "utilities/ostream.hpp"
 #include "concolic/utils.hpp"
 #include "concolic/exp/stringExpression.hpp"
-#include "concolic/exp/fieldAccessExpression.hpp"
 
 #include <sstream>
 
@@ -189,17 +188,10 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
       assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
              "should be equal");
       // Invariant: a field that already carries a symbolic expression is
-      // never overwritten by a fresh symbol, and no equation is recorded.
+      // never overwritten by a fresh symbol.
       if (sym_inst->has_sym_exp(fd->offset())) return false;
-      Expression *symbol = new StringSymbolExp(
-          sym_inst->get_sym_rid(), symbolic_name);
-      sym_inst->set_sym_exp(fd->offset(), symbol);
-      _ctx.record_path_condition(new OpSymExpression(
-          new FieldAccessExpression(
-              sym_inst->get_or_create_ref_exp(obj),
-              obj->klass()->name()->as_C_string(), fd->offset(), T_OBJECT,
-              "Ljava/lang/String;"),
-          symbol, op_eq, true));
+      sym_inst->set_sym_exp(fd->offset(), new StringSymbolExp(
+          sym_inst->get_sym_rid(), symbolic_name));
       return false;
     }
     const BasicType boxed = java_lang_boxing_object::basic_type(fld_oop);
@@ -244,21 +236,14 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
              "should be equal");
       // Invariant: a field that already carries a symbolic expression is
       // never overwritten by a fresh symbol; the child keeps its own
-      // reference expression, and no equation is recorded.
+      // reference expression.
       if (sym_inst->has_sym_exp(fd->offset())) return false;
       SymInstance *field_instance = this->_ctx.get_or_alloc_sym_inst(fld_oop);
       if (field_instance != NULL) {
-        Expression *symbol = new FieldSymbolExp(
-            field_instance->get_sym_rid(), symbolic_name, T_OBJECT);
-        field_instance->set_ref_exp(symbol);
+        field_instance->set_ref_exp(new FieldSymbolExp(
+            field_instance->get_sym_rid(), symbolic_name, T_OBJECT));
         sym_inst->set_sym_exp(fd->offset(),
             field_instance->get_or_create_ref_exp(fld_oop));
-        _ctx.record_path_condition(new OpSymExpression(
-            new FieldAccessExpression(
-                sym_inst->get_or_create_ref_exp(obj),
-                obj->klass()->name()->as_C_string(), fd->offset(),
-                T_OBJECT),
-            symbol, op_eq, true));
       }
       return false;
     }
@@ -283,7 +268,7 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
            "should be equal");
     // Invariant for the recursive and by-name symbolizers: a field that
     // already carries a symbolic expression is never overwritten by a fresh
-    // symbol, and no equation is recorded.
+    // symbol.
     //
     // The exact symbolizer (holder + name + descriptor) is the one explicit
     // mint API, and its caller has already asked getSymbolicFieldExpression
@@ -311,13 +296,8 @@ void FieldSymbolizer::mint_slot(SymInstance *sym_inst, oop obj,
                                 const SharedFieldVersions::Cell &cell) {
   Expression *symbol = new FieldSymbolExp(sym_inst->get_sym_rid(), name, type);
   sym_inst->set_sym_exp(fd->offset(), symbol);
-  // Publish before the equation is built, so the equation can name the
-  // version it defines.  The mint is a write: the version published here
-  // *is* this symbol, and the projection on the left of the equation is a
-  // view of exactly that version.  Ordering is free -- publish reads
-  // path_guard(), the region's branch conjunction, while
-  // record_path_condition appends to the frame's auxiliary conditions, and
-  // neither reads the other.
+  // The mint is a write: the version published here *is* this symbol, and
+  // the field's shadow is it, so a read states it either way.
   // A mint is a symbolic write, whichever symbolizer performed it: it is
   // kept by value and starts this field's log when it is the first symbolic
   // value to reach it.  This used to run only for the exact
@@ -335,37 +315,18 @@ void FieldSymbolizer::mint_slot(SymInstance *sym_inst, oop obj,
   Expression *guard = _ctx.path_guard();
   // The symbol stands for the word the field holds, which is the word a
   // later read of it must find there: read under the location's stripe.
-  jlong minted_version = SharedFieldVersions::publish_held(
-      location, cell, symbol, guard, SharedFieldVersions::VERSION_WRITE);
-  std::string minted_version_kind;
-  if (minted_version > 0) {
-    minted_version_kind = SharedFieldVersions::version_kind_name(
-        SharedFieldVersions::VERSION_WRITE);
-  }
-  ResourceMark rm;
-  _ctx.record_path_condition(new OpSymExpression(
-      new FieldAccessExpression(
-          sym_inst->get_or_create_ref_exp(obj),
-          obj->klass()->name()->as_C_string(), fd->offset(), type,
-          std::string(), NULL, NULL, minted_version, minted_version_kind),
-      symbol, op_eq, true));
+  SharedFieldVersions::publish_held(location, cell, symbol, guard,
+                                    SharedFieldVersions::VERSION_WRITE);
 }
 
 void FieldSymbolizer::mint_reference(oop obj, fieldDescriptor *fd,
                                      const std::string &name) {
   SymInstance *sym_inst = this->_ctx.find_sym_inst(obj);
   // Invariant: a field that already carries a symbolic expression is never
-  // overwritten by a fresh symbol, and no equation is recorded.
+  // overwritten by a fresh symbol.
   if (sym_inst == NULL || sym_inst->has_sym_exp(fd->offset())) return;
-  Expression *symbol = new FieldSymbolExp(sym_inst->get_sym_rid(), name,
-                                          T_OBJECT);
-  sym_inst->set_sym_exp(fd->offset(), symbol);
-  ResourceMark rm;
-  _ctx.record_path_condition(new OpSymExpression(
-      new FieldAccessExpression(
-          sym_inst->get_or_create_ref_exp(obj),
-          obj->klass()->name()->as_C_string(), fd->offset(), T_OBJECT),
-      symbol, op_eq, true));
+  sym_inst->set_sym_exp(fd->offset(), new FieldSymbolExp(
+      sym_inst->get_sym_rid(), name, T_OBJECT));
 }
 
 void FieldSymbolizer::after_field_helper(unsigned offset, oop parent_obj) {

@@ -5880,17 +5880,227 @@ public class ComposerTest {
     }
 
     /**
+     * A muted body's choices lower as the guards it stated and its facts as
+     * pins (VM model guards): MATCHES is whether the value at a key, null
+     * where absent, is the expected cell; PEEK a queue's head or null and
+     * POLL the queue without it, decided by a stated size and refused by
+     * name over none; an UNKNOWN cell is free, and a read at another literal
+     * key passes a guarded put; a query whose chain stands on no stated base
+     * answers what its call stated it returned -- pinned where nothing it
+     * rests on moves, free where its key does or where the stage may re-pair
+     * the read it rests on -- and one over a stated base is its chain's,
+     * whatever it states; asked of another object, a query states no answer.
+     * {asked, sat?}.
+     */
+    @Test
+    public void aModelsChoiceIsItsGuardAndItsFactAPin() {
+        Z3 solver = solver();
+        JsonObject n = vmLeaf("SymbolExpression", "n", "I");
+        JsonObject opaque = relation("ASSOCIATIVE", "STATE", symbol(
+                "M_L'java/util/HashMap'_3", "java/util/HashMap"));
+        // {n -> 7} over a stated empty base.
+        JsonObject map = relation("ASSOCIATIVE", "PUT", relation(
+                "ASSOCIATIVE", "SNAPSHOT_BASE", opaque), n, integer("I", 7L));
+        JsonObject base = relation("INDEXED", "SNAPSHOT_BASE", null);
+        JsonObject queue = relation("INDEXED", "APPEND", base,
+                integer("I", 7L));
+        JsonObject maybe = guarded(relation("INDEXED", "APPEND_IF", base,
+                integer("I", 7L)), binary("<", n, integer("I", 5L)));
+        String models = streamQuery(new String[] {"absent5", "seven5",
+                        "head", "polled", "drained"},
+                relation("ASSOCIATIVE", "MATCHES", "Z", map,
+                        integer("I", 5L), vmNull()),
+                relation("ASSOCIATIVE", "MATCHES", "Z", map,
+                        integer("I", 5L), integer("I", 7L)),
+                relation("INDEXED", "PEEK", "I", queue),
+                relation("INDEXED", "SIZE", "I",
+                        relation("INDEXED", "POLL", queue)),
+                relation("INDEXED", "SIZE", "I",
+                        relation("INDEXED", "POLL", base)));
+        // A head that is there where n < 5, and null -- no Int -- elsewhere.
+        String unsized = streamQuery(new String[] {"maybeHead"},
+                relation("INDEXED", "PEEK", "I", maybe));
+        String facts = streamQuery(new String[] {"opaqueRead", "chainRead",
+                        "opaqueHas"},
+                answered(relation("ASSOCIATIVE", "READ", "I", opaque,
+                        integer("I", 5L)), integer("I", 11L), 1L),
+                answered(relation("ASSOCIATIVE", "READ", "I", map,
+                        integer("I", 5L)), integer("I", 12L), 2L),
+                answered(relation("ASSOCIATIVE", "CONTAINS", "Z", opaque,
+                        n), integer("Z", 1L), 3L));
+        // The same membership, where a witness may move its key.
+        String moving = streamQuery(joined("n", "", null),
+                new String[] {"movedHas"},
+                answered(relation("ASSOCIATIVE", "CONTAINS", "Z", opaque,
+                        n), integer("Z", 1L), 4L));
+        // A membership over a state read: pinned where the stage holds the
+        // read to the version it observed, free where it may re-pair it.
+        SmtLowering.SessionJoin observed = joined("", "MAP/9#-3",
+                opaque);
+        JsonObject stateRead = read("MAP_STATE", 9L, -3L, 2L, "L");
+        String held = streamQuery(SmtLowering.repairing(observed,
+                        (location, event) -> false, (reader, writer) -> false),
+                new String[] {"heldHas"}, answered(relation("ASSOCIATIVE",
+                        "CONTAINS", "Z", stateRead, n), integer("Z", 1L), 5L));
+        String repaired = streamQuery(SmtLowering.repairing(observed,
+                        (location, event) -> true, (reader, writer) -> false),
+                new String[] {"repairedHas"}, answered(relation("ASSOCIATIVE",
+                        "CONTAINS", "Z", stateRead, n), integer("Z", 1L), 6L));
+        // {5 -> 7, 6 -> what a callback never run would have stored where
+        // n < 5}.
+        JsonObject unknownCell = relation("ASSOCIATIVE", "UNKNOWN", "L",
+                null);
+        unknownCell.addProperty(ContainerSmtCodec.ANSWER, 7L);
+        JsonObject filled = guarded(relation("ASSOCIATIVE", "PUT_IF",
+                relation("ASSOCIATIVE", "PUT", relation("ASSOCIATIVE",
+                        "SNAPSHOT_BASE", opaque), integer("I", 5L),
+                        integer("I", 7L)), integer("I", 6L), unknownCell),
+                binary("<", n, integer("I", 5L)));
+        String cells = streamQuery(new String[] {"nine6"},
+                relation("ASSOCIATIVE", "MATCHES", "Z", filled,
+                        integer("I", 6L), integer("I", 9L)));
+        String passed = streamQuery(new String[] {"read5"},
+                relation("ASSOCIATIVE", "READ", "I", filled,
+                        integer("I", 5L)));
+        assertFalse("a read at another literal key lowers a guarded put: "
+                + passed, passed.contains("assoc_put_if"));
+        JsonObject other = SmtLowering.asOf(answered(relation("ASSOCIATIVE",
+                "READ", "I", opaque, integer("I", 5L)), integer("I", 11L),
+                8L), map);
+        assertFalse("another object's query states the run's answer",
+                other.has("concreteValue")
+                        || other.has(ContainerSmtCodec.ANSWER));
+        String[][] cases = {
+            {models, "(and (= n 5) absent5)", "unsat"},
+            {models, "(and (= n 4) absent5)", "sat"},
+            {models, "(and (= n 5) seven5)", "sat"},
+            {models, "(and (= n 4) seven5)", "unsat"},
+            {models, "(= head 7)", "sat"},
+            {models, "(not (= head 7))", "unsat"},
+            {models, "(= polled 0)", "sat"},
+            {models, "(not (= polled 0))", "unsat"},
+            {models, "(= drained 0)", "sat"},
+            {unsized, "(and (= n 3) (= maybeHead 7))", "sat"},
+            {unsized, "(= n 7)", "unsat"},
+            {facts, "(= opaqueRead 11)", "sat"},
+            {facts, "(not (= opaqueRead 11))", "unsat"},
+            {facts, "(and (= n 5) (= chainRead 7))", "sat"},
+            {facts, "(= chainRead 12)", "unsat"},
+            {facts, "(not opaqueHas)", "unsat"},
+            {moving, "(not movedHas)", "sat"},
+            {moving, "movedHas", "sat"},
+            {held, "(not heldHas)", "unsat"},
+            {repaired, "(not repairedHas)", "sat"},
+            {repaired, "repairedHas", "sat"},
+            {cells, "(and (= n 3) nine6)", "sat"},
+            {cells, "(and (= n 3) (not nine6))", "sat"},
+            {cells, "(and (= n 7) nine6)", "unsat"},
+            {passed, "(= read5 7)", "sat"},
+            {passed, "(not (= read5 7))", "unsat"},
+        };
+        for (String[] asked : cases) {
+            Z3.Answer answer = solver.ask(asked[0] + "\n(assert " + asked[1]
+                    + ")", Collections.<String>emptyList(), false);
+            assertTrue(asked[1] + " " + answer.status(), answer.decided()
+                    && answer.sat() == "sat".equals(asked[2]));
+        }
+        assertTrue("a pin is named for an unsat core",
+                facts.contains(":named pinned_answer__"));
+        String refusal = "";
+        try {
+            streamQuery(new String[] {"unstated"}, relation("INDEXED",
+                    "SIZE", "I", relation("INDEXED", "POLL", relation(
+                            "INDEXED", "STATE", symbol(
+                                    "M_L'java/util/ArrayDeque'_4",
+                                    "java/util/ArrayDeque")))));
+        } catch (AssertionError refused) {
+            refusal = refused.getMessage();
+        }
+        assertTrue("a poll over no stated size: " + refusal, refusal.contains(
+                "ContainerRelation:INDEXED:POLL:unstated-size"));
+    }
+
+    /**
+     * The join of no session, where a witness may move {@code symbol} and
+     * every version of {@code written}'s location wrote it.
+     */
+    private static SmtLowering.SessionJoin joined(final String symbol,
+                                                  final String location,
+                                                  final JsonObject written) {
+        final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
+        return new SmtLowering.SessionJoin() {
+            @Override
+            public com.google.gson.JsonElement writeExpression(
+                    String at, long version) {
+                return location.equals(at) ? written
+                        : none.writeExpression(at, version);
+            }
+
+            @Override
+            public List<WriteRow> writes(String at) {
+                return none.writes(at);
+            }
+
+            @Override
+            public List<ReadRow> reads(String at) {
+                return none.reads(at);
+            }
+
+            @Override
+            public Set<String> mintedReadSymbols(long version) {
+                return none.mintedReadSymbols(version);
+            }
+
+            @Override
+            public Set<String> readSymbols(String at, long version) {
+                return none.readSymbols(at, version);
+            }
+
+            @Override
+            public boolean moves(String named) {
+                return symbol.equals(named);
+            }
+
+            @Override
+            public boolean repaired(String at, long readEvent) {
+                return false;
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return false;
+            }
+        };
+    }
+
+    /** A query stating what its call returned, under its answer id. */
+    private static JsonObject answered(JsonObject query, JsonObject value,
+                                       long id) {
+        query.add("concreteValue", value);
+        query.addProperty(ContainerSmtCodec.ANSWER, id);
+        return query;
+    }
+
+    /**
      * One query defining each of {@code names} as what its expression
-     * lowers to over an Int symbol {@code n}, with every condition the
-     * lowering requires asserted.
+     * lowers to over an Int symbol {@code n}, with every condition and
+     * assertion the lowering states.
      */
     private static String streamQuery(String[] names,
+                                      JsonObject... expressions) {
+        return streamQuery(SmtLowering.NO_JOIN, names, expressions);
+    }
+
+    /** The same, under {@code join}. */
+    private static String streamQuery(SmtLowering.SessionJoin join,
+                                      String[] names,
                                       JsonObject... expressions) {
         Map<String, VmTermLowering.Sort> declared =
                 new LinkedHashMap<String, VmTermLowering.Sort>();
         declared.put("n", VmTermLowering.Sort.INT);
         SmtLowering lowering = new SmtLowering(declared);
-        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        lowering.begin("t", join, ExpressionTable.empty());
         List<String> texts = new ArrayList<String>();
         StringBuilder defined = new StringBuilder();
         for (int index = 0; index < names.length; index++) {
@@ -5909,11 +6119,7 @@ public class ComposerTest {
                 lowering.openRefusals().isEmpty());
         List<String> conditions = lowering.end();
         texts.addAll(conditions);
-        StringBuilder query = new StringBuilder(
-                String.join("\n", lowering.preambleLines()));
-        for (SmtLowering.Declaration declaration : lowering.reachedBy(texts)) {
-            query.append('\n').append(declaration.render());
-        }
+        StringBuilder query = new StringBuilder(lowering.body(texts));
         for (String fact : lowering.facts(texts)) {
             query.append("\n(assert ").append(fact).append(')');
         }

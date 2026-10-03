@@ -3,10 +3,18 @@
 #include "concolic/concolicMngr.hpp"
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/containerSupport.hpp"
+#include "concolic/sharedFieldVersions.hpp"
 #include "classfile/javaClasses.hpp"
 #include "classfile/systemDictionary.hpp"
 
 namespace {
+
+template <class T>
+SharedFieldVersions::ConcreteBits result_as(MethodSymbolizerHandle &handle,
+                                            BasicType type) {
+  return SharedFieldVersions::ConcreteBits(
+      type, SharedFieldVersions::raw_bits(handle.get_result<T>(type)));
+}
 
 // A value an operand carries by itself: a String, a box or a StringBuilder.
 // Any other object marked semantic is an owner whose field was symbolized
@@ -20,6 +28,29 @@ bool value_operand(oop obj) {
 }
 
 }  // namespace
+
+ReturnedValue MethodSymbolizerHandle::returned_value() {
+  const BasicType type = get_result_type();
+  if (type == T_VOID || !result_readable()) return ReturnedValue();
+  // The word a primitive result left, in the encoding a field's word has,
+  // so that a call and a read state one constant one way.
+  SharedFieldVersions::ConcreteBits word;
+  switch (type) {
+    case T_OBJECT:
+    case T_ARRAY:
+      return SharedFieldVersions::returned_reference(get_result<oop>(type));
+    case T_BOOLEAN: word = result_as<jboolean>(*this, type); break;
+    case T_BYTE:    word = result_as<jbyte>(*this, type); break;
+    case T_CHAR:    word = result_as<jchar>(*this, type); break;
+    case T_SHORT:   word = result_as<jshort>(*this, type); break;
+    case T_INT:     word = result_as<jint>(*this, type); break;
+    case T_LONG:    word = result_as<jlong>(*this, type); break;
+    case T_FLOAT:   word = result_as<jfloat>(*this, type); break;
+    case T_DOUBLE:  word = result_as<jdouble>(*this, type); break;
+    default:        return ReturnedValue();
+  }
+  return SharedFieldVersions::returned_value(word, NULL);
+}
 
 Expression *CallbackResult::truth() const {
   if (symbolic) {

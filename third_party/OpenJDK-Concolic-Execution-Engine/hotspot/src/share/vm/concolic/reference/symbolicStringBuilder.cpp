@@ -3,7 +3,6 @@
 #include <concolic/exp/stringExpression.hpp>
 #include "concolic/reference/symbolicStringBuilder.hpp"
 #include "concolic/concolicMngr.hpp"
-#include "concolic/exp/methodExpression.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicString.hpp"

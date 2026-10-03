@@ -74,7 +74,17 @@ public:
 
   /** This thread's intent; kind NONE when there is none. */
   static Intent *intent();
+  /** Drops it, and an answer no finish took. */
   static void clear_intent();
+
+  /**
+   * What the compare-and-swap of a captured call answered -- whether the
+   * word it compared matched -- once, for the finish of the native it ran
+   * in, whose boolean result no hook can read
+   * (MethodSymbolizerHandle::result_readable); NULL when it compared
+   * nothing symbolic, or for any other call.
+   */
+  static Expression *take_result();
 
   /** Captures an ordinary caller's Unsafe write operands (SymbolicUnsafe). */
   static void capture(MethodSymbolizerHandle &handle);

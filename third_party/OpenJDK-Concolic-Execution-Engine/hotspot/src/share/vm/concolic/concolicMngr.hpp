@@ -386,10 +386,6 @@ public:
     }
   }
 
-  inline static void record_path_condition(Expression *sym_exp) {
-    ctx->record_path_condition(sym_exp);
-  }
-
   inline static void record_branch_condition(
       Expression *sym_exp, bool outcome, int opcode) {
     ctx->record_branch_condition(sym_exp, outcome, opcode);

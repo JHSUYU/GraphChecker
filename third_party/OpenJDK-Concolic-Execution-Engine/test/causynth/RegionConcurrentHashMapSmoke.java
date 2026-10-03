@@ -8,11 +8,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@code reserves.getOrDefault(gen, 0L)}) and its known commits.
  *
  * <p>Its bodies run muted, so its table nodes leave no rows of their own;
- * an absent key is a READ of the stated state; the presence a
- * putIfAbsent, computeIfAbsent or merge decided is a path condition in the
- * polarity the run took; a callback runs with propagation, seeded by the
- * contract, and what it returned is what the mutation stores -- its side
- * effects are versioned like any code's; entrySet().removeIf removes each
+ * an absent key is a READ of the stated state; what a putIfAbsent,
+ * computeIfAbsent or merge stores is guarded by the test its body made of
+ * the value at the key (MATCHES, stating what it found), so another state
+ * flips it -- what a callback the run never ran would have stored is an
+ * unknown cell, by name -- a call that changed nothing publishes no
+ * version, and none of them adds a condition to the path; a callback runs with
+ * propagation, seeded by the contract, and what it returned is what the
+ * mutation stores -- its side effects are versioned like any code's;
+ * entrySet().removeIf removes each
  * visited key under the predicate's result; a newKeySet is its map; and
  * the INITIAL walk reads a treeified bin.  A callback call on a map
  * nothing symbolic reached runs as bytecode; a removeIf whose predicate
@@ -87,19 +91,23 @@ public final class RegionConcurrentHashMapSmoke {
         String absent = field(sink, "absent", sink.absent);
         String fallback = field(sink, "fallback", sink.fallback);
 
-        // putIfAbsent, both ways.
+        // putIfAbsent, both ways: a PUT_IF each, a version only for the one
+        // that put.
         int before = conditions();
         reserves.putIfAbsent(input.generation, 1L);
         reserves.putIfAbsent(input.generation + 2, 2L);
-        String presence = range(before);
+        String presence = System.getSharedMapVersions(reserves);
 
-        // merge, both ways: the callback's result is the stored value.
-        before = conditions();
+        // merge, both ways: the callback's result is the stored value where
+        // the key was there, the value where it was not; what the absent
+        // arm's callback, which did not run, would have stored is unknown.
         sink.merged = reserves.merge(input.generation, input.deadline + 5,
                 (old, update) -> old + update);
         reserves.merge(input.generation + 3, input.deadline, Long::sum);
-        String mergePath = range(before);
+        String mergeLog = System.getSharedMapVersions(reserves);
         String merged = field(sink, "merged", sink.merged);
+        int after = conditions();
+        String pinned = System.getConcolicRegionSummary();
 
         // computeIfAbsent: the callback writes a tracked field.
         sink.computed = reserves.computeIfAbsent(input.generation + 4, key -> {
@@ -157,7 +165,7 @@ public final class RegionConcurrentHashMapSmoke {
 
         System.out.println("VALUE " + value);
         System.out.println("ABSENT " + absent);
-        System.out.println("MERGE " + mergePath);
+        System.out.println("MERGE " + merged);
         System.out.println("MAP " + map);
 
         require(contained, "the key set lost its key");
@@ -169,13 +177,19 @@ public final class RegionConcurrentHashMapSmoke {
                 "the absent get is no READ of a stated state: " + absent);
         require(fallback.contains("\"operation\":\"READ_OR_DEFAULT\""),
                 "getOrDefault is no READ_OR_DEFAULT: " + fallback);
-        require(count(presence, "\"_op\":\"!=\"") >= 1
-                        && count(presence, "\"_op\":\"==\"") >= 1,
-                "putIfAbsent stated no presence both ways: " + presence);
+        require(count(presence, "\"versionKind\":\"STATE_PUT_IF\"") == 1
+                        && count(presence, "\"operation\":\"MATCHES\"") >= 2
+                        && presence.contains("\"answer\":"),
+                "putIfAbsent is no PUT_IF guarded by what it found: "
+                        + presence);
+        require(after == before,
+                "a model's choice added a path condition: " + before + " -> "
+                        + after);
         require(merged.contains("DEADLINE") && merged.contains("\"+\""),
                 "merge's callback result is not what it stored: " + merged);
-        require(count(mergePath, "\"operation\":\"READ\"") >= 2,
-                "merge stated no presence: " + mergePath);
+        require(mergeLog.contains("\"operation\":\"UNKNOWN\"")
+                        && pinned.contains("CONTAINER_PINNED:merge"),
+                "merge's uncalled arm is no named unknown cell: " + mergeLog);
         require(computed.contains("GENERATION")
                         && counted.contains("\"versionKind\":\"WRITE\""),
                 "computeIfAbsent lost its callback or its side effect: "
@@ -212,10 +226,6 @@ public final class RegionConcurrentHashMapSmoke {
         int end = at;
         while (Character.isDigit(all.charAt(end))) end++;
         return Integer.parseInt(all.substring(at, end));
-    }
-
-    private static String range(int start) {
-        return System.getConcolicPathConditionRange(start, Integer.MAX_VALUE);
     }
 
     private static String field(Sink sink, String name, Long value) {

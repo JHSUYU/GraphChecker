@@ -77,11 +77,41 @@ Expression *concrete_value(oop value);
 // lineage while keeping the no-lineage fallback explicit and bounded.  Asked
 // of the session heap, so a thread outside every region may ask it too.
 Expression *semantic_value(oop value);
-Expression *concrete_result(MethodSymbolizerHandle &handle);
-void constrain_result(MethodSymbolizerHandle &handle,
-                      Expression *expression);
-void constrain_position(const char *shape, Expression *state,
-                        Expression *position, bool allow_end = false);
+// `left && right`, either NULL for `true`.
+Expression *conjunction(Expression *left, Expression *right);
+// `!condition`: its relational complement where it has one, else
+// `condition == false`.
+Expression *negation(Expression *condition);
+
+// States on `answer`, a query this call's model built, what the call
+// returned (ContainerExpression::state_returned): the run's answer, which
+// COMPOSE pins where the chain cannot decide it and nothing it rests on can
+// move.  Anything else -- a value the chain itself states, a read-from
+// around a query -- states nothing.  A query's bounds are the codec's own
+// requirements, never stated here.
+void state_result(MethodSymbolizerHandle &handle, Expression *answer);
+// The same, for a query whose answer the muted body decided rather than
+// returned (a presence test, an emptiness test): `truth`.
+void state_answer(Expression *answer, bool truth);
+// A cell no run stated: what a callback the run never ran would have
+// stored.  COMPOSE names it a free value, one per node (`UNKNOWN`, by its
+// `answer` id).
+Expression *unknown_cell();
+// Whether an INDEXED chain counts its size from a stated base -- a
+// SNAPSHOT_BASE, a CLEAR, an array's STATE with its length -- under appends,
+// insertions, removals, writes, polls and pins only: the size COMPOSE needs
+// to shift it (ContainerSmtCodec's literal size).
+bool stated_size(Expression *state);
+// A READ at `position` of an array `state` the chain does not decide, typed
+// as the element the run loaded: the word `word` of a primitive array, else
+// `element`.  It states what the load returned when the array's elements are
+// the heap's (a named shadow with no semantic expression), which its opaque
+// root cannot say; an array whose elements are an input states nothing --
+// the READ is the input.
+Expression *element_read(SymArr *array, Expression *state,
+                         Expression *position, BasicType type,
+                         const SharedFieldVersions::ConcreteBits &word,
+                         oop element);
 // What a load at a concrete position of an array returns when the recording
 // already decides it, with no READ: true with `*stored` the value the newest
 // recorded write at that position stored, or with `*stored` NULL when no

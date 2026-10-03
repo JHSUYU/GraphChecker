@@ -1069,7 +1069,9 @@ public final class Composer {
         repaired.removeAll(pinned);
         Set<String> moved = anchorReads(session, repaired, target.seq());
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
-                corpus.join(session), moved,
+                corpus.join(session),
+                (location, event) -> moved.contains(
+                        SmtLowering.readKey(location, event)),
                 (reader, writer) -> arms.concurrent(reader, writer, session));
         lowering.begin(session, rows, corpus.expressions(session));
 
