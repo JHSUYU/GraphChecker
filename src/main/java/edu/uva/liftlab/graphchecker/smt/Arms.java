@@ -28,7 +28,10 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableSet;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
@@ -281,6 +284,10 @@ public final class Arms {
             Pattern.compile("#u\\d+$|: void run\\(\\)>$");
 
     private final Rows rows;
+    /** session|location -> the versions its reads observed that no write
+     *  row states ({@link #eligible}); the rows never change. */
+    private final Map<String, NavigableSet<Long>> unrowed =
+            new ConcurrentHashMap<String, NavigableSet<Long>>();
     /** {@code slotId|sessionId|rootId}, in the order the arms were refused. */
     private final Set<String> refusals = new LinkedHashSet<String>();
     /**
@@ -517,9 +524,9 @@ public final class Arms {
         }
         long low = Math.min(state.version(), observedVersion);
         long high = Math.max(state.version(), observedVersion);
-        Set<Long> rowed = new HashSet<Long>();
+        Long between = unrowed(session, location, writes).higher(low);
+        if (between != null && between < high) return false;
         for (WriteRow write : writes) {
-            rowed.add(write.version());
             if (write.initial() || write.version() <= low
                     || write.version() > high) {
                 continue;
@@ -529,13 +536,25 @@ public final class Arms {
                 return false;
             }
         }
-        for (ReadRow read : rows.readsOf(session, location)) {
-            long seen = read.observedVersion();
-            if (seen > low && seen < high && !rowed.contains(seen)) {
-                return false;
-            }
-        }
         return true;
+    }
+
+    /** The versions of a location this session's reads observed and no
+     *  write row of {@code writes} states. */
+    private NavigableSet<Long> unrowed(String session, String location,
+                                       List<WriteRow> writes) {
+        return unrowed.computeIfAbsent(session + "|" + location, key -> {
+            Set<Long> rowed = new HashSet<Long>();
+            for (WriteRow write : writes) rowed.add(write.version());
+            NavigableSet<Long> seen = new TreeSet<Long>();
+            for (ReadRow read : rows.readsOf(session, location)) {
+                if (read.observedVersion() >= 0L
+                        && !rowed.contains(read.observedVersion())) {
+                    seen.add(read.observedVersion());
+                }
+            }
+            return seen;
+        });
     }
 
     /**
