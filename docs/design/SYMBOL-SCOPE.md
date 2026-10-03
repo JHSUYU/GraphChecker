@@ -449,9 +449,14 @@ reaches, to a fixed point:
   an occurrence it follows the edges of the methods its regions hold (its own and those folded into
   it) that ran in it (`observedMethods`): an edge of a method the occurrence never entered carried
   nothing there (ad-hoc `ReindexCollectionCmd-369`, Solr: along every method of their regions the
-  target's 923 writers demanded 5134 more, along the methods that ran in them 244). At a cell a `WRITE_SITE` names it crosses, on the same node, to every activation that
-  performed a storing region -- as its own region or folded into it -- and ran the storing method
-  (`SHARED_LOCATION_DEMAND_V1`), and keeps the guards of the read locally; in a writer it demands
+  target's 923 writers demanded 5134 more, along the methods that ran in them 244). At a cell a `WRITE_SITE` names it crosses, on the same node, to every activation that ran
+  the storing method or took the arm of one of the store's guards away from it (a recorded
+  `BRANCH` at that site in its calls, against the WRITE_SITE's `guardOutcomes`; any decision at a
+  guard that is not binary), whatever region it was performed under (`RegionDemandIndex#storersOrDeciders`, `SHARED_LOCATION_DEMAND_V1`): a store on an
+  arm the recording did not take is one flip away, so the closure keeps it, and a method that ran
+  without reaching the guard, or took its arm toward the store, is not (owner, 2026-10-02; the
+  hdfs-bugs slowdisk-zero detector decides `max > 0` each turn and never ran the store of
+  `slowDisksToExclude` behind it, an accessor's), and keeps the guards of the read locally; in a writer it demands
   the guards of the store, never the store's value (value provenance stops at a stored location:
   the values come from roots, below), nor the writer's own other writers.
   - **A heap location is one object's field** (Writers_W(l), GreyGraph §3.1): the recording names

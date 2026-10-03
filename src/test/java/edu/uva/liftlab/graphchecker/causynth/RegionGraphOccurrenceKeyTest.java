@@ -139,7 +139,12 @@ public class RegionGraphOccurrenceKeyTest {
      * every lambda capturing one ZooKeeper client), where a mutation through
      * the field writes what it held; and an edge of a method
      * the occurrence never ran demands nothing (the target never ran ALT,
-     * which reads OTHER).
+     * which reads OTHER).  An occurrence that took the arm of a guard of the
+     * store away from it is a writer too: the store is on the arm it did not
+     * take, one flip away (hdfs-bugs slowdisk-zero: the detector's turns
+     * decide {@code max > 0} and never ran the store behind it); one that
+     * ran the guard's method without reaching the guard, or took its arm
+     * toward the store, is not.
      */
     @Test
     public void theWalkCrossesWhatTheRecordingHeld() throws Exception {
@@ -160,6 +165,9 @@ public class RegionGraphOccurrenceKeyTest {
                         "L1"},
                 {"other-leg", "wl/dn0#epoch0", "REGION.send", 0, 0, "", "L2"},
                 {"unran-edge", "wl/nn0#epoch0", "REGION.side", 0, 0, "", ""},
+                {"decider", "wl/nn0#epoch0", "REGION.loop", 0, 0, "", ""},
+                {"undecided", "wl/nn0#epoch0", "REGION.loop", 0, 0, "", ""},
+                {"toward", "wl/nn0#epoch0", "REGION.loop", 0, 0, "", ""},
         };
         List<Map<String, Object>> instances = new ArrayList<>();
         Map<String, String> addresses = new LinkedHashMap<>();
@@ -173,7 +181,8 @@ public class RegionGraphOccurrenceKeyTest {
             String method = "REGION.check".equals(row[2]) ? CHECK
                     : "REGION.bump".equals(row[2]) ? BUMP
                     : "REGION.side".equals(row[2]) ? SIDE
-                    : "REGION.grow".equals(row[2]) ? GROW : SEND;
+                    : "REGION.grow".equals(row[2]) ? GROW
+                    : "REGION.loop".equals(row[2]) ? LOOP : SEND;
             Map<String, Object> activation = row(
                     "kind", "RUNTIME_REGION_ACTIVATION",
                     "regionId", row[2],
@@ -209,11 +218,19 @@ public class RegionGraphOccurrenceKeyTest {
         RuntimeSelectedRegionFinalizer.Result closure =
                 RuntimeSelectedRegionFinalizer.finalizeRegions(walkGraph(),
                         walkSkeletons(), "test", Arrays.asList(CHECK, BUMP,
-                                SEND, SIDE, GROW), instances,
-                        Collections.singletonList(row("kind", "BRANCH",
+                                SEND, SIDE, GROW, LOOP), instances,
+                        Arrays.asList(row("kind", "BRANCH",
                                 "eventSeq", 5L, "method", CHECK,
                                 "callId", 1L, "siteId", CHECK + "#u5",
-                                "outcome", Boolean.TRUE)),
+                                "outcome", Boolean.TRUE),
+                                row("kind", "BRANCH", "eventSeq", 6L,
+                                        "method", LOOP, "callId", 11L,
+                                        "siteId", LOOP + "#u3",
+                                        "outcome", Boolean.FALSE),
+                                row("kind", "BRANCH", "eventSeq", 7L,
+                                        "method", LOOP, "callId", 13L,
+                                        "siteId", LOOP + "#u3",
+                                        "outcome", Boolean.TRUE)),
                         walkScopeMap(), RuntimeWorkflowDiscovery.FIRST,
                         Collections.<ScheduleEvent>emptyList());
         List<String> planned = new ArrayList<>();
@@ -228,7 +245,7 @@ public class RegionGraphOccurrenceKeyTest {
             }
         }
         Collections.sort(planned);
-        assertEquals(Arrays.asList("mutation", "no-access",
+        assertEquals(Arrays.asList("decider", "mutation", "no-access",
                 "paired-export", "same-object", "target"), planned);
     }
 
@@ -240,6 +257,7 @@ public class RegionGraphOccurrenceKeyTest {
     private static final String SIDE = "<ex.Side: void set(int)>";
     private static final String OTHER = "<ex.Side: int other>";
     private static final String GROW = "<ex.Grower: void grow()>";
+    private static final String LOOP = "<ex.Loop: void turn()>";
     private static final String GET = "<ex.Proto: int getEpoch()>";
     private static final String SET =
             "<ex.Proto$Builder: ex.Proto$Builder setEpoch(int)>";
@@ -303,7 +321,8 @@ public class RegionGraphOccurrenceKeyTest {
                 walkSkeleton("REGION.send", SEND, "COMMUNICATION_CONTEXT",
                         Collections.singletonList(export)),
                 walkSkeleton("REGION.side", SIDE, "STATE_CONTEXT", none),
-                walkSkeleton("REGION.grow", GROW, "STATE_CONTEXT", none)),
+                walkSkeleton("REGION.grow", GROW, "STATE_CONTEXT", none),
+                walkSkeleton("REGION.loop", LOOP, "STATE_CONTEXT", none)),
                 RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test");
     }
 
@@ -355,6 +374,12 @@ public class RegionGraphOccurrenceKeyTest {
         grow.addProperty("declaredCallee",
                 "<java.util.Map: java.lang.Object put(java.lang.Object,"
                         + "java.lang.Object)>");
+        JsonArray storeGuards = new JsonArray();
+        storeGuards.add(LOOP + "#u3");
+        write.add("guards", storeGuards);
+        JsonArray towardStore = new JsonArray();
+        towardStore.add(true);
+        write.add("guardOutcomes", towardStore);
         Path file = tree.newFolder().toPath().resolve(StaticScopeMap.FILE);
         Files.write(file, (target + "\n" + write + "\n" + side + "\n" + grow
                 + "\n").getBytes(StandardCharsets.UTF_8));

@@ -273,7 +273,8 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, List<CutPort>> cutPorts = declaredCutPorts(program);
         declareCommunicationPorts(program, cutPorts, foldedIntoRegion);
         // One index shared by the fatal-prefix pass and the closure walk.
-        RegionDemandIndex demands = new RegionDemandIndex(program, scopeMap);
+        RegionDemandIndex demands = new RegionDemandIndex(program, scopeMap,
+                branchOrder);
         applyClosure(program, failureDirectedClosure(program, demands,
                 skeletonSource, scopeMap, cutPorts, declaredOccurrence,
                 new RecordedMessages(recordedSchedule)));
@@ -1095,9 +1096,11 @@ public final class RuntimeSelectedRegionFinalizer {
      * resumed with every admission's seeds; a demand is one cell of one
      * occurrence.  Inside an occurrence the walk follows the candidate graph;
      * at a cell the scope map names as stored it crosses to the activations
-     * on the same node (heap is node-private) that performed a storing
-     * region -- as their own, or folded into them, its text having run there
-     * -- and ran the storing method, unless the recording saw it hold only
+     * on the same node (heap is node-private) that ran the storing method or
+     * took the arm of one of the store's guards away from it, a store on the
+     * arm they did not take
+     * being one flip away ({@link RegionDemandIndex#storersOrDeciders}),
+     * unless the recording saw it hold only
      * other objects of the field than the reader read ({@link
      * #holdsOthersOnly}); there it demands the guards of the store, while
      * the read's guards still travel locally.  Which of them wrote the value
@@ -1114,10 +1117,6 @@ public final class RuntimeSelectedRegionFinalizer {
         private final RegionDemandIndex demands;
         private final Map<String, List<StaticScopeMap.Site>> writeSites;
         private final Set<String> wireConsumers = new HashSet<>();
-        /** Region -> the activations that performed it: its own, and those
-         *  it folded into, whose occurrence ran its text. */
-        private final Map<String, List<Map<String, Object>>> performers =
-                new HashMap<>();
         /** Occurrence -> the node it ran on, read once off its address,
          *  never off the trace rows (a non-address throws). */
         private final Map<String, String> nodes = new HashMap<>();
@@ -1178,11 +1177,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     : program.activations.entrySet()) {
                 nodes.put(entry.getKey(), OccurrenceAddress.parse(
                         entry.getKey()).node().render());
-                for (String regionId : performedRegionIds(entry.getValue())) {
-                    performers.computeIfAbsent(regionId,
-                            ignored -> new ArrayList<>()).add(
-                                    entry.getValue());
-                }
                 for (Map<String, Object> capture : rows(entry.getValue().get(
                         OBSERVED_COMMUNICATION_CAPTURES))) {
                     String leg = text(capture.get("exchangeLeg"));
@@ -1290,18 +1284,13 @@ public final class RuntimeSelectedRegionFinalizer {
                         .add(objectsOf(instances.get(occurrenceId), cell,
                                 true));
                 for (StaticScopeMap.Site site : writers) {
-                    String storingMethod = SiteId.methodOf(site.siteId);
-                    for (Map<String, Object> writer : performers.getOrDefault(
-                            site.regionId,
-                            Collections.<Map<String, Object>>emptyList())) {
-                        String writerOccurrence = text(
-                                writer.get("occurrenceId"));
-                        if (writerOccurrence.isEmpty()
-                                || writerOccurrence.equals(occurrenceId)
+                    for (String writerOccurrence
+                            : demands.storersOrDeciders(site)) {
+                        Map<String, Object> writer = instances.get(
+                                writerOccurrence);
+                        if (writerOccurrence.equals(occurrenceId)
                                 || excluded.contains(writerOccurrence)
                                 || !node.equals(nodes.get(writerOccurrence))
-                                || !demands.ran(writerOccurrence,
-                                        storingMethod)
                                 || holdsOthersOnly(writer, instances.get(
                                         occurrenceId), cell, site)) {
                             continue;
@@ -1661,6 +1650,13 @@ public final class RuntimeSelectedRegionFinalizer {
         /** Every observed occurrence's methods that ran in it. */
         private final Map<String, Set<String>> methodsByOccurrence =
                 new HashMap<>();
+        /** Method -> the observed occurrences it ran in. */
+        private final Map<String, List<String>> occurrencesByMethod =
+                new HashMap<>();
+        /** Decision site and outcome ({@link #decision}) -> the observed
+         *  occurrences that took that decision there. */
+        private final Map<String, Set<String>> occurrencesByDecision =
+                new HashMap<>();
         /** (region, cell) -> incoming cell -> the methods of its edges. */
         private final Map<String, Map<String, Set<String>>> localIncoming =
                 new LinkedHashMap<>();
@@ -1677,18 +1673,44 @@ public final class RuntimeSelectedRegionFinalizer {
         private final Set<String> pathSites = new LinkedHashSet<>();
 
         private RegionDemandIndex(StaticProgram program,
-                                  StaticScopeMap scopeMap) {
+                                  StaticScopeMap scopeMap,
+                                  List<Map<String, Object>> branches) {
             for (StaticScopeMap.Site target : scopeMap.targetSites()) {
                 pathSites.addAll(target.pathSites());
             }
             // Every observed activation, not only port holders: the walk
             // needs each occurrence's text.
+            Map<Long, List<String>> occurrencesByCall = new HashMap<>();
             for (Map.Entry<String, Map<String, Object>> entry
                     : program.activations.entrySet()) {
                 regionsByOccurrence.put(entry.getKey(),
                         performedRegionIds(entry.getValue()));
                 methodsByOccurrence.put(entry.getKey(), new HashSet<>(
                         strings(entry.getValue().get("observedMethods"))));
+                for (String method : methodsByOccurrence.get(entry.getKey())) {
+                    occurrencesByMethod.computeIfAbsent(method,
+                            ignored -> new ArrayList<>()).add(entry.getKey());
+                }
+                for (Long call : MapFields.longValues(
+                        entry.getValue().get("callIds"))) {
+                    occurrencesByCall.computeIfAbsent(call,
+                            ignored -> new ArrayList<>()).add(entry.getKey());
+                }
+            }
+            for (Map<String, Object> branch : branches) {
+                String site = text(branch.get("siteId"));
+                Object outcome = branch.get("outcome");
+                for (String occurrence : occurrencesByCall.getOrDefault(
+                        longNumber(branch.get("callId"), -1L),
+                        Collections.<String>emptyList())) {
+                    for (String key : new String[] {decision(site, null),
+                            decision(site, outcome instanceof Boolean
+                                    ? (Boolean) outcome : null)}) {
+                        occurrencesByDecision.computeIfAbsent(key,
+                                ignored -> new LinkedHashSet<>())
+                                .add(occurrence);
+                    }
+                }
             }
             Set<String> selectedRegions = new LinkedHashSet<>();
             for (Map<String, Object> region : program.regions) {
@@ -1824,10 +1846,35 @@ public final class RuntimeSelectedRegionFinalizer {
             return cells;
         }
 
-        /** Whether {@code method} ran in this occurrence. */
-        private boolean ran(String occurrenceId, String method) {
-            return methodsByOccurrence.getOrDefault(occurrenceId,
-                    Collections.<String>emptySet()).contains(method);
+        /**
+         * The observed occurrences that ran the store at {@code site} or
+         * left it at one of its guards: they ran the storing method, or took
+         * the arm of a guard away from the store (any decision at a guard
+         * that is not binary), under whatever region.  A store on the arm
+         * the recording did not take is one flip away (owner, 2026-10-02:
+         * the closure keeps every static writer); a method that ran without
+         * reaching the guard, or took its arm toward the store, is not.
+         */
+        private Set<String> storersOrDeciders(StaticScopeMap.Site site) {
+            Set<String> found = new LinkedHashSet<>(occurrencesByMethod
+                    .getOrDefault(SiteId.methodOf(site.siteId),
+                            Collections.<String>emptyList()));
+            for (int index = 0; index < site.guards.size(); index++) {
+                Boolean toward = site.guardOutcomes == null
+                        || index >= site.guardOutcomes.size() ? null
+                        : site.guardOutcomes.get(index);
+                found.addAll(occurrencesByDecision.getOrDefault(
+                        decision(site.guards.get(index),
+                                toward == null ? null : !toward),
+                        Collections.<String>emptySet()));
+            }
+            return found;
+        }
+
+        /** The key of a decision at {@code site}: its outcome, or null for
+         *  any decision there. */
+        private static String decision(String site, Boolean outcome) {
+            return site + "\n" + (outcome == null ? "any" : outcome);
         }
 
         /** The candidate graph's incoming cells of one cell in one region. */
