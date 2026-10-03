@@ -1185,11 +1185,13 @@ public final class RuntimeRegionPlanner {
                     plan.put(depth, seed.get(depth));
                 }
             }
-            // The declaration, resolved once by the finalizer, and its
-            // question's shape; PLAN and the replay read them.
+            // The declaration, resolved once by the finalizer, its
+            // question's shape and the occurrences the recording opened
+            // beside it; PLAN and the replay read them.
             for (String declared : new String[] {
                     RuntimeSelectedRegionFinalizer.DECLARED_OCCURRENCE,
-                    RuntimeSelectedRegionFinalizer.QUESTION_SHAPE}) {
+                    RuntimeSelectedRegionFinalizer.QUESTION_SHAPE,
+                    RuntimeSelectedRegionFinalizer.QUESTION_RECORDED}) {
                 if (seed.containsKey(declared)) {
                     plan.put(declared, seed.get(declared));
                 }

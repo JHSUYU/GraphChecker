@@ -157,6 +157,13 @@ public final class RuntimeSelectedRegionFinalizer {
      * §9).
      */
     public static final String QUESTION_SHAPE = "questionShape";
+    /**
+     * Plan-row member of the declared occurrence: the ids of every other
+     * occurrence the recording opened in its region on its node.  A
+     * replay's activation at one of them is that occurrence, and answers no
+     * question ({@code runtime.ConcolicTaskPlan#select}, IDENTITY §9).
+     */
+    public static final String QUESTION_RECORDED = "questionRecorded";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -829,6 +836,8 @@ public final class RuntimeSelectedRegionFinalizer {
         instances.get(declared).put(DECLARED_OCCURRENCE, true);
         instances.get(declared).put(QUESTION_SHAPE,
                 messages.shape(question.context()));
+        instances.get(declared).put(QUESTION_RECORDED,
+                recordedBeside(instances.keySet(), question));
         DemandWalk walk = new DemandWalk(program, demands, scopeMap,
                 cutPorts, otherTargets);
         List<String> seeds = new ArrayList<>();
@@ -853,6 +862,24 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         return walk.reached;
+    }
+
+    /**
+     * The ids of the occurrences the recording opened in {@code question}'s
+     * region on its node, {@code question} itself aside: its activations.
+     */
+    static List<String> recordedBeside(Collection<String> activations,
+                                       OccurrenceAddress question) {
+        List<String> ids = new ArrayList<>();
+        for (String activation : activations) {
+            OccurrenceAddress recorded = OccurrenceAddress.parse(activation);
+            if (recorded.regionId().equals(question.regionId())
+                    && recorded.node().equals(question.node())
+                    && !recorded.id().equals(question.id())) {
+                ids.add(recorded.id());
+            }
+        }
+        return ids;
     }
 
     /** One root an occurrence read: a captured DECLARED_SITE of a root's
