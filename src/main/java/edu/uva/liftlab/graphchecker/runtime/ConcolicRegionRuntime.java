@@ -567,11 +567,23 @@ public final class ConcolicRegionRuntime {
     /**
      * Takes the execution-index frame filed for the work running here.
      * Woven at the entry of every functional method a start hands to a
-     * thread ({@code WorkStartSites.entersWork}) in both passes; the receiver
-     * is the carrier the start was filed under.
+     * thread ({@code WorkStartSites.entersWork}) in both passes, before the
+     * method's level; the receiver is the carrier the start was filed under.
+     *
+     * @return what ends the claim when the work returns ({@link #endClaim})
      */
-    public static void claimStart(Object carrier) {
-        RowRuntime.claimStart(carrier);
+    public static long claimStart(Object carrier) {
+        return RowRuntime.claimStart(carrier);
+    }
+
+    /** Ends a work entry's claim, after its level, at every exit. */
+    public static void endClaim(long claim) {
+        RowRuntime.endClaim(claim);
+    }
+
+    /** Takes the start filed for an item taken off a queue. */
+    public static void claimItem(Object item) {
+        RowRuntime.claimItem(item);
     }
 
     /**

@@ -355,8 +355,18 @@ public final class CausynthTraceRecorder {
     }
 
     /** The recording's half of {@link RowRuntime#claimStart}. */
-    public static void claimStart(Object carrier) {
-        RowRuntime.claimStart(carrier);
+    public static long claimStart(Object carrier) {
+        return RowRuntime.claimStart(carrier);
+    }
+
+    /** The recording's half of {@link RowRuntime#endClaim}. */
+    public static void endClaim(long claim) {
+        RowRuntime.endClaim(claim);
+    }
+
+    /** The recording's half of {@link RowRuntime#claimItem}. */
+    public static void claimItem(Object item) {
+        RowRuntime.claimItem(item);
     }
 
     /** The recording's half of {@link RowRuntime#startWork}. */

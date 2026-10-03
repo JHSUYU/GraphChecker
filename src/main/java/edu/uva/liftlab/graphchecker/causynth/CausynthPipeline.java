@@ -1732,18 +1732,23 @@ public final class CausynthPipeline {
                             && ((AssignStmt) last).getLeftOp().getType()
                                     instanceof RefType) {
                         List<Unit> claim = new ArrayList<>();
-                        refs.bracket(claim, Hook.CLAIM_START,
+                        refs.bracket(claim, Hook.CLAIM_ITEM,
                                 ((AssignStmt) last).getLeftOp());
                         insertAfterSequence(body, last, claim);
                         claimed++;
                     }
                 }
-                // Claim before level: start frame below the work's levels.
+                // The claim opens before the level and closes after it:
+                // start frame below the work's levels.
                 Unit entry = safeInstrumentationEntry(body, method);
-                if (claimWorkEntry(body, method, entry, refs)) claimed++;
+                List<Unit> claim = claimWorkEntry(body, method, entry, refs);
+                if (claim != null) claimed++;
                 if (!lineageOnly && openMethodLevel(body, method,
                         originalUnits, entry, refs)) {
                     framed++;
+                }
+                if (claim != null) {
+                    endWorkEntryClaim(body, originalUnits, claim, refs);
                 }
             }
         }
@@ -1952,24 +1957,47 @@ public final class CausynthPipeline {
 
     /**
      * Claims the start frame filed under {@code this} at the entry of the
-     * work it carries ({@code Identity.claimStart}; no-op if none).
-     * @return whether this method received the claim
+     * work it carries ({@code Identity.claimStart}; no claim if none), before
+     * every other hook there.  With {@link #endWorkEntryClaim}, woven after
+     * the method's level, the claim ends when the work returns, after the
+     * work's own frame (IDENTITY §3).
+     *
+     * @return the claim's prologue, which stores its token, or null when
+     *         this method is no work entry
      */
-    private boolean claimWorkEntry(Body body, SootMethod method, Unit entry,
-                                   HookCatalog refs) {
-        if (method.isStatic() || method.isConstructor()
+    private static List<Unit> claimWorkEntry(Body body, SootMethod method,
+                                             Unit entry, HookCatalog refs) {
+        if (entry == null || method.isStatic() || method.isConstructor()
                 || !WorkStartSites.entersWork(method.getName(),
                         method.getParameterCount(),
                         hierarchyOf(method.getDeclaringClass()))) {
-            return false;
+            return null;
         }
         Value receiver = receiverOrNull(body, method);
-        if (receiver instanceof NullConstant) return false;
-        if (entry == null) return false;
+        if (receiver instanceof NullConstant) return null;
+        Local token = newTraceLocal(body, LongType.v(), "$causynthClaim");
         List<Unit> claim = new ArrayList<>();
-        refs.bracket(claim, Hook.CLAIM_START, receiver);
+        refs.bracket(claim, token, Hook.CLAIM_START, receiver);
         insertBeforeOrAppendNoRedirect(body, entry, claim);
-        return true;
+        return claim;
+    }
+
+    /** Ends {@link #claimWorkEntry}'s claim at every return and throw. */
+    private static void endWorkEntryClaim(Body body, List<Unit> originalUnits,
+                                          List<Unit> claim, HookCatalog refs) {
+        Value stored = null;
+        for (Unit unit : claim) {
+            if (unit instanceof AssignStmt) {
+                stored = ((AssignStmt) unit).getLeftOp();
+            }
+        }
+        Value token = stored;
+        bracketReturns(body, originalUnits, 0, refs, Hook.END_CLAIM, token);
+        // The handler reads the token: the trap opens after its store.
+        appendCatchAll(body, afterWovenPrologue(body, claim),
+                "$causynthClaimThrown",
+                (units, caught) -> refs.bracket(units, Hook.END_CLAIM,
+                        token));
     }
 
     /**
@@ -3513,6 +3541,8 @@ public final class CausynthPipeline {
         THROW_REGION_ENTRY,
         START_WORK,
         CLAIM_START,
+        END_CLAIM,
+        CLAIM_ITEM,
         ENTER_METHOD_FRAME,
         EXIT_METHOD_FRAME,
         THROW_METHOD_FRAME,
@@ -3579,7 +3609,11 @@ public final class CausynthPipeline {
             Type object = RefType.v("java.lang.Object");
             return add(Hook.START_WORK, owner, "startWork", VoidType.v(),
                     string, object)
-                    .add(Hook.CLAIM_START, owner, "claimStart", VoidType.v(),
+                    .add(Hook.CLAIM_START, owner, "claimStart", LongType.v(),
+                            object)
+                    .add(Hook.END_CLAIM, owner, "endClaim", VoidType.v(),
+                            LongType.v())
+                    .add(Hook.CLAIM_ITEM, owner, "claimItem", VoidType.v(),
                             object)
                     .add(Hook.ENTER_METHOD_FRAME, owner, "enterMethodFrame",
                             LongType.v(), string, object)
