@@ -6,7 +6,9 @@ import com.google.gson.JsonElement;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.Clock;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
@@ -238,6 +240,14 @@ final class SymbolizeAction {
     /** A declared wall-clock read with a recorded answer (moved by offset). */
     boolean declaresWallClockRead() {
         return clock != null && !recordedPrimitiveValue.isEmpty();
+    }
+
+    /** Where this input's value enters the world, as its mint states it:
+     *  a clock's reading, a fault marker, else a read. */
+    RootCategory category() {
+        if (declaresWallClockRead()) return RootCategory.CLOCK;
+        return RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
+                sourceKind) ? RootCategory.FAULT : RootCategory.READ;
     }
 
     boolean matchesStaticField(String actualMethod,

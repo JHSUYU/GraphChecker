@@ -28,6 +28,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.PathEntry;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -173,6 +174,8 @@ public final class Composer {
         private final List<PathEntry> paths;
         private final List<Family> families;
         private final List<RootDomain> roots;
+        /** Each root's category, by root id. */
+        private final Map<String, RootCategory> categories;
         private final List<Valuation> valuations;
         private final List<GapRow> gaps;
         private final List<String> clockCells;
@@ -207,6 +210,14 @@ public final class Composer {
                     new ArrayList<Family>(composed.families.values()));
             this.roots = Collections.unmodifiableList(
                     new ArrayList<RootDomain>(composed.roots.values()));
+            Map<String, RootCategory> categories =
+                    new LinkedHashMap<String, RootCategory>();
+            for (Map.Entry<String, List<RootMintRow>> root
+                    : composed.corpus.roots().entrySet()) {
+                categories.put(root.getKey(),
+                        root.getValue().get(0).category());
+            }
+            this.categories = Collections.unmodifiableMap(categories);
             this.valuations = Collections.unmodifiableList(valuations);
             this.gaps = Collections.unmodifiableList(composed.gaps);
             this.clockCells = Collections.unmodifiableList(clockCells);
@@ -392,6 +403,13 @@ public final class Composer {
 
         public List<RootDomain> roots() {
             return roots;
+        }
+
+        /** Where a moved root's value enters the world: a clock cell's
+         *  CLOCK, else its mint's category; null for a key no mint names. */
+        public RootCategory categoryOf(String moved) {
+            return clockCells.contains(moved) ? RootCategory.CLOCK
+                    : categories.get(moved);
         }
 
         public List<Valuation> valuations() {

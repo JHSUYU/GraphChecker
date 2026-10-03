@@ -497,8 +497,8 @@ same demand, and folding it changes nothing (`ClosurePlanner#candidates`); the w
 once. Each demanded occurrence becomes a `Task` (id =
 `digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
 the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
-plus every fault site (`Corpus.faultSites`: a decision whose term reaches a MARKER root, by the same
-walk). A
+plus every fault site (`Corpus.faultSites`: a decision whose term reaches a root of the `FAULT`
+category, by the same walk; a boolean hook source or READ placeholder is a MARKER and no fault). A
 demanded occurrence no session captured (ran, but no planned task admitted it) is: skipped if it is a
 role (`ROLE.*`, `LINEAGE_LOST` when lost); skipped when its chain began at a daemon tick later than the
 recording's last tick of that role on that node (`Corpus.tickPastRecording`, DIAGNOSTIC); *exposed*
@@ -1370,8 +1370,8 @@ than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else every valuation decided un
 `INCONCLUSIVE_PARTIAL`. The manifest's `solver` block carries `state` (sat/unsat/unknown),
 `reachability`, `unsatClosureComplete`, `valuations` (status, assignment, moved, selected path and
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
-`findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `blockers`, `whyNotAccepted`,
-`witnessFindings`).
+`findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved
+root's category, `contract.RootCategory`), `blockers`, `whyNotAccepted`, `witnessFindings`).
 
 ## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
 
@@ -1521,8 +1521,9 @@ refutes it. Then the campaign exits by its verdict (`campaign_exit_verdict`).
 3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a
    `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in);
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `findingKind`,
-   `polarityDecides`, `valuationOrdinal`, `movedRoots`, `blockers`, `reachability`, `finalStatus`,
-   `gapCount`, `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
+   `polarityDecides`, `valuationOrdinal`, `movedRoots`, `movedRootCategories` (each moved root's
+   category, `contract.RootCategory`), `blockers`, `reachability`, `finalStatus`, `gapCount`,
+   `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
    `targetOccurrence`, `valuations`, `witnessFindings`.
 4. `final/run-manifest.json`: provenance, iteration manifests, the path, size and sha256 of each
    required final artifact (`candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json`,

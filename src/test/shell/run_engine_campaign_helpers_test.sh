@@ -111,6 +111,8 @@ emit_fixture() {
         findingKind: "MARKER_FLIPPED", polarityDecides: true,
         valuationOrdinal: 1,
         movedRoots: {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "true"},
+        movedRootCategories:
+          {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "HOOK"},
         witnessFindings: [{findingKind: "MARKER_FLIPPED",
           valuationOrdinal: 1, polarityDecides: true,
           movedRoots: {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "true"}}]}}}' \
@@ -250,7 +252,9 @@ jq -e '.blockers == [] and .blockerCount == 0 and .whyNotAccepted == ""' \
 # reads as a refusal for a reason the run never had.
 jq -e '.findingKind == "MARKER_FLIPPED" and .polarityDecides == true
   and .valuationOrdinal == 1
-  and .movedRoots == {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "true"}' \
+  and .movedRoots == {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "true"}
+  and .movedRootCategories
+      == {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "HOOK"}' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "result.json does not carry the mechanism the claim rests on"
 

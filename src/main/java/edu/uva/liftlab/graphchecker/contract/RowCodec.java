@@ -439,6 +439,7 @@ public final class RowCodec {
         json.addProperty("rootId", row.rootId());
         json.addProperty("symbol", row.symbol());
         json.addProperty("kind", row.kind().name());
+        json.addProperty("category", row.category().name());
         json.addProperty("recordedValue", row.recordedValue());
         if (row.domainMin() != null) {
             json.addProperty("domainMin", row.domainMin());
@@ -469,6 +470,7 @@ public final class RowCodec {
                 readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "rootId"), string(json, "symbol"),
                 RootKind.valueOf(string(json, "kind")),
+                RootCategory.valueOf(string(json, "category")),
                 string(json, "recordedValue"),
                 optionalString(json, "domainMin"),
                 optionalString(json, "domainMax"), bool(json, "declared"),

@@ -22,6 +22,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -80,7 +81,10 @@ public class ConfirmMainTest {
 
     private RootMintRow root(String session, String id, String symbol,
                              RootKind kind, String value) {
-        return RootMintRow.of(session, 1L, mint, id, symbol, kind, value,
+        return RootMintRow.of(session, 1L, mint, id, symbol, kind,
+                kind == RootKind.CLOCK ? RootCategory.CLOCK
+                        : kind == RootKind.MARKER ? RootCategory.FAULT
+                        : RootCategory.HOOK, value,
                 null, null, true, kind == RootKind.CLOCK
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L);
     }

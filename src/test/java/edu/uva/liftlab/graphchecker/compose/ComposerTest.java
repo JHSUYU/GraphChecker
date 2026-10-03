@@ -36,6 +36,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -1791,7 +1792,8 @@ public class ComposerTest {
             String id = "s" + row[0];
             Session session = new Session(iteration, id, row[0] == 1L);
             session.roots.add(RootMintRow.of(id, 1L, ANCHOR, "ROOT.NOW",
-                    "clk_now", RootKind.CLOCK, Long.toString(row[1]), null,
+                    "clk_now", RootKind.CLOCK, RootCategory.CLOCK,
+                    Long.toString(row[1]), null,
                     null, true, Clock.of(1_000_000L, Clock.WALL), row[2]));
             session.expression("EXPR.00000000000003e1", binary("<",
                     integer("J", row[3]), symbol("clk_now", "J")));
@@ -1818,7 +1820,7 @@ public class ComposerTest {
                                          String rootId, String symbol,
                                          String reading) {
         return RootMintRow.of(session, seq, ANCHOR, rootId, symbol,
-                RootKind.CLOCK, reading, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L);
+                RootKind.CLOCK, RootCategory.CLOCK, reading, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L);
     }
 
     // ------------------------------------------------------------------
@@ -1897,7 +1899,7 @@ public class ComposerTest {
         Session twice = new Session(runs, "s0", false);
         twice.clock("700");
         twice.roots.add(RootMintRow.of("s0", ++twice.seq, ANCHOR, "ROOT.THEN",
-                "clock_then", RootKind.CLOCK, "705", null, null, true,
+                "clock_then", RootKind.CLOCK, RootCategory.CLOCK, "705", null, null, true,
                 Clock.of(1_000_000L, Clock.WALL), 0L));
         twice.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
                 + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
@@ -3128,7 +3130,7 @@ public class ComposerTest {
             if (guarded) {
                 session.roots.add(RootMintRow.of("s0", ++session.seq,
                         writers[2], "ROOT.CLEAN", "M_J_clean",
-                        RootKind.CLOCK, "1000", null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
+                        RootKind.CLOCK, RootCategory.CLOCK, "1000", null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
                 session.expression("EXPR.0000000000000090", binary("<",
                         symbol("M_J_clean", "J"), integer("J", 2_000L)));
                 session.decision(writers[2], "Cleaner#clean#u3", true,
@@ -3301,7 +3303,7 @@ public class ComposerTest {
         // The reservation of 5: the reserver's clock plus 6000.
         LocationId reserves = LocationId.of(LocationKind.MAP, "50", "-3");
         session.roots.add(RootMintRow.of(id, ++session.seq, reserver,
-                "ROOT.RESERVED", RESERVED, RootKind.CLOCK,
+                "ROOT.RESERVED", RESERVED, RootKind.CLOCK, RootCategory.CLOCK,
                 Long.toString(seed - 1_000L), null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
         // As the VM publishes it: an arithmetic node states no Java type,
         // and the deadline is a Long cell by its width alone.
@@ -3316,7 +3318,7 @@ public class ComposerTest {
                 at("reserve#1", 0), 0), reserves, 70L,
                 "EXPR.00000000000000e1");
         session.roots.add(RootMintRow.of(id, ++session.seq, newer,
-                "ROOT.RESERVE", NANO, RootKind.CLOCK, Long.toString(
+                "ROOT.RESERVE", NANO, RootKind.CLOCK, RootCategory.CLOCK, Long.toString(
                         expired ? seed + 10_000L : seed), null, null, true,
                 Clock.of(1L, Clock.MONOTONIC), 0L));
         // The older commit's map, then its store.
@@ -4707,7 +4709,7 @@ public class ComposerTest {
         StringBuilder phi = new StringBuilder("(and");
         for (String[] cell : cells) {
             session.roots.add(RootMintRow.of("s0", ++session.seq, ANCHOR,
-                    cell[0], cell[1], RootKind.CLOCK, cell[2], null, null,
+                    cell[0], cell[1], RootKind.CLOCK, RootCategory.CLOCK, cell[2], null, null,
                     true, Clock.of(1_000_000L, cell[3]), 0L));
             phi.append(" (> ").append(cell[1]).append(" 0)");
         }
@@ -6338,7 +6340,7 @@ public class ComposerTest {
 
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
-                    RootKind.MARKER, recorded, null, null, true, null, 0L));
+                    RootKind.MARKER, RootCategory.FAULT, recorded, null, null, true, null, 0L));
         }
 
         /**
@@ -6351,7 +6353,7 @@ public class ComposerTest {
          */
         void clock(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,
-                    RootKind.CLOCK, recorded, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
+                    RootKind.CLOCK, RootCategory.CLOCK, recorded, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
         }
 
         /** One decision, and the clock cells its predicate read. */
@@ -6365,7 +6367,7 @@ public class ComposerTest {
         /** A declared counter, with the window the CASE states around it. */
         void serial(String recorded, String min, String max) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
-                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true, null, 0L));
+                    SERIAL, RootKind.INTEGRAL, RootCategory.HOOK, recorded, min, max, true, null, 0L));
         }
 
         /** Root id -> occurrence -> what this replay read the root at
@@ -6452,6 +6454,9 @@ public class ComposerTest {
         void root(OccurrenceAddress at, String rootId, String symbol,
                   RootKind kind, String recorded) {
             roots.add(RootMintRow.of(id, ++seq, at, rootId, symbol, kind,
+                    kind == RootKind.CLOCK ? RootCategory.CLOCK
+                            : kind == RootKind.MARKER ? RootCategory.FAULT
+                            : RootCategory.HOOK,
                     recorded, null, null, true,
                     kind == RootKind.CLOCK
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));

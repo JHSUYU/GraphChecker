@@ -27,6 +27,7 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -4512,7 +4513,9 @@ public class ExploreTest {
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
             roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId,
-                    symbol, kind, recorded, min, max, declared,
+                    symbol, kind, kind == RootKind.CLOCK ? RootCategory.CLOCK
+                            : kind == RootKind.MARKER ? RootCategory.FAULT
+                            : RootCategory.HOOK, recorded, min, max, declared,
                     kind == RootKind.CLOCK
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
         }

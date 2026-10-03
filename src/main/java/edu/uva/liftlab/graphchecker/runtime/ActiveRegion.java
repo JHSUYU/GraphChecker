@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -356,6 +357,7 @@ final class ActiveRegion {
         row.add("expression", expression == null
                 ? JsonNull.INSTANCE : expression);
         row.addProperty("reused", reused);
+        row.addProperty("category", RootCategory.HOOK.name());
         row.addProperty("mintOccurrence",
                 mintOccurrence(safe(sourceId)));
         symbolizedRows.add(row);
@@ -437,6 +439,7 @@ final class ActiveRegion {
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
         }
+        row.addProperty("category", action.category().name());
         // A declared wall-clock read says so, so no reader guesses a clock
         // from a name.  Trap: never publish the PLAN's instant as its value.
         if (action.declaresWallClockRead()) {

@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
@@ -130,7 +131,8 @@ final class RowPlaceholderMint {
             }
             RowRuntime.rootMint(mintOccurrence(row, occurrence),
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
-                    kind, recorded,
+                    kind, RootCategory.valueOf(optionalString(row,
+                            "category")), recorded,
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"), true,
                     kind == RootKind.CLOCK ? Clock.of(optionalLongInteger(row,

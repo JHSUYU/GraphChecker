@@ -7,7 +7,8 @@ nothing. Java paths below are under `src/main/java/edu/uva/liftlab/graphchecker/
 Three things are kept apart:
 
 - a **root** is a fresh symbol the replay mints (a clock reading, a fault marker, a configured
-  source). Only roots add freedom.
+  source). Only roots add freedom; each states its category (`CLOCK`, `FAULT`, `READ`, `HOOK`,
+  `contract/RootCategory`): what moving it means.
 - a value is **symbolic by propagation** when the VM's shadow carries an upstream root's expression.
   The VM propagates through every bytecode a region's thread interprets, whatever the analysis
   scope (VM.md); the slice decides only where roots, tracked reads and ports are.

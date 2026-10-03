@@ -5963,6 +5963,9 @@ campaign_emit() {
      polarityDecides: $decided.polarityDecides,
      valuationOrdinal: $decided.valuationOrdinal,
      movedRoots: $decided.movedRoots,
+     # What each moved root is (CLOCK, FAULT, CONFIG, READ, HOOK): a sweep
+     # ranks a witness that moves configuration only after the others.
+     movedRootCategories: $decided.movedRootCategories,
      reachability: $reachability,
      solverState: ($r.state // ""),
      finalStatus: ($c.finalStatus // ""),
