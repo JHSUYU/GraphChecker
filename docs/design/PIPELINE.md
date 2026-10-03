@@ -608,8 +608,9 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   version 0) become one Bool selector each (`wchoice_*`, exactly one), one choice per (reader
   occurrence, location) binding every read of it -- reads of it that saw two writes have no choice
   that is the run's pairing and refuse the flip by name (`UNSTATED_VALUE:READS_SAW_TWO_WRITES`, as
-  COMPOSE's family does); no writer: pinned to the row's `concreteValue`; neither: refused
-  `UNSTATED_VALUE`. A scalar read of a field or array cell
+  COMPOSE's family does); a writer whose write lowers to another sort than the read delivers
+  nothing it could be and is no choice (`ARM_SORT_MISMATCH`, the recorded one excepted); no writer:
+  pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A scalar read of a field or array cell
   of the flipped occurrence (not a container's state or a query of one) with more than one
   eligible writer is its own symbol, as COMPOSE keeps the anchor's
   (`FlipQuery#movableReads`, `SmtLowering#rowSymbol`): inlined, the VM's guarded read is the
