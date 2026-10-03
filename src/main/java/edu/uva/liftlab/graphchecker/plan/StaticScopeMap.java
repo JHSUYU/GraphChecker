@@ -1523,6 +1523,16 @@ public final class StaticScopeMap {
         return reads;
     }
 
+    /** The cells a replay versions its reads of ({@link #READ_SITE}): a
+     *  read of one can be paired with another writer. */
+    public Set<String> trackedCells() {
+        Set<String> cells = new LinkedHashSet<String>();
+        for (Site site : ofRole(READ_SITE, read -> true)) {
+            cells.add(site.cell);
+        }
+        return cells;
+    }
+
     /** The regions reading a tracked cell ({@link #READ_SITE}). */
     public Set<String> trackedRegions() {
         Set<String> regions = new LinkedHashSet<String>();

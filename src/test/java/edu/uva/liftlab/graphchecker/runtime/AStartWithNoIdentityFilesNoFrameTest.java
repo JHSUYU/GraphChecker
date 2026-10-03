@@ -6,6 +6,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.Function;
 
@@ -62,29 +63,48 @@ public class AStartWithNoIdentityFilesNoFrameTest {
     }
 
     /**
-     * A connection's handler before and after its first message (a
-     * DataXceiver's SASL handshake, whose callback region runs inside the
-     * handshake's): the region it enters first opens none, the one it enters
-     * inside it under the message's scope opens its own.  A start made
-     * under a scope names its work, whose first entry opens an occurrence.
+     * A daemon whose service loop's one entry no hop named (started under no
+     * root, or before the window): what it enters opens none until a hop
+     * names its work, and then the region it stands in -- the outermost one
+     * with no name, which owns what it entered -- opens an occurrence under
+     * the hop, indexed from the hop's scope base, for as long as the hop
+     * stands: each turn is one occurrence, whose decisions count from 1 and
+     * whose entries fold into it.  The region's exit ends it too.  A start
+     * made under a scope names its work, whose first entry opens an
+     * occurrence.
      */
     @Test
     public void unnamedWorkOpensNoOccurrenceUntilAHopNamesIt()
             throws Exception {
-        Object connection = new Object();
-        Identity.startWork(ACCEPT, connection);
-        String[] unnamed = claimed(connection, carrier -> {
-            String before = opened("REGION.handshake");
-            long hop = RuntimeTraceContext.beginRequest(DN, "handshake");
-            String after = opened("REGION.handle");
+        Object daemon = new Object();
+        Identity.startWork(ACCEPT, daemon);
+        List<String> seen = claimed(daemon, carrier -> {
+            List<String> said = new ArrayList<String>();
+            said.add(opened("REGION.loop"));
+            said.add(opened("REGION.step"));
+            said.add("ordinal " + Identity.nextBranchOrdinal("loop#u3"));
+            for (String turn : new String[]{"turn", "turn"}) {
+                long hop = RuntimeTraceContext.beginRequest(DN, turn);
+                said.add(Identity.currentOccurrence(DN.key()).render());
+                said.add(opened("REGION.inner"));
+                said.add("ordinals " + Identity.nextBranchOrdinal("loop#u3")
+                        + "," + Identity.nextBranchOrdinal("loop#u3"));
+                Identity.regionExit();
+                RuntimeTraceContext.endRequest(hop);
+                said.add(Identity.currentOccurrence(DN.key()).regionId());
+            }
             Identity.regionExit();
+            long hop = RuntimeTraceContext.beginRequest(DN, "last");
+            Identity.regionExit();
+            said.add(Identity.currentOccurrence(DN.key()).regionId());
             RuntimeTraceContext.endRequest(hop);
-            Identity.regionExit();
-            return new String[]{before, after};
+            return said;
         });
-        assertEquals("before a hop", "none", unnamed[0]);
-        assertEquals("under the hop, inside it", "Root:CLIENT/handshake#1",
-                unnamed[1]);
+        String turn = DN.key() + "/region/REGION.loop/ctx:Root:CLIENT/turn#";
+        assertEquals(Arrays.asList("none", "none", "ordinal 0",
+                turn + "1/idx:", "none", "ordinals 1,2", "ROLE.UNKNOWN",
+                turn + "2/idx:", "none", "ordinals 1,2", "ROLE.UNKNOWN",
+                "ROLE.CLIENT"), seen);
 
         long request = RuntimeTraceContext.beginRequest(DN, "accept");
         Object named = new Object();

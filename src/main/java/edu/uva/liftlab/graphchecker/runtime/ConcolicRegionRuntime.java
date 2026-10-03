@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -366,6 +367,59 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * The activations a hop's naming started on this thread, by the hop
+     * ({@link #regionNamed}).
+     */
+    private static final ThreadLocal<Map<Long, Long>> NAMED_ACTIVATIONS =
+            ThreadLocal.withInitial(LinkedHashMap::new);
+
+    /**
+     * A hop named a standing region ({@code Identity#hopOpened}): admits the
+     * task planned at that occurrence, by its whole address, and starts its
+     * VM region here, mid-method.  The VM's attach shadows every frame then
+     * standing with no expression (ShadowStack's constructor walks the
+     * thread's frames), so the region's work before the hop is concrete
+     * and stated by nothing.
+     */
+    static void regionNamed(OccurrenceAddress address, Object receiver,
+                            long hop) {
+        ConcolicTaskPlan config = configuration();
+        if (admissionEnded || config.tasks.isEmpty()) return;
+        RuntimeTask admitted;
+        pauseObservation();
+        try {
+            admitted = config.selectNamed(address,
+                    RuntimeTraceContext.activationSource(receiver));
+        } finally {
+            resumeObservation();
+        }
+        if (admitted == null) return;
+        ActiveRegion active = startSymbolicRegion(admitted, receiver);
+        if (active != null) NAMED_ACTIVATIONS.get().put(hop, active.token);
+    }
+
+    /**
+     * The occurrence the hop {@code hop} named ends, by the hop's end or by
+     * its region's exit ({@code thrown} when by a throw): so does the
+     * activation it admitted.
+     */
+    static void regionUnnamed(long hop, Throwable thrown) {
+        Map<Long, Long> named = NAMED_ACTIVATIONS.get();
+        Long token = named.remove(hop);
+        if (named.isEmpty()) NAMED_ACTIVATIONS.remove();
+        if (token == null) return;
+        try {
+            if (thrown == null) {
+                finish(token, "NORMAL", "", null);
+            } else {
+                finishThrown(token, thrown);
+            }
+        } catch (Throwable ignored) {
+            // Every stage inside #finish states its own refusal.
+        }
+    }
+
+    /**
      * Decides which planned occurrence this root invocation admits, muted:
      * the selection is GraphChecker control flow over workload objects.
      */
@@ -570,12 +624,12 @@ public final class ConcolicRegionRuntime {
 
     /** Closes the entry {@code entry} opened, and only that entry. */
     public static void exitRegionEntry(long entry) {
-        closeRegionEntry(entry);
+        closeRegionEntry(entry, null);
     }
 
     /** The exceptional edge of {@link #enterRegionEntry}. */
     public static void throwRegionEntry(long entry, Throwable throwable) {
-        closeRegionEntry(entry);
+        closeRegionEntry(entry, throwable);
     }
 
     /** One open region entry: its token, the depths it opened at, its root. */
@@ -608,7 +662,7 @@ public final class ConcolicRegionRuntime {
      * and pop pair without guessing.  A leaked entry is refused BLOCKING:
      * every later row would carry the wrong occurrence.
      */
-    private static void closeRegionEntry(long entry) {
+    private static void closeRegionEntry(long entry, Throwable thrown) {
         if (entry <= 0L) return;
         Deque<RegionEntry> open = REGION_ENTRIES.get();
         RegionEntry mine = null;
@@ -621,7 +675,7 @@ public final class ConcolicRegionRuntime {
         if (mine == null) return;
         while (!open.isEmpty()) {
             RegionEntry top = open.pop();
-            Identity.regionExit();
+            Identity.regionExit(top.token == entry ? thrown : null);
             if (top.token == entry) break;
         }
         if (open.isEmpty()) REGION_ENTRIES.remove();
@@ -1139,17 +1193,20 @@ public final class ConcolicRegionRuntime {
             RootInvocationFrame frame = popRootInvocationFrame(
                     rootHookGroup, rootMethod);
             if (frame != null && frame.token != 0L) {
-                if (throwable instanceof LoopBoundCut) {
-                    finish(frame.token, "CUT", "", throwable);
-                } else {
-                    finish(frame.token, "THROW",
-                            throwable == null ? ""
-                                    : throwable.getClass().getName(),
-                            throwable);
-                }
+                finishThrown(frame.token, throwable);
             }
         } catch (Throwable ignored) {
             // Keep the program's throwable; see #exitRegionFrame.
+        }
+    }
+
+    /** Ends the activation {@code token} by a throw: a bound's cut is CUT. */
+    private static void finishThrown(long token, Throwable throwable) {
+        if (throwable instanceof LoopBoundCut) {
+            finish(token, "CUT", "", throwable);
+        } else {
+            finish(token, "THROW", throwable == null ? ""
+                    : throwable.getClass().getName(), throwable);
         }
     }
 

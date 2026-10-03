@@ -638,6 +638,27 @@ public final class RowRuntime {
             new ConcurrentHashMap<String, AtomicInteger>();
 
     /**
+     * A hop named the standing region at position {@code region} of this
+     * thread's region stack ({@link Identity#hopOpened}): the recording
+     * states the occurrence as an activation of its own, a replay admits the
+     * task planned there.  Each half is a no-op in the other pass.
+     */
+    static void regionNamed(int region, OccurrenceAddress address,
+                            Object receiver, long hop) {
+        CausynthTraceRecorder.regionNamed(region, address);
+        ConcolicRegionRuntime.regionNamed(address, receiver, hop);
+    }
+
+    /**
+     * The occurrence the hop {@code hop} named ends: the hop ended, or the
+     * region's entry exited ({@code thrown} when by a throw).
+     */
+    static void regionUnnamed(int region, long hop, Throwable thrown) {
+        ConcolicRegionRuntime.regionUnnamed(hop, thrown);
+        CausynthTraceRecorder.regionUnnamed(region);
+    }
+
+    /**
      * One region entry unnamed work made, which opened no occurrence.
      * Never silent: each region and node is named once, in either pass, by
      * a LINEAGE_LOST row, and the session's manifest counts every entry at
