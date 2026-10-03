@@ -845,8 +845,8 @@ public class ManualMintStatesItsValueTest {
             assertNotNull("at its own declared site", entry);
             assertEquals("and files nothing to explain itself", 2,
                     gaps().size());
-            String symbol = ConfiguredSourcePhaseContract
-                    .engineLabelForPhase(phaseId(), SOURCE_ID);
+            String symbol =
+                    ConfiguredSourcePhaseContract.engineLabel(SOURCE_ID);
             focused.recordConfiguredSourceMint(entry, SOURCE_ID, FIELD,
                     symbol, symbolExpression(symbol), false, "true");
             RowPlaceholderMint.roots(focused, address(FOCUSED_ADDRESS));
@@ -941,8 +941,8 @@ public class ManualMintStatesItsValueTest {
         java.util.Set<String> labels = new java.util.LinkedHashSet<String>();
         for (ConfiguredSourcePhaseContract.Occurrence phase
                 : ConfiguredSourcePhaseContract.occurrencesOf(catalog)) {
-            labels.add(ConfiguredSourcePhaseContract.engineLabelForPhase(
-                    phase.phaseId(), phase.sourceId()));
+            labels.add(ConfiguredSourcePhaseContract.engineLabel(
+                    phase.sourceId()));
         }
         return labels;
     }

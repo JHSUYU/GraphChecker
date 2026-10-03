@@ -6,9 +6,9 @@ nothing. Java paths below are under `src/main/java/edu/uva/liftlab/graphchecker/
 
 Three things are kept apart:
 
-- a **root** is a fresh symbol the replay mints (a clock reading, a fault marker, a configured
-  source). Only roots add freedom; each states its category (`CLOCK`, `FAULT`, `READ`, `HOOK`,
-  `contract/RootCategory`): what moving it means.
+- a **root** is a fresh symbol the replay mints (a clock reading, a fault marker, a configuration
+  value or a tree's configured source). Only roots add freedom; each states its category (`CLOCK`,
+  `FAULT`, `CONFIG`, `READ`, `HOOK`, `contract/RootCategory`): what moving it means.
 - a value is **symbolic by propagation** when the VM's shadow carries an upstream root's expression.
   The VM propagates through every bytecode a region's thread interprets, whatever the analysis
   scope (VM.md); the slice decides only where roots, tracked reads and ports are.
@@ -19,7 +19,7 @@ Three things are kept apart:
 
 | where a value comes from | what it is | bound by |
 |---|---|---|
-| **F1** the environment: a clock read, a door fault, a configured source hook (§4) | ROOT | its domain: a marker both values, a configured source its `root-domains.jsonl` row (none: pinned), a clock its window (`contract/RootKind`, `contract/RootDomain`) |
+| **F1** the environment: a clock read, a door fault, a configuration value, a tree's configured source hook (§4) | ROOT | its domain: a marker (a boolean configuration too) both values, an integral configuration the hull of its anchors (§4.3), a hook's source its `root-domains.jsonl` row (none: pinned), a clock its window (`contract/RootKind`, `contract/RootDomain`) |
 | **F2** a read of shared state another occurrence writes (§5) | TRACKED READ, or a READ placeholder where the accessor is unwoven | the version it observed, and every attested HB-concurrent writer occurrence of the same session (`smt/Arms#stateArms`) |
 | **F3** a message leaf that crosses a process (§6) | WIRE ATTACH, a fresh `v_H` per primitive leaf | the producer's export, paired within the run (message families) |
 | **F4** a return or parameter from code outside the analysis scope | grow the scope (§2.4); what stays outside has no root, tracked read or port, and is symbolic only by propagation | its inputs' expressions, else the recorded value |
@@ -190,7 +190,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 |---|---|---|
 | `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
-| `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both) |
+| `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field) |
 | `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
@@ -298,25 +298,77 @@ The catalog's rows each state `schemaVersion 1` and their `kind` and are keyed b
 `library-catalog.jsonl:<line>`, the shape `contract/WireDeclarations` reads (CONTRACT-SPEC §6.1). A
 malformed row, a member its kind lacks and a row stated twice are refused by name. `CONFIG_SOURCE`
 rows (`method`, `keyArg` naming the String key argument, optional `defaultArg`) list configuration
-getters (Hadoop `Configuration.get*`, Solr `getClusterProperty` and `XmlConfigFile.get*`); only
-`tools/analysis/rootcov.py` reads them yet.
+getters (Hadoop `Configuration.get*`, Solr `getClusterProperty` and `XmlConfigFile.get*`);
+`CONFIG_FIELD_OWNER` rows (`class`) name a configuration object built from a file no getter of the
+catalog reads, whose every field is configuration (Solr's `NodeConfig`, `CloudConfig`). Both are
+`causynth/ConfigRoots`' (§4.3).
 
 A `FAULT:` marker is a `DECLARED_SITE` (`inputKind: FAULT`) iff its transport is a catalog door's
 (`StaticScopeMap#declaredFault`, `LibraryCatalog#transports`); a marker whose name does not start
 with `FAULT:` is the workload's own and always declared. The recorded polarity is `false`. How
 fault decisions become flip sites is IDENTITY.md §7.
 
-### 4.3 Configured sources
+### 4.3 Configuration and configured sources
 
-A tree calls `CausynthSymbolicSource.symbolize(String sourceId, Object owner, String
-fieldSignature)` (the Hadoop copy is `src/shim/java/org/apache/hadoop/ipc/CausynthSymbolicSource`).
-`causynth/StaticSymbolicSourceDiscovery` finds the call by class simple name and signature and
-attaches one declaration per source to every region that can run it (one hook site per source
-per region, else refused). At the hook, `runtime/RootMint#configuredSource` mints one symbol per
-source on the owner's primitive instance field, keeps a propagated expression instead when the
-field already carries one (`reused`), and plants the value the obligation asks for. Its domain is
-the `root-domains.jsonl` row for `sourceId` (absolute or `+k`/`-k` from the recording); without a
-row it is pinned.
+Configuration is recognized by category, as a clock is (`causynth/ConfigRoots`, over the slice):
+
+- a *getter*: a JVM one (`System.getProperty`, `System.getenv`, `Boolean.getBoolean`,
+  `Integer.getInteger`, `Long.getLong`) or a `CONFIG_SOURCE` row of the library catalog (§4.2),
+  called on its class or a subclass (Hadoop's `HdfsConfiguration`);
+- a *wrapper*: a method every return of which is a configuration value of one key -- a literal, or
+  the wrapper's own `String` parameter -- followed four wrappers deep (Solr's `Overseer.isLegacy`,
+  `"true".equals(getClusterProperty(LEGACY_CLOUD, "false"))`);
+- a *field*: an integral or boolean instance field every writer of which, over the whole analysed
+  scope (`StaticProgram#fieldWriters`), stores a configuration value of one key -- hdfs-17960's
+  `SnapshotManager.snapshotDeletionOrdered`, stored once, in the constructor, from
+  `conf.getBoolean("dfs.namenode.snapshot.deletion.ordered", false)` -- or such a field of a
+  `CONFIG_FIELD_OWNER` class, its own key.
+
+A configuration value is a getter's or wrapper's return through locals, casts, a boolean view (a
+literal's `equals`, `Boolean.parseBoolean`/`valueOf`), a parse (`Integer.parseInt`,
+`Long.parseLong`), an unboxing, `trim` and `Math.max`/`min` with a constant; arithmetic makes
+another value. Its key is the key argument where that is a literal (javac inlines a `static final
+String`), else the getter call's site; its root is `CONFIG:<key>`. One key is one root, minted in
+one shape: at each read of the key's field (the first by signature where a field holds it), else
+at the return of each getter call the slice reads it at, a `DECLARED_SITE` `CALL_RETURN` with
+`inputKind: CONFIG`, its `sourceId` and domain (the plan's input action states them as
+`configSource`, `domainMin`, `domainMax`). Only an integral or boolean value is minted.
+
+- **The field's reads.** `causynth/StaticSymbolicSourceDiscovery` declares each read (`getfield`)
+  of a configuration field in a region's text -- its methods and their application callees -- as it
+  declares a hook site (below), under the authority `EXACT_STATIC_CONFIG_READ_SITE_V1`; the
+  recording's read of the field there (a `FIELD_READ` trace event) is the site's evidence in an
+  occurrence (`runtime/RuntimeRegionPlanner#configuredSourcePhases`). Before the `getfield`,
+  INSTRUMENT weaves `ConcolicRegionRuntime.readConfiguration(sourceId, owner, field)` under the
+  site's context (`CausynthPipeline#instrumentConfigurationRead`), the hook a tree would have
+  carried. A field a tree's hook mints is the hook's: none of its reads is declared.
+- **The world.** A configuration belongs to the world, not to an occurrence: the value an
+  obligation assigns it is written at every read of its field, on every node, whatever occurrence
+  runs it (`runtime/RootMint#configuration`), and planted at every getter return a symbolic
+  occurrence reads; a second getter read of one key in an occurrence is the first one's value.
+  The VM label is the source's alone (`ConfiguredSourcePhaseContract#engineLabel`), so the reads of
+  one key in one JVM are one symbol: a homogeneous cluster.
+- **Domain.** A boolean is a MARKER, free over both values. An integral's domain is the hull of
+  its anchors -- each getter call's literal default and `c - 1, c, c + 1` for each integral literal
+  `c` a branch compares the value with within eight flows of the slice, never through a field, at 0
+  or above where every anchor is -- and of the value the mint read: the declaration states the
+  static hull, the mint row the whole (`runtime/ActiveRegion#configDomain`).
+
+A tree may still call `CausynthSymbolicSource.symbolize(String sourceId, Object owner, String
+fieldSignature)` (the Hadoop copy is `src/shim/java/org/apache/hadoop/ipc/CausynthSymbolicSource`):
+the block-key trees' `HDFS.BLOCK_KEY.SERIAL_NO` and `EXPIRY_DATE*`, and hdfs-17960's
+`HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` in `SnapshotManager.isSnapshotDeletionOrdered()`, on the
+field this section's rules recognize as `CONFIG:dfs.namenode.snapshot.deletion.ordered`: the hook
+owns it until its tree drops the hook.
+`StaticSymbolicSourceDiscovery` finds the call by class simple name and signature and attaches one
+declaration per source to every region that can run it (one hook site per source per region, else
+refused). Its value is planted at a focused occurrence only, and its domain is the
+`root-domains.jsonl` row for `sourceId` (absolute or `+k`/`-k` from the recording); without a row it
+is pinned.
+
+Either way `runtime/RootMint#configuredSource` mints one symbol per source on the owner's
+primitive instance field, keeps a propagated expression instead when the field already carries one
+(`reused`), and its root row states the category, `CONFIG` or `HOOK`.
 
 ### 4.4 Admission
 
@@ -324,8 +376,8 @@ row it is pinned.
 
 | input | verdict |
 |---|---|
-| a clock's return, a READ placeholder's own site, a `FAULT` marker | declared root: the replay mints (`DECLARED_SYMBOLIC_ROOT`; a clock also `DECLARED_WALL_CLOCK` = its tick) |
-| a field a configured-source hook of the region mints | `CONCRETE`, `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` (the hook mints) |
+| a clock's return, a configuration getter's return (`configSource`), a READ placeholder's own site, a `FAULT` marker | declared root: the replay mints (`DECLARED_SYMBOLIC_ROOT`; a clock also `DECLARED_WALL_CLOCK` = its tick) |
+| a field a configured source of the region mints (a tree's hook, or the engine's configuration read) | `CONCRETE`, `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` (the source mints) |
 | a declared communication port (`COMMUNICATION_SITE_PORT`) | tracked, never minted (the attach installs the producer's value) |
 | anything else | `CONCRETE`, `UNDECLARED_SYMBOLIC_INPUT` |
 
@@ -372,13 +424,14 @@ reaches, to a fixed point:
   consumer cells it demanded. Every admission states its `demandDepth`: the hops of the shortest
   chain from the question that reached it (a target 0, a root's or a door's occurrence one past
   what it was found from).
-- **Roots by relevance** (`causynth/RootRelevance`). A root read is a capture of a `CLOCK` or
-  `FAULT` `DECLARED_SITE`. Its influence is the forward reach of its `dependencyCell` over the
-  candidate edges of the methods its occurrence performed -- value, guard and exception edges
-  alike -- ended at a stored location (a cell some `WRITE_SITE` names) and at a wire producer
-  (recording the consumer cell its `wire_handoff` names). The influence is static: the arm a root
-  decides counts whether the recording took it or not (an expiry check that removed nothing), and
-  a value leaving by a wire counts on the consumer's side. An occurrence one of whose roots reaches
+- **Roots by relevance** (`causynth/RootRelevance`). A root read is a capture of a `CLOCK`,
+  `FAULT` or `CONFIG` `DECLARED_SITE`; a configuration field's read (§4.3) is a configured-source
+  phase, no capture, and plans with whichever occurrence another rule admits. Its influence is the
+  forward reach of its `dependencyCell` over the candidate edges of the methods its occurrence
+  performed -- value, guard and exception edges alike -- ended at a stored location (a cell some
+  `WRITE_SITE` names) and at a wire producer (recording the consumer cell its `wire_handoff` names).
+  The influence is static: the arm a root decides counts whether the recording took it or not (an
+  expiry check that removed nothing), and a value leaving by a wire counts on the consumer's side. An occurrence one of whose roots reaches
   a location the walk demanded on its node -- unless the recording saw it access that field on
   other objects only (`Demanded#heldBy`) -- or a consumer cell it demanded anywhere, is admitted
   (`ROOT_RELEVANT_V1`, unless another rule admitted it), and every such occurrence seeds the walk
@@ -594,10 +647,16 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
 ## 7. Current limits
 
 - Roots are clocks recognized by the call-return rule, the library catalog's door faults (no door
-  on a read, §4.2) and tree hooks. A clock
-  read through a field, a parameter, `java.time`, or an interface whose implementation is outside
-  the scope is not recognized; configuration values and pre-window state are roots only where a
-  tree hook says so.
+  on a read, §4.2), configuration (§4.3) and tree hooks. A clock read through a field, a parameter,
+  `java.time`, or an interface whose implementation is outside the scope is not recognized;
+  pre-window state is a root only where a tree hook says so.
+- Configuration (§4.3): one symbol per key per JVM, a homogeneous cluster, by design. The VM names
+  a field mint by its owner's class, so one key is minted at one field (the first by signature)
+  or, with none, at its getter returns, and a second field caching the key is read concretely; a
+  field declared in a class two runtime classes extend mints one symbol per class. A static field,
+  a `float` or `double`, a box, a `String` or an enum is no root (an enum or `String` key would need
+  a finite-set domain), nor a value computed from a configuration by arithmetic. A getter's return
+  is planted only where a symbolic occurrence reads it, a field at every read of it.
 - The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
   and `AtomicReference.value`, a static one on its class's mirror) and the atomics' integral
   `value` from an observed access (§5.2). A container reached through a

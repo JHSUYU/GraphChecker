@@ -194,8 +194,8 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                     configured.observeConfiguredSourceEntry(SOURCE_ID,
                             SOURCE_FIELD);
             assertNotNull("the fixture declares this source's site", entry);
-            String label = ConfiguredSourcePhaseContract
-                    .engineLabelForPhase(phaseId(), SOURCE_ID);
+            String label =
+                    ConfiguredSourcePhaseContract.engineLabel(SOURCE_ID);
             // The VM's spelling of the field it mints under that label
             // (FieldSymbolExp: M_<sort>_field_<label>_<owner class>), with
             // the label filed before the store, as RootMint files it.

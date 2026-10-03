@@ -7,7 +7,6 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -20,6 +19,7 @@ import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBackedgeBudget;
 import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.ReplayLoopResourceCut;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -83,6 +83,9 @@ final class ActiveRegion {
     final Map<String, String> sharedStateRefusals = new LinkedHashMap<>();
     /** Symbols this activation already minted at a one-shot hook. */
     final Set<String> materialized = new LinkedHashSet<>();
+    /** The box each configuration key's first getter read here minted. */
+    private final Map<String, Object> configurationReads =
+            new LinkedHashMap<>();
     final ConcolicRegionRuntime.OccurrenceCounter
             materializationOccurrences =
             new ConcolicRegionRuntime.OccurrenceCounter();
@@ -335,6 +338,16 @@ final class ActiveRegion {
         return new RootMint.SourceSiteEntry(matched, site);
     }
 
+    /** The box a getter read of this configuration minted here, or null
+     *  ({@code RootMint#materializePrimitiveValue}). */
+    synchronized Object configurationRead(String sourceId) {
+        return configurationReads.get(sourceId);
+    }
+
+    synchronized void configurationMinted(String sourceId, Object box) {
+        configurationReads.putIfAbsent(sourceId, box);
+    }
+
     /** Publishes one mint row for one entry of a declared site. */
     synchronized void recordConfiguredSourceMint(
             RootMint.SourceSiteEntry entry, String sourceId,
@@ -342,9 +355,11 @@ final class ActiveRegion {
             JsonElement expression, boolean reused,
             String recordedValue) {
         JsonObject row = new JsonObject();
-        // The live read, taken before any plant (RootMint#configuredSource),
-        // so never the wave's value.  Without it a relative domain has no
-        // centre; RowPlaceholderMint#roots names that case.
+        // The live read, taken before any focused plant
+        // (RootMint#configuredSource); a configuration's world plant comes
+        // first (RootMint#configuration), so it states the world it read.
+        // Without it a relative domain has no centre;
+        // RowPlaceholderMint#roots names that case.
         if (recordedValue != null && !recordedValue.isEmpty()) {
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
@@ -357,10 +372,30 @@ final class ActiveRegion {
         row.add("expression", expression == null
                 ? JsonNull.INSTANCE : expression);
         row.addProperty("reused", reused);
-        row.addProperty("category", RootCategory.HOOK.name());
+        row.addProperty("category", entry.category().name());
+        configDomain(row, entry.domainMin(), entry.domainMax(),
+                recordedValue);
         row.addProperty("mintOccurrence",
                 mintOccurrence(safe(sourceId)));
         symbolizedRows.add(row);
+    }
+
+    /**
+     * A configuration root's domain (SYMBOL-SCOPE §4.3): the hull of its
+     * static anchors ({@code causynth.ConfigRoots}) and the value this mint
+     * read.  None stated: a boolean, or no anchor, and the value alone.
+     */
+    static void configDomain(JsonObject row, String staticMin,
+                             String staticMax, String recordedValue) {
+        if (safe(staticMin).isEmpty() || !safe(recordedValue).trim()
+                .matches("-?[0-9]+")) {
+            return;
+        }
+        BigInteger value = new BigInteger(recordedValue.trim());
+        row.addProperty("domainMin",
+                value.min(new BigInteger(staticMin)).toString());
+        row.addProperty("domainMax",
+                value.max(new BigInteger(staticMax)).toString());
     }
 
     /**
@@ -440,6 +475,12 @@ final class ActiveRegion {
             row.addProperty("recordedValue", recordedValue);
         }
         row.addProperty("category", action.category().name());
+        if (!action.configSource.isEmpty()) {
+            // A configuration getter's return is the root of its key.
+            row.addProperty("sourceId", action.configSource);
+            configDomain(row, action.configDomainMin,
+                    action.configDomainMax, recordedValue);
+        }
         // A declared wall-clock read says so, so no reader guesses a clock
         // from a name.  Trap: never publish the PLAN's instant as its value.
         if (action.declaresWallClockRead()) {

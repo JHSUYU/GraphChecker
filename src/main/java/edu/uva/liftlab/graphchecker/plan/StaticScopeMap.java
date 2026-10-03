@@ -106,6 +106,9 @@ public final class StaticScopeMap {
      *  accessor that runs outside the woven program, so no replay versions
      *  it: a placeholder the closure binds to that location's writers. */
     public static final String READ_INPUT = "READ";
+    /** {@code inputKind}: a configuration getter's return
+     *  (causynth.ConfigRoots), with its {@code sourceId} and domain. */
+    public static final String CONFIG_INPUT = "CONFIG";
 
     /** A Jimple local cell: {@code <method>::local[#suffix]}. */
     private static final java.util.regex.Pattern LOCAL_CELL =
@@ -359,15 +362,18 @@ public final class StaticScopeMap {
         public final String implementationMethod;
         public final String javaType;
         /** {@link #CLOCK_INPUT}, {@link #FAULT_INPUT}, {@link #READ_INPUT},
-         *  or "": a read that stays concrete. */
+         *  {@link #CONFIG_INPUT}, or "": a read that stays concrete. */
         public final String inputKind;
         /** A {@link #CLOCK_INPUT}'s clock: the JVM clock it wraps and its
          *  tick (causynth.RootCatalog); null for any other input. */
         public final Clock clock;
+        /** A {@link #CONFIG_INPUT}'s root and static domain; null for any
+         *  other input. */
+        public final ConfigCall config;
 
         public Declared(String kind, String edgeId, String dependencyCell,
                         String implementationMethod, String javaType,
-                        String inputKind, Clock clock) {
+                        String inputKind, Clock clock, ConfigCall config) {
             this.kind = safe(kind);
             this.edgeId = safe(edgeId);
             this.dependencyCell = safe(dependencyCell);
@@ -375,11 +381,35 @@ public final class StaticScopeMap {
             this.javaType = safe(javaType);
             this.inputKind = safe(inputKind);
             this.clock = CLOCK_INPUT.equals(this.inputKind) ? clock : null;
+            this.config = CONFIG_INPUT.equals(this.inputKind) ? config : null;
         }
 
         private static String safe(String value) {
             return value == null ? "" : value;
         }
+    }
+
+    /** The configuration root one getter call's return is: {@code
+     *  CONFIG:<key>} and the domain its static anchors span ("": none). */
+    public static final class ConfigCall {
+        public final String sourceId;
+        public final String domainMin;
+        public final String domainMax;
+
+        public ConfigCall(String sourceId, String domainMin,
+                          String domainMax) {
+            this.sourceId = sourceId == null ? "" : sourceId;
+            this.domainMin = domainMin == null ? "" : domainMin;
+            this.domainMax = domainMax == null ? "" : domainMax;
+        }
+    }
+
+    /** Which call returns are configuration roots, asked of the stage that
+     *  recognizes them (causynth.ConfigRoots). */
+    public interface ConfigCalls {
+        /** The root the return of {@code callee} at {@code
+         *  method#uunitIndex} is, or null. */
+        ConfigCall of(String method, int unitIndex, String callee);
     }
 
     /** Region skeletons, published beside {@link #FILE}. */
@@ -421,6 +451,8 @@ public final class StaticScopeMap {
      *                     CALL_RETURN} rows.  {@code
      *                     ACCESSOR_RETURN} rows are bounded by edge kind and
      *                     published whole.
+     * @param configCalls  the configuration getter calls the slice reads;
+     *                     they are {@code CALL_RETURN} rows too
      * @param unwoven      whether a method runs outside the woven program
      * @param trackedKind  how the replay versions a field (SYMBOL-SCOPE F2)
      * @param staticField  whether a field is static
@@ -428,7 +460,7 @@ public final class StaticScopeMap {
     public static List<Site> sites(
             List<Map<String, Object>> edges,
             List<Map<String, Object>> regions, Map<String, Clock> clocks,
-            Predicate<String> unwoven,
+            ConfigCalls configCalls, Predicate<String> unwoven,
             Function<String, SharedFieldFlow.TrackedKind> trackedKind,
             Predicate<String> staticField) {
         Set<String> deciding = decidingCells(edges);
@@ -454,7 +486,7 @@ public final class StaticScopeMap {
             }
             addRootSite(found, seen, retained, edge, method, unitIndex);
             addDeclaredSite(found, seen, retained, edge, kind, method,
-                    unitIndex, clocks, regionRoots);
+                    unitIndex, clocks, configCalls, regionRoots);
             String field = field(edge);
             if (READ_KINDS.contains(kind)) {
                 SharedFieldFlow.TrackedKind tracked =
@@ -550,7 +582,7 @@ public final class StaticScopeMap {
                     new Declared(declared.kind, declared.edgeId,
                             declared.dependencyCell,
                             declared.implementationMethod,
-                            declared.javaType, READ_INPUT, null),
+                            declared.javaType, READ_INPUT, null, null),
                     site.guards, site.guardOutcomes));
         }
     }
@@ -700,6 +732,14 @@ public final class StaticScopeMap {
                             site.declared.clock.source());
                 }
             }
+            ConfigCall config = site.declared.config;
+            if (config != null) {
+                row.addProperty("sourceId", config.sourceId);
+                if (!config.domainMin.isEmpty()) {
+                    row.addProperty("domainMin", config.domainMin);
+                    row.addProperty("domainMax", config.domainMax);
+                }
+            }
         }
         JsonArray guards = new JsonArray();
         for (String guard : site.guards) guards.add(guard);
@@ -788,21 +828,25 @@ public final class StaticScopeMap {
 
     /** DECLARED_SITE rows of one candidate edge producing a value from outside
      *  the slice's text: {@code accessor_field_return} (cell = the field);
-     *  {@code call_return} of a clock no region holds (a region callee
-     *  already publishes rows; two authorities for one value is the trap);
-     *  and {@code explicit_symbolic_fault}, a fault marker.
+     *  {@code call_return} of a clock or a configuration getter no region
+     *  holds (a region callee already publishes rows; two authorities for
+     *  one value is the trap); and {@code explicit_symbolic_fault}, a fault
+     *  marker.
      */
     private static void addDeclaredSite(
             List<Site> into, Set<String> seen, List<Region> retained,
             Map<String, Object> edge, String kind, String method,
             int unitIndex, Map<String, Clock> clocks,
-            Set<String> regionMethods) {
+            ConfigCalls configCalls, Set<String> regionMethods) {
         String callee = text(edge.get("invoke"));
         if (callee.isEmpty()) return;
         String cell;
         String implementation = "";
         String inputKind = "";
         Clock clock = null;
+        ConfigCall config = "call_return".equals(kind)
+                && !regionMethods.contains(callee)
+                ? configCalls.of(method, unitIndex, callee) : null;
         if ("accessor_field_return".equals(kind)) {
             cell = firstNonBlank(text(edge.get("declaredFieldSignature")),
                     text(edge.get("fromCell")));
@@ -820,6 +864,9 @@ public final class StaticScopeMap {
             cell = text(edge.get("fromCell"));
             inputKind = CLOCK_INPUT;
             clock = clocks.get(callee);
+        } else if (config != null) {
+            cell = text(edge.get("fromCell"));
+            inputKind = CONFIG_INPUT;
         } else if ("explicit_symbolic_fault".equals(kind)
                 && Debug.isBooleanMarkerSignature(callee)
                 && declaredFault(text(edge.get("symbolicName")))) {
@@ -844,7 +891,7 @@ public final class StaticScopeMap {
                     vmSite(method), cell, "", "", callee, "",
                     new Declared(declaredKind, text(edge.get("id")),
                             dependencyCell, implementation, javaType,
-                            inputKind, clock),
+                            inputKind, clock, config),
                     Collections.<String>emptyList(),
                     Collections.<Boolean>emptyList()));
         }
@@ -1028,7 +1075,10 @@ public final class StaticScopeMap {
                                             "clockNanos", 0L),
                                             optionalString(row,
                                                     "clockSource"))
-                                    : null);
+                                    : null,
+                            new ConfigCall(optionalString(row, "sourceId"),
+                                    optionalString(row, "domainMin"),
+                                    optionalString(row, "domainMax")));
             sites.add(new Site(optionalString(row, "role"),
                     optionalString(row, "regionId"),
                     optionalString(row, "siteId"),

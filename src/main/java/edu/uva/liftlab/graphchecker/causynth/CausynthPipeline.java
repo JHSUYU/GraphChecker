@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.Clock;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ObservedSite;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
@@ -162,7 +163,9 @@ public final class CausynthPipeline {
         long skeletonPlanningStart = System.nanoTime();
         SymbolicRegionPlanner.planSelectedSkeleton(result,
                 result.traceMethods);
-        StaticSymbolicSourceDiscovery.discover(result);
+        ConfigRoots config = ConfigRoots.of(result.edges,
+                result.fieldWriters);
+        StaticSymbolicSourceDiscovery.discover(result, config);
         long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
         // SYMBOL-SCOPE §2.3: over the door-woven bodies, before any hook is
         // woven, so site and guard ids are the unit indices a replay decides
@@ -170,6 +173,13 @@ public final class CausynthPipeline {
         Map<String, Clock> clocks = RootCatalog.clocks(result.edges);
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
                 result.edges, result.regions, clocks,
+                (method, unitIndex, callee) -> {
+                    ConfigRoots.Source source = config.call(method,
+                            unitIndex, callee);
+                    return source == null ? null
+                            : new StaticScopeMap.ConfigCall(source.sourceId,
+                                    source.domainMin, source.domainMax);
+                },
                 method -> !CausynthStaticFacts.applicationMethod(method),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField);
@@ -1450,13 +1460,22 @@ public final class CausynthPipeline {
                 Jimple.v().newCastExpr(attached, valueType)));
     }
 
-    /** Restores the recording's exact call-site identity around sources. */
+    /**
+     * Restores the recording's exact site identity around configured
+     * sources (SYMBOL-SCOPE §4.3): a tree's hook call is bracketed as the
+     * recording saw it; before the engine's configuration read the weave
+     * puts the hook call a tree would have carried, under the same context.
+     */
     private void instrumentConcolicConfiguredSourceCallContexts(
             Collection<ConfiguredSourcePhaseContract.Occurrence> phases,
             HookCatalog refs) {
         for (ConfiguredSourcePhaseContract.Occurrence phase : phases) {
             Body body = selectedBody(phase.declarationMethod(),
                     "CONFIGURED_SOURCE_PHASE_METHOD", phase.siteId());
+            if (phase.category() == RootCategory.CONFIG) {
+                instrumentConfigurationRead(body, phase, refs);
+                continue;
+            }
             Stmt selected = originalCall(body, phase.declarationUnitIndex(),
                     phase.siteId(), "CONFIGURED_SOURCE_PHASE_SITE_NOT_UNIQUE",
                     "CONFIGURED_SOURCE_PHASE_CALL_NOT_FOUND");
@@ -1495,6 +1514,68 @@ public final class CausynthPipeline {
             guardCall(body, selected, after, normalExit, thrown,
                     "$causynthSourcePhaseThrown");
         }
+    }
+
+    /**
+     * Before one configuration read ({@code x = owner.field}): the site's
+     * context opened, the configuration read on its owner ({@code
+     * ConcolicRegionRuntime.readConfiguration}, which plants the world's
+     * value and mints), the context closed.  The read then loads what the
+     * mint left.  The hooks never throw.
+     */
+    private static void instrumentConfigurationRead(
+            Body body, ConfiguredSourcePhaseContract.Occurrence phase,
+            HookCatalog refs) {
+        Stmt read = originalRead(body, phase);
+        Value owner = ((InstanceFieldRef) ((AssignStmt) read).getRightOp())
+                .getBase();
+        Local invocationId = newTraceLocal(body, LongType.v(),
+                "$causynthSourcePhaseInvocation");
+        List<Unit> before = new ArrayList<>();
+        before.add(Jimple.v().newAssignStmt(invocationId, LongConstant.v(0L)));
+        emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
+        emit(before, invocationId,
+                refs.ref(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE),
+                StringConstant.v(phase.declarationMethod()),
+                IntConstant.v(phase.declarationUnitIndex()),
+                StringConstant.v(phase.runtimeDeclaredCallee()));
+        emit(before, refs.ref(Hook.READ_CONFIGURATION),
+                StringConstant.v(phase.sourceId()), owner,
+                StringConstant.v(phase.fieldSignature()));
+        emit(before, refs.ref(Hook.EXIT_CONFIGURED_SOURCE_PHASE_SITE),
+                invocationId, NullConstant.v(), StringConstant.v(""));
+        emit(before, refs.ref(Hook.RESUME_OBSERVATION));
+        insertBeforeSequence(body, read, before);
+    }
+
+    /** The one original {@code getfield} of a configuration read site;
+     *  refused by name when the unit is no read of the declared field. */
+    private static Stmt originalRead(
+            Body body, ConfiguredSourcePhaseContract.Occurrence phase) {
+        tagOriginalUnits(snapshotUnits(body));
+        Stmt selected = null;
+        for (Unit unit : snapshotUnits(body)) {
+            if (originalUnitIndex(unit) != phase.declarationUnitIndex()) {
+                continue;
+            }
+            if (selected != null) {
+                throw new IllegalStateException(
+                        "CONFIGURED_SOURCE_PHASE_SITE_NOT_UNIQUE: "
+                                + phase.siteId());
+            }
+            selected = (Stmt) unit;
+        }
+        if (!(selected instanceof AssignStmt) || !(((AssignStmt) selected)
+                .getRightOp() instanceof InstanceFieldRef)
+                || !phase.fieldSignature().equals(CausynthStaticFacts
+                .declaredFieldSignature(((InstanceFieldRef) ((AssignStmt)
+                        selected).getRightOp()).getFieldRef()))) {
+            throw new IllegalStateException(
+                    "CONFIGURED_SOURCE_PHASE_READ_NOT_FOUND: "
+                            + phase.siteId() + " reads no "
+                            + phase.fieldSignature());
+        }
+        return selected;
     }
 
     /**
@@ -3392,6 +3473,7 @@ public final class CausynthPipeline {
         ENTER_CONFIGURED_SOURCE_PHASE_SITE,
         EXIT_CONFIGURED_SOURCE_PHASE_SITE,
         THROW_CONFIGURED_SOURCE_PHASE_SITE,
+        READ_CONFIGURATION,
         ENTER_ACCESSOR_CALL_CONTEXT,
         EXIT_ACCESSOR_CALL_CONTEXT,
         OBSERVE_TRACKED_SITE,
@@ -3557,6 +3639,9 @@ public final class CausynthPipeline {
                     .add(Hook.THROW_CONFIGURED_SOURCE_PHASE_SITE, runtime,
                             "throwConfiguredSourcePhaseCallSite", VoidType.v(),
                             LongType.v())
+                    .add(Hook.READ_CONFIGURATION, runtime,
+                            "readConfiguration", VoidType.v(), string,
+                            object, string)
                     .add(Hook.ENTER_ACCESSOR_CALL_CONTEXT, runtime,
                             "enterAccessorCallContext", LongType.v(), string,
                             IntType.v(), string, string, object)

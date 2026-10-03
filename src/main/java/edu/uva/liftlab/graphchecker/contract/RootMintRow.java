@@ -117,8 +117,7 @@ public final class RootMintRow extends Value {
     }
 
     /** Where the root's value enters the world: a decision reaching a FAULT
-     *  marker is a fault flip site, one reaching another boolean root is
-     *  not. */
+     *  marker is a fault flip site, one reaching a CONFIG flag is not. */
     public RootCategory category() {
         return category;
     }

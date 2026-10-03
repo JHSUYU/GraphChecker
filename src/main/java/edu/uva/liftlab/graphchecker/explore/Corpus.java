@@ -979,7 +979,7 @@ public final class Corpus implements Arms.Rows {
 
     /** Whether a decision is a FAULT decision: its term REACHES a fault
      *  marker the same session minted (PIPELINE §7.2, {@link #termSymbols}),
-     *  by category: a boolean hook source is a MARKER too, and no fault.
+     *  by category: a boolean configuration is a MARKER too, and no fault.
      */
     public boolean fault(String sessionId, DecisionRow decision) {
         if (!Arms.predicate(decision.term())) return false;

@@ -5,6 +5,7 @@ import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
@@ -339,7 +340,21 @@ final class RootMint {
         }
 
         String phaseId() {
-            return phase == null ? "" : phase.phaseId();
+            return phase.phaseId();
+        }
+
+        /** HOOK: a tree's hook mints here; CONFIG: the engine's read. */
+        RootCategory category() {
+            return phase.category();
+        }
+
+        /** A CONFIG site's static domain bound, or {@code ""}. */
+        String domainMin() {
+            return phase.domainMin();
+        }
+
+        String domainMax() {
+            return phase.domainMax();
         }
     }
 
@@ -397,7 +412,8 @@ final class RootMint {
      * says {@code reused}, and the root is derived here.
      *
      * <p>Called from outside this repository, by the workload's
-     * {@code org.apache.hadoop.ipc.CausynthSymbolicSource}.</p>
+     * {@code org.apache.hadoop.ipc.CausynthSymbolicSource}, and by the
+     * engine's configuration read ({@link #configuration}).</p>
      */
     static boolean configuredSource(
             String sourceId, Object owner, String fieldSignature) {
@@ -466,20 +482,22 @@ final class RootMint {
             // not an expression of its own.
             boolean reused = VmExpressionIr.carriesSymbolicValue(carried);
             if (reused) RowRuntime.derivedRoot(sourceId);
-            // What the region observed, read before the plant overwrites it.
+            // What the region observed, read before the plant overwrites it;
+            // a configuration's world value is already there (#configuration).
             String observed = ConcolicRegionRuntime.recordedScalar(
                     field.get(owner));
             // The wave's value is written first: the app's Map re-key reads
             // it back through this same path.
             String planted = "";
-            if (!reused) {
+            if (!reused && entry.category() != RootCategory.CONFIG) {
                 planted = applyFocusedRootAssignment(active, safe(sourceId),
                         owner, safe(fieldSignature), descriptor);
             }
-            // ONE SYMBOL PER DECLARED SOURCE: the label depends on the site
-            // only, so a flip moves every read.  The row is still one per READ.
-            String symbol = ConfiguredSourcePhaseContract
-                    .engineLabelForPhase(entry.phaseId(), safe(sourceId));
+            // ONE SYMBOL PER DECLARED SOURCE: the label is the source's
+            // alone, so a flip moves every read.  The row is still one per
+            // READ.
+            String symbol = ConfiguredSourcePhaseContract.engineLabel(
+                    safe(sourceId));
             if (!reused) {
                 api.symbolizeExactField(owner, exactFieldSignature(field),
                         declaring(symbol));
@@ -526,6 +544,64 @@ final class RootMint {
         if (occurrence.isEmpty()) return;
         RowRuntime.concreteReading(rootId, occurrence,
                 ConcolicRegionRuntime.recordedScalar(value));
+    }
+
+    /**
+     * The engine's configuration read, woven before the {@code getfield} of
+     * a configuration field (SYMBOL-SCOPE §4.3).  A configuration belongs
+     * to the world, not to an occurrence: the value an obligation assigns
+     * it is written at every read of it, on every node, whatever occurrence
+     * runs it; then the read mints as a configured source does, stating
+     * what it read.
+     */
+    static void configuration(String sourceId, Object owner,
+                              String fieldSignature) {
+        if (owner == null) return;
+        String assigned = FocusedReplay.rootAssignment(safe(sourceId));
+        if (!assigned.isEmpty()) {
+            plantConfiguration(safe(sourceId), owner, safe(fieldSignature),
+                    assigned);
+        }
+        configuredSource(sourceId, owner, fieldSignature);
+    }
+
+    /** Writes a configuration's assigned value into the field one read of
+     *  it loads, unless a mint of this replay stands there already (and
+     *  holds it). */
+    private static void plantConfiguration(String sourceId, Object owner,
+                                           String fieldSignature,
+                                           String value) {
+        FocusedReplay.mintReached(sourceId);
+        ConcolicRegionRuntime.pauseObservation();
+        try {
+            Field field = declaredInstanceField(owner, fieldSignature);
+            if (field == null) return;
+            String descriptor = javaTypeDescriptor(
+                    field.getType().getTypeName());
+            JsonElement carried;
+            try {
+                carried = ConcolicRegionRuntime.engineExpression(engine()
+                        .fieldExpression(owner,
+                                field.getDeclaringClass().getName(),
+                                field.getName(), descriptor,
+                                field.get(owner)));
+            } catch (Throwable unsymbolized) {
+                carried = null;
+            }
+            if (VmExpressionIr.carriesSymbolicValue(carried)) return;
+            if (writeModeledField(owner, fieldSignature, descriptor, value)) {
+                FocusedReplay.planted(sourceId);
+                return;
+            }
+            RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.BLOCKING,
+                    sourceId, "the wave's assignment for this configuration"
+                            + " could not be written into "
+                            + fieldSignature);
+        } catch (Throwable failure) {
+            // A read of the workload's own field: never perturb it.
+        } finally {
+            ConcolicRegionRuntime.resumeObservation();
+        }
     }
 
     /**
@@ -750,7 +826,11 @@ final class RootMint {
     private static Object materializePrimitiveValue(
             ActiveRegion active, SymbolizeAction action, Object concrete,
             List<String> path) {
-        FocusedReplay.mintReached(action.symbol);
+        // A configuration's root is its key's (SYMBOL-SCOPE §4.3), else the
+        // input's own.
+        boolean config = !action.configSource.isEmpty();
+        String root = config ? action.configSource : action.symbol;
+        FocusedReplay.mintReached(root);
         ConcolicVmBroker api = engine();
         List<String> exactPath = path == null
                 ? Collections.<String>emptyList() : path;
@@ -777,6 +857,10 @@ final class RootMint {
                         + firstNonBlank(fieldSignature, action.cell))) {
             return concrete;
         }
+        // One configuration read twice in one occurrence is one value: the
+        // box its first read minted, no second root row (invariant 8).
+        Object read = config ? active.configurationRead(root) : null;
+        if (read != null) return read;
         // A clock reads its node's clock (NodeClocks): the host's reading
         // moved by the jump before it.
         ActiveRegion owner = active.rootOwner(action.symbol);
@@ -785,8 +869,10 @@ final class RootMint {
                 && readingOf(concrete) != null;
         Object ran = clock ? clockReading(node, action, concrete) : concrete;
         // The box minted here IS what the region reads back, so the plant
-        // goes into it (#focusedRootValue).
-        String assigned = focusedRootValue(active, action.symbol, concrete);
+        // goes into it (#focusedRootValue); a configuration's is the world's,
+        // whatever occurrence reads it.
+        String assigned = config ? FocusedReplay.rootAssignment(root)
+                : focusedRootValue(active, action.symbol, concrete);
         Object planted = ran;
         if (!assigned.isEmpty()) {
             Object modeled = ModelValues.coerce("", assigned,
@@ -812,8 +898,12 @@ final class RootMint {
         }
         Object fresh = freshPrimitiveBox(planted);
         try {
-            api.symbolizeField(fresh, "value", declaring(manualMintLabel(
-                    action.symbol, active.activation.occurrenceId, true)));
+            // A configuration is one symbol per key, in every occurrence and
+            // session; any other input one per occurrence.
+            api.symbolizeField(fresh, "value", declaring(config
+                    ? ConfiguredSourcePhaseContract.engineLabel(root)
+                    : manualMintLabel(action.symbol,
+                    active.activation.occurrenceId, true)));
             active.pathRecordingStarted = true;
             JsonElement expression = primitiveBoxExpression(api, fresh);
             // What the region ran the root at: the box's value.  A clock
@@ -824,7 +914,8 @@ final class RootMint {
                     ConcolicRegionRuntime.recordedScalar(planted),
                     clock ? clockSkew(node, action, concrete, planted,
                             !assigned.isEmpty()) : 0L);
-            if (!assigned.isEmpty()) FocusedReplay.planted(action.symbol);
+            if (!assigned.isEmpty()) FocusedReplay.planted(root);
+            if (config) active.configurationMinted(root, fresh);
             return fresh;
         } catch (Throwable throwable) {
             return ran;

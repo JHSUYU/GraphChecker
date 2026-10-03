@@ -297,7 +297,8 @@ public final class ComposeMain {
 
     /**
      * Each moved root's category ({@link RootCategory}): what moving it means,
-     * where its kind says only how.
+     * where its kind says only how.  A sweep ranks a witness whose moved
+     * roots are all CONFIG after pairings and faults.
      */
     private static JsonObject categories(Composer.Composition composition,
                                          Claim claim) {

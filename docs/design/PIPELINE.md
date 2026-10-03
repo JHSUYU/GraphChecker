@@ -498,7 +498,8 @@ once. Each demanded occurrence becomes a `Task` (id =
 `digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
 the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
 plus every fault site (`Corpus.faultSites`: a decision whose term reaches a root of the `FAULT`
-category, by the same walk; a boolean hook source or READ placeholder is a MARKER and no fault). A
+category, by the same walk; a boolean configuration, hook source or READ placeholder is a MARKER
+and no fault). A
 demanded occurrence no session captured (ran, but no planned task admitted it) is: skipped if it is a
 role (`ROLE.*`, `LINEAGE_LOST` when lost); skipped when its chain began at a daemon tick later than the
 recording's last tick of that role on that node (`Corpus.tickPastRecording`, DIAGNOSTIC); *exposed*

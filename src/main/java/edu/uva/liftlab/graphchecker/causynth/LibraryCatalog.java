@@ -44,7 +44,11 @@ import java.util.regex.Pattern;
  *       {@code CompletableFuture} on trunk, a monitor on 3.4).</li>
  *   <li>{@code CONFIG_SOURCE} ({@code method, keyArg, defaultArg?}): a
  *       configuration getter, argument {@code keyArg} (a String) its key and
- *       {@code defaultArg} its default.</li>
+ *       {@code defaultArg} its default ({@link ConfigRoots}).</li>
+ *   <li>{@code CONFIG_FIELD_OWNER} ({@code class}): a class whose every
+ *       field is configuration, each its own key: a configuration object
+ *       built from a file no getter of the catalog reads (Solr's {@code
+ *       NodeConfig}, {@code CloudConfig}).</li>
  * </ul>
  */
 public final class LibraryCatalog {
@@ -57,6 +61,7 @@ public final class LibraryCatalog {
     static final int SCHEMA_VERSION = 1;
     static final String DOOR = "DOOR";
     static final String CONFIG_SOURCE = "CONFIG_SOURCE";
+    static final String CONFIG_FIELD_OWNER = "CONFIG_FIELD_OWNER";
     /** A system's own row: where its hook sits relative to a catalog door. */
     static final String HOOK = "HOOK";
 
@@ -67,6 +72,7 @@ public final class LibraryCatalog {
         MEMBERS.put(DOOR, names("transport", "direction", "method", "before",
                 "after", "faults"));
         MEMBERS.put(CONFIG_SOURCE, names("method", "keyArg", "defaultArg"));
+        MEMBERS.put(CONFIG_FIELD_OWNER, names("class"));
         MEMBERS.put(HOOK, names("transport", "direction", "door", "method",
                 "after"));
     }
@@ -80,9 +86,43 @@ public final class LibraryCatalog {
     private static final Pattern CLASS =
             Pattern.compile("[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)+");
 
+    /** The engine's catalog, read once. */
+    private static volatile Contents shipped;
+    /** Its doors, each placed after its system's hook. */
     private static volatile List<Door> doors;
 
     private LibraryCatalog() {
+    }
+
+    /** One catalog's rows, by kind, in file order. */
+    static final class Contents {
+        final List<Door> doors;
+        final List<ConfigSource> configSources;
+        final Set<String> configFieldOwners;
+
+        private Contents(List<Door> doors, List<ConfigSource> configSources,
+                         Set<String> configFieldOwners) {
+            this.doors = Collections.unmodifiableList(doors);
+            this.configSources = Collections.unmodifiableList(configSources);
+            this.configFieldOwners =
+                    Collections.unmodifiableSet(configFieldOwners);
+        }
+    }
+
+    /** One configuration getter of a library. */
+    public static final class ConfigSource {
+        /** Its Soot signature. */
+        public final String method;
+        /** The argument that is the key, a String. */
+        public final int keyArg;
+        /** The argument that is the default, or -1. */
+        public final int defaultArg;
+
+        private ConfigSource(String method, int keyArg, int defaultArg) {
+            this.method = method;
+            this.keyArg = keyArg;
+            this.defaultArg = defaultArg;
+        }
     }
 
     /** One fault point of a library transport. */
@@ -135,19 +175,7 @@ public final class LibraryCatalog {
     public static List<Door> doors() {
         List<Door> known = doors;
         if (known == null) {
-            try (InputStream in = LibraryCatalog.class
-                    .getResourceAsStream(RESOURCE)) {
-                if (in == null) {
-                    throw new IllegalStateException(
-                            "library catalog missing from the engine: "
-                                    + RESOURCE);
-                }
-                known = doors(rows(new BufferedReader(new InputStreamReader(
-                        in, StandardCharsets.UTF_8)), RESOURCE.substring(
-                        RESOURCE.lastIndexOf('/') + 1)));
-            } catch (IOException unreadable) {
-                throw new UncheckedIOException(unreadable);
-            }
+            known = shipped().doors;
             String system = System.getProperty(SYSTEM_DOORS, "").trim();
             if (!system.isEmpty()) {
                 Path file = Paths.get(system);
@@ -161,6 +189,37 @@ public final class LibraryCatalog {
             }
             doors = known;
         }
+        return known;
+    }
+
+    /** The configuration getters of the libraries, in file order. */
+    public static List<ConfigSource> configSources() {
+        return shipped().configSources;
+    }
+
+    /** The classes whose every field is configuration. */
+    public static Set<String> configFieldOwners() {
+        return shipped().configFieldOwners;
+    }
+
+    /** The engine's catalog ({@value #RESOURCE}), read once. */
+    private static Contents shipped() {
+        Contents known = shipped;
+        if (known != null) return known;
+        try (InputStream in = LibraryCatalog.class
+                .getResourceAsStream(RESOURCE)) {
+            if (in == null) {
+                throw new IllegalStateException(
+                        "library catalog missing from the engine: "
+                                + RESOURCE);
+            }
+            known = read(rows(new BufferedReader(new InputStreamReader(
+                    in, StandardCharsets.UTF_8)), RESOURCE.substring(
+                    RESOURCE.lastIndexOf('/') + 1)));
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(unreadable);
+        }
+        shipped = known;
         return known;
     }
 
@@ -278,9 +337,11 @@ public final class LibraryCatalog {
         return rows;
     }
 
-    /** The DOOR rows of a catalog's rows, every row checked by its kind. */
-    static List<Door> doors(Map<String, JsonObject> rows) {
+    /** A catalog's rows by kind, every row checked by its kind. */
+    static Contents read(Map<String, JsonObject> rows) {
         List<Door> doors = new ArrayList<>();
+        List<ConfigSource> configSources = new ArrayList<>();
+        Set<String> owners = new LinkedHashSet<>();
         Map<String, String> declaredAt = new LinkedHashMap<>();
         for (Map.Entry<String, JsonObject> entry : rows.entrySet()) {
             try {
@@ -295,8 +356,15 @@ public final class LibraryCatalog {
                     Door door = door(row);
                     doors.add(door);
                     identity = door.name() + " " + door.method;
+                } else if (CONFIG_SOURCE.equals(kind)) {
+                    ConfigSource source = configSource(row);
+                    configSources.add(source);
+                    identity = CONFIG_SOURCE + " " + source.method;
                 } else {
-                    identity = CONFIG_SOURCE + " " + configSource(row);
+                    String owner = matching(CLASS, text(row, "class"),
+                            "class").group();
+                    owners.add(owner);
+                    identity = CONFIG_FIELD_OWNER + " " + owner;
                 }
                 String first = declaredAt.putIfAbsent(identity,
                         entry.getKey());
@@ -309,7 +377,7 @@ public final class LibraryCatalog {
                         malformed);
             }
         }
-        return Collections.unmodifiableList(doors);
+        return new Contents(doors, configSources, owners);
     }
 
     private static String kind(JsonObject row) {
@@ -361,8 +429,8 @@ public final class LibraryCatalog {
                 after != null, faults);
     }
 
-    /** Checks a CONFIG_SOURCE row; its method. */
-    private static String configSource(JsonObject row) {
+    /** One CONFIG_SOURCE row, checked. */
+    private static ConfigSource configSource(JsonObject row) {
         Matcher method = signature(text(row, "method"));
         List<String> parameters = method.group(3).isEmpty()
                 ? Collections.<String>emptyList()
@@ -372,11 +440,12 @@ public final class LibraryCatalog {
             throw new IllegalArgumentException(
                     "keyArg names the String argument that is the key");
         }
-        if (index(row, "defaultArg", parameters.size()) == key) {
+        int fallback = index(row, "defaultArg", parameters.size());
+        if (fallback == key) {
             throw new IllegalArgumentException(
                     "defaultArg is another argument than the key");
         }
-        return method.group();
+        return new ConfigSource(method.group(), key, fallback);
     }
 
     /** An argument index below {@code arity}, or -1 when absent. */

@@ -11,6 +11,8 @@ import soot.Local;
 import soot.SootMethod;
 import soot.Unit;
 import soot.Value;
+import soot.jimple.AssignStmt;
+import soot.jimple.InstanceFieldRef;
 import soot.jimple.InvokeExpr;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
@@ -30,7 +32,14 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
-/** The {@code symbolize} hook's PUBLISH sites: one declaration per source. */
+/**
+ * The configured sources each region can mint (SYMBOL-SCOPE §4.3), from the
+ * text it runs -- its methods and their application callees: a tree's
+ * {@code CausynthSymbolicSource.symbolize} call (one hook site per source
+ * per region), and the engine's read ({@code getfield}) of a configuration
+ * field {@link ConfigRoots} declares, every one of them.  A field a tree's
+ * hook mints is the hook's: no read of it is the engine's.
+ */
 final class StaticSymbolicSourceDiscovery {
     private static final String HOOK_CLASS_SIMPLE_NAME =
             "CausynthSymbolicSource";
@@ -39,8 +48,32 @@ final class StaticSymbolicSourceDiscovery {
     private StaticSymbolicSourceDiscovery() {
     }
 
-    /** Attaches declarations to every region that can execute the hook. */
-    static void discover(StaticProgram program) throws IOException {
+    /** One mint site a region's text holds. */
+    private static final class Site {
+        final Map<String, Object> declaration;
+        final JsonObject phase;
+        final String method;
+
+        Site(Map<String, Object> declaration, JsonObject phase,
+             String method) {
+            this.declaration = declaration;
+            this.phase = phase;
+            this.method = method;
+        }
+
+        String field() {
+            return text(declaration.get("fieldSignature"));
+        }
+
+        boolean hook() {
+            return StaticSymbolicSourceDeclaration.AUTHORITY.equals(
+                    text(declaration.get("authority")));
+        }
+    }
+
+    /** Attaches declarations to every region that can execute a site. */
+    static void discover(StaticProgram program, ConfigRoots config)
+            throws IOException {
         if (program.regions.isEmpty()) return;
         Set<String> regionRoots = new LinkedHashSet<>();
         for (Map<String, Object> region : program.regions) {
@@ -49,23 +82,33 @@ final class StaticSymbolicSourceDiscovery {
         }
         Set<String> cutBoundaries = new LinkedHashSet<>(
                 program.communicationCallSiteCallees);
+        Map<Map<String, Object>, List<Site>> sites = new LinkedHashMap<>();
+        Set<String> hooked = new LinkedHashSet<>();
         for (Map<String, Object> region : program.regions) {
-            discoverRegion(region, regionRoots, cutBoundaries);
+            List<Site> found = sitesOf(region, regionRoots, cutBoundaries,
+                    config);
+            for (Site site : found) {
+                if (site.hook()) hooked.add(site.field());
+            }
+            sites.put(region, found);
+        }
+        for (Map.Entry<Map<String, Object>, List<Site>> region
+                : sites.entrySet()) {
+            attach(region.getKey(), region.getValue(), hooked);
         }
     }
 
-    private static void discoverRegion(
+    /** The mint sites one region's text holds, in walk order. */
+    private static List<Site> sitesOf(
             Map<String, Object> region, Set<String> regionRoots,
-            Set<String> cutBoundaries) throws IOException {
+            Set<String> cutBoundaries, ConfigRoots config)
+            throws IOException {
         Deque<String> work = new ArrayDeque<>();
         List<String> initial = strings(region.get("methods"));
         Collections.sort(initial);
         work.addAll(initial);
         Set<String> seen = new LinkedHashSet<>();
-        Map<String, Map<String, Object>> bySource = new LinkedHashMap<>();
-        List<JsonObject> phases = new ArrayList<>();
-        Set<String> phaseIdentities = new LinkedHashSet<>();
-        Set<String> phaseTraceMethods = new LinkedHashSet<>();
+        List<Site> found = new ArrayList<>();
         while (!work.isEmpty()) {
             String signature = work.removeFirst();
             if (!seen.add(signature)) continue;
@@ -74,44 +117,47 @@ final class StaticSymbolicSourceDiscovery {
             if (body == null) continue;
             int unitIndex = 0;
             for (Unit unit : body.getUnits()) {
-                if (!(unit instanceof Stmt)
-                        || !((Stmt) unit).containsInvokeExpr()) {
-                    unitIndex++;
-                    continue;
-                }
-                InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
-                if (symbolizeHook(invoke)) {
-                    Map<String, Object> declaration = declaration(
-                            method, invoke, unitIndex);
-                    merge(bySource, declaration, region);
-                    String sourceId = text(declaration.get("sourceId"));
-                    JsonObject phase;
-                    try {
-                        phase = ConfiguredSourcePhaseContract.declaration(
-                                sourceId,
-                                text(declaration.get("fieldSignature")),
-                                signature, unitIndex);
-                    } catch (IllegalArgumentException rejected) {
-                        throw malformed(method, unitIndex,
-                                rejected.getMessage());
-                    }
-                    if (phaseIdentities.add(sourceId + "\n"
-                            + JsonFields.optionalString(phase, "siteId"))) {
-                        phases.add(phase);
-                        phaseTraceMethods.add(signature);
-                    }
-                } else {
-                    SootMethod callee = concreteCallee(invoke);
-                    if (callee != null) {
-                        String calleeSignature = callee.getSignature();
-                        if (!cutBoundaries.contains(calleeSignature)
-                                && (!regionRoots.contains(calleeSignature)
-                                || initial.contains(calleeSignature))) {
-                            work.addLast(calleeSignature);
+                Site read = configRead(method, unit, unitIndex, config);
+                if (read != null) found.add(read);
+                if (unit instanceof Stmt
+                        && ((Stmt) unit).containsInvokeExpr()) {
+                    InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
+                    if (symbolizeHook(invoke)) {
+                        found.add(hook(method, invoke, unitIndex));
+                    } else {
+                        SootMethod callee = concreteCallee(invoke);
+                        if (callee != null) {
+                            String calleeSignature = callee.getSignature();
+                            if (!cutBoundaries.contains(calleeSignature)
+                                    && (!regionRoots.contains(calleeSignature)
+                                    || initial.contains(calleeSignature))) {
+                                work.addLast(calleeSignature);
+                            }
                         }
                     }
                 }
                 unitIndex++;
+            }
+        }
+        return found;
+    }
+
+    /** The region's declarations and phases, a hooked field's reads left
+     *  to its hook. */
+    private static void attach(Map<String, Object> region, List<Site> sites,
+                               Set<String> hooked) throws IOException {
+        Map<String, Map<String, Object>> bySource = new LinkedHashMap<>();
+        List<JsonObject> phases = new ArrayList<>();
+        Set<String> phaseIdentities = new LinkedHashSet<>();
+        Set<String> phaseTraceMethods = new LinkedHashSet<>();
+        for (Site site : sites) {
+            if (!site.hook() && hooked.contains(site.field())) continue;
+            merge(bySource, site, region);
+            if (phaseIdentities.add(text(site.declaration.get("sourceId"))
+                    + "\n" + JsonFields.optionalString(site.phase,
+                    "siteId"))) {
+                phases.add(site.phase);
+                phaseTraceMethods.add(site.method);
             }
         }
         if (!bySource.isEmpty()) {
@@ -128,9 +174,30 @@ final class StaticSymbolicSourceDiscovery {
         }
     }
 
-    private static Map<String, Object> declaration(
-            SootMethod method, InvokeExpr invoke,
-            int unitIndex) throws IOException {
+    /** A read of a declared configuration field at this unit, or null. */
+    private static Site configRead(SootMethod method, Unit unit,
+                                   int unitIndex, ConfigRoots config) {
+        if (!(unit instanceof AssignStmt) || !(((AssignStmt) unit)
+                .getRightOp() instanceof InstanceFieldRef)) {
+            return null;
+        }
+        String field = CausynthStaticFacts.declaredFieldSignature(
+                ((InstanceFieldRef) ((AssignStmt) unit).getRightOp())
+                        .getFieldRef());
+        ConfigRoots.Source source = config.field(field);
+        if (source == null) return null;
+        String signature = method.getSignature();
+        return new Site(declaration(
+                StaticSymbolicSourceDeclaration.CONFIG_AUTHORITY,
+                source.sourceId, field, signature, unitIndex),
+                ConfiguredSourcePhaseContract.configDeclaration(
+                        source.sourceId, field, signature, unitIndex,
+                        source.domainMin, source.domainMax), signature);
+    }
+
+    /** A tree's hook call. */
+    private static Site hook(SootMethod method, InvokeExpr invoke,
+                             int unitIndex) throws IOException {
         if (invoke.getArgCount() != 3
                 || !(invoke.getArg(0) instanceof StringConstant)
                 || !(invoke.getArg(2) instanceof StringConstant)) {
@@ -149,14 +216,29 @@ final class StaticSymbolicSourceDiscovery {
             throw malformed(method, unitIndex,
                     "sourceId or fieldSignature is malformed");
         }
+        String signature = method.getSignature();
+        try {
+            return new Site(declaration(
+                    StaticSymbolicSourceDeclaration.AUTHORITY, sourceId,
+                    field, signature, unitIndex),
+                    ConfiguredSourcePhaseContract.declaration(sourceId,
+                            field, signature, unitIndex), signature);
+        } catch (IllegalArgumentException rejected) {
+            throw malformed(method, unitIndex, rejected.getMessage());
+        }
+    }
+
+    private static Map<String, Object> declaration(
+            String authority, String sourceId, String field, String method,
+            int unitIndex) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("schemaVersion",
                 StaticSymbolicSourceDeclaration.SCHEMA_VERSION);
         result.put("kind", StaticSymbolicSourceDeclaration.KIND);
-        result.put("authority", StaticSymbolicSourceDeclaration.AUTHORITY);
+        result.put("authority", authority);
         result.put("sourceId", sourceId);
         result.put("fieldSignature", field);
-        result.put("declarationMethod", method.getSignature());
+        result.put("declarationMethod", method);
         result.put("declarationUnitIndex", unitIndex);
         return result;
     }
@@ -169,30 +251,33 @@ final class StaticSymbolicSourceDiscovery {
                 + ": " + detail);
     }
 
+    /**
+     * One declaration per source and region: a source one field, a hook's
+     * one site.  A configuration source is read at every site that reads
+     * its field; its declaration names the first.
+     */
     private static void merge(
-            Map<String, Map<String, Object>> bySource,
-            Map<String, Object> declaration, Map<String, Object> region)
-            throws IOException {
+            Map<String, Map<String, Object>> bySource, Site site,
+            Map<String, Object> region) throws IOException {
+        Map<String, Object> declaration = site.declaration;
         String sourceId = text(declaration.get("sourceId"));
         Map<String, Object> prior = bySource.putIfAbsent(
                 sourceId, declaration);
-        if (prior != null) {
-            if (!text(prior.get("fieldSignature")).equals(
-                    text(declaration.get("fieldSignature")))) {
-                throw new IOException("region "
-                        + text(region.get("regionId"))
-                        + " gives symbolic source " + sourceId
-                        + " two fields");
-            }
-            if (!text(prior.get("declarationMethod")).equals(
-                    text(declaration.get("declarationMethod")))
-                    || !text(prior.get("declarationUnitIndex")).equals(
-                    text(declaration.get("declarationUnitIndex")))) {
-                throw new IOException("region "
-                        + text(region.get("regionId"))
-                        + " declares symbolic source " + sourceId
-                        + " at more than one hook site");
-            }
+        if (prior == null) return;
+        if (!text(prior.get("fieldSignature")).equals(site.field())) {
+            throw new IOException("region "
+                    + text(region.get("regionId"))
+                    + " gives symbolic source " + sourceId
+                    + " two fields");
+        }
+        if (site.hook() && (!text(prior.get("declarationMethod")).equals(
+                text(declaration.get("declarationMethod")))
+                || !text(prior.get("declarationUnitIndex")).equals(
+                text(declaration.get("declarationUnitIndex"))))) {
+            throw new IOException("region "
+                    + text(region.get("regionId"))
+                    + " declares symbolic source " + sourceId
+                    + " at more than one hook site");
         }
     }
 

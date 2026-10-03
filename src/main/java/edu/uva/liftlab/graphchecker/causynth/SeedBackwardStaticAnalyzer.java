@@ -268,6 +268,14 @@ final class SeedBackwardStaticAnalyzer {
                     + "; matches=" + discoveredExceptionSeedCount);
         }
         planCommunicationCatalog(result);
+        for (Map.Entry<String, List<FieldWrite>> field
+                : fieldWritersByField.entrySet()) {
+            List<String> sites = new ArrayList<>();
+            for (FieldWrite write : field.getValue()) {
+                sites.add(SiteId.of(write.method, write.unitIndex));
+            }
+            result.fieldWriters.put(field.getKey(), sites);
+        }
 
         // Numbered in content order, not in the order the worklist found
         // them: the ids and the rows' order are the slice's, not the run's.
