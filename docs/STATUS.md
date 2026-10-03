@@ -16,7 +16,8 @@ Pointers are `path` plus class and method. `gc/` stands for
 
 Main after the merges of `symbolic-scope` (rounds `V10`, `V11`), `system-zookeeper` + the recorded-address identity rule
 (`V12`, `V13`), `vm-streams` (round `V14`, 12/12 incl. zk-bugs-quota-init), `retire-adhoc-pipeline` (`V15`),
-`seed-functional` (`V16` + `V16b`, snapshot `p229`, 12/12) and `preWindow-loop-root` (round `V17`, snapshot `p230`, 12/12), VM
+`seed-functional` (`V16` + `V16b`, snapshot `p229`, 12/12), `preWindow-loop-root` (round `V17`, snapshot `p230`, 12/12) and
+`zk-election-offer` (round `V18`, snapshot `p231`, 13/13, hdfs-11741 on its rerun `V18b`), VM
 `/bigtemp/vnr3ne/vm-streams2/j2sdk-image`, trees `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741`
 (`gc/hdfs-11741`) and `/bigtemp/vnr3ne/wt/lucene-solr-storing` (`gc/solr-unified-storing` `663e0ef`). Runs under
 `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`, each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every
@@ -36,6 +37,7 @@ the system's code (the moved roots are those of the Phase 1 release, rounds `F1`
 | solr-18413 | `V17` | 21 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
 
 | zk-bugs-quota-init | `V17` (tree `/bigtemp/vnr3ne/wt/zookeeper-unified`, `gc/zk-unified` `8f18cf3a4`) | 6 min | MARKER_FLIPPED, the ZOOKEEPER WRITE door's ConnectionLoss on `SetQuotaCommand.createQuota`'s limit create (`REGION.acedb7d4`, `createQuota@0/create@1`): the limit is written, the client retries, the retry finds the limit and takes the update branch, and the server's `getData` of the stat node the failed call never created throws NoNode |
+| zk-bugs-election-offer | `V18` (tree `gc/zk-unified`) | 12 min | STATE_PAIRING_FLIPPED (no root moved): the anchor, Thread-3's `getData` of its offer `n_0` (`LeaderElectionSupport` ~:310, server `FinalRequestProcessor` -> `DataTree.getNode` -> `NodeHashMapImpl.get`), re-paired to the competitor's `stop()` delete of `n_0` (`DataTree.deleteNode`, the arm binds the node map to `assoc_remove(.., "/../n_0000000000")` with `lastProcessedZxid`=6); the lookup returns null and `FinalRequestProcessor` throws NoNode; CONFIRM holds Thread-3's `getData` send until the delete exited (claim `repairedArms`) |
 
 The workload of solr-18413 places the source shard's leader off the Overseer's node (tree `b41116b`): with
 both on one node, the per-node clock order leaves no witness short of the node's wall clock stepping back.
