@@ -33,6 +33,8 @@ the system's code (the moved roots are those of the Phase 1 release, rounds `F1`
 | solr-18406 | `V8` | 15 min | CLOCK_SKEW: the `IndexCommitWrapper.delete()` clock jumps past the commit's one-hour reservation, generation 2 is deleted and `getAndSaveCommitPoint(2)` throws |
 | solr-18413 | `V8` | 23 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
 
+| zk-bugs-quota-init | `ZK8` (branch `system-zookeeper`, tree `gc/zk-unified` `8f18cf3a4`) | 5 min | MARKER_FLIPPED, the ZOOKEEPER WRITE door's ConnectionLoss on `SetQuotaCommand.createQuota`'s limit create (`REGION.acedb7d4`, `createQuota@0/create@1`): the limit is written, the client retries, the retry finds the limit and takes the update branch, and the server's `getData` of the stat node the failed call never created throws NoNode |
+
 The workload of solr-18413 places the source shard's leader off the Overseer's node (tree `b41116b`): with
 both on one node, the per-node clock order leaves no witness short of the node's wall clock stepping back.
 hdfs-11741's balancer may run its second move to dn1 one dispatcher iteration later (`maxNoMoveInterval` on its
