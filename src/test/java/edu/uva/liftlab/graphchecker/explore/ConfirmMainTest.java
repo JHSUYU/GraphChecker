@@ -441,6 +441,62 @@ public class ConfirmMainTest {
     }
 
     /**
+     * An event in its occurrence's outermost activation -- a loop body's
+     * store, standing on the loop's method, which spans every turn -- is
+     * ordered by its occurrence: a read paired with it waits for the turn
+     * to close, and a store held after a read waits at the turn's opening
+     * (hdfs-bugs-slowdisk-zero SD8: the anchor waited for the detector's
+     * run() to exit, past the order's timeout).  A deeper call is its own
+     * activation.
+     */
+    @Test
+    public void aLoopTurnsOutermostEventIsOrderedByItsTurn()
+            throws Exception {
+        Path iteration = iteration();
+        Frame loop = Frame.of("<a.Manager: void run()>", 0);
+        Endpoint store = Endpoint.of(mint, "a.Manager#run()#9:WRITE",
+                ExecutionIndex.of(Arrays.asList(loop, Frame.of(
+                        "a.Manager#run()#9:WRITE", 0))), 0);
+        Endpoint scan = Endpoint.of(mint, "a.Manager#scan()#4:READ",
+                ExecutionIndex.of(Arrays.asList(loop, Frame.of(
+                        "<a.Manager: void scan()>", 0), Frame.of(
+                        "a.Manager#scan()#4:READ", 0))), 0);
+        Endpoint first = endpoint(MINT, "a.Manager#run()#9:INITIAL");
+        String turn = Confirmation.activation(mint, ExecutionIndex.empty());
+        String read = Confirmation.activation(anchor, ExecutionIndex.empty());
+        SessionDir sel = SessionDir.of(iteration, "sel");
+        RowCodec.writeAll(sel.writes(), Arrays.asList(
+                WriteRow.initial("sel", 9L, first, CELL, 4L, "EXPR.w", "I"),
+                WriteRow.of("sel", 20L, store, CELL, 5L, "EXPR.w", "I")),
+                RowCodec::writeWrite);
+        // the version the read saw, its pairing, the ORDER it needs
+        Object[][] table = {
+                {5L, Confirmation.id(store), turn + " < " + read},
+                {4L, Confirmation.INITIAL, read + " < " + turn},
+        };
+        for (Object[] row : table) {
+            RowCodec.writeAll(sel.reads(), Arrays.asList(
+                    ReadRow.of("sel", 25L, scan, LocationId.of(
+                            LocationKind.INSTANCE, "1", "41"), 2L,
+                            "INSTANCE_FIELD/1#41@v2", "I", "0"),
+                    ReadRow.of("sel", 30L, reader, CELL, (Long) row[0],
+                            "INSTANCE_FIELD/1#40@v" + row[0], "I", "3")),
+                    RowCodec::writeRead);
+            List<String> orders = new ArrayList<String>();
+            for (JsonObject edge : ConfirmMain.holding(SessionReader.read(
+                    iteration, "sel"), Collections.singletonMap(
+                    Confirmation.id(reader), (String) row[1])).edges) {
+                if ("ORDER".equals(edge.get("kind").getAsString())) {
+                    orders.add(edge.get("before").getAsString() + " < "
+                            + edge.get("after").getAsString());
+                }
+            }
+            assertEquals(String.valueOf(row[1]),
+                    Collections.singletonList(row[2]), orders);
+        }
+    }
+
+    /**
      * A query through a re-pointable reference, by variant of what the
      * model chose: another writer's store for the reference and a state of
      * the map that store delivered is held as two joins -- the reference

@@ -1007,18 +1007,40 @@ public final class ConfirmMain {
                 this.seq = seq;
             }
 
-            /** The activation an event stood in. */
-            private static Exit of(Endpoint event, long seq) {
-                return new Exit(event.occurrence(), event.activationFrames(),
-                        seq);
-            }
-
             /** Its occurrence as a whole: entered at its opening, exited
              *  at its close ({@code runtime.Identity}). */
             private static Exit occurrenceOf(Endpoint event, long seq) {
                 return new Exit(event.occurrence(),
                         Collections.<Frame>emptyList(), seq);
             }
+        }
+
+        /**
+         * What an ORDER after this event waits for: the activation it stood
+         * in, or -- where that is its occurrence's outermost
+         * ({@link #outermost}) -- the occurrence's close.  The outermost
+         * activation of a loop body's occurrence is the loop's method, which
+         * spans every turn and never exits while the loop runs
+         * (hdfs-bugs-slowdisk-zero SD8: the anchor held until the detector's
+         * {@code run()} exited, past the order's timeout); a method's
+         * occurrence closes as its root activation exits.
+         */
+        private Exit exit(Endpoint event, long seq) {
+            return outermost(event) ? Exit.occurrenceOf(event, seq)
+                    : new Exit(event.occurrence(), event.activationFrames(),
+                    seq);
+        }
+
+        /** Whether an event stood in its occurrence's outermost activation:
+         *  no event of the occurrence stood on fewer frames. */
+        private boolean outermost(Endpoint event) {
+            int depth = event.activationFrames().size();
+            List<Placed> events = placed.get(event.occurrence().id());
+            for (Placed other : events == null
+                    ? Collections.<Placed>emptyList() : events) {
+                if (other.frames.size() < depth) return false;
+            }
+            return true;
         }
 
         /** Where an event is held: the activation entry, and the
@@ -1064,7 +1086,10 @@ public final class ConfirmMain {
          * the cluster state until the watcher's parse of it lands) cannot be
          * held at its own entry: the writer follows that entry, and holding
          * it there waits out the order's timeout.  The last call before the
-         * read (the poll's {@code getRoutingRules}) is entered after.
+         * read (the poll's {@code getRoutingRules}) is entered after.  With
+         * no such call, an event in its occurrence's outermost activation
+         * is held at the occurrence's opening: a loop body's turn enters no
+         * activation of its own ({@link #exit}).
          */
         private Hold holdBefore(Endpoint event, long seq) {
             List<Frame> own = event.activationFrames();
@@ -1080,6 +1105,9 @@ public final class ConfirmMain {
                 }
                 latest = other.seq;
                 hold = other.frames.subList(0, own.size() + 1);
+            }
+            if (hold == own && outermost(event)) {
+                hold = Collections.<Frame>emptyList();
             }
             return new Hold(event.occurrence(), hold);
         }
@@ -1304,7 +1332,7 @@ public final class ConfirmMain {
             StateClosure.Exit reading = block
                     ? StateClosure.Exit.occurrenceOf(read.endpoint(),
                     read.seq())
-                    : StateClosure.Exit.of(read.endpoint(), read.seq());
+                    : closure.exit(read.endpoint(), read.seq());
             String reader = read.endpoint().id();
             WriteRow held = chosen.containsKey(reader) ? chosen.get(reader)
                     : closure.joined.get(reader);
@@ -1333,7 +1361,7 @@ public final class ConfirmMain {
             holding.edges.add(edge);
             if (mint) continue;
             if (!held.initial()) {
-                closure.order(holding, StateClosure.Exit.of(held.endpoint(),
+                closure.order(holding, closure.exit(held.endpoint(),
                         held.seq()), read.endpoint(), read.seq());
             }
             // No other writer of the location it reads between the two: one
@@ -1345,7 +1373,7 @@ public final class ConfirmMain {
                     continue;
                 }
                 if (!held.initial() && other.seq() < held.seq()) {
-                    closure.order(holding, StateClosure.Exit.of(
+                    closure.order(holding, closure.exit(
                             other.endpoint(), other.seq()), held.endpoint(),
                             held.seq());
                 } else {

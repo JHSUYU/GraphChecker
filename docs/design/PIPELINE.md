@@ -1511,7 +1511,10 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   chose names writer `INITIAL`, `Confirmation#INITIAL`, which every INITIAL a run logs is to it),
   `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
-  it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); where that activation runs
+  it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); an event in its
+  occurrence's outermost activation -- a loop body's, standing on the loop's method, which spans
+  every turn -- is held at the occurrence's opening and waited for until its close
+  (`StateClosure#exit`, `#outermost`); where that activation runs
   as claimed work on a consumer thread (`ActivationRow#claimed`: a server pipeline applying one
   request after another, the writer's among them, would deadlock held), the entry of the send that
   started it, its anchor's producer followed up the chain while that send is claimed work too
