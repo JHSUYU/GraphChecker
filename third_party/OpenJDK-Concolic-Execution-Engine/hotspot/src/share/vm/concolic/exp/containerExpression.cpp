@@ -158,6 +158,10 @@ volatile intptr_t ContainerExpression::answer_count = 0;
 void ContainerExpression::state_returned(const ReturnedValue &returned) {
   if (returned.kind == ReturnedValue::UNSTATED) return;
   _returned = returned;
+  name_answer();
+}
+
+void ContainerExpression::name_answer() {
   _answer = (jlong) Atomic::add_ptr((intptr_t) 1, &answer_count);
 }
 

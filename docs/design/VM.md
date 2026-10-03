@@ -164,7 +164,7 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | `Integer.parseInt`, `Long.parseLong` | a method-return symbol stating its concrete value and its call (holder, name, descriptor, argument expressions) | |
 | `BigDecimal` | 8 signatures | `<init>(double)`, `<init>(String)` mint symbols unrelated to the argument; `BigInteger` |
 | `AtomicInteger`, `AtomicLong` | `getAndIncrement getAndDecrement incrementAndGet decrementAndGet getAndAdd addAndGet compareAndSet weakCompareAndSet`, when the receiver is shadowed: the model states `new = old op delta` (or the CAS's expect/update) as an intent, and the compare-and-swap that performs it reads `old` at the word it compared and publishes the RMW version, in one critical section; a failed CAS reads the word it lost to | `set` is a putfield; `lazySet`, `getAndSet`, `AtomicReference`/`AtomicBoolean` (`value` observed on the atomic; `get`/`set` are a getfield/putfield, a CAS answers `old == expected` over the value it compared as its result), field updaters are versioned as Unsafe writes with their captured operands, not modeled; `accumulate*`, `LongAdder`, atomic arrays |
-| maps by the Map contract: `HashMap`, `LinkedHashMap` (insertion order), `ConcurrentHashMap`, `Hashtable` (views, iterators, entries, a map view's `Collection.removeIf`) | `put get getOrDefault remove containsKey isEmpty clear size mappingCount entrySet keySet values iterator hasNext next getKey getValue`, conditional removal; `putAll` (a tracked source as `PUT_ALL` of its state read, else one `PUT` per entry); `putIfAbsent`, `replace`, `remove(k, v)`: `PUT_IF`/`REMOVE_IF` under the test the body made (§6); `computeIfAbsent computeIfPresent merge`: the callback's result stored under the test that ran it, an arm whose callback did not run pinned; `compute`: the callback's result stored (`PUT`, or `REMOVE` for null); `replaceAll`, `forEach`; key and entry views' `removeIf` (`REMOVE_IF` under the predicate) | `Entry.setValue` abandons the entry; `values().removeIf` (`ASSOCIATIVE_VALUES_REMOVE_IF_UNMODELED`); `ConcurrentHashMap`'s bulk parallel operations |
+| maps by the Map contract: `HashMap`, `LinkedHashMap` (insertion order), `ConcurrentHashMap`, `Hashtable` (views, iterators, entries, a map view's `Collection.removeIf`) | `put get getOrDefault remove containsKey isEmpty clear size mappingCount entrySet keySet values iterator hasNext next getKey getValue`, conditional removal; `putAll` (a tracked source as `PUT_ALL` of its state read, else one `PUT` per entry); `putIfAbsent`, `replace`, `remove(k, v)`: `PUT_IF`/`REMOVE_IF` under the test the body made (§6); `computeIfAbsent computeIfPresent merge`: the callback's result stored under the test that ran it, what a callback that did not run would have stored an unknown cell; `compute`: the callback's result stored (`PUT`, or `REMOVE` for null); `replaceAll`, `forEach`; key and entry views' `removeIf` (`REMOVE_IF` under the predicate) | `Entry.setValue` abandons the entry; `values().removeIf` (`ASSOCIATIVE_VALUES_REMOVE_IF_UNMODELED`); `ConcurrentHashMap`'s bulk parallel operations |
 | `ArrayList`, `ArrayDeque`, `AbstractList` iterators | list and deque operations; `peek`/`poll` as `PEEK`/`POLL` (§6) | `removeIf` abandons |
 | `HashSet`, `LinkedHashSet`, `ConcurrentHashMap`'s `KeySetView` (its map's location) | set operations | a hash set's reads are not bound to versions |
 | `java.util.stream` sequential pipelines from `Collection.stream()` of a modeled container (a list, a deque, a hash set, a key/entry/values view, an unmodifiable map's entry set) | `filter map limit sorted distinct unordered`; `collect(Collectors.toList()/toSet())`, `toArray`, `count`, `anyMatch allMatch noneMatch` stated as relations; `findFirst findAny forEach forEachOrdered` run on the run's values (below) | `skip peek flatMap* mapTo* reduce min max iterator spliterator parallel`, `collect` with any other collector, `parallelStream()`, and every pipeline over another source (`Arrays.stream`, `Stream.of`, `IntStream`) run as bytecode |
@@ -387,10 +387,17 @@ stated on the nodes it builds, and COMPOSE decides what holds (PIPELINE §8).
   [k, null]`, `computeIfPresent` (`PUT_IF`, or `REMOVE_IF` for null) and `merge` (the callback's
   result under the key's presence over the value under its absence) under its negation; a set's
   `add` is `PUT_IF` under the member's absence; `poll()` is `PEEK` and `POLL`, whose emptiness test
-  is their own. An arm whose callback did not run -- `computeIfAbsent` over a present key,
-  `computeIfPresent` and `merge` over an absent one -- cannot be stated, since what the callback
-  would have stored is unknown: it is a `PIN` of the run's arm, named `CONTAINER_PINNED:<method>`
-  in the region's `modelGaps`. A compute-family call answers `get(k)` as it left the map.
+  is their own. What a callback that did not run -- `computeIfAbsent` over a present key,
+  `computeIfPresent` and `merge` over an absent one -- would have stored is an `UNKNOWN` cell
+  (`ContainerSupport::unknown_cell`, named by its `answer` id), put at its key under the arm it
+  would have run in, named `CONTAINER_PINNED:<method>` in the region's `modelGaps`. A
+  compute-family call answers `get(k)` as it left the map. `MATCHES` compares a String or a box by
+  value, as `equals()` does, and any other object by identity; a match `equals()` found for an
+  object whose class overrides it states no answer. A call that left the container as it was (a
+  guarded mutation that did not fire: a hit, a miss, an unrun callback, a poll of an empty queue)
+  is the thread's state (`set_container_state`) and no version, so it takes no slot of the
+  location's log; a poll of an empty queue whose chain states no size
+  (`ContainerSupport::stated_size`) states nothing.
 - A FACT the run observed that the chain may not decide is stated on its node as `concreteValue`
   (`ReturnedValue`) with a session-unique `answer` id (`ContainerExpression::state_returned`):
   what a query answered (`get`, `getOrDefault`, `containsKey`, `size`, `isEmpty`, `hasNext`, a
@@ -407,7 +414,7 @@ stated on the nodes it builds, and COMPOSE decides what holds (PIPELINE §8).
 
 **Stream results** (§4). `APPEND_IF [v]` and `PUT_IF [k, v]` carry the `guard` they hold under;
 `PIN` (no arguments, either shape) is its receiver's state where its `guard` holds. A version a
-stream published is `STATE_COLLECT`; a map's is `STATE_PUT_IF` or `STATE_PIN`, a queue's
+stream published is `STATE_COLLECT`; a map's guarded mutation is `STATE_PUT_IF`, a queue's poll
 `STATE_POLL`. Of the VM's own chain readers, `ContainerSupport::position_answer` looks through a
 `PIN` and replays a `POLL`, and `entry_answer` looks through a `PIN` and past a guarded mutation of
 another key; across anything else they, `undo_indexed_history` and `snapshot_entry_count` decide
@@ -551,7 +558,7 @@ that does not hold.
 | radix, hexadecimal, char and floating renderings | detected (a named operation, not pinned) |
 | a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
 | an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
-| map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6): a choice a guard, a callback's result and its side effects hooked; an arm whose callback did not run detected and pinned (`CONTAINER_PINNED:`) |
+| map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6): a choice a guard, a callback's result and its side effects hooked; what a callback that did not run would have stored detected and named (an unknown cell, `CONTAINER_PINNED:`) |
 | a `java.util.stream` pipeline over a modeled container | modeled (§4): its result a guarded chain, its stages' callbacks seeded; what no relation states detected and pinned (a `PIN`, or the run's result named `STREAM_PINNED:`); an unmodeled operation named and hooked as bytecode |
 | a stream over any other source, a parallel stream | hooked (bytecode); a predicate's decision inside the JDK's sink is an unmarked branch, silently lost |
 | list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
@@ -617,7 +624,8 @@ tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's
 `RegionWrapperViewSmoke` (a view or wrapper is its container), `RegionStreamSmoke` (stream
 pipelines: filter, limit, map, an unmodifiable map's entries, count, anyMatch, a set, the pins and
 the model gaps), `RegionModelGuardSmoke` (the pin/guard discipline, §6: each guarded choice, the
-named pins, answers stated on query and array-element nodes, nothing added to the path) and
+named unknown cells, no version for a call that changed nothing, an `equals()` match, answers
+stated on query and array-element nodes, nothing added to the path) and
 `RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers); the leaf natives have
 `RegionLeafBrokerSmoke` (every slot kind with and without a region, peeks that record nothing,
 templates, `SHARED`, a region-less mint reaching a later region's path through `parseLong`, and

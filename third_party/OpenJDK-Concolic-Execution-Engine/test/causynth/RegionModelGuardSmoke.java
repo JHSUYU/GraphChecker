@@ -12,8 +12,10 @@ import java.util.Set;
  * emptiness is a guard on the chain it produced -- PUT_IF and REMOVE_IF
  * under MATCHES (the value at the key, null where absent, is the expected
  * cell) or CONTAINS, POLL under its own emptiness test -- so another state
- * flips the effect; an arm whose callback did not run is a PIN, named
- * CONTAINER_PINNED.  A FACT the run observed that the chain may not decide
+ * flips the effect; what a callback the run never ran would have stored is
+ * an UNKNOWN cell under the arm it would have run in, named
+ * CONTAINER_PINNED; and a call that left the container as it was publishes
+ * no version.  A FACT the run observed that the chain may not decide
  * -- what a query answered, an element of an array whose elements are the
  * heap's -- is stated on its node (`concreteValue`, with the `answer` id
  * that names its pin), and an array whose elements are an input states
@@ -23,6 +25,25 @@ public final class RegionModelGuardSmoke {
     private static final class Input {
         long key = 7L;
         int[] values = {40, 41, 42, 43};
+    }
+
+    /** Equal by value, as no cell compares an object. */
+    private static final class Point {
+        final int at;
+
+        Point(int at) {
+            this.at = at;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Point && ((Point) other).at == at;
+        }
+
+        @Override
+        public int hashCode() {
+            return at;
+        }
     }
 
     private static final class Sink {
@@ -47,14 +68,17 @@ public final class RegionModelGuardSmoke {
 
         // computeIfAbsent: the callback ran where get(k) was null, so what
         // it stored is a PUT_IF under that test; the second call's callback
-        // did not run, so its arm is pinned.
+        // did not run, so what it would have stored is unknown, and the
+        // call changed nothing: no version.
         Map<Long, Long> computing = new HashMap<>();
         computing.computeIfAbsent(input.key, k -> k + 1);
         computing.computeIfAbsent(input.key, k -> k + 2);
         String computed = System.getSymbolicExpression(computing);
+        String computedLog = System.getSharedMapVersions(computing);
 
         // computeIfPresent: a callback that answered null removes under the
-        // key being there (REMOVE_IF); one that did not run is pinned.
+        // key being there (REMOVE_IF); one that did not run stores an
+        // unknown cell where the key would have been there.
         Map<Long, Long> present = new HashMap<>();
         present.put(input.key, 1L);
         present.computeIfPresent(input.key, (k, v) -> null);
@@ -69,6 +93,13 @@ public final class RegionModelGuardSmoke {
         replacing.replace(input.key, 2L, 3L);
         boolean unmatched = replacing.remove(input.key, 4L);
         String replaced = System.getSymbolicExpression(replacing);
+        // An expected value equals() matched but no cell would: its match
+        // states no answer.
+        Map<Long, Point> points = new HashMap<>();
+        points.put(input.key, new Point(1));
+        boolean equalPoint = points.replace(input.key, new Point(1),
+                new Point(2));
+        String pointChain = System.getSymbolicExpression(points);
 
         // A set's add puts where the member was absent, and answers that.
         Set<Long> set = new HashSet<>();
@@ -107,31 +138,39 @@ public final class RegionModelGuardSmoke {
 
         System.out.println("COMPUTED " + computed);
         System.out.println("POLLED " + polled);
-        require(!unmatched && added && !again && sink.head == null
+        require(!unmatched && equalPoint && added && !again
+                        && sink.head == null
                         && sink.value == 3L && sink.element == 8
                         && sink.input == 41,
                 "the models did not run as written");
         require(after == before,
                 "a model's choice added a path condition: " + before + " -> "
                         + after);
-        require(computed.contains("\"operation\":\"PUT_IF\"")
+        require(count(computed, "\"operation\":\"PUT_IF\"") == 2
                         && computed.contains("\"operation\":\"MATCHES\"")
-                        && computed.contains("\"operation\":\"PIN\"")
+                        && computed.contains("\"operation\":\"UNKNOWN\"")
                         && computed.contains("\"answer\":")
+                        && count(computedLog,
+                        "\"versionKind\":\"STATE_PUT_IF\"") == 1
                         && summary.contains("CONTAINER_PINNED:computeIfAbsent"),
-                "computeIfAbsent is no guarded PUT_IF and a named pin: "
-                        + computed);
+                "computeIfAbsent is no guarded PUT_IF and a named unknown "
+                        + "cell, or a no-op published: " + computed + " / "
+                        + computedLog);
         require(removed.contains("\"operation\":\"REMOVE_IF\"")
-                        && removed.contains("\"operation\":\"PIN\"")
+                        && removed.contains("\"operation\":\"UNKNOWN\"")
                         && summary.contains(
                         "CONTAINER_PINNED:computeIfPresent"),
-                "computeIfPresent is no guarded REMOVE_IF and a named pin: "
-                        + removed);
+                "computeIfPresent is no guarded REMOVE_IF and a named "
+                        + "unknown cell: " + removed);
         require(count(replaced, "\"operation\":\"PUT_IF\"") == 2
                         && replaced.contains("\"operation\":\"REMOVE_IF\"")
                         && replaced.contains("\"operation\":\"CONTAINS\"")
                         && replaced.contains("\"operation\":\"MATCHES\""),
                 "replace/remove are no guarded mutations: " + replaced);
+        require(pointChain.contains("\"operation\":\"MATCHES\"")
+                        && !pointChain.contains("\"answer\":"),
+                "an equals() match states an identity answer: "
+                        + pointChain);
         require(count(members, "\"operation\":\"PUT_IF\"") == 2
                         && members.contains("\"operation\":\"CONTAINS\"")
                         && members.contains("\"answer\":"),

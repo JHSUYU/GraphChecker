@@ -369,7 +369,7 @@ final class SharedStateCapture {
     private static final Set<String> VERSION_KINDS = names("INITIAL", "WRITE",
             "RMW", "UNOBSERVED", "STATE", "STATE_PUT", "STATE_PUT_IF",
             "STATE_PUT_ALL", "STATE_REMOVE", "STATE_REMOVE_IF", "STATE_CLEAR",
-            "STATE_REMOVE_AT", "STATE_CLEAR_VIEW", "STATE_ADD", "STATE_PIN",
+            "STATE_REMOVE_AT", "STATE_CLEAR_VIEW", "STATE_ADD",
             "STATE_APPEND", "STATE_INSERT", "STATE_WRITE", "STATE_POLL",
             "STATE_COLLECT", "STATE_ATTACH");
     /**

@@ -1036,7 +1036,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
   of that version (a placeholder), else PIN to the value the row states, else REFUSE
   (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
-  can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
+  can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair) --
+  `SmtLowering#moves`, the one predicate every pin asks, a method return's and a container
+  answer's too, and EXPLORE's flip query alike, where a read of any location with write rows
+  moves (it takes one of its eligible writers, `SmtLowering#forSession`) -- and
   dropped it raises nothing (no refusal, side condition or gap); what a read row's binding required
   (container membership and cell tags, recorded readings) is stated with its join, so only where
   the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
@@ -1201,7 +1204,10 @@ each component as `assoc_remove_if`'s); a source whose chain bounds no keys is r
 the source's keys. `MATCHES [k, e]` (the test a conditional mutator made) is whether the cell at
 `k`, the null cell where `k` is absent, is `e`'s, tag included (`(= cell e)`): it guards the
 `PUT_IF`/`REMOVE_IF` of `putIfAbsent`, `compute*`, `merge`, `replace(k, e, u)` and `remove(k, e)`,
-and `CONTAINS` that of `replace(k, v)` and a set's `add`. A queue's `PEEK` is its head, the null
+and `CONTAINS` that of `replace(k, v)` and a set's `add`. An `UNKNOWN` cell -- what a callback the
+run never ran would have stored -- is the MINT of a free `Value`, `unknown__` for its session and
+`answer` id (`SmtLowering#unknown`, DIAGNOSTIC `ContainerCellUnknown@<session>`). A read at a
+literal key passes guarded mutations at other literal keys as it passes plain ones. A queue's `PEEK` is its head, the null
 cell where it is empty and no member required; `POLL` is the queue without its head, a shift at 0
 where its size is a stated nonzero literal, itself where it is 0, and refused by name over no
 stated size (`ContainerRelation:INDEXED:POLL:unstated-size`). A String a map
@@ -1240,10 +1246,13 @@ the one it stands for (`Host#chain`), remembered per conjunction (`Host#statedBa
 base it is the PIN of the read rule, as a method return's: a name `answer__` for its session and id,
 equal to the stated value by an assertion named `pinned_answer__...` for an unsat core (DIAGNOSTIC
 `ContainerAnswerPinned:<shape>:<operation>@<session>`), only where nothing it rests on moves
-(`#moves`: its keys, positions, owner and chain); else its relation stands, free over the opaque
+(`#moves`: its keys, positions, owner and chain -- a read the stage may re-pair moves); else its
+relation stands, free over the opaque
 base, and a `READ` there is refused `CONTAINER_BASE_UNSTATED` as before. A pin is never stated where
 a witness may move it -- `READ(s, k) == v` under a moving `k` would cut the witness -- and no model
-choice is a hard constraint: it is the guard its node states.
+choice is a hard constraint: it is the guard its node states. The answer is the run's object's
+alone: a query asked of another object a family may re-point its owner to (`SmtLowering#asOf`)
+states none.
 
 **Stream results** (VM.md §4, `SymStream`). A collected list is an `INDEXED` chain from an exact empty
 `SNAPSHOT_BASE`: `APPEND_IF [v]` with a `guard` is `indexed_append_if`, the guard inside the store

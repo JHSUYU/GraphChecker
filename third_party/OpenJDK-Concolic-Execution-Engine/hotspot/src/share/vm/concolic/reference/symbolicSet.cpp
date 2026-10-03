@@ -86,7 +86,8 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
     // add answers whether the member was absent, and puts it only there: a
     // hash set's member maps to true, a KeySetView's to its map value, and
     // putIfAbsent keeps the value a member already maps to.  So the PUT is
-    // guarded by that absence, which a flip of the state flips.
+    // guarded by that absence, which a flip of the state flips; one that
+    // did not fire is the thread's state, no version.
     exp_list_t key;
     key.push_back(arguments[0]);
     Expression *present = new ContainerExpression(
@@ -105,7 +106,7 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
         "ASSOCIATIVE", "PUT_IF", state, arguments, T_OBJECT, std::string(),
         absent);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
-    ContainerSupport::publish_state(receiver_object, next, "ADD");
+    if (added) ContainerSupport::publish_state(receiver_object, next, "ADD");
     return absent;
   }
   if (method == "remove" && arguments.size() == 1) {

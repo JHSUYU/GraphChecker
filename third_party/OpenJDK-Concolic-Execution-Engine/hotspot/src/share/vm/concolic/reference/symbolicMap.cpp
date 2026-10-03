@@ -1,5 +1,8 @@
 #ifdef ENABLE_CONCOLIC
 
+#include "classfile/javaClasses.hpp"
+#include "classfile/systemDictionary.hpp"
+#include "classfile/vmSymbols.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
@@ -7,6 +10,7 @@
 #include "concolic/reference/symbolicStream.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/utils.hpp"
+#include "oops/method.hpp"
 
 #include <string.h>
 
@@ -137,8 +141,9 @@ Expression *read_of(Expression *state, Expression *key, Expression *owner,
 // MATCHES(state, key, expected): whether get(key) answers `expected` (NULL
 // for null) as a cell, an absent key answering null -- the test the JDK's
 // default Map methods make of the value there (`get(k) == null`,
-// `Objects.equals(get(k), v)`).  The caller states what the muted body
-// found, when it knows.
+// `Objects.equals(get(k), v)`).  A cell compares a String or a box by
+// value, as equals() does, and any other object by identity.  The caller
+// states what the muted body found, when it knows.
 Expression *matches(Expression *state, Expression *key, Expression *expected,
                     Expression *owner) {
   exp_list_t arguments;
@@ -171,25 +176,68 @@ Expression *publish(oop container, const char *operation, Expression *state,
                  operation);
 }
 
-// PUT, or PUT_IF under `guard`, of one key's state: the relation, built
-// over `state`; publish() makes one a version.
+// PUT_IF / REMOVE_IF of one key under `guard`: the relation over `state`,
+// which settle() makes the map's state.
 Expression *put_of(Expression *state, Expression *key, Expression *value,
-                   Expression *owner, Expression *guard = NULL) {
+                   Expression *owner, Expression *guard) {
   exp_list_t arguments;
   arguments.push_back(key);
   arguments.push_back(value);
-  return relation(guard == NULL ? "PUT" : "PUT_IF", state, arguments, owner,
-                  T_OBJECT, std::string(), guard);
+  return relation("PUT_IF", state, arguments, owner, T_OBJECT,
+                  std::string(), guard);
+}
+
+Expression *remove_of(Expression *state, Expression *key, Expression *owner,
+                      Expression *guard) {
+  exp_list_t arguments;
+  arguments.push_back(key);
+  return relation("REMOVE_IF", state, arguments, owner, T_OBJECT,
+                  std::string(), guard);
+}
+
+// `next` as the map's state after a call: a version labelled `label` when
+// the call changed the map, else the thread's state alone -- a guarded
+// mutation that did not fire is a relation a flip needs, not a write, and
+// as a version it would take a slot of the location's log.
+void settle(oop container, Expression *next, const char *label,
+            bool changed) {
+  if (changed) {
+    install(container, next, label);
+  } else {
+    ConcolicMngr::ctx->set_container_state(container, next);
+  }
+}
+
+// What a callback the run never ran would have stored: an UNKNOWN cell,
+// named (CONTAINER_PINNED, the arm's own name since it pinned the arm) as
+// what no relation states.
+Expression *unknown(const std::string &method) {
+  ConcolicMngr::ctx->note_model_gap("CONTAINER_PINNED:" + method);
+  return ContainerSupport::unknown_cell();
+}
+
+// Whether equals() of `expected` may differ from a cell's identity: an
+// object other than a String or a box whose class overrides
+// Object.equals.  A match the body found then states no answer: MATCHES
+// compares such an object by identity.
+bool compares_by_equals(oop expected) {
+  if (expected == NULL || expected->is_array()
+      || expected->klass() == SystemDictionary::String_klass()
+      || java_lang_boxing_object::basic_type(expected) != T_ILLEGAL) {
+    return false;
+  }
+  Method *equals = expected->klass()->lookup_method(
+      vmSymbols::equals_name(), vmSymbols::object_boolean_signature());
+  return equals != NULL
+      && equals->method_holder() != SystemDictionary::Object_klass();
 }
 
 Expression *put(oop container, Expression *state, Expression *key,
-                Expression *value, Expression *owner,
-                Expression *guard = NULL) {
+                Expression *value, Expression *owner) {
   exp_list_t arguments;
   arguments.push_back(key);
   arguments.push_back(value);
-  return publish(container, guard == NULL ? "PUT" : "PUT_IF", state,
-                 arguments, owner, guard);
+  return publish(container, "PUT", state, arguments, owner);
 }
 
 Expression *remove(oop container, Expression *state, Expression *key,
@@ -198,18 +246,6 @@ Expression *remove(oop container, Expression *state, Expression *key,
   arguments.push_back(key);
   return publish(container, guard == NULL ? "REMOVE" : "REMOVE_IF", state,
                  arguments, owner, guard);
-}
-
-// The state as it is, holding only where the run's own `decision` does: the
-// arm a muted body took whose other arm runs a callback this run never ran,
-// so what it would have stored is unknown.  Named (CONTAINER_PINNED), since
-// it cuts the other arm rather than stating it.
-Expression *pinned(Expression *state, Expression *decision, Expression *owner,
-                   const std::string &method) {
-  ConcolicMngr::ctx->note_model_gap("CONTAINER_PINNED:" + method);
-  exp_list_t none;
-  return relation("PIN", state, none, owner, T_OBJECT, std::string(),
-                  decision);
 }
 
 // Records `REMOVE_IF(prev_state, key) under guard` as a new version of the
@@ -563,41 +599,46 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     // The rest run their callback by the value at the key, the test the
     // muted body made: computeIfAbsent where get(k) is null, computeIfPresent
     // and merge where it is not.  What a callback that ran stored is guarded
-    // by that test, so another state undoes it; an arm whose callback did
-    // not run is pinned.  Each answers get(k) as the call left it.
+    // by that test, so another state undoes it; what one the run never ran
+    // would have stored at k is an UNKNOWN cell under the other arm.  Each
+    // answers get(k) as the call left it.
     Expression *absent = matches(state, key, NULL, owner);
     ContainerSupport::state_answer(absent,
                                    called == (method == "computeIfAbsent"));
     Expression *present = ContainerSupport::negation(absent);
+    // Whether the run changed the map, and the operation it did.
+    bool changed = called && !result.returned_null;
+    const char *label = "PUT_IF";
     if (method == "computeIfAbsent") {
-      if (!called) {
-        state = install(container, pinned(state, present, owner, method),
-                        "PIN");
-      } else if (!result.returned_null) {
-        state = put(container, state, key, result.result, owner, absent);
+      // A null result stores nothing.
+      if (!called || !result.returned_null) {
+        state = put_of(state, key, called ? result.result : unknown(method),
+                       owner, absent);
       }
     } else if (method == "computeIfPresent") {
       if (!called) {
-        state = install(container, pinned(state, absent, owner, method),
-                        "PIN");
+        state = put_of(state, key, unknown(method), owner, present);
       } else if (result.returned_null) {
-        state = remove(container, state, key, owner, present);
+        state = remove_of(state, key, owner, present);
+        label = "REMOVE_IF";
+        changed = true;
       } else {
-        state = put(container, state, key, result.result, owner, present);
+        state = put_of(state, key, result.result, owner, present);
       }
-    } else if (!called) {
-      // merge over an absent key stores its value; the callback the other
-      // arm runs is unknown.
-      state = put(container, pinned(state, absent, owner, method), key,
-                  arguments[1], owner);
     } else {
-      // merge over a present key: what the callback answered, and, where
-      // the key is absent instead, the value.
-      Expression *filled = put_of(state, key, arguments[1], owner, absent);
-      state = result.returned_null
-          ? remove(container, filled, key, owner, present)
-          : put(container, filled, key, result.result, owner, present);
+      // merge: the value where the key is absent; where it is present, what
+      // the callback answered (null removes), unknown where it did not run.
+      state = put_of(state, key, arguments[1], owner, absent);
+      if (called && result.returned_null) {
+        state = remove_of(state, key, owner, present);
+        label = "REMOVE_IF";
+      } else {
+        state = put_of(state, key, called ? result.result : unknown(method),
+                       owner, present);
+      }
+      changed = true;
     }
+    settle(container, state, label, changed);
     Expression *answer = read_of(state, key, owner,
                                  handle.get_result<oop>(T_OBJECT));
     ContainerSupport::state_result(handle, answer);
@@ -647,40 +688,45 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
       // `expected` matches only a key mapped to null.
       const bool matched = (handle.get_result<jint>(T_BOOLEAN) & 1) != 0;
       Expression *equal = matches(state, arguments[0], arguments[1], owner);
-      if (arguments[1] == NULL) {
+      oop expected = handle.get_param<oop>(2);
+      if (expected == NULL) {
         Expression *mapped = contains(state, arguments[0], owner);
         if (matched) {
           ContainerSupport::state_answer(mapped, true);
           ContainerSupport::state_answer(equal, true);
         }
         equal = ContainerSupport::conjunction(mapped, equal);
-      } else {
+      } else if (!matched || !compares_by_equals(expected)) {
         ContainerSupport::state_answer(equal, matched);
       }
-      if (method == "remove") {
-        remove(receiver_object, state, arguments[0], owner, equal);
-      } else {
-        put(receiver_object, state, arguments[0], arguments[2], owner,
-            equal);
-      }
+      settle(receiver_object, method == "remove"
+                 ? remove_of(state, arguments[0], owner, equal)
+                 : put_of(state, arguments[0], arguments[2], owner, equal),
+             method == "remove" ? "REMOVE_IF" : "PUT_IF", matched);
       return equal;
     }
     oop old_value = handle.get_result<oop>(T_OBJECT);
     Expression *test = NULL;
+    bool changed = true;
     if (method == "putIfAbsent") {
       // Puts where get(k) is null.
       test = matches(state, arguments[0], NULL, owner);
       ContainerSupport::state_answer(test, old_value == NULL);
+      changed = old_value == NULL;
     } else {
       // replace(k, v) puts where k is a key; a HashMap that answered null
-      // may have replaced a null value, so its membership is not stated.
+      // may have replaced a null value, so its membership is not stated,
+      // and its put stands as a version.
       test = contains(state, arguments[0], owner);
       if (old_value != NULL || ContainerSupport::capability(receiver_object)
                                    != ContainerSupport::CAPABILITY_HASH_MAP) {
         ContainerSupport::state_answer(test, old_value != NULL);
+        changed = old_value != NULL;
       }
     }
-    put(receiver_object, state, arguments[0], arguments[1], owner, test);
+    settle(receiver_object,
+           put_of(state, arguments[0], arguments[1], owner, test), "PUT_IF",
+           changed);
     Expression *old = read_of(state, arguments[0], owner, old_value);
     ContainerSupport::state_result(handle, old);
     return old;

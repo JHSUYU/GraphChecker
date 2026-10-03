@@ -363,8 +363,8 @@ public final class ContainerSmtCodec {
     public static Term term(JsonObject expression, Host host) {
         // A query the chain cannot decide answers what its call stated it
         // returned, where the host pins that ({@link Host#answered}).
-        if (expression.has(ANSWER) && !statedBase(expression.get("receiver"),
-                host)) {
+        if (expression.has(ANSWER) && expression.has("concreteValue")
+                && !statedBase(expression.get("receiver"), host)) {
             Term pinned = host.answered(expression);
             if (pinned != null) return pinned;
         }
@@ -378,7 +378,8 @@ public final class ContainerSmtCodec {
     /**
      * The member a query states its session-unique answer id in, beside the
      * {@code concreteValue} its call returned (ContainerExpression's
-     * {@code state_returned}): only a query whose chain may not decide it.
+     * {@code state_returned}): only a query whose chain may not decide it;
+     * and the id that names an {@code UNKNOWN} cell.
      */
     public static final String ANSWER = "answer";
 
@@ -422,6 +423,10 @@ public final class ContainerSmtCodec {
         String shape = optionalString(expression, "shape");
         String operation = optionalString(expression, "operation");
         String javaType = optionalString(expression, "_java_type");
+        if ("UNKNOWN".equals(operation)) {
+            // What a callback the run never ran would have stored.
+            return host.unknown(expression);
+        }
         if ("STATE".equals(operation)) {
             Sort stateSort = "INDEXED".equals(shape)
                     ? Sort.INDEXED : Sort.ASSOCIATIVE;
@@ -845,12 +850,13 @@ public final class ContainerSmtCodec {
      * whether the read, null where the key is absent, is the expected cell
      * -- the test a muted body made of the value there) at one key.  With a
      * literal key, the chain's
-     * mutations at other literal keys cannot touch it and are passed in the
-     * IR, never lowered: a map the recording rebuilt from a store's bytes
-     * (Solr's cluster state, one per notification) is a put per entry, and
-     * lowering every one of them was millions of container terms for a query
-     * that reads one key.  The walk stops at the first mutation at the key
-     * (its answer), at a key that is not a literal, or at the chain's base,
+     * mutations at other literal keys, guarded or not, cannot touch it and
+     * are passed in the IR, never lowered: a map the recording rebuilt from a
+     * store's bytes (Solr's cluster state, one per notification) is a put per
+     * entry, and lowering every one of them was millions of container terms
+     * for a query that reads one key.  The walk stops at the first mutation
+     * at the key (its answer; a guarded one's answer is the lowered whole),
+     * at a key that is not a literal, at a pin, or at the chain's base,
      * never at a depth (512 lowered the rest of a longer map whole); what
      * remains is lowered as the whole state was.  Never an absent-key
      * default over the passed puts: only literal keys are compared, and two
@@ -874,12 +880,19 @@ public final class ContainerSmtCodec {
         if (literal != null) {
             while (true) {
                 Mutation mutation = associativeMutation(state);
-                if (mutation == null || !("PUT".equals(mutation.operation)
-                        || "REMOVE".equals(mutation.operation))) {
+                boolean guarded = mutation != null
+                        && ("PUT_IF".equals(mutation.operation)
+                        || "REMOVE_IF".equals(mutation.operation));
+                if (mutation == null || !guarded
+                        && !"PUT".equals(mutation.operation)
+                        && !"REMOVE".equals(mutation.operation)) {
                     break;
                 }
                 String at = literalKey(mutation.arguments.get(0));
                 if (at == null) break;
+                // A guarded mutation at the key may not have fired: from it
+                // on, the chain is lowered whole.
+                if (guarded && at.equals(literal)) break;
                 if (at.equals(literal)) {
                     boolean removed = "REMOVE".equals(mutation.operation);
                     if (!read) {
@@ -1698,6 +1711,12 @@ public final class ContainerSmtCodec {
          * stand (something it rests on can move).
          */
         Term answered(JsonObject query);
+
+        /**
+         * What a callback the run never ran would have stored: a free cell,
+         * one name per {@code UNKNOWN} node.
+         */
+        Term unknown(JsonObject cell);
 
         /** What {@link #statedBase} found of one chain node, or null. */
         Boolean statedBase(JsonElement node);

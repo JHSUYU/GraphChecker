@@ -117,6 +117,10 @@ class ContainerExpression : public Expression {
   // node, before anything else sees it.
   void state_returned(const ReturnedValue &returned);
 
+  // Gives this node its session-unique `answer` id and states nothing: an
+  // UNKNOWN cell's own name (ContainerSupport::unknown_cell).
+  void name_answer();
+
   const std::string &get_operation() const { return _operation; }
   const std::string &get_shape() const { return _shape; }
   Expression *get_receiver() const { return _receiver; }

@@ -516,8 +516,10 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   } else if (symbolic) {
     writer.Key("kind");
     writer.String("SYMBOLIC_OBJECT");
+    // A symbolized object answers by its identity, named now if nothing
+    // named it (a symbolization states its fields, never the owner).
     if (object_instance != NULL) {
-      expression = object_instance->get_ref_exp();
+      expression = object_instance->get_or_create_ref_exp(obj);
     }
   } else {
     expression = concrete_boxed_primitive_expression(obj);

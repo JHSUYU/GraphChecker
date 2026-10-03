@@ -93,6 +93,15 @@ void state_result(MethodSymbolizerHandle &handle, Expression *answer);
 // The same, for a query whose answer the muted body decided rather than
 // returned (a presence test, an emptiness test): `truth`.
 void state_answer(Expression *answer, bool truth);
+// A cell no run stated: what a callback the run never ran would have
+// stored.  COMPOSE names it a free value, one per node (`UNKNOWN`, by its
+// `answer` id).
+Expression *unknown_cell();
+// Whether an INDEXED chain counts its size from a stated base -- a
+// SNAPSHOT_BASE, a CLEAR, an array's STATE with its length -- under appends,
+// insertions, removals, writes, polls and pins only: the size COMPOSE needs
+// to shift it (ContainerSmtCodec's literal size).
+bool stated_size(Expression *state);
 // A READ at `position` of an array `state` the chain does not decide, typed
 // as the element the run loaded: the word `word` of a primitive array, else
 // `element`.  It states what the load returned when the array's elements are

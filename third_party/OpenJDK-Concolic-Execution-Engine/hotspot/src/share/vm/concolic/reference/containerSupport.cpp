@@ -1373,6 +1373,14 @@ void ContainerSupport::state_answer(Expression *answer, bool truth) {
       SharedFieldVersions::ConcreteBits(T_BOOLEAN, truth ? 1 : 0), NULL));
 }
 
+Expression *ContainerSupport::unknown_cell() {
+  exp_list_t none;
+  ContainerExpression *cell = new ContainerExpression(
+      "ASSOCIATIVE", "UNKNOWN", NULL, none);
+  cell->name_answer();
+  return cell;
+}
+
 Expression *ContainerSupport::element_read(
     SymArr *array, Expression *state, Expression *position, BasicType type,
     const SharedFieldVersions::ConcreteBits &word, oop element) {
@@ -1588,6 +1596,24 @@ ContainerExpression *own_relation(Expression *node, const char *shape) {
 }
 
 }  // namespace
+
+bool ContainerSupport::stated_size(Expression *state) {
+  Expression *cursor = state;
+  for (int depth = 0; depth < CONTAINER_CHAIN_DEPTH_LIMIT; ++depth) {
+    ContainerExpression *relation = own_relation(cursor, "INDEXED");
+    if (relation == NULL) return false;
+    const std::string &operation = relation->get_operation();
+    if (operation == "SNAPSHOT_BASE" || operation == "CLEAR") return true;
+    if (operation == "STATE") return relation->has_constant_size();
+    if (operation != "APPEND" && operation != "INSERT"
+        && operation != "REMOVE" && operation != "WRITE"
+        && operation != "POLL" && operation != "PIN") {
+      return false;
+    }
+    cursor = relation->get_receiver();
+  }
+  return false;
+}
 
 ContainerSupport::MemberAnswer ContainerSupport::entry_answer(
     Expression *state, oop key, Expression **stored) {

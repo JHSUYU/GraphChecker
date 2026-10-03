@@ -294,7 +294,9 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     // poll() answers the head or null and removes the head where there is
     // one -- PEEK and POLL, whose emptiness test is their own, so another
     // state flips both; remove() throws on an empty queue, so its head is a
-    // member: READ and REMOVE at 0.
+    // member: READ and REMOVE at 0.  A poll of an empty queue changed
+    // nothing: its POLL is the thread's state, no version, and nothing
+    // over a chain of no stated size, which no POLL lowers over.
     const bool poll = method == "poll";
     exp_list_t first;
     if (!poll) first.push_back(new ConExpression((jint)0));
@@ -306,6 +308,13 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
             result_object, handle.get_result_type()));
     ContainerSupport::state_result(handle, old);
     ContainerSupport::attach_result(result_object, old);
+    if (poll && result_object == NULL) {
+      if (ContainerSupport::stated_size(receiver)) {
+        ConcolicMngr::ctx->set_container_state(receiver_object,
+            new ContainerExpression("INDEXED", "POLL", receiver, first));
+      }
+      return old;
+    }
     Expression *next = new ContainerExpression(
         "INDEXED", poll ? "POLL" : "REMOVE", receiver, first);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);

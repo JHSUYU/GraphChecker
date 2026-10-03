@@ -11,8 +11,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * an absent key is a READ of the stated state; what a putIfAbsent,
  * computeIfAbsent or merge stores is guarded by the test its body made of
  * the value at the key (MATCHES, stating what it found), so another state
- * flips it -- an arm whose callback did not run is pinned, by name -- and
- * none of them adds a condition to the path; a callback runs with
+ * flips it -- what a callback the run never ran would have stored is an
+ * unknown cell, by name -- a call that changed nothing publishes no
+ * version, and none of them adds a condition to the path; a callback runs with
  * propagation, seeded by the contract, and what it returned is what the
  * mutation stores -- its side effects are versioned like any code's;
  * entrySet().removeIf removes each
@@ -90,15 +91,16 @@ public final class RegionConcurrentHashMapSmoke {
         String absent = field(sink, "absent", sink.absent);
         String fallback = field(sink, "fallback", sink.fallback);
 
-        // putIfAbsent, both ways: a PUT_IF each.
+        // putIfAbsent, both ways: a PUT_IF each, a version only for the one
+        // that put.
         int before = conditions();
         reserves.putIfAbsent(input.generation, 1L);
         reserves.putIfAbsent(input.generation + 2, 2L);
         String presence = System.getSharedMapVersions(reserves);
 
         // merge, both ways: the callback's result is the stored value where
-        // the key was there, the value where it was not; the absent arm,
-        // whose callback did not run, is pinned.
+        // the key was there, the value where it was not; what the absent
+        // arm's callback, which did not run, would have stored is unknown.
         sink.merged = reserves.merge(input.generation, input.deadline + 5,
                 (old, update) -> old + update);
         reserves.merge(input.generation + 3, input.deadline, Long::sum);
@@ -175,7 +177,7 @@ public final class RegionConcurrentHashMapSmoke {
                 "the absent get is no READ of a stated state: " + absent);
         require(fallback.contains("\"operation\":\"READ_OR_DEFAULT\""),
                 "getOrDefault is no READ_OR_DEFAULT: " + fallback);
-        require(count(presence, "\"versionKind\":\"STATE_PUT_IF\"") == 2
+        require(count(presence, "\"versionKind\":\"STATE_PUT_IF\"") == 1
                         && count(presence, "\"operation\":\"MATCHES\"") >= 2
                         && presence.contains("\"answer\":"),
                 "putIfAbsent is no PUT_IF guarded by what it found: "
@@ -185,9 +187,9 @@ public final class RegionConcurrentHashMapSmoke {
                         + after);
         require(merged.contains("DEADLINE") && merged.contains("\"+\""),
                 "merge's callback result is not what it stored: " + merged);
-        require(mergeLog.contains("\"operation\":\"PIN\"")
+        require(mergeLog.contains("\"operation\":\"UNKNOWN\"")
                         && pinned.contains("CONTAINER_PINNED:merge"),
-                "merge's uncalled arm is not pinned by name: " + mergeLog);
+                "merge's uncalled arm is no named unknown cell: " + mergeLog);
         require(computed.contains("GENERATION")
                         && counted.contains("\"versionKind\":\"WRITE\""),
                 "computeIfAbsent lost its callback or its side effect: "

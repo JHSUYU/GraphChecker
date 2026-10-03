@@ -475,8 +475,10 @@ MethodSymbolizer::finish_method_helper(MethodSymbolizerHandle &handle) {
           We hope only symbolize the method whose return value
           is the object we support like SymString and SymInterger.
         */
+        // Its identity, named now if nothing named it (a symbolization
+        // states its fields, never the owner).
         SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
-        exp = sym_inst == NULL ? NULL : sym_inst->get_ref_exp();
+        exp = sym_inst == NULL ? NULL : sym_inst->get_or_create_ref_exp(obj);
       } else {
         exp = SymbolExpression::get(Sym_NULL);
       }

@@ -1044,7 +1044,7 @@ public final class Composer {
         Set<String> pinned = pinnedOwners(session, reached, repaired);
         repaired.removeAll(pinned);
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
-                corpus.join(session), repaired,
+                corpus.join(session), repaired::contains,
                 (reader, writer) -> arms.concurrent(reader, writer, session));
         lowering.begin(session, rows, corpus.expressions(session));
 

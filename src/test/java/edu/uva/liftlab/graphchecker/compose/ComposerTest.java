@@ -5879,10 +5879,13 @@ public class ComposerTest {
      * pins (VM model guards): MATCHES is whether the value at a key, null
      * where absent, is the expected cell; PEEK a queue's head or null and
      * POLL the queue without it, decided by a stated size and refused by
-     * name over none; a query whose chain stands on no stated base answers
-     * what its call stated it returned -- pinned where nothing it rests on
-     * moves, free where its key does -- and one over a stated base is its
-     * chain's, whatever it states.  {asked, sat?}.
+     * name over none; an UNKNOWN cell is free, and a read at another literal
+     * key passes a guarded put; a query whose chain stands on no stated base
+     * answers what its call stated it returned -- pinned where nothing it
+     * rests on moves, free where its key does or where the stage may re-pair
+     * the read it rests on -- and one over a stated base is its chain's,
+     * whatever it states; asked of another object, a query states no answer.
+     * {asked, sat?}.
      */
     @Test
     public void aModelsChoiceIsItsGuardAndItsFactAPin() {
@@ -5921,10 +5924,47 @@ public class ComposerTest {
                 answered(relation("ASSOCIATIVE", "CONTAINS", "Z", opaque,
                         n), integer("Z", 1L), 3L));
         // The same membership, where a witness may move its key.
-        String moving = streamQuery(moving("n"),
+        String moving = streamQuery(joined("n", "", null),
                 new String[] {"movedHas"},
                 answered(relation("ASSOCIATIVE", "CONTAINS", "Z", opaque,
                         n), integer("Z", 1L), 4L));
+        // A membership over a state read: pinned where the stage holds the
+        // read to the version it observed, free where it may re-pair it.
+        SmtLowering.SessionJoin observed = joined("", "MAP/9#-3",
+                opaque);
+        JsonObject stateRead = read("MAP_STATE", 9L, -3L, 2L, "L");
+        String held = streamQuery(SmtLowering.repairing(observed,
+                        location -> false, (reader, writer) -> false),
+                new String[] {"heldHas"}, answered(relation("ASSOCIATIVE",
+                        "CONTAINS", "Z", stateRead, n), integer("Z", 1L), 5L));
+        String repaired = streamQuery(SmtLowering.repairing(observed,
+                        location -> true, (reader, writer) -> false),
+                new String[] {"repairedHas"}, answered(relation("ASSOCIATIVE",
+                        "CONTAINS", "Z", stateRead, n), integer("Z", 1L), 6L));
+        // {5 -> 7, 6 -> what a callback never run would have stored where
+        // n < 5}.
+        JsonObject unknownCell = relation("ASSOCIATIVE", "UNKNOWN", "L",
+                null);
+        unknownCell.addProperty(ContainerSmtCodec.ANSWER, 7L);
+        JsonObject filled = guarded(relation("ASSOCIATIVE", "PUT_IF",
+                relation("ASSOCIATIVE", "PUT", relation("ASSOCIATIVE",
+                        "SNAPSHOT_BASE", opaque), integer("I", 5L),
+                        integer("I", 7L)), integer("I", 6L), unknownCell),
+                binary("<", n, integer("I", 5L)));
+        String cells = streamQuery(new String[] {"nine6"},
+                relation("ASSOCIATIVE", "MATCHES", "Z", filled,
+                        integer("I", 6L), integer("I", 9L)));
+        String passed = streamQuery(new String[] {"read5"},
+                relation("ASSOCIATIVE", "READ", "I", filled,
+                        integer("I", 5L)));
+        assertFalse("a read at another literal key lowers a guarded put: "
+                + passed, passed.contains("assoc_put_if"));
+        JsonObject other = SmtLowering.asOf(answered(relation("ASSOCIATIVE",
+                "READ", "I", opaque, integer("I", 5L)), integer("I", 11L),
+                8L), map);
+        assertFalse("another object's query states the run's answer",
+                other.has("concreteValue")
+                        || other.has(ContainerSmtCodec.ANSWER));
         String[][] cases = {
             {models, "(and (= n 5) absent5)", "unsat"},
             {models, "(and (= n 4) absent5)", "sat"},
@@ -5944,6 +5984,14 @@ public class ComposerTest {
             {facts, "(not opaqueHas)", "unsat"},
             {moving, "(not movedHas)", "sat"},
             {moving, "movedHas", "sat"},
+            {held, "(not heldHas)", "unsat"},
+            {repaired, "(not repairedHas)", "sat"},
+            {repaired, "repairedHas", "sat"},
+            {cells, "(and (= n 3) nine6)", "sat"},
+            {cells, "(and (= n 3) (not nine6))", "sat"},
+            {cells, "(and (= n 7) nine6)", "unsat"},
+            {passed, "(= read5 7)", "sat"},
+            {passed, "(not (= read5 7))", "unsat"},
         };
         for (String[] asked : cases) {
             Z3.Answer answer = solver.ask(asked[0] + "\n(assert " + asked[1]
@@ -5967,24 +6015,30 @@ public class ComposerTest {
                 "ContainerRelation:INDEXED:POLL:unstated-size"));
     }
 
-    /** The join of no session, where a witness may move {@code symbol}. */
-    private static SmtLowering.SessionJoin moving(final String symbol) {
+    /**
+     * The join of no session, where a witness may move {@code symbol} and
+     * every version of {@code written}'s location wrote it.
+     */
+    private static SmtLowering.SessionJoin joined(final String symbol,
+                                                  final String location,
+                                                  final JsonObject written) {
         final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
         return new SmtLowering.SessionJoin() {
             @Override
             public com.google.gson.JsonElement writeExpression(
-                    String location, long version) {
-                return none.writeExpression(location, version);
+                    String at, long version) {
+                return location.equals(at) ? written
+                        : none.writeExpression(at, version);
             }
 
             @Override
-            public List<WriteRow> writes(String location) {
-                return none.writes(location);
+            public List<WriteRow> writes(String at) {
+                return none.writes(at);
             }
 
             @Override
-            public List<ReadRow> reads(String location) {
-                return none.reads(location);
+            public List<ReadRow> reads(String at) {
+                return none.reads(at);
             }
 
             @Override
@@ -5993,8 +6047,8 @@ public class ComposerTest {
             }
 
             @Override
-            public Set<String> readSymbols(String location, long version) {
-                return none.readSymbols(location, version);
+            public Set<String> readSymbols(String at, long version) {
+                return none.readSymbols(at, version);
             }
 
             @Override
@@ -6003,7 +6057,7 @@ public class ComposerTest {
             }
 
             @Override
-            public boolean repaired(String location) {
+            public boolean repaired(String at) {
                 return false;
             }
 
