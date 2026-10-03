@@ -1,1 +1,0 @@
-exception_target: adhoc-migrate-slices org.apache.solr.cloud.api.collections.MigrateCmd 122

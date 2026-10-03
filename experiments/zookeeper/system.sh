@@ -21,28 +21,18 @@ zk_maven_repo=/bigtemp/vnr3ne/m2/zookeeper
 # GraphChecker's jar follows the tree's classpath: the tree's own libraries
 # (slf4j and its binding, Netty) are not the engine's versions.
 system_jar_first=false
-# The class a cluster test names: tools/adhoc/workloads.py lists the tests
-# of the classes that do.
-system_cluster_class=org/apache/zookeeper/test/ClientBase
-# The tree's own code, for coverage and for the ad-hoc checks' scan: its class
-# roots (system_root names), the package JaCoCo counts, and each root's
-# sources, as "<root>:<tree-relative source dir>".
-system_roots=(server election lock queue)
-system_package=org.apache.zookeeper
+# The tree's own sources, as "<root>:<tree-relative source dir>": where
+# tools/lib/annotated.py finds the throws a known bug's case is marked at.
 system_sources=(
   server:zookeeper-server/src/main/java
   election:zookeeper-recipes/zookeeper-recipes-election/src/main/java
   lock:zookeeper-recipes/zookeeper-recipes-lock/src/main/java
   queue:zookeeper-recipes/zookeeper-recipes-queue/src/main/java
 )
-# A class a workload runs only if it starts a node of the system: a test
-# that starts none opens no recording window, so an ad-hoc sweep does not
-# choose it (tools/adhoc/select.py).
-system_node_class=org/apache/zookeeper/server/ZooKeeperServer
 
 system_paths() {
   module=${repo}/${zk_module}
-  report=${module}/target/surefire-reports/TEST-${classpath_test:-${test_class}}.xml
+  report=${module}/target/surefire-reports/TEST-${test_class}.xml
   test_classes=${module}/target/test-classes
   # The lineage scope (plan.LineageScan): the tree's class roots the
   # workload's classpath holds -- its module's, the server's and jute's, the

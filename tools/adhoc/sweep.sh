@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # sweep.sh <snapshot> <round> <cases-file> [heads-per-host]
 #
-# Runs every case id of <cases-file> as one acceptance campaign of the
-# snapshot (tools/rounds/launch-run.sh): its head on one of the lifts
-# (LIFTS, tools/lib/gc-env.sh), at most <heads-per-host> heads on each
-# (default 1), its obligations on all of them (CAUSYNTH_CAMPAIGN_WORKER_HOSTS),
-# every lift's memory gated for both through one ledger (fanout.sh,
-# run_engine's host gate).  A head is admitted for the room it reserves on
+# Runs every case id of <cases-file> (a bug check is a named case whose tree
+# marks its target throw, experiments/lib/README.md) as one acceptance
+# campaign of the snapshot (tools/rounds/launch-run.sh): its head on one of
+# the lifts (LIFTS, tools/lib/gc-env.sh), at most <heads-per-host> heads on
+# each (default 1), its obligations on all of them
+# (CAUSYNTH_CAMPAIGN_WORKER_HOSTS), every lift's memory gated for both
+# through one ledger (fanout.sh, run_engine's host gate).  A head is admitted for the room it reserves on
 # its host (tools/lib/heads.sh case_head_reserve_mb: what its planner or
 # composer starts at; every other step it runs is charged where it is
 # placed).  The cases running at once share the lifts' obligation slots:
@@ -22,9 +23,6 @@
 # image VM_IMAGE, which a sweep must name.  Case n of the file writes
 # $GC_OUT/accept-<round>-<n>; <round>-cases.tsv maps n to the case id.  A
 # sweep started again resumes: fanout.sh skips every case that returned.
-# STATIC_ROOT, when set, is every case's causynth_static_root: an ad-hoc
-# batch case (cover.py `cases`) takes its checks' static slices from the
-# build's $GC_OUT/static/<key> (slice.sh) and records once for all of them.
 set -uo pipefail
 snapshot=$(cd "${1:?snapshot}" && pwd -P)
 round=${2:?round}
@@ -40,7 +38,7 @@ set +e
 source "${here}/../lib/heads.sh"
 out=${GC_OUT}
 vm=CAUSYNTH_CUSTOM_JDK_HOME=${VM_IMAGE:?sweep.sh: name the concolic VM image as VM_IMAGE}
-static=${STATIC_ROOT:+CAUSYNTH_STATIC_ROOT=${STATIC_ROOT}}
+mkdir -p "${out}"
 
 mapfile -t cases < <(grep -v '^\s*\(#\|$\)' "${cases_file}")
 jobs="${out}/sweep-${round}-jobs.txt"
@@ -57,6 +55,6 @@ configuration could not be read): no case is launched" >&2
   # shellcheck disable=SC2086 # the lifts are words
   slots=$(campaign_pool_slots "${obligation_mb}" ${LIFTS})
   printf '%s\t%s\n' "${n}" "${cases[$n]}" >> "${out}/sweep-${round}-cases.tsv"
-  printf '%s\n' "NEED_MB=$(case_head_reserve_mb "${config}") PRUNE=1 CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_STREAM_MAX_IN_FLIGHT=${slots} CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' GC_OUT=${out} CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} ${vm} ${static} bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
+  printf '%s\n' "NEED_MB=$(case_head_reserve_mb "${config}") PRUNE=1 CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_STREAM_MAX_IN_FLIGHT=${slots} CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' GC_OUT=${out} CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} ${vm} bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
 done
 exec bash "${here}/fanout.sh" "${jobs}" "${out}/sweep-${round}-logs" "${heads}"

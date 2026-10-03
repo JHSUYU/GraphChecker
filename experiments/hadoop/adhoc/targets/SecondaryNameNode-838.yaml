@@ -1,1 +1,0 @@
-exception_target: adhoc-SecondaryNameNode-838 org.apache.hadoop.hdfs.server.namenode.SecondaryNameNode 838

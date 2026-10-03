@@ -1,1 +1,0 @@
-exception_target: adhoc-Checkpointer-237 org.apache.hadoop.hdfs.server.namenode.Checkpointer 237

@@ -1,1 +1,0 @@
-exception_target: adhoc-MigrateCmd-106 org.apache.solr.cloud.api.collections.MigrateCmd 106

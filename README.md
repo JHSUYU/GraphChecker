@@ -242,7 +242,7 @@ The owner is a PhD student doing academic research on open-source system stabili
 owner in **Chinese**, answer a direct question first (before continuing the work), keep answers
 short. The design decisions are the lead's (the agent coordinating the work), made after reading
 the code; implementers follow a written design. Decisions that change what the owner asked for
-(the pick lists, the recording window, what counts as a root) go to the owner with a
+(the bug checks, the recording window, what counts as a root) go to the owner with a
 recommendation.
 
 **The 2026-10-02 goal's rulings** (§0.1 has them verbatim)
@@ -321,7 +321,7 @@ recommendation.
   Solr/HDFS trees use `git -c user.name="Zhenyu Li" -c user.email=zhl136@ucsd.edu`.
 - Never edit the owner's dotfiles. Never rebuild a tree or edit a snapshot a campaign runs on.
   Never remove a `~/gc-run/p<N>` a running round uses: `tools/rounds/snapshot-gc.sh` removes one
-  only when no lock and no process on any lift names it.
+  only when no process on any lift names it.
 - Solr's test SecurityManager may be changed if it interferes (owner's permission); today it is
   off via `-Dtests.useSecurityManager=false`.
 
@@ -458,8 +458,8 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | z3 | `~/.local/bin/z3` (4.14.1) |
 | concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-w4h/j2sdk-image`** (vm-w4e + the `frame::metadata_do` fix for interpreted frames + caches cleared when metadata is freed + demand-driven tracking). Parked, unreviewed: `vm-w4i` (per-activation tracked-location read-out, branch `perf-vm-readout`; a jar from that branch refuses vm-w4h by name), `vm-nr41` (reference-compare identity, branch `vm-ref-compare`). Older images are deleted (2026-10-02). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
-| HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) and the ad-hoc sweep -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
-| Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406, solr-18413 and solr-adhoc name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
+| HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
+| Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406 and solr-18413 name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | ZooKeeper tree | `/bigtemp/vnr3ne/wt/zookeeper-unified` (branch `gc/zk-unified` on `branch-3.9`, a worktree of `~/zookeeper`): the adapter (`CausynthZk`, `CausynthZkCluster`), the `zk-bugs` cases' target markers and the quota workload. Maven build into its own repository `/bigtemp/vnr3ne/m2/zookeeper` (`experiments/zookeeper/build.sh`, which installs the GraphChecker jar there; never `~/.m2`). Build a case's workload before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/zookeeper/zk-bugs <case> build`. Its only remote is apache/zookeeper: never push it. |
 | HBase and bug trees | `gc/hbase-unified`, `gc/solr-bugs`, `gc/hdfs-bugs` under `/bigtemp/vnr3ne/wt/` (§0.2); clone `~/hbase`; private Maven repos `/bigtemp/vnr3ne/m2/<name>` |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
@@ -513,8 +513,8 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
   host first (PIPELINE §7.7).
 - A round's cases explore uncapped (`stream_max_in_flight=0`): each keeps as many obligations in
-  flight as the hosts admit, so one case alone may take the whole cluster. An ad-hoc sweep caps
-  them so the cases it runs at once share it: `sweep.sh` gives every case
+  flight as the hosts admit, so one case alone may take the whole cluster. A sweep ("Run the bug
+  checks") caps them so the cases it runs at once share it: `sweep.sh` gives every case
   `CAUSYNTH_STREAM_MAX_IN_FLIGHT` = the lifts' obligation slots for its `obligation_memory_mb`
   (`run_engine.sh` `campaign_pool_slots`: on each lift as many replays as fit under the 70 %
   ceiling at their charge, at most its cores; the ten lifts hold 30 of 6000 MB), and each capped
@@ -534,7 +534,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   `probe.sh` (z3 per alternative path, 600 s each) can add up to 30 min before the summary row is
   written; it is reported, not a gate.
 - **How the last lead used the servers:** one round at a time, at most ~6–8 cases at once (batch 1
-  = six cases, then the rest as cases finish); ad-hoc sweeps with 1 head per host
+  = six cases, then the rest as cases finish); sweeps with 1 head per host
   (`sweep.sh … 1`); agents' verification runs in their own `GC_OUT`; every start through the ledger
   (≤ 70 % memory per lift); `lift11` (the owner's machine, where the lead session runs) works but
   never heads; builds with `onlift.sh -g 10`.
@@ -567,8 +567,8 @@ breaks a campaign's time down by stage.
 
 ### 3.7 A snapshot for a branch that needs another tree
 
-There is no override for a case's tree: each `experiments/<system>/<case>/case.sh` names its `repo=` (and
-`experiments/hadoop/adhoc/tree` the ad-hoc HDFS tree). To validate a branch that needs a different tree
+There is no override for a case's tree: each `experiments/<system>/<case>/case.sh` names its `repo=`. To
+validate a branch that needs a different tree
 (today: `dtx-on-main` and everything on it needs `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`), edit those lines in the
 **snapshot only**, uncommitted, never on main:
 
@@ -578,7 +578,6 @@ cd ~/gc-run/p<N> && git merge --no-ff -q <branch> -m "Validation merge: <branch>
 sed -i 's#repo=/u/vnr3ne/hadoop-hdfs-unified$#repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx#' \
   experiments/hadoop/hdfs-17967/case.sh experiments/hadoop/hdfs-17899/case.sh \
   experiments/hadoop/hdfs-17960/case.sh experiments/hadoop/hdfs-17897/case.sh
-sed -i 's#^/u/vnr3ne/hadoop-hdfs-unified$#/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx#' experiments/hadoop/adhoc/tree
 /bigtemp/vnr3ne/bin/onlift.sh -g 10 bash -c 'cd ~/gc-run/p<N> && mvn -q -o package && bash src/test/shell/run_engine_campaign_helpers_test.sh'
 ```
 
@@ -658,8 +657,8 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
   its tree marks the bug's target throw with `@CausynthExceptionTarget("<case id>[,<case
   id>...]")` (the case id is `<case dir>-<case arg>`, e.g. `hdfs-17899-bug1`), and `run.sh`
   derives the spec from the marker (`tools/lib/annotated.py <system dir> <tree> <case id>`, into
-  `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`). An ad-hoc sweep counts a confirmed finding at a
-  marked throw as that known bug found again (`findings.py --annotated`, `nightly.sh`);
+  `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`). A bug check is such a case ("Run the bug
+  checks");
 - optionally `communication-mappings.jsonl` (`WIRE_FLOW` rows; the fault doors are the engine's
   library catalog, `docs/design/SYMBOL-SCOPE.md` §4.2), `root-domains.jsonl` and
   `loop-bounds*.jsonl`.
@@ -673,8 +672,8 @@ export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-w4h/j2sdk-image
 CASES=hdfs-17960 bash experiments/accept/accept.sh                  # campaign + probe + report
 ```
 
-A case id names its experiment by its longest prefix, for example `hdfs-17899-bug1`,
-`solr-18413`, `adhoc-<check>.<workload>` or `solr-adhoc-<check>.<workload>`.
+A case id names its experiment by its longest prefix, for example `hdfs-17899-bug1` or
+`solr-18413`.
 
 `accept.sh` runs the campaign, a z3 probe and `report.py`. `experiments/accept/README.md` says
 what PASS means. `report.py`'s table names the nine HDFS cases, the two Solr cases and the two
@@ -705,107 +704,38 @@ charge is granted the excess, charged on the ledger, unless the host's real use 
 `campaign_host_try_grow`): what the ledger promised other starts is no reason to end it. A head's "waiting for memory for a head step" line goes to stderr
 (its stdout is often an artifact).
 
-## Run an ad-hoc sweep
+## Run the bug checks
 
-An ad-hoc check is a guarded `throw` that a system's existing cluster test reaches and passes.
-A case is one check on one workload (`<check>.<workload>`), or a batch of checks on one workload
-(`B<n>`, a row of `batches.tsv` with its target spec `targets/B<n>.yaml`, `batch.sh`). The
-experiments are `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds
-`checks.tsv`, `batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A
-check's slice starts from the classes its experiment's communication mappings name (`system.sh`'s
-`system_mapping_scope`) and its own class, and grows the scope from there; the library doors'
-classes join it once a class of that scope calls them. A sweep runs batches:
-given `causynth_static_root` (`sweep.sh`'s `STATIC_ROOT`), a batch campaign takes each check's
-slice from the build, records its workload once for all its checks, plans each check, replays
-one seed per group of checks whose plans agree, and runs each check's campaign from EXPLORE on,
-all at once, in `out/<case>/targets/<check>/` (PIPELINE §2b).
-
-**The picks (Phase 2) are run directly, one campaign per check**, not through the nightly chain
-below. Cases are `<check>.<workload>` ids (the pick lists of §0.4):
+A bug check is a real historical bug declared like a named case: a case directory (above) without
+a `target.yaml`, whose tree marks the bug's throw with `@CausynthExceptionTarget("<case id>")`, run
+as one campaign. A list of case ids, one per line, runs through `tools/adhoc/sweep.sh`: one
+campaign per case, at most `heads-per-host` heads on each lift and every case's obligations on all
+of them, every start through `fanout.sh` and the host ledger (§3.4); each case gets
+`CASE_TIMEOUT_SECONDS` (5400 s by default) and `PRUNE=1`, and a sweep started again resumes. Give
+a sweep its own `GC_OUT`, so that `findings.py` reads that sweep's cases only (the host ledger
+stays the cluster's one):
 
 ```bash
-cd ~/gc-run/p<N>        # a built snapshot of main (for HDFS checks on another tree, §3.7)
-GC_OUT=/bigtemp/vnr3ne/gc-out VM_IMAGE=/bigtemp/vnr3ne/vm-w4h/j2sdk-image setsid nohup \
-  bash tools/adhoc/sweep.sh ~/gc-run/p<N> <round> <cases-file> 1 > /bigtemp/vnr3ne/gc-out/sweep-<round>.log 2>&1 < /dev/null &
-GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
-GC_OUT=/bigtemp/vnr3ne/gc-out python3 tools/adhoc/triage.py <round>     # class, stage, reason per check
+cd ~/gc-run/p<N>        # a built snapshot of main (§3.4; a case on another tree, §3.7)
+out=/bigtemp/vnr3ne/gc-out/checks-<round>
+GC_OUT=${out} VM_IMAGE=/bigtemp/vnr3ne/vm-w4h/j2sdk-image setsid nohup \
+  bash tools/adhoc/sweep.sh ~/gc-run/p<N> <round> <cases-file> 1 > ${out}-sweep.log 2>&1 < /dev/null &
+GC_OUT=${out} tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
+GC_OUT=${out} python3 tools/adhoc/triage.py <round>         # class, stage, reason per case
+python3 tools/adhoc/findings.py ${out} --ledger /bigtemp/vnr3ne/gc-out/findings/ledger.jsonl \
+  --annotated experiments/<system> <tree>                    # confirmed witnesses by mechanism
 ```
 
-Case `n` of the file writes `$GC_OUT/accept-<round>-<n>` (`sweep-<round>-cases.tsv` maps n to the id); each
-case has `CASE_TIMEOUT_SECONDS` (5400 s by default); the sweep waits for head room by itself (a quiet log at
-the start is the ledger, not a hang). Triage classes: CONFIRMED, REFUTED (a real false positive: keep it),
-NO_WITNESS, NO_ROOT, STOPPED (stage + reason).
-
-`tools/adhoc/nightly.sh <system>/<experiment> [date]` runs the whole chain below once per night
-(one frozen, comparable sweep, never stopped for an engine fix) into
-`$GC_OUT/nightly/<date>-<experiment>/`: it freezes the newest commit tagged `regress-pass-*` (an
-annotated tag whose message holds a line `vm=<image>`, the VM the commit passed on; placed by
-hand after an acceptance round: `git tag -a regress-pass-<date> -m vm=<image> <commit>`) as
-`~/gc-run/n<date>-<experiment>`, locks it in `$GC_OUT/snapshots-in-use/`, writes `manifest.json`
-(commit, jar, VM, tree, build key), runs steps 1–14 with the caches below, runs a case lost to the
-infrastructure once more (DEAD, or STOPPED by a full disk or quota, ssh, or the case timeout),
-and writes `triage.tsv`, `findings.tsv` and `report.md` (`funnel.py`: each step's count, and the
-kept checks' outcomes beside the calibration tail's). `tools/rounds/snapshot-gc.sh <snapshot>...`
-removes a snapshot only when no lock and no process on any lift names it (`tools/lib/alive.sh`).
-
-The build key names what a static slice and a pre-screen recording depend on:
-`tools/adhoc/buildkey.sh <experiment>` prints `<experiment>-<12 hex>`, a digest of the jar's
-entries (stable across clean rebuilds of one commit), the tree's commit (a tree with uncommitted
-tracked changes is refused) and the scope declarations (`system.sh`, `case.sh`,
-`workflow.properties`, `communication-mappings.jsonl`, `loop-bounds.jsonl`). `slice.sh` and
-`prescreen.sh` compute it: a new jar, tree or scope is a new key, under which every check is
-sliced again, and the same build finds its slices and recordings again.
-
-The steps, in order (`tools/adhoc/`; each script's header documents its arguments). Steps 1–4
-are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree commit>/`):
-
-1. `workloads.py <system-dir> <repo>`: the system's cluster tests (`workloads.tsv`): every
-   JUnit 4 or Jupiter `@Test` method, declared or inherited, that the engine's runner can call,
-   of a test class that names the system's cluster class (`system_cluster_class`). HDFS: 4176
-   tests; Solr: 606.
-2. `sites.py <system-dir> <repo>`: every guarded `throw new` in the system's sources.
-3. `coverage.sh`, fanned out by `fanout.sh`: one JaCoCo run per workload test, which writes
-   `<w>.lines` and a `.node` marker and exits with the test's own status.
-4. `reach.py <sites.jsonl> <coverage-dir>`: checks whose guard ran and whose throw did not.
-5. `select.py <sweep-dir> <experiment> declare [tree]`: declare every reached check a sweep can
-   run in `checks.tsv` (a new one as `<Class>-<throw line>`) and print one
-   `<check>.<workload>` per check, its fastest usable workload.
-6. `targets.py <experiment> <tree>`: write `targets/<check>.yaml`, each check's class and throw
-   line. Nothing in the tree is edited or rebuilt.
-7. `slice.sh <experiment> <cases-file>`: the engine's own static slice of each check
-   (`run.sh … slice`, ~70–100 s, 3.2 GB) and its score (`score.py`), in
-   `$GC_OUT/static/<key>/<check>/` (`key.json` there says what the key digests), fanned out over
-   the lifts; a check the key has a score for is kept. A check is kept when a root (clock, fault
-   door, READ placeholder, field another region stores, wire crossing) lies within 4 edges of its
-   fatal operands.
-8. `select.py <sweep-dir> <experiment> rank $GC_OUT/static/<key> <cases-file>`: `selected.jsonl`
-   (kept checks, best score first, at most three per class, plus the calibration tail: every
-   twentieth dropped check, 5 %, the same ones every night, which measures what the selection
-   drops).
-9. `cover.py <sweep-dir> <experiment> jobs [16] [2]`: `prescreen-jobs.tsv`, a greedy cover of the
-   selected checks by the tests that reach them, at most 16 checks per recording, each recording
-   named by its workload and a digest of its checks.
-10. `prescreen.sh <experiment> <sweep-dir>/prescreen-jobs.tsv`: one recording per batch woven
-    for every check of it (`$GC_OUT/prescreen/<key>/<batch>/runtime/record-summary.json`: each
-    check's ACTIVATED or refusal; a batch the build recorded already is kept). Pairs not in the
-    recording window are dropped here instead of dying at SEED (WP2 measured ~35 %, while a check
-    whose region folds into another check's was still lost as `NOT_IN_WINDOW`; each check is
-    now aggregated on its view of the merged skeletons).
-11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`, one batch
-    case per workload with the checks it activated (at most four).
-12. `VM_IMAGE=<image> STATIC_ROOT=$GC_OUT/static/<key> sweep.sh <snapshot> <round>
-    <sweep-dir>/cases.txt [heads-per-host]`: one campaign per batch over all ten lifts, `PRUNE=1`, 5400 s per case;
-    restartable. The cases exploring at once share the lifts' obligation slots
-    (`stream_max_in_flight`, §3.4). A batch records once, plans each check, and seed-replays each group of checks
-    whose plans agree once (`out/<batch>/schedule/groups/`); each check explores on its own.
-13. `triage.py <round> [gc-out]`: outcome class per case, and per check of a batch case
-    (`<case>/<check>`): CONFIRMED, CONFIG_ONLY (confirmed, every moved root a configuration),
-    REFUTED, NO_ROOT, NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING; `gc-out` defaults to
-    `gc-env.sh`'s `GC_OUT`.
-14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
-    one row per mechanism among the confirmed witnesses (`findings.tsv`), weighted by kind,
-    mediation and (1 + the rate at which REPRODUCE reproduced it natively at its anchor), the
-    configuration-only ones last; the ledger marks each new, known or dismissed.
+Case `n` of the file writes `$GC_OUT/accept-<round>-<n>` (`sweep-<round>-cases.tsv` maps n to the
+id); the sweep waits for head room by itself (a quiet log at the start is the ledger, not a hang).
+`triage.py` classes each case: CONFIRMED, CONFIG_ONLY (confirmed, every moved root a configuration),
+REFUTED (a real false positive: keep it), NO_ROOT, NO_WITNESS, STOPPED (stage and reason), DEAD, RUNNING,
+PENDING. `findings.py` writes
+`findings.tsv`, one row per mechanism among the confirmed witnesses (the target site, the finding
+kind and each moved root's kind, site, node role and context), weighted by kind and native
+reproduction (REPRODUCE), the configuration-only ones last; the ledger marks each new, known or dismissed (`dismissed.tsv` beside
+it), and `--annotated` names the known bug whose marked throw a witness's campaign declared: a
+check that found its own bug again. Hand-check every CONFIRMED witness against the code.
 
 ## Outputs
 
@@ -819,7 +749,6 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
 | `out/<case>/schedule/iteration-0000/` | `execution_task_plan.jsonl`, `concolic_region_plan.jsonl`, `recorded_schedule.jsonl`, `sessions/<id>/`, `obligations-<NNNN>/` (per planner round: one worker directory per obligation), `obligation_results.jsonl`, `exploration.json`, `witness-attempts/` |
 | `…/sessions/<id>/` | one replay's rows: `activations`, `decisions`, `reads`, `writes`, `exports`, `attaches`, `roots`, `targets`, `gaps`, `schedule` (`.jsonl`), `expressions.jsonl`, `manifest.json` |
 | `out/<case>/schedule/final/` | `result.json`, `claim.json`, `gaps.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `reproduce.json`, `run-manifest.json` |
-| `out/<batch>/targets/<check>/` | a batch case's check: its frozen slice, its region plan (`runtime/`), `campaign.log`, and its campaign root `schedule/` laid out as above; the batch's one recording and `runtime/record-summary.json` are in `out/<batch>/` |
 
 A flip query can be re-solved by hand with `z3 -smt2 obligation_query.smt2`.
 
@@ -849,18 +778,17 @@ third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/sh
                                   interpreter/bytecodeInterpreter.cpp) and its smoke tests
 experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
-experiments/hadoop/, experiments/solr/   per-system scripts, cases, ad-hoc experiments
+experiments/hadoop/, experiments/solr/   per-system scripts and cases
 tools/lib/                        gc-env.sh (GC_OUT, host ledger, LIFTS for every tool), alive.sh
                                   (which runs a process on any lift still names), heads.sh (a
                                   case's configuration, its head's weight and
                                   room, and which host heads it)
 tools/rounds/                     launch, monitor and stop campaigns on the lifts; snapshot-gc.sh
-tools/adhoc/                      ad-hoc check discovery, build key, slicing, selection, pre-screen,
-                                  sweeps, the nightly, triage, findings
+tools/adhoc/                      sweep.sh (a list of cases over the lifts), fanout.sh, triage.py,
+                                  findings.py
 tools/regress/                    offline-ab.sh: the offline merge gate
-tools/analysis/                   occurrences.py (a selector from a discovery log), timeline.py (where a
-                                  campaign's wall time went), rootcov.py (roots and symbolic
-                                  predicates per campaign)
+tools/analysis/                   timeline.py (where a campaign's wall time went), rootcov.py (roots
+                                  and symbolic predicates per campaign)
 docs/STATUS.md                    done / partial / not done, per requirement; open defects
 docs/design/                      the design of main (index: docs/design/README.md)
 ```
