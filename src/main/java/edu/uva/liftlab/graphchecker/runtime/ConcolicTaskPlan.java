@@ -347,17 +347,27 @@ final class ConcolicTaskPlan {
         }
         if (answering < 0) return null;
         // A context a task plans an occurrence in is that task's, live,
-        // done or not, its every invocation included; and an entry that
-        // opened no occurrence of its own (a fold, unnamed work) has none to
-        // give the declared address.
+        // done or not, its every invocation included; an address the
+        // recording opened is that occurrence; and an entry that opened no
+        // occurrence of its own (a fold, unnamed work) has none to give the
+        // declared address.
+        RuntimeTask declared = tasks.get(answering);
+        if (declared.recorded(answered.observed)) {
+            declared.noteUnaddressedCandidate(RefusedCandidate.onAddress(
+                    "the recording opened this address itself, so the "
+                            + "activation is that occurrence and answers no "
+                            + "question", answered.observed,
+                    activationSource));
+            return null;
+        }
         if (occupies(rootHookGroupKey, answered.observed)
                 || Identity.openedNone()) {
-            tasks.get(answering).noteUnaddressedCandidate(answered);
+            declared.noteUnaddressedCandidate(answered);
             return null;
         }
         candidateLive[answering] = true;
         answeredByQuestion[answering] = true;
-        return tasks.get(answering);
+        return declared;
     }
 
     /**
@@ -861,6 +871,13 @@ final class ConcolicTaskPlan {
          * ({@link #answers}); empty on every other task.
          */
         final List<String> questionShape;
+        /**
+         * The ids of the other occurrences the recording opened in the
+         * declared region on its node: an activation at one of them is that
+         * occurrence and answers no question ({@link #recorded}); empty on
+         * every other task.
+         */
+        final Set<String> questionRecorded;
         final String rootMethod;
         final RootContextSelector rootContextSelector;
         /** Argument predicates evaluated at the enclosing method entry. */
@@ -942,6 +959,12 @@ final class ConcolicTaskPlan {
                 shape.add(hop.getAsString());
             }
             this.questionShape = Collections.unmodifiableList(shape);
+            Set<String> recorded = new LinkedHashSet<String>();
+            for (JsonElement id : array(task.json(),
+                    RuntimeSelectedRegionFinalizer.QUESTION_RECORDED)) {
+                recorded.add(id.getAsString());
+            }
+            this.questionRecorded = Collections.unmodifiableSet(recorded);
             this.rootMethod = task.rootMethod();
             this.rootContextSelector = RootContextSelector.from(rootSelector);
             this.enclosingRootArgumentSelector =
@@ -1159,6 +1182,18 @@ final class ConcolicTaskPlan {
                     && observed != null
                     && ContextShape.answers(observed, address,
                     ScheduleLog.shape(observed.context()), questionShape);
+        }
+
+        /**
+         * Whether the recording opened {@code observed} itself: a run's
+         * activation there is that occurrence, whatever it serves this time,
+         * and answers no other question (a Solr Overseer's first task, the
+         * collection's CREATE, took the address of the declared second, the
+         * REINDEX, whose own entry then ran unplanned: accept-SB2).
+         */
+        boolean recorded(OccurrenceAddress observed) {
+            return observed != null
+                    && questionRecorded.contains(observed.id());
         }
 
         /**

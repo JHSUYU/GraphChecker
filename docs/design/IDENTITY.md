@@ -462,7 +462,11 @@ activation of its region on its node, in a context no task of that root plans an
 region in (`ConcolicTaskPlan#occupies`: not its address, and not another invocation under the same
 anchor, which is the planned occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer
 handshake, under the anchor of that handshake's planned first call, answered the declared second
-handshake, which then ran unplanned), in an entry that
+handshake, which then ran unplanned), at an address the recording did not open itself (PLAN states
+the ids of every other occurrence the recording opened in the region on the node, `questionRecorded`,
+`RuntimeTask#recorded`: an activation at one of them is that occurrence, whatever it serves this run;
+accept-SB2: the Solr Overseer's first task, the collection's CREATE, took the address of the declared
+second, the REINDEX, whose own entry then ran unplanned), in an entry that
 opened its own occurrence, answers it when its own context, shaped over this run's senders
 (`runtime/ScheduleLog#shape`: each producer endpoint's SEND stance), has that shape hop for hop and
 reaches a root (`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then

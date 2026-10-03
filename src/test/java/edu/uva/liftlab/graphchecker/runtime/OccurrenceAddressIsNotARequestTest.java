@@ -216,7 +216,8 @@ public class OccurrenceAddressIsNotARequestTest {
      * The declared occurrence is also answered by its question (IDENTITY
      * §9): an activation of its region on its node, under a chain of its
      * shape, at an address no task plans, takes the declared address.  An
-     * address a task plans is that task's, whatever the plan's order.
+     * address a task plans is that task's, whatever the plan's order, and
+     * an address the recording opened is that occurrence.
      */
     @Test
     public void theDeclaredOccurrenceIsAnsweredByItsQuestion() {
@@ -264,6 +265,16 @@ public class OccurrenceAddressIsNotARequestTest {
             // The region entry opens the run's own address; the admission
             // gives it the declared one.
             Identity.occurrence(NN0 + "#epoch0", SNAPSHOT_REGION, true);
+            JsonObject knowing = row.deepCopy();
+            knowing.add("questionRecorded", json("{'s':['" + ran.id()
+                    + "']}").getAsJsonArray("s"));
+            ConcolicTaskPlan.RuntimeTask knows = new ConcolicTaskPlan
+                    .RuntimeTask(ExecutionTask.decode(knowing));
+            assertEquals("the recording's own occurrence answers nothing",
+                    null, plan(knows).select(knows.rootHookGroup,
+                            SNAPSHOT_ROOT, node, new Object[0]));
+            assertTrue(knows.unansweredAddress(), knows.unansweredAddress()
+                    .contains("the recording opened this address itself"));
             ConcolicTaskPlan alone = plan(asked);
             assertEquals(asked, alone.select(asked.rootHookGroup,
                     SNAPSHOT_ROOT, node, new Object[0]));
