@@ -54,7 +54,7 @@ The owner's rulings of the same evening (binding; also in §1):
    selection (sites, workloads, coverage, reach, select, targets, slice, score, cover, prescreen, buildkey,
    batch, nightly, funnel), `run_engine.sh`'s batch campaign, `plan.PlanUnion`, the 155/127 sweep checks, the
    20+20 pick lists. Kept: `sweep.sh` (a list of case ids, one campaign each), `fanout.sh`, `triage.py`,
-   `findings.py`, `tools/lib/annotated.py`. Branch `retire-adhoc-pipeline` (§0.4) does it.
+   `findings.py`, `tools/lib/annotated.py`. Done on branch `retire-adhoc-pipeline` (§0.4).
 3. **A self-written cluster test may be a bug's workload** when the bug is truly high quality ("如果这个bug本身
    真的非常高质量。我允许你自己一个cluster based unit test for it…当然，bug质量要是不高就算了").
 4. **IO rule**: a bug whose causal chain crosses file or HDFS-namespace state (where symbolic propagation stops)
@@ -100,11 +100,11 @@ checks per system) is superseded by this one; Phase 1's eleven cases stay the re
 - **Cleanup done 2026-10-02**: VM images w4e/f/g; the whole home `~/gc-out` (942 old runs); every `/bigtemp`
   round output but V7/V8/V9; `ab/` gate outputs; stale analyses and the ADHOC-INFRA spec; `w5-scratch`; stale
   worktrees under `wt/` and `.claude/worktrees/`; 30 snapshots. 14 obsolete unmerged branches are archived in
-  `/bigtemp/vnr3ne/handover/archived-branches-2026-10-02.bundle` and may now be deleted (§0.4). NOT done yet:
-  deleting the merged branches and the remaining clean agent worktrees (nine: `agent-ab09dadd…`,
-  `agent-abcc5c58…`, `agent-acff2eef…`, `agent-af1a4b57…`, `agent-af53ada5…`, `agent-af77ecb5…`,
-  `agent-afab1643…`, `lock-infra`, `loopbound-scope`, all clean), and the repo-level deletion
-  (`retire-adhoc-pipeline`).
+  `/bigtemp/vnr3ne/handover/archived-branches-2026-10-02.bundle`.
+- **Cleanup done 2026-10-03**: 62 branches deleted (§0.4: 20 merged into main, 25 merged `worktree-agent-*`,
+  the 14 archived in the 2026-10-02 bundle, 2 archived in `handover/archived-branches-2026-10-03.bundle`, one
+  WIP port) and the clean worktrees of finished agents under `.claude/worktrees/`; the repo-level deletion is
+  branch `retire-adhoc-pipeline`.
 
 ### 0.3 The bug_study verdict: 60 bugs, what qualifies
 
@@ -151,43 +151,42 @@ executor (IDENTITY.md §6 claims), compare the claims' starters, not the consume
 occurrences on one consumer thread are concurrent when their starters are; CONFIRM then must hold the queue
 submission order (ORDER edges on the submitters).
 
-### 0.4 Branches (exact heads; WIP = uncommitted, saved under `/bigtemp/vnr3ne/handover/`)
+### 0.4 Branches (heads at 2026-10-03; WIP = uncommitted, saved under `/bigtemp/vnr3ne/handover/`)
 
-Branches of the 2026-10-02 night (all based on main `c2c920098` unless said):
+`main` = `770a64c8f`, fast-forwarded after round V14 (all twelve PASS): `96685608f` (`symbolic-scope`) +
+`system-zookeeper` (`df2155720`) + `fix-recorded-address` (`a43a5b312`) + `vm-streams` (`fe68c3409`). Merged and
+kept for now: `system-zookeeper`, `vm-streams` (its worktree `wt/gc-vm-streams`), `main-vs` (= main).
 
 | branch | head | content | state / next step |
 | --- | --- | --- | --- |
-| `symbolic-scope` | `95ab67bd6` + WIP `symbolic-scope-wip.patch` (12 files: ConfigRoots, StaticSymbolicSourceDiscovery, ActiveRegion, ConcolicRegionRuntime, RootMint, tests, STATUS/PIPELINE/SYMBOL-SCOPE/README) | the port of R1-ROOTS WP-D + WP-F1 without WIRE-CODEC W6, from `r1-roots-wpd-wpf1`/`gc/config-roots-soundness`: root rows state their category (a fault flip site only reaches a FAULT root; `result.json` names moved roots' categories); COMPOSE enumerates integral alternatives nearest first; configuration values are roots by category (`CONFIG:<key>`); SEED demands roots from the throw's path guards (`root_demand.jsonl`); a concrete anchor demands its pre-decision reads the root demand found; a configuration getter is a root, not a scope frontier. WIP = the soundness commit `c520f77aa`'s engine parts (one key one shape, clamps, overwritten field / unnamed key named) | finish the WIP, `mvn -q -o package` + shell test, offline gate on V8/V9 (expected: SEED.static/PLAN differ; claims and moved roots unchanged except hdfs-17960's root name `CONFIG:dfs.namenode.snapshot.deletion.ordered` if the engine mints it before the tree hook), one live round of the 11, merge. TOP PRIORITY |
-| `state-pairing` | `94e1390fc` + WIP `state-pairing-wip.patch` (experiments/hadoop/hdfs-bugs/*, report.py) | `fix-no-root`'s commits carried onto main (NO_ROOT fixes, final containers as cells, D0 by test, Writers_W(l)'s writer at version 0) as the base for the first confirmed STATE_PAIRING witness (HDFS #15) | apply WIP + the tree's WIP; build the HDFS bugs tree (`MAVEN_REPO_LOCAL=/bigtemp/vnr3ne/m2/hdfs-bugs`), run the workload 5x natively, campaign, fix generally what stands between the run and a confirmed STATE witness (is the detector iteration an occurrence -- a WAKE turn after its sleep, attributed to the DataNode; is the field a READ_SITE; does the closure demand the version-0 writer; does CONFIRM realize read-before-reconfig), hand-check the `.smt`. Supersedes branch `fix-no-root` (and its HB-edges WIP patch, not yet applied) |
-| `system-zookeeper` | `95d54763f` | ZooKeeper as the third system: `experiments/zookeeper/{system.sh,build.sh,classpath.py}`, `experiments/zookeeper/zk-bugs/` (quota-init, election-offer), report.py's expected mechanisms; the workload runner answers a Jupiter `TestInfo` parameter | tree `gc/zk-unified` built, both workloads pass; snapshot `~/gc-run/zk1` was being built. Next: campaign to IMPORT (`CAUSYNTH_CAMPAIGN_STOP_AFTER=IMPORT`) for each, then full campaigns; election-offer needs the serving-thread rule (§0.3) |
-| `solr-bug-reindex` | `4d3f0fb07` | `experiments/solr/solr-bugs/` (case `reindex-cleanup` on tree `gc/solr-bugs`), report.py | rerun SB1 (`GC_OUT=/bigtemp/vnr3ne/gc-out/solr-bugs`); the trace aggregation needs 4 GB (it re-ran itself at 4096 MB; check whether a measured need belongs in `run_engine.sh campaign_engine_need_mb`) |
-| `system-hbase` | `301fa2455` (no commit) + WIP `system-hbase-wip.patch` (experiments/hbase/*, RootCatalog's clock rule through an interface delegate + RootCatalogTest, docs, external-callers) | HBase as the fourth system | apply WIP; Phase A: build `gc/hbase-unified` on JDK 8 (`/bigtemp/vnr3ne/m2/hbase`), run `TestSplitWALProcedure#testMasterRestart` natively, then a campaign to IMPORT to measure recording and seed replay on the VM (gate ~1 h); Phase B/C per §0.3 |
-| `pairing-on-main` | `efaa032d7` + WIP `pairing-on-main-wip.patch` (ClaimPolicy, ComposeMain, ComposedFamilies, Composer, GapKind, SessionReader, SlotTable, Confirmation, RowRuntime) | main + `dtx-on-main` + `fix-11741-pairing`, with the review rework (#1 CONFIRM's substitution must compare value and attempt/site index, file a DIAGNOSTIC gap per substitution, only where the arm's session has ADDRESS_UNSTABLE; #2 an `answered` bit so the session state does not depend on landing order) half done in the WIP | finish #1/#2, offline check on `accept-V7-11741` and the gate, snapshot with the HDFS cases on the dtx tree (§3.7), ONE live round (11741 twice), merge, then move `gc/hdfs-unified` to `gc/hdfs-unified-dtx` |
-| `retire-adhoc-pipeline` | `d1045761b` | the pipeline deletion of §0.1-2 (342 files, -4199 lines) | README edits were not done; finish (README "Run an ad-hoc sweep" -> "Run the bug checks", repository map), `git grep` for dangling references, build + shell test, offline gate (solo campaigns identical), merge |
-
-Older branches (from the 2026-10-02 day handover):
-
-| branch | head | content | state |
-| --- | --- | --- | --- |
-| `dtx-on-main`, `fix-11741-pairing` | `e3b2efb1f`, `9fd01c95f` | DataTransfer messages and doors; 11741's balancer race | carried by `pairing-on-main`; delete once it merges |
-| `fix-no-root` | `2e931192e` | NO_ROOT fixes + version-0 writer | carried by `state-pairing` (its HB-edges WIP `fix-no-root-hb-edges-wip.patch` not yet) |
-| `fix-hdfs-seed-stalls` | `bfd7492bd` | one rule set for seed-replay stalls | needs a live round; its evidence (b20h) is deleted with the retired checks: validate on the 11 cases and the new checks |
+| `retire-adhoc-pipeline` | rebased onto main `770a64c8f` | the pipeline deletion of §0.1-2 (342 files, -4199 lines), README "Run the bug checks" and repository map; `experiments/zookeeper/system.sh` without the retired keys | build + shell test green, offline gate on V14 (the 11 + `zk-bugs-quota-init`) identical; merge with a live subset round (it edits `run_engine.sh`) |
+| `state-pairing` | `aa961ff78` | `fix-no-root`'s commits carried onto main (NO_ROOT fixes, final containers as cells, D0 by test, Writers_W(l)'s writer at version 0), case `hdfs-bugs-slowdisk-zero` (tree `gc/hdfs-bugs`), launch-round's `CAUSYNTH_CAMPAIGN_STOP_AFTER` | Phase A (rounds HB1/HB2, `gc-out/hdfs-bugs/`): INCONCLUSIVE on NO_ROOT_REACHES_ANCHOR and ADMISSION_GAP at `chooseVolume`; the detector's turns are occurrences already (attributed to the DataNode). Next: design `codemap-2026-10-02/08-hdfs15-design.md` Parts 1-2 |
+| `preWindow-loop-root` | `b3096d9b7` | holds `seed-functional` (`3a5978315`: java.util.stream pipelines in the SEED slice, a campaign may stop after SEED) | agent A1, live |
+| `solr-bug-reindex` | `161bdff92` | `experiments/solr/solr-bugs/` (case `reindex-cleanup`, tree `gc/solr-bugs`) | agent A2, live |
+| `zk-election-offer` | `a21d00970` | ZooKeeper #05 (`zk-bugs-election-offer`) | agent A5, live |
+| `system-hbase` | `11ddd06e1` | HBase harness (`experiments/hbase`, case `hbase-bugs-master-active-time` on `gc/hbase-unified`); an interface delegate's clock is a CLOCK root when every implementation in scope is one (`RootCatalog#dispatchesToClocks`) | Phase A done (Java 8 builds and runs, round HBA1 in `gc-out/hbase-bugs/`); parked on three blockers: the old master's activation time is written before the window (no root); a WAKE turn's k counts arrivals of every thread at one wait site (seed replay stalls); async start chains nest without bound (contexts up to 686 KB). When it resumes, its `experiments/hbase/system.sh` drops the keys the pipeline retirement retired (`system_cluster_class`, `system_roots`, `system_package`, `system_node_class`, `classpath_test`) |
+| `pairing-on-main` | `efaa032d7` + WIP `pairing-on-main-wip.patch` (in worktree `agent-aee27b43…`) | main + `dtx-on-main` + `fix-11741-pairing`, with the review rework (#1 CONFIRM's substitution must compare value and attempt/site index, file a DIAGNOSTIC gap per substitution, only where the arm's session has ADDRESS_UNSTABLE; #2 an `answered` bit so the session state does not depend on landing order) half done in the WIP | finish #1/#2, offline check on `accept-V7-11741` and the gate, snapshot with the HDFS cases on the dtx tree (§3.7), ONE live round (11741 twice), merge, then move `gc/hdfs-unified` to `gc/hdfs-unified-dtx` |
+| `dtx-on-main`, `fix-11741-pairing` | `e3b2efb1f`, `9fd01c95f` + WIP `fix-11741-pairing-review-rework-wip.patch` (in worktree `agent-a9f2c23f…`) | DataTransfer messages and doors; 11741's balancer race | both contained in `pairing-on-main`; delete once it merges |
+| `fix-no-root` | `2e931192e` + WIP `fix-no-root-hb-edges-wip.patch` and its four new files `fix-no-root-hb-edges-wip-untracked.patch` (in worktree `agent-a5fe8997…`) | NO_ROOT fixes + version-0 writer; HB-edges WIP | commits carried by `state-pairing`; the HB-edges WIP is not |
+| `fix-hdfs-seed-stalls` | `bfd7492bd` | one rule set for seed-replay stalls | needs a live round on the 11 cases and the new checks |
 | `replay-random-draws` | `d656860b2` | every random draw recorded and replayed | on `dtx-on-main`; needs a live round |
 | `fix-replay-equivalent-context` | `71fedd858` | a root admitted by its address alone | rebase after `pairing-on-main` |
 | `perf-expr-store` | `dd89bc65b` | no whole-run map keeps a replay expression alive | verify (heap, seed rows unchanged) |
 | `perf-vm-readout`, `vm-ref-compare` | `3cbea0bee`, `bba1ee25d` | VM read-out per activation; reference compare with an enum constant | parked; each needs a VM review (images `vm-w4i`, `vm-nr41`) |
 | `worktree-agent-a49c8bf5715a00c40` | `90ca7724e` | WIRE-CODEC W3/W6 + the first WP-D integration | deferred; the source of W3/W6 when they are taken up |
-| `r1-roots-wpd-wpf1`, `gc/config-roots-soundness` | `cb4a4c3e7`, `c520f77aa` | the original WP-D/WP-F1 work | source of `symbolic-scope`'s port; delete after it merges |
 
-Delete (merged into main): `admission-relevance`, `agent-11741-{L1,anchor,refine,regress,timeline}`,
-`fix-17960-unstated-value`, `fix-a40h2-stopped`, `fix-adhoc-crashes`, `fix-anchor-identity-replay`,
-`fix-confirm-flakiness`, `fix-confirm-flakiness-watch`, `loopbound-scope`, `perf-demand-tracking`,
-`perf-slow-replays`, `phase1-lock`, `r1-roots-wp0-wpe`, `stream-in-flight-cap`, `vm-bcp0-crash`, and every merged
-`worktree-agent-*`. Delete (archived in the bundle): `adhoc-pick2`, `datatransfer-doors`,
-`fix-18413-watcher-deliveries`, `fix-hdfs-seed-stalls-pre-p219`, `fix-no-root-nodtx`,
-`fix-replay-equivalent-context-r2`, `fix-solver-string-blowup`, `fix-unattested-hoff-arm`, `lock-infra`,
-`schedule-stall-planned`, `schedule-stall-release`, `worktree-agent-a2a3969b54657da82`,
-`worktree-agent-a3b05c9883ee81a4b`, `worktree-agent-a92b9448d2b627d43` (remove their worktrees first).
+Deleted 2026-10-03 (each verified merged into main, or identical to its head in
+`/bigtemp/vnr3ne/handover/archived-branches-2026-10-02.bundle`): merged -- `admission-relevance`,
+`agent-11741-{L1,anchor,refine,regress,timeline}`, `fix-17960-unstated-value`, `fix-a40h2-stopped`,
+`fix-adhoc-crashes`, `fix-anchor-identity-replay`, `fix-confirm-flakiness`, `fix-confirm-flakiness-watch`,
+`loopbound-scope`, `perf-demand-tracking`, `perf-slow-replays`, `phase1-lock`, `r1-roots-wp0-wpe`,
+`stream-in-flight-cap`, `vm-bcp0-crash`, and 25 merged `worktree-agent-*` (all but the live agents'
+`aea16c87…`, `a6cdfa85…`); bundle -- `adhoc-pick2`, `datatransfer-doors`, `fix-18413-watcher-deliveries`,
+`fix-hdfs-seed-stalls-pre-p219`, `fix-no-root-nodtx`, `fix-replay-equivalent-context-r2`,
+`fix-solver-string-blowup`, `fix-unattested-hoff-arm`, `lock-infra`, `schedule-stall-planned`,
+`schedule-stall-release`, `worktree-agent-{a2a3969b…,a3b05c98…,a92b9448…}`. Then, on the lead's word: `symbolic-scope`
+(merged), `symbolic-scope-wip-p1` (a WIP full port of `d7d7aa216`), and `r1-roots-wpd-wpf1`, `gc/config-roots-soundness`
+(the port's sources, archived in `handover/archived-branches-2026-10-03.bundle`).
 
 ### 0.5 TODO, in order
 
@@ -205,8 +204,7 @@ does not merge until fixed (§1). The new checks join the round once they pass.
    new), `zk-bugs-quota-init`, `hdfs-bugs-slowdisk-zero`, `zk-bugs-election-offer`, `hbase-bugs-master-active-time`
    (HBase first needs Phase A feasibility). Each new check: workload passes natively 5x; campaign to IMPORT; full
    campaign; read the chain against the code; add it to `experiments/accept/report.py` and STATUS "Acceptance".
-3. **Merge the pipeline retirement** (`retire-adhoc-pipeline`) and finish the repo cleanup (§0.2's NOT-done list;
-   delete the branches of §0.4).
+3. **Merge the pipeline retirement** (`retire-adhoc-pipeline`, ready; the repo cleanup is done, §0.2).
 4. **README TODO carried over**: `pairing-on-main` (the 11741 balancer race + DataTransfer doors; then move the
    HDFS tree to dtx), then one round each: `fix-hdfs-seed-stalls`, `replay-random-draws`,
    `fix-replay-equivalent-context` (rebased), `perf-expr-store`.
@@ -728,14 +726,14 @@ python3 tools/adhoc/findings.py ${out} --ledger /bigtemp/vnr3ne/gc-out/findings/
 
 Case `n` of the file writes `$GC_OUT/accept-<round>-<n>` (`sweep-<round>-cases.tsv` maps n to the
 id); the sweep waits for head room by itself (a quiet log at the start is the ledger, not a hang).
-`triage.py` classes each case: CONFIRMED, CONFIG_ONLY (confirmed, every moved root a configuration),
-REFUTED (a real false positive: keep it), NO_ROOT, NO_WITNESS, STOPPED (stage and reason), DEAD, RUNNING,
-PENDING. `findings.py` writes
-`findings.tsv`, one row per mechanism among the confirmed witnesses (the target site, the finding
-kind and each moved root's kind, site, node role and context), weighted by kind and native
-reproduction (REPRODUCE), the configuration-only ones last; the ledger marks each new, known or dismissed (`dismissed.tsv` beside
-it), and `--annotated` names the known bug whose marked throw a witness's campaign declared: a
-check that found its own bug again. Hand-check every CONFIRMED witness against the code.
+`triage.py` classes each case: CONFIRMED, CONFIG_ONLY (confirmed, every moved root a
+configuration), REFUTED (a real false positive: keep it), NO_ROOT, NO_WITNESS, STOPPED (stage and
+reason), DEAD, RUNNING, PENDING. `findings.py` writes `findings.tsv`, one row per mechanism among
+the confirmed witnesses (the target site, the finding kind and each moved root's kind, site, node
+role and context), weighted by kind and native reproduction (REPRODUCE), the configuration-only
+ones last; the ledger marks each new, known or dismissed (`dismissed.tsv` beside it), and
+`--annotated` names the known bug whose marked throw a witness's campaign declared: a check that
+found its own bug again. Hand-check every CONFIRMED witness against the code.
 
 ## Outputs
 
