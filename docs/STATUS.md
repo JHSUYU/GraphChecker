@@ -212,8 +212,8 @@ Correctness:
    no refusal frame). A refused arm is dropped by name. A query can therefore ask for a world no
    replay can plant.
 3. Valuations are cut at `compose_max_valuations` with no gap. Only single and pair moves are
-   tried, and integral values are enumerated from the domain minimum (`gc/compose/Composer`).
-   No `INCONCLUSIVE_BOUNDED` claim exists.
+   tried, an integral's outward from its recorded value (`gc/compose/Composer`). No
+   `INCONCLUSIVE_BOUNDED` claim exists.
 4. `gc/explore/FlipQuery`: a CLOCK with no reading gets the window `[0, Long.MAX]`.
 5. `==` and `!=` between a boxed container cell and a primitive are not unboxed. They are
    refused as `BinarySortConflict` (`gc/compose/SmtLowering`).

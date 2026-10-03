@@ -1713,6 +1713,43 @@ public class ComposerTest {
     }
 
     /**
+     * An integral's moves are taken outward from the value it ran at,
+     * nearest first, within its domain: a wide domain's minimum is no nearer
+     * move than any other, and a recording outside the domain moves to the
+     * nearest bound first.  {recorded, min, max, the values moved to, in
+     * order, under a cap of four valuations}.
+     */
+    @Test
+    public void anIntegralMovesOutwardFromItsRecording() throws Exception {
+        String[][] rows = {
+                {"500", "0", "1000", "499 501 498"},
+                {"0", "0", "1000", "1 2 3"},
+                {"7", "5", "8", "6 8 5"},
+                {"20", "5", "8", "8 7 6"},
+        };
+        for (String[] row : rows) {
+            Path iteration = folder.newFolder("outward-" + row[0] + "-"
+                    + row[1]).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.serial(row[0], row[1], row[2]);
+            // The fatal rests on the counter, so the valuations move it.
+            session.expression("EXPR.0000000000000e01", binary(">",
+                    symbol(SERIAL, "I"), integer("I", 2_000L)));
+            session.target("EXPR.0000000000000e01", false, true);
+            session.write();
+            List<String> moved = new ArrayList<String>();
+            for (Composer.Valuation valuation
+                    : compose(iteration, 4).valuations()) {
+                if (!valuation.moved().isEmpty()) {
+                    moved.add(valuation.moved().get(SERIAL_ROOT));
+                }
+            }
+            assertEquals(Arrays.toString(row),
+                    Arrays.asList(row[3].split(" ")), moved);
+        }
+    }
+
+    /**
      * A NODE'S CLOCK IS ONE ORDER, THE RECORDING'S.  Its cells are listed in
      * the recording's seq order whatever order the corpus holds them in (the
      * claim pins them back in it, and a replay runs a plant on in it); a

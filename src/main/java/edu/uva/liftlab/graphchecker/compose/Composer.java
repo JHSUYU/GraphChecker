@@ -2788,16 +2788,26 @@ public final class Composer {
         BigInteger high = new BigInteger(max.trim());
         BigInteger centre = integralLiteral(recorded).isEmpty()
                 ? low : new BigInteger(recorded);
-        List<BigInteger> candidates = new ArrayList<BigInteger>();
-        for (BigInteger value = low; value.compareTo(high) <= 0;
-             value = value.add(BigInteger.ONE)) {
-            if (value.equals(centre)) continue;
-            candidates.add(value);
-            if (candidates.size() >= maxValuations) break;
+        // A recording outside the domain moves to its nearest bound first.
+        if (centre.compareTo(low) < 0 || centre.compareTo(high) > 0) {
+            centre = centre.compareTo(low) < 0 ? low : high;
+            values.add(centre.toString());
         }
-        candidates.sort(Comparator.comparing(
-                value -> value.subtract(centre).abs()));
-        for (BigInteger value : candidates) values.add(value.toString());
+        // Outward from the recording, nearest first, within the domain: a
+        // wide domain's minimum is no nearer move than any other.
+        for (BigInteger step = BigInteger.ONE;
+             values.size() < maxValuations
+                     && (centre.subtract(step).compareTo(low) >= 0
+                     || centre.add(step).compareTo(high) <= 0);
+             step = step.add(BigInteger.ONE)) {
+            for (BigInteger value : new BigInteger[]{
+                    centre.subtract(step), centre.add(step)}) {
+                if (value.compareTo(low) >= 0 && value.compareTo(high) <= 0
+                        && values.size() < maxValuations) {
+                    values.add(value.toString());
+                }
+            }
+        }
         return values;
     }
 

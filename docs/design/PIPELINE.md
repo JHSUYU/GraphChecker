@@ -1252,7 +1252,7 @@ each replay's startup keys, 9 to 11 minutes late on the recording's timeline, wi
 **Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
 moves sorted by distance, then pairs of moves, cut at
 `compose_max_valuations` (a MARKER's move is its other polarity; an INTEGRAL's values come from its
-window; clocks are not enumerated).
+window, outward from its recorded value, nearest first; clocks are not enumerated).
 
 ComposeMain writes three files. `candidate.smt2`: the body, then valuation 0 as named pins
 `(assert (! (= <root symbol> <value>) :named valuation__<symbol>))` (so the file as published asks
