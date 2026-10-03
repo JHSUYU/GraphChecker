@@ -66,6 +66,9 @@ private:
   static void seed_callback(MethodSymbolizerHandle &call, sym_rid_t receiver,
                             const std::vector<oop> &arguments,
                             exp_list_t *seeds, Expression **key);
+  static void fold_callback(MethodSymbolizerHandle &call,
+                            const CallbackResult &result, oop returned,
+                            const std::vector<oop> &arguments);
 };
 
 /**

@@ -186,10 +186,10 @@ public:
                  Expression *owner, int members)
       : _view(view), _state(state), _shape(shape), _owner(owner),
         _members(members), _staged(FILTER), _has_staged(false),
-        _terminal(NO_TERMINAL), _settled(0), _pending(NO_PENDING),
+        _terminal(NO_TERMINAL), _pending(NO_PENDING), _pending_argument(0),
         _live(false), _pulled(0), _symbolic(false), _pinned(NULL),
         _barrier_met(false), _seen_callback(false), _stopped(false),
-        _deciding(NULL), _guarded_action(false) {}
+        _over_bound(false), _deciding(NULL), _guarded_action(false) {}
 
   // ---- recording ----------------------------------------------------------
 
@@ -237,13 +237,12 @@ public:
   }
 
   /**
-   * A callback of `receiver` is entering with `argument`: folds the one
-   * before it in, places this one, and answers the seed of its parameter.
+   * A callback of `receiver` is entering with `argument`: places it, and
+   * answers the seed of its parameter.
    */
-  Expression *enter(const std::vector<CallbackResult> &log,
-                    sym_rid_t receiver, oop argument) {
-    settle(log);
+  Expression *enter(sym_rid_t receiver, oop argument) {
     _pending = IGNORED;
+    _pending_argument = (uintptr_t) argument;
     if (_pinned != NULL) return NULL;
     const size_t called = stage_of(receiver);
     if (called == NO_PENDING) return NULL;
@@ -261,6 +260,17 @@ public:
     }
     _pending = called;
     return seed(argument);
+  }
+
+  /**
+   * The callback placed last returns `result` (an object result is
+   * `returned`); `argument` is the object its frame holds as its first
+   * argument now, the one it entered with when it is still that object.
+   */
+  void leave(const CallbackResult &result, oop returned, oop argument) {
+    if (result.threw) return;
+    fold(result, returned,
+         (uintptr_t) argument == _pending_argument ? argument : (oop) NULL);
   }
 
   Expression *finish(MethodSymbolizerHandle &handle);
@@ -289,10 +299,6 @@ private:
       if (_stages[at - 1].barrier()) return at - 1;
     }
     return NO_PENDING;
-  }
-
-  void settle(const std::vector<CallbackResult> &log) {
-    for (; _settled < log.size(); ++_settled) fold(log[_settled]);
   }
 
   // The source's member at position `pull`, as `member` is: READ of a
@@ -341,26 +347,30 @@ private:
     advance();
   }
 
-  // The seed of the element's callback.  An element whose value is no
-  // expression yet is named by its object when a later statement may
-  // need it: one a filter may drop, one a set collects.
+  // The seed of the element's callback: what it is, when that is an
+  // expression -- its own, or one its object carries.
   Expression *seed(oop argument) {
     if (_current.symbolic_value) return _current.value;
-    if (_current.value != NULL || argument == NULL) return NULL;
-    Expression *own = ContainerSupport::semantic_value(argument);
+    Expression *own = argument == NULL ? NULL
+        : ContainerSupport::semantic_value(argument);
     if (own != NULL) {
       _current.value = own;
       _current.symbolic_value = true;
       _symbolic = true;
-      return own;
     }
-    if (_stages[_current.stage].kind == FILTER || _terminal == TO_SET) {
-      _current.value = ContainerSupport::concrete_value(argument);
-    }
-    return NULL;
+    return own;
   }
 
-  void fold(const CallbackResult &result) {
+  // An element of the run's own value, named when a statement needs it:
+  // what a set collects, or a member a symbolic filter dropped.  Never on
+  // the way: a pipeline that stays concrete names nothing.
+  void name_value(oop object) {
+    if (_current.value == NULL && object != NULL) {
+      _current.value = ContainerSupport::concrete_value(object);
+    }
+  }
+
+  void fold(const CallbackResult &result, oop returned, oop argument) {
     const size_t at = _pending;
     _pending = NO_PENDING;
     if (at == NO_PENDING || at == IGNORED || _pinned != NULL) return;
@@ -388,9 +398,14 @@ private:
                                                 : "CALLBACK_PATH");
     }
     if (called.kind == MAP) {
-      _current.value = result.result;
-      _current.symbolic_value = result.symbolic;
-      if (result.symbolic) _symbolic = true;
+      Expression *own = result.symbolic ? result.result
+          : ContainerSupport::semantic_value(returned);
+      _current.value = own;
+      _current.symbolic_value = own != NULL;
+      if (own != NULL) _symbolic = true;
+      // A list's members are named from the list it collected
+      // (fill_values); a set's have no position to be read back by.
+      if (_terminal == TO_SET) name_value(returned);
       ++_current.stage;
       advance();
       return;
@@ -409,11 +424,12 @@ private:
       return;
     }
     if (held) {
+      if (_terminal == TO_SET) name_value(argument);
       _current.guard = conjunction(_current.guard, truth);
       ++_current.stage;
       advance();
     } else {
-      drop(truth);
+      drop(truth, argument);
     }
   }
 
@@ -421,18 +437,24 @@ private:
   // worlds that flip it, as far as relations can follow it: through LIMITs
   // to the terminal.  Before anything that calls back or holds a barrier,
   // what it would have been is unknown, so the drop is pinned.
-  void drop(Expression *truth) {
+  void drop(Expression *truth, oop argument) {
     if (truth == NULL) {
       _live = false;
       return;
     }
     Expression *alive = conjunction(_current.guard, truth);
+    bool stated = true;
     for (size_t later = _current.stage + 1; later < _stages.size(); ++later) {
-      if (_stages[later].calls_back() || _stages[later].barrier()) {
-        pin(negation(alive), "DROPPED");
-        _live = false;
-        return;
-      }
+      stated = stated && !_stages[later].calls_back()
+          && !_stages[later].barrier();
+    }
+    if (stated) name_value(argument);
+    if (!stated || _current.value == NULL) {
+      // What it would have been past here is unknown (or, its frame no
+      // longer holding the object it was called with, what it was).
+      pin(negation(alive), "DROPPED");
+      _live = false;
+      return;
     }
     _current.guard = alive;
     _current.in_run = false;
@@ -471,7 +493,10 @@ private:
   // it.  The run pulls no element past an exhausted one.
   void limit(Stage &cap) {
     const int before = cap.passed;
-    Expression *position = cap.position();
+    // Where this element stands among the arrivals, in every world: built
+    // only where some world differs from the run.
+    Expression *position = cap.bound != NULL || cap.arrivals != NULL
+        ? cap.position() : NULL;
     if (_current.in_run) {
       if ((jlong) before >= cap.concrete_bound) {
         pin_all("PROGRESS");
@@ -479,7 +504,7 @@ private:
       }
       ++cap.passed;
     }
-    if (cap.bound != NULL || cap.arrivals != NULL) {
+    if (position != NULL) {
       _current.guard = conjunction(_current.guard, new OpSymExpression(
           position, cap.bound_expression(), op_lt, true));
     }
@@ -491,9 +516,18 @@ private:
   }
 
   void arrive() {
-    _outputs.push_back(Output(_current.value, _current.guard,
-                              _current.in_run));
+    output(Output(_current.value, _current.guard, _current.in_run));
     if (_terminal == FIND && _current.in_run) _stopped = true;
+  }
+
+  // One member of the result, up to the snapshot bound: past it no
+  // statement is made (finish), so none is kept.
+  void output(const Output &member) {
+    if (_outputs.size() < (size_t) ConcolicMngr::initialSnapshotMaxEntries()) {
+      _outputs.push_back(member);
+    } else {
+      _over_bound = true;
+    }
   }
 
   // A match's predicate answered for an element: the element matches (or,
@@ -506,7 +540,8 @@ private:
         : all ? negation(truth) : truth;
     if (condition != NULL || counts) {
       Expression *guard = conjunction(_current.guard, condition);
-      _outputs.push_back(Output(mark(), guard, counts));
+      // A match's chain holds marks, made when it is stated.
+      output(Output(NULL, guard, counts));
       if (counts) {
         _stopped = true;
         _deciding = guard;
@@ -562,8 +597,10 @@ private:
   bool _has_staged;
   // The terminal's run.
   Terminal _terminal;
-  size_t _settled;
   size_t _pending;
+  // The address of the object the pending callback entered with: compared,
+  // never dereferenced.
+  uintptr_t _pending_argument;
   Element _current;
   bool _live;
   int _pulled;
@@ -572,6 +609,7 @@ private:
   bool _barrier_met;
   bool _seen_callback;
   bool _stopped;
+  bool _over_bound;
   Expression *_deciding;
   bool _guarded_action;
   std::vector<Output> _outputs;
@@ -649,7 +687,6 @@ bool StreamPipeline::fill_values(oop result) {
 }
 
 Expression *StreamPipeline::finish(MethodSymbolizerHandle &handle) {
-  settle(handle.callbacks());
   if (_live) advance();
   if (handle.callback_refusal() != NULL) pin_all("CALLBACK_DEPTH");
   const BasicType type = handle.get_result_type();
@@ -676,14 +713,11 @@ Expression *StreamPipeline::finish(MethodSymbolizerHandle &handle) {
     }
   }
   if (!_symbolic) return NULL;
+  if (_over_bound) pin_all("OVER_BOUND");
   if (_pinned == NULL
       && (_terminal == TO_LIST || _terminal == TO_ARRAY)
       && !fill_values(result)) {
     pin_all("PROGRESS");
-  }
-  if (_pinned == NULL && _outputs.size()
-      > (size_t) ConcolicMngr::initialSnapshotMaxEntries()) {
-    pin_all("OVER_BOUND");
   }
   // What the run never pulled.
   bool exhausted = false;
@@ -976,6 +1010,7 @@ bool SymStream::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
   pipeline->begin(kind, handle);
   handle.set_seeder(seed_callback);
+  handle.set_listener(fold_callback);
   return true;
 }
 
@@ -985,9 +1020,17 @@ void SymStream::seed_callback(MethodSymbolizerHandle &call,
                               exp_list_t *seeds, Expression **) {
   StreamPipeline *pipeline = recorded(call.get_param<oop>(0));
   if (pipeline == NULL) return;
-  seeds->push_back(pipeline->enter(call.callbacks(), receiver,
-                                   arguments.empty() ? (oop) NULL
-                                                     : arguments[0]));
+  seeds->push_back(pipeline->enter(receiver, arguments.empty() ? (oop) NULL
+                                                               : arguments[0]));
+}
+
+void SymStream::fold_callback(MethodSymbolizerHandle &call,
+                              const CallbackResult &result, oop returned,
+                              const std::vector<oop> &arguments) {
+  StreamPipeline *pipeline = recorded(call.get_param<oop>(0));
+  if (pipeline == NULL) return;
+  pipeline->leave(result, returned,
+                  arguments.empty() ? (oop) NULL : arguments[0]);
 }
 
 Expression *SymStream::finish_method_helper(MethodSymbolizerHandle &handle) {

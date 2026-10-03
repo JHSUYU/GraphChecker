@@ -128,7 +128,10 @@ model call inside the callback nests. When its frame pops, what it returned (its
 its concrete value) and the conditions its path recorded (`path`, `path_negation`: a predicate
 compiled to branches returns a constant) are logged on the call (`CallbackResult`; a predicate's
 answer as a condition is `CallbackResult::truth`), and the model's finish builds the mutation from
-the log. Its side effects are hooked like any interpreted
+the log. A model may instead read each callback as it returns (`CallbackListener`: its result, the
+object it returned, its arguments as its frame then holds them); a concrete result is then not built
+into an expression, so a call whose callbacks stay concrete allocates nothing per callback (the stream
+model). Its side effects are hooked like any interpreted
 code. A callback the stack declines (a fifth window) runs muted and unlogged, and its call refuses
 its map (`CALLBACK_DEPTH_EXCEEDED`). A callback that calls back into its call's map is refused
 (`CALLBACK_REENTERS_CONTAINER`). A call that mutates as its callbacks answer (`removeIf`,
@@ -178,10 +181,14 @@ the stream it returns; every body runs muted. The terminal call runs muted with 
 functional object a callback: an element's first callback is seeded with the source's member (a
 `READ` of the list's state at its position, a map view's `ENTRY`/key by `SymMap::visited_member`,
 under `CONTAINS` of its key), each later one with the previous map's result, and the elements'
-progress is reconstructed from the answers (a sequential pipeline calls the stages per element in
-order and stops an element at the first filter that answers false; a `LIMIT` lets an element through
-while fewer than maxSize passed before it in that world, `SIZE` of the earlier arrivals' guarded
-chain). The terminal states its result: a collected list is an `INDEXED` chain from its stated empty
+progress is reconstructed from the answers as each callback returns (a sequential pipeline calls
+the stages per element in order and stops an element at the first filter that answers false; a
+`LIMIT` lets an element through while fewer than maxSize passed before it in that world, `SIZE` of
+the earlier arrivals' guarded chain). An element of the run's own value is named only where a
+statement needs it: a collected list's members are read back from the list, a set's members and an
+element a symbolic filter dropped are named by the object their callback returned or still holds
+when it returns (else that drop is pinned) -- so a pipeline that stays concrete allocates no
+expression. The terminal states its result: a collected list is an `INDEXED` chain from its stated empty
 base, one `APPEND_IF` per element under its filters' answers and limit positions, published as its
 first version (`ContainerSupport::publish_filled`, `STATE_COLLECT`); a set the same with `PUT_IF`;
 `toArray` the chain as the array's state; `count` the chain's `SIZE`; a match the `IS_EMPTY` of the

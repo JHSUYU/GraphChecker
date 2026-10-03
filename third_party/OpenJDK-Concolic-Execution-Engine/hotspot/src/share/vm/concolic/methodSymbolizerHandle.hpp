@@ -62,6 +62,17 @@ typedef void (*CallbackSeeder)(MethodSymbolizerHandle &call,
                                const std::vector<oop> &arguments,
                                exp_list_t *seeds, Expression **key);
 
+/**
+ * A model that reads each callback as it returns, instead of from the
+ * call's log: its result, the object it returned, and its arguments as its
+ * frame holds them then.  With one, a concrete result is not built into an
+ * expression (the model names what it needs from the object), so a call
+ * whose callbacks stay concrete allocates nothing per callback.
+ */
+typedef void (*CallbackListener)(MethodSymbolizerHandle &call,
+                                 const CallbackResult &result, oop returned,
+                                 const std::vector<oop> &arguments);
+
 class MethodSymbolizerHandle {
 private:
   ZeroFrame *_caller_frame;
@@ -80,6 +91,7 @@ private:
   // session id: a frame whose receiver is one of them is a callback.
   std::vector<sym_rid_t> _functional;
   CallbackSeeder _seeder;
+  CallbackListener _listener;
   std::vector<CallbackResult> _callbacks;
   // The state the call's container held when it began, when it had one.
   Expression *_pre_state;
@@ -95,7 +107,7 @@ private:
 public:
   MethodSymbolizerHandle()
       : _caller_frame(NULL), _callee_frame(NULL), _callee_istate(NULL),
-        _recording(false), _seeder(NULL), _pre_state(NULL),
+        _recording(false), _seeder(NULL), _listener(NULL), _pre_state(NULL),
         _reentered(false), _callback_refusal(NULL),
         _mutates_per_callback(false) {}
 
@@ -113,6 +125,10 @@ public:
   }
   inline void set_seeder(CallbackSeeder seeder) { _seeder = seeder; }
   inline CallbackSeeder seeder() const { return _seeder; }
+  inline void set_listener(CallbackListener listener) {
+    _listener = listener;
+  }
+  inline CallbackListener listener() const { return _listener; }
   inline std::vector<CallbackResult> &callbacks() { return _callbacks; }
   inline void set_pre_state(Expression *pre_state) { _pre_state = pre_state; }
   inline Expression *pre_state() const { return _pre_state; }
@@ -277,6 +293,7 @@ public:
     _recording = false;
     _functional.clear();
     _seeder = NULL;
+    _listener = NULL;
     _callbacks.clear();
     _pre_state = NULL;
     _reentered = false;

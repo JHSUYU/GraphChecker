@@ -230,6 +230,23 @@ void MethodSymbolizer::register_functional_arguments() {
   }
 }
 
+// A callback frame's arguments, as its locals hold them, and the local each
+// one's shadow anchors at (a two-word value at its second word).
+static void callback_arguments(interpreterState istate,
+                               std::vector<oop> *arguments,
+                               std::vector<int> *anchors) {
+  ResourceMark rm;
+  int local = 1;
+  for (SignatureStream stream(istate->method()->signature());
+       !stream.at_return_type(); stream.next()) {
+    const BasicType type = stream.type();
+    arguments->push_back(type == T_OBJECT || type == T_ARRAY
+        ? *(oop *)(istate->locals() - local) : (oop) NULL);
+    if (anchors != NULL) anchors->push_back(local + type2size[type] - 1);
+    local += type2size[type];
+  }
+}
+
 bool MethodSymbolizer::enter_callback(ZeroFrame *caller_frame,
                                       ZeroFrame *callee_frame) {
   if (!_symbolizing_method || !_handle.has_functional()
@@ -250,22 +267,9 @@ bool MethodSymbolizer::enter_callback(ZeroFrame *caller_frame,
     _handle.refuse_callbacks("CALLBACK_DEPTH_EXCEEDED");
     return false;
   }
-  // The callback's arguments, as its locals hold them, and the local each
-  // one's shadow anchors at (a two-word value at its second word).
   std::vector<oop> arguments;
   std::vector<int> anchors;
-  {
-    ResourceMark rm;
-    int local = 1;
-    for (SignatureStream stream(method->signature());
-         !stream.at_return_type(); stream.next()) {
-      const BasicType type = stream.type();
-      arguments.push_back(type == T_OBJECT || type == T_ARRAY
-          ? *(oop *)(istate->locals() - local) : (oop) NULL);
-      anchors.push_back(local + type2size[type] - 1);
-      local += type2size[type];
-    }
-  }
+  callback_arguments(istate, &arguments, &anchors);
   exp_list_t seeds;
   CallbackWindow window;
   window.frame = callee_frame;
@@ -314,19 +318,22 @@ bool MethodSymbolizer::exit_callback(ZeroFrame *callee_frame) {
       callee_frame, result.threw ? T_VOID : type);
   _handle = _suspended.back();
   _suspended.pop_back();
+  // A listening model names what it needs of a concrete result itself.
+  const bool listened = _handle.listener() != NULL;
+  oop returned_object = NULL;
   if (!result.threw && type != T_VOID) {
     // Where a returning frame leaves its result, as get_result reads it.
     intptr_t *slot = istate->stack() + 1;
     result.symbolic = returned != NULL;
     if (type == T_OBJECT || type == T_ARRAY) {
-      oop value = *(oop *) slot;
-      result.returned_null = value == NULL;
-      result.result = returned != NULL
-          ? returned : ContainerSupport::concrete_value(value);
+      returned_object = *(oop *) slot;
+      result.returned_null = returned_object == NULL;
+      result.result = returned != NULL || listened
+          ? returned : ContainerSupport::concrete_value(returned_object);
     } else if (type == T_BOOLEAN || type == T_BYTE || type == T_CHAR
                || type == T_SHORT || type == T_INT) {
       result.returned_int = *(jint *) slot;
-      result.result = returned != NULL ? returned
+      result.result = returned != NULL || listened ? returned
           : type == T_BOOLEAN
               ? static_cast<Expression *>(
                     new ConExpression((jboolean)(result.returned_int & 1)))
@@ -337,7 +344,14 @@ bool MethodSymbolizer::exit_callback(ZeroFrame *callee_frame) {
     }
   }
   _symbolizing_method = true;
-  _handle.callbacks().push_back(result);
+  if (listened) {
+    // Read as it returns: no log is kept for the call's finish.
+    std::vector<oop> arguments;
+    callback_arguments(istate, &arguments, NULL);
+    _handle.listener()(_handle, result, returned_object, arguments);
+  } else {
+    _handle.callbacks().push_back(result);
+  }
   return true;
 }
 
