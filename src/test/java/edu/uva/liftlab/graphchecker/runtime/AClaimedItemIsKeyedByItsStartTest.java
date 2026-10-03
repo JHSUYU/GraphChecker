@@ -40,7 +40,7 @@ public class AClaimedItemIsKeyedByItsStartTest {
         Thread consumer = new Thread(() -> {
             keys[2] = Identity.claimedStart();
             for (int item = 0; item < 2; item++) {
-                Identity.claimStart(items[item]);
+                Identity.claimItem(items[item]);
                 keys[item] = Identity.claimedStart();
             }
         });

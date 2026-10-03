@@ -2000,8 +2000,8 @@ public class RowRuntimeTest {
         // A pool thread was created before the work it runs, so it inherits
         // nothing from the submission: the start filed for the TASK -- the
         // frames it was submitted under, then its own -- is claimed on the
-        // object the region is entered on, and the next task replaces those
-        // levels instead of nesting under them.
+        // object the region is entered on, and those levels end with the
+        // task, so the next task nests under none of them.
         Identity.resetForTests();
         final List<String> ran =
                 Collections.synchronizedList(new ArrayList<String>());
@@ -2010,10 +2010,11 @@ public class RowRuntimeTest {
             @Override
             public void run() {
                 for (Object task : tasks) {
-                    Identity.claimStart(task);
+                    long claim = Identity.claimStart(task);
                     long running = Identity.enterFrame("Task.run()#u1", null);
                     ran.add(Identity.atScope().render());
                     Identity.exitFrame(running);
+                    Identity.endClaim(claim);
                 }
             }
         });

@@ -807,14 +807,17 @@ public final class RowRuntime {
     }
 
     /**
-     * Takes the start frame filed for the work {@code carrier} carries.  The
-     * work runs either way; an unclaimable frame is a stated gap.
+     * Takes the start frame filed for the work {@code carrier} carries, at
+     * its entry ({@link Identity#claimStart}).  The work runs either way;
+     * an unclaimable frame is a stated gap.
+     *
+     * @return what ends the claim ({@link #endClaim}), 0 when none opened
      */
-    public static void claimStart(Object carrier) {
+    public static long claimStart(Object carrier) {
         // No carrier, no frame, and no subject to name a gap by.
-        if (carrier == null) return;
+        if (carrier == null) return 0L;
         try {
-            Identity.claimStart(carrier);
+            return Identity.claimStart(carrier);
         } catch (Throwable unnamed) {
             gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                     carrier.getClass().getName(),
@@ -822,8 +825,53 @@ public final class RowRuntime {
                             + "claimed, so the occurrences it publishes carry "
                             + "no start-site frame in their execution index: "
                             + unnamed);
+            return 0L;
         }
     }
+
+    /** Ends one work entry's claim ({@link Identity#endClaim}). */
+    public static void endClaim(long claim) {
+        try {
+            Identity.endClaim(claim);
+        } catch (Throwable unclosed) {
+            gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, "work entry",
+                    "the claim of a returning work entry could not be ended, "
+                            + "so the thread's next work stands on its start "
+                            + "frames: " + unclosed);
+        }
+    }
+
+    /**
+     * Takes the start filed for an item taken off a queue ({@link
+     * Identity#claimItem}).  An item another node put there names no work
+     * of the taker: a DIAGNOSTIC row, once per pair of nodes and item class.
+     */
+    public static void claimItem(Object item) {
+        if (item == null) return;
+        try {
+            String refused = Identity.claimItem(item);
+            if (refused != null && REFUSED_ITEMS.add(refused + "|"
+                    + item.getClass().getName())) {
+                gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                        item.getClass().getName(),
+                        "an item " + refused + " put on a queue was taken "
+                                + "by another node's work, so it names no "
+                                + "work of the taker (a pool the nodes of "
+                                + "one JVM share): no claim");
+            }
+        } catch (Throwable unnamed) {
+            gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                    item.getClass().getName(),
+                    "the start filed for this queue item could not be "
+                            + "claimed, so the work it publishes carries "
+                            + "no start-site frame in its execution index: "
+                            + unnamed);
+        }
+    }
+
+    /** Each pair of nodes and item class an item claim was refused for. */
+    private static final Set<String> REFUSED_ITEMS =
+            ConcurrentHashMap.newKeySet();
 
     /** Files one expression and returns the ref rows name it by. */
     public static String expressionRef(JsonElement expression) {

@@ -76,6 +76,12 @@ public final class Identity {
          * FutureTask inside an executor's wrapper) nests.
          */
         private final Deque<Claim> starts = new ArrayDeque<Claim>();
+        /** The serial the next claim on this thread takes. */
+        private long claimSerial;
+        /** The work entries standing that claimed work ({@link
+         *  Identity#claimStart}), innermost first. */
+        private final Deque<ClaimScope> claimScopes =
+                new ArrayDeque<ClaimScope>();
         /**
          * Whether this thread's own start was UNNAMED ({@link #startWork}
          * where no hop names the starter): for the thread's life.
@@ -162,26 +168,40 @@ public final class Identity {
          * (IDENTITY §3, start frames): the starter's index from its scope
          * root, then the start's own frame, so two starts from one site
          * differ by the frames they were made under or by that frame's k.
-         * A started thread stands on its creator's frames already
-         * ({@link #copy}) and opens the start's own frame alone.  Their
-         * levels have no token, so no frame exit closes them.
+         * Work that already stands on its starter's frames -- a started
+         * thread ({@link #copy}), or work its starter runs itself ({@link
+         * Start#ranHere}) -- opens the start's own frame alone.  Their
+         * levels have no token, so no frame exit closes them; a work
+         * entry's claim ends when the entry returns ({@link
+         * Identity#endClaim}).
+         *
+         * @param own whether this is the thread's own start, which is no
+         *            claimed work: the thread orders it
          */
-        private void openStart(Start start, boolean inherited) {
-            // A pool thread drops its finished task's start (and the scope
-            // it carried) before taking the next; a nested start nests.
-            int held = innermostStart();
-            if (held >= 0 && onlyStartsFrom(held)) {
-                while (depth() > held) levels.remove(depth());
-                closeStartsFrom(held);
+        private void openStart(Start start, boolean own, boolean ranHere) {
+            // A claim takes the place of the finished one made in the same
+            // work before it (a consumer loop's previous item, and the scope
+            // that item carried); any other stands under it: the work that
+            // runs it, or the thread's own start.
+            Claim held = starts.peek();
+            if (held != null && held.scope == claimScope()
+                    && onlyStartsFrom(held.depth)) {
+                while (depth() > held.depth) levels.remove(depth());
+                closeStartsFrom(held.depth);
             }
-            // A thread's own start is no claimed work: the thread orders it.
-            starts.push(new Claim(depth(), inherited ? null : start.key));
+            starts.push(new Claim(depth(), start.key, own, claimScope(),
+                    claimSerial++));
             // The frames belong to the window the start was counted in.
-            for (Frame frame : inherited
+            for (Frame frame : own || ranHere
                     ? Collections.singletonList(start.frame())
                     : start.frames) {
                 levels.add(new Level(frame, 0L, null, start.window));
             }
+        }
+
+        /** The innermost work entry's claim scope, or 0 under none. */
+        private long claimScope() {
+            return claimScopes.isEmpty() ? 0L : claimScopes.peek().id;
         }
 
         /** Whether no entered frame stands at depth {@code from} or above:
@@ -425,7 +445,7 @@ public final class Identity {
      */
     private static final class Start {
         private static final Start UNNAMED = new Start(
-                Collections.<Frame>emptyList(), null, "");
+                Collections.<Frame>emptyList(), null, "", null, null, 0);
         /** The starter's frames from its scope root, then the start's. */
         private final List<Frame> frames;
         private final Attribution.Reference starter;
@@ -437,29 +457,83 @@ public final class Identity {
         private final String key;
         /** The window the start was counted in ({@link Level#window}). */
         private final int window = RecordingWindow.index();
+        /** The thread that made the start, and its innermost level then. */
+        private final Thread thread;
+        private final Level level;
+        private final int depth;
 
         private Start(List<Frame> frames, Attribution.Reference starter,
-                      String key) {
+                      String key, Thread thread, Level level, int depth) {
             this.frames = frames;
             this.starter = starter;
             this.key = key;
+            this.thread = thread;
+            this.level = level;
+            this.depth = depth;
         }
 
         /** The start's own frame: its site and k. */
         private Frame frame() {
             return frames.get(frames.size() - 1);
         }
+
+        /**
+         * Whether {@code state}'s thread is the starter and still stands on
+         * the level it started from: the starter runs the work itself (an
+         * executor that runs a task on the calling thread, HBase's
+         * {@code IPCUtil#execute} on its own event loop).  The work stands on
+         * the starter's frames already; opened again on top of them, every
+         * such run doubled the stack.
+         */
+        private boolean ranHere(State state) {
+            return thread == Thread.currentThread()
+                    && depth <= state.depth()
+                    && state.levels.get(depth) == level;
+        }
     }
 
-    /** One claimed start standing on a thread: where its levels open, and
-     *  its start's {@link Start#key} -- null for the thread's own start. */
+    /**
+     * One claimed start standing on a thread: where its levels open, its
+     * start's {@link Start#key}, the claim scope that made it, and its
+     * serial on the thread.
+     */
     private static final class Claim {
         private final int depth;
         private final String start;
+        /** Whether this is the thread's own start, which is no claimed work. */
+        private final boolean own;
+        private final long scope;
+        private final long serial;
 
-        private Claim(int depth, String start) {
+        private Claim(int depth, String start, boolean own, long scope,
+                      long serial) {
             this.depth = depth;
             this.start = start;
+            this.own = own;
+            this.scope = scope;
+            this.serial = serial;
+        }
+    }
+
+    /**
+     * One work entry's claim scope: what it found on the thread, which it
+     * puts back when the work returns ({@link #endClaim}).
+     */
+    private static final class ClaimScope {
+        private final long id = TOKENS.getAndIncrement();
+        /** The serial of the first claim this activation may make. */
+        private final long serial;
+        private final Object work;
+        private final Attribution.Reference starter;
+        private final boolean adopted;
+        private final int unnamedAt;
+
+        private ClaimScope(State state) {
+            this.serial = state.claimSerial;
+            this.work = state.work;
+            this.starter = state.starter;
+            this.adopted = state.adopted;
+            this.unnamedAt = state.unnamedAt;
         }
     }
 
@@ -518,14 +592,14 @@ public final class Identity {
         if (start == null) return;
         // The thread a start created claims it itself, standing on the
         // frames it inherited; a task is claimed on a pool's thread.
-        boolean inherited = carrier == Thread.currentThread();
+        boolean own = carrier == Thread.currentThread();
         if (start == Start.UNNAMED) {
             // Work no hop started: nothing to open, nothing carried, no
             // CLAIM (its START was never an event).
-            state.claimUnnamed(inherited);
+            state.claimUnnamed(own);
             return;
         }
-        state.openStart(start, inherited);
+        state.openStart(start, own, !own && start.ranHere(state));
         state.starter = start.starter;
         state.adopted = true;
         // The starter's scope comes with the work; it closes when the start
@@ -578,7 +652,8 @@ public final class Identity {
                 new Start(frames, Attribution.capture(),
                         RuntimeTraceContext.nodeHere() + "|"
                                 + contextHere().render() + "|"
-                                + ExecutionIndex.of(frames).render()));
+                                + ExecutionIndex.of(frames).render(),
+                        Thread.currentThread(), state.top(), state.depth()));
         ScheduleLog.observe(ScheduleEvent.Kind.START, site);
     }
 
@@ -600,7 +675,8 @@ public final class Identity {
      */
     static String claimedStart() {
         State state = state();
-        return state.starts.isEmpty() ? null : state.starts.peek().start;
+        return state.starts.isEmpty() || state.starts.peek().own ? null
+                : state.starts.peek().start;
     }
 
     /** Whether that reference is a claimed start, not the thread's creator. */
@@ -630,12 +706,99 @@ public final class Identity {
      * Takes the start frame filed for task {@code carrier}, if any: the
      * task half of the claim rule ({@link #state}), woven at the functional
      * method's entry by {@code CausynthPipeline.claimWorkEntry} in both
-     * passes.  An unfiled thread claims nothing; its inseparable events are
-     * refused at the mint, not given an invented frame.
+     * passes, before the method's level.  An unfiled thread claims nothing;
+     * its inseparable events are refused at the mint, not given an invented
+     * frame.
+     *
+     * @return what ends the claim when the work returns ({@link #endClaim})
      */
-    public static void claimStart(Object carrier) {
-        if (carrier == null) return;
+    public static long claimStart(Object carrier) {
+        if (carrier == null) return 0L;
         State state = state();
+        ClaimScope scope = new ClaimScope(state);
+        state.claimScopes.push(scope);
+        claim(state, carrier);
+        return scope.id;
+    }
+
+    /**
+     * Ends the claim {@link #claimStart} made at a work entry, woven at the
+     * entry's every exit after its own level: the claims made since -- the
+     * work's own and any a queue take inside it made -- end with it, their
+     * start levels and the scopes they carried, and the work, starter and
+     * unnamed state they replaced come back.  Left standing, an event
+     * loop's callbacks ran on its last task's frames and scope, and each
+     * send they made nested under the one before (HBA1: 3777 frames on one
+     * HBase client event loop).  A claim a non-local exit left inside it
+     * ends with it.
+     */
+    public static void endClaim(long id) {
+        if (id <= 0L) return;
+        State state = state();
+        ClaimScope scope = null;
+        for (ClaimScope open : state.claimScopes) {
+            if (open.id == id) {
+                scope = open;
+                break;
+            }
+        }
+        if (scope == null) return;
+        while (state.claimScopes.pop() != scope) {
+            // a claim a non-local exit left inside it
+        }
+        int from = -1;
+        while (!state.starts.isEmpty()
+                && state.starts.peek().serial >= scope.serial) {
+            from = state.starts.pop().depth;
+            RuntimeTraceContext.releaseCarried();
+        }
+        if (from >= 0) {
+            // The claims' levels; a frame entered above them has exited.
+            while (state.depth() > from
+                    && state.levels.get(state.depth()).token == 0L) {
+                state.levels.remove(state.depth());
+            }
+        }
+        state.work = scope.work;
+        state.starter = scope.starter;
+        state.adopted = scope.adopted;
+        state.unnamedAt = scope.unnamedAt;
+        if (state.scopeBase > state.depth()) state.scopeBase = state.depth();
+        state.journal();
+    }
+
+    /**
+     * Takes the start filed for an item taken off a queue (woven after the
+     * take in both passes), which lasts until the consumer takes its next
+     * item or the work it runs in ends.  An item another node put there
+     * names no work of the taker: the nodes of one JVM share static pools,
+     * and a pooled object put back by one node's work and taken by
+     * another's lent the taker the putter's scope (HBA1: the restarted
+     * master's activation took a memstore chunk its predecessor's shutdown
+     * had put back, and ran the rest of its activation, and every thread it
+     * started, as the old master).
+     *
+     * @return the putter's node when the item was refused so, else null
+     */
+    static String claimItem(Object item) {
+        if (item == null) return null;
+        State state = state();
+        Start start = STARTS.isEmpty() ? null
+                : STARTS.get(new Carrier(item, null));
+        if (start != null && start.starter != null) {
+            SourceRef putter = start.starter.resolve();
+            SourceRef taker = Attribution.resolve(null);
+            if (putter != null && taker != null
+                    && !putter.key().equals(taker.key())) {
+                STARTS.remove(new Carrier(item, null));
+                return putter.key();
+            }
+        }
+        claim(state, item);
+        return null;
+    }
+
+    private static void claim(State state, Object carrier) {
         state.work = carrier;
         // A task claimed here takes the place of a finished unnamed one.
         state.endUnnamedWork();

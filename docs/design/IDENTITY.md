@@ -118,12 +118,20 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   (`#claimStart`). A task claimed on a pool's thread stands on all of them; a started thread
   already stands on its creator's frames and adds the start frame alone. So siblings started from
   one site differ by that frame's `k` or, started in two calls of the method holding the site, by
-  the frames above it. Claimed starts nest; a pool thread drops a finished task's start levels
-  before claiming the next. A start made where no hop names the starter (its lineage is
+  the frames above it. Claimed starts nest while their work runs: a work entry's claim ends when
+  the entry returns (`#claimStart` / `#endClaim`, woven around the entry outside its level), with
+  the scope it carried, and puts back what it replaced; left standing, an event loop's callbacks
+  ran on its last task's frames and each send nested under the one before (HBA1: 3777 frames). Work
+  its starter runs itself (an executor that runs a task on the calling thread) stands on the
+  starter's frames already and opens the start frame alone (`Start#ranHere`). A queue item's claim
+  lasts until the consumer takes its next item in the same work (`#claimItem`); an item another
+  node put there is no work of the taker -- the nodes of one JVM share static pools (HBA1: the
+  restarted master's activation took a memstore chunk its predecessor's shutdown put back, and ran
+  as the old master) -- and is refused, a `LINEAGE_LOST` DIAGNOSTIC row (`RowRuntime#claimItem`).
+  A start made where no hop names the starter (its lineage is
   empty) files no frame, captures no scope and writes no event -- its k would count arrivals,
   which nothing schedules -- but an unnamed start: the work that claims it is unnamed (§1), a
-  started thread for its life, a task claimed on a pool's thread until the next claim on that
-  thread or until a level below its claim exits.
+  started thread for its life, a task claimed on a pool's thread until it returns.
 - **Scope base** (`Identity#scopeStart`, `Hop`): an occurrence's index starts at its context's
   origin: the inbound scope for `ANCHOR` (which pooled handler serves a request is scheduling, not
   identity), the scope start for `SCOPE_ROOT` (a request, a carried scope, a wake turn), the claimed
@@ -554,7 +562,8 @@ carried the second move to dn1 is the balancer's timing).
 ## 10. Pass equality
 
 The address is one function of one input set in both passes. The hooks that push a frame or count
-an event (`startWork`, `claimStart`, `enterMethodFrame`, `exitMethodFrame`, `throwMethodFrame`) are
+an event (`startWork`, `claimStart`, `endClaim`, `claimItem`, `enterMethodFrame`, `exitMethodFrame`,
+`throwMethodFrame`) are
 in both hook catalogs (`CausynthPipeline.HookCatalog#shared`); every site string is stabilized once
 by `contract/JvmNames#stable` (reflection accessors and lambda proxies lose their JVM-minted
 counters; a desugared lambda class is named by content in every weave, `LambdaClassNames`);
