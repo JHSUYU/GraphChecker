@@ -1185,7 +1185,10 @@ each component as `assoc_remove_if`'s); a source whose chain bounds no keys is r
 the source's keys. The presence and match conditions of `putIfAbsent`, `replace` and `remove(k, v)`
 are comparisons of a `READ` with null or the argument, lowered as any comparison. A String a map
 answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
-(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A view's positions are
+(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). An object reference is an
+opaque identity: one the VM named (`M_L'c'_rid`) is non-null and distinct from its session's other
+named objects, one it placed unnamed (`P_L'c'_`, made only for a non-null object) is non-null
+(`SmtLowering#opaque`). A view's positions are
 stated linearly in its chain's puts: each position below the size names a present key held at that
 position, and each put key present is held at a position below the size. A position is the run's
 iteration count, so the chain's order is the positions' only where it is the order the map's class

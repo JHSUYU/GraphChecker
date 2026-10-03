@@ -92,6 +92,17 @@ public final class VmRows {
     private static final String TRUNCATION_AUTHORITY =
             "VM_SERIALIZATION_TRUNCATION_V1";
 
+    /**
+     * Whether {@code symbol} is an object the VM placed without naming it,
+     * {@code P_L'class'_} ({@code PlaceHolderSymbolExp}, made only for a
+     * non-null object the session holds no id for): an identity that is
+     * non-null, and may be any of the session's unnamed objects of its class.
+     */
+    public static boolean placedObject(String symbol) {
+        return symbol != null && symbol.startsWith("P_L'")
+                && symbol.endsWith("'_");
+    }
+
     /** The rid one {@code M_L'class'_rid} reference symbol names, or -1. */
     public static long referencedObjectRid(String symbol) {
         if (symbol == null) return -1L;

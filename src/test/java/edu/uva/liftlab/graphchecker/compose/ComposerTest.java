@@ -3012,6 +3012,28 @@ public class ComposerTest {
     }
 
     /**
+     * An object the VM placed unnamed ({@code P_L'class'_}) is non-null, as
+     * a named one is: a lookup that returned it is no null in any model.
+     */
+    @Test
+    public void aPlacedObjectIsNonNull() {
+        SmtLowering lowering = new SmtLowering(
+                new LinkedHashMap<String, VmTermLowering.Sort>());
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        String test = lowering.dispatch(binary("==",
+                symbol("P_L'org/apache/zookeeper/server/DataNode'_",
+                        "org/apache/zookeeper/server/DataNode"), vmNull()),
+                VmTermLowering.Sort.BOOL, "test").text;
+        lowering.end();
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        List<String> facts = lowering.facts(Collections.singletonList(test));
+        assertTrue(test + " " + facts, facts.size() == 1
+                && facts.get(0).matches("\\(not \\(= identity__\\w+ nullRef\\)\\)")
+                && test.contains(facts.get(0).substring(8, 8 + 20)));
+    }
+
+    /**
      * What another writer of the reference may have handed the reader, by
      * variant: a map mutated after its store by a writer concurrent with the
      * reader is each state the reader could have seen, chosen by nested
