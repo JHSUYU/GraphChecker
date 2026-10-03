@@ -1783,6 +1783,27 @@ campaign_remote_worker_bound_s() {
 # that rather than assumed away.
 campaign_remote_visibility_wait_s=120
 
+# campaign_await_visible <file>...: the files a head step that may have
+# been placed on a peer wrote, visible here before the head reads them: a
+# file not visible yet has its directory re-listed each second (a negative
+# lookup the head cached -- the head itself checked the name was free
+# before the step -- hides a file the peer created until the directory's
+# attribute cache expires), bounded by campaign_remote_visibility_wait_s.
+# A visible file costs nothing; what never shows is the caller's to refuse.
+# (The engine JVM's placement is made in a subshell, run_in_directory, so
+# its caller cannot tell where it ran.)
+campaign_await_visible() {
+  local file waited=0
+  for file in "$@"; do
+    while [[ ! -s "${file}" ]] \
+        && (( waited < campaign_remote_visibility_wait_s )); do
+      ls "$(dirname "${file}")" >/dev/null 2>&1 || true
+      sleep 1
+      waited=$((waited + 1))
+    done
+  done
+}
+
 # Every workflow key's CURRENT value, under the environment override that
 # sets it.
 #
@@ -5283,6 +5304,8 @@ campaign_compose() {
     "${campaign_final}/compose.log" \
     "the composer failed with exit ${status} on inputs it was given: \
 $(campaign_thrown "${campaign_final}/compose.log")"
+  # Its claim before it: refuted, moved away, its name looked up free here.
+  campaign_await_visible "${composed_smt}" "${composition_manifest}"
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
   printf '%s\t%s\n' "COMPOSE[anchor]" "${millis}" \
@@ -5629,22 +5652,17 @@ ${campaign_recorded_workload_s}s)"
 # recording's peak memory for an obligation's ramp, wherever there is room
 # (campaign_head_charged), and released as it returns.  A run placed on a
 # peer has its answer waited for until the shared home shows it here
-# (campaign_remote_visibility_wait_s); one that never shows states none.
+# (campaign_await_visible); one that never shows states none.
 campaign_reproduce_one() {
-  local run=$1 bound=$2 plant=$3 waited=0
+  local run=$1 bound=$2 plant=$3
   mkdir -p "${run}"
   campaign_head_charged "${campaign_recorded_workload_rss_mb}" \
     "${campaign_host_ramp_s}" campaign_reproduce_run "${analysis_classes_dir}" \
     "${run}" "${bound}" "${plant}" "${campaign_recorded_workload_rss_mb}" \
     || campaign_log "reproduce: $(basename "${run}") exited nonzero; its \
 logs are in ${run}"
-  campaign_host_is_local "${campaign_placed_host}" && return 0
-  while [[ ! -s "${run}/answer.json" ]] \
-      && (( waited < campaign_remote_visibility_wait_s )); do
-    ls "${run}" >/dev/null 2>&1 || true
-    sleep 1
-    waited=$((waited + 1))
-  done
+  campaign_host_is_local "${campaign_placed_host}" \
+    || campaign_await_visible "${run}/answer.json"
 }
 
 # One native run, on the host it was placed on, which it names in
