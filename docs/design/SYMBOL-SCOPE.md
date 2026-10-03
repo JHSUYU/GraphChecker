@@ -452,9 +452,14 @@ reaches, to a fixed point:
   target's 923 writers demanded 5134 more, along the methods that ran in them 244). At a cell a `WRITE_SITE` names it crosses, on the same node, to every activation that ran
   the storing method or took the arm of one of the store's guards away from it (a recorded
   `BRANCH` at that site in its calls, against the WRITE_SITE's `guardOutcomes`; any decision at a
-  guard that is not binary), whatever region it was performed under (`RegionDemandIndex#storersOrDeciders`, `SHARED_LOCATION_DEMAND_V1`): a store on an
+  guard that is not binary) at a decision something the engine moves reaches there -- a tracked read (`READ_SITE`: the replay
+  versions it, so another writer re-pairs it; an untracked stored read stays what it read), a root's
+  dependency cell, an IN port's capture, backwards over the
+  edges of the methods that ran in it (`DemandWalk#movable`; a decision the slice states no operand of
+  is kept) --, whatever region it was performed under (`RegionDemandIndex#deciders`, `SHARED_LOCATION_DEMAND_V1`): a store on an
   arm the recording did not take is one flip away, so the closure keeps it, and a method that ran
-  without reaching the guard, or took its arm toward the store, is not (owner, 2026-10-02; the
+  without reaching the guard, took its arm toward the store, or decided it on nothing a world moves
+  is not (the last stated per region, a DIAGNOSTIC `ADMISSION_GAP`) (owner, 2026-10-02; the
   hdfs-bugs slowdisk-zero detector decides `max > 0` each turn and never ran the store of
   `slowDisksToExclude` behind it, an accessor's), and keeps the guards of the read locally; in a writer it demands
   the guards of the store, never the store's value (value provenance stops at a stored location:

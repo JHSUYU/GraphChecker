@@ -845,6 +845,7 @@ public final class RuntimeSelectedRegionFinalizer {
         walk.walk(seeds);
         admitRelevantRoots(program, walk, scopeMap, messages);
         walk.stateUnpairedWires(program.planGaps);
+        walk.stateFixedDeciders(program.planGaps);
         // Restated after the walk, so an occurrence the walk reached twice
         // publishes the shortest chain that reached it.
         for (String occurrence : walk.reached) {
@@ -1097,9 +1098,10 @@ public final class RuntimeSelectedRegionFinalizer {
      * occurrence.  Inside an occurrence the walk follows the candidate graph;
      * at a cell the scope map names as stored it crosses to the activations
      * on the same node (heap is node-private) that ran the storing method or
-     * took the arm of one of the store's guards away from it, a store on the
-     * arm they did not take
-     * being one flip away ({@link RegionDemandIndex#storersOrDeciders}),
+     * took the arm of one of the store's guards away from it at a decision a
+     * movable value reaches there, a store on the arm they did not take
+     * being one flip away ({@link RegionDemandIndex#deciders}, {@link
+     * #movable}),
      * unless the recording saw it hold only
      * other objects of the field than the reader read ({@link
      * #holdsOthersOnly}); there it demands the guards of the store, while
@@ -1144,6 +1146,17 @@ public final class RuntimeSelectedRegionFinalizer {
          *  whose recording paired no export with it. */
         private final Map<String, Set<String>> unpaired =
                 new LinkedHashMap<>();
+        /**
+         * The cells a value can move from under a world the engine expresses
+         * ({@link #movable}): a tracked read (the replay versions it, so
+         * another writer re-pairs it), a root's dependency cell, a declared
+         * IN port's capture.  An untracked stored read stays the value it
+         * read in every replay.
+         */
+        private final Set<String> sources = new HashSet<>();
+        /** Occurrences that left a demanded store at guards no source
+         *  reaches in them ({@link #movable}), so no writer was planned. */
+        private final Set<String> fixedDeciders = new LinkedHashSet<>();
 
         private DemandWalk(StaticProgram program, RegionDemandIndex demands,
                            StaticScopeMap scopeMap,
@@ -1154,6 +1167,12 @@ public final class RuntimeSelectedRegionFinalizer {
             this.cutPorts = cutPorts;
             this.excluded = excluded;
             this.writeSites = scopeMap.writeSitesByCell();
+            sources.addAll(scopeMap.trackedCells());
+            for (StaticScopeMap.Site declared : scopeMap.declaredSites()) {
+                if (!declared.declared.inputKind.isEmpty()) {
+                    sources.add(declared.declared.dependencyCell);
+                }
+            }
             for (Map<String, Object> edge : program.graph) {
                 if ("wire_handoff".equals(text(edge.get("kind")))) {
                     wireConsumers.add(text(edge.get("toCell")));
@@ -1171,6 +1190,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     attachCells.computeIfAbsent(portId,
                             ignored -> new LinkedHashSet<>())
                             .addAll(port.cells);
+                    sources.addAll(port.cells);
                 }
             }
             for (Map.Entry<String, Map<String, Object>> entry
@@ -1284,8 +1304,12 @@ public final class RuntimeSelectedRegionFinalizer {
                         .add(objectsOf(instances.get(occurrenceId), cell,
                                 true));
                 for (StaticScopeMap.Site site : writers) {
-                    for (String writerOccurrence
-                            : demands.storersOrDeciders(site)) {
+                    List<String> storers = demands.storers(site);
+                    Map<String, List<String>> deciders =
+                            demands.deciders(site);
+                    Set<String> candidates = new LinkedHashSet<>(storers);
+                    candidates.addAll(deciders.keySet());
+                    for (String writerOccurrence : candidates) {
                         Map<String, Object> writer = instances.get(
                                 writerOccurrence);
                         if (writerOccurrence.equals(occurrenceId)
@@ -1293,6 +1317,12 @@ public final class RuntimeSelectedRegionFinalizer {
                                 || !node.equals(nodes.get(writerOccurrence))
                                 || holdsOthersOnly(writer, instances.get(
                                         occurrenceId), cell, site)) {
+                            continue;
+                        }
+                        if (!storers.contains(writerOccurrence)
+                                && !movable(writerOccurrence,
+                                deciders.get(writerOccurrence))) {
+                            fixedDeciders.add(writerOccurrence);
                             continue;
                         }
                         reach(writerOccurrence, depth(occurrenceId) + 1,
@@ -1412,6 +1442,51 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
             return paired;
+        }
+
+        /**
+         * Whether one of {@code guards} can decide otherwise in {@code
+         * occurrence} under a world the engine expresses: a source reaches
+         * the cells its decision reads, backwards over the edges of the
+         * methods that ran there.  A decision no root, no tracked read and
+         * no attach reaches carries no expression in any replay, so the
+         * store it left is no flip away.
+         */
+        private boolean movable(String occurrence, List<String> guards) {
+            Set<String> seen = new HashSet<>();
+            Deque<String> work = new ArrayDeque<>();
+            for (String guard : guards) work.addAll(demands.operandsOf(guard));
+            // A decision the slice states no operand of says nothing: kept.
+            if (work.isEmpty()) return true;
+            while (!work.isEmpty()) {
+                String cell = work.removeFirst();
+                if (!seen.add(cell)) continue;
+                if (sources.contains(cell)) return true;
+                work.addAll(demands.incomingCells(occurrence, cell));
+            }
+            return false;
+        }
+
+        /** One DIAGNOSTIC row per region whose occurrences left a demanded
+         *  store at guards nothing the engine moves reaches ({@link
+         *  #movable}), and the walk planned none of them otherwise. */
+        private void stateFixedDeciders(List<Map<String, Object>> gaps) {
+            Map<String, Integer> byRegion = new LinkedHashMap<>();
+            for (String occurrence : fixedDeciders) {
+                if (reached.contains(occurrence)) continue;
+                byRegion.merge(text(program.activations.get(occurrence)
+                        .get("regionId")), 1, Integer::sum);
+            }
+            for (Map.Entry<String, Integer> region : byRegion.entrySet()) {
+                planGap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        region.getKey(), region.getValue() + " occurrence(s)"
+                                + " of this region took the arm of a guard of"
+                                + " a demanded store away from it, at a"
+                                + " decision no root, tracked read or"
+                                + " attach reaches there, so no world the"
+                                + " engine expresses makes them store: none"
+                                + " is planned as its writer");
+            }
         }
 
         /** One DIAGNOSTIC row per demanded consumer cell the recording paired
@@ -1657,6 +1732,10 @@ public final class RuntimeSelectedRegionFinalizer {
          *  occurrences that took that decision there. */
         private final Map<String, Set<String>> occurrencesByDecision =
                 new HashMap<>();
+        /** Decision site -> the cells its decision reads: its GUARD edges
+         *  into the site. */
+        private final Map<String, Set<String>> guardOperands =
+                new HashMap<>();
         /** (region, cell) -> incoming cell -> the methods of its edges. */
         private final Map<String, Map<String, Set<String>>> localIncoming =
                 new LinkedHashMap<>();
@@ -1739,6 +1818,11 @@ public final class RuntimeSelectedRegionFinalizer {
                 String to = text(edge.get("toCell"));
                 String method = text(edge.get("method"));
                 if (from.isEmpty() || to.isEmpty()) continue;
+                if ("GUARD".equals(text(edge.get("transferKind")))
+                        && to.equals(text(edge.get("siteId")))) {
+                    guardOperands.computeIfAbsent(to,
+                            ignored -> new LinkedHashSet<>()).add(from);
+                }
                 for (String regionId
                         : program.skeletonRegionsHolding(method)) {
                     if (!selectedRegions.contains(regionId)) continue;
@@ -1846,29 +1930,43 @@ public final class RuntimeSelectedRegionFinalizer {
             return cells;
         }
 
+        /** The observed occurrences that ran the store at {@code site}: its
+         *  storing method ran in them, under whatever region. */
+        private List<String> storers(StaticScopeMap.Site site) {
+            return occurrencesByMethod.getOrDefault(SiteId.methodOf(
+                    site.siteId), Collections.<String>emptyList());
+        }
+
         /**
-         * The observed occurrences that ran the store at {@code site} or
-         * left it at one of its guards: they ran the storing method, or took
-         * the arm of a guard away from the store (any decision at a guard
-         * that is not binary), under whatever region.  A store on the arm
-         * the recording did not take is one flip away (owner, 2026-10-02:
-         * the closure keeps every static writer); a method that ran without
+         * The observed occurrences that left the store at {@code site} at one
+         * of its guards, each with the guards it left there: they took the
+         * guard's arm away from the store (any decision at a guard that is
+         * not binary), under whatever region.  A store on the arm the
+         * recording did not take is one flip away (owner, 2026-10-02: the
+         * closure keeps every static writer); a method that ran without
          * reaching the guard, or took its arm toward the store, is not.
          */
-        private Set<String> storersOrDeciders(StaticScopeMap.Site site) {
-            Set<String> found = new LinkedHashSet<>(occurrencesByMethod
-                    .getOrDefault(SiteId.methodOf(site.siteId),
-                            Collections.<String>emptyList()));
+        private Map<String, List<String>> deciders(StaticScopeMap.Site site) {
+            Map<String, List<String>> found = new LinkedHashMap<>();
             for (int index = 0; index < site.guards.size(); index++) {
+                String guard = site.guards.get(index);
                 Boolean toward = site.guardOutcomes == null
                         || index >= site.guardOutcomes.size() ? null
                         : site.guardOutcomes.get(index);
-                found.addAll(occurrencesByDecision.getOrDefault(
-                        decision(site.guards.get(index),
-                                toward == null ? null : !toward),
-                        Collections.<String>emptySet()));
+                for (String occurrence : occurrencesByDecision.getOrDefault(
+                        decision(guard, toward == null ? null : !toward),
+                        Collections.<String>emptySet())) {
+                    found.computeIfAbsent(occurrence,
+                            ignored -> new ArrayList<>()).add(guard);
+                }
             }
             return found;
+        }
+
+        /** The cells the decision at {@code site} reads. */
+        private Set<String> operandsOf(String site) {
+            return guardOperands.getOrDefault(site,
+                    Collections.<String>emptySet());
         }
 
         /** The key of a decision at {@code site}: its outcome, or null for
