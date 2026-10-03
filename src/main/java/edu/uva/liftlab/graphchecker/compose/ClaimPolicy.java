@@ -434,32 +434,31 @@ public final class ClaimPolicy {
     }
 
     /**
-     * Names every path whose OWN conjunction is unsat (selector forced, no
-     * valuation): such a path answers every root question the same way.
+     * Each path asked alone with every root free (selector forced, no
+     * valuation): one unsat there answers every root question the same way,
+     * and is refuted for each.  When every path is, the claim rests on those
+     * refutations, so each is asked once more without its fatal arm, what
+     * its own run satisfied.  Unsat there -- or refuted after observing the
+     * fatal arm -- is a contradiction the composition built
+     * (PATH_SELF_CONTRADICTORY: DIAGNOSTIC per path, BLOCKING for the
+     * composition).  Satisfied by every path, no root of the corpus turns
+     * any of them to the fatal arm: that is the claim's own answer, no gap
+     * (b20h BlockTokenSecretManager-511: the key read null-checked is pinned
+     * to the object the run read, its writers outside the window).  A claim
+     * whose polarity rests on a refuted path is refused separately
+     * ({@link #namesAValuation}).
      */
     private static void selfContradictory(Composer.Composition composition,
                                           Disjunction asks,
                                           List<GapRow> gaps) {
-        int inert = 0;
+        int refuted = 0;
         int undecided = 0;
         // A sanity check, not the witness search: its own short budget.  An
         // undecided run leaves the path in the disjunction (safe direction).
         List<Z3.Answer> answers = asks.selfCheck();
-        for (int i = 0; i < answers.size(); i++) {
-            Composer.Disjunct disjunct = composition.disjuncts().get(i);
-            Z3.Answer answer = answers.get(i);
+        for (Z3.Answer answer : answers) {
             if (!answer.decided()) undecided++;
-            if (!answer.unsat()) continue;
-            inert++;
-            // DIAGNOSTIC per path (may be a corpus fact); a claim whose
-            // polarity rests on it is refused separately (#namesAValuation).
-            gaps.add(GapRow.of(disjunct.path().sessionId,
-                    GapKind.PATH_SELF_CONTRADICTORY, GapClass.DIAGNOSTIC,
-                    disjunct.path().pathId,
-                    "this path's own conjunction is unsatisfiable with "
-                            + "every root free, so no valuation of any root "
-                            + "could have satisfied it and it contributes "
-                            + "nothing to the disjunction"));
+            if (answer.unsat()) refuted++;
         }
         if (undecided > 0) {
             // A budget that drops a question says so: runs stay comparable.
@@ -472,17 +471,38 @@ public final class ClaimPolicy {
                             + "self-refutation budget and stay in the "
                             + "disjunction unexamined"));
         }
-        if (inert > 0 && inert == composition.disjuncts().size()) {
-            // Every path inert: the composition is false in every world.
-            gaps.add(GapRow.of(Composer.COMPOSITION,
-                    GapKind.PATH_SELF_CONTRADICTORY, GapClass.BLOCKING,
-                    composition.anchor().render(),
-                    "all " + inert + " composed paths are unsatisfiable "
-                            + "with every root free, so this composition is "
-                            + "false in every world of the corpus and its "
-                            + "verdicts are about the formula it built, not "
-                            + "about the recording"));
+        if (refuted < answers.size()) return;
+        List<Z3.Answer> withoutFatalArms = asks.withoutFatalArms();
+        int contradictory = 0;
+        for (int i = 0; i < withoutFatalArms.size(); i++) {
+            Composer.Disjunct disjunct = composition.disjuncts().get(i);
+            Z3.Answer answer = withoutFatalArms.get(i);
+            if (answer.sat() && !disjunct.fatalObserved()) continue;
+            contradictory++;
+            gaps.add(GapRow.of(disjunct.path().sessionId,
+                    GapKind.PATH_SELF_CONTRADICTORY, GapClass.DIAGNOSTIC,
+                    disjunct.path().pathId, disjunct.fatalObserved()
+                            ? "this path observed the fatal arm, and its "
+                            + "conjunction is unsatisfiable with every root "
+                            + "free"
+                            : answer.unsat()
+                            ? "this path's conjunction is unsatisfiable even "
+                            + "without its fatal arm, every root free, "
+                            + "though its own run satisfied it"
+                            : "z3 answered " + answer.status() + " for this "
+                            + "path's conjunction without its fatal arm "
+                            + "within " + Disjunction.SELF_CHECK_BUDGET_MS
+                            + "ms, so nothing shows it states its own run"));
         }
+        if (contradictory == 0) return;
+        gaps.add(GapRow.of(Composer.COMPOSITION,
+                GapKind.PATH_SELF_CONTRADICTORY, GapClass.BLOCKING,
+                composition.anchor().render(),
+                "all " + refuted + " composed paths are unsatisfiable with "
+                        + "every root free, and " + contradictory + " of them "
+                        + "contradict their own run, so the composition's "
+                        + "verdicts are about the formula it built, not "
+                        + "about the recording"));
     }
 
     /**
