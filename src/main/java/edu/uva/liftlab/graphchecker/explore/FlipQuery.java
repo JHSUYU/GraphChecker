@@ -1117,7 +1117,14 @@ final class FlipQuery {
             choices.reads.add(row);
             List<String> bindings = new ArrayList<String>();
             for (Choice choice : choices.alternatives) {
-                String value = delivered(choice.alternative);
+                String value = delivered(choice.alternative,
+                        sorts.get(variable));
+                if (value == null) {
+                    if (!choice.selector.equals(choices.recorded)) {
+                        assertions.add("(not " + choice.selector + ")");
+                    }
+                    continue;
+                }
                 if (value.isEmpty()) continue;
                 bindings.add("(=> " + choice.selector + " (= " + variable
                         + " " + value + "))");
@@ -1136,12 +1143,25 @@ final class FlipQuery {
             for (String binding : bindings) assertions.add(binding);
         }
 
-        /** What one eligible writer delivers, as this query spells it. */
-        private String delivered(Arms.Arm alternative) {
+        /**
+         * What one eligible writer delivers, as this query spells it, or ""
+         * where it does not lower; null where its write is of another sort
+         * than the read (an array cell's whole array, a narrower cell): it
+         * delivers nothing the read could be, named, and no model takes it.
+         */
+        private String delivered(Arms.Arm alternative, String sort) {
             SmtLowering.Lowered lowered =
                     corpus.lowering(alternative.sessionId())
                             .lower(alternative.expressionRef());
             if (!lowered.ok()) return "";
+            if (!lowered.value().sort.smt.equals(sort)) {
+                gaps.add(GapRow.of(alternative.sessionId(),
+                        GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        alternative.slotId(), "ARM_SORT_MISMATCH: the arm "
+                                + "delivers a " + lowered.value().sort.smt
+                                + " and the read is a " + sort));
+                return null;
+            }
             Set<String> unknown = new LinkedHashSet<String>();
             String value = rename(lowered.text(), alternative.sessionId(),
                     unknown);

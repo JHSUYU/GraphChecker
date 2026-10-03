@@ -3564,6 +3564,27 @@ public class ExploreTest {
     }
 
     /**
+     * A writer whose store is of another sort than the read (an array
+     * cell's whole array, a narrower cell) delivers nothing the read could
+     * be: no model takes it, so a flip only it could take plants nothing.
+     */
+    @Test
+    public void anArmOfAnotherSortIsNoModelsChoice() throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = twoWriters("other-sort", VM_LOOKUP, null, "Z");
+        Path out = tree.newFolder("other-sort-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Worker worker = solve(iteration, wave,
+                named(obligations(wave), "Lookup#u8"), out, "w0");
+        assertFalse(detail(worker),
+                detail(worker).contains("planted pairing"));
+        assertTrue(query(worker), query(worker).matches(
+                "(?s).*\\(not wchoice_\\S+\\).*"));
+    }
+
+    /**
      * A model that moves a writer choice is asked again with every choice
      * held to the recorded writer; one that then plants a root is the one
      * run, and no pairing is.  The nearest-world objective keeps the root
@@ -3673,6 +3694,13 @@ public class ExploreTest {
 
     private Path twoWriters(String name, String term, String limit)
             throws IOException {
+        return twoWriters(name, term, limit, "I");
+    }
+
+    /** {@link #twoWriters}, the second writer storing an int, or with
+     *  {@code "Z"} a comparison's boolean. */
+    private Path twoWriters(String name, String term, String limit,
+                            String secondType) throws IOException {
         Path iteration = tree.newFolder(name).toPath();
         // A second addKeys, started by a request of its own.
         OccurrenceAddress again = occurrence("hdfs-case/dn0",
@@ -3683,7 +3711,11 @@ public class ExploreTest {
         seed.activation(WRITER, false);
         seed.activation(again, false, true, "fixture#key-updater");
         seed.constant("e.1", "1");
-        seed.constant("e.2", "2");
+        if ("Z".equals(secondType)) {
+            seed.expression("e.2", binary("==", literal(2), literal(2)));
+        } else {
+            seed.constant("e.2", "2");
+        }
         seed.write(STORED, KEY_ID, 5L, "e.1");
         seed.write(at(again, Endpoint.stateSite("BlockTokenSecretManager",
                 "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
