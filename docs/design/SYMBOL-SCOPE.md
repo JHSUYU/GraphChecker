@@ -130,7 +130,7 @@ causynth output directory:
 |---|---|
 | `candidate_dataflow_edges.jsonl.gz` | the slice's edges (`kind`, `fromCell`, `toCell`, `method`, `unitIndex`, `invoke`, ...) |
 | `region_skeletons.jsonl.gz` | the regions built around execution-context entries (`causynth/SymbolicRegionPlanner`), with their ports and retained loops |
-| `communication_gaps.jsonl.gz` | ports or loops the planner could not place |
+| `communication_gaps.jsonl.gz` | ports or loops the planner could not place, and the configuration reads left concrete (§4.3) |
 | `static_scope_map.jsonl` | §3; built before any hook is woven, over the door-woven bodies (§4.2), so site ids are the unit indices every pass and every replay decides at |
 | `scope_frontier.jsonl` | §2.4 |
 | `root_demand.jsonl` | §4.6: every boundary where the values the throw's path guards decide on enter |
@@ -319,24 +319,29 @@ Configuration is recognized by category, as a clock is (`causynth/ConfigRoots`, 
 - a *getter*: a JVM one (`System.getProperty`, `System.getenv`, `Boolean.getBoolean`,
   `Integer.getInteger`, `Long.getLong`) or a `CONFIG_SOURCE` row of the library catalog (§4.2),
   called on its class or a subclass (Hadoop's `HdfsConfiguration`);
-- a *wrapper*: a method every return of which is a configuration value of one key -- a literal, or
-  the wrapper's own `String` parameter -- followed four wrappers deep (Solr's `Overseer.isLegacy`,
-  `"true".equals(getClusterProperty(LEGACY_CLOUD, "false"))`);
+- a *wrapper*: a method every return of which is a configuration value of one key in one shape --
+  its key a literal, or the wrapper's own `String` parameter -- followed four wrappers deep (Solr's
+  `Overseer.isLegacy`, `"true".equals(getClusterProperty(LEGACY_CLOUD, "false"))`). A getter
+  call in a wrapper's body is the wrapper's read: its callers mint it;
 - a *field*: an integral or boolean instance field every writer of which, over the whole analysed
-  scope (`StaticProgram#fieldWriters`), stores a configuration value of one key -- hdfs-17960's
+  scope (`StaticProgram#fieldWriters`), stores a configuration value of one key in one shape, or a
+  constant that a store of the configuration post-dominates in the same method (an initializer it
+  overwrites, javac's `boolean legacy = false;` before the constructor's store) -- hdfs-17960's
   `SnapshotManager.snapshotDeletionOrdered`, stored once, in the constructor, from
   `conf.getBoolean("dfs.namenode.snapshot.deletion.ordered", false)` -- or such a field of a
-  `CONFIG_FIELD_OWNER` class, its own key.
+  `CONFIG_FIELD_OWNER` class, its own key. A getter call its writers store is the field's read.
 
-A configuration value is a getter's or wrapper's return through locals, casts, a boolean view (a
-literal's `equals`, `Boolean.parseBoolean`/`valueOf`), a parse (`Integer.parseInt`,
-`Long.parseLong`), an unboxing, `trim` and `Math.max`/`min` with a constant; arithmetic makes
-another value. Its key is the key argument where that is a literal (javac inlines a `static final
-String`), else the getter call's site; its root is `CONFIG:<key>`. A key is minted only where the root demand
-chose it (§4.6): its nearest read within sixteen edges of the throw's path guards on the cone, among
-the twelve nearest keys. One key is one root, minted in
-one shape: at each read of the key's field (the first by signature where a field holds it), else
-at the return of each getter call the slice reads it at, a `DECLARED_SITE` `CALL_RETURN` with
+A configuration value is a getter's or wrapper's return through locals, casts, a parse or an
+unboxing (`Integer.parseInt`, `Boolean.parseBoolean`/`valueOf`, `intValue`, `trim`), a literal's
+`equals` (a *view*) and `Math.max`/`min` with a constant (a *clamp*); arithmetic makes another
+value. Its key is the key argument where that is a literal (javac inlines a `static final
+String`); a read whose key no literal names is no root. Its root is `CONFIG:<key>`, or
+`CONFIG:<key>==<literal>` for a view: `"a".equals(get(k))` is not `k`, nor the `"b"` view. Its
+*shape* is its view, its clamps and its type. A key is minted only where
+the root demand chose it (§4.6): its nearest read within sixteen edges of the throw's path guards
+on the cone, among the twelve nearest keys. One key is one root, minted in one shape: at each read
+of the key's field (the first by signature where a field holds it), else at the return of each
+getter call of the shape of its first call (by site), a `DECLARED_SITE` `CALL_RETURN` with
 `inputKind: CONFIG`, its `sourceId` and domain (the plan's input action states them as
 `configSource`, `domainMin`, `domainMax`). Only an integral or boolean value is minted.
 
@@ -348,6 +353,14 @@ at the return of each getter call the slice reads it at, a `DECLARED_SITE` `CALL
   INSTRUMENT weaves `ConcolicRegionRuntime.readConfiguration(sourceId, owner, field)` under the
   site's context (`CausynthPipeline#instrumentConfigurationRead`), the hook a tree would have
   carried. A field a tree's hook mints is the hook's: none of its reads is declared.
+- **Named, not minted.** What these rules leave concrete is a `DECLARATION_MISSING` DIAGNOSTIC row
+  of `communication_gaps.jsonl.gz` (`ConfigRoots#gaps`, published with the declarations), its
+  reason first in its detail: `CONFIG_KEY_UNRESOLVED`, a read whose key no literal names (`for (k :
+  keys) conf.getInt(k, 0)`: a site is no key, and one symbol would stand for every key);
+  `CONFIG_FIELD_OVERWRITTEN`, a field a constant store can leave holding the constant (`f =
+  get(k); if (f <= 0) f = 1`: a plant would write a value the field never holds); and
+  `CONFIG_READ_CONCRETE`, a read of a chosen key in another shape (a second field, another view,
+  clamp or type, a getter beside the key's field).
 - **The world.** A configuration belongs to the world, not to an occurrence: the value an
   obligation assigns it is written at every read of its field, on every node, whatever occurrence
   runs it (`runtime/RootMint#configuration`), and planted at every getter return a symbolic
@@ -357,8 +370,9 @@ at the return of each getter call the slice reads it at, a `DECLARED_SITE` `CALL
 - **Domain.** A boolean is a MARKER, free over both values. An integral's domain is the hull of
   its anchors -- each getter call's literal default and `c - 1, c, c + 1` for each integral literal
   `c` a branch compares the value with within eight flows of the slice, never through a field, at 0
-  or above where every anchor is -- and of the value the mint read: the declaration states the
-  static hull, the mint row the whole (`runtime/ActiveRegion#configDomain`).
+  or above where every anchor is -- mapped through its clamps (a planted value lies in their image:
+  `Math.max(v, 1)` is never 0), and of the value the mint read: the declaration states the static
+  hull, the mint row the whole (`runtime/ActiveRegion#configDomain`).
 
 A tree may still call `CausynthSymbolicSource.symbolize(String sourceId, Object owner, String
 fieldSignature)` (the Hadoop copy is `src/shim/java/org/apache/hadoop/ipc/CausynthSymbolicSource`):
@@ -696,12 +710,17 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   `java.time`, or an interface whose implementation is outside the scope is not recognized;
   pre-window state is a root only where a tree hook says so.
 - Configuration (§4.3): one symbol per key per JVM, a homogeneous cluster, by design. The VM names
-  a field mint by its owner's class, so one key is minted at one field (the first by signature)
-  or, with none, at its getter returns, and a second field caching the key is read concretely; a
-  field declared in a class two runtime classes extend mints one symbol per class. A static field,
-  a `float` or `double`, a box, a `String` or an enum is no root (an enum or `String` key would need
-  a finite-set domain), nor a value computed from a configuration by arithmetic. A getter's return
-  is planted only where a symbolic occurrence reads it, a field at every read of it.
+  a field mint by its owner's class, so one key is minted in one shape, at one field (the first by
+  signature) or, with none, at its getter returns, and every other read of the key -- a second
+  field caching it, a getter beside its field, another view, clamp or type -- is read concretely
+  (`CONFIG_READ_CONCRETE`): a world that flips the key leaves those reads at the recording's
+  value. A field declared in a class two runtime classes extend mints one symbol per class. A
+  static field, a `float` or `double`, a box, a `String` or an enum is no root (an enum or `String`
+  key would need a finite-set domain, so a String key is minted under one view, a boolean),
+  nor a value computed from a configuration by arithmetic, nor a value whose key no literal names.
+  A domain is bounded by clamps only: a field the constructor validates (a throw on a bad value)
+  can be planted with a value the validation would refuse. A getter's return is planted only where
+  a symbolic occurrence reads it, a field at every read of it.
 - Root demand (§4.6) is chosen once, at SEED: no re-seed admits a boundary the seed left unminted
   or untracked. Its classes read the slice's edges, so a value the slice never reached is no
   boundary, and a concrete anchor's demand joins a read row to a demanded read by its method, kind

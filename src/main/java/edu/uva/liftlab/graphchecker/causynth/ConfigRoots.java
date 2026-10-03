@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import soot.Body;
 import soot.FastHierarchy;
@@ -18,6 +20,7 @@ import soot.jimple.CmpExpr;
 import soot.jimple.CmpgExpr;
 import soot.jimple.CmplExpr;
 import soot.jimple.ConditionExpr;
+import soot.jimple.Constant;
 import soot.jimple.FieldRef;
 import soot.jimple.IdentityStmt;
 import soot.jimple.IfStmt;
@@ -28,18 +31,22 @@ import soot.jimple.LongConstant;
 import soot.jimple.ParameterRef;
 import soot.jimple.ReturnStmt;
 import soot.jimple.StringConstant;
+import soot.toolkits.graph.BriefUnitGraph;
+import soot.toolkits.graph.MHGPostDominatorsFinder;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -58,41 +65,61 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  *       Configuration.get*}, Solr's cluster properties and {@code
  *       XmlConfigFile}), called on its class or a subclass;</li>
  *   <li>a WRAPPER: a method each of whose returns is a configuration value
- *       ({@link #valueOf}) of one key -- a literal, or the wrapper's own
- *       String parameter -- followed {@value #MAX_DEPTH} deep: Solr's {@code
- *       "true".equals(getClusterProperty(LEGACY_CLOUD, "false"))};</li>
+ *       ({@link #valueOf}) of one key in one shape -- a literal key, or the
+ *       wrapper's own String parameter -- followed {@value #MAX_DEPTH} deep:
+ *       Solr's {@code "true".equals(getClusterProperty(LEGACY_CLOUD,
+ *       "false"))}.  A getter call in a wrapper's body is the wrapper's
+ *       read: its callers mint it;</li>
  *   <li>a FIELD: an integral or boolean instance field each writer of which
  *       ({@link StaticProgram#fieldWriters}, the whole analysed scope)
- *       stores a configuration value of one key -- a constant its own
- *       initializer stores first excepted --, as hdfs-17960's {@code
- *       SnapshotManager.snapshotDeletionOrdered} = {@code
+ *       stores a configuration value of one key in one shape, as hdfs-17960's
+ *       {@code SnapshotManager.snapshotDeletionOrdered} = {@code
  *       conf.getBoolean(DFS_NAMENODE_SNAPSHOT_DELETION_ORDERED, false)} in
- *       its constructor; or a field of a {@code CONFIG_FIELD_OWNER} class,
- *       which is its own key.</li>
+ *       its constructor -- a constant store excepted where a store of the
+ *       configuration post-dominates it (an initializer it overwrites) --; or
+ *       a field of a {@code CONFIG_FIELD_OWNER} class, which is its own
+ *       key.  A getter call its writers store is the field's read.</li>
  * </ul>
  * A configuration value is a getter's or wrapper's return through locals,
- * casts, a boolean view (a literal's {@code equals}, {@code
- * Boolean.parseBoolean}/{@code valueOf}), a parse, an unboxing, {@code trim}
- * and {@code Math.max}/{@code min} with a constant; arithmetic makes another
+ * casts, a parse or an unboxing ({@code parseInt}, {@code booleanValue},
+ * {@code trim}, ...), a literal's {@code equals} (a VIEW) and {@code
+ * Math.max}/{@code min} with a constant (a CLAMP); arithmetic makes another
  * value.
  *
- * <p>The key is the key argument where it is a literal (javac inlines a
- * {@code static final String}), else the getter call's site; a source is
- * {@code CONFIG:<key>}.  One key is one root, minted in one shape: the
- * key's first field (by signature) where a field holds it, else each
- * primitive getter call the slice reads it at.  The VM names a field mint by
- * its owner's class, so a second field of one key would be a second symbol
- * of one root; it is read concretely instead (SYMBOL-SCOPE §7).</p>
+ * <p>Its key is the key argument where it is a literal (javac inlines a
+ * {@code static final String}); a key no literal names is no root.  A source
+ * is {@code CONFIG:<key>}, or {@code CONFIG:<key>==<literal>} for a view:
+ * {@code "a".equals(get(k))} is not {@code k}.  One key is one root, minted
+ * in one shape (its view, clamps and type): the key's first field (by
+ * signature) where a field holds it, else every call reading it in the
+ * shape of its first call (by site).  The VM names a field mint by its
+ * owner's class and a symbol by its source, so every other read of the key
+ * is read concretely (SYMBOL-SCOPE §7).</p>
  *
  * <p>An integral source's domain is the hull of its anchors: each getter's
  * literal default and {@code c - 1, c, c + 1} for each integral literal
  * {@code c} a branch compares its value with within {@value #FLOWS} flows
  * of the slice, never through a field; at {@code 0} or above where every
- * anchor is.  The mint adds the value it read ({@code runtime.RootMint}).</p>
+ * anchor is; then through its clamps, whose image a planted value must lie
+ * in.  The mint adds the value it read ({@code runtime.ActiveRegion}).</p>
+ *
+ * <p>What is not minted is named ({@link #gaps}, {@code DECLARATION_MISSING}
+ * DIAGNOSTIC): a read of a key no literal names ({@value #KEY_UNRESOLVED}),
+ * a field a constant store can leave holding the constant ({@value
+ * #FIELD_OVERWRITTEN}), and a read of a minted key in another shape
+ * ({@value #READ_CONCRETE}).</p>
  */
 final class ConfigRoots {
     /** The prefix of every configuration source id. */
     static final String PREFIX = "CONFIG:";
+    /** Between a key and the literal its view compares it with. */
+    static final String VIEW = "==";
+    /** A read whose key no literal names: read concretely. */
+    static final String KEY_UNRESOLVED = "CONFIG_KEY_UNRESOLVED";
+    /** A field a constant store can leave holding the constant. */
+    static final String FIELD_OVERWRITTEN = "CONFIG_FIELD_OVERWRITTEN";
+    /** A read of a key minted in another shape: read concretely. */
+    static final String READ_CONCRETE = "CONFIG_READ_CONCRETE";
     /** How many wrappers deep a getter is followed. */
     private static final int MAX_DEPTH = 4;
     /** How many flows a compared literal may stand from the value. */
@@ -120,8 +147,9 @@ final class ConfigRoots {
                 + "java.lang.Long)>", 0, 1},
     };
 
-    /** A configuration value's view: the same key under another type. */
-    private static final Set<String> VIEWS = new LinkedHashSet<>(
+    /** A configuration value's parse or unboxing: the same key, read under
+     *  another type. */
+    private static final Set<String> PARSES = new LinkedHashSet<>(
             Arrays.asList(
                     "<java.lang.Boolean: boolean parseBoolean(java.lang.String)>",
                     "<java.lang.Boolean: java.lang.Boolean valueOf(java.lang.String)>",
@@ -135,11 +163,14 @@ final class ConfigRoots {
                     "<java.lang.String: java.lang.String trim()>"));
     private static final String EQUALS =
             "<java.lang.String: boolean equals(java.lang.Object)>";
-    private static final Set<String> CLAMPS = new LinkedHashSet<>(
-            Arrays.asList("<java.lang.Math: int max(int,int)>",
-                    "<java.lang.Math: int min(int,int)>",
-                    "<java.lang.Math: long max(long,long)>",
-                    "<java.lang.Math: long min(long,long)>"));
+    /** A clamp: whether it is a floor ({@code max}) or a ceiling. */
+    private static final Map<String, Boolean> CLAMPS = new HashMap<>();
+    static {
+        CLAMPS.put("<java.lang.Math: int max(int,int)>", Boolean.TRUE);
+        CLAMPS.put("<java.lang.Math: long max(long,long)>", Boolean.TRUE);
+        CLAMPS.put("<java.lang.Math: int min(int,int)>", Boolean.FALSE);
+        CLAMPS.put("<java.lang.Math: long min(long,long)>", Boolean.FALSE);
+    }
     private static final Set<String> MINTABLE = new LinkedHashSet<>(
             Arrays.asList("boolean", "byte", "char", "short", "int",
                     "long"));
@@ -163,48 +194,197 @@ final class ConfigRoots {
             this.domainMin = domainMin;
             this.domainMax = domainMax;
         }
+    }
 
-        /** The key it is the configuration of. */
-        String key() {
-            return sourceId.substring(PREFIX.length());
+    /** {@code Math.max(v, bound)} (a floor) or {@code Math.min(v, bound)}. */
+    private static final class Clamp {
+        final boolean floor;
+        final BigInteger bound;
+
+        Clamp(boolean floor, BigInteger bound) {
+            this.floor = floor;
+            this.bound = bound;
+        }
+
+        BigInteger apply(BigInteger value) {
+            return floor ? value.max(bound) : value.min(bound);
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Clamp && floor == ((Clamp) other).floor
+                    && bound.equals(((Clamp) other).bound);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(floor, bound);
+        }
+    }
+
+    /**
+     * A configuration value at one point of a body: its key -- or the
+     * parameter that states it, or neither (no literal names it) -- the view
+     * and clamps it is read through, innermost first, and the defaults its
+     * getters name.
+     */
+    private static final class ConfigValue {
+        final String key;
+        final int keyParam;
+        final String view;
+        final List<Clamp> clamps;
+        final List<BigInteger> defaults;
+
+        ConfigValue(String key, int keyParam, String view, List<Clamp> clamps,
+                    List<BigInteger> defaults) {
+            this.key = key;
+            this.keyParam = keyParam;
+            this.view = view;
+            this.clamps = clamps;
+            this.defaults = defaults;
+        }
+
+        /** The same value: one key in one shape (its defaults may differ). */
+        boolean sameShape(ConfigValue other) {
+            return other != null && keyParam == other.keyParam
+                    && Objects.equals(key, other.key)
+                    && Objects.equals(view, other.view)
+                    && clamps.equals(other.clamps);
+        }
+
+        /** {@code "literal".equals(this)}: a view of a raw value only. */
+        ConfigValue viewed(String literal) {
+            if (view != null || !clamps.isEmpty()) return null;
+            return new ConfigValue(key, keyParam, literal, clamps, defaults);
+        }
+
+        /** {@code Math.max}/{@code min} of this: an integral value only. */
+        ConfigValue clamped(Clamp clamp) {
+            if (view != null) return null;
+            List<Clamp> through = new ArrayList<>(clamps);
+            through.add(clamp);
+            return new ConfigValue(key, keyParam, view, through, defaults);
+        }
+
+        ConfigValue withDefaults(List<BigInteger> more) {
+            List<BigInteger> all = new ArrayList<>(defaults);
+            all.addAll(more);
+            return new ConfigValue(key, keyParam, view, clamps, all);
+        }
+
+        /** Its root's id: the key, and the literal of its view. */
+        String sourceId() {
+            return PREFIX + key + (view == null ? "" : VIEW + view);
         }
     }
 
     /** A getter: which argument is its key, which its default; or a
-     *  wrapper of one with its key fixed. */
+     *  wrapper of one, its key fixed or one of its parameters, with the
+     *  view and clamps its returns read the key through. */
     private static final class Getter {
         final int keyArg;
         final int defaultArg;
         /** A wrapper's own key, or null when an argument states it. */
         final String key;
+        final String view;
+        final List<Clamp> clamps;
         final List<BigInteger> defaults;
 
-        Getter(int keyArg, int defaultArg, String key,
-               List<BigInteger> defaults) {
+        Getter(int keyArg, int defaultArg) {
+            this(keyArg, defaultArg, null, null,
+                    Collections.<Clamp>emptyList(),
+                    Collections.<BigInteger>emptyList());
+        }
+
+        Getter(int keyArg, int defaultArg, String key, String view,
+               List<Clamp> clamps, List<BigInteger> defaults) {
             this.keyArg = keyArg;
             this.defaultArg = defaultArg;
             this.key = key;
+            this.view = view;
+            this.clamps = clamps;
             this.defaults = defaults;
         }
     }
 
-    /** A configuration value at one point of a body: its key, or the
-     *  parameter that states it, and the defaults its getters name. */
-    private static final class ConfigValue {
-        final String key;
-        final int keyParam;
-        final List<BigInteger> defaults;
+    /** What a field's writers store: its value, or why no read of it is a
+     *  root. */
+    private static final class FieldValue {
+        final ConfigValue value;
+        final Refusal refusal;
 
-        ConfigValue(String key, int keyParam, List<BigInteger> defaults) {
-            this.key = key;
-            this.keyParam = keyParam;
-            this.defaults = defaults;
+        FieldValue(ConfigValue value, Refusal refusal) {
+            this.value = value;
+            this.refusal = refusal;
+        }
+    }
+
+    /** One getter call the slice reads a return of. */
+    private static final class Read {
+        final Map<String, Object> edge;
+        final String method;
+        final int unitIndex;
+        final String callee;
+        final String type;
+        final ConfigValue value;
+
+        Read(Map<String, Object> edge, String method, int unitIndex,
+             String callee, String type, ConfigValue value) {
+            this.edge = edge;
+            this.method = method;
+            this.unitIndex = unitIndex;
+            this.callee = callee;
+            this.type = type;
+            this.value = value;
         }
 
-        boolean sameKey(ConfigValue other) {
-            return other != null && keyParam == other.keyParam
-                    && (key == null ? other.key == null
-                    : key.equals(other.key));
+        String site() {
+            return SiteId.render(method, unitIndex);
+        }
+    }
+
+    /** The one shape a key is minted in: its field's, or its first
+     *  call's. */
+    private static final class Shape {
+        final String sourceId;
+        final String javaType;
+        final ConfigValue value;
+        /** Where it is minted: the field, or the first call's site. */
+        final String at;
+        final boolean field;
+
+        Shape(String sourceId, String javaType, ConfigValue value, String at,
+              boolean field) {
+            this.sourceId = sourceId;
+            this.javaType = javaType;
+            this.value = value;
+            this.at = at;
+            this.field = field;
+        }
+
+        /** Whether a call's return is this shape's: one symbol for both. */
+        boolean takes(Read read) {
+            return !field && javaType.equals(read.type)
+                    && value.sameShape(read.value);
+        }
+    }
+
+    /** A configuration read no root mints, named ({@link #gaps}). */
+    private static final class Refusal {
+        final String reason;
+        final String method;
+        final String siteId;
+        /** The source the key is minted as elsewhere, or "". */
+        final String sourceId;
+        final String detail;
+
+        Refusal(String reason, String method, String siteId, String sourceId,
+                String detail) {
+            this.reason = reason;
+            this.method = method;
+            this.siteId = siteId;
+            this.sourceId = sourceId;
+            this.detail = detail;
         }
     }
 
@@ -220,6 +400,11 @@ final class ConfigRoots {
     private final Set<String> configFields = new TreeSet<>();
     /** Every getter or wrapper callee of the slice's call returns. */
     private final Set<String> configCallees = new TreeSet<>();
+    /** The configuration reads no root mints. */
+    private final List<Refusal> refusals = new ArrayList<>();
+    /** The getter calls a configuration field's writers store: the field's
+     *  reads, minted (or refused) there. */
+    private final Set<String> fieldReads = new HashSet<>();
 
     private ConfigRoots() {
     }
@@ -254,73 +439,131 @@ final class ConfigRoots {
                         ignored -> new ArrayList<>()).add(edge);
             }
         }
-        Map<String, List<String>> keyFields = new TreeMap<>();
-        Map<String, List<BigInteger>> fieldDefaults = new HashMap<>();
+        // One key, one shape: its first field, by signature, else its first
+        // call, by site.
+        Map<String, Shape> shapes = new HashMap<>();
         for (String field : readFields) {
-            ConfigValue value = roots.fieldValue(field, fieldWriters);
-            if (value == null) continue;
+            FieldValue stored = roots.fieldValue(field, fieldWriters);
+            if (stored == null) continue;
             roots.configFields.add(field);
-            keyFields.computeIfAbsent(value.key,
-                    ignored -> new ArrayList<>()).add(field);
-            fieldDefaults.put(field, value.defaults);
+            if (stored.refusal != null) {
+                roots.refusals.add(stored.refusal);
+                continue;
+            }
+            ConfigValue value = stored.value;
+            Shape held = shapes.get(value.key);
+            if (held != null) {
+                roots.refusals.add(concrete("", field, field, held));
+                continue;
+            }
+            Source source = roots.source(value.sourceId(), fieldType(field),
+                    value.defaults, value.clamps,
+                    Collections.singleton(field), out, guardsFrom);
+            shapes.put(value.key, new Shape(source.sourceId, source.javaType,
+                    value, field, true));
+            roots.fields.put(field, source);
         }
-        for (Map.Entry<String, List<String>> key : keyFields.entrySet()) {
-            String field = key.getValue().get(0);
-            roots.fields.put(field, roots.source(key.getKey(),
-                    fieldType(field), fieldDefaults.get(field),
-                    Collections.singleton(field), out, guardsFrom));
+        List<Read> reads = roots.reads(callSites);
+        for (Read read : reads) {
+            if (read.value.key != null && MINTABLE.contains(read.type)
+                    && !shapes.containsKey(read.value.key)) {
+                shapes.put(read.value.key, new Shape(read.value.sourceId(),
+                        read.type, read.value, read.site(), false));
+            }
         }
-        Map<String, List<Map<String, Object>>> keyCalls = new TreeMap<>();
-        Map<String, List<BigInteger>> callDefaults = new TreeMap<>();
-        Map<String, String> callTypes = new HashMap<>();
-        for (Map.Entry<String, List<Map<String, Object>>> callee
-                : callSites.entrySet()) {
-            SootMethodRef reference = reference(callee.getKey());
-            if (reference == null) continue;
-            Getter getter = roots.getter(reference, 0);
-            if (getter == null) continue;
-            roots.configCallees.add(callee.getKey());
-            String type = reference.getReturnType().toString();
-            for (Map<String, Object> edge : callee.getValue()) {
-                String method = text(edge.get("method"));
-                int unitIndex = MapFields.number(edge.get("unitIndex"), -1);
-                Body body = CausynthStaticFacts.activeBody(
-                        CausynthStaticFacts.method(method));
-                InvokeExpr invoke = invokeOf(unitAt(body, unitIndex));
-                if (invoke == null) continue;
-                ConfigValue value = called(getter, invoke, body,
-                        SiteId.render(method, unitIndex));
-                if (value.key == null || keyFields.containsKey(value.key)
-                        || !MINTABLE.contains(type)) {
-                    continue;
+        Map<Shape, List<Read>> minted = new LinkedHashMap<>();
+        for (Read read : reads) {
+            if (read.value.key == null) {
+                if (MINTABLE.contains(read.type)) {
+                    roots.refusals.add(new Refusal(KEY_UNRESOLVED,
+                            read.method, read.site(), "", read.callee
+                            + " reads a key no literal names, so its return"
+                            + " is read concretely: a configuration root is"
+                            + " one key's"));
                 }
-                keyCalls.computeIfAbsent(value.key,
-                        ignored -> new ArrayList<>()).add(edge);
-                callDefaults.computeIfAbsent(value.key,
-                        ignored -> new ArrayList<>()).addAll(value.defaults);
-                callTypes.putIfAbsent(value.key, type);
+                continue;
+            }
+            Shape shape = shapes.get(read.value.key);
+            // A key no read of which is mintable (a String): no root.
+            if (shape == null) continue;
+            if (shape.takes(read)) {
+                minted.computeIfAbsent(shape, ignored -> new ArrayList<>())
+                        .add(read);
+            } else {
+                roots.refusals.add(concrete(read.method, read.site(),
+                        read.callee + " (" + read.type + ")", shape));
             }
         }
-        for (Map.Entry<String, List<Map<String, Object>>> key
-                : keyCalls.entrySet()) {
+        for (Map.Entry<Shape, List<Read>> shape : minted.entrySet()) {
             Set<String> cells = new LinkedHashSet<>();
-            for (Map<String, Object> edge : key.getValue()) {
-                cells.add(text(edge.get("toCell")));
+            List<BigInteger> defaults = new ArrayList<>();
+            for (Read read : shape.getValue()) {
+                cells.add(text(read.edge.get("toCell")));
+                defaults.addAll(read.value.defaults);
             }
-            Source source = roots.source(key.getKey(),
-                    callTypes.get(key.getKey()),
-                    callDefaults.get(key.getKey()), cells, out, guardsFrom);
-            for (Map<String, Object> edge : key.getValue()) {
-                roots.calls.put(callSite(text(edge.get("method")),
-                        MapFields.number(edge.get("unitIndex"), -1),
-                        text(edge.get("invoke"))), source);
+            Shape key = shape.getKey();
+            Source source = roots.source(key.sourceId, key.javaType,
+                    defaults, key.value.clamps, cells, out, guardsFrom);
+            for (Read read : shape.getValue()) {
+                roots.calls.put(callSite(read.method, read.unitIndex,
+                        read.callee), source);
             }
         }
         return roots;
     }
 
+    /** The getter calls whose returns the slice reads, by site; a call in
+     *  a wrapper's body is the wrapper's, one a configuration field's writer
+     *  stores the field's. */
+    private List<Read> reads(
+            Map<String, List<Map<String, Object>>> callSites) {
+        List<Read> reads = new ArrayList<>();
+        for (Map.Entry<String, List<Map<String, Object>>> callee
+                : callSites.entrySet()) {
+            SootMethodRef reference = reference(callee.getKey());
+            if (reference == null) continue;
+            Getter getter = getter(reference, 0);
+            if (getter == null) continue;
+            configCallees.add(callee.getKey());
+            String type = reference.getReturnType().toString();
+            for (Map<String, Object> edge : callee.getValue()) {
+                String method = text(edge.get("method"));
+                int unitIndex = MapFields.number(edge.get("unitIndex"), -1);
+                SootMethodRef caller = reference(method);
+                if (caller != null && getter(caller, 0) != null
+                        || fieldReads.contains(SiteId.render(method,
+                        unitIndex))) {
+                    continue;
+                }
+                Body body = CausynthStaticFacts.activeBody(
+                        CausynthStaticFacts.method(method));
+                InvokeExpr invoke = invokeOf(unitAt(body, unitIndex));
+                if (invoke == null) continue;
+                reads.add(new Read(edge, method, unitIndex, callee.getKey(),
+                        type, called(getter, invoke, body)));
+            }
+        }
+        reads.sort(Comparator.<Read, String>comparing(read -> read.method)
+                .thenComparingInt(read -> read.unitIndex)
+                .thenComparing(read -> read.callee));
+        return reads;
+    }
+
+    /** A read of a key minted in another shape, read concretely. */
+    private static Refusal concrete(String method, String siteId,
+                                    String what, Shape shape) {
+        return new Refusal(READ_CONCRETE, method, siteId, shape.sourceId,
+                what + " reads the configuration concretely: its key is"
+                        + " minted once, as " + shape.sourceId + " ("
+                        + shape.javaType + ") at " + shape.at + ", and this"
+                        + " read takes it in another shape (another field,"
+                        + " view, clamp or type, or a getter beside the"
+                        + " key's field)");
+    }
+
     /** The same recognition, minting only these roots ({@link
-     *  RootDemand#configSources}). */
+     *  RootDemand#configSources}); a read left concrete beside a root
+     *  not chosen is no gap. */
     ConfigRoots limitedTo(Set<String> sourceIds) {
         ConfigRoots limited = new ConfigRoots();
         limited.configFields.addAll(configFields);
@@ -333,6 +576,12 @@ final class ConfigRoots {
         for (Map.Entry<String, Source> call : calls.entrySet()) {
             if (sourceIds.contains(call.getValue().sourceId)) {
                 limited.calls.put(call.getKey(), call.getValue());
+            }
+        }
+        for (Refusal refusal : refusals) {
+            if (refusal.sourceId.isEmpty()
+                    || sourceIds.contains(refusal.sourceId)) {
+                limited.refusals.add(refusal);
             }
         }
         return limited;
@@ -367,19 +616,36 @@ final class ConfigRoots {
         return Collections.unmodifiableSet(configCallees);
     }
 
+    /**
+     * The configuration reads no root mints, one catalog gap row each
+     * ({@code communication_gaps.jsonl.gz}): {@code DECLARATION_MISSING},
+     * DIAGNOSTIC, the reason first in its detail.
+     */
+    List<Map<String, Object>> gaps() {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Refusal refusal : refusals) {
+            rows.add(CommunicationCatalogPlanner.gap(
+                    GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    refusal.reason, refusal.method, refusal.siteId,
+                    refusal.reason + ": " + refusal.detail));
+        }
+        return rows;
+    }
+
     private static String callSite(String method, int unitIndex,
                                    String callee) {
         return SiteId.render(method, unitIndex) + "|" + callee;
     }
 
-    /** A root of {@code key} read at {@code cells}, its domain from its
-     *  defaults and the literals the slice compares those cells with. */
-    private Source source(String key, String javaType,
-                          List<BigInteger> defaults, Collection<String> cells,
+    /** A root read at {@code cells}, its domain from its defaults and the
+     *  literals the slice compares those cells with, through its clamps. */
+    private Source source(String sourceId, String javaType,
+                          List<BigInteger> defaults, List<Clamp> clamps,
+                          Collection<String> cells,
                           Map<String, List<Map<String, Object>>> out,
                           Map<String, List<Map<String, Object>>> guardsFrom) {
         if ("boolean".equals(javaType)) {
-            return new Source(PREFIX + key, javaType, "", "");
+            return new Source(sourceId, javaType, "", "");
         }
         List<BigInteger> anchors = new ArrayList<>(defaults);
         List<BigInteger> spread = new ArrayList<>(defaults);
@@ -390,14 +656,20 @@ final class ConfigRoots {
             spread.add(compared.add(BigInteger.ONE));
         }
         if (spread.isEmpty()) {
-            return new Source(PREFIX + key, javaType, "", "");
+            return new Source(sourceId, javaType, "", "");
         }
         BigInteger min = Collections.min(spread);
+        BigInteger max = Collections.max(spread);
         if (Collections.min(anchors).signum() >= 0) {
             min = min.max(BigInteger.ZERO);
         }
-        return new Source(PREFIX + key, javaType, min.toString(),
-                Collections.max(spread).toString());
+        // A clamp's value lies in its image: Math.max(v, 1) is never 0, so
+        // no plant may write 0 where it stores.  Monotone: the hull's ends.
+        for (Clamp clamp : clamps) {
+            min = clamp.apply(min);
+            max = clamp.apply(max);
+        }
+        return new Source(sourceId, javaType, min.toString(), max.toString());
     }
 
     /**
@@ -470,11 +742,17 @@ final class ConfigRoots {
         return found;
     }
 
-    /** The configuration value {@code field} holds, or null: an integral or
-     *  boolean instance field each writer stores one key in, or a field of
-     *  a configuration class. */
-    private ConfigValue fieldValue(String field,
-                                   Map<String, List<String>> fieldWriters) {
+    /**
+     * What {@code field} holds, or null when it is no configuration: not an
+     * integral or boolean instance field, or a writer storing anything but a
+     * constant or a configuration value of one key in one shape.  A field of
+     * a configuration class is its own key.  Not minted, named: a value of a
+     * key no literal names, and a constant store no store of the
+     * configuration post-dominates (the field may hold it, as {@code if (f
+     * <= 0) f = 1} after {@code f = get(k)}).
+     */
+    private FieldValue fieldValue(String field,
+                                  Map<String, List<String>> fieldWriters) {
         SootField declared = Scene.v().grabField(field);
         if (declared == null || declared.isStatic()
                 || !MINTABLE.contains(declared.getType().toString())) {
@@ -482,16 +760,18 @@ final class ConfigRoots {
         }
         if (LibraryCatalog.configFieldOwners().contains(
                 declared.getDeclaringClass().getName())) {
-            return new ConfigValue(field, -1,
-                    Collections.<BigInteger>emptyList());
+            return new FieldValue(new ConfigValue(field, -1, null,
+                    Collections.<Clamp>emptyList(),
+                    Collections.<BigInteger>emptyList()), null);
         }
-        List<String> writers = fieldWriters.getOrDefault(field,
-                Collections.<String>emptyList());
+        Map<String, Body> bodies = new HashMap<>();
+        Set<String> through = new HashSet<>();
+        Map<String, List<Unit>> constants = new LinkedHashMap<>();
+        Map<String, List<Unit>> stores = new HashMap<>();
         ConfigValue stored = null;
-        List<BigInteger> defaults = new ArrayList<>();
-        Set<String> storing = new HashSet<>();
-        Set<String> initializing = new HashSet<>();
-        for (String writer : writers) {
+        String unresolved = null;
+        for (String writer : fieldWriters.getOrDefault(field,
+                Collections.<String>emptyList())) {
             String method = SiteId.methodOf(writer);
             Body body = CausynthStaticFacts.activeBody(
                     CausynthStaticFacts.method(method));
@@ -500,77 +780,131 @@ final class ConfigRoots {
                     || !(((AssignStmt) unit).getLeftOp() instanceof FieldRef)) {
                 return null;
             }
+            bodies.put(method, body);
             Value right = ((AssignStmt) unit).getRightOp();
-            if (right instanceof soot.jimple.Constant) {
-                // An initializer, if its method stores the configuration.
-                initializing.add(method);
+            if (right instanceof Constant) {
+                constants.computeIfAbsent(method,
+                        ignored -> new ArrayList<>()).add(unit);
                 continue;
             }
-            ConfigValue value = valueOf(right, body, writer, 0);
-            if (value == null || value.key == null
-                    || stored != null && !stored.sameKey(value)) {
-                return null;
+            ConfigValue value = valueOf(right, body, 0, through);
+            if (value == null) return null;
+            if (value.key == null) {
+                if (unresolved == null) unresolved = writer;
+                continue;
             }
-            stored = value;
-            storing.add(method);
-            defaults.addAll(value.defaults);
+            if (stored != null && !stored.sameShape(value)) return null;
+            stored = stored == null ? value : stored.withDefaults(
+                    value.defaults);
+            stores.computeIfAbsent(method, ignored -> new ArrayList<>())
+                    .add(unit);
         }
-        if (stored == null || !storing.containsAll(initializing)) return null;
-        return new ConfigValue(stored.key, -1, defaults);
+        if (unresolved != null || stored != null) {
+            // The getter calls it stores are its reads, not the slice's.
+            fieldReads.addAll(through);
+        }
+        if (unresolved != null) {
+            return new FieldValue(null, new Refusal(KEY_UNRESOLVED,
+                    SiteId.methodOf(unresolved), unresolved, "", field
+                    + " stores a configuration of a key no literal names,"
+                    + " so its reads stay concrete"));
+        }
+        if (stored == null) return null;
+        for (Map.Entry<String, List<Unit>> method : constants.entrySet()) {
+            Body body = bodies.get(method.getKey());
+            for (Unit constant : method.getValue()) {
+                if (overwritten(body, constant, stores.get(method.getKey()))) {
+                    continue;
+                }
+                String site = SiteId.render(method.getKey(),
+                        indexOf(body, constant));
+                return new FieldValue(null, new Refusal(FIELD_OVERWRITTEN,
+                        method.getKey(), site, "", field + " may hold the"
+                        + " constant stored at " + site + ": no store of "
+                        + stored.sourceId() + " follows it on every path,"
+                        + " so its reads stay concrete"));
+            }
+        }
+        return new FieldValue(stored, null);
+    }
+
+    /** Whether a store of the configuration post-dominates {@code store}
+     *  in its method: an initializer every path overwrites. */
+    private static boolean overwritten(Body body, Unit store,
+                                       List<Unit> configured) {
+        if (configured == null) return false;
+        MHGPostDominatorsFinder<Unit> post =
+                new MHGPostDominatorsFinder<>(new BriefUnitGraph(body));
+        for (Unit configuration : configured) {
+            if (post.isDominatedBy(store, configuration)) return true;
+        }
+        return false;
     }
 
     /**
      * The configuration value {@code value} is in {@code body}, or null:
-     * through each local's one definition, casts, views and clamps, to a
-     * getter's or wrapper's return.
+     * through each local's one definition, casts, parses, views and clamps,
+     * to a getter's or wrapper's return.
      *
-     * @param site the site of the statement {@code value} is in: the key of
-     *             a getter whose key argument states none
+     * @param through the sites of the definitions it passes, collected (the
+     *                getter call's among them), or null
      */
-    private ConfigValue valueOf(Value value, Body body, String site,
-                                int depth) {
+    private ConfigValue valueOf(Value value, Body body, int depth,
+                                Set<String> through) {
         if (value instanceof Local) {
             // A parameter is the caller's value, no configuration here.
             Unit definition = uniqueDefinitionUnit(body, (Local) value);
             if (!(definition instanceof AssignStmt)) return null;
+            if (through != null) {
+                through.add(SiteId.render(body.getMethod().getSignature(),
+                        indexOf(body, definition)));
+            }
             return valueOf(((AssignStmt) definition).getRightOp(), body,
-                    SiteId.render(body.getMethod().getSignature(),
-                            indexOf(body, definition)), depth);
+                    depth, through);
         }
         if (value instanceof CastExpr) {
-            return valueOf(((CastExpr) value).getOp(), body, site, depth);
+            return valueOf(((CastExpr) value).getOp(), body, depth, through);
         }
         if (!(value instanceof InvokeExpr)) return null;
         InvokeExpr invoke = (InvokeExpr) value;
         String callee = invoke.getMethodRef().getSignature();
-        if (VIEWS.contains(callee)) {
+        if (PARSES.contains(callee)) {
             return valueOf(invoke instanceof InstanceInvokeExpr
                     ? ((InstanceInvokeExpr) invoke).getBase()
-                    : invoke.getArg(0), body, site, depth);
+                    : invoke.getArg(0), body, depth, through);
         }
         if (EQUALS.equals(callee)) {
             Value base = ((InstanceInvokeExpr) invoke).getBase();
             Value argument = invoke.getArg(0);
-            if (literalString(base, body)) {
-                return valueOf(argument, body, site, depth);
+            String literal = literalString(base, body);
+            Value viewed = argument;
+            if (literal == null) {
+                literal = literalString(argument, body);
+                viewed = base;
             }
-            return literalString(argument, body)
-                    ? valueOf(base, body, site, depth) : null;
+            ConfigValue raw = literal == null ? null
+                    : valueOf(viewed, body, depth, through);
+            return raw == null ? null : raw.viewed(literal);
         }
-        if (CLAMPS.contains(callee)) {
-            boolean first = literal(invoke.getArg(0)) != null;
-            if (first == (literal(invoke.getArg(1)) != null)) return null;
-            return valueOf(invoke.getArg(first ? 1 : 0), body, site, depth);
+        Boolean floor = CLAMPS.get(callee);
+        if (floor != null) {
+            BigInteger first = literal(invoke.getArg(0));
+            BigInteger second = literal(invoke.getArg(1));
+            if ((first == null) == (second == null)) return null;
+            ConfigValue raw = valueOf(invoke.getArg(first == null ? 0 : 1),
+                    body, depth, through);
+            return raw == null ? null : raw.clamped(new Clamp(floor,
+                    first == null ? second : first));
         }
         Getter getter = getter(invoke.getMethodRef(), depth + 1);
-        return getter == null ? null : called(getter, invoke, body, site);
+        return getter == null ? null : called(getter, invoke, body);
     }
 
     /** What one call of a getter in {@code body} reads: its key, or the
-     *  parameter of {@code body}'s method that states it, and the default
-     *  it names. */
+     *  parameter of {@code body}'s method that states it, or neither; the
+     *  shape the getter reads it in, and the default it names. */
     private static ConfigValue called(Getter getter, InvokeExpr invoke,
-                                      Body body, String site) {
+                                      Body body) {
         List<BigInteger> defaults = new ArrayList<>(getter.defaults);
         if (getter.defaultArg >= 0
                 && getter.defaultArg < invoke.getArgCount()) {
@@ -578,7 +912,8 @@ final class ConfigRoots {
             if (fallback != null) defaults.add(fallback);
         }
         if (getter.key != null) {
-            return new ConfigValue(getter.key, -1, defaults);
+            return new ConfigValue(getter.key, -1, getter.view,
+                    getter.clamps, defaults);
         }
         Value key = getter.keyArg < invoke.getArgCount()
                 ? invoke.getArg(getter.keyArg) : null;
@@ -589,14 +924,14 @@ final class ConfigRoots {
         }
         if (key instanceof StringConstant) {
             return new ConfigValue(((StringConstant) key).value, -1,
-                    defaults);
+                    getter.view, getter.clamps, defaults);
         }
-        if (definition instanceof IdentityStmt && ((IdentityStmt) definition)
-                .getRightOp() instanceof ParameterRef) {
-            return new ConfigValue(null, ((ParameterRef) ((IdentityStmt)
-                    definition).getRightOp()).getIndex(), defaults);
-        }
-        return new ConfigValue(site, -1, defaults);
+        int parameter = definition instanceof IdentityStmt
+                && ((IdentityStmt) definition).getRightOp()
+                instanceof ParameterRef ? ((ParameterRef) ((IdentityStmt)
+                definition).getRightOp()).getIndex() : -1;
+        return new ConfigValue(null, parameter, getter.view, getter.clamps,
+                defaults);
     }
 
     /**
@@ -607,16 +942,14 @@ final class ConfigRoots {
         String signature = reference.getSignature();
         for (Object[] jvm : JVM_GETTERS) {
             if (jvm[0].equals(signature)) {
-                return new Getter((Integer) jvm[1], (Integer) jvm[2], null,
-                        Collections.<BigInteger>emptyList());
+                return new Getter((Integer) jvm[1], (Integer) jvm[2]);
             }
         }
         for (LibraryCatalog.ConfigSource row
                 : LibraryCatalog.configSources()) {
             if (row.method.equals(signature) || inherits(reference,
                     row.method)) {
-                return new Getter(row.keyArg, row.defaultArg, null,
-                        Collections.<BigInteger>emptyList());
+                return new Getter(row.keyArg, row.defaultArg);
             }
         }
         if (getters.containsKey(signature)) return getters.get(signature);
@@ -629,34 +962,33 @@ final class ConfigRoots {
     }
 
     /** A wrapper: a method each of whose returns is a configuration value
-     *  of one key, a literal or one of its String parameters. */
+     *  of one key in one shape, its key a literal or one of its String
+     *  parameters. */
     private Getter wrapper(String signature, int depth) {
         SootMethod method = CausynthStaticFacts.method(signature);
         Body body = CausynthStaticFacts.activeBody(method);
         if (body == null) return null;
         ConfigValue returned = null;
-        List<BigInteger> defaults = new ArrayList<>();
-        int index = 0;
         for (Unit unit : body.getUnits()) {
-            if (unit instanceof ReturnStmt) {
-                ConfigValue value = valueOf(((ReturnStmt) unit).getOp(),
-                        body, SiteId.render(signature, index), depth);
-                if (value == null
-                        || returned != null && !returned.sameKey(value)) {
-                    return null;
-                }
-                returned = value;
-                defaults.addAll(value.defaults);
+            if (!(unit instanceof ReturnStmt)) continue;
+            ConfigValue value = valueOf(((ReturnStmt) unit).getOp(), body,
+                    depth, null);
+            if (value == null
+                    || returned != null && !returned.sameShape(value)) {
+                return null;
             }
-            index++;
+            returned = returned == null ? value
+                    : returned.withDefaults(value.defaults);
         }
         if (returned == null) return null;
         if (returned.key != null) {
-            return new Getter(-1, -1, returned.key, defaults);
+            return new Getter(-1, -1, returned.key, returned.view,
+                    returned.clamps, returned.defaults);
         }
-        return "java.lang.String".equals(method.getParameterType(
-                returned.keyParam).toString())
-                ? new Getter(returned.keyParam, -1, null, defaults) : null;
+        return returned.keyParam >= 0 && "java.lang.String".equals(
+                method.getParameterType(returned.keyParam).toString())
+                ? new Getter(returned.keyParam, -1, null, returned.view,
+                returned.clamps, returned.defaults) : null;
     }
 
     /** Whether {@code reference} names {@code catalogMethod} on a subclass
@@ -746,11 +1078,13 @@ final class ConfigRoots {
                 ? ((AssignStmt) unit).getRightOp() : null;
     }
 
-    /** Whether a value is a String literal, or a local only one defines. */
-    private static boolean literalString(Value value, Body body) {
+    /** The String literal a value is, directly or as a local only one
+     *  defines; or null. */
+    private static String literalString(Value value, Body body) {
         if (value instanceof Local) value = uniqueDefinition(body,
                 (Local) value);
-        return value instanceof StringConstant;
+        return value instanceof StringConstant
+                ? ((StringConstant) value).value : null;
     }
 
     /** An integral constant's value, or null. */

@@ -38,7 +38,9 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * {@code CausynthSymbolicSource.symbolize} call (one hook site per source
  * per region), and the engine's read ({@code getfield}) of a configuration
  * field {@link ConfigRoots} declares, every one of them.  A field a tree's
- * hook mints is the hook's: no read of it is the engine's.
+ * hook mints is the hook's: no read of it is the engine's.  The
+ * configuration reads no root mints are published beside, as catalog gaps
+ * ({@link ConfigRoots#gaps}).
  */
 final class StaticSymbolicSourceDiscovery {
     private static final String HOOK_CLASS_SIMPLE_NAME =
@@ -71,9 +73,11 @@ final class StaticSymbolicSourceDiscovery {
         }
     }
 
-    /** Attaches declarations to every region that can execute a site. */
+    /** Attaches declarations to every region that can execute a site, and
+     *  names the configuration reads left concrete. */
     static void discover(StaticProgram program, ConfigRoots config)
             throws IOException {
+        program.communicationGaps.addAll(config.gaps());
         if (program.regions.isEmpty()) return;
         Set<String> regionRoots = new LinkedHashSet<>();
         for (Map<String, Object> region : program.regions) {
