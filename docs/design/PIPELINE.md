@@ -275,6 +275,12 @@ is withheld and its mints are published, as an abandoned one's are: other activa
 name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
 `System.exit` ends the in-process cluster (its threads and ports) with the JVM.
 
+Every logged version a region stored is a write row (`RowPublication#writes`; a store outside
+every region has no performer, a declared input is a mint), the location's INITIAL among them,
+flagged (`WriteRow#initial`): what the location held before every write its log names -- a
+scalar's word, a container's members -- at the access that started the log, spelled as its own
+site kind there (`Endpoint#initialSite`). A read of it joins it like any version.
+
 A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
 admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
 only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the
@@ -427,9 +433,13 @@ are counted, never dropped silently: the `NO_ROOT_REACHES_ANCHOR` detail states 
   (`STATIC_CANDIDATE_PRODUCER`); an unpaired attach is `LINEAGE_LOST` (DIAGNOSTIC) and its static
   candidates are taken on every node;
 - a read whose symbol is demanded: the writers `Corpus.eligibleWrites` names (the write of the observed
-  version, and writes of the same session by HB-concurrent occurrences — `Arms.concurrent`: not the
-  same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root, neither
-  Lost), and every activated occurrence on the reader's node holding a static write site of the
+  version, and every other the one eligibility rule `Arms#eligible` admits: a write of the same
+  session the read could have run right after -- its occurrence HB-concurrent, `Arms.concurrent`: not
+  the same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root,
+  neither Lost; every write between the two an HB-concurrent occurrence's; none of them under
+  construction, a constructor or class initializer anywhere on its frame chain; no version between
+  them a read observed and no row states -- or the location's INITIAL by the same test, whose
+  expression's symbols are demanded and which is no task: no occurrence wrote it), and every activated occurrence on the reader's node holding a static write site of the
   location's carrier, unless the read's session states it holding other objects only
   (`STATIC_CANDIDATE_WRITER`; a heap location is one object's, and a store reaches only an object its
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
@@ -594,8 +604,18 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   export's `messageKey` and hole are the attach's `correlationId` and hole), bound by COMPOSE's one
   hole-arm rule (`VmTermLowering#holeArm`, §8) over the query's names, and a relay's operand, the
   upstream hole's symbol, is a nested slot.
-- READ: the eligible writers (`Arms.stateArms`) become one Bool selector each (`wchoice_*`,
-  exactly one); no writer: pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`.
+- READ: the eligible writers (`Arms.stateArms`, the location's INITIAL among them, the writer at
+  version 0) become one Bool selector each (`wchoice_*`, exactly one), one choice per (reader
+  occurrence, location) binding every read of it -- reads of it that saw two writes have no choice
+  that is the run's pairing and refuse the flip by name (`UNSTATED_VALUE:READS_SAW_TWO_WRITES`, as
+  COMPOSE's family does); a writer whose write lowers to another sort than the read delivers
+  nothing it could be and is no choice (`ARM_SORT_MISMATCH`, the recorded one excepted); no writer:
+  pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A scalar read of a field or array cell
+  of the flipped occurrence (not a container's state or a query of one) with more than one
+  eligible writer is its own symbol, as COMPOSE keeps the anchor's
+  (`FlipQuery#movableReads`, `SmtLowering#rowSymbol`): inlined, the VM's guarded read is the
+  written value, a constant no selector moves (hdfs-bugs-slowdisk-zero: the detector turn's
+  `maxSlowDisksToExclude <= 0` over the reconfiguration's 0 and its INITIAL 1).
   Only reads the text names are variables: a container state behind a guard is inlined by its join
   (the closure demands its writers, §7.2), so the query declares nothing for it — a variable bound
   to each writer's state would constrain nothing, and its equalities over states built by removals
@@ -609,7 +629,9 @@ operator the lowering writes (the string operators `str.substr`, `str.indexof`, 
 `str.from_code`, `str.to_code`, and `str.in_re`, `re.*`, `re.range` of `String.trim` among them,
 the floating-point operators, `to_fp`, `int2bv`, `bv2int`
 and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
-refuses (`UNPRODUCIBLE_ANSWER`); a query with no variable of its own is not asked. A construct the
+refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no variable of its own --
+none it names, none a definition it rests on names (`FlipQuery#flipMoves`) -- is not asked
+(`ADMISSION_GAP`), whatever variables a prefix decision binds. A construct the
 lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays
 in the query. Demanded conjuncts (the flip and the inherited flips) get a one-minute clock margin on
 each comparison atom over a clock whose polarity `not`/`and`/`or` resolve (`explore.ClockMargin`;
@@ -639,24 +661,34 @@ long refuses), controls as answers keyed by attach endpoint id (`ObligationFacto
 control -- a codec's STR hole -- as its JSON string literal, which the replay plants verbatim; one
 whose model value is no string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
 (an arrival, a read's `concreteValue`, a root) is a literal of the sort its variable is declared at
-by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A model that plants
-nothing its path's session did not run -- no moved clock, no answer, and every assigned root at
-the value that session minted -- would have its replay run that session's world again. Before it
-is refused, the query is asked again with every writer choice held to the writer the recording's
-read observed (`ObligationFactory#heldToRecording`; a container state follows its writer's, and a
-refused term `unsupported__*` has no recorded value and stays free): a model that then plants
-something is the one issued. Else it is refused before any replay (`NOT_ADMITTED`, a DIAGNOSTIC
-`ADMISSION_GAP` under `EXPLORATION`). Assigning roots, all at their recorded values, it names the
-polarity or binding fault that implies; assigning none (`EMPTY_WORLD`), it names the symbols it sets
-that no replay plants (writer choices `wchoice_*`, container states `st__*`, refused terms
-`unsupported__*`) and what the held query answered (SOLR-18413 r5: 67 such focused replays, r7 14,
-r9 2, none ever admitted). The
-parent world is overlaid (model wins) and its flips inherited. Every assigned root must
-have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`). The worker writes
-`obligation_result.jsonl` (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`,
-`gaps.jsonl`, `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)) and the
-schedule cut (`SchedulePrefix.write`, held): the source session's schedule up to the first event or
-mark of the flip occurrence, the focused occurrence or a factor member goes to
+by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A writer choice the
+model sets away from the writer the recording's reads observed, the location's INITIAL among them,
+is a **planted pairing**, counted like an answered handoff (`ObligationFactory#planted`: reader →
+writer, each as CONFIRM names them, `ConfirmMain#writer`; one of a read another session made refuses,
+`PAIRING_UNPLANTABLE`). A pairing is planted only where the recorded ones take no flip: a model
+that moves one is asked again with every writer choice held to the recorded writer
+(`ObligationFactory#heldToRecording`; a container state follows its writer's, and a refused term
+`unsupported__*` has no recorded value and stays free), and a model that then plants something is
+the one issued. A model that plants nothing its path's session did not run -- no moved clock, no
+answer, no pairing, and every assigned root at the value that session minted -- would have its
+replay run that session's world again, and is refused before any replay (`NOT_ADMITTED`, a
+DIAGNOSTIC `ADMISSION_GAP` under `EXPLORATION`). Assigning roots, all at their recorded values, it
+names the polarity or binding fault that implies; assigning none (`EMPTY_WORLD`), it names the
+symbols it sets that no replay plants (container states `st__*`, refused terms `unsupported__*`).
+The parent world is overlaid (model wins: roots, skews, answers, pairings) and its flips inherited.
+Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`,
+`NOT_ADMITTED`). The world's pairings are held by CONFIRM's rows over the session the path was cut
+from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
+for an INITIAL every writer of the location after the read; a writer the read must precede waits for
+the reader's occurrence to close, since the choice binds every read it makes of the location and
+the flipped world may read it again, CONFIRM's for the read's activation); a pairing that session states no read
+or write of refuses (`PAIRING_UNSTATED`). The worker writes `obligation_result.jsonl`
+(`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`, `gaps.jsonl`,
+`focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)), the pairings'
+`expected_edges.jsonl` and the schedule cut (`SchedulePrefix.write`, held): the source session's
+schedule up to the first event or mark of the flip occurrence, the focused occurrence, a factor
+member, or an occurrence an `ORDER` moves after another's that the session ran first (the
+prefix is followed only up to the first event the pairings reorder) goes to
 `schedule_prefix.jsonl`, the rest to `schedule_suffix.jsonl`.
 
 ### 7.6 The obligation replay
@@ -683,8 +715,10 @@ launcher gets TERM, the kill grace, then KILL), so no replay JVM writes after it
 five JVMs past their bound rewrote the answer ADMITTED during their shutdown hooks, naming sessions
 the worker had withdrawn, and the head waited for them until the campaign failed). `ADMITTED` = the flipped
 decision took the other arm, the focused prefix was not abandoned, the session published a mint row
-for every assigned root and clock skew, and every inherited flip held; anything else is
-`NOT_ADMITTED` naming why. A mint that ran without planting its assignment is a BLOCKING
+for every assigned root and clock skew, every inherited flip held, and every edge of its
+`expected_edges.jsonl` was taken (`runtime.Confirmation`, the world's pairings: a read that did
+not observe its paired writer's version, or an order that stalled, is `PAIRING_UNTAKEN`);
+anything else is `NOT_ADMITTED` naming why. A mint that ran without planting its assignment is a BLOCKING
 `ASSIGNMENT_UNPLANTED` gap of the session. A replay ends once the focus row's `declaredTarget`
 publishes a target row that reached the anchor and observed the fatal (`AT_WITNESS`, §5).
 
@@ -1068,23 +1102,36 @@ are stated as they are made and taken back with a refused path (`ComposedFamilie
 `SmtLowering#retract`), so the next path, composed at the ordinal a refused one left free, names
 nothing twice.
 
-**State families** (`stateFamilies`), for joined reads at the anchor only, of a static field or of a heap
+**State families** (`stateFamilies`), for the joined reads the stage re-pairs (`SessionJoin#repaired`,
+one rule, one entry point, `Composer#repairing`): the anchor's up to its cutoff, and every read the
+selected session's world planted a pairing on (`Corpus.World#pairings`, each with every read its
+occurrence made of the location, as the replay held them), each block of one occurrence's reads of
+one location by the same test -- a named owner, and a read of it that could have seen a writer
+besides the one it did -- and both less the owners `Composer#pinnedOwners` keeps; away from the anchor, its occurrence reached by the closure
+(hdfs-bugs-slowdisk-zero: the detector turn's read of the exclusion bound, whose guard and store
+the anchor's read of the published list rests on); of a static field or of a heap
 location whose owner is an object rid (`Arms.namedOwner`; a class-name owner gets no alternatives):
 one `writer_arm__` selector per writer occurrence of the same session (`Arms.stateArms`: the
 observed writer's arm is the write the read observed, any other writer's its last write of the
-location, and only attested HB-concurrent ones), plus an `observed_arm__` holding each read to its
+location, and only attested ones the read could have run right after, `Arms#eligible`), one for the
+location's INITIAL, the writer at version 0, where the read observed it or the same rule admits it
+(its arm binds the reads to what the location held and rests on nothing a run
+decided, `ComposedFamilies#initialBody`), plus an `observed_arm__` holding each read to its
 own join or pin when a version one of the reads observed has no writing row; exactly one per
 location that has two arms or more, one of them an HB-concurrent writer's, else the reads keep their
 own joins: arms that are each some read's own pairing (the writer one read saw, the pins of another
-whose version no row wrote) re-pair nothing. The read rule's "an anchor location a STATE family may
-re-pair" (`Composer#repaired`) is the same alternative: a read of it at the anchor could have seen
-a writer occurrence besides the one it did (`Corpus#eligibleWrites`; a version no row wrote has none
-of its own). A hot field the reader's own occurrence alone writes, whose earliest versions the VM's
+whose version no row wrote) re-pair nothing. The read rule's "a location a STATE family may
+re-pair" (`Composer#repairing`) is the same alternative: a read of it could have seen a writer
+occurrence besides the one it did (`Corpus#eligibleWrites`; a version no row wrote has none of its
+own). A hot field the reader's own occurrence alone writes, whose earliest versions the VM's
 64-version bound dropped, is none (hdfs-17960 e1c: the checkpoint saver's configuration parse,
 whose `Hashtable` entries' hashes, a `String.hashCode` no lowering models, are pinned). The arm the
 run took (the observed arm, else the one writer every read observed) is part of the path's recorded
-pairing; a location where no arm is that pairing (the reads saw two writes, or the write they saw
-has no arm) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formula.
+pairing -- at a location the world planted, the recording's pairing, any arm but the plant
+(`(not <plant>)`), so a witness that needs the plant names it as the arm it re-paired
+(`repairedArms`) and the recording decides it (STATE_PAIRING_FLIPPED); a location where no arm is
+that pairing (the reads saw two writes, or the write they saw has no arm) is a BLOCKING
+`UNSTATED_VALUE`: the run as it happened is no world of the formula.
 
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
@@ -1152,8 +1199,9 @@ whose write and row name no object refuses the path (`UNSTATED_VALUE:OwnerCandid
 
 **A container read the family re-pairs** (`SmtLowering#movedQuery`). The anchor's read of a container
 location a STATE family re-pairs (`SessionJoin#repaired`, per read event: the anchor's reads up to its
-cutoff, `Composer#anchorReads`) asks its query of the read's own symbol, the state its join states at
-the container's sort and each writer arm binds to that writer's state, not of the run's chain, which
+cutoff, `Composer#repairing`) asks its query of the read's own symbol, the state its join states at
+the container's sort and each writer arm binds to that writer's state -- the INITIAL's arm to what the
+location held before every write (`ComposedFamilies#initialBody`) --, not of the run's chain, which
 inlined is the run's answer no family moves (zk-bugs-election-offer: the getData's lookup of an offer
 in ZooKeeper's node map). The base a query requires of its chain (`requireStatedContainerBase`) is the
 observed version's: every version of one location descends from it. A query through a view keeps the
@@ -1250,7 +1298,8 @@ reads the epoch's scope map (`--static-scope-map`, required; `run_engine.sh do_c
 
 **An owner kept to the run's pairing** (`Composer#pinnedOwners`): a location a STATE family may
 re-pair keeps the run's pairing (no family, no movable owner), named DIAGNOSTIC, only where a read the
-family moves -- the anchor's, up to its cutoff (`Composer#anchorReads`) -- would leave something
+family moves -- the anchor's up to its cutoff and the world's planted ones (`Composer#repairing`) --
+would leave something
 unnamed; a reached writer's own read of the location keeps the run's pairing, so what is asked
 through it names the run's object and pins nothing (zk-bugs-election-offer: each create and delete
 looks up its parent in the node map the anchor's getData re-pairs). So when a reached occurrence's
@@ -1434,7 +1483,9 @@ Only a `SAT_CANDIDATE` is confirmed. ConfirmMain reads `claim.json` and the mani
 valuation, its selected path and session, and the selected arms of that path; the selected session
 must have a target row at the anchor that reached it (else refused, exit 1 → unconfirmed).
 
-- **Realized**: when that target row observed the fatal, every selected arm is the session's own
+- **Realized**: when the session's world planted no pairing (a pairing is a moved choice its own
+  run took under the order its replay held, which CONFIRM makes again in its own replay, strict),
+  that target row observed the fatal, every selected arm is the session's own
   delivery, every write the model chose for a read of the join closure at a location the fatal
   rests on (`restsOn`, below) is the one that read saw (`StateClosure#ran`), the session minted
   every moved non-clock root at the model's value, and its clocks are the model's (on every cell
@@ -1446,7 +1497,10 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   composition anchored its cell to (the manifest's `roots`) -- and, on every clock cell the
   composition anchors, the model's jumps alone: the session's own skews there are dropped, since
   the model runs those cells on from the jump before them. A moved root the recording mints
-  nowhere, or a moved clock the composition anchors nowhere, refuses the confirmation by name. The focus row focuses the anchor
+  nowhere, or a moved clock the composition anchors nowhere, refuses the confirmation by name. The
+  world's pairings are held by the rows its replay was held to (`ConfirmMain#holding`, the reader's
+  occurrence a block; a pairing the session states no read or write of refuses, `PAIRING_UNSTATED`).
+  The focus row focuses the anchor
   with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits
@@ -1463,17 +1517,23 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   all; the write the model chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
   endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a
   query through a re-pointable reference the write of the state its arm's `referentStates` name,
-  §8; a recorded join to a container's INITIAL is no edge -- that version is the members the VM read
-  where it first observed the container, which no occurrence wrote and which access first observes
-  it is the run's own history, as a scalar's INITIAL is no row: `StateClosure#initial`, the write
-  whose expression is its `SNAPSHOT_BASE`'s `members` and nothing above them), `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
+  §8; a recorded join to an INITIAL is no edge -- no occurrence wrote it, and which access first
+  observes the location is the run's own history (`WriteRow#initial`) -- and an INITIAL the model
+  chose names writer `INITIAL`, `Confirmation#INITIAL`, which every INITIAL a run logs is to it),
+  `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
-  it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); where that activation runs
+  it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); an event in its
+  occurrence's outermost activation -- a loop body's, standing on the loop's method, which spans
+  every turn -- is held at the occurrence's opening and waited for until its close
+  (`StateClosure#exit`, `#outermost`), which the session ran at the occurrence's last recorded
+  event, so a writer it ran before that is a reordered occurrence (`StateClosure#closing`); where
+  that activation runs
   as claimed work on a consumer thread (`ActivationRow#claimed`: a server pipeline applying one
   request after another, the writer's among them, would deadlock held), the entry of the send that
   started it, its anchor's producer followed up the chain while that send is claimed work too
   (`Confirmation#submitter`; none outside one refuses the confirmation, `ORDER_UNHELD`); every other
-  writer of the location the held write is of before the writer or after the reader, held alike), `MARKER`
+  writer of the location the held write is of before the writer or after the reader, held alike, and
+  for an INITIAL the model chose every writer of the location after the reader), `MARKER`
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
   stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
   delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where
@@ -1493,13 +1553,19 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   consumer, `RowRuntime#confirm`, and the value must still arrive), STATE at close (both by
   `Confirmation#id`; a STATE edge is taken when the model's reader observed the model's writer, or
   when a read at its site at another turn of the loops on its path did, `readerAnyTurn`,
-  `Endpoint#anyTurn`: how many turns a loop that polls for a write takes is that write's timing),
-  and holds each `ORDER` activation's
+  `Endpoint#anyTurn`: how many turns a loop that polls for a write takes is that write's timing --
+  never for an INITIAL, which every read observes before the first write, so the exact reader must;
+  a `mint` row, a placeholder's, which lands on whichever occurrence reads the cell first, when a
+  placeholder of the run observed a version of its `location` its writer wrote, an INITIAL included,
+  and it holds no order), and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
   mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
   are not read by the runtime. A CONFIRM run (`FocusedReplay.confirming`: its obligation flips
-  nothing) whose `expected_edges.jsonl` is missing or unreadable compares nothing and files one
-  `EDGES:` mismatch at the close, so it confirms nothing.
+  nothing), or a replay whose world plants pairings (`FocusedReplay.pairs`), whose
+  `expected_edges.jsonl` is missing or unreadable compares nothing and files one `EDGES:` mismatch
+  at the close, so it confirms nothing and the obligation is `PAIRING_UNTAKEN`. One read is held to
+  one writer: two STATE rows naming two are refused by `ConfirmMain` (`STATE_CONFLICT`) and, read at
+  runtime, compare nothing.
 - Decision (`ConfirmMain --claim --output <worker> --sessions <dir>`, `ConfirmMain#decide`, which
   prints `final/confirm.json`), conditions in order, the first that fails named as the reason: the
   replay's verdict is `ADMITTED`; its session directory exists and its `gaps.jsonl` and

@@ -38,12 +38,14 @@ import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -199,6 +201,7 @@ public final class Composer {
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         private final Map<String, List<String>> ownArms;
+        private final Map<String, List<String>> recordedAtPlants;
         private final String seedSessionId;
         /** Where each top-level command of the body ends, and the path
          *  selector it is guarded by (null: every path's); #pathQuery. */
@@ -258,6 +261,8 @@ public final class Composer {
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
             this.ownArms = composed.composedFamilies.ownArms();
+            this.recordedAtPlants =
+                    composed.composedFamilies.recordedAtPlants();
             this.seedSessionId = composed.seed();
             List<Integer> ends = new ArrayList<Integer>();
             List<String> guards = new ArrayList<String>();
@@ -553,23 +558,39 @@ public final class Composer {
         /**
          * The arms {@code taken} under the path {@code selector} names that
          * are no pairing its own run had ({@link #ownRun}: its own
-         * session's message arms, the writer arm each state read observed):
-         * the re-paired ones, which a pairing kind moved where no root did.
+         * session's message arms, the writer arm each state read observed,
+         * and at a location its world planted a pairing on any arm but the
+         * plant, {@code ComposedFamilies#recordedAtPlants}): the re-paired
+         * ones, which a pairing kind moved where no root did.  Only that
+         * path's: another path's arms are free in the model, as its
+         * selector is.
          */
         public List<String> repaired(String selector,
                                      Collection<String> taken) {
             Set<String> own = new LinkedHashSet<String>();
-            List<String> arms = ownArms.get(selector);
-            if (arms != null) own.addAll(arms);
+            for (Map<String, List<String>> owned
+                    : Arrays.asList(ownArms, recordedAtPlants)) {
+                List<String> arms = owned.get(selector);
+                if (arms != null) own.addAll(arms);
+            }
             Disjunct disjunct = bySelector(selector);
             List<String> reads = disjunct == null ? null
                     : observedReads.get(disjunct.path().pathId);
             if (reads != null) own.addAll(reads);
             List<String> repaired = new ArrayList<String>();
             for (String arm : taken) {
-                if (!own.contains(arm)) repaired.add(arm);
+                if (!own.contains(arm) && ordinal(arm).equals(
+                        ordinal(selector))) {
+                    repaired.add(arm);
+                }
             }
             return repaired;
+        }
+
+        /** The path ordinal a selector name carries ({@code kind__N__hash}). */
+        private static String ordinal(String name) {
+            String[] parts = name.split("__", -1);
+            return parts.length == 3 ? parts[1] : "";
         }
 
         /**
@@ -1059,15 +1080,13 @@ public final class Composer {
         //      any lowering.
         Map<String, Long> reached = closure(session, anchor, target.seq(),
                 null);
-        // What a family may move at the anchor is no constant anywhere in
-        // this path: not a pin after a refused join, not a variable
-        // independence leaves out.  A location a reader mutated a container
-        // through is held to the run's pairing.
-        Set<String> repaired = repaired(session);
-        Set<String> pinned = pinnedOwners(session, reached,
-                anchorReads(session, repaired, target.seq()), repaired);
-        repaired.removeAll(pinned);
-        Set<String> moved = anchorReads(session, repaired, target.seq());
+        // What a family may move is no constant anywhere in this path: not
+        // a pin after a refused join, not a variable independence leaves
+        // out.  ONE entry point: the anchor's reads and the world's planted
+        // ones, less a location a reader mutated a container through.
+        Repairing repairing = repairing(session, reached, target.seq());
+        Set<String> pinned = repairing.pinned;
+        Set<String> moved = repairing.keys;
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
                 corpus.join(session),
                 (location, event) -> moved.contains(
@@ -1088,7 +1107,8 @@ public final class Composer {
         conditions.addAll(reachedConditions(session, reached));
         Independence relevant = independence(session,
                 Collections.singletonList(target.phiTerm()),
-                familyBound(session, repaired), reached, conditions);
+                familyBound(session, repairing.reads), reached,
+                conditions);
         //       What the fatal itself rests on ({@link #fatalRests}) and
         //       the roots alone: a location a family binds and nothing else
         //       reaches holds the formula's alternatives, not the witness (a
@@ -1222,7 +1242,7 @@ public final class Composer {
         //     A read a family gives alternatives to takes its value there.
         Set<String> chosen = composedFamilies.stateFamilies(path,
                 ordinal, selector, joined, joins, interactionIds,
-                familyTerms, observed);
+                familyTerms, observed, repairing.planted);
         // (8) And the state joins this conjunction ASKS ABOUT.
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
@@ -1677,7 +1697,8 @@ public final class Composer {
 
     /**
      * One write this path rests on (joined or an earlier version): its
-     * writer is reached and its location's earlier versions queued.
+     * writer is reached and its location's earlier versions queued.  An
+     * INITIAL has neither: no occurrence wrote it.
      */
     private void reach(WriteRow write, OccurrenceAddress start,
                        Map<String, Long> reached,
@@ -1685,7 +1706,10 @@ public final class Composer {
                        Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
         // Never the anchor or the start: their cutoff is fixed.
-        if (anchor.id().equals(writer) || start.id().equals(writer)) return;
+        if (write.initial() || anchor.id().equals(writer)
+                || start.id().equals(writer)) {
+            return;
+        }
         if (handled.add(SmtLowering.locationKey(write.location()) + "#"
                 + write.version())) {
             versions.add(write);
@@ -1881,28 +1905,9 @@ public final class Composer {
     }
 
     /**
-     * The anchor's reads of these locations up to its cutoff, each by
-     * {@link SmtLowering#readKey}: the reads a STATE family re-pairs.  Any
-     * other read of such a location -- a reached writer's own lookup of the
-     * container it then mutates -- keeps the run's pairing, so what is
-     * asked through it names the run's object.
-     */
-    private Set<String> anchorReads(String session, Set<String> locations,
-                                    long cutoff) {
-        Set<String> reads = new LinkedHashSet<String>();
-        for (ReadRow read : corpus.readsOn(session, anchor)) {
-            String key = SmtLowering.locationKey(read.location());
-            if (read.seq() <= cutoff && locations.contains(key)) {
-                reads.add(SmtLowering.readKey(key, read.seq()));
-            }
-        }
-        return reads;
-    }
-
-    /**
-     * The anchor locations a family may re-pair that keep the run's own
-     * pairing, named: only where a read the family MOVES ({@code moved},
-     * {@link #anchorReads}) would leave something unnamed.  A reader of this
+     * The locations a family may re-pair that keep the run's own pairing,
+     * named: only where a read the family MOVES ({@code moved},
+     * {@link #repairing}) would leave something unnamed.  A reader of this
      * path mutated a container through one (R3-REFCONT C-4): a reached
      * occurrence's container version whose mutation names, as its owner, a
      * moved read; another pairing would mutate an object no row records the
@@ -1979,7 +1984,7 @@ public final class Composer {
     }
 
     /**
-     * The container locations whose moved query reads ({@link #anchorReads})
+     * The container locations whose moved query reads ({@link #repairing})
      * the anchor or a reached occurrence asks a field or a query through
      * ({@code owner}), up to its cutoff.
      */
@@ -2030,7 +2035,7 @@ public final class Composer {
 
     /**
      * The location of the read a node's {@code owner} is, when that read is
-     * a moved one ({@link #anchorReads}), else null.
+     * a moved one ({@link #repairing}), else null.
      */
     private static String movedOwner(JsonObject node, Set<String> moved) {
         JsonElement owner = unwrapped(node == null ? null : node.get("owner"));
@@ -2068,56 +2073,149 @@ public final class Composer {
      * phi and the roots alone left out a condition over them, and the
      * family set them free of it (C1 review M2).
      */
-    private Set<String> familyBound(String session, Set<String> repaired) {
+    private Set<String> familyBound(String session, List<ReadRow> moving) {
         Set<String> bound = new LinkedHashSet<String>();
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
             bound.add(attach.symbol());
         }
-        for (ReadRow read : corpus.readsOn(session, anchor)) {
-            String key = SmtLowering.locationKey(read.location());
-            if (!repaired.contains(key)) continue;
-            bound.add(Independence.location(key));
+        for (ReadRow read : moving) {
+            bound.add(Independence.location(SmtLowering.locationKey(
+                    read.location())));
             if (!read.symbol().isEmpty()) bound.add(read.symbol());
         }
         return bound;
     }
 
+    /** The reads a STATE family re-pairs on one path ({@link #repairing}). */
+    private static final class Repairing {
+        /** The reads, in session order. */
+        final List<ReadRow> reads = new ArrayList<ReadRow>();
+        /** Each read by {@link SmtLowering#readKey}. */
+        final Set<String> keys = new LinkedHashSet<String>();
+        /** Location key -> the writer the world planted there
+         *  ({@link ComposedFamilies#writer}). */
+        final Map<String, String> planted =
+                new LinkedHashMap<String, String>();
+        /** The locations held to the run's pairing ({@link
+         *  #pinnedOwners}). */
+        Set<String> pinned = Collections.emptySet();
+    }
+
     /**
-     * The locations a STATE family may re-pair at the anchor ({@link
-     * ComposedFamilies#stateFamilies}): read there by this session, owned
-     * by a named object, by a read that could have seen a writer
-     * occurrence besides the one it did ({@link Corpus#eligibleWrites}, the
-     * writers the family's arms are drawn from: only an HB-concurrent one
-     * is another).  A version no row wrote has no writer of its own, so
-     * any eligible writer is another; but a read whose only eligible writer
-     * is the one it observed, or none, has no alternative: two reads that
-     * saw two ordered writers, or a hot field whose earliest versions the
-     * VM's version bound dropped and whose only writer is the reader's own
+     * THE READS A STATE FAMILY RE-PAIRS on one path ({@code
+     * SmtLowering.SessionJoin#repaired}), ONE entry point: the anchor's,
+     * up to its cutoff, and every read the session's world planted a
+     * pairing on ({@code Corpus.World#pairings}: reader -> writer, as
+     * {@code runtime.Confirmation} names them), with every read its
+     * occurrence made of the location -- one choice per occurrence's
+     * reads, as the replay held them ({@code ConfirmMain#holding}).  One
+     * test admits a block of one occurrence's reads of one location: the
+     * location owned by a named object, and one of the reads could have
+     * seen a writer occurrence besides the one it did ({@link
+     * Corpus#eligibleWrites}, the writers the family's arms are drawn
+     * from).  A version no row wrote has no writer of its own, so any
+     * eligible writer is another; but a read whose only eligible writer is
+     * the one it observed, or none, has no alternative: two reads that saw
+     * two ordered writers, or a hot field whose earliest versions the VM's
+     * version bound dropped and whose only writer is the reader's own
      * occurrence (hdfs-17960 e1c: a configuration parser's fields in the
-     * checkpoint saver), stay the run's.
+     * checkpoint saver), stay the run's.  Then a location a reader of the
+     * path mutated a container through, or one holding a wrapper, keeps the
+     * run's pairing ({@link #pinnedOwners}), planted or not.  A planted
+     * location's recorded arm is the recording's pairing, any arm but the
+     * plant ({@code ComposedFamilies#stateFamilies}); a pairing whose writer
+     * the session states no write of plants nothing.
      */
-    private Set<String> repaired(String session) {
-        Set<String> repaired = new LinkedHashSet<String>();
-        Set<String> asked = new LinkedHashSet<String>();
-        for (ReadRow read : corpus.readsOn(session, anchor)) {
-            long version = read.observedVersion();
-            if (version < 0L || !Arms.namedOwner(read.location())) continue;
+    private Repairing repairing(String session, Map<String, Long> reached,
+                                long cutoff) {
+        Map<String, String> pairings = corpus.world(session).pairings;
+        Map<String, String> planted = new LinkedHashMap<String, String>();
+        Set<String> plantedBlocks = new LinkedHashSet<String>();
+        SessionReader reader = corpus.session(session);
+        List<ReadRow> sessionReads = reader == null
+                ? Collections.<ReadRow>emptyList() : reader.reads();
+        for (ReadRow read : pairings.isEmpty()
+                ? Collections.<ReadRow>emptyList() : sessionReads) {
+            String writer = pairings.get(Confirmation.id(read.endpoint()));
+            if (writer == null) continue;
             String key = SmtLowering.locationKey(read.location());
-            if (repaired.contains(key) || !asked.add(key + "#" + version)) {
-                continue;
-            }
-            WriteRow observed = corpus.writeOf(session, key, version);
-            String seen = observed == null ? null
-                    : observed.endpoint().occurrence().id();
-            for (WriteRow write : corpus.eligibleWrites(session, key,
-                    version, anchor)) {
-                if (!write.endpoint().occurrence().id().equals(seen)) {
-                    repaired.add(key);
+            for (WriteRow write : corpus.join(session).writes(key)) {
+                if (Confirmation.INITIAL.equals(writer) ? write.initial()
+                        : writer.equals(Confirmation.id(write.endpoint()))) {
+                    planted.put(key, ComposedFamilies.writer(write));
+                    plantedBlocks.add(block(read));
                     break;
                 }
             }
         }
-        return repaired;
+        // (occurrence, location) -> its reads the family would move
+        Map<String, List<ReadRow>> blocks =
+                new LinkedHashMap<String, List<ReadRow>>();
+        for (ReadRow read : sessionReads) {
+            boolean atAnchor = anchor.id().equals(
+                    read.endpoint().occurrence().id())
+                    && read.seq() <= cutoff;
+            if (atAnchor || plantedBlocks.contains(block(read))) {
+                blocks.computeIfAbsent(block(read),
+                        key -> new ArrayList<ReadRow>()).add(read);
+            }
+        }
+        Set<String> locations = new LinkedHashSet<String>();
+        List<ReadRow> admitted = new ArrayList<ReadRow>();
+        for (List<ReadRow> block : blocks.values()) {
+            if (!anotherWriter(session, block)) continue;
+            locations.add(SmtLowering.locationKey(block.get(0).location()));
+            admitted.addAll(block);
+        }
+        Set<String> keys = new LinkedHashSet<String>();
+        for (ReadRow read : admitted) keys.add(key(read));
+        Repairing repairing = new Repairing();
+        repairing.pinned = pinnedOwners(session, reached, keys, locations);
+        for (ReadRow read : admitted) {
+            String key = SmtLowering.locationKey(read.location());
+            if (repairing.pinned.contains(key)) continue;
+            repairing.reads.add(read);
+            repairing.keys.add(key(read));
+            if (planted.containsKey(key)) {
+                repairing.planted.put(key, planted.get(key));
+            }
+        }
+        return repairing;
+    }
+
+    /** One occurrence's reads of one location: what a family moves as one
+     *  choice. */
+    private static String block(ReadRow read) {
+        return read.endpoint().occurrence().id() + "|"
+                + SmtLowering.locationKey(read.location());
+    }
+
+    private static String key(ReadRow read) {
+        return SmtLowering.readKey(SmtLowering.locationKey(read.location()),
+                read.seq());
+    }
+
+    /** Whether one of a block's reads, of a location a named object owns,
+     *  could have seen a writer besides the one it did
+     *  ({@link #repairing}). */
+    private boolean anotherWriter(String session, List<ReadRow> block) {
+        Set<Long> asked = new LinkedHashSet<Long>();
+        for (ReadRow read : block) {
+            long version = read.observedVersion();
+            if (version < 0L || !Arms.namedOwner(read.location())
+                    || !asked.add(version)) {
+                continue;
+            }
+            String key = SmtLowering.locationKey(read.location());
+            WriteRow observed = corpus.writeOf(session, key, version);
+            String seen = observed == null ? null
+                    : ComposedFamilies.writer(observed);
+            for (WriteRow write : corpus.eligibleWrites(session, key,
+                    version, read.endpoint().occurrence())) {
+                if (!ComposedFamilies.writer(write).equals(seen)) return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -2220,10 +2318,12 @@ public final class Composer {
         for (ReadRow read : statedRows(session, occurrences)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (!relevant.keeps(read)) continue;
-            // Family alternatives are the anchor's only.
-            boolean atAnchor = anchor.id().equals(
-                    read.endpoint().occurrence().id());
+            // Family alternatives are for the reads the stage re-pairs: the
+            // anchor's, and those the session's world planted a pairing on.
             String key = SmtLowering.locationKey(read.location());
+            boolean atAnchor = anchor.id().equals(
+                    read.endpoint().occurrence().id())
+                    || join.repaired(key, read.seq());
             long version = read.observedVersion();
             WriteRow write = corpus.writeOf(session, key, version);
             if (joins.containsKey(read.symbol())) {

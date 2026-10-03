@@ -10,11 +10,14 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -186,10 +189,10 @@ public class ConfirmationTest {
         // it, so the state edge is answered at the close.
         Confirmation.read(reader, cell, 121L,
                 edu.uva.liftlab.graphchecker.contract.ReadRow.UNKNOWN_VERSION);
-        Confirmation.wrote(cell, 121L, other);
+        Confirmation.wrote(cell, 121L, other, false);
         Confirmation.read(turn(1), cell, 123L,
                 edu.uva.liftlab.graphchecker.contract.ReadRow.UNKNOWN_VERSION);
-        Confirmation.wrote(cell, 123L, writer);
+        Confirmation.wrote(cell, 123L, writer, false);
         List<String> close = Confirmation.close();
         assertEquals(close.toString(), 2, close.size());
         assertTrue(close.get(0), close.get(0).startsWith("STATE "
@@ -199,6 +202,125 @@ public class ConfirmationTest {
                 + other.id()));
         assertTrue(close.get(1), close.get(1).contains(absent.id())
                 && close.get(1).endsWith("the run never read here"));
+    }
+
+    /**
+     * A placeholder's pairing is taken where a placeholder of the run, at
+     * whichever occurrence read first, observed a version of the model's
+     * location that the model's writer wrote -- an INITIAL included, which
+     * is every location's, so another location's INITIAL is not it.
+     */
+    @Test
+    public void aPlaceholderIsComparedByItsWriterAtItsLocation()
+            throws Exception {
+        Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
+        Endpoint first = endpoint(MINT, "a.Manager#tick()#7:INITIAL");
+        LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
+        LocationId other = LocationId.of(LocationKind.INSTANCE, "1", "41");
+        // the model's writer, the placeholder's location and version, taken?
+        Object[][] table = {
+                {writer.id(), cell, 5L, true},
+                {Confirmation.INITIAL, cell, 4L, true},
+                {Confirmation.INITIAL, other, 4L, false},
+                {Confirmation.INITIAL, cell, 5L, false},
+        };
+        for (Object[] row : table) {
+            reset();
+            handed("{\"schemaVersion\":1,\"kind\":\"FOCUSED_TASK\","
+                    + "\"taskId\":\"CONFIRM\",\"obligationId\":\"CONFIRM\","
+                    + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
+                    + "\"focusedOccurrenceId\":\""
+                    + OccurrenceAddress.parse(ANCHOR).id() + "\","
+                    + "\"seedSessionId\":\"seed\",\"flip\":null,"
+                    + "\"rootAssignments\":{},\"clockDeltas\":{},"
+                    + "\"answers\":{},\"rootMints\":{}}\n",
+                    Collections.singletonList("{\"kind\":\"STATE\","
+                            + "\"reader\":\"" + endpoint(ANCHOR,
+                            "a.Handler#h()#12:READ").id() + "\",\"mint\":true,"
+                            + "\"writer\":\"" + row[0] + "\",\"version\":\"4\","
+                            + "\"location\":\"INSTANCE/1#40\"}"));
+            for (LocationId location : Arrays.asList(cell, other)) {
+                Confirmation.wrote(location, 4L, first, true);
+            }
+            Confirmation.wrote(cell, 5L, writer, false);
+            Confirmation.read(endpoint(PRODUCER, "a.Convert#c()#3:READ"),
+                    (LocationId) row[1], (Long) row[2], 9L);
+            List<String> close = Confirmation.close();
+            assertEquals(Arrays.toString(row) + ": " + close,
+                    (Boolean) row[3], close.isEmpty());
+        }
+    }
+
+    /**
+     * An obligation replay whose world pairs a read with its location's
+     * INITIAL is admitted only where that exact read observed the INITIAL's
+     * version.  hdfs-bugs-slowdisk-zero SD5: the guard read the INITIAL and
+     * the limit, the same accessor site one call later -- one read at any
+     * turn -- the reconfiguration's 0; another turn's INITIAL says nothing
+     * of this one.  A focus row with pairings and no edges compared nothing,
+     * and two writers for one read are no model: neither is admitted.
+     */
+    @Test
+    public void anObligationReplayIsAdmittedOnlyOverItsPairing()
+            throws Exception {
+        Frame loop = Frame.of("<a.Detector: void run()>", 0);
+        String site = "a.Metrics#bound()#43:READ";
+        Endpoint guard = Endpoint.of(OccurrenceAddress.parse(ANCHOR), site,
+                ExecutionIndex.of(Arrays.asList(loop, Frame.of(site, 0))), 0);
+        Endpoint limit = Endpoint.of(OccurrenceAddress.parse(ANCHOR), site,
+                ExecutionIndex.of(Arrays.asList(loop, Frame.of(site, 1))), 0);
+        Endpoint first = endpoint(ANCHOR, "a.Metrics#bound()#43:INITIAL");
+        Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
+        LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "48");
+        String flipped = "<a.Detector: void run()>#u63";
+        OccurrenceAddress anchor = OccurrenceAddress.parse(ANCHOR);
+        String initial = state(guard, Confirmation.INITIAL);
+        // rows, the version each of guard and limit observed (0: no read),
+        // admitted?, what refused it
+        Object[][] table = {
+                {Arrays.asList(initial), 4L, 0L, true, ""},
+                {Arrays.asList(initial), 5L, 0L, false, "STATE"},
+                {Arrays.asList(initial, state(limit, Confirmation.INITIAL)),
+                        4L, 5L, false, "STATE " + limit.id()},
+                {null, 4L, 0L, false, "EDGES"},
+                {Arrays.asList(initial, state(guard, writer.id())), 4L, 0L,
+                        false, "STATE_CONFLICT"},
+        };
+        for (Object[] row : table) {
+            @SuppressWarnings("unchecked")
+            List<String> edges = (List<String>) row[0];
+            handed("{\"taskId\":\"T\",\"obligationId\":\"OBL.1\","
+                    + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
+                    + "\"focusedOccurrenceId\":\"" + anchor.id() + "\","
+                    + "\"seedSessionId\":\"seed\",\"flip\":{\"siteId\":\""
+                    + flipped + "\",\"ordinal\":1,\"outcome\":true},"
+                    + "\"pairings\":{\"" + Confirmation.id(guard) + "\":\""
+                    + Confirmation.INITIAL + "\"}}\n", edges);
+            FocusedReplay.observeDecision(anchor, flipped, 1, true);
+            Confirmation.wrote(cell, 4L, first, true);
+            Confirmation.wrote(cell, 5L, writer, false);
+            Confirmation.read(guard, cell, (Long) row[1],
+                    ReadRow.UNKNOWN_VERSION);
+            if ((Long) row[2] > 0L) {
+                Confirmation.read(limit, cell, (Long) row[2],
+                        ReadRow.UNKNOWN_VERSION);
+            }
+            ObligationResult result = FocusedReplay.results("s").get(0);
+            boolean admitted = (Boolean) row[3];
+            assertEquals(result.detail(), admitted ? Verdict.ADMITTED
+                    : Verdict.NOT_ADMITTED, result.verdict());
+            assertEquals(result.detail(), !admitted, result.detail()
+                    .startsWith("PAIRING_UNTAKEN: ")
+                    && result.detail().contains((String) row[4]));
+            reset();
+        }
+    }
+
+    /** One STATE row of an obligation's edges. */
+    private static String state(Endpoint reader, String writer) {
+        return "{\"kind\":\"STATE\",\"reader\":\"" + reader.id()
+                + "\",\"readerAnyTurn\":\"" + Confirmation.anyTurn(reader)
+                + "\",\"writer\":\"" + writer + "\",\"version\":\"4\"}";
     }
 
     /** A delivery into the anchor is the model's when its producer answers

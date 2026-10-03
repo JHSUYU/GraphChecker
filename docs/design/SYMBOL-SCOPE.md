@@ -20,10 +20,10 @@ Three things are kept apart:
 | where a value comes from | what it is | bound by |
 |---|---|---|
 | **F1** the environment: a clock read, a door fault, a configuration value, a tree's configured source hook (§4) | ROOT | its domain: a marker (a boolean configuration too) both values, an integral configuration the hull of its anchors (§4.3), a hook's source its `root-domains.jsonl` row (none: pinned), a clock its window (`contract/RootKind`, `contract/RootDomain`) |
-| **F2** a read of shared state another occurrence writes (§5) | TRACKED READ, or a READ placeholder where the accessor is unwoven | the version it observed, and every attested HB-concurrent writer occurrence of the same session (`smt/Arms#stateArms`) |
+| **F2** a read of shared state another occurrence writes (§5) | TRACKED READ, or a READ placeholder where the accessor is unwoven | the version it observed, and every attested writer occurrence of the same session or the location's INITIAL the read could have run right after (`smt/Arms#stateArms`, the one rule `#eligible`) |
 | **F3** a message leaf that crosses a process (§6) | WIRE ATTACH, a fresh `v_H` per primitive leaf | the producer's export, paired within the run (message families) |
 | **F4** a return or parameter from code outside the analysis scope | grow the scope (§2.4); what stays outside has no root, tracked read or port, and is symbolic only by propagation | its inputs' expressions, else the recorded value |
-| a read of state from before the window | the INITIAL version of its log | pinned to the recorded value |
+| a read of state from before the window | the INITIAL version of its log, a write row (`contract/WriteRow#initial`): the writer at version 0 | joined to what it held, an arm of F2's |
 
 A value no rule makes symbolic is concrete: `plan/ConcolicScheduler.SymbolicInputSelection` marks
 every other proposed input `CONCRETE` (`UNDECLARED_SYMBOLIC_INPUT`), and its expression, if any,
@@ -663,13 +663,17 @@ referent: carrier and cell are the field, `declaredCallee` the mutator, `publish
 `StaticScopeMap#observedSites` lists every access of a tracked cell: its write sites and its read
 sites. The concolic weave puts `ConcolicRegionRuntime.observeTrackedSite(siteId, cell, receiver)`
 before each (`CausynthPipeline#instrumentConcolicObservedSites`): before the `putfield`, before the
-atomic's RMW call, before the `getfield`. Inside an active region it calls the VM's
+atomic's RMW call, before the `getfield`, and before the call of a read through an accessor, on the
+call's receiver: such a `READ_SITE` (an `accessor_field_return` edge) names the accessor as its
+`declaredCallee`, and as its `vmSite` the accessor's body, where the VM records the read, so a
+recorded read joins its carrier there (`StaticScopeMap#carriersAt`, `#demandedAt`) (hdfs-bugs slowdisk-zero: `FsVolumeList.chooseVolume` reads `slowDisksToExclude`
+through `DataNodeDiskMetrics.getSlowDisksToExclude()`, and its read had stated no version). Inside an active region it calls the VM's
 `observeField(owner, declaringClass, name, descriptor)` (`runtime/ConcolicVmBroker#observeField`),
 which starts the location's log with an INITIAL version holding the current value -- an integral's
 or a wrapper's word, a reference's identity -- unless a log stands (VM.md §5). A concrete store
 after it is then a version, and a read states the version it saw, INITIAL when no store of the
-window came first. An access before its object's constructor call, and a read site that is no
-`getfield` of its cell, are left unobserved; a status the VM refuses with (`UNSUPPORTED_TARGET`
+window came first; the INITIAL is a write row of its own (`contract/WriteRow#initial`). An access before its object's constructor call, and a read site that is neither a `getfield` of
+its cell nor an accessor's call, are left unobserved; a status the VM refuses with (`UNSUPPORTED_TARGET`
 for a `float` or `double` field) is an `UNSTATED_VALUE` DIAGNOSTIC row naming it.
 
 Each observed row states its cell's `trackedKind`; a `REFERENCE` cell's access is observed like a

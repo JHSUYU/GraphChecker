@@ -4892,9 +4892,10 @@ $(jq -r -s 'map(.regionId) | unique | join(",")' "${rows}") \
     mkdir -p "$(dirname "${rerun}")"
     mkdir "${rerun}" || campaign_fail EXPLORE CAMPAIGN "${rerun}" \
       "obligation ${obligation_id} was already re-run for this round"
-    # What a replay reads of its worker: the focus row and the schedule cut.
+    # What a replay reads of its worker: the focus row, the schedule cut and
+    # the edges its world's pairings hold it to.
     for file in focused_task.jsonl schedule_prefix.jsonl \
-        schedule_suffix.jsonl; do
+        schedule_suffix.jsonl expected_edges.jsonl; do
       [[ ! -e "${worker}/${file}" ]] || ln "${worker}/${file}" "${rerun}/"
     done
     stream_queue=("RERUN $(basename "${round_dir}") ${obligation_id} \

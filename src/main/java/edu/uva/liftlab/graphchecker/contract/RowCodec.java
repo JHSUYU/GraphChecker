@@ -373,6 +373,7 @@ public final class RowCodec {
             json.addProperty(REFERENT_STATE_REFUSED,
                     row.referentStateRefused());
         }
+        if (row.initial()) json.addProperty(INITIAL, true);
         return json;
     }
 
@@ -381,10 +382,17 @@ public final class RowCodec {
     }
 
     static WriteRow readWrite(JsonObject json, RowPool pool) {
+        Endpoint endpoint = readEndpoint(object(json, ENDPOINT), pool);
+        LocationId location = readLocation(object(json, LOCATION));
+        if (json.has(INITIAL) && json.get(INITIAL).getAsBoolean()) {
+            return WriteRow.initial(string(json, SESSION_ID),
+                    number(json, SEQ), endpoint, location,
+                    number(json, "version"), string(json, "expressionRef"),
+                    string(json, JAVA_TYPE));
+        }
         JsonObject referent = optionalObject(json, REFERENT_STATE);
         return WriteRow.of(string(json, SESSION_ID), number(json, SEQ),
-                readEndpoint(object(json, ENDPOINT), pool),
-                readLocation(object(json, LOCATION)), number(json, "version"),
+                endpoint, location, number(json, "version"),
                 string(json, "expressionRef"), string(json, JAVA_TYPE),
                 referent == null ? null : WriteRow.Referent.of(
                         readLocation(object(referent, LOCATION)),
@@ -392,6 +400,7 @@ public final class RowCodec {
                 optionalString(json, REFERENT_STATE_REFUSED));
     }
 
+    private static final String INITIAL = "initial";
     private static final String REFERENT_STATE = "referentState";
     private static final String REFERENT_STATE_REFUSED =
             "referentStateRefused";

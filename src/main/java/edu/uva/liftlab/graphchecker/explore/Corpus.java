@@ -112,16 +112,19 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** THE WORLD one session ran in, from its focus row: the recording plus its
-     *  planted roots, clock skews, answers and the flips it was held to (own
-     *  and inherited). A path cut from it exists only there, so a child
-     *  inherits all of it ({@link ObligationFactory#solve} merges, {@link
-     *  FlipQuery} asserts). Empty for the seed and for sessions no worker
-     *  states a focus row for. */
+     *  planted roots, clock skews, answers, pairings and the flips it was
+     *  held to (own and inherited). A path cut from it exists only there, so
+     *  a child inherits all of it ({@link ObligationFactory#solve} merges,
+     *  {@link FlipQuery} asserts). Empty for the seed and for sessions no
+     *  worker states a focus row for. */
     public static final class World {
         public final Map<String, String> rootAssignments;
         public final Map<String, String> clockDeltas;
         public final Map<String, String> answers;
         public final Map<String, String> rootMints;
+        /** Reader -> the writer it was held to, each as a confirmation names
+         *  it ({@code ConfirmMain#holding}). */
+        public final Map<String, String> pairings;
         /** The row's own flip first, then the flips it inherited. */
         public final List<Flip> flips;
 
@@ -129,18 +132,21 @@ public final class Corpus implements Arms.Rows {
               Map<String, String> clockDeltas,
               Map<String, String> answers,
               Map<String, String> rootMints,
+              Map<String, String> pairings,
               List<Flip> flips) {
             this.rootAssignments =
                     Collections.unmodifiableMap(rootAssignments);
             this.clockDeltas = Collections.unmodifiableMap(clockDeltas);
             this.answers = Collections.unmodifiableMap(answers);
             this.rootMints = Collections.unmodifiableMap(rootMints);
+            this.pairings = Collections.unmodifiableMap(pairings);
             this.flips = Collections.unmodifiableList(flips);
         }
 
         /** The seed's world, and that of a session with no worker. */
         static World empty() {
             return new World(new LinkedHashMap<String, String>(),
+                    new LinkedHashMap<String, String>(),
                     new LinkedHashMap<String, String>(),
                     new LinkedHashMap<String, String>(),
                     new LinkedHashMap<String, String>(),
@@ -492,13 +498,14 @@ public final class Corpus implements Arms.Rows {
         return from;
     }
 
-    /** Per-site counts of the writes to {@code locations} (not values). */
+    /** Per-site counts of the writes to {@code locations} (not values); an
+     *  INITIAL row is no write. */
     private List<String> writeSites(String sessionId,
                                     OccurrenceAddress occurrence,
                                     Set<String> locations) {
         List<String> sites = new ArrayList<String>();
         for (WriteRow write : writesOn.of(occurrence.id(), sessionId)) {
-            if (!locations.contains(
+            if (write.initial() || !locations.contains(
                     SmtLowering.locationKey(write.location()))) {
                 continue;
             }
@@ -664,12 +671,16 @@ public final class Corpus implements Arms.Rows {
             writeByVersion.put(versionKey(session.sessionId(), location,
                     row.version()), row);
             writesOn.add(row.endpoint().occurrence().id(), row.sessionId(), row);
-            located(writtenLocations, row.endpoint().occurrence(), location);
             add(writesByLocation, session.sessionId() + "|" + location, row);
-            writeSitesByLocation.computeIfAbsent(location,
-                    ignored -> new LinkedHashMap<String, WriteRow>())
-                    .putIfAbsent(row.endpoint().site() + "|" + row.javaType(),
-                            row);
+            // An INITIAL's endpoint observed the location; it wrote nothing.
+            if (!row.initial()) {
+                located(writtenLocations, row.endpoint().occurrence(),
+                        location);
+                writeSitesByLocation.computeIfAbsent(location,
+                        ignored -> new LinkedHashMap<String, WriteRow>())
+                        .putIfAbsent(row.endpoint().site() + "|"
+                                + row.javaType(), row);
+            }
             endpointById.put(row.endpoint().id(), row.endpoint());
             touch(row.endpoint().occurrence(), row.location());
         }
@@ -957,21 +968,22 @@ public final class Corpus implements Arms.Rows {
     // ---- The causal graph (GreyGraph §3.1) ----
 
     /**
-     * The writes one read could have taken its value from: the observed one and
-     * every HB-concurrent writer (IDENTITY §4, {@code smt.Arms}) -- the same
-     * alternatives the composition offers. ONE implementation, used by the
-     * closure ({@link ClosurePlanner#writers}).
+     * The writes one read could have taken its value from: the observed one
+     * and every other the one eligibility rule admits ({@code
+     * smt.Arms#eligible}, which {@code Arms#stateArms} asks too: the
+     * composition offers the same alternatives).  Used by the closure
+     * ({@link ClosurePlanner#writers}) and the flip query.
      *
      * @param reader the reading occurrence, for the concurrency rule
      */
     public List<WriteRow> eligibleWrites(String sessionId, String locationKey,
                                          long observedVersion,
                                          OccurrenceAddress reader) {
+        List<WriteRow> writes = writesOf(sessionId, locationKey);
         List<WriteRow> eligible = new ArrayList<WriteRow>();
-        for (WriteRow write : writesOf(sessionId, locationKey)) {
-            if (write.version() == observedVersion
-                    || arms.concurrent(reader,
-                            write.endpoint().occurrence(), sessionId)) {
+        for (WriteRow write : writes) {
+            if (arms.eligible(reader, sessionId, locationKey, writes,
+                    observedVersion, write)) {
                 eligible.add(write);
             }
         }
@@ -1281,6 +1293,11 @@ public final class Corpus implements Arms.Rows {
     public List<WriteRow> writesOf(String sessionId, String locationKey) {
         return writesByLocation.getOrDefault(sessionId + "|" + locationKey,
                 Collections.<WriteRow>emptyList());
+    }
+
+    @Override
+    public List<ReadRow> readsOf(String sessionId, String locationKey) {
+        return join(sessionId).reads(locationKey);
     }
 
     /** One write per (site, java type) that wrote a location, in any session,

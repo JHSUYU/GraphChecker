@@ -456,7 +456,7 @@ public final class RowRuntime {
                              String site, LocationId location, long version,
                              JsonObject expression, String javaType,
                              String siteIndex, WriteRow.Referent referent,
-                             String referentRefused) {
+                             String referentRefused, boolean initial) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null
                 || ownCode(site)) {
@@ -467,10 +467,14 @@ public final class RowRuntime {
                 javaType, expression);
         if (type.isEmpty()) return;
         distinct(at, "write#" + location + "#" + version);
-        session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
-                version, expressionRef(expression), type, referent,
-                referentRefused));
-        Confirmation.wrote(location, version, at);
+        long sequenced = sequence(seq);
+        String ref = expressionRef(expression);
+        session.write(initial
+                ? WriteRow.initial(sessionId(), sequenced, at, location,
+                version, ref, type)
+                : WriteRow.of(sessionId(), sequenced, at, location, version,
+                ref, type, referent, referentRefused));
+        Confirmation.wrote(location, version, at, initial);
     }
 
     /**
@@ -1130,7 +1134,8 @@ public final class RowRuntime {
             gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING,
                     sessionId(), shortfall);
         }
-        // CONFIRM (b) edges only the whole run can answer for.
+        // CONFIRM (b) edges only the whole run can answer for, and the
+        // pairings an obligation's world plants (FocusedReplay#results).
         for (String mismatch : Confirmation.close()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC,
                     mismatch.substring(0, mismatch.indexOf(':')), mismatch);

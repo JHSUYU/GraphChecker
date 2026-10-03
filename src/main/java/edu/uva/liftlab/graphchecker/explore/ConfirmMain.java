@@ -9,10 +9,10 @@ import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
+import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
-import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
@@ -36,7 +36,6 @@ import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -45,6 +44,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -81,7 +81,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *
  * <p>THE RULE (PIPELINE §10). SAT says the model satisfies our formula;
  * CONFIRM says the program agrees: re-run the world the selected path's own
- * session ran (its planted roots and answers) overlaid with the model's
+ * session ran (its planted roots, answers and pairings, the pairings held by
+ * the rows its replay was held to, {@link #holding}) overlaid with the model's
  * moved roots, its clocks the model's jumps alone ({@link Moved}), with no
  * flip forced, and require
  * (a) every edge the model chose is taken and (b) the fatal at the anchor.
@@ -300,7 +301,18 @@ public final class ConfirmMain {
         // The edges the model chose.
         List<JsonObject> edges = new ArrayList<JsonObject>();
         edges.addAll(wireEdges(arms, armSessions, anchor));
-        edges.addAll(stateEdges(closure, chosen, restsOn));
+        List<ReadRow> resting = new ArrayList<ReadRow>();
+        for (ReadRow read : closure.readers.values()) {
+            if (restsOn.contains(SmtLowering.locationKey(read.location()))) {
+                resting.add(read);
+            }
+        }
+        edges.addAll(stateEdges(closure, resting, chosen, false).edges);
+        // The pairings the selected session's world planted are its world
+        // as much as its roots: held by the rows its replay was held to.
+        edges.addAll(holding(session, ExploreCodec.map(object(world,
+                "pairings"))).edges);
+        heldOnce(edges);
         edges.addAll(markers);
         JsonObject anchorRow = new JsonObject();
         anchorRow.addProperty("kind", "ANCHOR");
@@ -315,7 +327,8 @@ public final class ConfirmMain {
                 Collections.<OccurrenceAddress>emptyList(),
                 Obligation.confirming(OBLIGATION_ID, OBLIGATION_ID, pathId,
                         assignments, answers, Collections.<String>emptyList()),
-                Collections.<Corpus.Flip>emptyList(), clockDeltas, mints, cut);
+                Collections.<Corpus.Flip>emptyList(), clockDeltas, mints,
+                Collections.<String, String>emptyMap(), cut);
         // {@code flip: null} is the statement: serialize nulls.
         Files.write(out.resolve(ObligationDir.FOCUSED_TASK),
                 (new GsonBuilder().serializeNulls().create().toJson(focus)
@@ -733,9 +746,13 @@ public final class ConfirmMain {
         return summary;
     }
 
-    /** Why the selected session is itself the confirming run, or "": all chosen
-     *  arms are its own deliveries and its reads saw every write the model
-     *  chose ({@code sawChosen}, {@link StateClosure#ran}: another writer, or
+    /** Why the selected session is itself the confirming run, or "": its
+     *  world planted no pairing (a pairing is a moved choice its own run
+     *  took under an order the replay held, so CONFIRM makes it again in a
+     *  replay of its own, strict; a planted root, skew or answer is checked
+     *  on the session's rows below), all chosen arms are its own
+     *  deliveries and its reads saw every write the model chose
+     *  ({@code sawChosen}, {@link StateClosure#ran}: another writer, or
      *  another state of a delivered object, is a run a replay has to make),
      *  it observed the fatal, and it ran the model's world: every moved
      *  root at the model's value (its mint row), and its clocks the model's
@@ -745,7 +762,8 @@ public final class ConfirmMain {
     static String realizedBy(Moved moved, JsonObject world, String sessionId,
                              List<JsonObject> arms, SessionReader session,
                              TargetRow target, boolean sawChosen) {
-        if (!target.observedFatal() || !sawChosen
+        if (!ExploreCodec.map(object(world, "pairings")).isEmpty()
+                || !target.observedFatal() || !sawChosen
                 || !moved.refusal.isEmpty()) {
             return "";
         }
@@ -936,14 +954,14 @@ public final class ConfirmMain {
                 new LinkedHashMap<String, WriteRow>();
         /** The reads of a reached occurrence at or past its cutoff. */
         private final Set<String> past = new LinkedHashSet<String>();
-        /** The session's expressions, for {@link #initial}. */
-        private final ExpressionTable expressions;
         /** Occurrence id -> the session's activation of it. */
         private final Map<String, ActivationRow> activations =
                 new LinkedHashMap<String, ActivationRow>();
         /** Occurrence id -> where its events sat: activation frames, seq. */
         private final Map<String, List<Placed>> placed =
                 new LinkedHashMap<String, List<Placed>>();
+        /** Occurrence id -> the seq of its last recorded event. */
+        private final Map<String, Long> last = new HashMap<String, Long>();
 
         /** One event's activation frames and its place in the order. */
         private static final class Placed {
@@ -960,22 +978,98 @@ public final class ConfirmMain {
             if (at == null) return;
             placed.computeIfAbsent(at.occurrence().id(),
                     key -> new ArrayList<Placed>()).add(new Placed(at, seq));
+            last(at.occurrence(), seq);
+        }
+
+        private void last(OccurrenceAddress occurrence, long seq) {
+            last.merge(occurrence.id(), seq, Math::max);
         }
 
         /**
-         * {@code first}'s activation exits before {@code then}'s event,
-         * unless one occurrence holds both: it runs on one thread, whose
-         * program order already orders them.  The hold is the last
+         * The close of an occurrence as an ORDER waits for it: entered at
+         * its opening, exited at its close ({@code runtime.Identity}), which
+         * the session ran at its last recorded event -- so a writer the
+         * session ran before that, whose ORDER puts it after, is reordered
+         * ({@link #order}).
+         */
+        private Exit closing(OccurrenceAddress occurrence) {
+            return new Exit(occurrence, Collections.<Frame>emptyList(),
+                    last.get(occurrence.id()));
+        }
+
+        /**
+         * The activation {@code first} names exits before {@code then}'s
+         * event, unless one occurrence holds both: it runs on one thread,
+         * whose program order already orders them.  The hold is the last
          * activation entry before the event on its thread
          * ({@link #holdBefore}), or the send that started claimed work
-         * ({@link #held}).
+         * ({@link #held}).  Where the session ran {@code then} first, the
+         * order moves the held occurrence's events after {@code first}'s:
+         * it is {@code reordered}.
          */
-        private void order(Set<String> orders, Endpoint first, Endpoint then,
+        private void order(Holding holding, Exit first, Endpoint then,
                            long thenSeq) {
-            if (first.occurrence().id().equals(then.occurrence().id())) return;
-            orders.add(Confirmation.activation(first.occurrence(),
-                    ExecutionIndex.of(first.activationFrames())) + "\n"
-                    + held(then, thenSeq));
+            if (first.occurrence.equals(then.occurrence().id())) return;
+            Hold hold = held(then, thenSeq);
+            holding.orders.add(first.activation + "\n" + hold.activation);
+            if (thenSeq < first.seq) holding.reordered.add(hold.occurrence);
+        }
+
+        /** What an ORDER waits for to exit, the occurrence it is of, and
+         *  where the session ran it. */
+        private static final class Exit {
+            private final String activation;
+            private final String occurrence;
+            private final long seq;
+
+            private Exit(OccurrenceAddress occurrence, List<Frame> frames,
+                         long seq) {
+                this.activation = Confirmation.activation(occurrence,
+                        ExecutionIndex.of(frames));
+                this.occurrence = occurrence.id();
+                this.seq = seq;
+            }
+        }
+
+        /**
+         * What an ORDER after this event waits for: the activation it stood
+         * in, or -- where that is its occurrence's outermost
+         * ({@link #outermost}) -- the occurrence's close.  The outermost
+         * activation of a loop body's occurrence is the loop's method, which
+         * spans every turn and never exits while the loop runs
+         * (hdfs-bugs-slowdisk-zero SD8: the anchor held until the detector's
+         * {@code run()} exited, past the order's timeout); a method's
+         * occurrence closes as its root activation exits.
+         */
+        private Exit exit(Endpoint event, long seq) {
+            return outermost(event) ? closing(event.occurrence())
+                    : new Exit(event.occurrence(), event.activationFrames(),
+                    seq);
+        }
+
+        /** Whether an event stood in its occurrence's outermost activation:
+         *  no event of the occurrence stood on fewer frames. */
+        private boolean outermost(Endpoint event) {
+            int depth = event.activationFrames().size();
+            List<Placed> events = placed.get(event.occurrence().id());
+            for (Placed other : events == null
+                    ? Collections.<Placed>emptyList() : events) {
+                if (other.frames.size() < depth) return false;
+            }
+            return true;
+        }
+
+        /** Where an event is held: the activation entry, and the
+         *  occurrence it is of. */
+        private static final class Hold {
+            private final String occurrence;
+            private final String activation;
+
+            private Hold(OccurrenceAddress occurrence, List<Frame> frames) {
+                this.occurrence = occurrence.id();
+                this.activation = Confirmation.activation(occurrence,
+                        ExecutionIndex.of(frames));
+            }
         }
 
         /**
@@ -986,7 +1080,7 @@ public final class ConfirmMain {
          * server applies a getData on the thread that must apply the
          * delete ordered before it, so the client's getData is held.
          */
-        private String held(Endpoint event, long seq) {
+        private Hold held(Endpoint event, long seq) {
             Endpoint send;
             try {
                 send = Confirmation.submitter(event.occurrence(),
@@ -995,8 +1089,7 @@ public final class ConfirmMain {
                 throw new Refused(unheld.getMessage());
             }
             return send == null ? holdBefore(event, seq)
-                    : Confirmation.activation(send.occurrence(),
-                    ExecutionIndex.of(send.activationFrames()));
+                    : new Hold(send.occurrence(), send.activationFrames());
         }
 
         /**
@@ -1009,9 +1102,12 @@ public final class ConfirmMain {
          * the cluster state until the watcher's parse of it lands) cannot be
          * held at its own entry: the writer follows that entry, and holding
          * it there waits out the order's timeout.  The last call before the
-         * read (the poll's {@code getRoutingRules}) is entered after.
+         * read (the poll's {@code getRoutingRules}) is entered after.  With
+         * no such call, an event in its occurrence's outermost activation
+         * is held at the occurrence's opening: a loop body's turn enters no
+         * activation of its own ({@link #exit}).
          */
-        private String holdBefore(Endpoint event, long seq) {
+        private Hold holdBefore(Endpoint event, long seq) {
             List<Frame> own = event.activationFrames();
             List<Frame> hold = own;
             long latest = Long.MIN_VALUE;
@@ -1026,44 +1122,15 @@ public final class ConfirmMain {
                 latest = other.seq;
                 hold = other.frames.subList(0, own.size() + 1);
             }
-            return Confirmation.activation(event.occurrence(),
-                    ExecutionIndex.of(hold));
-        }
-
-        /**
-         * Whether a write row is a container's INITIAL: the members the VM
-         * read when it began tracking the container, stated at whichever
-         * access first observed it -- a version no occurrence wrote, as a
-         * scalar's INITIAL is no row at all (runtime.SharedStateCapture
-         * #scalarInitial).  Its expression is the snapshot alone, its
-         * SNAPSHOT_BASE's {@code members} PUTs and nothing above them;
-         * a base stating no {@code members} (an image before it) is read
-         * as a write.
-         */
-        private boolean initial(WriteRow write) {
-            JsonElement at = expressions.expression(write.expressionRef());
-            int above = 0;
-            while (at != null && at.isJsonObject()) {
-                JsonObject relation = at.getAsJsonObject();
-                if (!"ContainerRelation".equals(
-                        optionalString(relation, "_type"))) {
-                    return false;
-                }
-                String operation = optionalString(relation, "operation");
-                if ("SNAPSHOT_BASE".equals(operation)) {
-                    return JsonFields.optionalInteger(relation, "members", -1)
-                            == above;
-                }
-                if (!"PUT".equals(operation)) return false;
-                above++;
-                at = relation.get("receiver");
+            if (hold == own && outermost(event)) {
+                hold = Collections.<Frame>emptyList();
             }
-            return false;
+            return new Hold(event.occurrence(), hold);
         }
 
-        private StateClosure(SessionReader session, OccurrenceAddress anchor,
-                             long cutoff) {
-            expressions = session.expressions();
+        /** Where the session's events sat, and its writes: what an ORDER is
+         *  built from ({@link #order}), with no closure. */
+        private StateClosure(SessionReader session) {
             for (ActivationRow activation : session.activations()) {
                 activations.putIfAbsent(activation.occurrence().id(),
                         activation);
@@ -1077,13 +1144,26 @@ public final class ConfirmMain {
             for (AttachRow attach : session.attaches()) {
                 place(attach.endpoint(), attach.seq());
             }
+            for (DecisionRow decision : session.decisions()) {
+                last(decision.occurrence(), decision.seq());
+            }
             for (WriteRow write : session.writes()) {
-                place(write.endpoint(), write.seq());
+                // An INITIAL is no event of the access its row stands at
+                // (Endpoint#initialSite): its frames name no activation the
+                // run enters, so no hold is placed by it (hdfs-bugs-
+                // slowdisk-zero SD4: the reconfiguration held at a
+                // reflective accessor's frame, which never waits).
+                if (!write.initial()) place(write.endpoint(), write.seq());
                 writes.put(version(write.location(), write.version()), write);
                 byLocation.computeIfAbsent(SmtLowering.locationKey(
                         write.location()),
                         key -> new ArrayList<WriteRow>()).add(write);
             }
+        }
+
+        private StateClosure(SessionReader session, OccurrenceAddress anchor,
+                             long cutoff) {
+            this(session);
             Map<String, List<ReadRow>> readsOn =
                     new LinkedHashMap<String, List<ReadRow>>();
             for (ReadRow read : session.reads()) {
@@ -1224,92 +1304,210 @@ public final class ConfirmMain {
     }
 
     /**
-     * STATE and ORDER edges over the join closure at the locations the
-     * fatal rests on ({@code restsOn}): every such join, the write the model
-     * chose or else the one the run read -- the run is held to no recorded
-     * order, so a pinned join is the model's as much as a choice.  A read
-     * elsewhere holds no value the witness needs; under a moved root the run
-     * may make it at another endpoint or not at all (r7 hdfs-17960: the
-     * fsimage's name maps, re-serialized after the flip).  A read no row
-     * answers is held only where the model chose a writer for it; otherwise
-     * its outside store is the run's own -- and so is a container's INITIAL
-     * ({@link StateClosure#initial}).  Endpoints and activations are
-     * named as every delivery of their stored message is
+     * The rows that hold a replay to pairings, and the occurrences the
+     * order they need moves: {@code reordered}, each held where the session
+     * ran it before what the order puts first.
+     */
+    static final class Holding {
+        final List<JsonObject> edges = new ArrayList<JsonObject>();
+        final Set<String> reordered = new LinkedHashSet<String>();
+        /** Each ORDER as "before\nafter", once. */
+        private final Set<String> orders = new LinkedHashSet<String>();
+    }
+
+    /**
+     * STATE and ORDER edges for {@code reads}: CONFIRM's over the join
+     * closure at the locations the fatal rests on, an obligation's over the
+     * reads its world pairs ({@link #holding}).  Each read is held to the
+     * write chosen for it or else the one it joined -- the run is held to no
+     * recorded order, so a pinned join is the model's as much as a choice.
+     * A read elsewhere holds no value the witness needs; under a moved root
+     * the run may make it at another endpoint or not at all (r7 hdfs-17960:
+     * the fsimage's name maps, re-serialized after the flip).  A read no
+     * row answers is held only where a writer was chosen for it; otherwise
+     * its outside store is the run's own -- and so is an INITIAL the run
+     * joined ({@link WriteRow#initial}).  A chosen INITIAL is the version
+     * the read must observe ({@link Confirmation#INITIAL}), and every write
+     * of its location goes after the read -- after its activation, or, a
+     * {@code block}, after its occurrence closes: a flip query binds the
+     * reads one occurrence made of a location as one choice (IDENTITY §4),
+     * and the flipped world may read it again after the recorded read
+     * (hdfs-bugs-slowdisk-zero SD5: the detector turn's {@code limit(max)}
+     * re-read the bound after the reconfiguration had landed, so the turn
+     * read 1 at its guard and 0 at its limit).  Endpoints and activations
+     * are named as every delivery of their stored message is
      * ({@link Confirmation#id}).
      */
-    private static List<JsonObject> stateEdges(StateClosure closure,
-                                               Map<String, WriteRow> chosen,
-                                               Set<String> restsOn) {
-        List<JsonObject> edges = new ArrayList<JsonObject>();
-        Set<String> orders = new LinkedHashSet<String>();
-        for (Map.Entry<String, ReadRow> reader : closure.readers.entrySet()) {
-            ReadRow read = reader.getValue();
-            if (!restsOn.contains(SmtLowering.locationKey(read.location()))) {
-                continue;
-            }
-            WriteRow held = chosen.containsKey(reader.getKey())
-                    ? chosen.get(reader.getKey())
-                    : closure.joined.get(reader.getKey());
-            // A pinned join to a container's INITIAL holds nothing: no
+    private static Holding stateEdges(StateClosure closure,
+                                      List<ReadRow> reads,
+                                      Map<String, WriteRow> chosen,
+                                      boolean block) {
+        Holding holding = new Holding();
+        for (ReadRow read : reads) {
+            // What a writer the read must precede waits for: the read's
+            // activation, or, where the reads of the location are a block,
+            // its whole occurrence -- a read the flip adds after the one
+            // recorded is the block's too.
+            StateClosure.Exit reading = block
+                    ? closure.closing(read.endpoint().occurrence())
+                    : closure.exit(read.endpoint(), read.seq());
+            String reader = read.endpoint().id();
+            WriteRow held = chosen.containsKey(reader) ? chosen.get(reader)
+                    : closure.joined.get(reader);
+            // A join to the INITIAL the run took holds nothing: no
             // occurrence wrote it, only whichever access first observed the
-            // container, which is the run's own history.
-            if (held == null || !chosen.containsKey(reader.getKey())
-                    && closure.initial(held)) {
+            // location, which is the run's own history.
+            if (held == null || !chosen.containsKey(reader)
+                    && held.initial()) {
                 continue;
             }
             String location = SmtLowering.locationKey(held.location());
+            // A mint read lands on whichever racing occurrence reads the cell
+            // first, so it is checked by the writer and the location
+            // (runtime/Confirmation), not the reader, and holds no order: a
+            // placeholder at the anchor joins the write it was laid over, so
+            // a family may choose the location's INITIAL for it.
+            boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", Confirmation.id(read.endpoint()));
             edge.addProperty("readerAnyTurn",
                     Confirmation.anyTurn(read.endpoint()));
-            // A mint read lands on whichever racing occurrence reads the cell
-            // first, so it is held by the writer (runtime/Confirmation), not
-            // the reader.
-            boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
             edge.addProperty("mint", mint);
-            edge.addProperty("writer", Confirmation.id(held.endpoint()));
+            edge.addProperty("writer", writer(held));
             edge.addProperty("version", held.version());
             edge.addProperty("location", location);
-            edges.add(edge);
+            holding.edges.add(edge);
             if (mint) continue;
-            closure.order(orders, held.endpoint(), read.endpoint(),
-                    read.seq());
+            if (!held.initial()) {
+                closure.order(holding, closure.exit(held.endpoint(),
+                        held.seq()), read.endpoint(), read.seq());
+            }
             // No other writer of the location it reads between the two: one
             // recorded before the write goes before it, any other after the
             // read.
             for (WriteRow other : closure.byLocation.get(location)) {
                 if (other.endpoint().equals(held.endpoint())
-                        || closure.initial(other)) {
+                        || other.initial()) {
                     continue;
                 }
-                if (other.seq() < held.seq()) {
-                    closure.order(orders, other.endpoint(), held.endpoint(),
+                if (!held.initial() && other.seq() < held.seq()) {
+                    closure.order(holding, closure.exit(
+                            other.endpoint(), other.seq()), held.endpoint(),
                             held.seq());
                 } else {
-                    closure.order(orders, read.endpoint(), other.endpoint(),
+                    closure.order(holding, reading, other.endpoint(),
                             other.seq());
                 }
             }
         }
-        for (String order : orders) {
+        for (String order : holding.orders) {
             String[] ends = order.split("\n", 2);
             JsonObject row = new JsonObject();
             row.addProperty("kind", "ORDER");
             row.addProperty("before", ends[0]);
             row.addProperty("after", ends[1]);
-            edges.add(row);
+            holding.edges.add(row);
         }
-        return edges;
+        return holding;
     }
 
-    /** One write the path rests on: reach its writer, sweep older versions. */
+    /**
+     * One read, one writer: the model's choice and the world's pairing
+     * holding one read to two writers is no model a run can take, refused
+     * by name ({@code STATE_CONFLICT}), never the later row's.
+     *
+     * @throws Refused naming the read and its writers
+     */
+    private static void heldOnce(List<JsonObject> edges) {
+        Map<String, String> writers = new LinkedHashMap<String, String>();
+        for (JsonObject edge : edges) {
+            if (!"STATE".equals(optionalString(edge, "kind"))) continue;
+            String reader = optionalString(edge, "reader");
+            String writer = optionalString(edge, "writer");
+            String held = writers.put(reader, writer);
+            if (held != null && !held.equals(writer)) {
+                throw new Refused("STATE_CONFLICT: read " + reader
+                        + " is held to writers " + held + " and " + writer
+                        + ": the model's choice and the selected session's"
+                        + " world disagree");
+            }
+        }
+    }
+
+    /** The writer a STATE row names: its endpoint as {@link Confirmation#id}
+     *  names it, or {@link Confirmation#INITIAL}, which no occurrence
+     *  wrote. */
+    static String writer(WriteRow write) {
+        return write.initial() ? Confirmation.INITIAL
+                : Confirmation.id(write.endpoint());
+    }
+
+    /**
+     * What holds an obligation replay to the pairings its world plants
+     * ({@code ObligationFactory}: reader -> writer, each as {@link #writer}
+     * names it): CONFIRM's rows ({@link #stateEdges}) over the session its
+     * path was cut from, which the replay compares and holds
+     * ({@code runtime.Confirmation}).  A pairing's write is the reader's
+     * location's write by that writer, the one the read observed else the
+     * last ({@code smt.Arms#stateArms}), or its INITIAL; the reader's reads
+     * of the location are a block ({@link #stateEdges}).
+     *
+     * @throws Refused naming a pairing whose read or write the session does
+     *         not state
+     */
+    static Holding holding(SessionReader session,
+                           Map<String, String> pairings) {
+        StateClosure closure = new StateClosure(session);
+        List<ReadRow> reads = new ArrayList<ReadRow>();
+        Map<String, WriteRow> chosen = new LinkedHashMap<String, WriteRow>();
+        Set<String> found = new LinkedHashSet<String>();
+        for (ReadRow read : session.reads()) {
+            String reader = Confirmation.id(read.endpoint());
+            String writer = pairings.get(reader);
+            if (writer == null) continue;
+            WriteRow held = null;
+            for (WriteRow write : closure.byLocation.getOrDefault(
+                    SmtLowering.locationKey(read.location()),
+                    Collections.<WriteRow>emptyList())) {
+                if (!writer.equals(writer(write))
+                        || held != null && held.version()
+                        == read.observedVersion()) {
+                    continue;
+                }
+                if (held == null || write.version() == read.observedVersion()
+                        || write.seq() > held.seq()) {
+                    held = write;
+                }
+            }
+            if (held == null) {
+                throw new Refused("PAIRING_UNSTATED: the world pairs read "
+                        + reader + " with writer " + writer + ", which "
+                        + "session " + session.sessionId() + " states no "
+                        + "write of " + read.location() + " by");
+            }
+            found.add(reader);
+            reads.add(read);
+            chosen.put(read.endpoint().id(), held);
+        }
+        Set<String> unread = new LinkedHashSet<String>(pairings.keySet());
+        unread.removeAll(found);
+        if (!unread.isEmpty()) {
+            throw new Refused("PAIRING_UNSTATED: the world pairs read(s) "
+                    + unread + ", which session " + session.sessionId()
+                    + " states no read at");
+        }
+        return stateEdges(closure, reads, chosen, true);
+    }
+
+    /** One write the path rests on: reach its writer, sweep older versions
+     *  (an INITIAL has neither). */
     private static void reach(WriteRow write, OccurrenceAddress anchor,
                               Map<String, Long> reached, List<String> pending,
                               List<WriteRow> versions, Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
         // Never the anchor: its cutoff is the target observation.
-        if (anchor.id().equals(writer)) return;
+        if (write.initial() || anchor.id().equals(writer)) return;
         if (handled.add(version(write.location(), write.version()))) {
             versions.add(write);
         }

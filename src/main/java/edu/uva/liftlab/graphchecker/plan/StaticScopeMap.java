@@ -125,8 +125,10 @@ public final class StaticScopeMap {
             "field_mutation", "container_mutation_argument",
             "container_call_mutation_effect", "container_array_store_value",
             PUBLICATION_KIND};
+    /** A call that is one read of one field, the read at its call site. */
+    private static final String ACCESSOR_READ = "accessor_field_return";
     private static final Set<String> READ_KINDS = new LinkedHashSet<String>(
-            java.util.Arrays.asList("field_read", "accessor_field_return"));
+            java.util.Arrays.asList("field_read", ACCESSOR_READ));
     private static final String THROW_KIND = "exception_throw";
 
     /** The guard set of one site, asked of the stage that has the CFG. */
@@ -197,7 +199,9 @@ public final class StaticScopeMap {
         public final String role;
         public final String regionId;
         public final String siteId;
-        /** The method half of the site as the VM spells it. */
+        /** The method half of the site as the VM spells it: the method the
+         *  VM records the access in, for a read through an accessor the
+         *  accessor's body. */
         public final String vmSite;
         /** WRITE_SITE: the leaf the VM versions. */
         public final String cell;
@@ -564,8 +568,16 @@ public final class StaticScopeMap {
                 if (tracked != SharedFieldFlow.TrackedKind.NONE
                         && (deciding.contains(text(edge.get("toCell")))
                         || chosen(mark, TRACKED_DEMAND))) {
+                    // A read through an accessor call names the accessor:
+                    // the replay observes the call's receiver, there being
+                    // no getfield of the cell at the site, and the VM
+                    // records the read in the accessor's body.
+                    boolean accessor = ACCESSOR_READ.equals(kind);
                     add(found, seen, retained, new Site(READ_SITE, "",
-                            siteId, vmSite(method), field, field, "", "", "",
+                            siteId, vmSite(accessor ? text(edge.get(
+                                    "accessorImplementationMethod"))
+                                    : method), field, field, "",
+                            accessor ? text(edge.get("invoke")) : "", "",
                             null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS,
                             NO_CHAIN, NO_CALLERS, tracked.name(),
                             staticField.test(field), "", distance(mark)));

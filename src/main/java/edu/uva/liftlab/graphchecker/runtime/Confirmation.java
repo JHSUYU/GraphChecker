@@ -44,6 +44,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * this program: it goes on, and the stall is a {@code CONFIRM_MISMATCH}, so
  * the claim is not confirmed.  Any other difference is one too.</p>
  *
+ * <p>An obligation replay whose world plants pairings
+ * ({@code explore.ObligationFactory}) is handed the same rows over them:
+ * held to the same order, and an edge it did not take un-admits it
+ * ({@code FocusedReplay}, {@code PAIRING_UNTAKEN}).</p>
+ *
  * <p>WIRE is compared at the attach, where the producer is known -- a
  * codec's hole at its mint, by the store version its message was and the
  * text it decoded too (WIRE-CODEC §6.5); a delivery into the anchor by the
@@ -57,6 +62,12 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  */
 public final class Confirmation {
     public static final String FILE = "expected_edges.jsonl";
+    /**
+     * The writer a STATE row names for a location's INITIAL
+     * ({@code contract.WriteRow#initial}): no occurrence wrote it, and the
+     * access its row stands at is whichever first observed the location.
+     */
+    public static final String INITIAL = "INITIAL";
     /** A WIRE row's member: the question its producer answers, stated for a
      *  consumer of the anchor when the model's arm answered the anchor by
      *  its question ({@code explore.ConfirmMain#question}). */
@@ -72,9 +83,11 @@ public final class Confirmation {
     private static final Map<String, Wire> WIRE =
             new LinkedHashMap<String, Wire>();
     /**
-     * Writer endpoint id -> version for a declared cell's PLACEHOLDER join;
-     * keyed by writer because the mint lands on whichever occurrence reads
-     * first.
+     * Writer endpoint id (or {@link #INITIAL}) and location, as "writer
+     * location", -> version for a declared cell's PLACEHOLDER join; keyed by
+     * writer and not by reader because the mint lands on whichever
+     * occurrence reads first, and by location because an INITIAL is every
+     * location's.
      */
     private static final Map<String, String> MINT =
             new LinkedHashMap<String, String>();
@@ -251,10 +264,12 @@ public final class Confirmation {
                         + chosen.producer + " at another address" : "");
     }
 
-    static void wrote(LocationId location, long version, Endpoint writer) {
+    static void wrote(LocationId location, long version, Endpoint writer,
+                      boolean initial) {
         if (!expected() || location == null || writer == null) return;
         synchronized (LOCK) {
-            WROTE.put(key(location, version), id(writer));
+            WROTE.put(key(location, version), initial ? INITIAL
+                    : id(writer));
         }
     }
 
@@ -396,27 +411,36 @@ public final class Confirmation {
                         + ", the run never attached at this consumer");
             }
             for (Map.Entry<String, String> edge : MINT.entrySet()) {
+                String[] held = edge.getKey().split(" ", 2);
                 boolean taken = false;
                 List<String> observed = new ArrayList<String>();
                 for (String minted : MINTED) {
                     String writer = WROTE.get(minted);
                     observed.add(minted + (writer == null ? "" : " by "
                             + writer));
-                    taken |= edge.getKey().equals(writer);
+                    taken |= held[0].equals(writer)
+                            && minted.startsWith(held[1] + "@");
                 }
                 if (taken) continue;
                 mismatches.add("STATE mint: the model joined a declared "
-                        + "cell's placeholder to writer " + edge.getKey()
-                        + " (version " + edge.getValue() + "), and no "
-                        + "placeholder of the run observed a version that "
-                        + "writer wrote" + (observed.isEmpty() ? ""
-                        : "; the run's placeholders observed "
+                        + "cell's placeholder of " + held[1] + " to writer "
+                        + held[0] + " (version " + edge.getValue() + "), "
+                        + "and no placeholder of the run observed a version "
+                        + "of it that writer wrote" + (observed.isEmpty()
+                        ? "" : "; the run's placeholders observed "
                         + observed));
             }
             for (Map.Entry<String, String> edge : STATE.entrySet()) {
                 String observed = READ.get(edge.getKey());
                 String version = VERSION.get(edge.getKey());
-                if (atAnotherTurn(edge.getKey(), edge.getValue())) continue;
+                // An INITIAL is what every read observes before the first
+                // write: another turn's read of it says nothing of this one
+                // (hdfs-bugs-slowdisk-zero SD5: the guard read the INITIAL,
+                // the limit, one site at any turn, the reconfiguration's 0).
+                if (!INITIAL.equals(edge.getValue())
+                        && atAnotherTurn(edge.getKey(), edge.getValue())) {
+                    continue;
+                }
                 if (observed == null) {
                     mismatches.add("STATE " + edge.getKey() + ": the model"
                             + " joined this read to writer "
@@ -440,7 +464,8 @@ public final class Confirmation {
     /**
      * Whether a read at this reader's site, at some turn of the loops on its
      * path, observed a version the model's writer wrote: a loop that polls
-     * for the write reads it at whichever turn it lands.
+     * for the write reads it at whichever turn it lands.  Never asked of an
+     * INITIAL, which the exact reader must observe.
      */
     private static boolean atAnotherTurn(String reader, String writer) {
         Set<String> observed = READ_TURNS.get(TURNS.get(reader));
@@ -472,12 +497,15 @@ public final class Confirmation {
             ordering = 1;
             Path file = FocusedReplay.workerFile(FILE);
             if (file == null) {
-                // Only a CONFIRM run is handed edges; one that finds none
-                // beside its focus row has nothing to compare.
-                if (FocusedReplay.confirming()) {
-                    unread = "EDGES: this CONFIRM run found no readable "
-                            + FILE + " in its worker directory, so no edge"
-                            + " the model chose was compared";
+                // A CONFIRM run is handed edges, and so is a replay whose
+                // world plants pairings; one that finds none beside its focus
+                // row compared nothing, and says so: it is no such run.
+                if (FocusedReplay.confirming() || FocusedReplay.pairs()) {
+                    unread = "EDGES: this " + (FocusedReplay.confirming()
+                            ? "CONFIRM run" : "replay, whose world plants "
+                            + "pairings,") + " found no readable " + FILE
+                            + " in its worker directory, so no edge it is"
+                            + " held to was compared";
                 }
                 return;
             }
@@ -495,11 +523,19 @@ public final class Confirmation {
                     } else if ("STATE".equals(kind)
                             && row.has("mint") && !row.get("mint").isJsonNull()
                             && row.get("mint").getAsBoolean()) {
-                        MINT.put(optionalString(row, "writer"),
+                        MINT.put(optionalString(row, "writer") + " "
+                                        + optionalString(row, "location"),
                                 optionalString(row, "version"));
                     } else if ("STATE".equals(kind)) {
-                        STATE.put(optionalString(row, "reader"),
-                                optionalString(row, "writer"));
+                        String reader = optionalString(row, "reader");
+                        String writer = optionalString(row, "writer");
+                        String held = STATE.put(reader, writer);
+                        // One read, one writer: two are no model.
+                        if (held != null && !held.equals(writer)) {
+                            throw new IllegalStateException("STATE_CONFLICT:"
+                                    + " read " + reader + " is held to "
+                                    + "writers " + held + " and " + writer);
+                        }
                         VERSION.put(optionalString(row, "reader"),
                                 optionalString(row, "version"));
                         String turns = stated(row, "readerAnyTurn");

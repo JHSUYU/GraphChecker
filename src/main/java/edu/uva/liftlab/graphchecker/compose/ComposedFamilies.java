@@ -471,7 +471,26 @@ final class ComposedFamilies {
     }
 
     private void own(String arm) {
-        List<String> arms = ownArms.computeIfAbsent(path,
+        own(ownArms, arm);
+    }
+
+    /** Path selector -> the arms at a planted location that may be the
+     *  recording's own pairing ({@link #recordedAtPlants}). */
+    private final Map<String, List<String>> recordedAtPlants =
+            new LinkedHashMap<String, List<String>>();
+
+    /**
+     * Each path's arms at the locations its session's world planted a
+     * pairing on, other than the plant: the recording's pairing is any of
+     * them ({@link #stateFamilies}), so taking one re-pairs nothing.  Never
+     * asserted: the run is "any arm but the plant".
+     */
+    Map<String, List<String>> recordedAtPlants() {
+        return Collections.unmodifiableMap(recordedAtPlants);
+    }
+
+    private void own(Map<String, List<String>> owned, String arm) {
+        List<String> arms = owned.computeIfAbsent(path,
                 key -> new ArrayList<String>());
         arms.add(arm);
         pathUndo.add(() -> arms.remove(arms.size() - 1));
@@ -1326,7 +1345,10 @@ final class ComposedFamilies {
      * be half a block moved.  {@code recorded} receives each family's arm
      * the run took -- the observed writer's selector, or the pins' when no
      * region wrote a version read: the pairing a witness re-pairs if it
-     * needs another.  A read's value is no such statement, since a joined
+     * needs another.  At a location the session's world {@code planted} a
+     * pairing on (location -> planted writer, {@code Composer#repairing}) the
+     * recording's pairing is any arm but the plant: a witness resting on it
+     * names the plant as the arm it re-paired.  A read's value is no such statement, since a joined
      * value moves with the valuation while its pairing stays.  Where no arm
      * is that pairing (the reads saw two writes, or the one they saw has no
      * arm) the run as it happened is no world of the formula, and a BLOCKING
@@ -1342,7 +1364,8 @@ final class ComposedFamilies {
                               Map<String, String> pins,
                               Set<String> reached,
                               List<String> stated,
-                              List<String> recorded) {
+                              List<String> recorded,
+                              Map<String, String> planted) {
         String session = path.sessionId;
         Set<String> chosen = new LinkedHashSet<String>();
         // Reads grouped by location: every read of it takes the same arm.
@@ -1420,8 +1443,7 @@ final class ComposedFamilies {
                 if (write == null) {
                     outside = true;
                 } else {
-                    observed.put(write.version(),
-                            write.endpoint().occurrence().id());
+                    observed.put(write.version(), writer(write));
                 }
             }
             List<String> observedPin = new ArrayList<String>();
@@ -1437,7 +1459,7 @@ final class ComposedFamilies {
             // alternative is an HB-concurrent writer: arms that are each the
             // run's own pairing of some read (the writer one read saw, the
             // pins of another whose version no row wrote) re-pair nothing,
-            // and their location is none Composer#repaired names.
+            // and their location is none Composer#repairing names.
             boolean alternative = false;
             for (Arms.Arm arm : found) {
                 alternative |= arms.concurrent(reads.get(0).endpoint()
@@ -1454,7 +1476,7 @@ final class ComposedFamilies {
             }
             List<String> writers = new ArrayList<String>();
             for (Arms.Arm arm : found) {
-                String writer = arm.producer().id();
+                String writer = writer(arm.write());
                 if (!writers.contains(writer)) writers.add(writer);
                 add(outsOfWriter, writer, new Out(arm, symbols));
             }
@@ -1471,9 +1493,10 @@ final class ComposedFamilies {
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
             lowering.declare(name, VmTermLowering.Sort.BOOL);
             int[] mark = mark();
-            String body = producerBody(ordinal, name, writer.getKey(),
-                    session, writer.getValue(), reached,
-                    new ArrayList<String>(), 0,
+            String body = writer.getKey().startsWith(INITIAL)
+                    ? initialBody(session, writer.getValue())
+                    : producerBody(ordinal, name, writer.getKey(), session,
+                    writer.getValue(), reached, new ArrayList<String>(), 0,
                     new LinkedHashMap<String, BoundLeaf>());
             if (body == null) {
                 rollback(mark);
@@ -1574,8 +1597,19 @@ final class ComposedFamilies {
                                 + "arm is the pairing the run took, so the "
                                 + "run as it happened is no world of the "
                                 + "formula"));
-            } else if (!recorded.contains(taken)) {
-                recorded.add(taken);
+            } else {
+                // Where the session's world planted the pairing, the arm the
+                // run took is the plant; the recording's is any other.
+                String plant = planted.containsKey(location.getKey())
+                        ? selectorOf.get(planted.get(location.getKey()))
+                        : null;
+                String run = plant == null ? taken : "(not " + plant + ")";
+                if (!recorded.contains(run)) recorded.add(run);
+                if (plant != null) {
+                    for (String arm : selectors) {
+                        if (!arm.equals(plant)) own(recordedAtPlants, arm);
+                    }
+                }
             }
             String formula = Arms.exactlyOne(selectors);
             stated.add(formula);
@@ -1584,6 +1618,52 @@ final class ComposedFamilies {
                     "(=> " + selector + " " + formula + ")");
         }
         return chosen;
+    }
+
+    /** How {@link #writer} names a location's INITIAL. */
+    private static final String INITIAL = "INITIAL|";
+
+    /**
+     * The writer a STATE arm stands for, one selector each: the occurrence
+     * whose writes move as a block, or a location's INITIAL, which no
+     * occurrence wrote (Writers_W(l)'s writer at version 0).
+     */
+    static String writer(WriteRow write) {
+        return write.initial()
+                ? INITIAL + SmtLowering.locationKey(write.location())
+                : write.endpoint().occurrence().id();
+    }
+
+    /**
+     * An INITIAL's arm: each read of its location bound to the value the
+     * location held before every write its log names, and a query through
+     * the read to that state ({@link SmtLowering#storeChoice}), and nothing
+     * else -- no run decided it, so it rests on no prefix, closure or root.
+     *
+     * @return the conjunction, or null when the value does not lower
+     */
+    private String initialBody(String session, List<Out> outs) {
+        lowering.begin(session, corpus.join(session),
+                corpus.expressions(session));
+        List<String> conjuncts = new ArrayList<String>();
+        boolean stated = true;
+        for (Out out : outs) {
+            Term value = lower(session, out.arm.expressionRef(),
+                    "arm:" + out.arm.slotId(), conjuncts);
+            if (value == null) {
+                stated = false;
+                break;
+            }
+            for (String symbol : out.symbols) {
+                if (symbol == null || symbol.isEmpty()) continue;
+                lowering.declareStated(symbol, value.sort);
+                conjuncts.add("(= " + symbol + " " + value.text + ")");
+                conjuncts.add(lowering.storeChoice(symbol, out.arm.write()));
+            }
+        }
+        boolean refused = !lowering.openRefusals().isEmpty();
+        conjuncts.addAll(lowering.end());
+        return stated && !refused ? VmTermLowering.and(conjuncts) : null;
     }
 
     /** The arms one writer's outs were built from. */

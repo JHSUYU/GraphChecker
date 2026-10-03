@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -44,7 +45,8 @@ import java.util.List;
  *   --obligation-id &lt;id&gt;      which row of it this worker owns
  *   --output-dir &lt;dir&gt;        obligation_result.jsonl, obligation.jsonl,
  *                             obligation_query.smt2, gaps.jsonl,
- *                             focused_task.jsonl, the schedule cut, and
+ *                             focused_task.jsonl, the schedule cut, the
+ *                             pairings' expected_edges.jsonl, and
  *                             question.txt (a decided verdict of its own
  *                             settles its question) or question.asked (SAT)
  *   or a host's share of them ({@link SolverService}):
@@ -199,19 +201,28 @@ public final class ObligationSolverMain {
             }
             return published;
         }
-        // The schedule half of the world (SchedulePrefix). Mints are listed,
-        // not derived: one whole-workload run can focus several occurrences
-        // so each root is planted where it is minted.
+        // The schedule half of the world (SchedulePrefix), followed only up
+        // to the first occurrence the world's pairings reorder. Mints are
+        // listed, not derived: one whole-workload run can focus several
+        // occurrences so each root is planted where it is minted.
+        List<String> cutAt = targetOccurrences(candidate);
+        cutAt.addAll(outcome.holding.reordered);
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
-                candidate.path.sessionId, targetOccurrences(candidate), true,
-                out);
+                candidate.path.sessionId, cutAt, true, out);
+        // The pairings, held and compared as CONFIRM's edges are
+        // (runtime.Confirmation).
+        if (!outcome.holding.edges.isEmpty()) {
+            RowCodec.writeJsonl(out.resolve(Confirmation.FILE),
+                    outcome.holding.edges);
+        }
         Task task = candidate.task;
         JsonObject published = publish(out, outcome.obligation,
                 outcome.result, outcome.smt2, outcome.gaps,
                 ExploreCodec.writeFocusRow(task.focused(), declared,
                         task.seedSessionId(), task.factor(),
                         outcome.obligation, outcome.inheritedFlips,
-                        outcome.clockDeltas, outcome.rootMints, cut));
+                        outcome.clockDeltas, outcome.rootMints,
+                        outcome.pairings, cut));
         // Asked, and settled only by what its replay decides: its worker
         // makes it the settled question then (run_engine.sh
         // campaign_obligation_replay).

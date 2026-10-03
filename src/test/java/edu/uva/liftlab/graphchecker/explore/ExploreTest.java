@@ -40,6 +40,7 @@ import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
 import org.junit.Assume;
@@ -1966,6 +1967,41 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * A container's state read rests on the reference read that returned
+     * the container, whether or not the VM states it as the relation's
+     * owner: the reference's writer is in the closure (hdfs-bugs
+     * slowdisk-zero: chooseVolume's filter asks {@code contains} of the list
+     * getSlowDisksToExclude() returned, inside the lambda that captured it).
+     */
+    @Test
+    public void aContainerReadRestsOnTheReadThatReturnedItsObject()
+            throws Exception {
+        Path iteration = tree.newFolder("holder").toPath();
+        LocationId reference = LocationId.of(LocationKind.INSTANCE, "8",
+                "88");
+        LocationId list = LocationId.of(LocationKind.MAP, "20", "-3");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(WRITER, false);
+        seed.symbolic("e.list", "M_LIST");
+        seed.write(at(WRITER, "Metrics#run#2:WRITE", "Metrics#run#2"),
+                reference, 2L, "e.list");
+        seed.read(at(TARGET, "Metrics#getList#15:READ", "Metrics#getList#15"),
+                reference, 2L, "M_REF", "M_L'java/util/ArrayList'_20");
+        seed.read(at(TARGET, "Chooser#test#40:READ", "Chooser#test#40"),
+                list, 1L, "M_HAS", "0");
+        seed.target(TARGET, "Chooser#choose#5", "(= M_HAS 0)");
+        seed.flush();
+
+        ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
+                TARGET, StaticScopeMap.empty());
+        List<String> focused = new ArrayList<String>();
+        for (Task task : plan.tasks) focused.add(task.focused().render());
+        assertTrue("the writer of the reference that returned the list: "
+                + focused, focused.contains(WRITER.render()));
+    }
+
     @Test
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {
@@ -3479,21 +3515,23 @@ public class ExploreTest {
                 skew + 1000L <= 100000L - ClockMargin.margin(1_000_000L));
     }
 
-    // ---- (6a) a flip no replay can plant is refused before its replay --
+    // ---- (6a) a flip only another writer takes plants that pairing -----
 
     /**
-     * A model that assigns no root, moves no clock and answers no handoff
-     * asks for a replay of the world its path already ran: it takes the
-     * other arm only through which writer a read observes, which no replay
-     * sets.  SOLR-18413 r5: all 67 focused replays were such, each ended
-     * NOT_ADMITTED after 10 to 22 minutes; now the solver says so.
+     * A model that takes the other arm only through which writer a read
+     * observes plants that pairing: the focus row states it, and the replay
+     * is held to it by CONFIRM's rows (SOLR-18413 r5: 67 such focused
+     * replays ran the world they were cut from again, each NOT_ADMITTED).
+     * The read is the VM's guarded read, joined to the write it observed: a
+     * read another writer could have answered is its own symbol, or no
+     * choice could move it.
      */
     @Test
-    public void aFlipOnlyAnotherWriterTakesIsRefusedBeforeItsReplay()
+    public void aFlipOnlyAnotherWriterTakesPlantsThatPairing()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        Path iteration = twoWriters("empty-world", "(= M_READ_KEY 2)", null);
-        Path out = tree.newFolder("empty-world-out").toPath();
+        Path iteration = twoWriters("paired-world", VM_LOOKUP, null);
+        Path out = tree.newFolder("paired-world-out").toPath();
         Path wave = out.resolve("obligations-0000");
         plan(iteration, TARGET_SELECTOR, null,
                 out.resolve("results.jsonl"), wave, 0);
@@ -3502,23 +3540,56 @@ public class ExploreTest {
         Worker worker = solve(iteration, wave, lookup, out, "w0");
         assertTrue("the other writer is the flip's only way: "
                 + query(worker), query(worker).contains("wchoice_"));
-        assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
-        assertTrue(detail(worker), detail(worker).startsWith("EMPTY_WORLD: "
-                + "the model assigns no root, moves no clock and answers no "
-                + "handoff, so the replay it asks for would run the world of "
-                + "s-seed again")
-                && detail(worker).endsWith("; with every writer choice held "
-                + "to the writer the recording observed, no model takes the "
-                + "other arm"));
-        assertEquals("and no replay is asked for", 0L, Files.size(
-                worker.directory.resolve(ObligationDir.FOCUSED_TASK)));
+        assertEquals(detail(worker), Verdict.SAT_MODEL_READY, worker.verdict);
+        assertTrue(detail(worker),
+                detail(worker).contains("1 planted pairing(s)"));
+        JsonObject pairings = RowCodec.readJsonl(worker.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0)
+                .getAsJsonObject("pairings");
+        String reader = Confirmation.id(LOOKED_UP);
+        assertEquals(pairings.toString(), 1, pairings.size());
+        String writer = pairings.get(reader).getAsString();
+        assertFalse("another writer than the one the read observed",
+                writer.equals(Confirmation.id(STORED)));
+        List<String> state = new ArrayList<String>();
+        for (JsonObject edge : RowCodec.readJsonl(
+                worker.directory.resolve(Confirmation.FILE))) {
+            if ("STATE".equals(edge.get("kind").getAsString())) {
+                state.add(edge.get("reader").getAsString() + " -> "
+                        + edge.get("writer").getAsString());
+            }
+        }
+        assertEquals(Collections.singletonList(reader + " -> " + writer),
+                state);
     }
 
     /**
-     * A model that plants nothing is asked again with every writer choice
+     * A writer whose store is of another sort than the read (an array
+     * cell's whole array, a narrower cell) delivers nothing the read could
+     * be: no model takes it, so a flip only it could take plants nothing.
+     */
+    @Test
+    public void anArmOfAnotherSortIsNoModelsChoice() throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = twoWriters("other-sort", VM_LOOKUP, null, "Z");
+        Path out = tree.newFolder("other-sort-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Worker worker = solve(iteration, wave,
+                named(obligations(wave), "Lookup#u8"), out, "w0");
+        assertFalse(detail(worker),
+                detail(worker).contains("planted pairing"));
+        assertTrue(query(worker), query(worker).matches(
+                "(?s).*\\(not wchoice_\\S+\\).*"));
+    }
+
+    /**
+     * A model that moves a writer choice is asked again with every choice
      * held to the recorded writer; one that then plants a root is the one
-     * run.  The nearest-world objective keeps the root at its recording and
-     * lets the other writer take the arm; held, only the root can.
+     * run, and no pairing is.  The nearest-world objective keeps the root
+     * at its recording and lets the other writer take the arm; held, only
+     * the root can.
      */
     @Test
     public void aModelHeldToTheRecordedWriterPlantsTheRootInstead()
@@ -3561,8 +3632,8 @@ public class ExploreTest {
         Obligation lookup = named(obligations(wave0), "Lookup#u8");
         Worker first = solve(iteration, wave0, lookup, out, "w0");
         String asked = new String(Files.readAllBytes(first.directory
-                .resolve(ObligationDir.QUESTION)), StandardCharsets.UTF_8)
-                .trim();
+                .resolve(ObligationDir.QUESTION_ASKED)),
+                StandardCharsets.UTF_8).trim();
         assertEquals("the question's first half is the flip a round holds "
                         + "in flight (Frontier#inFlight)",
                 ObligationFactory.flip(lookup.taskId(), lookup.pathId(),
@@ -3578,7 +3649,7 @@ public class ExploreTest {
         answer(iteration, "OB.admitted", ObligationDir.QUESTION, asked,
                 Verdict.ADMITTED, "S.gone", "flipped");
         Worker again = solve(iteration, wave0, lookup, out, "w1");
-        assertTrue(detail(again), detail(again).startsWith("EMPTY_WORLD"));
+        assertEquals(detail(again), Verdict.SAT_MODEL_READY, again.verdict);
         // Settled under an id that has since drifted: its answer, no solver.
         answer(iteration, "OB.drifted", ObligationDir.QUESTION, asked,
                 Verdict.NOT_ADMITTED, "", "refused");
@@ -3615,8 +3686,21 @@ public class ExploreTest {
      *  the first write, and {@code Lookup#u8} deciding {@code term} over it
      *  (and over root {@code CASE.LIMIT}, recorded {@code limit}, when one
      *  is given). */
+    /** {@link #twoWriters}' lookup over the read node the VM writes. */
+    private static final String VM_LOOKUP = "EXPR.0000000000000002";
+    /** The key id both of {@link #twoWriters}' writers store: a field. */
+    private static final LocationId KEY_ID =
+            LocationId.of(LocationKind.INSTANCE, "21", "40");
+
     private Path twoWriters(String name, String term, String limit)
             throws IOException {
+        return twoWriters(name, term, limit, "I");
+    }
+
+    /** {@link #twoWriters}, the second writer storing an int, or with
+     *  {@code "Z"} a comparison's boolean. */
+    private Path twoWriters(String name, String term, String limit,
+                            String secondType) throws IOException {
         Path iteration = tree.newFolder(name).toPath();
         // A second addKeys, started by a request of its own.
         OccurrenceAddress again = occurrence("hdfs-case/dn0",
@@ -3627,12 +3711,26 @@ public class ExploreTest {
         seed.activation(WRITER, false);
         seed.activation(again, false, true, "fixture#key-updater");
         seed.constant("e.1", "1");
-        seed.constant("e.2", "2");
-        seed.write(STORED, ALL_KEYS, 5L, "e.1");
+        if ("Z".equals(secondType)) {
+            seed.expression("e.2", binary("==", literal(2), literal(2)));
+        } else {
+            seed.constant("e.2", "2");
+        }
+        seed.write(STORED, KEY_ID, 5L, "e.1");
         seed.write(at(again, Endpoint.stateSite("BlockTokenSecretManager",
                 "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
-                ALL_KEYS, 6L, "e.2");
-        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "1");
+                KEY_ID, 6L, "e.2");
+        seed.read(LOOKED_UP, KEY_ID, 5L, "M_READ_KEY", "1");
+        // The lookup again, after the second write: the same occurrence's
+        // read of the same field.
+        seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                "retrieveDataEncryptionKey", 9, false),
+                "BlockTokenSecretManager#retrieveDataEncryptionKey#9"),
+                KEY_ID, 6L, "M_READ_AGAIN", "2");
+        // The lookup as the VM states it: the guarded read, joined to the
+        // write it observed, compared.
+        seed.expression(VM_LOOKUP, binary("==", readNode(KEY_ID, 5L, "I",
+                literal(1)), literal(2)));
         if (limit != null) {
             seed.root(TARGET, "CASE.LIMIT", "M_LIMIT", RootKind.INTEGRAL,
                     limit, "0", "10", true);
@@ -3647,6 +3745,86 @@ public class ExploreTest {
                         "<example.Keys: int value>",
                         "<example.Manager: example.Keys allKeys>", ""));
         return iteration;
+    }
+
+    /**
+     * One writer choice binds every read one occurrence made of a location
+     * (IDENTITY §4); reads of it that saw two writes have no choice that is
+     * the run's pairing, and the flip is refused by name, as COMPOSE refuses
+     * such a family ("the reads saw two writes"), never asked with the two
+     * reads forced equal.
+     */
+    @Test
+    public void readsOfOneBlockThatSawTwoWritesAreRefusedByName()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = twoWriters("two-writes",
+                "(and (= M_READ_KEY 2) (= M_READ_AGAIN 2))", null);
+        Path out = tree.newFolder("two-writes-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Worker worker = solve(iteration, wave,
+                named(obligations(wave), "Lookup#u8"), out, "w0");
+        assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
+        assertTrue(detail(worker), detail(worker).contains(
+                "READS_SAW_TWO_WRITES"));
+    }
+
+    /**
+     * A flip is asked only where its own predicate reaches a variable: a
+     * movable read a PREFIX decision names binds nothing the flipped
+     * predicate rests on, and a predicate over a read only one writer wrote
+     * is the recording's arm whatever the prefix does -- refused by name,
+     * not asked to an UNSAT that claims no world takes it.
+     */
+    @Test
+    public void aFlipWhosePredicateReachesNoVariableIsNotAsked()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("prefix-only").toPath();
+        OccurrenceAddress again = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.of("KEY_UPDATE"), "",
+                        2), "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        LocationId other = LocationId.of(LocationKind.INSTANCE, "21", "41");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(WRITER, false);
+        seed.activation(again, false, true, "fixture#key-updater");
+        seed.constant("e.1", "1");
+        seed.constant("e.2", "2");
+        seed.constant("e.3", "3");
+        seed.write(STORED, KEY_ID, 5L, "e.1");
+        seed.write(at(again, Endpoint.stateSite("BlockTokenSecretManager",
+                "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
+                KEY_ID, 6L, "e.2");
+        seed.write(STORED, other, 7L, "e.3");
+        seed.read(LOOKED_UP, KEY_ID, 5L, "M_READ_KEY", "1");
+        seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                "retrieveDataEncryptionKey", 9, false),
+                "BlockTokenSecretManager#retrieveDataEncryptionKey#9"),
+                other, 7L, "M_OTHER", "3");
+        seed.expression(VM_LOOKUP, binary("==", readNode(other, 7L, "I",
+                literal(3)), literal(4)));
+        seed.decision(TARGET, "Prefix#u7", 1, false, "(= M_READ_KEY 2)");
+        seed.decision(TARGET, "Lookup#u8", 1, false, VM_LOOKUP);
+        seed.flush();
+        scopeMap(iteration,
+                targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""));
+        Path out = tree.newFolder("prefix-only-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Worker worker = solve(iteration, wave,
+                named(obligations(wave), "Lookup#u8"), out, "w0");
+        assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
+        assertTrue(detail(worker), detail(worker).contains(
+                "ADMISSION_GAP:Lookup#u8#1"));
     }
 
     // ---- (6b) a handoff nobody can answer moves only with its own run --

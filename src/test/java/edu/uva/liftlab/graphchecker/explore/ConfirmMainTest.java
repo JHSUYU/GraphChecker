@@ -10,6 +10,7 @@ import static org.junit.Assert.assertTrue;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -175,6 +176,18 @@ public class ConfirmMainTest {
         return iteration;
     }
 
+    /** The selected session's world, planting nothing: the recording's. */
+    private static void plantNothing(Path iteration) throws Exception {
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        for (String member : new String[]{"rootAssignments", "clockDeltas",
+                "answers", "pairings"}) {
+            world.add(member, new JsonObject());
+        }
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+    }
+
     private static void manifest(SessionDir dir, SessionManifest.Role role)
             throws Exception {
         RowCodec.writeExpressions(dir.expressions(), ExpressionTable.empty());
@@ -326,15 +339,202 @@ public class ConfirmMainTest {
     }
 
     /**
+     * A model that chose a location's INITIAL for a read holds the read to
+     * the INITIAL's version, which no occurrence wrote: every write of the
+     * location goes after the read.  An obligation whose world pairs the
+     * read so is held by the same rows ({@link ConfirmMain#holding}), and
+     * the writer the recording ran first is where its prefix ends.  The
+     * INITIAL's row, which stands at the access that started the log with
+     * that access's frames, places no hold (hdfs-bugs-slowdisk-zero SD4).
+     * CONFIRM holds the write after the read's activation; an obligation,
+     * whose choice binds every read the occurrence makes of the location,
+     * after the occurrence (SD5: the turn re-read the bound for its limit);
+     * and CONFIRM of a session whose world planted the pairing, by the rows
+     * its replay was held to.
+     */
+    @Test
+    public void aModelThatChoseTheInitialHoldsEveryWriteAfterTheRead()
+            throws Exception {
+        Path iteration = iteration();
+        Endpoint observedAt = Endpoint.of(mint, "a.Manager#tick()#7:INITIAL",
+                ExecutionIndex.of(Collections.singletonList(Frame.of(
+                        "a.Manager#tick()#7:WRITE", 0))), 0);
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                Arrays.asList(WriteRow.initial("sel", 9L, observedAt, CELL,
+                        4L, "EXPR.w", "I"), WriteRow.of("sel", 10L, writer,
+                        CELL, 5L, "EXPR.w", "I")), RowCodec::writeWrite);
+        // The read in a call of its own, as an accessor's is.
+        Endpoint polled = Endpoint.of(anchor, "a.Handler#h()#12:READ",
+                ExecutionIndex.of(Arrays.asList(Frame.of(
+                        "<a.Handler: int bound()>", 0), Frame.of(
+                        "a.Handler#h()#12:READ", 0))), 0);
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
+                Collections.singletonList(ReadRow.of("sel", 30L, polled,
+                        CELL, 5L, "INSTANCE_FIELD/1#40@v5", "I", "3")),
+                RowCodec::writeRead);
+        Path claim = claim("FAULT:IPC", "true");
+        JsonObject document = JsonParser.parseString(new String(
+                Files.readAllBytes(claim), StandardCharsets.UTF_8))
+                .getAsJsonObject();
+        JsonObject arm = new JsonObject();
+        arm.addProperty("selector", "writer_arm__1__i");
+        arm.addProperty("groupId", "INITIAL|" + SmtLowering.locationKey(CELL));
+        JsonArray fills = new JsonArray();
+        fills.add(Interaction.of(InteractionKind.STATE, observedAt, polled)
+                .id());
+        arm.add("interactionIds", fills);
+        document.getAsJsonArray("valuations").get(1).getAsJsonObject()
+                .getAsJsonArray("selectedArms").add(arm);
+        Files.write(claim, document.toString()
+                .getBytes(StandardCharsets.UTF_8));
+        Path out = folder.newFolder("initial-chosen").toPath();
+        ConfirmMain.write(iteration, claim, manifest(), out);
+        // The selected session's world planted the pairing, so its read
+        // observed the INITIAL; the model chose no arm for it.
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
+                Collections.singletonList(ReadRow.of("sel", 30L, polled,
+                        CELL, 4L, "INSTANCE_FIELD/1#40@v4", "I", "3")),
+                RowCodec::writeRead);
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        JsonObject pairings = new JsonObject();
+        pairings.addProperty(Confirmation.id(polled), Confirmation.INITIAL);
+        world.add("pairings", pairings);
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+        Path planted = folder.newFolder("initial-planted").toPath();
+        ConfirmMain.write(iteration, claim("FAULT:IPC", "true"), manifest(),
+                planted);
+        ConfirmMain.Holding paired = ConfirmMain.holding(
+                SessionReader.read(iteration, "sel"),
+                Collections.singletonMap(Confirmation.id(polled),
+                        Confirmation.INITIAL));
+        Map<List<JsonObject>, String> after =
+                new LinkedHashMap<List<JsonObject>, String>();
+        after.put(RowCodec.readJsonl(out.resolve(Confirmation.FILE)),
+                polled.activation());
+        after.put(paired.edges, Confirmation.activation(anchor,
+                ExecutionIndex.empty()));
+        after.put(RowCodec.readJsonl(planted.resolve(Confirmation.FILE)),
+                Confirmation.activation(anchor, ExecutionIndex.empty()));
+        for (Map.Entry<List<JsonObject>, String> each : after.entrySet()) {
+            List<JsonObject> edges = each.getKey();
+            List<String> held = new ArrayList<String>();
+            for (JsonObject edge : edges) {
+                String kind = edge.get("kind").getAsString();
+                if ("ORDER".equals(kind)) {
+                    held.add(edge.get("before").getAsString() + " < "
+                            + edge.get("after").getAsString());
+                } else if ("STATE".equals(kind) && edge.get("reader")
+                        .getAsString().equals(Confirmation.id(polled))) {
+                    held.add(edge.get("writer").getAsString() + "@"
+                            + edge.get("version").getAsString());
+                }
+            }
+            assertEquals("the INITIAL's version, the write after the read",
+                    Arrays.asList(Confirmation.INITIAL + "@4",
+                            each.getValue() + " < " + writer.activation()),
+                    held);
+        }
+        assertEquals("the write the session ran before the read",
+                Collections.singleton(mint.id()), paired.reordered);
+        // The model chose the INITIAL and the world held the read to the
+        // write: one read, two writers, refused by name.
+        pairings.addProperty(Confirmation.id(polled), Confirmation.id(writer));
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+        String refused = "";
+        try {
+            ConfirmMain.write(iteration, claim, manifest(),
+                    folder.newFolder("initial-conflict").toPath());
+        } catch (ConfirmMain.Refused conflict) {
+            refused = conflict.getMessage();
+        }
+        assertTrue(refused, refused.startsWith("STATE_CONFLICT: read "
+                + Confirmation.id(polled)));
+    }
+
+    /**
+     * An event in its occurrence's outermost activation -- a loop body's
+     * store, standing on the loop's method, which spans every turn -- is
+     * ordered by its occurrence: a read paired with it waits for the turn
+     * to close, and a store held after a read waits at the turn's opening
+     * (hdfs-bugs-slowdisk-zero SD8: the anchor waited for the detector's
+     * run() to exit, past the order's timeout).  A deeper call is its own
+     * activation.  An occurrence closes at its last recorded event, so a
+     * store the session ran after the read but before the reader's
+     * occurrence closed is reordered, as its ORDER puts it after the close.
+     */
+    @Test
+    public void aLoopTurnsOutermostEventIsOrderedByItsTurn()
+            throws Exception {
+        Path iteration = iteration();
+        Frame loop = Frame.of("<a.Manager: void run()>", 0);
+        Endpoint store = Endpoint.of(mint, "a.Manager#run()#9:WRITE",
+                ExecutionIndex.of(Arrays.asList(loop, Frame.of(
+                        "a.Manager#run()#9:WRITE", 0))), 0);
+        Endpoint scan = Endpoint.of(mint, "a.Manager#scan()#4:READ",
+                ExecutionIndex.of(Arrays.asList(loop, Frame.of(
+                        "<a.Manager: void scan()>", 0), Frame.of(
+                        "a.Manager#scan()#4:READ", 0))), 0);
+        Endpoint first = endpoint(MINT, "a.Manager#run()#9:INITIAL");
+        String turn = Confirmation.activation(mint, ExecutionIndex.empty());
+        String read = Confirmation.activation(anchor, ExecutionIndex.empty());
+        SessionDir sel = SessionDir.of(iteration, "sel");
+        RowCodec.writeAll(sel.writes(), Arrays.asList(
+                WriteRow.initial("sel", 9L, first, CELL, 4L, "EXPR.w", "I"),
+                WriteRow.of("sel", 20L, store, CELL, 5L, "EXPR.w", "I")),
+                RowCodec::writeWrite);
+        LocationId elsewhere = LocationId.of(LocationKind.INSTANCE, "1",
+                "41");
+        // the version the read saw, its pairing, the ORDER it needs, the
+        // read's seq, the reordered occurrences
+        Object[][] table = {
+                {5L, Confirmation.id(store), turn + " < " + read, 30L,
+                        Collections.emptySet()},
+                {4L, Confirmation.INITIAL, read + " < " + turn, 30L,
+                        Collections.singleton(mint.id())},
+                {4L, Confirmation.INITIAL, read + " < " + turn, 15L,
+                        Collections.singleton(mint.id())},
+        };
+        for (Object[] row : table) {
+            RowCodec.writeAll(sel.reads(), Arrays.asList(
+                    ReadRow.of("sel", 25L, scan, elsewhere, 2L,
+                            "INSTANCE_FIELD/1#41@v2", "I", "0"),
+                    ReadRow.of("sel", (Long) row[3], reader, CELL,
+                            (Long) row[0], "INSTANCE_FIELD/1#40@v" + row[0],
+                            "I", "3"),
+                    ReadRow.of("sel", 31L, endpoint(ANCHOR,
+                            "a.Handler#h()#13:READ"), elsewhere, 2L,
+                            "INSTANCE_FIELD/1#41@v2", "I", "0")),
+                    RowCodec::writeRead);
+            List<String> orders = new ArrayList<String>();
+            ConfirmMain.Holding holding = ConfirmMain.holding(
+                    SessionReader.read(iteration, "sel"),
+                    Collections.singletonMap(Confirmation.id(reader),
+                            (String) row[1]));
+            for (JsonObject edge : holding.edges) {
+                if ("ORDER".equals(edge.get("kind").getAsString())) {
+                    orders.add(edge.get("before").getAsString() + " < "
+                            + edge.get("after").getAsString());
+                }
+            }
+            assertEquals(row[1] + "@" + row[3],
+                    Collections.singletonList(row[2]), orders);
+            assertEquals(row[1] + "@" + row[3], row[4], holding.reordered);
+        }
+    }
+
+    /**
      * A query through a re-pointable reference, by variant of what the
      * model chose: another writer's store for the reference and a state of
      * the map that store delivered is held as two joins -- the reference
      * read to the store, the query's read to the write of that state, each
      * with every other writer of its location outside the two -- and the
      * session, which read neither, is no realization of it; the observed
-     * store with nothing else is the session itself, its arm being the write
-     * the read observed though its endpoint stored again later; a state
-     * asked outside every read, or one no write states, is refused by name.
+     * store with nothing else is the session itself (its world planting
+     * nothing), its arm being the write the read observed though its
+     * endpoint stored again later; a state asked outside every read, or one
+     * no write states, is refused by name.
      */
     @Test
     public void aQueryThroughAReplacedReferenceIsHeldToTheStateTheModelChose()
@@ -358,6 +558,7 @@ public class ConfirmMainTest {
                 {"outside", store, "", 1L},
                 {"unwritten", store, query.id(), 9L}};
         Path iteration = iteration();
+        plantNothing(iteration);
         SessionDir sel = SessionDir.of(iteration, "sel");
         RowCodec.writeAll(sel.roots(), Collections.singletonList(
                 root("sel", "FAULT:IPC", "M_Z_fault.sel",
@@ -456,12 +657,17 @@ public class ConfirmMainTest {
     }
 
     /**
-     * A selected session that already took every edge the model chose, ran
-     * the moved root at the model's value and observed the fatal IS the run
-     * that confirms the claim: nothing is handed to a replay.
+     * A selected session that took every edge the model chose, ran the
+     * moved root at the model's value, ran the model's clocks and observed
+     * the fatal IS the run that confirms the claim -- unless its world
+     * planted a pairing: a choice its run took under an order its replay
+     * held, which CONFIRM makes again in a replay of its own, strict.  A
+     * planted root or answer is the session's own run; a skew planted on a
+     * clock cell the composition anchors is no clock of the model's, and
+     * its replay drops it and keeps one outside the composition.
      */
     @Test
-    public void aSessionThatRealizedTheClaimIsItsConfirmation()
+    public void aSessionIsItsConfirmationUnlessItsWorldPlantedAPairing()
             throws Exception {
         Path iteration = iteration();
         SessionDir sel = SessionDir.of(iteration, "sel");
@@ -470,52 +676,75 @@ public class ConfirmMainTest {
                         RootKind.INTEGRAL, "119978"),
                 root("sel", "FAULT:IPC", "M_Z_fault.sel", RootKind.MARKER,
                         "true")), RowCodec::writeRootMint);
-        // Had its world planted a skew on a clock cell the composition
-        // anchors and the model does not move, the model's clock runs on
-        // there: that session ran another world, and the replay plants the
-        // model's clocks alone.
-        Path worker = iteration.resolve("obligations-0000").resolve("w1");
-        JsonObject world = RowCodec.readJsonl(worker.resolve(
-                ObligationDir.FOCUSED_TASK)).get(0);
-        JsonObject skewed = world.deepCopy();
-        skewed.getAsJsonObject("clockDeltas").addProperty("CLOCK.a",
-                "43000");
-        RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
-                Collections.singletonList(skewed));
-        Path replayed = folder.newFolder("replayed").toPath();
-        JsonObject planned = ConfirmMain.write(iteration,
-                claim("FAULT:IPC", "true"), manifest(), replayed);
-        assertTrue("not realized: " + planned, !planned.has("realizedBy"));
-        JsonObject focus = RowCodec.readJsonl(replayed.resolve(
-                "focused_task.jsonl")).get(0);
-        assertTrue("the session's own skew is not the model's: " + focus,
-                !focus.getAsJsonObject("clockDeltas").has("CLOCK.a"));
-        assertEquals("one outside the composition is kept", "7000",
-                focus.getAsJsonObject("clockDeltas").get("CLOCK.gone")
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        plantNothing(iteration);
+        JsonObject planted = RowCodec.readJsonl(focus).get(0);
+        // what the world planted (member -> key -> value), realized?
+        Object[][] table = {
+                {null, null, null, true},
+                {"rootAssignments", "FAULT:IPC", "true", true},
+                {"clockDeltas", "CLOCK.gone", "7000", false},
+                {"answers", consumer.id(), "119979", true},
+                {"pairings", Confirmation.id(reader), Confirmation.id(writer),
+                        false},
+        };
+        for (Object[] row : table) {
+            JsonObject world = planted.deepCopy();
+            if (row[0] != null) {
+                world.getAsJsonObject((String) row[0]).addProperty(
+                        (String) row[1], (String) row[2]);
+            }
+            if ("clockDeltas".equals(row[0])) {
+                world.getAsJsonObject("clockDeltas").addProperty("CLOCK.a",
+                        "43000");
+            }
+            RowCodec.writeJsonl(focus, Collections.singletonList(world));
+            Path out = folder.newFolder("world-" + row[0]).toPath();
+            JsonObject summary = ConfirmMain.write(iteration,
+                    claim("FAULT:IPC", "true"), manifest(), out);
+            boolean realized = (Boolean) row[3];
+            assertEquals(row[0] + ": " + summary, realized,
+                    summary.has("realizedBy"));
+            assertEquals(row[0] + ": a realized claim hands no replay "
+                    + "anything", !realized, Files.exists(out.resolve(
+                    ObligationDir.FOCUSED_TASK)));
+            if (realized) {
+                List<JsonObject> rows = RowCodec.readJsonl(
+                        out.resolve(ConfirmMain.REALIZED));
+                assertTrue(rows.get(0).get("confirmed").getAsBoolean());
+                assertEquals("sel", rows.get(0).get("sessionId")
                         .getAsString());
-        RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
-                Collections.singletonList(world));
-        Path out = folder.newFolder("realized").toPath();
-
-        JsonObject summary = ConfirmMain.write(iteration,
-                claim("FAULT:IPC", "true"), manifest(), out);
-
-        assertEquals("sel", summary.get("realizedBy").getAsString());
-        List<JsonObject> rows = RowCodec.readJsonl(
-                out.resolve(ConfirmMain.REALIZED));
-        assertEquals(1, rows.size());
-        assertTrue(rows.get(0).get("confirmed").getAsBoolean());
-        assertEquals("sel", rows.get(0).get("sessionId").getAsString());
-        assertTrue("and no replay is handed anything",
-                !Files.exists(out.resolve("focused_task.jsonl")));
-
+            }
+            if ("clockDeltas".equals(row[0])) {
+                JsonObject deltas = RowCodec.readJsonl(out.resolve(
+                        ObligationDir.FOCUSED_TASK)).get(0)
+                        .getAsJsonObject("clockDeltas");
+                assertTrue("the session's own skew is not the model's: "
+                        + deltas, !deltas.has("CLOCK.a"));
+                assertEquals("one outside the composition is kept", "7000",
+                        deltas.get("CLOCK.gone").getAsString());
+            }
+            if ("pairings".equals(row[0])) {
+                int held = 0;
+                for (JsonObject edge : RowCodec.readJsonl(
+                        out.resolve(Confirmation.FILE))) {
+                    if ("STATE".equals(edge.get("kind").getAsString())
+                            && edge.get("reader").getAsString().equals(
+                            Confirmation.id(reader))) {
+                        held++;
+                    }
+                }
+                assertTrue("the world's pairing is held", held > 0);
+            }
+        }
+        // And with a world that planted nothing, a moved root the session
+        // ran at another value is a run a replay has to make.
         Path other = folder.newFolder("not-realized").toPath();
         ConfirmMain.write(iteration, claim("FAULT:IPC", "false"),
                 manifest(), other);
-        assertTrue("a moved root the session ran at another value is a run "
-                        + "a replay has to make",
-                !Files.exists(other.resolve(ConfirmMain.REALIZED))
-                        && Files.exists(other.resolve("focused_task.jsonl")));
+        assertTrue(!Files.exists(other.resolve(ConfirmMain.REALIZED))
+                && Files.exists(other.resolve(ObligationDir.FOCUSED_TASK)));
     }
 
     /**
@@ -717,30 +946,18 @@ public class ConfirmMainTest {
             }
         }
 
-        // A pinned join to a container's INITIAL holds nothing: its version
-        // is the members the VM read where it first observed the map, which
-        // no occurrence wrote (SOLR-18413 stream7b: the leader's first
-        // lookup of the cluster state).  A write above its members is a
-        // write.  Every STATE row names its reader at any turn too.
-        for (int members : new int[]{1, 0}) {
-            JsonObject base = JsonParser.parseString("{\"_type\":"
-                    + "\"ContainerRelation\",\"shape\":\"ASSOCIATIVE\","
-                    + "\"operation\":\"SNAPSHOT_BASE\",\"members\":"
-                    + members + ",\"arguments\":[],\"receiver\":{"
-                    + "\"_type\":\"ContainerRelation\",\"operation\":"
-                    + "\"STATE\",\"receiver\":{\"_type\":"
-                    + "\"SymbolExpression\",\"_exp\":\"M_L_9\"}}}")
-                    .getAsJsonObject();
-            JsonObject put = JsonParser.parseString("{\"_type\":"
-                    + "\"ContainerRelation\",\"shape\":\"ASSOCIATIVE\","
-                    + "\"operation\":\"PUT\",\"arguments\":[{\"_type\":"
-                    + "\"ConstExpr\",\"_exp\":\"Y_I_1\"},{\"_type\":"
-                    + "\"ConstExpr\",\"_exp\":\"Y_I_1\"}]}")
-                    .getAsJsonObject();
-            put.add("receiver", base);
-            RowCodec.writeExpressions(sel.expressions(), ExpressionTable.of(
-                    Collections.singletonMap("EXPR.w", put)));
-            Path snapshot = folder.newFolder("snapshot" + members).toPath();
+        // A join the run took to an INITIAL holds nothing: no occurrence
+        // wrote it, only the access that first observed the location
+        // (SOLR-18413 stream7b: the leader's first lookup of the cluster
+        // state).  A write is a write.  Every STATE row names its reader at
+        // any turn too.
+        for (boolean initial : new boolean[]{true, false}) {
+            RowCodec.writeAll(sel.writes(), Collections.singletonList(initial
+                    ? WriteRow.initial("sel", 10L, writer, CELL, 5L, "EXPR.w",
+                    "I")
+                    : WriteRow.of("sel", 10L, writer, CELL, 5L, "EXPR.w",
+                    "I")), RowCodec::writeWrite);
+            Path snapshot = folder.newFolder("initial" + initial).toPath();
             ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
                     snapshot);
             int stated = 0;
@@ -751,8 +968,7 @@ public class ConfirmMainTest {
                 assertEquals(Confirmation.anyTurn(reader),
                         edge.get("readerAnyTurn").getAsString());
             }
-            assertEquals("members " + members, members == 1 ? 0 : 1,
-                    stated);
+            assertEquals("initial " + initial, initial ? 0 : 1, stated);
         }
 
         // A join at a location the fatal does not rest on is no edge: under

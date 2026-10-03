@@ -786,7 +786,7 @@ public class RowRuntimeTest {
                 Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
                         "getAndIncrement", "()I", 12, true),
                 location, 125L, rmwExpression(), "",
-                "Caller.body()#u9@1", null, null);
+                "Caller.body()#u9@1", null, null, false);
         // A String method's result states no type of its own, and its
         // operands' are not its own: a concat is a String (f4 visible-gs:
         // java.io.File.path's version published no row, and the path that
@@ -801,7 +801,7 @@ public class RowRuntimeTest {
                 Endpoint.stateSite("java.io.File", "<init>",
                         "(Ljava/lang/String;)V", 4, true),
                 LocationId.of(LocationKind.INSTANCE, "49", "32"), 127L,
-                concat, "", "Caller.body()#u9@1", null, null);
+                concat, "", "Caller.body()#u9@1", null, null, false);
         // A null stored into a tracked reference field states no class, and
         // is a reference write all the same (17960 v64: a diff's cleared
         // posteriorDiff published no row, and the path reading it was
@@ -811,7 +811,7 @@ public class RowRuntimeTest {
                         true),
                 LocationId.of(LocationKind.INSTANCE, "6", "40"), 126L,
                 nullExpression(), "",
-                "Caller.body()#u9@1", null, null);
+                "Caller.body()#u9@1", null, null, false);
         RowRuntime.read(occurrence, 14L,
                 Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
                         "get", "()I", 2, false),
@@ -821,7 +821,7 @@ public class RowRuntimeTest {
                 "(Ljava/lang/Object;Z)Z", 34, true);
         RowRuntime.write(occurrence, 16L, waits,
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6254L,
-                rmwExpression(), "", "Caller.body()#u9@1", null, null);
+                rmwExpression(), "", "Caller.body()#u9@1", null, null, false);
         RowRuntime.read(occurrence, 16L, waits,
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6253L, "w",
                 "I", "1", "", ReadRow.UNKNOWN_VERSION);
@@ -2348,7 +2348,7 @@ public class RowRuntimeTest {
                             + ".AtomicInteger", "getAndIncrement", "()I", 12,
                             true), LocationId.of(LocationKind.INSTANCE, "22",
                             "24"), version++, chain, "",
-                    "Caller.body()#u9@1", null, null);
+                    "Caller.body()#u9@1", null, null, false);
         }
         RowRuntime.closeSession();
         List<WriteRow> writes = RowCodec.readAll(session().writes(),

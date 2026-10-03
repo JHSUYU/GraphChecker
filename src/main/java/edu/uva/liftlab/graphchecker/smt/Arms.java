@@ -9,11 +9,13 @@ import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -21,11 +23,16 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableSet;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * THE family-arm rule, shared by the composer and the flip solver so the two
@@ -69,6 +76,9 @@ public final class Arms {
 
         /** The writes of this location in this session, any version. */
         List<WriteRow> writesOf(String sessionId, String locationKey);
+
+        /** The reads of this location in this session, in read order. */
+        List<ReadRow> readsOf(String sessionId, String locationKey);
 
         /** This session's decisions at this occurrence, in seq order. */
         List<DecisionRow> decisionsOf(String sessionId,
@@ -269,7 +279,15 @@ public final class Arms {
         }
     }
 
+    /** A thread's entry frame: a start's own frame, or a {@code run()}. */
+    private static final Pattern THREAD_ENTRY =
+            Pattern.compile("#u\\d+$|: void run\\(\\)>$");
+
     private final Rows rows;
+    /** session|location -> the versions its reads observed that no write
+     *  row states ({@link #eligible}); the rows never change. */
+    private final Map<String, NavigableSet<Long>> unrowed =
+            new ConcurrentHashMap<String, NavigableSet<Long>>();
     /** {@code slotId|sessionId|rootId}, in the order the arms were refused. */
     private final Set<String> refusals = new LinkedHashSet<String>();
     /**
@@ -401,14 +419,19 @@ public final class Arms {
     }
 
     /**
-     * The writer occurrences a read could have seen, as arms (IDENTITY §4): the
-     * observed writer plus every ATTESTED writer occurrence HB-concurrent with
-     * the reader.  Locks are not constraints.  A writer's writes move as a
-     * BLOCK, so there is one arm per writer at its last write of L, and the
-     * caller binds every read of L in the reader to it (the arm has no
-     * symbol).  The observed writer's arm is the write the read observed:
-     * a read that saw STARTING of a writer that then wrote RUNNING never
-     * paired with RUNNING, and that arm is the run as it happened.
+     * The writers a read could have seen, as arms (IDENTITY §4,
+     * Writers_W(l)): the observed writer plus every ATTESTED writer
+     * occurrence HB-concurrent with the reader, and the location's INITIAL;
+     * each only where the read could have run right after it ({@link
+     * #eligible}).  Locks are not constraints.
+     * A writer's
+     * writes move as a BLOCK, so there is one arm per writer at its last
+     * write of L, and the caller binds every read of L in the reader to it
+     * (the arm has no symbol).  The observed writer's arm is the write the
+     * read observed: a read that saw STARTING of a writer that then wrote
+     * RUNNING never paired with RUNNING, and that arm is the run as it
+     * happened.  The INITIAL is no occurrence's block: its arm is its own,
+     * delivered under no prefix (nothing a run decided made it).
      *
      * @param readerEndpoint one read of L in the reading occurrence
      * @param session        the reader's own session: eligibility is its
@@ -424,10 +447,24 @@ public final class Arms {
                                String location, long observedVersion,
                                boolean alternatives) {
         OccurrenceAddress reader = readerEndpoint.occurrence();
+        List<WriteRow> writes = rows.writesOf(session, location);
+        List<Arm> arms = new ArrayList<Arm>();
         // One arm per writer occurrence: the observed write, else the
         // block's last write of L.
         Map<String, WriteRow> armOf = new LinkedHashMap<String, WriteRow>();
-        for (WriteRow write : rows.writesOf(session, location)) {
+        for (WriteRow write : writes) {
+            if (write.initial()) {
+                if (write.version() == observedVersion || alternatives
+                                && eligible(reader, session, location, writes,
+                        observedVersion, write)) {
+                    Arm arm = arm(slot(write, readerEndpoint), "", session,
+                            write.endpoint().occurrence(),
+                            write.expressionRef(), write.seq(), write, null,
+                            null);
+                    if (arm != null) arms.add(arm);
+                }
+                continue;
+            }
             String key = write.endpoint().occurrence().id();
             WriteRow held = armOf.get(key);
             if (held == null || held.version() != observedVersion
@@ -436,18 +473,15 @@ public final class Arms {
                 armOf.put(key, write);
             }
         }
-        List<Arm> arms = new ArrayList<Arm>();
         for (WriteRow write : armOf.values()) {
             OccurrenceAddress writer = write.endpoint().occurrence();
             boolean observed = write.version() == observedVersion;
-            if (!observed && (!alternatives
-                    || !concurrent(reader, writer, session))) {
+            if (!observed && (!alternatives || !eligible(reader, session,
+                    location, writes, observedVersion, write))) {
                 continue;
             }
-            Arm arm = arm(Interaction.of(InteractionKind.STATE,
-                            write.endpoint(), readerEndpoint).id(),
-                    "", session, writer, write.expressionRef(),
-                    write.seq(), write, null, null);
+            Arm arm = arm(slot(write, readerEndpoint), "", session, writer,
+                    write.expressionRef(), write.seq(), write, null, null);
             if (arm == null) continue;
             // An alternative must be attested; the observed writer is stated
             // whatever it is, because it is what the run did.
@@ -455,6 +489,98 @@ public final class Arms {
             arms.add(arm);
         }
         return arms;
+    }
+
+    /** The STATE interaction one write delivers to one read. */
+    private static String slot(WriteRow write, Endpoint reader) {
+        return Interaction.of(InteractionKind.STATE, write.endpoint(), reader)
+                .id();
+    }
+
+    /**
+     * THE ONE ELIGIBILITY RULE, asked by these arms and by the writers
+     * EXPLORE and COMPOSE ask of a read ({@code Corpus#eligibleWrites}):
+     * whether a read that observed one version of its location could have
+     * seen {@code state}, a whole value, instead.  The version it observed
+     * it saw.  Any other -- a writer's, or the location's INITIAL, the state
+     * before every write ({@link WriteRow#initial}) -- only where the read
+     * could have run right after it: its writer an HB-concurrent occurrence
+     * ({@link #concurrent}), every write between the two (after {@code
+     * state} up to the observed one, or after the observed one up to {@code
+     * state}) an HB-concurrent occurrence's moved to the read's other side,
+     * and none of them made under construction -- a constructor or a class
+     * initializer anywhere on its frame chain ({@link #constructs}), which
+     * every reader of what it built follows.  A version between the two
+     * that a read of the location observed and no write row states was
+     * made by a writer no row names, which no order moves: refused.
+     */
+    public boolean eligible(OccurrenceAddress reader, String session,
+                            String location, List<WriteRow> writes,
+                            long observedVersion, WriteRow state) {
+        if (state.version() == observedVersion) return true;
+        if (!state.initial() && (constructs(state) || !concurrent(reader,
+                state.endpoint().occurrence(), session))) {
+            return false;
+        }
+        long low = Math.min(state.version(), observedVersion);
+        long high = Math.max(state.version(), observedVersion);
+        Long between = unrowed(session, location, writes).higher(low);
+        if (between != null && between < high) return false;
+        for (WriteRow write : writes) {
+            if (write.initial() || write.version() <= low
+                    || write.version() > high) {
+                continue;
+            }
+            if (constructs(write) || !concurrent(reader,
+                    write.endpoint().occurrence(), session)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The versions of a location this session's reads observed and no
+     *  write row of {@code writes} states. */
+    private NavigableSet<Long> unrowed(String session, String location,
+                                       List<WriteRow> writes) {
+        return unrowed.computeIfAbsent(session + "|" + location, key -> {
+            Set<Long> rowed = new HashSet<Long>();
+            for (WriteRow write : writes) rowed.add(write.version());
+            NavigableSet<Long> seen = new TreeSet<Long>();
+            for (ReadRow read : rows.readsOf(session, location)) {
+                if (read.observedVersion() >= 0L
+                        && !rowed.contains(read.observedVersion())) {
+                    seen.add(read.observedVersion());
+                }
+            }
+            return seen;
+        });
+    }
+
+    /**
+     * Whether a write was made under construction: a constructor or a class
+     * initializer anywhere on the frames its own thread stood on, its own
+     * site included.  A started thread stands on its creator's frames
+     * ({@code runtime.Identity}: a child thread copies them), so the chain
+     * is read from the write out to the thread's entry -- the start frame a
+     * named start opens ({@code plan.SiteId}, {@code #u}), else its {@code
+     * run()}: a thread a constructor started writes after it, not under it
+     * (hdfs-bugs-slowdisk-zero: the disk-outlier detector, which
+     * {@code DataNodeDiskMetrics.<init>} starts).
+     */
+    private static boolean constructs(WriteRow write) {
+        if (constructing(write.endpoint().site())) return true;
+        List<Frame> frames = write.endpoint().siteIndex().frames();
+        for (int at = frames.size() - 1; at >= 0; at--) {
+            String site = frames.get(at).callSite();
+            if (constructing(site)) return true;
+            if (THREAD_ENTRY.matcher(site).find()) return false;
+        }
+        return false;
+    }
+
+    private static boolean constructing(String site) {
+        return site.contains("<init>(") || site.contains("<clinit>(");
     }
 
     /**
@@ -548,11 +674,13 @@ public final class Arms {
                     AttachRow attach) {
         JsonObject expression = rows.expression(session, expressionRef);
         if (expression == null) return null;
-        List<DecisionRow> decisions = rows.decisionsOf(session, producer);
-        boolean attested = attested(session, producer);
+        // An INITIAL rests on nothing a run decided: attested, no prefix.
+        boolean initial = write != null && write.initial();
+        boolean attested = initial || attested(session, producer);
         // The prefix: only decisions taken before the delivery.
-        List<String> pi = attested
-                ? pathCondition(decisions, deliveredAt)
+        List<String> pi = attested && !initial
+                ? pathCondition(rows.decisionsOf(session, producer),
+                deliveredAt)
                 : new ArrayList<String>();
         Set<String> symbols = symbolsByExpression.computeIfAbsent(
                 session + " " + expressionRef, key -> {
@@ -607,7 +735,7 @@ public final class Arms {
             }
         }
         return new Arm(slotId, symbol, session, producer, deliveredAt,
-                attested ? rows.pathIdOf(session, producer) : "",
+                attested && !initial ? rows.pathIdOf(session, producer) : "",
                 expressionRef, pi, guard, guardMints, attested, nested,
                 write, export, attach);
     }

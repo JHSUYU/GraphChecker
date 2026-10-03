@@ -3,7 +3,8 @@ package edu.uva.liftlab.graphchecker.contract;
 /**
  * CONTRACT-SPEC §2.2: one write, the producer half of a STATE interaction.
  * {@code version} joins reads within a run; across runs the endpoint is the
- * identity (CONTRACT-SPEC §1).
+ * identity (CONTRACT-SPEC §1).  A location's INITIAL version is a row too
+ * ({@link #initial}): Writers_W(l)'s writer at version 0.
  */
 public final class WriteRow extends Value {
     private final String sessionId;
@@ -15,11 +16,12 @@ public final class WriteRow extends Value {
     private final String javaType;
     private final Referent referentState;
     private final String referentStateRefused;
+    private final boolean initial;
 
     private WriteRow(String sessionId, long seq, Endpoint endpoint,
                      LocationId location, long version, String expressionRef,
                      String javaType, Referent referentState,
-                     String referentStateRefused) {
+                     String referentStateRefused, boolean initial) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.endpoint = endpoint;
@@ -29,6 +31,7 @@ public final class WriteRow extends Value {
         this.javaType = javaType;
         this.referentState = referentState;
         this.referentStateRefused = referentStateRefused;
+        this.initial = initial;
     }
 
     public static WriteRow of(String sessionId, long seq, Endpoint endpoint,
@@ -36,6 +39,19 @@ public final class WriteRow extends Value {
                               String expressionRef, String javaType) {
         return of(sessionId, seq, endpoint, location, version, expressionRef,
                 javaType, null, null);
+    }
+
+    /** A location's INITIAL version ({@link #initial}), placed where an
+     *  access first observed it. */
+    public static WriteRow initial(String sessionId, long seq,
+                                   Endpoint endpoint, LocationId location,
+                                   long version, String expressionRef,
+                                   String javaType) {
+        WriteRow row = of(sessionId, seq, endpoint, location, version,
+                expressionRef, javaType);
+        return new WriteRow(row.sessionId, row.seq, row.endpoint,
+                row.location, row.version, row.expressionRef, row.javaType,
+                null, null, true);
     }
 
     /** The same write of a reference, stating the state of the container
@@ -55,7 +71,8 @@ public final class WriteRow extends Value {
                 Fields.required(endpoint, "endpoint"),
                 Fields.required(location, "location"), version,
                 Fields.required(expressionRef, "expressionRef"),
-                Fields.text(javaType, "javaType"), referentState, refused);
+                Fields.text(javaType, "javaType"), referentState, refused,
+                false);
     }
 
     public String sessionId() {
@@ -105,16 +122,30 @@ public final class WriteRow extends Value {
         return referentStateRefused;
     }
 
+    /**
+     * Whether this is the location's INITIAL version: what it held before
+     * every write its log names -- a constructor's or an initializer's
+     * store from before the log began, the JVM default, a container's
+     * members -- stated where an access first observed it.  No occurrence
+     * wrote it: its endpoint only places that observation, and it is no
+     * write of the endpoint's occurrence.
+     */
+    public boolean initial() {
+        return initial;
+    }
+
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, endpoint, location, version,
-                expressionRef, javaType, referentState, referentStateRefused};
+                expressionRef, javaType, referentState, referentStateRefused,
+                initial};
     }
 
     @Override
     public String toString() {
         return "WriteRow{" + sessionId + "#" + seq + " " + endpoint + " "
-                + location + " v" + version + ":" + javaType
+                + location + " v" + version + (initial ? " INITIAL" : "")
+                + ":" + javaType
                 + (referentState == null ? "" : " -> " + referentState)
                 + "}";
     }
