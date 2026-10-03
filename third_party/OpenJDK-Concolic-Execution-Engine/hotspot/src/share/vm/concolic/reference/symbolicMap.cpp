@@ -134,53 +134,82 @@ Expression *read_of(Expression *state, Expression *key, Expression *owner,
                   ContainerSupport::java_type(value, T_OBJECT));
 }
 
-// Records `READ(state, key) != null` (present) or `== null`, the presence
-// the muted body decided, in the polarity the run took.  A present key of a
-// null-free map is exactly a non-null READ; a HashMap's compute family and
-// putIfAbsent treat a null value as absent, which is the same test.
-Expression *record_presence(Expression *state, Expression *key,
-                            Expression *owner, bool present) {
-  Expression *old = read_of(state, key, owner);
-  ConcolicMngr::record_path_condition(new OpSymExpression(
-      old, SymbolExpression::get(Sym_NULL), present ? op_ne : op_eq, true));
-  return old;
+// MATCHES(state, key, expected): whether get(key) answers `expected` (NULL
+// for null) as a cell, an absent key answering null -- the test the JDK's
+// default Map methods make of the value there (`get(k) == null`,
+// `Objects.equals(get(k), v)`).  The caller states what the muted body
+// found, when it knows.
+Expression *matches(Expression *state, Expression *key, Expression *expected,
+                    Expression *owner) {
+  exp_list_t arguments;
+  arguments.push_back(key);
+  arguments.push_back(expected == NULL ? SymbolExpression::get(Sym_NULL)
+                                       : expected);
+  return relation("MATCHES", state, arguments, owner, T_BOOLEAN);
 }
 
-// Records `READ(state, key) == expected` or `!=`, as the body decided it,
-// and answers the equality.
-Expression *record_match(Expression *state, Expression *key,
-                         Expression *expected, Expression *owner,
-                         bool matched) {
-  Expression *read = read_of(state, key, owner);
-  Expression *equal = new OpSymExpression(read, expected, op_eq, true);
-  ConcolicMngr::record_path_condition(
-      matched ? equal : new OpSymExpression(read, expected, op_ne, true));
-  return equal;
+// CONTAINS(state, key), whether `key` is a key.
+Expression *contains(Expression *state, Expression *key, Expression *owner) {
+  exp_list_t arguments;
+  arguments.push_back(key);
+  return relation("CONTAINS", state, arguments, owner, T_BOOLEAN);
 }
 
-Expression *publish(oop container, const char *operation, Expression *state,
-                    const exp_list_t &arguments, Expression *owner,
-                    Expression *guard = NULL) {
-  Expression *next = relation(operation, state, arguments, owner, T_OBJECT,
-                              std::string(), guard);
+// `next` as the map's state, a version labelled `label`.
+Expression *install(oop container, Expression *next, const char *label) {
   ConcolicMngr::ctx->set_container_state(container, next);
-  ContainerSupport::publish_state(container, next, operation);
+  ContainerSupport::publish_state(container, next, label);
   return next;
 }
 
-Expression *put(oop container, Expression *state, Expression *key,
-                Expression *value, Expression *owner) {
+// One mutation of the map, unconditional when `guard` is NULL: a version.
+Expression *publish(oop container, const char *operation, Expression *state,
+                    const exp_list_t &arguments, Expression *owner,
+                    Expression *guard = NULL) {
+  return install(container, relation(operation, state, arguments, owner,
+                                     T_OBJECT, std::string(), guard),
+                 operation);
+}
+
+// PUT, or PUT_IF under `guard`, of one key's state: the relation, built
+// over `state`; publish() makes one a version.
+Expression *put_of(Expression *state, Expression *key, Expression *value,
+                   Expression *owner, Expression *guard = NULL) {
   exp_list_t arguments;
   arguments.push_back(key);
   arguments.push_back(value);
-  return publish(container, "PUT", state, arguments, owner);
+  return relation(guard == NULL ? "PUT" : "PUT_IF", state, arguments, owner,
+                  T_OBJECT, std::string(), guard);
+}
+
+Expression *put(oop container, Expression *state, Expression *key,
+                Expression *value, Expression *owner,
+                Expression *guard = NULL) {
+  exp_list_t arguments;
+  arguments.push_back(key);
+  arguments.push_back(value);
+  return publish(container, guard == NULL ? "PUT" : "PUT_IF", state,
+                 arguments, owner, guard);
 }
 
 Expression *remove(oop container, Expression *state, Expression *key,
-                   Expression *owner) {
+                   Expression *owner, Expression *guard = NULL) {
   exp_list_t arguments;
   arguments.push_back(key);
-  return publish(container, "REMOVE", state, arguments, owner);
+  return publish(container, guard == NULL ? "REMOVE" : "REMOVE_IF", state,
+                 arguments, owner, guard);
+}
+
+// The state as it is, holding only where the run's own `decision` does: the
+// arm a muted body took whose other arm runs a callback this run never ran,
+// so what it would have stored is unknown.  Named (CONTAINER_PINNED), since
+// it cuts the other arm rather than stating it.
+Expression *pinned(Expression *state, Expression *decision, Expression *owner,
+                   const std::string &method) {
+  ConcolicMngr::ctx->note_model_gap("CONTAINER_PINNED:" + method);
+  exp_list_t none;
+  return relation("PIN", state, none, owner, T_OBJECT, std::string(),
+                  decision);
 }
 
 // Records `REMOVE_IF(prev_state, key) under guard` as a new version of the
@@ -513,12 +542,8 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
         }
         // The removal condition: true where the predicate answered true.
         Expression *guard = visit.truth();
-        if (guard != NULL) {
-          exp_list_t key;
-          key.push_back(visit.key);
-          state = publish(container, "REMOVE_IF", state, key, owner, guard);
-        } else if ((visit.returned_int & 1) != 0) {
-          state = remove(container, state, visit.key, owner);
+        if (guard != NULL || (visit.returned_int & 1) != 0) {
+          state = remove(container, state, visit.key, owner, guard);
         }
       }
       return NULL;
@@ -526,24 +551,6 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *key = arguments[0];
     const bool called = !callbacks.empty();
     const CallbackResult result = called ? callbacks[0] : CallbackResult();
-    if (method == "computeIfAbsent") {
-      // Called exactly when the key was absent; a null result maps nothing.
-      Expression *old = record_presence(state, key, owner, !called);
-      if (!called) return old;
-      if (result.returned_null) return result.result;
-      put(container, state, key, result.result, owner);
-      return result.result;
-    }
-    if (method == "computeIfPresent") {
-      record_presence(state, key, owner, called);
-      if (!called) return SymbolExpression::get(Sym_NULL);
-      if (result.returned_null) {
-        remove(container, state, key, owner);
-      } else {
-        put(container, state, key, result.result, owner);
-      }
-      return result.result;
-    }
     if (method == "compute") {
       if (!called) return NULL;
       if (result.returned_null) {
@@ -553,18 +560,48 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
       }
       return result.result;
     }
-    // merge: the callback runs exactly when an old value was there.
-    record_presence(state, key, owner, called);
-    if (!called) {
-      put(container, state, key, arguments[1], owner);
-      return arguments[1];
-    }
-    if (result.returned_null) {
-      remove(container, state, key, owner);
+    // The rest run their callback by the value at the key, the test the
+    // muted body made: computeIfAbsent where get(k) is null, computeIfPresent
+    // and merge where it is not.  What a callback that ran stored is guarded
+    // by that test, so another state undoes it; an arm whose callback did
+    // not run is pinned.  Each answers get(k) as the call left it.
+    Expression *absent = matches(state, key, NULL, owner);
+    ContainerSupport::state_answer(absent,
+                                   called == (method == "computeIfAbsent"));
+    Expression *present = ContainerSupport::negation(absent);
+    if (method == "computeIfAbsent") {
+      if (!called) {
+        state = install(container, pinned(state, present, owner, method),
+                        "PIN");
+      } else if (!result.returned_null) {
+        state = put(container, state, key, result.result, owner, absent);
+      }
+    } else if (method == "computeIfPresent") {
+      if (!called) {
+        state = install(container, pinned(state, absent, owner, method),
+                        "PIN");
+      } else if (result.returned_null) {
+        state = remove(container, state, key, owner, present);
+      } else {
+        state = put(container, state, key, result.result, owner, present);
+      }
+    } else if (!called) {
+      // merge over an absent key stores its value; the callback the other
+      // arm runs is unknown.
+      state = put(container, pinned(state, absent, owner, method), key,
+                  arguments[1], owner);
     } else {
-      put(container, state, key, result.result, owner);
+      // merge over a present key: what the callback answered, and, where
+      // the key is absent instead, the value.
+      Expression *filled = put_of(state, key, arguments[1], owner, absent);
+      state = result.returned_null
+          ? remove(container, filled, key, owner, present)
+          : put(container, filled, key, result.result, owner, present);
     }
-    return result.result;
+    Expression *answer = read_of(state, key, owner,
+                                 handle.get_result<oop>(T_OBJECT));
+    ContainerSupport::state_result(handle, answer);
+    return answer;
   }
 
   // ---- mutators the body decides by presence or by a value match ----
@@ -601,42 +638,51 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
       }
       return NULL;
     }
-    if (method == "putIfAbsent") {
-      oop old_value = handle.get_result<oop>(T_OBJECT);
-      Expression *old = record_presence(state, arguments[0], owner,
-                                        old_value != NULL);
-      if (old_value == NULL) {
-        put(receiver_object, state, arguments[0], arguments[1], owner);
-      }
-      return old;
-    }
+    // Each decides by the key's value or membership: its mutation is
+    // guarded by that test, which a flip of the state flips, in whichever
+    // arm the run took.
     if (arguments.size() == 3 || method == "remove") {
-      // replace(k, expected, update) and remove(k, expected) answer whether
-      // the value matched.
+      // replace(k, expected, update) and remove(k, expected) act where the
+      // value at k equals `expected`, and answer whether it did.  A null
+      // `expected` matches only a key mapped to null.
       const bool matched = (handle.get_result<jint>(T_BOOLEAN) & 1) != 0;
-      Expression *equal = record_match(state, arguments[0], arguments[1],
-                                       owner, matched);
-      if (matched && method == "remove") {
-        remove(receiver_object, state, arguments[0], owner);
-      } else if (matched) {
-        put(receiver_object, state, arguments[0], arguments[2], owner);
+      Expression *equal = matches(state, arguments[0], arguments[1], owner);
+      if (arguments[1] == NULL) {
+        Expression *mapped = contains(state, arguments[0], owner);
+        if (matched) {
+          ContainerSupport::state_answer(mapped, true);
+          ContainerSupport::state_answer(equal, true);
+        }
+        equal = ContainerSupport::conjunction(mapped, equal);
+      } else {
+        ContainerSupport::state_answer(equal, matched);
+      }
+      if (method == "remove") {
+        remove(receiver_object, state, arguments[0], owner, equal);
+      } else {
+        put(receiver_object, state, arguments[0], arguments[2], owner,
+            equal);
       }
       return equal;
     }
-    // replace(k, v): replaced exactly when a mapping was there.  A HashMap
-    // that answered null may have replaced a null value.
     oop old_value = handle.get_result<oop>(T_OBJECT);
-    if (old_value == NULL && ContainerSupport::capability(receiver_object)
-                                 == ContainerSupport::CAPABILITY_HASH_MAP) {
-      ContainerSupport::abandon_state(receiver_object,
-                                      "ASSOCIATIVE_REPLACE_UNDECIDED");
-      return NULL;
+    Expression *test = NULL;
+    if (method == "putIfAbsent") {
+      // Puts where get(k) is null.
+      test = matches(state, arguments[0], NULL, owner);
+      ContainerSupport::state_answer(test, old_value == NULL);
+    } else {
+      // replace(k, v) puts where k is a key; a HashMap that answered null
+      // may have replaced a null value, so its membership is not stated.
+      test = contains(state, arguments[0], owner);
+      if (old_value != NULL || ContainerSupport::capability(receiver_object)
+                                   != ContainerSupport::CAPABILITY_HASH_MAP) {
+        ContainerSupport::state_answer(test, old_value != NULL);
+      }
     }
-    Expression *old = record_presence(state, arguments[0], owner,
-                                      old_value != NULL);
-    if (old_value != NULL) {
-      put(receiver_object, state, arguments[0], arguments[1], owner);
-    }
+    put(receiver_object, state, arguments[0], arguments[1], owner, test);
+    Expression *old = read_of(state, arguments[0], owner, old_value);
+    ContainerSupport::state_result(handle, old);
     return old;
   }
 
@@ -696,8 +742,6 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     arguments.clear();
     arguments.push_back(new ConExpression(
         ConcolicMngr::ctx->next_container_position(receiver_object)));
-    ContainerSupport::constrain_position(
-        "ASSOCIATIVE", receiver, arguments[0]);
   } else if (method == "getKey") operation = "KEY";
   else if (method == "getValue") operation = "VALUE";
 
@@ -707,14 +751,14 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     oop result = handle.get_result_type() == T_OBJECT
         ? handle.get_result<oop>(T_OBJECT) : NULL;
     Expression *old = read_of(old_state, arguments[0], owner, result);
-    ContainerSupport::constrain_result(handle, old);
+    ContainerSupport::state_result(handle, old);
     return old;
   }
   if (method == "remove" && root_map && arguments.size() == 1) {
     Expression *old = read_of(receiver, arguments[0], owner,
         handle.get_result_type() == T_OBJECT
             ? handle.get_result<oop>(T_OBJECT) : NULL);
-    ContainerSupport::constrain_result(handle, old);
+    ContainerSupport::state_result(handle, old);
     remove(receiver_object, receiver, arguments[0], owner);
     return old;
   }
@@ -827,7 +871,7 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
         ConcolicMngr::ctx->current_container_position(receiver_object)));
     Expression *result = relation("HAS_NEXT", receiver, arguments, owner,
                                   T_BOOLEAN);
-    ContainerSupport::constrain_result(handle, result);
+    ContainerSupport::state_result(handle, result);
     return result;
   }
   if (operation == NULL) return NULL;
@@ -862,8 +906,8 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
         expression_type, result_java_type, owner);
     if (bound.expression != NULL) {
       result = bound.expression;
-      // A guarded writer choice must not be constrained to the concrete value
-      // this replay happened to return; that would pin the read to one writer.
+      // A guarded writer choice states no value this replay happened to
+      // return: a pin of it would choose the read's writer.
       observation_admitted = false;
     } else if (bound.selected) {
       selected_without_value = true;
@@ -883,18 +927,10 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
       && (method == "get" || method == "getOrDefault"
           || method == "containsKey" || method == "size"
           || method == "mappingCount" || method == "isEmpty"
+          || method == "getKey" || method == "getValue"
           || (method == "next"
               && klass_is_one_of(receiver_object, SCALAR_ITERATORS)))) {
-    ContainerSupport::constrain_result(handle, result);
-  }
-  if ((method == "getKey" || method == "getValue")
-      && result_object != NULL) {
-    exp_list_t observation_arguments;
-    observation_arguments.push_back(
-        ContainerSupport::concrete_value(result_object));
-    ConcolicMngr::record_path_condition(relation(
-        method == "getKey" ? "OBSERVE_KEY" : "OBSERVE_VALUE",
-        receiver, observation_arguments, owner, T_BOOLEAN));
+    ContainerSupport::state_result(handle, result);
   }
   if (handle.get_result_type() == T_OBJECT) {
     if (result_object != NULL) {

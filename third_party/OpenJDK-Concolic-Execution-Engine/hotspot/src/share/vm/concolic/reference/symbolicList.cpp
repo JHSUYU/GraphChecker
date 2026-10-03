@@ -232,10 +232,6 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
   }
   if ((method == "add" || method == "offer") && root_container) {
     const char *operation = arguments.size() == 1 ? "APPEND" : "INSERT";
-    if (arguments.size() == 2) {
-      ContainerSupport::constrain_position(
-          "INDEXED", receiver, arguments[0], true);
-    }
     Expression *next = new ContainerExpression(
         "INDEXED", operation, receiver, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
@@ -244,8 +240,6 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
         ? (Expression *)new ConExpression((jboolean)true) : NULL;
   }
   if (method == "set" && root_container && arguments.size() == 2) {
-    ContainerSupport::constrain_position(
-        "INDEXED", receiver, arguments[0]);
     exp_list_t index;
     index.push_back(arguments[0]);
     oop result_object = handle.get_result_type() == T_OBJECT
@@ -256,7 +250,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
             result_object, handle.get_result_type()),
         ContainerSupport::java_type(
             result_object, handle.get_result_type()));
-    ContainerSupport::constrain_result(handle, old);
+    ContainerSupport::state_result(handle, old);
     ContainerSupport::attach_result(result_object, old);
     Expression *next = new ContainerExpression(
         "INDEXED", "WRITE", receiver, arguments);
@@ -269,8 +263,6 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     const char *signature =
         handle.get_callee_method()->signature()->as_C_string();
     if (signature != NULL && signature[0] == '(' && signature[1] == 'I') {
-      ContainerSupport::constrain_position(
-          "INDEXED", receiver, arguments[0]);
       oop result_object = handle.get_result_type() == T_OBJECT
           ? handle.get_result<oop>(T_OBJECT) : NULL;
       Expression *old = new ContainerExpression(
@@ -279,7 +271,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
               result_object, handle.get_result_type()),
           ContainerSupport::java_type(
               result_object, handle.get_result_type()));
-      ContainerSupport::constrain_result(handle, old);
+      ContainerSupport::state_result(handle, old);
       ContainerSupport::attach_result(result_object, old);
       Expression *next = new ContainerExpression(
           "INDEXED", "REMOVE", receiver, arguments);
@@ -299,28 +291,26 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
       || (method == "remove" && arguments.empty()))) {
     oop result_object = handle.get_result_type() == T_OBJECT
         ? handle.get_result<oop>(T_OBJECT) : NULL;
-    if (method == "poll" && result_object == NULL) {
-      exp_list_t no_arguments;
-      ConcolicMngr::record_path_condition(new ContainerExpression(
-          "INDEXED", "IS_EMPTY", receiver, no_arguments, T_BOOLEAN));
-      return SymbolExpression::get(Sym_NULL);
-    }
+    // poll() answers the head or null and removes the head where there is
+    // one -- PEEK and POLL, whose emptiness test is their own, so another
+    // state flips both; remove() throws on an empty queue, so its head is a
+    // member: READ and REMOVE at 0.
+    const bool poll = method == "poll";
     exp_list_t first;
-    first.push_back(new ConExpression((jint)0));
-    ContainerSupport::constrain_position(
-        "INDEXED", receiver, first[0]);
+    if (!poll) first.push_back(new ConExpression((jint)0));
     Expression *old = new ContainerExpression(
-        "INDEXED", "READ", receiver, first,
+        "INDEXED", poll ? "PEEK" : "READ", receiver, first,
         ContainerSupport::result_type(
             result_object, handle.get_result_type()),
         ContainerSupport::java_type(
             result_object, handle.get_result_type()));
-    ContainerSupport::constrain_result(handle, old);
+    ContainerSupport::state_result(handle, old);
     ContainerSupport::attach_result(result_object, old);
     Expression *next = new ContainerExpression(
-        "INDEXED", "REMOVE", receiver, first);
+        "INDEXED", poll ? "POLL" : "REMOVE", receiver, first);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
-    ContainerSupport::publish_state(receiver_object, next, "REMOVE");
+    ContainerSupport::publish_state(receiver_object, next,
+                                    poll ? "POLL" : "REMOVE");
     return old;
   }
   if (method == "clear" && root_container) {
@@ -381,18 +371,10 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     return NULL;
   }
 
-  if ((method == "peek" || method == "element")
-      && arguments.empty()) {
-    if (method == "peek" && handle.get_result_type() == T_OBJECT
-        && handle.get_result<oop>(T_OBJECT) == NULL) {
-      exp_list_t no_arguments;
-      ConcolicMngr::record_path_condition(new ContainerExpression(
-          "INDEXED", "IS_EMPTY", receiver, no_arguments, T_BOOLEAN));
-      return SymbolExpression::get(Sym_NULL);
-    }
+  // element() throws on an empty queue, so its head is a member: READ at 0.
+  // peek() is PEEK, the head or null.
+  if (method == "element" && arguments.empty()) {
     arguments.push_back(new ConExpression((jint)0));
-    ContainerSupport::constrain_position(
-        "INDEXED", receiver, arguments[0]);
   }
   if (method == "remove" && !root_container) {
     ContainerSupport::abandon_state(receiver_object,
@@ -404,22 +386,20 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
         ConcolicMngr::ctx->current_container_position(receiver_object)));
     Expression *result = new ContainerExpression(
         "INDEXED", "HAS_NEXT", receiver, arguments, T_BOOLEAN);
-    ContainerSupport::constrain_result(handle, result);
+    ContainerSupport::state_result(handle, result);
     return result;
   }
   if (method == "nextIndex" && arguments.empty()) {
-    Expression *result = new ConExpression((jint)
+    return new ConExpression((jint)
         ConcolicMngr::ctx->current_container_index(receiver_object));
-    ContainerSupport::constrain_result(handle, result);
-    return result;
   }
   if (method == "listIterator" && !arguments.empty()) {
     ContainerSupport::abandon_state(handle.get_param<oop>(0),
         "INDEXED_LIST_ITERATOR_OFFSET_UNSUPPORTED");
     return NULL;
   }
-  const char *operation = method == "get"
-          || method == "peek" || method == "element" ? "READ"
+  const char *operation = method == "get" || method == "element" ? "READ"
+      : method == "peek" ? "PEEK"
       : method == "contains" ? "CONTAINS"
       : method == "size" ? "SIZE"
       : method == "isEmpty" ? "IS_EMPTY"
@@ -430,11 +410,6 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     arguments.clear();
     arguments.push_back(new ConExpression(
         ConcolicMngr::ctx->next_container_position(receiver_object)));
-    ContainerSupport::constrain_position(
-        "INDEXED", receiver, arguments[0]);
-  } else if (method == "get" && arguments.size() == 1) {
-    ContainerSupport::constrain_position(
-        "INDEXED", receiver, arguments[0]);
   }
   oop result_object = handle.get_result_type() == T_OBJECT
       ? handle.get_result<oop>(T_OBJECT) : NULL;
@@ -463,8 +438,8 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
         result_type, result_java_type);
     if (bound.expression != NULL) {
       result = bound.expression;
-      // A guarded writer choice must not be constrained to the concrete value
-      // this replay happened to return; that would pin the read to one writer.
+      // A guarded writer choice states no value this replay happened to
+      // return: a pin of it would choose the read's writer.
       observation_admitted = false;
     } else if (bound.selected) {
       selected_without_value = true;
@@ -478,7 +453,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
   if (result == NULL) return NULL;
   if (observation_admitted
       && method != "iterator" && method != "listIterator") {
-    ContainerSupport::constrain_result(handle, result);
+    ContainerSupport::state_result(handle, result);
   }
   if (result_object != NULL) {
     ContainerSupport::attach_result(result_object, result,

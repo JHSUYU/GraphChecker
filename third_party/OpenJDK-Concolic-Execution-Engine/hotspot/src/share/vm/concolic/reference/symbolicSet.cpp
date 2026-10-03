@@ -83,11 +83,17 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
     arguments.push_back(parameters[index]);
   }
   if (method == "add" && arguments.size() == 1) {
+    // add answers whether the member was absent, and puts it only there: a
+    // hash set's member maps to true, a KeySetView's to its map value, and
+    // putIfAbsent keeps the value a member already maps to.  So the PUT is
+    // guarded by that absence, which a flip of the state flips.
     exp_list_t key;
     key.push_back(arguments[0]);
     Expression *present = new ContainerExpression(
         "ASSOCIATIVE", "CONTAINS", state, key, T_BOOLEAN);
-    // A hash set's member maps to true; a KeySetView's to its map value.
+    const bool added = (handle.get_result<jint>(T_BOOLEAN) & 1) != 0;
+    ContainerSupport::state_answer(present, !added);
+    Expression *absent = ContainerSupport::negation(present);
     oop mapped = ContainerSupport::capability(receiver_object)
         == ContainerSupport::CAPABILITY_HASH_SET ? (oop) NULL
         : OopUtils::obj_field_by_name(receiver_object, "value",
@@ -96,22 +102,20 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
         ? static_cast<Expression *>(new ConExpression((jboolean)true))
         : ContainerSupport::concrete_value(mapped));
     Expression *next = new ContainerExpression(
-        "ASSOCIATIVE", "PUT", state, arguments);
+        "ASSOCIATIVE", "PUT_IF", state, arguments, T_OBJECT, std::string(),
+        absent);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
     ContainerSupport::publish_state(receiver_object, next, "ADD");
-    Expression *result = new OpSymExpression(
-        present, new ConExpression((jboolean)false), op_eq);
-    ContainerSupport::constrain_result(handle, result);
-    return result;
+    return absent;
   }
   if (method == "remove" && arguments.size() == 1) {
     Expression *present = new ContainerExpression(
         "ASSOCIATIVE", "CONTAINS", state, arguments, T_BOOLEAN);
+    ContainerSupport::state_result(handle, present);
     Expression *next = new ContainerExpression(
         "ASSOCIATIVE", "REMOVE", state, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
     ContainerSupport::publish_state(receiver_object, next, "REMOVE");
-    ContainerSupport::constrain_result(handle, present);
     return present;
   }
   if (method == "clear") {
@@ -142,7 +146,7 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
         "ASSOCIATIVE", operation, state, arguments,
         handle.get_result_type());
     if (method != "iterator") {
-      ContainerSupport::constrain_result(handle, result);
+      ContainerSupport::state_result(handle, result);
     }
   }
   if (handle.get_result_type() == T_OBJECT) {

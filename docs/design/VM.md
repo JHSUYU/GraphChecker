@@ -55,8 +55,9 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   expression is allocated in one session arena (`VM/concolic/globalSymbolicSession.cpp`) and freed
   at close; one event clock numbers versions, reads and region entries (`currentSymbolicEventId`).
 - **Regions.** `startConcolicRegion` / `finishConcolicRegion` bracket one activation on one thread;
-  each region frame owns its guard, auxiliary conditions and branch events
-  (`VM/concolic/threadContext.cpp`). Nothing is recorded in a region until it reads something
+  each region frame owns its guard and branch events (`VM/concolic/threadContext.cpp`); the path
+  holds a marked branch's conditions and nothing else -- a model states what it chose and what it
+  observed on the nodes it builds (§6, the pin/guard discipline). Nothing is recorded in a region until it reads something
   symbolic (the admission gate); `observeField`, every mint, a getfield that yields an expression,
   and a modeled call whose value operand (a String, a box or a StringBuilder) carries its own
   expression (one a decode minted, `MethodSymbolizerHandle::general_check_param_symbolized`) open
@@ -160,11 +161,11 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | `StringBuilder` (and its `AbstractStringBuilder` methods) | `append` (as concat; `append(CharSequence, start, end)` of a String or builder as a concat with its `substring` of `[start, end)`, of a `char[]` or another `CharSequence` with no expression of its own as a concat with the text it appended, of one with an expression as a concat with a named `unsupportedCharArrayRange`/`unsupportedCharSequenceRange` over it), `toString`, `length`; `insert delete deleteCharAt replace setCharAt setLength` as a concat of substrings of the content (an operand's slot shadow first) | `reverse`, `appendCodePoint` and a padding `setLength` drop the expression (the next use states the concrete content); `StringBuffer` |
 | boxing `valueOf`, `new X(v)` for `Boolean Byte Character Short Integer Long` | the value on the result slot, and on the returned object unless it is JVM-wide | `Float`/`Double.valueOf`. This JDK's `Integer/Long/Short/Byte/Boolean.valueOf` box afresh; `Character.valueOf` caches 0..127 |
 | decimal and boolean renderings: `Byte/Short/Integer/Long/Boolean.toString` (static of the class's own primitive, and the instance form), `String.valueOf` of an `int`, `long` or `boolean` or of such a box | one `toString` op of the value (`StringBuilder.append` wraps every primitive in the same op) | radix and hexadecimal conversions and char or floating renderings become a named `unsupportedPrimitiveStringConversion:` operation; `String.valueOf` of a char, float, double or other object stays a `valueOf` op |
-| `Integer.parseInt`, `Long.parseLong` | a method-return symbol stating its concrete value and its call (holder, name, descriptor, argument expressions), plus a `MethodExpression` condition | |
+| `Integer.parseInt`, `Long.parseLong` | a method-return symbol stating its concrete value and its call (holder, name, descriptor, argument expressions) | |
 | `BigDecimal` | 8 signatures | `<init>(double)`, `<init>(String)` mint symbols unrelated to the argument; `BigInteger` |
-| `AtomicInteger`, `AtomicLong` | `getAndIncrement getAndDecrement incrementAndGet decrementAndGet getAndAdd addAndGet compareAndSet weakCompareAndSet`, when the receiver is shadowed: the model states `new = old op delta` (or the CAS's expect/update) as an intent, and the compare-and-swap that performs it reads `old` at the word it compared and publishes the RMW version, in one critical section; a failed CAS reads the word it lost to | `set` is a putfield; `lazySet`, `getAndSet`, `AtomicReference`/`AtomicBoolean` (`value` observed on the atomic; `get`/`set` are a getfield/putfield, a CAS decides over the value it compared), field updaters are versioned as Unsafe writes with their captured operands, not modeled; `accumulate*`, `LongAdder`, atomic arrays |
-| maps by the Map contract: `HashMap`, `LinkedHashMap` (insertion order), `ConcurrentHashMap`, `Hashtable` (views, iterators, entries, a map view's `Collection.removeIf`) | `put get getOrDefault remove containsKey isEmpty clear size mappingCount entrySet keySet values iterator hasNext next getKey getValue`, conditional removal; `putAll` (a tracked source as `PUT_ALL` of its state read, else one `PUT` per entry); `putIfAbsent`, `replace`, `remove(k, v)`: the presence or match the body decided as a path condition, then `PUT`/`REMOVE`; `computeIfAbsent computeIfPresent compute merge`: presence, then the callback's result stored (`PUT`, or `REMOVE` for null); `replaceAll`, `forEach`; key and entry views' `removeIf` (`REMOVE_IF` under the predicate) | `Entry.setValue` abandons the entry; `values().removeIf` (`ASSOCIATIVE_VALUES_REMOVE_IF_UNMODELED`); a HashMap `replace(k, v)` that answered null (`ASSOCIATIVE_REPLACE_UNDECIDED`); `ConcurrentHashMap`'s bulk parallel operations |
-| `ArrayList`, `ArrayDeque`, `AbstractList` iterators | list and deque operations | `removeIf` abandons |
+| `AtomicInteger`, `AtomicLong` | `getAndIncrement getAndDecrement incrementAndGet decrementAndGet getAndAdd addAndGet compareAndSet weakCompareAndSet`, when the receiver is shadowed: the model states `new = old op delta` (or the CAS's expect/update) as an intent, and the compare-and-swap that performs it reads `old` at the word it compared and publishes the RMW version, in one critical section; a failed CAS reads the word it lost to | `set` is a putfield; `lazySet`, `getAndSet`, `AtomicReference`/`AtomicBoolean` (`value` observed on the atomic; `get`/`set` are a getfield/putfield, a CAS answers `old == expected` over the value it compared as its result), field updaters are versioned as Unsafe writes with their captured operands, not modeled; `accumulate*`, `LongAdder`, atomic arrays |
+| maps by the Map contract: `HashMap`, `LinkedHashMap` (insertion order), `ConcurrentHashMap`, `Hashtable` (views, iterators, entries, a map view's `Collection.removeIf`) | `put get getOrDefault remove containsKey isEmpty clear size mappingCount entrySet keySet values iterator hasNext next getKey getValue`, conditional removal; `putAll` (a tracked source as `PUT_ALL` of its state read, else one `PUT` per entry); `putIfAbsent`, `replace`, `remove(k, v)`: `PUT_IF`/`REMOVE_IF` under the test the body made (§6); `computeIfAbsent computeIfPresent merge`: the callback's result stored under the test that ran it, an arm whose callback did not run pinned; `compute`: the callback's result stored (`PUT`, or `REMOVE` for null); `replaceAll`, `forEach`; key and entry views' `removeIf` (`REMOVE_IF` under the predicate) | `Entry.setValue` abandons the entry; `values().removeIf` (`ASSOCIATIVE_VALUES_REMOVE_IF_UNMODELED`); `ConcurrentHashMap`'s bulk parallel operations |
+| `ArrayList`, `ArrayDeque`, `AbstractList` iterators | list and deque operations; `peek`/`poll` as `PEEK`/`POLL` (§6) | `removeIf` abandons |
 | `HashSet`, `LinkedHashSet`, `ConcurrentHashMap`'s `KeySetView` (its map's location) | set operations | a hash set's reads are not bound to versions |
 | `java.util.stream` sequential pipelines from `Collection.stream()` of a modeled container (a list, a deque, a hash set, a key/entry/values view, an unmodifiable map's entry set) | `filter map limit sorted distinct unordered`; `collect(Collectors.toList()/toSet())`, `toArray`, `count`, `anyMatch allMatch noneMatch` stated as relations; `findFirst findAny forEach forEachOrdered` run on the run's values (below) | `skip peek flatMap* mapTo* reduce min max iterator spliterator parallel`, `collect` with any other collector, `parallelStream()`, and every pipeline over another source (`Arrays.stream`, `Stream.of`, `IntStream`) run as bytecode |
 | commons-lang 2 and Spring `StringUtils` | `isNotBlank`, `isEmpty` | commons-lang3 |
@@ -368,16 +369,49 @@ its map through its own untracked field, so a query through it carries no owner;
 `referentState` then names a container that is not the stored object.
 
 **Map operations beyond get/put.** `READ_OR_DEFAULT [k, d]` (`getOrDefault`), `PUT_ALL [source
-state]`, and `ENTRY [k]` -- the entry of key `k` a view's callback visits, whose `getKey`/`getValue`
-answer `k` and `READ(state, k)`. The presence or match a conditional mutator decided is a path
-condition over the pre-state (`READ(s, k) == null` / `!= null`, `READ(s, k) == expected` / `!=`) in
-the polarity the run took, followed by an ordinary `PUT`/`REMOVE` version or none.
+state]`, `ENTRY [k]` -- the entry of key `k` a view's callback visits, whose `getKey`/`getValue`
+answer `k` and `READ(state, k)` -- and `MATCHES [k, e]`: whether the value at `k`, null where `k` is
+absent, is the cell `e` (the test the JDK's default Map methods make, `get(k) == null`,
+`Objects.equals(get(k), e)`). A queue's `PEEK` is its head or null, and `POLL` the queue without its
+head where it has one.
+
+**The pin/guard discipline.** A model records no condition (a summary states no condition but a
+marked branch's, `VM/concolic/threadContext.cpp`): what it decided and what it observed are
+stated on the nodes it builds, and COMPOSE decides what holds (PIPELINE §8).
+
+- A CHOICE a muted body made by the value at a key, a membership or an emptiness is the guard of
+  the mutation it made, whichever arm the run took, so another state flips the effect:
+  `putIfAbsent` is `PUT_IF` under `MATCHES [k, null]`, `replace(k, v)` under `CONTAINS [k]`,
+  `replace(k, e, u)` and `remove(k, e)` `PUT_IF`/`REMOVE_IF` under `MATCHES [k, e]` (and `CONTAINS`
+  for a null `e`); `computeIfAbsent` stores what its callback answered (`PUT_IF`) under `MATCHES
+  [k, null]`, `computeIfPresent` (`PUT_IF`, or `REMOVE_IF` for null) and `merge` (the callback's
+  result under the key's presence over the value under its absence) under its negation; a set's
+  `add` is `PUT_IF` under the member's absence; `poll()` is `PEEK` and `POLL`, whose emptiness test
+  is their own. An arm whose callback did not run -- `computeIfAbsent` over a present key,
+  `computeIfPresent` and `merge` over an absent one -- cannot be stated, since what the callback
+  would have stored is unknown: it is a `PIN` of the run's arm, named `CONTAINER_PINNED:<method>`
+  in the region's `modelGaps`. A compute-family call answers `get(k)` as it left the map.
+- A FACT the run observed that the chain may not decide is stated on its node as `concreteValue`
+  (`ReturnedValue`) with a session-unique `answer` id (`ContainerExpression::state_returned`):
+  what a query answered (`get`, `getOrDefault`, `containsKey`, `size`, `isEmpty`, `hasNext`, a
+  scalar iterator's `next`, an entry's key or value, a list's `get`/`set`/`remove`, a set's
+  `contains`/`add`/`remove`, `peek`/`poll`), what the test of a choice found, and an element of an
+  array whose elements are the heap's (a named shadow) at a position the chain does not decide
+  (`ContainerSupport::element_read`; an array whose elements are an input states none: its `READ`
+  is the input). A query bound to a version (`ContainerSupport::query_state`'s read-from) states
+  none: a pin would choose its writer.
+- A relation already on a node has no copy: a method-return symbol states its call; the codec
+  requires a position or an entry a member; a captured compare-and-swap's `old == expected` is the
+  result of the native it ran in (`UnsafeAccess::take_result`, read at that native's finish), which
+  a branch on it decides; a field mint is its version and its shadow.
 
 **Stream results** (§4). `APPEND_IF [v]` and `PUT_IF [k, v]` carry the `guard` they hold under;
 `PIN` (no arguments, either shape) is its receiver's state where its `guard` holds. A version a
-stream published is `STATE_COLLECT`. The VM's own chain readers (`ContainerSupport::position_answer`,
-`entry_answer`, `undo_indexed_history`, `snapshot_entry_count`) decide nothing across them: the
-member is a `READ`.
+stream published is `STATE_COLLECT`; a map's is `STATE_PUT_IF` or `STATE_PIN`, a queue's
+`STATE_POLL`. Of the VM's own chain readers, `ContainerSupport::position_answer` looks through a
+`PIN` and replays a `POLL`, and `entry_answer` looks through a `PIN` and past a guarded mutation of
+another key; across anything else they, `undo_indexed_history` and `snapshot_entry_count` decide
+nothing: the member is a `READ`.
 
 **Array reads over recorded writes.** The writes at concrete positions of one array chain share
 one index of what was stored where, and what each left in the heap (`ElementWrites`,
@@ -479,8 +513,11 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
 - A read node states `observedExact`, `writerSetComplete`, `unnamedWriter` (only when true) and
   `concreteValue` (a String past 4 KB
   as `{"_type":"TruncatedValue","length":n}`); a method-return symbol states `concreteValue` and
-  `call: {holder, name, descriptor, arguments}`.
-- A region's summary (`finishConcolicRegion`) states its `modelGaps`: `{name, site}` per call a
+  `call: {holder, name, descriptor, arguments}`; a container query its chain may not decide
+  states `concreteValue` and `answer` (§6).
+- A region's summary (`finishConcolicRegion`) states no condition (`pathConditionAuthority`
+  `VM_SELECTED_BRANCHES_V2`: a decision is a marked branch's own conditions, read by their indices)
+  and its `modelGaps`: `{name, site}` per call a
   model ran on the run's own values though symbolic content reached it (§4: streams, application code
   a muted call with callbacks ran unhooked), once per name and site; `runtime/ConcolicRegionRuntime#modelGaps` files each as a DIAGNOSTIC `UNSTATED_VALUE`
   gap whose subject is the name.
@@ -507,14 +544,14 @@ that does not hold.
 | `Unsafe.get<Primitive>(Object, long)` | hooked (field shadow, bypassing the version log) |
 | `System.arraycopy`, `Arrays.copyOf` | hooked: element values into the destination's state (a stated word per element; past 16384 elements a shadowed destination's state is dropped and named), tracked destination elements versioned in one critical section with the copy (`VM/concolic/heapCopy.cpp`); an object copy that checks each element's store holds no lock across it: it names its tracked destination elements (`ARRAYCOPY_STORE_CHECK`, or `ARRAYCOPY_FAILED` when it will throw) |
 | `Object.clone`, array `clone()` | hooked: the clone gets its own identity and the original's field shadows or state; a tracked field takes its newest version's value when the clone holds what it wrote (its word; a reference's shadow expression), else is concrete |
-| `Unsafe` puts, CAS, `getAndAdd*`/`getAndSet*` (`ConcurrentHashMap` slots, `lazySet`, `AtomicReference`, `AtomicBoolean`, field updaters, reflective `Field.set`) on a shadowed object | hooked: versioned with the captured operand; a captured CAS records `old == expected` (or `!=`) over the value it compared; uncaptured ones detected (`UNSAFE_WRITE_UNCAPTURED`) |
+| `Unsafe` puts, CAS, `getAndAdd*`/`getAndSet*` (`ConcurrentHashMap` slots, `lazySet`, `AtomicReference`, `AtomicBoolean`, field updaters, reflective `Field.set`) on a shadowed object | hooked: versioned with the captured operand; a captured CAS answers `old == expected` over the value it compared as its native's result; uncaptured ones detected (`UNSAFE_WRITE_UNCAPTURED`) |
 | `String` and `StringBuilder`, boxing, `HashMap`/`ArrayList`/... operations, atomic RMW | modeled (§4) |
 | `Integer.parseInt`, `Long.parseLong` | detected and pinned (return symbol with its concrete value) |
 | decimal and boolean renderings (`toString`, `String.valueOf`, `append`) | modeled: one `toString` op |
 | radix, hexadecimal, char and floating renderings | detected (a named operation, not pinned) |
 | a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
 | an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
-| map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6); a callback's result and its side effects hooked |
+| map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6): a choice a guard, a callback's result and its side effects hooked; an arm whose callback did not run detected and pinned (`CONTAINER_PINNED:`) |
 | a `java.util.stream` pipeline over a modeled container | modeled (§4): its result a guarded chain, its stages' callbacks seeded; what no relation states detected and pinned (a `PIN`, or the run's result named `STREAM_PINNED:`); an unmodeled operation named and hooked as bytecode |
 | a stream over any other source, a parallel stream | hooked (bytecode); a predicate's decision inside the JDK's sink is an unmarked branch, silently lost |
 | list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
@@ -545,6 +582,9 @@ that does not hold.
 - Re-pairable state is integral, wrapper and reference fields, modeled containers and
   Unsafe-written locations. A container read states no word, so it is never exact, and an unhooked
   mutation of a container is not detected.
+- A container answer is typed by the object the run returned (`ContainerSupport::java_type`): a
+  null answer is a reference, so a witness in which the same query answers a String or a box is
+  outside its sort.
 - A write from a muted or paused thread is unhooked (detected at the next read of a word it
   changed, not attributed).
 - `symbolize` stops at depth 5; mint failures print to the console only; a null argument to a mint
@@ -560,7 +600,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 66
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 67
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -576,7 +616,8 @@ collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, 
 tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
 `RegionWrapperViewSmoke` (a view or wrapper is its container), `RegionStreamSmoke` (stream
 pipelines: filter, limit, map, an unmodifiable map's entries, count, anyMatch, a set, the pins and
-the model gaps) and
+the model gaps), `RegionModelGuardSmoke` (the pin/guard discipline, §6: each guarded choice, the
+named pins, answers stated on query and array-element nodes, nothing added to the path) and
 `RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers); the leaf natives have
 `RegionLeafBrokerSmoke` (every slot kind with and without a region, peeks that record nothing,
 templates, `SHARED`, a region-less mint reaching a later region's path through `parseLong`, and

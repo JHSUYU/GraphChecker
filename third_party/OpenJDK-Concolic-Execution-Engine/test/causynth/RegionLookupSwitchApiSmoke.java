@@ -57,7 +57,7 @@ public final class RegionLookupSwitchApiSmoke {
         String summary = System.finishConcolicRegion();
         require(summary.contains(
                 "\"pathConditionAuthority\":"
-                        + "\"VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1\""),
+                        + "\"VM_SELECTED_BRANCHES_V2\""),
                 summary);
         return new Trace(result, summary, events, path);
     }

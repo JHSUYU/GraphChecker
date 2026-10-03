@@ -4,7 +4,6 @@
 #include "concolic/unsafeAccess.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "runtime/atomic.inline.hpp"
-#include "concolic/exp/methodExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/reference/symbolicStringBuilder.hpp"
@@ -47,7 +46,7 @@ void MethodSymbolizer::init_helper_methods() {
   // formatting, encoding and output are observational side effects.  Letting
   // those implementation bodies execute concolically caused one symbolic
   // keyId to generate thousands of MessageFormatter/UTF-8 array constraints
-  // and eventually truncate the bounded auxiliary-PC envelope.  Suppress the
+  // and eventually truncate the bounded path-condition envelope.  Suppress the
   // logging implementation as one concrete subtree; business code before and
   // after the call remains fully concolic.
   add_prefix_disabled_class("org/slf4j/");
@@ -415,14 +414,17 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
     BasicType basicType = primitive_target(_handle.get_callee_holder_name());
     const std::string& callee_holder_name = _handle.get_callee_holder_name();
 
-    if (disabled_class(callee_holder_name) || !_handle.result_readable()) {
+    if (disabled_class(callee_holder_name)) {
       // An observation sink returns a concrete value.  In particular, never
-      // manufacture a MethodExpression that would reconnect a formatted log
-      // string to its symbolic application argument.  A native's primitive
-      // result cannot be read here (MethodSymbolizerHandle::result_readable),
-      // so it is concrete too: no model mints a symbol for a word it did not
-      // see.
+      // manufacture a symbol that would reconnect a formatted log string to
+      // its symbolic application argument.
       exp = NULL;
+    } else if (!_handle.result_readable()) {
+      // A native's primitive result cannot be read here
+      // (MethodSymbolizerHandle::result_readable), so no model mints a
+      // symbol for a word it did not see; a compare-and-swap states what it
+      // answered over the word it compared (UnsafeAccess::take_result).
+      exp = UnsafeAccess::take_result();
     } else if (basicType != T_ILLEGAL) {
       exp = primitive_finish_method_helper(_handle, basicType);
     } else if (_finish_helper_methods.find(callee_holder_name) != _finish_helper_methods.end()) {
@@ -483,12 +485,9 @@ MethodSymbolizer::finish_method_helper(MethodSymbolizerHandle &handle) {
       ShouldNotCallThis();
       break;
     default:
+      // States its call, which COMPOSE relates or pins.
       exp = new MethodReturnSymbolExp(handle);
   }
-
-  ConcolicMngr::record_path_condition(new MethodExpression(
-      handle.get_callee_holder_name(), handle.get_callee_name(),
-      handle.get_param_list(), exp, true));
   return exp;
 }
 
@@ -576,32 +575,6 @@ bool MethodSymbolizer::disabled_class(const std::string &class_name) const {
 
 volatile intptr_t MethodReturnSymbolExp::sym_method_count = 0;
 
-template <class T>
-static SharedFieldVersions::ConcreteBits result_as(
-    MethodSymbolizerHandle &handle, BasicType type) {
-  return SharedFieldVersions::ConcreteBits(
-      type, SharedFieldVersions::raw_bits(handle.get_result<T>(type)));
-}
-
-// The word a primitive result left, in the encoding a field's word has, so
-// that a call and a read state one constant one way.
-static SharedFieldVersions::ConcreteBits result_word(
-    MethodSymbolizerHandle &handle, BasicType type) {
-  switch (type) {
-    case T_BOOLEAN: return result_as<jboolean>(handle, type);
-    case T_BYTE:    return result_as<jbyte>(handle, type);
-    case T_CHAR:    return result_as<jchar>(handle, type);
-    case T_SHORT:   return result_as<jshort>(handle, type);
-    case T_INT:     return result_as<jint>(handle, type);
-    case T_LONG:    return result_as<jlong>(handle, type);
-    case T_FLOAT:   return result_as<jfloat>(handle, type);
-    case T_DOUBLE:  return result_as<jdouble>(handle, type);
-    default:
-      ShouldNotReachHere();
-      return SharedFieldVersions::ConcreteBits();
-  }
-}
-
 MethodReturnSymbolExp::MethodReturnSymbolExp(MethodSymbolizerHandle &handle) {
   const BasicType type = handle.get_result_type();
   char buf[BUF_SIZE];
@@ -611,9 +584,7 @@ MethodReturnSymbolExp::MethodReturnSymbolExp(MethodSymbolizerHandle &handle) {
   ss.print("return%lu", (ulong) Atomic::add_ptr(
       (intptr_t) 1, &sym_method_count) - 1);
   this->finalize(buf, ss.size());
-  _returned = SharedFieldVersions::returned_value(result_word(handle, type),
-                                                  NULL);
-  // Taken before the MethodExpression beside it consumes the list.
+  _returned = handle.returned_value();
   ResourceMark rm;
   Method *callee = handle.get_callee_method();
   _holder = handle.get_callee_holder_name();

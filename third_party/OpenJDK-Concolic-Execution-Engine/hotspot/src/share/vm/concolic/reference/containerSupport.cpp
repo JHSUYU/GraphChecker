@@ -1343,71 +1343,50 @@ Expression *ContainerSupport::semantic_value(oop value) {
       ? instance->get_ref_exp() : NULL;
 }
 
-Expression *ContainerSupport::concrete_result(
-    MethodSymbolizerHandle &handle) {
-  BasicType type = handle.get_result_type();
-  switch (type) {
-    case T_BOOLEAN:
-      return new ConExpression(
-          (jboolean)handle.get_result<jint>(T_BOOLEAN));
-    case T_BYTE:
-      return new ConExpression((jbyte)handle.get_result<jint>(T_BYTE));
-    case T_CHAR:
-      return new ConExpression((jchar)handle.get_result<jint>(T_CHAR));
-    case T_SHORT:
-      return new ConExpression((jshort)handle.get_result<jint>(T_SHORT));
-    case T_INT:
-      return new ConExpression(handle.get_result<jint>(T_INT));
-    case T_LONG:
-      return new ConExpression(handle.get_result<jlong>(T_LONG));
-    case T_FLOAT:
-      return new ConExpression(handle.get_result<jfloat>(T_FLOAT));
-    case T_DOUBLE:
-      return new ConExpression(handle.get_result<jdouble>(T_DOUBLE));
-    case T_OBJECT:
-    case T_ARRAY:
-      return concrete_value(handle.get_result<oop>(type));
-    default:
-      return NULL;
-  }
+Expression *ContainerSupport::conjunction(Expression *left,
+                                          Expression *right) {
+  if (left == NULL) return right;
+  if (right == NULL) return left;
+  return new OpSymExpression(left, right, op_land, true);
 }
 
-void ContainerSupport::constrain_result(
-    MethodSymbolizerHandle &handle, Expression *expression) {
-  if (expression == NULL) return;
-  Expression *concrete = concrete_result(handle);
-  if (concrete == NULL) return;
-  ConcolicMngr::record_path_condition(
-      new OpSymExpression(expression, concrete, op_eq, true));
+Expression *ContainerSupport::negation(Expression *condition) {
+  Expression *flipped = condition->logical_negation();
+  return flipped != NULL ? flipped
+      : static_cast<Expression *>(new OpSymExpression(
+            condition, new ConExpression((jboolean) false), op_eq, true));
 }
 
-void ContainerSupport::constrain_position(
-    const char *shape, Expression *state, Expression *position,
-    bool allow_end) {
-  if (state == NULL || position == NULL) return;
-  // A concrete position constrains nothing by itself: `k >= 0` is a constant
-  // the run already decided, and so is `k < SIZE` when the size is constant
-  // too -- a Java array's length.  hdfs-17960's FSImageSaver scanned the
-  // NameNode's inode map, a LightWeightGSet whose ~1M-bucket array an earlier
-  // region had stored into under symbolic guards, and recorded both facts
-  // per bucket: native RSS went from 300 MB to 27 GB in a minute and the
-  // kernel killed the JVM.
-  jint concrete = 0;
-  const bool constant_position = position->concrete_int_value(&concrete);
-  if (!constant_position) {
-    ConcolicMngr::record_path_condition(new OpSymExpression(
-        position, new ConExpression((jint)0), op_ge, true));
+void ContainerSupport::state_result(MethodSymbolizerHandle &handle,
+                                    Expression *answer) {
+  ContainerExpression *query =
+      answer == NULL ? NULL : answer->as_container_expression();
+  if (query == NULL || query != answer) return;
+  query->state_returned(handle.returned_value());
+}
+
+void ContainerSupport::state_answer(Expression *answer, bool truth) {
+  ContainerExpression *query =
+      answer == NULL ? NULL : answer->as_container_expression();
+  if (query == NULL || query != answer) return;
+  query->state_returned(SharedFieldVersions::returned_value(
+      SharedFieldVersions::ConcreteBits(T_BOOLEAN, truth ? 1 : 0), NULL));
+}
+
+Expression *ContainerSupport::element_read(
+    SymArr *array, Expression *state, Expression *position, BasicType type,
+    const SharedFieldVersions::ConcreteBits &word, oop element) {
+  exp_list_t index;
+  index.push_back(position);
+  ContainerExpression *read = new ContainerExpression(
+      "INDEXED", "READ", state, index, type,
+      type == T_OBJECT ? java_type(element, T_OBJECT) : std::string());
+  if (array != NULL && array->named() && !array->has_semantic_expression()) {
+    read->state_returned(type == T_OBJECT
+        ? SharedFieldVersions::returned_reference(element)
+        : SharedFieldVersions::returned_value(word, NULL));
   }
-  ContainerExpression *relation = state->as_container_expression();
-  if (constant_position && relation != NULL
-      && relation->has_constant_size()) {
-    return;
-  }
-  exp_list_t no_arguments;
-  Expression *size =
-      new ContainerExpression(shape, "SIZE", state, no_arguments, T_INT);
-  ConcolicMngr::record_path_condition(new OpSymExpression(
-      position, size, allow_end ? op_le : op_lt, true));
+  return read;
 }
 
 bool ContainerSupport::recorded_element(arrayOop heap_array, SymArr *array,
@@ -1626,20 +1605,27 @@ ContainerSupport::MemberAnswer ContainerSupport::entry_answer(
     if (operation == "SNAPSHOT_BASE" || operation == "CLEAR") {
       return MEMBER_STALE;
     }
-    const bool put = operation == "PUT" && arguments.size() == 2;
+    // A pin changes no member.
+    if (operation == "PIN") {
+      cursor = relation->get_receiver();
+      continue;
+    }
+    const bool put = (operation == "PUT" || operation == "PUT_IF")
+        && arguments.size() == 2;
     const bool removal = (operation == "REMOVE" || operation == "REMOVE_IF")
         && arguments.size() == 1;
     if (!put && !removal) return MEMBER_UNDECIDED;
     const KeyMatch match = key_match(arguments[0], key);
     if (match == KEY_UNKNOWN) return MEMBER_UNDECIDED;
     if (match == KEY_EQUAL) {
+      // A guarded mutation may not have fired, which only the READ can say.
+      if (relation->get_guard() != NULL) return MEMBER_UNDECIDED;
       if (put) {
         *stored = arguments[1];
         return *stored == NULL ? MEMBER_HEAP : MEMBER_RECORDED;
       }
-      // A recorded removal the heap's entry outlived; a guarded one may
-      // not have fired, which only the READ can say.
-      return operation == "REMOVE" ? MEMBER_STALE : MEMBER_UNDECIDED;
+      // A recorded removal the heap's entry outlived.
+      return MEMBER_STALE;
     }
     cursor = relation->get_receiver();
   }
@@ -1688,9 +1674,11 @@ ContainerSupport::MemberAnswer ContainerSupport::position_answer(
     } else if (operation == "REMOVE" && arguments.size() == 1 && positioned
                && at < count) {
       members.erase(members.begin() + at);
+    } else if (operation == "POLL" && arguments.empty()) {
+      if (!members.empty()) members.erase(members.begin());
     } else if (operation == "CLEAR" && arguments.empty()) {
       members.clear();
-    } else {
+    } else if (operation != "PIN") {
       return MEMBER_UNDECIDED;
     }
   }

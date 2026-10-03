@@ -77,6 +77,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionMapIterationOrderSmoke.java \
   test/causynth/RegionWrapperViewSmoke.java \
   test/causynth/RegionStreamSmoke.java \
+  test/causynth/RegionModelGuardSmoke.java \
   test/causynth/RegionAtomicCarrierSmoke.java \
   test/causynth/RegionRedefineOnStackSmoke.java
 
@@ -144,6 +145,7 @@ for smoke in \
   RegionMapIterationOrderSmoke \
   RegionWrapperViewSmoke \
   RegionStreamSmoke \
+  RegionModelGuardSmoke \
   RegionAtomicCarrierSmoke \
   RegionRedefineOnStackSmoke; do
   "$JDK_HOME/bin/java" -Xint -cp "$OUT" "$smoke"

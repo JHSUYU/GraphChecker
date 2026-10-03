@@ -3,7 +3,6 @@
 #include "concolic/heapCopy.hpp"
 
 #include "concolic/concolicMngr.hpp"
-#include "concolic/exp/containerExpression.hpp"
 #include "concolic/globalSymbolicSession.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicArray.hpp"
@@ -36,21 +35,9 @@ Expression *source_value(arrayOop source, SymArr *shadow, Expression *state,
                                          &value)) {
     return value;
   }
-  exp_list_t position;
-  position.push_back(new ConExpression((jint) index));
-  const BasicType type = element_type(source);
-  Expression *read = new ContainerExpression(
-      "INDEXED", "READ", state, position, type,
-      type == T_OBJECT ? ContainerSupport::java_type(element, T_OBJECT)
-                       : std::string());
-  if (shadow->get_version() == 0) {
-    // Never written: the element is the one the run holds (the aload pin).
-    ConcolicMngr::record_path_condition(new OpSymExpression(
-        read, type == T_OBJECT ? ContainerSupport::concrete_value(element)
-            : SharedFieldVersions::primitive_expression(word.type, word.bits),
-        op_eq, true));
-  }
-  return read;
+  return ContainerSupport::element_read(
+      shadow, state, new ConExpression((jint) index), element_type(source),
+      word, element);
 }
 
 SharedFieldVersions::Location element_location(arrayOop array, int index) {

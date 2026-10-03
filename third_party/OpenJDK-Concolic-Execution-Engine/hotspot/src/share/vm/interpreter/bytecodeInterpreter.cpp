@@ -2446,26 +2446,14 @@ run:
         if (!index_exp) {                                                      \
           index_exp = new ConExpression(index);                                \
         }                                                                      \
-        exp_list_t container_arguments;                                       \
-        container_arguments.push_back(index_exp);                             \
-        ContainerSupport::constrain_position(                                 \
-            "INDEXED", container_state, index_exp);                           \
-        value_exp = new ContainerExpression(                                  \
-            "INDEXED", "READ",                                               \
-            container_state,                                                   \
-            container_arguments, arrObj->klass()                              \
-                    == Universe::boolArrayKlassObj()                           \
-                ? T_BOOLEAN : T);                                              \
-        if (sym_arr->get_version() == 0) {                                    \
-          T2 concrete_value = *(T2 *)(((address)arrObj->base(T))               \
-              + index * sizeof(T2));                                           \
-          Expression *observed = arrObj->klass()                              \
-                  == Universe::boolArrayKlassObj()                             \
-              ? (Expression *)new ConExpression((jboolean)concrete_value)      \
-              : (Expression *)new ConExpression(concrete_value);               \
-          ConcolicMngr::record_path_condition(                                \
-              new OpSymExpression(value_exp, observed, op_eq, true));         \
-        }                                                                      \
+        const BasicType element_type = arrObj->klass()                        \
+            == Universe::boolArrayKlassObj() ? T_BOOLEAN : (T);                \
+        value_exp = ContainerSupport::element_read(                           \
+            sym_arr, container_state, index_exp, element_type,               \
+            SharedFieldVersions::ConcreteBits(element_type,                   \
+                SharedFieldVersions::raw_bits(*(T2 *)(((address)               \
+                    arrObj->base(T)) + index * sizeof(T2)))),                  \
+            (oop) NULL);                                                       \
       }                                                                        \
     }                                                                          \
     ConcolicMngr::ctx->set_stack_value(                                       \
@@ -2538,21 +2526,9 @@ run:
                 if (!index_exp) {
                   index_exp = new ConExpression(index);
                 }
-                exp_list_t container_arguments;
-                container_arguments.push_back(index_exp);
-                ContainerSupport::constrain_position(
-                    "INDEXED", container_state, index_exp);
-                value_exp = new ContainerExpression(
-                    "INDEXED", "READ",
-                    container_state,
-                    container_arguments, T_OBJECT,
-                    ContainerSupport::java_type(obj, T_OBJECT));
-                if (sym_arr->get_version() == 0) {
-                  ConcolicMngr::record_path_condition(
-                      new OpSymExpression(value_exp,
-                          ContainerSupport::concrete_value(obj), op_eq,
-                          true));
-                }
+                value_exp = ContainerSupport::element_read(
+                    sym_arr, container_state, index_exp, T_OBJECT,
+                    SharedFieldVersions::ConcreteBits(), obj);
                 value_exp->set_java_code_position(
                     ConcolicMngr::ctx->get_current_code_pos());
               }
@@ -2680,8 +2656,6 @@ run:
       container_arguments.push_back(value_exp);                               \
       Expression *container_state =                                           \
           ConcolicMngr::ctx->container_state(arrObj, "INDEXED");              \
-      ContainerSupport::constrain_position(                                   \
-          "INDEXED", container_state, index_exp);                             \
       Expression *next_container_state = new ContainerExpression(             \
           "INDEXED", "WRITE",                                                \
           container_state,                                                     \
@@ -2804,8 +2778,6 @@ run:
               container_arguments.push_back(value_exp);
               Expression *container_state =
                   ConcolicMngr::ctx->container_state(arrObj, "INDEXED");
-              ContainerSupport::constrain_position(
-                  "INDEXED", container_state, index_exp);
               ConcolicMngr::ctx->set_container_state(
                   arrObj, new ContainerExpression(
                       "INDEXED", "WRITE", container_state,

@@ -372,6 +372,12 @@ public final class SmtLowering {
      */
     private Set<JsonElement> still = identities();
     /**
+     * What {@link ContainerSmtCodec}'s walk found of each chain node of this
+     * conjunction: whether it stands on a stated base.  A chain resolves
+     * through the open join, so the answer is the conjunction's.
+     */
+    private Map<JsonElement, Boolean> statedBases = statedBases();
+    /**
      * THE FRAMES, innermost last (null while one raised nothing): what each
      * lowering in progress raised ({@link Raised}).  Anything is raised into
      * the innermost only, and reaches the one enclosing it only when
@@ -771,7 +777,8 @@ public final class SmtLowering {
         // NESTED, not replaced: an arm is lowered in its producer's scope
         // mid-path; overwriting the path's frame would leave the rest of the
         // path with no join, no table and no refusal sink.
-        frames.push(new Frame(open, scope, join, openTable, memo, still));
+        frames.push(new Frame(open, scope, join, openTable, memo, still,
+                statedBases));
         this.open = new Raised();
         raising.add(open);
         this.scope = sessionId;
@@ -779,11 +786,16 @@ public final class SmtLowering {
         this.openTable = expressions;
         this.memo = new HashMap<MemoKey, Attempt<?>>();
         this.still = identities();
+        this.statedBases = statedBases();
     }
 
     private static Set<JsonElement> identities() {
         return Collections.newSetFromMap(
                 new IdentityHashMap<JsonElement, Boolean>());
+    }
+
+    private static Map<JsonElement, Boolean> statedBases() {
+        return new IdentityHashMap<JsonElement, Boolean>();
     }
 
     /**
@@ -802,6 +814,7 @@ public final class SmtLowering {
         openTable = previous.table;
         memo = previous.memo;
         still = previous.still;
+        statedBases = previous.statedBases;
         top().gaps(closed);
         return new ArrayList<String>(closed.conditions);
     }
@@ -814,16 +827,19 @@ public final class SmtLowering {
         private final ExpressionTable table;
         private final Map<MemoKey, Attempt<?>> memo;
         private final Set<JsonElement> still;
+        private final Map<JsonElement, Boolean> statedBases;
 
         private Frame(Raised open, String scope, SessionJoin join,
                       ExpressionTable table, Map<MemoKey, Attempt<?>> memo,
-                      Set<JsonElement> still) {
+                      Set<JsonElement> still,
+                      Map<JsonElement, Boolean> statedBases) {
             this.open = open;
             this.scope = scope;
             this.join = join;
             this.table = table;
             this.memo = memo;
             this.still = still;
+            this.statedBases = statedBases;
         }
     }
 
@@ -1245,6 +1261,48 @@ public final class SmtLowering {
         top().pinnedReturns.put(raw, returned);
         return value.sort == Sort.STRING ? Term.nonNullString(name, "true")
                 : Term.of(name, value.sort, value.integralWidth);
+    }
+
+    /**
+     * THE PIN of a container query its chain cannot decide (no stated base
+     * under it, {@link ContainerSmtCodec#term}), as a method return's
+     * ({@link #methodReturn}): the answer its call stated it returned
+     * ({@code concreteValue}) -- a member of an opaque root, a presence a
+     * muted body tested -- named for the query's {@code answer} id and
+     * pinned by an assertion named for an unsat core, where nothing it rests
+     * on can move ({@link #moves}: its keys, positions, owner and chain).
+     * Null otherwise, and the relation stands, free over its opaque base:
+     * a pin there would cut the witnesses that move it.  Named, never
+     * silent: one DIAGNOSTIC per query kind and session.
+     */
+    private ContainerSmtCodec.Term answered(JsonObject query) {
+        String returned = ReadRow.returned(query);
+        String javaType = primitiveString(query, "_java_type");
+        long id = optionalLongInteger(query, ContainerSmtCodec.ANSWER, 0L);
+        if (returned == null || id <= 0L || moves(query)) return null;
+        Term value = statedValue(returned, javaType);
+        if (value == null) return null;
+        String name = symbols.mint("answer__", scope + SEPARATOR + id, 10);
+        if (!declared(name)) {
+            declare(name, value.sort);
+            String pin = "(= " + name + " " + value.text + ")";
+            if (symbolsDeclareThemselves) {
+                assertPlain(pin);
+            } else {
+                assertNamed("pinned_" + name, pin);
+            }
+        }
+        String kind = primitiveString(query, "shape") + ":"
+                + primitiveString(query, "operation");
+        top().diagnostics.put("ContainerAnswerPinned:" + kind + "@" + scope,
+                "a " + kind + " over a chain with no stated base answers "
+                        + "what its call returned, pinned by a named "
+                        + "assertion where nothing it rests on moves");
+        ContainerSmtCodec.Sort sort = VmTermLowering.containerSortOf(
+                value.sort);
+        return value.sort == Sort.STRING
+                ? ContainerSmtCodec.Term.string(name, "false")
+                : new ContainerSmtCodec.Term(name, sort, value.integralWidth);
     }
 
     /**
@@ -2626,6 +2684,21 @@ public final class SmtLowering {
             }
 
             @Override
+            public ContainerSmtCodec.Term answered(JsonObject query) {
+                return SmtLowering.this.answered(query);
+            }
+
+            @Override
+            public Boolean statedBase(JsonElement node) {
+                return statedBases.get(node);
+            }
+
+            @Override
+            public void statedBase(JsonElement node, Boolean stated) {
+                statedBases.put(node, stated);
+            }
+
+            @Override
             public void require(String predicate) {
                 sideCondition(predicate);
             }
@@ -3637,23 +3710,11 @@ public final class SmtLowering {
     }
 
     /**
-     * Java {@code ==} between two Strings is reference identity.  Three
+     * Java {@code ==} between two Strings is reference identity.  Two
      * cases close it exactly and the rest stays refused.
      */
     private Term stringIdentity(JsonObject expression, String operator,
                                 Term left, Term right, String origin) {
-        if (ContainerSmtCodec.handlesFieldBinding(expression)) {
-            Term symbol = ContainerSmtCodec.handlesField(
-                    expression.get("_left")) ? right : left;
-            String materialization = ContainerSmtCodec
-                    .materializedStringEquality(left.text, right.text,
-                            symbol.stringNullness);
-            if (materialization.isEmpty()) {
-                return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
-                        "MATERIALIZATION:" + operator, Sort.BOOL);
-            }
-            return result(materialization, Sort.BOOL, left, right);
-        }
         if (!left.stringReferenceOrigin.isEmpty()
                 && left.stringReferenceOrigin.equals(
                 right.stringReferenceOrigin)) {

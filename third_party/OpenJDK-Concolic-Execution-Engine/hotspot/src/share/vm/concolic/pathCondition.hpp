@@ -64,8 +64,7 @@ public:
   }
 
   // Appends one condition and returns its stable, zero-based index in this
-  // thread context.  Exact branch-event accounting uses the returned index;
-  // callers that only contribute auxiliary constraints may ignore it.
+  // thread context, which exact branch-event accounting uses.
   int add(Expression *exp);
 
   inline int size() const { return (int) _conds.size(); }

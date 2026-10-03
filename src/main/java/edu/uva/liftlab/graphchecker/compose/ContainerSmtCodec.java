@@ -82,25 +82,6 @@ public final class ContainerSmtCodec {
                 VmExpressionIr.typeOf(expression));
     }
 
-    public static boolean handlesFieldBinding(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return false;
-        JsonObject binary = expression.getAsJsonObject();
-        String position = optionalString(binary, "_code_position");
-        if (!"BinaryExpression".equals(optionalString(binary, "_type"))
-                || !"==".equals(optionalString(binary, "_op"))
-                || position.indexOf(
-                "java.lang.System.symbolizeExactField(") < 0
-                && position.indexOf(
-                "java.lang.System.symbolizeField(") < 0
-                && position.indexOf("java.lang.System.symbolize(") < 0) {
-            return false;
-        }
-        return handlesField(binary.get("_left"))
-                && symbol(binary.get("_right"))
-                || handlesField(binary.get("_right"))
-                && symbol(binary.get("_left"));
-    }
-
     /** Whether one already-read {@code _type} names a constant payload. */
     public static boolean constantKind(String type) {
         return "ConstExpr".equals(type) || "ConSymbolExp".equals(type)
@@ -114,11 +95,6 @@ public final class ContainerSmtCodec {
         return "false".equals(symbolNullness) ? equality
                 : "(and " + equality + " (not "
                 + symbolNullness + "))";
-    }
-
-    private static boolean symbol(JsonElement expression) {
-        return VmExpressionIr.SYMBOL_TYPE.equals(
-                VmExpressionIr.typeOf(expression));
     }
 
     /** The one refusal for a projection no evidence values. */
@@ -385,11 +361,58 @@ public final class ContainerSmtCodec {
      * array-valued choice over lambda terms is outside what z3 decides.
      */
     public static Term term(JsonObject expression, Host host) {
+        // A query the chain cannot decide answers what its call stated it
+        // returned, where the host pins that ({@link Host#answered}).
+        if (expression.has(ANSWER) && !statedBase(expression.get("receiver"),
+                host)) {
+            Term pinned = host.answered(expression);
+            if (pinned != null) return pinned;
+        }
         Term answer = relation(expression, host);
         return answer == null || !expression.has("owner")
                 || answer.sort == Sort.INDEXED
                 || answer.sort == Sort.ASSOCIATIVE
                 ? answer : host.query(expression, answer);
+    }
+
+    /**
+     * The member a query states its session-unique answer id in, beside the
+     * {@code concreteValue} its call returned (ContainerExpression's
+     * {@code state_returned}): only a query whose chain may not decide it.
+     */
+    public static final String ANSWER = "answer";
+
+    /**
+     * Whether a state's chain ends at a base the VM walked -- a
+     * {@code SNAPSHOT_BASE} or a program {@code CLEAR} -- through every
+     * relation under it (views, iterators, entries, mutations, pins): then
+     * it decides a query over it.  A {@code STATE} root, or anything no
+     * relation, is opaque.  Each state is the one it stands for
+     * ({@link Host#chain}), and the host remembers every answer
+     * ({@link Host#statedBase}), so a long chain is walked once.
+     */
+    private static boolean statedBase(JsonElement state, Host host) {
+        List<JsonElement> walked = new ArrayList<JsonElement>();
+        JsonElement cursor = state;
+        Boolean stated = null;
+        while (stated == null) {
+            JsonElement node = host.chain(cursor);
+            stated = node == null ? Boolean.FALSE : host.statedBase(node);
+            if (stated != null) break;
+            walked.add(node);
+            String operation = handles(node)
+                    ? optionalString(node.getAsJsonObject(), "operation")
+                    : "STATE";
+            if (emptiesState(operation)) {
+                stated = Boolean.TRUE;
+            } else if ("STATE".equals(operation)) {
+                stated = Boolean.FALSE;
+            } else {
+                cursor = node.getAsJsonObject().get("receiver");
+            }
+        }
+        for (JsonElement node : walked) host.statedBase(node, stated);
+        return stated.booleanValue();
     }
 
     private static Term relation(JsonObject expression, Host host) {
@@ -459,26 +482,6 @@ public final class ContainerSmtCodec {
                     view.stateExpression, positions.get(0)), view.kind,
                     javaType, host, views);
             return value == null ? null : host.unbox(value, javaType);
-        }
-        if ("OBSERVE_KEY".equals(operation)
-                || "OBSERVE_VALUE".equals(operation)) {
-            Entry entry = entry(expression.get("receiver"));
-            JsonArray observed = array(expression, "arguments");
-            if (entry == null || observed.size() != 1) {
-                host.unsupported("ContainerRelation:malformed-observation:"
-                        + operation);
-                return null;
-            }
-            Term value = host.box(observed.get(0));
-            if (value == null) return null;
-            String observedJavaType = VmTermLowering.expressionJavaType(observed.get(0));
-            Term selected = associativeEntryValue(entry,
-                    "OBSERVE_KEY".equals(operation)
-                            ? "KEY_VIEW" : "VALUE_VIEW",
-                    observedJavaType, host, views);
-            if (selected == null) return null;
-            return new Term("(= " + selected.text + " " + value.text + ")",
-                    Sort.BOOL);
         }
         if ("HAS_NEXT".equals(operation)) {
             Sort stateSort = "INDEXED".equals(shape)
@@ -617,6 +620,27 @@ public final class ContainerSmtCodec {
             return new Term("(= (indexed_size " + receiver.text + ") 0)",
                     Sort.BOOL);
         }
+        if ("PEEK".equals(operation) && arguments.size() == 0) {
+            // A queue's head, or null where it is empty: no member required.
+            long size = receiver.indexedSize;
+            String head = "(indexed_read " + receiver.text + " 0)";
+            return host.unbox(new Term(size == 0L ? NULL_CELL
+                    : size > 0L ? head
+                    : "(ite (= (indexed_size " + receiver.text + ") 0) "
+                    + NULL_CELL + " " + head + ")", Sort.VALUE), javaType);
+        }
+        if ("POLL".equals(operation) && arguments.size() == 0) {
+            // Without its head where it has one: whether it does is the
+            // op's own test, which a stated size decides; with none, as a
+            // removal, it is refused by name.
+            if (receiver.indexedSize == 0L) return receiver;
+            if (receiver.indexedSize < 0L) {
+                host.unsupported("ContainerRelation:INDEXED:POLL:"
+                        + "unstated-size");
+                return null;
+            }
+            return shift(receiver, new Term("0", Sort.INT), null, host);
+        }
         return unmodeled("INDEXED", operation, arguments, host);
     }
 
@@ -629,8 +653,8 @@ public final class ContainerSmtCodec {
                 expression.get("receiver"));
         if (("READ".equals(operation) || "CONTAINS".equals(operation))
                 && arguments.size() == 1
-                || "READ_OR_DEFAULT".equals(operation)
-                && arguments.size() == 2) {
+                || ("READ_OR_DEFAULT".equals(operation)
+                || "MATCHES".equals(operation)) && arguments.size() == 2) {
             return associativeLookup(receiverIr, operation, arguments,
                     javaType, host);
         }
@@ -755,7 +779,7 @@ public final class ContainerSmtCodec {
      * How many positions an INDEXED chain can fill: its appends and
      * insertions, guarded or not, down to an exact base (a stated
      * {@code SNAPSHOT_BASE}, whose members are appends above it, or a
-     * {@code CLEAR}); writes, removals and pins fill none.  Null for a
+     * {@code CLEAR}); writes, removals, polls and pins fill none.  Null for a
      * chain with no such base within {@link #VIEW_CHAIN_LIMIT}.  Each
      * state is the one it stands for ({@link Host#chain}).
      */
@@ -777,6 +801,7 @@ public final class ContainerSmtCodec {
                 filled++;
             } else if (!"WRITE".equals(operation)
                     && !"REMOVE".equals(operation)
+                    && !"POLL".equals(operation)
                     && !"PIN".equals(operation)) {
                 return null;
             }
@@ -816,8 +841,10 @@ public final class ContainerSmtCodec {
 
     /**
      * A read, a read with a default ({@code getOrDefault}: the default where
-     * the key is absent) or a membership test at one key.  With a literal
-     * key, the chain's
+     * the key is absent), a membership test, or a match ({@code MATCHES}:
+     * whether the read, null where the key is absent, is the expected cell
+     * -- the test a muted body made of the value there) at one key.  With a
+     * literal key, the chain's
      * mutations at other literal keys cannot touch it and are passed in the
      * IR, never lowered: a map the recording rebuilt from a store's bytes
      * (Solr's cluster state, one per notification) is a put per entry, and
@@ -837,9 +864,11 @@ public final class ContainerSmtCodec {
         Term wanted = host.box(key);
         if (wanted == null) return null;
         boolean read = !"CONTAINS".equals(operation);
-        Term absent = arguments.size() == 2 ? host.box(arguments.get(1))
-                : new Term(NULL_CELL, Sort.VALUE);
-        if (absent == null) return null;
+        boolean match = "MATCHES".equals(operation);
+        Term absent = arguments.size() == 2 && !match
+                ? host.box(arguments.get(1)) : new Term(NULL_CELL, Sort.VALUE);
+        Term expected = match ? host.box(arguments.get(1)) : null;
+        if (absent == null || match && expected == null) return null;
         JsonElement state = receiverIr;
         String literal = literalKey(key);
         if (literal != null) {
@@ -859,7 +888,9 @@ public final class ContainerSmtCodec {
                     }
                     Term value = removed ? absent
                             : host.box(mutation.arguments.get(1));
-                    return value == null ? null : host.unbox(value, javaType);
+                    return value == null ? null : match
+                            ? matched(value, expected)
+                            : host.unbox(value, javaType);
                 }
                 state = mutation.receiver;
             }
@@ -867,9 +898,16 @@ public final class ContainerSmtCodec {
         Term receiver = associativeState(state, host);
         if (receiver == null) return null;
         if (!read) return associativeHas(receiver, wanted, host);
+        Term cell = associativeRead(receiver, wanted, absent, host);
+        if (match) return matched(cell, expected);
         requireStatedContainerBase(state, wanted, host);
-        return host.unbox(associativeRead(receiver, wanted, absent, host),
-                javaType);
+        return host.unbox(cell, javaType);
+    }
+
+    /** Whether one cell is another: a Java value's equality, by its tag. */
+    private static Term matched(Term cell, Term expected) {
+        return new Term("(= " + cell.text + " " + expected.text + ")",
+                Sort.BOOL);
     }
 
     /**
@@ -1653,6 +1691,19 @@ public final class ContainerSmtCodec {
         /** The chain of mutations a container state stands for: a read's
          *  joined version, else the node itself. */
         JsonElement chain(JsonElement state);
+
+        /**
+         * THE PIN of a query its chain cannot decide: the answer its call
+         * stated it returned, or null where the host lets the relation
+         * stand (something it rests on can move).
+         */
+        Term answered(JsonObject query);
+
+        /** What {@link #statedBase} found of one chain node, or null. */
+        Boolean statedBase(JsonElement node);
+
+        /** Remembers it. */
+        void statedBase(JsonElement node, Boolean stated);
 
         void require(String predicate);
 

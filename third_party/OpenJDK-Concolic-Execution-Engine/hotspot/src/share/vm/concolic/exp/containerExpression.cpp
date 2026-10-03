@@ -1,6 +1,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/exp/containerExpression.hpp"
+#include "runtime/atomic.hpp"
 #include "utilities/ostream.hpp"
 
 #include <pthread.h>
@@ -108,7 +109,8 @@ ContainerExpression::ContainerExpression(
                                    arguments)),
       _decides_reads(false),
       _ordinal(0),
-      _writes(NULL) {
+      _writes(NULL),
+      _answer(0) {
   if (_operation == "STATE") {
     // An array's root answers every read no WRITE above it answers: the
     // element is the root's.  Whether the root's elements are the heap's is
@@ -149,6 +151,14 @@ bool ContainerExpression::derived_container_value(Expression **owner) {
 
 ContainerExpression::~ContainerExpression() {
   if (_ordinal == 1) delete _writes;
+}
+
+volatile intptr_t ContainerExpression::answer_count = 0;
+
+void ContainerExpression::state_returned(const ReturnedValue &returned) {
+  if (returned.kind == ReturnedValue::UNSTATED) return;
+  _returned = returned;
+  _answer = (jlong) Atomic::add_ptr((intptr_t) 1, &answer_count);
 }
 
 bool ContainerExpression::stored_at(jint position, Expression **stored,
@@ -203,6 +213,11 @@ void ContainerExpression::serialize_internal(
   if (_members >= 0) {
     writer.Key("members");
     writer.Int(_members);
+  }
+  if (_answer != 0) {
+    _returned.serialize(writer);
+    writer.Key("answer");
+    writer.Int64(_answer);
   }
 }
 

@@ -37,8 +37,7 @@ class StreamTable;
  *
  * The complete path condition stays singular and thread-scoped so its indices
  * remain stable across nested regions.  Each region frame separately owns the
- * Condition wrappers for its selected branch guard, auxiliary constraints and
- * branch events.  A nested summary therefore serializes only the nested work;
+ * Condition wrappers for its selected branch guard and branch events.  A nested summary therefore serializes only the nested work;
  * after it is popped, the enclosing summary contains only enclosing work.
  */
 class ThreadContext {
@@ -62,8 +61,6 @@ private:
     // Region-local wrappers around session-owned expressions.  The complete
     // thread path below remains the authority for their stable global indices.
     PathCondition branch_path_condition;
-    PathCondition auxiliary_path_condition;
-    std::vector<int> auxiliary_path_condition_indices;
     std::vector<BranchEvent> branch_events;
     // How many of branch_events a read has returned: the runtime reads after
     // every decision, and a whole-frame read each time is quadratic in them.
@@ -77,7 +74,6 @@ private:
     RegionFrame() : enter_event_id(0), branch_events_read(0) {}
     ~RegionFrame() {
       branch_path_condition.gc();
-      auxiliary_path_condition.gc();
     }
   };
 
@@ -207,23 +203,13 @@ public:
     return serialize_path_condition_range(this, start, end);
   }
 
-  /**
-   * Every admitted non-branch solver constraint of the current region frame,
-   * paired with its position in the thread's full path condition.  This is the
-   * case-level counterpart of path_guard(): versions carry only the current
-   * region's control guard, while its result carries these relations once.
-   */
-  std::string get_auxiliary_path_conditions();
-
   inline jlong get_context_id() const { return _context_id; }
   inline jlong get_owner_java_thread_id() const {
     return _owner_java_thread_id;
   }
 
   // The conjunction of the current region frame's instrumented, taken branch
-  // predicates, or NULL for `true`.  This deliberately excludes auxiliary
-  // solver constraints retained in get_path_condition(); the region case
-  // carries those once, while a shared version needs only its control guard.
+  // predicates, or NULL for `true`: a shared version's control guard.
   // Folded here so that a caller can obtain it before taking any engine lock.
   Expression *path_guard();
 
@@ -366,18 +352,6 @@ public:
     return get_sym_array(array_obj->get_sym_rid());
   }
   SymArr *find_sym_array(arrayOop array_obj) const;
-
-  inline void __attribute__((optimize("O0"))) record_path_condition(Expression *sym_exp) {
-    if (_aborted || !_path_condition_enabled || !_path_condition_admitted
-        || _path_condition_pause_depth > 0 || _region_stack.empty()) {
-      return;
-    }
-
-    const int full_index = _path_condition.add(sym_exp);
-    RegionFrame *frame = _region_stack.back();
-    frame->auxiliary_path_condition.add(sym_exp);
-    frame->auxiliary_path_condition_indices.push_back(full_index);
-  }
 
   void write_array_element(arrayOop array, int index,
                            Expression *expression,
