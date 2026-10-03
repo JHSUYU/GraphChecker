@@ -87,9 +87,9 @@ workflow_config_keys=(
   # campaign_replay_need_mb): half its heap, half the VM's native symbolic
   # state, and the charge execute.sh holds it to, grown while its host has
   # room (campaign_watch_workload).  The pool starts an
-  # obligation only on a host with that much available beyond what the starts
-  # there in the last ramp window will still claim (campaign_host_try_start),
-  # whichever campaign started them -- the hosts are shared, and so is this
+  # obligation only on a host whose live charges and real use both leave room
+  # for that much under its ceiling (campaign_host_try_start), whichever
+  # campaign charged them -- the hosts are shared, and so is this
   # accounting; the host's solver is charged at its own start
   # (campaign_start_solver).  No default: the need is the case's, measured
   # (each replay states its peak), and a campaign that states none is refused.
@@ -458,8 +458,8 @@ run_in_directory() {
 }
 
 # The engine JVM, started at what its main measurably needs and charged that
-# -- on whichever host a campaign's head placed it, for as long as a JVM
-# takes to reach its size (campaign_head_charged) -- and at the case's
+# -- on whichever host a campaign's head placed it, for as long as it runs
+# (campaign_head_charged) -- and at the case's
 # engine heap (engine_memory_mb,
 # else the launcher's 8 GB) only when it outgrows that.  A head that charged
 # every engine JVM 16 GB waited 35-69 minutes for room it did not use: the
@@ -498,7 +498,7 @@ engine_java() {
   while (( start < heap )); do
     out=$(mktemp) || return
     status=0
-    campaign_head_charged "${start}" 120 \
+    campaign_head_charged "${start}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
       -XX:+ExitOnOutOfMemoryError "$@" >"${out}" || status=$?
     if (( status != campaign_jvm_out_of_heap_status )); then
@@ -514,7 +514,7 @@ engine_java() {
       "${main##*.}" "${start}" "${next}" >&2
     start=${next}
   done
-  campaign_head_charged "${heap}" 120 \
+  campaign_head_charged "${heap}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
     -XX:+ExitOnOutOfMemoryError "$@"
 }
@@ -2468,7 +2468,7 @@ campaign_session_replay() {
   bound=$(( seed_replay_time_factor * campaign_recorded_workload_s ))
   (( bound >= replay_timeout_s )) || bound=${replay_timeout_s}
   need=$(campaign_replay_need_mb)
-  campaign_head_charged "${need}" 300 campaign_seed_replay "${iteration_dir}" \
+  campaign_head_charged "${need}" campaign_seed_replay "${iteration_dir}" \
     "${causynth_static_scope_map}" "${need}" "${bound}" \
     "seed_replay_time_factor=${seed_replay_time_factor} x the recording's \
 ${campaign_recorded_workload_s}s workload and at least \
@@ -2898,10 +2898,13 @@ campaign_solver_log() {
 # root domains behind the arm that produces it.
 campaign_start_solver() {
   local dir=$1 sessions=$2 charge status=0
-  campaign_host_try_charge localhost "${campaign_solver_start_mb}" 120
+  campaign_host_try_charge localhost "${campaign_solver_start_mb}"
   (( status == 0 )) || return 1
   charge=${campaign_host_charge_id}
   {
+    # The solver outlives the obligation that started it: it holds its
+    # charge itself.
+    campaign_host_keep localhost "${charge}"
     campaign_solver_jvm "${campaign_solver_heap_mb}" \
       "${campaign_solver_start_mb}" --serve "${dir}" \
       --sessions "${sessions}" \
@@ -2954,7 +2957,7 @@ campaign_solve_obligation_alone() {
   if [[ "${when}" == now ]]; then
     charged=${obligation_memory_mb}
   else
-    campaign_await_host_memory localhost "${heap}" 120 || return 1
+    campaign_await_host_memory localhost "${heap}" || return 1
     charge=${campaign_host_charge_id}
     charged=${heap}
   fi
@@ -3183,26 +3186,33 @@ $(hostname -s 2>/dev/null) "
 #   ${campaign_host_gate_root}/<host>/lock       an mkdir lock, held for the
 #                                                 few lines that read and
 #                                                 append the ledger
-#   ${campaign_host_gate_root}/<host>/starts     "<epoch> <mb> <ramp_s> <id>"
-#                                                 per start still ramping
+#   ${campaign_host_gate_root}/<host>/charges/<mb>.<id>
+#                                                 one live start's charge of
+#                                                 <mb>, its lease the file's
+#                                                 mtime
 #   ${campaign_host_gate_root}/<host>/available  "<epoch> <mb>": MemAvailable,
 #                                                 read at most every poll
 #   ${campaign_host_gate_root}/<host>/total      "<mb>": MemTotal, read once
 #
-# A start of <mb> may go when MemAvailable, less what every start still in
-# its ramp will grow into, leaves <mb> plus the host's reserve: the share of
-# MemTotal above CAUSYNTH_HOST_MAX_USED_PCT (tools/lib/gc-env.sh), so no
-# start leaves a host more than that full.  A JVM takes
-# tens of seconds to reach its size and MemAvailable says nothing about
-# memory a JVM has not touched yet, so a start is charged in full for its own
-# ramp; after it, what it holds is in MemAvailable.  A start is released
-# the moment its command returns (campaign_host_release), whoever started
-# it, so a head's JVMs, one after another, are never charged twice and an
-# answer in seconds does not hold its host's room for the ramp.  A start
-# that does not fit WAITS -- an obligation or a head's step goes to another
-# host or later, never skipped -- and says so once.  A JVM that grows past
-# its charge after its start asks the host again for the excess, by the
-# same rule (campaign_watch_workload).
+# A start of <mb> may go when two things leave it room under the host's
+# ceiling, CAUSYNTH_HOST_MAX_USED_PCT of MemTotal (tools/lib/gc-env.sh):
+# what the host's live charges promise, and what it really uses (MemTotal
+# less MemAvailable), each with the room a head holds there (HEAD ROOM
+# below) and <mb>.  A start's charge holds for the whole life of what it
+# started, not only while that grows into it: a JVM below its charge grows
+# into it later, and what the host promised it is room no other start may
+# take meanwhile (Solr obligation replays grow for minutes toward their
+# 6000 MB; counted only for their first 60 s, rounds SB11 and SB13 filled
+# lift12-15 and lift06 to 29-30 GB).  A charge lives by a lease: the shell
+# that took it renews it while it lives (campaign_host_keep), and it is
+# released the moment what it ran returns (campaign_host_release), whoever
+# started it, so a head's JVMs, one after another, are never charged twice.
+# A run killed before its release leaves charges that lapse with their
+# lease.  A start that does not fit WAITS -- an obligation or a head's step
+# goes to another host or later, never skipped -- and says so once.  A JVM
+# that grows past its charge asks the host again for the excess, by the
+# real-use half of the rule alone (campaign_watch_workload), and holds what
+# it was granted the same way.
 #
 #   ${campaign_host_gate_root}/<host>/heads/<id>  "<mb>": a campaign head's
 #                                                 room on its host
@@ -3224,19 +3234,19 @@ $(hostname -s 2>/dev/null) "
 # shellcheck source=tools/lib/gc-env.sh
 source "${graphchecker_dir}/tools/lib/gc-env.sh"
 campaign_host_gate_root=${CAUSYNTH_HOST_LEDGER}
-# How long an obligation's start is charged in full: the time its replay JVM
-# takes to stand its cluster up (the host's solver is charged at its own
-# start, campaign_start_solver).  A native run of REPRODUCE, and the excess
-# a workload JVM grew past its charge (campaign_watch_workload), take the
-# same ramp.
-campaign_host_ramp_s=60
+# A charge's lease: how long it counts past its last renewal, and how often
+# the shell that holds it renews it (campaign_host_keep).  The lease spans
+# NFS's attribute cache (60 s at most) beside a renewal, so a live charge
+# is never read as lapsed on another lift.
+campaign_host_lease_s=120
+campaign_host_renew_s=10
 # Whether this shell is a campaign's head, whose engine JVMs and replays are
 # placed and charged as its steps (do_campaign, campaign_head_charged); an
 # obligation's replay is inside the obligation's charge.
 campaign_head_charging=0
-# The most of a host's memory a start may leave in use, in percent: what
-# stays free is the page cache the JVMs read their jars and corpora through,
-# the owner's own sessions, and the room JVMs past their ramp still grow into.
+# The most of a host's memory a start may leave charged or in use, in
+# percent: what stays free is the page cache the JVMs read their jars and
+# corpora through, the owner's own sessions, and what no charge covers.
 campaign_host_max_used_pct=${CAUSYNTH_HOST_MAX_USED_PCT}
 [[ "${campaign_host_max_used_pct}" =~ ^[0-9]+$ ]] \
   && (( campaign_host_max_used_pct > 0 && campaign_host_max_used_pct <= 100 )) \
@@ -3370,18 +3380,18 @@ campaign_host_lock() {
   return 3
 }
 
-# campaign_host_try_start <host> <need_mb> <ramp_s>: one try.  0 when the
-# start may go now and is charged to the host, its row named in
-# campaign_host_charge_id; 1 when it does not fit yet (why, in
+# campaign_host_try_start <host> <need_mb>: one try.  0 when the start may
+# go now and is charged to the host, held by this shell (campaign_host_hold)
+# and named in campaign_host_charge_id; 1 when it does not fit yet (why, in
 # campaign_host_wait_reason); 2 when the host's memory cannot be read; 3 when
 # another start holds the ledger's lock for the instant it takes to charge
-# one.  Every start states its need -- what the JVM measurably takes -- and
-# the ramp it takes to reach it; neither has a default.
+# one.  Every start states its need -- what it measurably takes -- with no
+# default.
 campaign_host_wait_reason=""
 campaign_host_charge_id=""
 campaign_host_try_start() {
-  local host=$1 need=$2 ramp=$3 key dir now available total
-  local reserve charged kept held=0
+  local host=$1 need=$2 key dir now available total limit charged used
+  local held=0
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
@@ -3389,47 +3399,89 @@ campaign_host_try_start() {
   total=$(campaign_host_memory_total "${host}" "${dir}") || return 2
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
-  reserve=$(( total * (100 - campaign_host_max_used_pct) / 100 ))
+  limit=$(campaign_host_limit_mb "${total}")
+  used=$(( total - available ))
   [[ "${campaign_host_head_start}" == 1 ]] \
     || held=$(campaign_host_head_room "${dir}" "${now}")
   campaign_host_lock "${dir}" "${now}" || return 3
-  kept=$(campaign_host_in_ramp "${dir}" "${now}")
-  charged=$(awk '{ mb += $2 } END { print mb + 0 }' <<<"${kept}")
-  [[ -z "${kept}" ]] || kept+=$'\n'
-  if (( available - charged - held < need + reserve )); then
-    printf '%s' "${kept}" >"${dir}/starts"
+  charged=$(campaign_host_charged "${dir}" "${now}")
+  if (( charged + held + need > limit || used + held + need > limit )); then
     rmdir "${dir}/lock"
-    campaign_host_wait_reason="${key} has ${available} MB available, \
-${charged} MB charged to starts still in their ramp and ${held} MB held for \
-a head; one needs ${need} MB and ${reserve} MB stay free (at most \
-${campaign_host_max_used_pct}% of ${total} MB in use)"
+    campaign_host_wait_reason="${key} has ${charged} MB charged to what it \
+runs, ${used} MB in use and ${held} MB held for a head; one needs ${need} MB \
+and at most ${limit} MB (${campaign_host_max_used_pct}% of ${total} MB) may \
+be charged or in use"
     return 1
   fi
-  campaign_host_charge_row "${dir}" "${kept}" "${now}" "${need}" "${ramp}"
+  campaign_host_charge_row "${dir}" "${need}"
   return 0
 }
 
-# Writes <dir>/starts as <kept> plus one row charging <need_mb> for <ramp_s>
-# from <now>, named in campaign_host_charge_id, and gives the ledger's lock
-# back.
+# The most of a host of <total_mb> its charges, or its real use, may reach:
+# CAUSYNTH_HOST_MAX_USED_PCT of it.
+campaign_host_limit_mb() {
+  printf '%s\n' "$(( $1 - $1 * (100 - campaign_host_max_used_pct) / 100 ))"
+}
+
+# The MB the live charges of the host directory <dir> hold at <now>: each
+# renewed within its lease.  One past ten leases was left by a run that is
+# gone, and is removed.
+campaign_host_charged() {
+  local dir=$1 now=$2
+  [[ -d "${dir}/charges" ]] || { echo 0; return 0; }
+  find "${dir}/charges" -maxdepth 1 -type f -printf '%T@ %f\n' 2>/dev/null \
+    | awk -v now="${now}" -v lease="${campaign_host_lease_s}" \
+        -v dir="${dir}/charges" '
+        { age = now - int($1); split($2, name, ".") }
+        age < lease && name[1] ~ /^[0-9]+$/ { mb += name[1]; next }
+        age >= 10 * lease { system("rm -f -- \"" dir "/" $2 "\"") }
+        END { print mb + 0 }'
+}
+
+# Charges <need_mb> to the host directory <dir>, whose lock this shell
+# holds, and gives the lock back: the charge, named in
+# campaign_host_charge_id, is held by this shell (campaign_host_hold).
 campaign_host_charge_row() {
-  local dir=$1 kept=$2 now=$3 need=$4 ramp=$5
-  campaign_host_charge_id="$(hostname -s).${BASHPID}.${now}.${RANDOM}"
-  printf '%s%s %s %s %s\n' "${kept}" "${now}" "${need}" "${ramp}" \
-    "${campaign_host_charge_id}" >"${dir}/starts"
+  local dir=$1 need=$2
+  campaign_host_charge_id="${need}.$(hostname -s).${BASHPID}.$(date +%s).\
+${RANDOM}"
+  mkdir -p "${dir}/charges"
+  : >"${dir}/charges/${campaign_host_charge_id}"
   rmdir "${dir}/lock"
+  campaign_host_hold "${dir}/charges/${campaign_host_charge_id}"
+}
+
+# campaign_host_keep <host> <id>: the charge <id> on <host> is held by this
+# shell too, one the shell that took it hands over (the host's solver, which
+# outlives the obligation that started it).
+campaign_host_keep() {
+  campaign_host_hold "${campaign_host_gate_root}/$(campaign_host_key \
+"$1")/charges/$2"
+}
+
+# The charge <file> renewed every campaign_host_renew_s while this shell
+# lives and the charge stands: by a process of its own, no child of this
+# shell (a head's `wait` never waits for it), which ends within a renewal
+# of either.  Its programs are the commands, never a function of this shell's
+# by their name (the shell test's `sleep`).
+campaign_host_hold() {
+  local file=$1 owner=${BASHPID}
+  ( ( while kill -0 "${owner}" 2>/dev/null && [[ -e "${file}" ]]; do
+        command touch -c -- "${file}" 2>/dev/null || true
+        command sleep "${campaign_host_renew_s}"
+      done ) </dev/null >/dev/null 2>&1 & )
 }
 
 # campaign_host_try_grow <host> <mb>: a RUNNING JVM grows by <mb>.  What the
-# ledger promises future starts -- their ramps, a head's room -- is no
-# reason to end a JVM already running: the growth is refused (1, the reason
-# in campaign_host_wait_reason) only when the host's real use, MemTotal less
+# ledger promises others -- their charges, a head's room -- is no reason to
+# end a JVM already running: the growth is refused (1, the reason in
+# campaign_host_wait_reason) only when the host's real use, MemTotal less
 # MemAvailable, would pass CAUSYNTH_HOST_MAX_USED_PCT with it.  Granted, it
-# is charged on the ledger as a start (0, its row in
-# campaign_host_charge_id), so the starts after it wait for it.  2 when the
+# is charged on the ledger as a start and held by this shell (0, its charge
+# in campaign_host_charge_id), so the starts after it wait for it.  2 when the
 # host's memory cannot be read, 3 while another holds the ledger's lock.
 campaign_host_try_grow() {
-  local host=$1 mb=$2 key dir now total available kept
+  local host=$1 mb=$2 key dir now total available limit
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
@@ -3437,19 +3489,16 @@ campaign_host_try_grow() {
   total=$(campaign_host_memory_total "${host}" "${dir}") || return 2
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
+  limit=$(campaign_host_limit_mb "${total}")
   campaign_host_lock "${dir}" "${now}" || return 3
-  if (( total - available + mb > total * campaign_host_max_used_pct / 100 ))
-  then
+  if (( total - available + mb > limit )); then
     rmdir "${dir}/lock"
     campaign_host_wait_reason="${key} has ${available} MB available of \
 ${total} MB, and ${mb} MB more would put over \
 ${campaign_host_max_used_pct}% of it in use"
     return 1
   fi
-  kept=$(campaign_host_in_ramp "${dir}" "${now}")
-  [[ -z "${kept}" ]] || kept+=$'\n'
-  campaign_host_charge_row "${dir}" "${kept}" "${now}" "${mb}" \
-    "${campaign_host_ramp_s}"
+  campaign_host_charge_row "${dir}" "${mb}"
   return 0
 }
 
@@ -3508,36 +3557,24 @@ campaign_head_unreserve() {
   campaign_head_reservation=""
 }
 
-# The rows of <dir>/starts still inside their own ramp at <now>, as they
-# stand there, one per line.
-campaign_host_in_ramp() {
-  local dir=$1 now=$2 at mb row_ramp id
-  [[ -f "${dir}/starts" ]] || return 0
-  while read -r at mb row_ramp id; do
-    [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ \
-      && "${row_ramp}" =~ ^[0-9]+$ ]] || continue
-    (( now - at < row_ramp )) || continue
-    printf '%s %s %s %s\n' "${at}" "${mb}" "${row_ramp}" "${id}"
-  done <"${dir}/starts"
-}
-
 # The room, in MB, one more start that is no head's own may take on <host>
 # now, read without charging it (campaign_host_try_start decides, under the
-# host's lock): MemAvailable less what the starts in their ramp will still
-# claim, the room a head holds there, and the reserve.  2 when unreadable.
+# host's lock): the least of what the live charges and the real use leave
+# under the ceiling, less the room a head holds there.  2 when unreadable.
 campaign_host_room() {
-  local host=$1 dir now total available charged
+  local host=$1 dir now total available limit charged used
   dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
   mkdir -p "${dir}"
   now=$(date +%s)
   total=$(campaign_host_memory_total "${host}" "${dir}") || return 2
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
-  charged=$(campaign_host_in_ramp "${dir}" "${now}" \
-    | awk '{ mb += $2 } END { print mb + 0 }')
-  printf '%s\n' "$(( available - charged \
-    - $(campaign_host_head_room "${dir}" "${now}") \
-    - total * (100 - campaign_host_max_used_pct) / 100 ))"
+  limit=$(campaign_host_limit_mb "${total}")
+  charged=$(campaign_host_charged "${dir}" "${now}")
+  used=$(( total - available ))
+  (( charged > used )) || charged=${used}
+  printf '%s\n' "$(( limit - charged \
+    - $(campaign_host_head_room "${dir}" "${now}") ))"
 }
 
 # campaign_pool_slots <need_mb> <host>...: how many starts of <need_mb> the
@@ -3561,20 +3598,10 @@ campaign_pool_slots() {
   printf '%s\n' "${slots}"
 }
 
-# Drops one start's row: what it ran has returned, and whatever it held is
-# back in MemAvailable.
+# Drops one start's charge: what it ran has returned, and whatever it held
+# is back in MemAvailable.  Its holder stops renewing it.
 campaign_host_release() {
-  local host=$1 id=$2 dir kept
-  dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
-  until campaign_host_lock "${dir}" "$(date +%s)"; do
-    sleep 0.$(( (RANDOM % 9) + 1 ))
-  done
-  if [[ -f "${dir}/starts" ]]; then
-    kept=$(awk -v id="${id}" '$4 != id' "${dir}/starts")
-    [[ -z "${kept}" ]] || kept+=$'\n'
-    printf '%s' "${kept}" >"${dir}/starts"
-  fi
-  rmdir "${dir}/lock"
+  rm -f -- "${campaign_host_gate_root}/$(campaign_host_key "$1")/charges/$2"
 }
 
 # campaign_host_try_start, the ledger's lock waited out -- another start
@@ -3618,8 +3645,9 @@ campaign_watch_interval_s=2
 # host (hdfs-17960 v96); one ended for 41 MB over its 2500 MB on a host with
 # 28 GB free failed its case for nothing (accept-e1b-17960's seed replay),
 # and one refused 6 MB on a host with 16 GB free, all of it promised to
-# ramps and heads (accept-x1-17960's).
-# What it was granted is released when it ends.
+# starts and heads (accept-x1-17960's).
+# What it was granted is held by the watcher (campaign_host_hold) and
+# released when it ends.
 campaign_watch_workload() {
   local pid=$1 charged=$2 trace=${3:-} peak=0 held=$2 mb id
   local status=0 refused=""
@@ -3657,7 +3685,7 @@ its host was charged ${charged} MB for it$( (( held == charged )) \
     || echo " and took ${held} MB as it grew")" >&2
 }
 
-# campaign_head_charged <need_mb> <ramp_s> <command...>: one heavy start of
+# campaign_head_charged <need_mb> <command...>: one heavy start of
 # a campaign head -- an engine JVM of any stage, the seed or the CONFIRM
 # replay, a native run of REPRODUCE -- goes where there is room
 # (campaign_head_place), is charged there while it runs, and is released
@@ -3669,10 +3697,10 @@ its host was charged ${charged} MB for it$( (( held == charged )) \
 # its host: the setup adapter's copy and the recording (do_workload).
 # Outside a head it runs the command alone.  The command runs as a plain
 # command, so errexit means inside it what it meant before: a failure that
-# ends the shell leaves the charge to lapse with its ramp.
+# ends the shell leaves the charge to lapse with its lease.
 campaign_head_charged() {
-  local need=$1 ramp=$2 id status busy="" host
-  shift 2
+  local need=$1 id status busy="" host
+  shift
   if [[ "${campaign_head_charging}" != 1 ]]; then
     "$@"
     return
@@ -3680,7 +3708,7 @@ campaign_head_charged() {
   # Its words go to stderr: the command's stdout is often its artifact
   # (ImportGateMain's summary JSON).
   campaign_head_heartbeat
-  campaign_head_place "${need}" "${ramp}" >&2
+  campaign_head_place "${need}" >&2
   host=${campaign_placed_host}
   id=${campaign_host_charge_id}
   if campaign_host_is_local "${host}"; then
@@ -3700,7 +3728,7 @@ campaign_head_charged() {
   return "${status}"
 }
 
-# Room for a head step of <need_mb> for <ramp_s>, charged: on the head's own
+# Room for a head step of <need_mb>, charged: on the head's own
 # host when it fits there (its own room is not held against it), else on
 # the host of the pool with the most room under the ceiling
 # (campaign_host_room), as the pool would place one more start; waited for
@@ -3715,11 +3743,10 @@ campaign_head_charged() {
 # The host is campaign_placed_host.
 campaign_placed_host=""
 campaign_head_place() {
-  local need=$1 ramp=$2 host room best best_room said=false status=0
+  local need=$1 host room best best_room said=false status=0
   local since=${SECONDS}
   while true; do
-    campaign_host_head_start=1 campaign_host_try_charge localhost "${need}" \
-      "${ramp}"
+    campaign_host_head_start=1 campaign_host_try_charge localhost "${need}"
     if (( status == 0 )); then
       campaign_placed_host=localhost
       campaign_head_placed "${said}" "${need}" "${since}"
@@ -3735,7 +3762,7 @@ campaign_head_place() {
       best_room=${room}
     done < <(campaign_worker_host_list)
     if [[ -n "${best}" ]]; then
-      campaign_host_try_charge "${best}" "${need}" "${ramp}"
+      campaign_host_try_charge "${best}" "${need}"
       if (( status == 0 )); then
         campaign_placed_host=${best}
         campaign_head_placed "${said}" "${need}" "${since}"
@@ -3811,7 +3838,7 @@ campaign_run_placed() {
   return "${status}"
 }
 
-# campaign_await_host_memory <host> <need_mb> <ramp_s>: blocks until one
+# campaign_await_host_memory <host> <need_mb>: blocks until one
 # start fits on the host, then charges it there: 0.  2 when the host's
 # memory cannot be read for campaign_ssh_patience_s, the waiter's named
 # failure.  What starts on the host that runs it waits here: a host's
@@ -3821,10 +3848,10 @@ campaign_run_placed() {
 # (campaign_stream_admit_host): neither waits on one host while another
 # has room.
 campaign_await_host_memory() {
-  local host=$1 need=$2 ramp=$3
+  local host=$1 need=$2
   local said=false status=0 unread_since="" since=${SECONDS}
   while true; do
-    campaign_host_try_charge "${host}" "${need}" "${ramp}"
+    campaign_host_try_charge "${host}" "${need}"
     case "${status}" in
       0)
         [[ "${said}" == false ]] || campaign_log "room for ${need} MB on \
@@ -3860,11 +3887,11 @@ ${campaign_host_wait_reason}"
 # subshell under `set -euo pipefail`; a remote one runs through the remote
 # worker script, an obligation as --run-obligation (the script and ssh's own
 # output beside its logs), a re-run as a placed step (campaign_run_placed);
-# its stdout and stderr are <worker>'s either way.  Its row is released as
-# soon as its work returned, before the head waits to see what a peer wrote
-# (campaign_await_remote_result): an answer in seconds does not hold its
-# host's room for the ramp.  A job the head reaps (campaign_stream_reap)
-# leaves its row to lapse with the ramp.
+# its stdout and stderr are <worker>'s either way.  Its charge, which the
+# head holds, is released as soon as its work returned, before the head
+# waits to see what a peer wrote (campaign_await_remote_result), and again
+# by the head once the job ended however it did (campaign_stream_ended,
+# campaign_stream_reap).
 campaign_stream_job() {
   local kind=$1 host=$2 charge=$3 id=$4 worker=$5 status=0
   shift 5
@@ -4002,7 +4029,7 @@ campaign_explore() {
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
   local -a stream_witnesses=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
-  local -A stream_jobs=() stream_flying=()
+  local -A stream_jobs=() stream_job_charge=() stream_flying=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
   local -A stream_solver_seen=()
   : >"${results}"
@@ -4476,8 +4503,21 @@ campaign_stream_reap() {
   for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_ticker}; do
     wait "${pid}" 2>/dev/null || true
   done
+  for pid in "${!stream_jobs[@]}"; do
+    campaign_stream_release "${pid}"
+  done
   stream_step_pid=""
   stream_ticker=""
+}
+
+# The charge the head took for job <pid> (campaign_stream_admit_host),
+# released: the job ended, or was ended.
+campaign_stream_release() {
+  local kind round id host
+  [[ -n "${stream_job_charge[$1]:-}" ]] || return 0
+  read -r kind round id host _ <<<"${stream_jobs[$1]}"
+  campaign_host_release "${host}" "${stream_job_charge[$1]}"
+  unset 'stream_job_charge[$1]'
 }
 
 # <pid> and every process below it, deepest first.
@@ -4553,14 +4593,15 @@ campaign_stream_unenroll() {
 
 # Picks the host for one start of <kind> (OBLIGATION or RERUN) and charges it
 # there (stream_admitted_host): the pool from the host after the last one
-# chosen, each start charged its replay's need, obligation_memory_mb, for an
-# obligation's ramp; an OBLIGATION goes first to a host where this
+# chosen, each start charged its replay's need, obligation_memory_mb, for as
+# long as it runs; an OBLIGATION goes first to a host where this
 # campaign's solver still serves (campaign_stream_warm: one started there
 # within the solver's idle time), whose question is then answered without a
 # solver of its own to start and its corpus to read.  A host is skipped
 # while it runs as many of this campaign's as it has cores, or while the
 # ledger has no room on it (campaign_host_try_start: no start leaves a host
-# more than CAUSYNTH_HOST_MAX_USED_PCT full, and none takes a head's room).
+# more than CAUSYNTH_HOST_MAX_USED_PCT charged or full, and none takes a
+# head's room).
 # 1 when no host has room now, said once per wait.
 campaign_stream_admit_host() {
   local kind=$1 host turn count pass is status=0
@@ -4598,8 +4639,7 @@ campaign_stream_warm() {
 campaign_stream_try_host() {
   local host=$1 turn=$2 count=${#stream_hosts[@]} status=0
   campaign_stream_has_cores "${host}" || return 1
-  campaign_host_try_charge "${host}" "${obligation_memory_mb}" \
-    "${campaign_host_ramp_s}"
+  campaign_host_try_charge "${host}" "${obligation_memory_mb}"
   case "${status}" in
     0)
       stream_admitted_host=${host}
@@ -4662,6 +4702,7 @@ campaign_stream_start() {
   campaign_stream_job "${kind}" "${host}" "${campaign_host_charge_id}" \
     "${id}" "${worker}" "${work[@]}" &
   stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"
+  stream_job_charge[$!]=${campaign_host_charge_id}
   stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
 }
 
@@ -4694,9 +4735,9 @@ campaign_stream_wait() {
 }
 
 # One child the head waited for, ended with <status>: the ticker; the step
-# (campaign_stream_step_done); or a job, whose host has its slot back (its
-# ledger row it gave back itself, campaign_stream_job) and whose return
-# waits in stream_pending for the next step to land it.
+# (campaign_stream_step_done); or a job, whose host has its slot and its
+# charge back (campaign_stream_release) and whose return waits in
+# stream_pending for the next step to land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session
   if [[ "${pid}" == "${stream_ticker}" ]]; then
@@ -4705,6 +4746,7 @@ campaign_stream_ended() {
     campaign_stream_step_done "${status}"
   else
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
+    campaign_stream_release "${pid}"
     unset 'stream_jobs[$pid]'
     stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
     stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
@@ -5257,7 +5299,7 @@ campaign_confirm_claim() {
     # confirmation as "no verdict", which is one more way of not agreeing
     # with the model.
     need=$(campaign_replay_need_mb)
-    ( campaign_head_charged "${need}" 300 \
+    ( campaign_head_charged "${need}" \
         campaign_obligation_replay CONFIRM \
         "${iteration_dir}/instrumented-classes" "${worker}" "${sessions}" \
         "${iteration_dir}/seed-replay/execution_task_plan.jsonl" "${need}" ) \
@@ -5448,15 +5490,15 @@ ${campaign_recorded_workload_s}s)"
 }
 
 # One native run of REPRODUCE into <run>: a head step charged the
-# recording's peak memory for an obligation's ramp, wherever there is room
-# (campaign_head_charged), and released as it returns.  A run placed on a
+# recording's peak memory, wherever there is room (campaign_head_charged),
+# and released as it returns.  A run placed on a
 # peer has its answer waited for until the shared home shows it here
 # (campaign_await_visible); one that never shows states none.
 campaign_reproduce_one() {
   local run=$1 bound=$2 plant=$3
   mkdir -p "${run}"
   campaign_head_charged "${campaign_recorded_workload_rss_mb}" \
-    "${campaign_host_ramp_s}" campaign_reproduce_run "${analysis_classes_dir}" \
+    campaign_reproduce_run "${analysis_classes_dir}" \
     "${run}" "${bound}" "${plant}" "${campaign_recorded_workload_rss_mb}" \
     || campaign_log "reproduce: $(basename "${run}") exited nonzero; its \
 logs are in ${run}"

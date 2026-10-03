@@ -75,13 +75,14 @@ checks per system) is superseded by this one; Phase 1's eleven cases stay the re
   identity rule (V12, V13), `vm-streams` (V14 12/12, VM `vm-streams2`), `retire-adhoc-pipeline` (V15),
   `seed-functional` (V16 + V16b 12/12, snapshot `~/gc-run/p229`), `preWindow-loop-root` (V17 12/12, snapshot
   `~/gc-run/p230`), `zk-election-offer` (V18 13/13, snapshot `~/gc-run/p231`; hdfs-11741 on its rerun V18b: the first run
-  met the 11741 balancer race) and `pairing-port` (the race fixed, DataTransfer doors, the eight named HDFS cases on the
-  dtx tree; rounds PP1 + PP1b 13/13 and 11741 twice, snapshot `~/gc-run/pp1`). The thirteen regression cases are the eleven named ones plus
+  met the 11741 balancer race) `pairing-port` (the race fixed, DataTransfer doors, the eight named HDFS cases on the
+  dtx tree; rounds PP1 + PP1b 13/13 and 11741 twice, snapshot `~/gc-run/pp1`) and `vm-model-guards` (V19 13/13,
+  snapshot `~/gc-run/p232`, VM `vm-model-guards2`). The thirteen regression cases are the eleven named ones plus
   `zk-bugs-quota-init` and `zk-bugs-election-offer`. The HDFS
   RPC-fault cases move either direction of one IPC door from round to round (`Client$Connection#sendRpcRequest`
   or `Client#getRpcResponse`, the target DataNode's heartbeat request or response lost): the same chain, valid
   under the mechanism mandate.
-- **VM**: main's is `/bigtemp/vnr3ne/vm-streams2/j2sdk-image` (round V14); `vm-w4h` serves older rounds; `vm-w4i`,
+- **VM**: main's is `/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image` (round V19; vm-streams2 + the model guards); `vm-w4h` serves older rounds; `vm-w4i`,
   `vm-nr41` kept for the parked branches of §0.4.
 - **Trees** (never rebuild one a run reads; each new tree builds with its own Maven repo `/bigtemp/vnr3ne/m2/<name>`):
 
@@ -129,7 +130,7 @@ can plant (a door fault, a clock, a configuration value, a re-pairing) from a ru
 | `hdfs-bugs-slowdisk-zero` | HDFS #15: `DataNodeDiskMetrics`'s detector replaces `slowDisksToExclude` only `if (maxSlowDisksToExclude > 0)` (~:151); setting the documented "disabled" value 0 by run-time reconfiguration never clears a published list; `FsVolumeList` (~:111) filters the only SSD out | `RoundRobinVolumeChoosingPolicy.chooseVolume` `DiskOutOfSpaceException("No more available volumes")` (~:82-83) | STATE re-pairing: one detector iteration reads `maxSlowDisksToExclude` before the reconfiguration (version 0, value 1, between flagging the SSD and the reconfig) and publishes [SSD]; later iterations read 0 and never clear it | `TestCausynthSlowDiskZeroMax` (self-written, WIP in the tree: flag the SSD slow by `addSlowDiskForTesting`, reconfigure 1 -> 0, write an ALL_SSD file) | version-0 writer arm (from `fix-no-root`, in `state-pairing`); STATE pairing end to end | branch `slowdisk-dev` (SD1, SD2): the stream model makes the chooser's guard symbolic; the detector turns' `max > 0` flips wait for the INITIAL arm (`state-pairing` `94e1390fc`, ported onto `zk-election-offer`) and an obligation replay that plants a moved writer choice by ORDER |
 | `hbase-bugs-master-active-time` | HBase #14: `HMaster.masterActiveTime = EnvironmentEdgeManager.currentTime()` (~:986) travels with remote procedures; `MasterRpcServices.throwOnOldMaster` (~:2620-2629) refuses a report whose initiating time exceeds the current master's: wall clocks compared across masters as an epoch | `throwOnOldMaster`'s `MasterNotRunningException` | CLOCK: the OLD master's activation clock jumps forward (clock domains move forward only), its value crosses old master -> RS -> new master | `TestSplitWALProcedure#testMasterRestart` or `TestSnapshotVerifyProcedure#testRestartMaster` (3 RS) | the clock rule through an interface delegate (`EnvironmentEdge`, WIP in `system-hbase`), the HBase RPC causal context + derived protobuf ports, masters on distinct node clocks; JDK 8 feasibility | parked (branch `system-hbase`, round HBA1): builds and runs on Java 8; three blockers (§0.4) |
 
-**Second tier** (real, high-quality coordination bugs that need STATE/MESSAGE pairing and a self-written
+**Second tier** (not a TODO: the owner dropped them 2026-10-03; real, high-quality coordination bugs that need STATE/MESSAGE pairing and a self-written
 concurrent workload; take them once the picks' pairing works): ZooKeeper #08 (concurrent `delquota -N/-B`,
 read-modify-write with version -1, `ZooKeeperServer` QuotaExceeded), #02 (concurrent parent/child setquota);
 Solr #05 (DELETENODE vs count DELETEREPLICA empties a shard), #06 (CREATESNAPSHOT recounts replicas after a
@@ -160,17 +161,16 @@ submission order (ORDER edges on the submitters).
 ### 0.4 Branches (heads at 2026-10-03; WIP = uncommitted, saved under `/bigtemp/vnr3ne/handover/`)
 
 `main`: §0.2. Merged and kept for now: `system-zookeeper`, `vm-streams` (its worktree `wt/gc-vm-streams`),
-`seed-functional`, `preWindow-loop-root`, `zk-election-offer`, `pairing-port`, `main-sf`, `main-pw`, `main-eo`, `main-pp`
-(candidates of V16-V18 and PP1). Live agents: A1 (`slowdisk-dev`), A2 (`solr-bug-reindex`), A6 (read-out streaming);
-merge order: `vm-model-guards` (V19), `slowdisk-dev`'s INITIAL/ORDER work, `solr-bug-reindex`'s pieces, one per
-round.
+`seed-functional`, `preWindow-loop-root`, `zk-election-offer`, `pairing-port`, `vm-model-guards`, `main-sf`, `main-pw`,
+`main-eo`, `main-pp`, `main-vg` (candidates of V16-V19 and PP1). Live agents: A1 (`slowdisk-dev`), A2 (`solr-bug-reindex`), A6 (read-out streaming);
+merge order: `replay-address-only` (A5), the ledger's leased charges (A5), `slowdisk-dev`'s INITIAL/ORDER work,
+`solr-bug-reindex`'s pieces, one per round.
 
 | branch | head | content | state / next step |
 | --- | --- | --- | --- |
 | `state-pairing` | `aa961ff78` | `fix-no-root`'s commits carried onto an older main (NO_ROOT fixes, final containers as cells, D0 by test, `94e1390fc` Writers_W(l)'s writer at version 0), case `hdfs-bugs-slowdisk-zero` | the source of `slowdisk-dev`'s INITIAL port; delete once that merges |
 | `slowdisk-dev` | `5fe7ef941` | main-sf + `preWindow-loop-root` + the case's declarations; a tracked read through an accessor (`65f231091`), a demanded container state tied to the read that returned the container (`5fe7ef941`) | agent A1: merge `zk-election-offer`, port `94e1390fc` (one re-paired query: A5's `SmtLowering#movedQuery`), obligation replays plant a moved writer choice by CONFIRM's ORDER rows; then SD3 |
 | `solr-bug-reindex` | `35cdd1e6b` | case `reindex-cleanup` (tree `gc/solr-bugs`, two declared loop bounds); seeded random draws, the recorded-address identity rule (on main), the codec boundary for scope growth, region roots only at writers, recording rows only inside occurrences, CLAIMs keyed by the START they claim, stall rules (a response settles once its request ended, no fabricated timeout) | agent A2: a focused replay concludes once its question closed; then SB12; its pieces merge one per round |
-| `vm-model-guards` | `c0ba4a955` | VM: no model records a condition; a muted body's choice is a guard on its chain, a fact its node's answer | agent A6: two review blockers (`asOf` keeps the answer; EXPLORE's re-pairing invisible to the pin rule) + five should-fix; offline gate; then its round on a new image |
 | `system-hbase` | `11ddd06e1` | HBase harness (`experiments/hbase`, case `hbase-bugs-master-active-time` on `gc/hbase-unified`); an interface delegate's clock is a CLOCK root when every implementation in scope is one (`RootCatalog#dispatchesToClocks`) | Phase A done (Java 8 builds and runs, round HBA1 in `gc-out/hbase-bugs/`); parked on three blockers: the old master's activation time is written before the window (no root); a WAKE turn's k counts arrivals of every thread at one wait site (seed replay stalls); async start chains nest without bound (contexts up to 686 KB). When it resumes, its `experiments/hbase/system.sh` drops the keys the pipeline retirement retired (`system_cluster_class`, `system_roots`, `system_package`, `system_node_class`, `classpath_test`) |
 | `pairing-port` | `b818815fe` + this docs commit | `dtx-on-main` (DataTransfer messages and doors) and `fix-11741-pairing` (11741's balancer race) ported onto `main-eo`, the review rework done: CONFIRM takes a delivery into the anchor from another producer of its question only where the arm's session answered the anchor, compares site index, attempt and value, names each substitution (`ADDRESS_UNSTABLE`); a slot's answered bit is read off its opening session, so no landing order matters; the named HDFS cases move to the dtx tree | rounds `PP1` + `PP1b` (snapshot `pp1`, `gc-out/pairing-port/`): 13/13 and 11741 twice; merged into main (`main-pp`) |
 | `pairing-on-main`, `dtx-on-main`, `fix-11741-pairing` | `efaa032d7`, `e3b2efb1f`, `9fd01c95f` + WIPs (`pairing-on-main-wip.patch`, `fix-11741-pairing-review-rework-wip.patch`) | the sources of `pairing-port` | contained in main through `pairing-port` (`7ad095d0f` dropped: main's `c5878482f` covers it); to delete |
@@ -215,7 +215,7 @@ does not merge until fixed (§1). The new checks join the round once they pass.
    each: `fix-hdfs-seed-stalls`, `replay-random-draws`, `fix-replay-equivalent-context` (rebased). (`perf-expr-store`
    was measured and dropped: no heap effect; the replay heap is the whole read-out page the publication decodes,
    being streamed instead.)
-5. **Second-tier bugs** (§0.3) with self-written concurrent workloads, once pairing works.
+5. ~~Second-tier bugs~~: dropped by the owner (2026-10-03, "second tier bugs都先不管了。不用作为你的todo").
 6. Then the deferred WIRE-CODEC W3/W6 (`worktree-agent-a49c8bf5715a00c40`), one piece per round.
 
 ### 0.6 Open problems
@@ -463,7 +463,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | local scratch | `/localtmp/$USER` on each lift (replay working directories go to `/localtmp/$USER/graphchecker/`). |
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | z3 | `~/.local/bin/z3` (4.14.1) |
-| concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-streams2/j2sdk-image`** (vm-w4h + the java.util.stream model, branch `vm-streams` fe68c3409, merged 770a64c8f after round V14 12/12; a jar before 770a64c8f refuses its STATE_COLLECT versions by name). `vm-w4h` (the previous one: vm-w4e + the `frame::metadata_do` fix + caches cleared when metadata is freed + demand-driven tracking) serves rounds up to V13. Parked, unreviewed: `vm-w4i` (per-activation tracked-location read-out, branch `perf-vm-readout`; a jar from that branch refuses vm-w4h by name), `vm-nr41` (reference-compare identity, branch `vm-ref-compare`). Older images are deleted (2026-10-02). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
+| concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image`** (vm-streams2 + the model guards: no model records a condition, a muted body's choice is a guard on its chain; branch `vm-model-guards` af18b3a5d, merged dda07c51b after round V19 13/13). `vm-streams2` (vm-w4h + the java.util.stream model, branch `vm-streams` fe68c3409, merged 770a64c8f after round V14; a jar before 770a64c8f refuses its STATE_COLLECT versions by name) serves rounds V14-V18. `vm-w4h` (the previous one: vm-w4e + the `frame::metadata_do` fix + caches cleared when metadata is freed + demand-driven tracking) serves rounds up to V13. Parked, unreviewed: `vm-w4i` (per-activation tracked-location read-out, branch `perf-vm-readout`; a jar from that branch refuses vm-w4h by name), `vm-nr41` (reference-compare identity, branch `vm-ref-compare`). Older images are deleted (2026-10-02). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
 | HDFS trees | `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` (worktree of `~/hadoop`, branch `gc/hdfs-unified-dtx`: `gc/hdfs-unified`, trunk 734dd8a67cd, plus the DataTransfer op's envelope; its own Maven repo `/bigtemp/vnr3ne/wt/dtx/m2`): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
 | Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406 and solr-18413 name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | ZooKeeper tree | `/bigtemp/vnr3ne/wt/zookeeper-unified` (branch `gc/zk-unified` on `branch-3.9`, a worktree of `~/zookeeper`): the adapter (`CausynthZk`, `CausynthZkCluster`), the `zk-bugs` cases' target markers and the quota workload. Maven build into its own repository `/bigtemp/vnr3ne/m2/zookeeper` (`experiments/zookeeper/build.sh`, which installs the GraphChecker jar there; never `~/.m2`). Build a case's workload before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/zookeeper/zk-bugs <case> build`. Its only remote is apache/zookeeper: never push it. |
@@ -501,7 +501,7 @@ Never overwrite an image a round uses; build a new directory.
 ```bash
 git worktree add --detach ~/gc-run/p<N> <commit>
 (cd ~/gc-run/p<N> && /bigtemp/vnr3ne/bin/onlift.sh -g 10 mvn -q -o package -DskipTests)
-GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-streams2/j2sdk-image \
+GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image \
   tools/rounds/launch-round.sh ~/gc-run/p<N> <round>              # all 11 cases, heads chosen by room
 CASES="hdfs-17960 solr-18413" ... tools/rounds/launch-round.sh ... # a subset (or any case id)
 DRY=1 ... tools/rounds/launch-round.sh ...                         # the heads it would choose
@@ -674,7 +674,7 @@ parts are in `experiments/<system>/{system.sh,build.sh,classpath.py}`.
 
 ```bash
 experiments/lib/run.sh experiments/hadoop/hdfs-17960 "" build      # build the tree, run the workload once
-export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-streams2/j2sdk-image
+export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image
 CASES=hdfs-17960 bash experiments/accept/accept.sh                  # campaign + probe + report
 ```
 
@@ -696,15 +696,17 @@ Obligations of a campaign, and GROW's re-runs, fan out over the hosts in
 `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, round-robin, as many on a host as its ledger admits, up to its
 cores. A head's own steps go to its host when it has room, else to the pool's host with the most
 room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
-host is charged to the ledger first, at its measured need, for its ramp: an obligation or a re-run,
-which is its replay (`obligation_memory_mb`, for 60 s), a host's solver of the exploration (its
-heap, for 120 s; PIPELINE §7.5), a campaign head's engine JVM (its main's measured need, else
-`engine_memory_mb`, for 120 s, and once more at `engine_memory_mb` if it runs out; PIPELINE §7.7),
-its seed and CONFIRM replays (seven times the recording's measured peak when above
-`obligation_memory_mb`, else that, for 300 s), REPRODUCE's runs (the recording's peak, for 60 s), and a `fanout.sh` job
-(its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, every start
-still in its ramp there and a reserve that keeps the host at most `CAUSYNTH_HOST_MAX_USED_PCT`
-(70) percent full, and is released the moment it returns. A running workload JVM that outgrows its
+host is charged to the ledger first, at its measured need, for as long as it runs: an obligation or
+a re-run, which is its replay (`obligation_memory_mb`), a host's solver of the exploration (its
+start's need; PIPELINE §7.5), a campaign head's engine JVM (its main's measured need, else
+`engine_memory_mb`, and once more at `engine_memory_mb` if it runs out; PIPELINE §7.7), its seed and
+CONFIRM replays (seven times the recording's measured peak when above `obligation_memory_mb`, else
+that), REPRODUCE's runs (the recording's peak), an offline gate's JVM (its heap) and a `fanout.sh`
+job (its `NEED_MB`). A start goes only when both the host's live charges and its real use
+(`MemTotal` less `MemAvailable`), each with the start and a head's held room, stay within
+`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
+(`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released
+the moment what it ran returns. A running workload JVM that outgrows its
 charge is granted the excess, charged on the ledger, unless the host's real use (`MemTotal` less
 `MemAvailable`) would pass that ceiling with it; only then is it ended (`campaign_watch_workload`,
 `campaign_host_try_grow`): what the ledger promised other starts is no reason to end it. A head's "waiting for memory for a head step" line goes to stderr
@@ -724,7 +726,7 @@ stays the cluster's one):
 ```bash
 cd ~/gc-run/p<N>        # a built snapshot of main (§3.4; a case on another tree, §3.7)
 out=/bigtemp/vnr3ne/gc-out/checks-<round>
-GC_OUT=${out} VM_IMAGE=/bigtemp/vnr3ne/vm-streams2/j2sdk-image setsid nohup \
+GC_OUT=${out} VM_IMAGE=/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image setsid nohup \
   bash tools/adhoc/sweep.sh ~/gc-run/p<N> <round> <cases-file> 1 > ${out}-sweep.log 2>&1 < /dev/null &
 GC_OUT=${out} tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
 GC_OUT=${out} python3 tools/adhoc/triage.py <round>         # class, stage, reason per case
