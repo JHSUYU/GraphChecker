@@ -12,6 +12,13 @@ case "${1:?usage: case.sh quota-init|election-offer}" in
     # quota retrying on ConnectionLoss, raises it, and the server enforces it.
     test_class=org.apache.zookeeper.test.CausynthQuotaRetryTest
     test_method=raisesARetriedHardQuota
+    # The server answers six getData requests at the guard: per quota call
+    # the child-quota walk's read of the quota path (the first call's finds
+    # no node: a NoNode the walk expects), then the limit and the stat.  The
+    # question is the stat read of the call that takes the update branch,
+    # the sixth: the retry of a call whose limit create failed reads it at
+    # this address too (createQuota's second entry, its second getData).
+    target_occurrence="auto0/server0#epoch0/region/REGION.860d3eb6-a432-3c9e-87a7-161a28678252#6"
     scope=(
       server:org/apache/zookeeper/server/FinalRequestProcessor
       server:org/apache/zookeeper/cli/SetQuotaCommand

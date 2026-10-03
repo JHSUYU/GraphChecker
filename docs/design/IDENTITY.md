@@ -442,7 +442,7 @@ order:
 A case names its target occurrence (`declared_target_occurrence`) as a selector
 (`contract/Selector`), `<node>#epoch<N>/region/REGION.x[@<src>#epoch<N>/<api>]#k`, or as `first`,
 the first observed occurrence of the declared target site in the recording (an ad-hoc sweep's default,
-`plan/RuntimeWorkflowDiscovery.FIRST`, also for a case stating none). The recording's aggregation
+`plan/RuntimeWorkflowDiscovery.FIRST`; a case stating none is refused at PLAN). The recording's aggregation
 resolves it once, against the target occurrences it observed in recorded order
 (`RuntimeWorkflowDiscovery#declaredOccurrence`: the k-th a selector matches, by `SelectorResolution`'s
 rule), marks that occurrence's plan row, and plans only the question `(r,c)` around it: the target

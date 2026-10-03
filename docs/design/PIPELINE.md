@@ -13,7 +13,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | SETUP (optional) | `campaign_setup` | whatever `campaign_setup_command` does | the command fails |
 | FREEZE | `campaign_freeze` | the provenance (published by EMIT) | an input cannot be digested |
 | SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` (a batch: `campaign_batch_seed`, §2b) | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
-| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | not even the target's demand depth fits `schedule_max_jobs`; the index does not commit the frozen plan; no target |
+| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json`, `plan.log` | the scheduler refuses (its deepest throwable is the reason: not even the target's demand depth fits `schedule_max_jobs`, no declared occurrence, no target); the index does not commit the frozen plan |
 | UNION (a batch) | `campaign_batch_union`; `plan.PlanUnion` | `groups/groups.json`, `groups/group-<n>/execution_task_plan.jsonl` | `PlanUnion` exits nonzero |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/`, `instrument.log` | the weave refuses (its deepest throwable is the reason); no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
@@ -213,8 +213,8 @@ recording's schedule to `recorded_schedule.jsonl`, and runs `plan.ConcolicSchedu
 (`scheduleTargetFirst`). `RuntimeWorkflowDiscovery.workflow` schedules the declared target first, then
 every other occurrence the plan states is replayable, in recorded order; no slice is applied here
 (the closure is EXPLORE's). The declaration is `declared_target_occurrence`: a resolved address, a
-selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first` (also
-when none is stated). SEED's aggregation resolves it once against the recording's target occurrences
+selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first` (none stated:
+SEED resolves `first` and PLAN refuses, `DECLARED_TARGET_OCCURRENCE_MISSING`). SEED's aggregation resolves it once against the recording's target occurrences
 (`RuntimeWorkflowDiscovery#declaredOccurrence`) and marks that row `declaredOccurrence`; PLAN takes
 the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNED`), and the shell
 uses the address PLAN's index states for every later stage, whatever form the declaration had

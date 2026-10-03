@@ -2356,7 +2356,13 @@ campaign_plan() {
     cp -f "${recorded_schedule}" "${iteration_dir}/recorded_schedule.jsonl"
   fi
   schedule_output_dir="${iteration_dir}"
-  do_schedule
+  # A refusal of the scheduler's (DECLARED_TARGET_OCCURRENCE_MISSING, ...)
+  # ends the stage by name, as any stage's throwable does.
+  local plan_log="${iteration_dir}/plan.log"
+  run_capturing_status do_schedule 2>"${plan_log}"
+  cat -- "${plan_log}" >&2
+  (( status == 0 )) || campaign_fail PLAN ConcolicScheduler "${plan_log}" \
+    "the scheduler failed with exit ${status}: $(campaign_thrown "${plan_log}")"
   campaign_plan_read "${iteration_dir}"
   require_nonempty "campaign task plan" "${plan}"
   require_nonempty "runtime workflow schedule index" "${index}"
