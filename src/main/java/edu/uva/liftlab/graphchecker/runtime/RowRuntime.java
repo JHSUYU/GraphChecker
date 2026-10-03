@@ -237,8 +237,17 @@ public final class RowRuntime {
     private static final Map<String, Boolean> AMBIENT =
             new ConcurrentHashMap<String, Boolean>();
 
-    /** Thread name plus id: the name repeats across a pool. */
+    /**
+     * What an activation is program-ordered by (CONTRACT-SPEC §2.2): the
+     * start of the work it runs in, claimed on this thread (a queue item, a
+     * task: {@link Identity#claimedStart}), else its thread, by name plus id
+     * (the name repeats across a pool).  Two items one consumer thread
+     * claims run in their queue's order, which their starters decide: a
+     * server's pipeline applies two clients' requests on one thread.
+     */
     private static String threadKey() {
+        String claimed = Identity.claimedStart();
+        if (claimed != null) return ActivationRow.CLAIMED + claimed;
         Thread thread = Thread.currentThread();
         return thread.getName() + "#" + thread.getId();
     }

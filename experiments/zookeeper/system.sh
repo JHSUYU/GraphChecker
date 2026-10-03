@@ -39,12 +39,16 @@ system_paths() {
   # ones classpath.py puts first and the build makes (-am).  A recipe another
   # module holds is no class the workload can load: woven, it does not verify
   # against the workload's classpath (ZK5: the lock recipe's ProtocolSupport).
+  # And the workload's own test classes: a ZooKeeper workload's clients are
+  # threads its test starts (an election's contenders), which stand on their
+  # creator's frames and share one address unless the start is a start site.
   local each
   lineage_roots=
   for each in "${zk_module}" zookeeper-server zookeeper-jute; do
     [[ ":${lineage_roots}:" == *":${repo}/${each}/target/classes:"* ]] \
       || lineage_roots+=${lineage_roots:+:}${repo}/${each}/target/classes
   done
+  lineage_roots+=:${test_classes}
 }
 
 system_root() {

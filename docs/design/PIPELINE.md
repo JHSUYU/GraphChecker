@@ -1060,7 +1060,8 @@ has no arm) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world o
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
 lowers to the run's cell, except through an owner that is a read `stateJoins` joined at the anchor
 at a location a STATE family re-pairs (`SmtLowering#movable`: the family may bind it to another
-writer's object). There it is the
+writer's object; that read alone, by its event (`SmtLowering#readKey`), so another occurrence's read
+of the location at the same version -- a writer's own lookup -- keeps the run's object). There it is the
 field of the object the owner is, by the one rule for what is asked through such an owner
 (`perCandidate`, R3-REFCONT's "answer per candidate identity"):
 `(ite (= owner id_run) cell_run (ite (= owner id_k) cell_k ...))`, conjoined with "the owner is one
@@ -1118,6 +1119,15 @@ through keeps the run's pairing (`OWNER_PINNED_BY_CONTAINER_READ`, below); a re-
 whose write and row name no object refuses the path (`UNSTATED_VALUE:OwnerCandidates:<location>`).
 `ENTRY` is a view to walk through; as a value no
 `Value` spells it, and it is refused by name.
+
+**A container read the family re-pairs** (`SmtLowering#movedQuery`). The anchor's read of a container
+location a STATE family re-pairs (`SessionJoin#repaired`, per read event: the anchor's reads up to its
+cutoff, `Composer#anchorReads`) asks its query of the read's own symbol, the state its join states at
+the container's sort and each writer arm binds to that writer's state, not of the run's chain, which
+inlined is the run's answer no family moves (zk-bugs-election-offer: the getData's lookup of an offer
+in ZooKeeper's node map). The base a query requires of its chain (`requireStatedContainerBase`) is the
+observed version's: every version of one location descends from it. A query through a view keeps the
+run's chain (its positions are the chain's).
 
 **What a state arm states for CONFIRM** (`SmtLowering#stateChoices`, `ComposedFamilies.ArmChoice#states`).
 A query's reads are the container reads (MAP location) of the owner's reader whose joined value was
@@ -1185,16 +1195,20 @@ complement, stays free. `ComposeMain`
 reads the epoch's scope map (`--static-scope-map`, required; `run_engine.sh do_compose` passes it).
 
 **An owner kept to the run's pairing** (`Composer#pinnedOwners`): a location a STATE family may
-re-pair keeps the run's pairing (no family, no movable owner), named DIAGNOSTIC, when a reached
-occurrence's container version is a mutation naming as its `owner` a read of it
+re-pair keeps the run's pairing (no family, no movable owner), named DIAGNOSTIC, only where a read the
+family moves -- the anchor's, up to its cutoff (`Composer#anchorReads`) -- would leave something
+unnamed; a reached writer's own read of the location keeps the run's pairing, so what is asked
+through it names the run's object and pins nothing (zk-bugs-election-offer: each create and delete
+looks up its parent in the node map the anchor's getData re-pairs). So when a reached occurrence's
+container version is a mutation naming as its `owner` a moved read
 (`OWNER_PINNED_BY_MUTATION:<location>@<session>`, R3-REFCONT C-4: another pairing would mutate an
 object no row records the mutation of), or when a store of it states or refuses a referent while
 the object it stored has no container log of its own in the session, a `Collections` wrapper or a
 view (`OWNER_PINNED_BY_WRAPPER:<location>@<session>`: a query through a wrapper reaches its map
 through a field no row records and names no owner, so it would be the run's map's answer whichever
 object the family delivered), or when the anchor or a reached occurrence asks a field or a query
-through a container query's read of it (`OWNER_PINNED_BY_CONTAINER_READ:<location>@<session>`, the
-read names no object, `Composer#containerOwners`).
+through a moved container query read of it (`OWNER_PINNED_BY_CONTAINER_READ:<location>@<session>`,
+the read names no object, `Composer#containerOwners`).
 
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint
@@ -1399,8 +1413,12 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   it is the run's own history, as a scalar's INITIAL is no row: `StateClosure#initial`, the write
   whose expression is its `SNAPSHOT_BASE`'s `members` and nothing above them), `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
-  it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); every other writer of
-  the location the held write is of before the writer or after the reader, held alike), `MARKER`
+  it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); where that activation runs
+  as claimed work on a consumer thread (`ActivationRow#claimed`: a server pipeline applying one
+  request after another, the writer's among them, would deadlock held), the entry of the send that
+  started it, its anchor's producer followed up the chain while that send is claimed work too
+  (`Confirmation#submitter`; none outside one refuses the confirmation, `ORDER_UNHELD`); every other
+  writer of the location the held write is of before the writer or after the reader, held alike), `MARKER`
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
   stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
   delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where

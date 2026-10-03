@@ -422,13 +422,11 @@ final class RowPublication {
         return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
     }
 
-    /** The VM event a node names, or {@code -1}. */
+    /** The VM event a node names, or {@code -1} ({@link VmRows#readEvent},
+     *  the one rule COMPOSE finds a node's row by). */
     private static long eventOf(JsonElement node) {
-        if (node == null || !node.isJsonObject()) return -1L;
-        JsonObject object = node.getAsJsonObject();
-        long read = optionalLongInteger(object, "readEventId", -1L);
-        return read >= 0L ? read
-                : optionalLongInteger(object, "eventId", -1L);
+        return node == null || !node.isJsonObject() ? -1L
+                : VmRows.readEvent(node.getAsJsonObject());
     }
 
     /**
