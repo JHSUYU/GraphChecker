@@ -34,11 +34,11 @@ case "${1:?usage: case.sh quota-init|election-offer}" in
     zk_module=zookeeper-recipes/zookeeper-recipes-election
     test_class=org.apache.zookeeper.recipes.leader.LeaderElectionSupportTest
     test_method=testNodes3
-    # Each of the three candidates lists the three offers and reads each
-    # (nine getData requests at the guard, three per offer, in offer
-    # order).  The question is a read of the first offer, the leader's,
-    # which two competitors read and the leader's stop() deletes.
-    target_occurrence="auto0/server0#epoch0/region/REGION.860d3eb6-a432-3c9e-87a7-161a28678252#1"
+    # The question: the server's second getData of an offer.  Each of the
+    # three contenders lists the offers and reads them in the list's order
+    # (n_0, n_1, n_2), so the first two reads are of n_0, by its creator
+    # first, then by a competitor whose read its creator's stop() can race.
+    target_occurrence="auto0/server0#epoch0/region/REGION.860d3eb6-a432-3c9e-87a7-161a28678252#2"
     scope=(
       server:org/apache/zookeeper/server/FinalRequestProcessor
       election:org/apache/zookeeper/recipes/leader/LeaderElectionSupport

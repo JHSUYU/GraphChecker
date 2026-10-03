@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
@@ -14,7 +15,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -116,7 +119,7 @@ public class ConfirmationTest {
         Files.write(plain, new byte[0]);
         System.setProperty(FocusedReplay.PLAN_PROPERTY, plain.toString());
         assertEquals("", Confirmation.attached(
-                endpoint(ANCHOR, "x"), endpoint(MINT, "y"), null, null));
+                endpoint(ANCHOR, "x"), endpoint(MINT, "y"), null, null).mismatch);
         assertTrue(Confirmation.close().isEmpty());
         reset();
 
@@ -162,23 +165,23 @@ public class ConfirmationTest {
                                 + "\"value\":true}"));
         LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
         assertEquals("the chosen producer is no mismatch", "",
-                Confirmation.attached(consumer, chosen, null, null));
-        String mismatch = Confirmation.attached(consumer, other, null, null);
+                Confirmation.attached(consumer, chosen, null, null).mismatch);
+        String mismatch = Confirmation.attached(consumer, other, null, null).mismatch;
         assertTrue(mismatch, mismatch.contains("the model chose producer "
                 + chosen.id() + ", the run paired " + other.id()));
         assertEquals("a consumer the model chose nothing for", "",
-                Confirmation.attached(other, chosen, null, null));
+                Confirmation.attached(other, chosen, null, null).mismatch);
         // A codec's hole: its message's store version and its text too.
         assertEquals("the chosen version, decoded as the model's value", "",
-                Confirmation.attached(hole, chosen, state, "2000"));
+                Confirmation.attached(hole, chosen, state, "2000").mismatch);
         mismatch = Confirmation.attached(hole, chosen,
-                "SOLR_ZK /collections/c/state.json@4", "2000");
+                "SOLR_ZK /collections/c/state.json@4", "2000").mismatch;
         assertTrue(mismatch, mismatch.contains("the model's arm came from "
                 + "message " + state + ", the run decoded SOLR_ZK "
                 + "/collections/c/state.json@4"));
-        mismatch = Confirmation.attached(hole, chosen, state, "1999");
+        mismatch = Confirmation.attached(hole, chosen, state, "1999").mismatch;
         assertTrue(mismatch, mismatch.endsWith("the model's value is "
-                + "\"2000\", the run decoded \"1999\""));
+                + "\"2000\", the run delivered \"1999\""));
         // The writer of a version is published after the read that saw
         // it, so the state edge is answered at the close.
         Confirmation.read(reader, cell, 121L,
@@ -196,6 +199,51 @@ public class ConfirmationTest {
                 + other.id()));
         assertTrue(close.get(1), close.get(1).contains(absent.id())
                 && close.get(1).endsWith("the run never read here"));
+    }
+
+    /** A delivery into the anchor is the model's when its producer answers
+     *  the model's producer's question: the same site, site index and
+     *  attempt of an occurrence of the same region and node under a chain of
+     *  the same shape, delivering the model's value (hdfs-11741 V6: the
+     *  balancer's second move to dn1 rode its next dispatcher iteration in
+     *  the witness, its first in the CONFIRM run).  The substitution is
+     *  named, never silent. */
+    @Test
+    public void aDeliveryIntoTheAnchorIsComparedByItsProducersQuestion()
+            throws Exception {
+        String site = "XCH.1.resp.key-id";
+        Endpoint consumer = endpoint(ANCHOR, site);
+        Endpoint chosen = endpoint(PRODUCER, site);
+        String nextTurn = PRODUCER.replace("TICK#1", "TICK#2");
+        handed("", Arrays.asList("{\"kind\":\"WIRE\",\"consumer\":\""
+                + consumer.id() + "\",\"producer\":\"" + chosen.id()
+                + "\",\"value\":\"7\",\"" + Confirmation.PRODUCER_QUESTION
+                + "\":{\"occurrence\":\"" + PRODUCER + "\",\"site\":\""
+                + site + "\",\"siteIndex\":\""
+                + ExecutionIndex.empty().hash() + "\",\"attempt\":0,"
+                + "\"shape\":[\"Root:TICK\"]}}"));
+        // producer, the value it delivered, substituted?, a mismatch?
+        Object[][] table = {
+            {endpoint(nextTurn, site), "7", true, false},
+            {endpoint(nextTurn, site), "8", true, true},
+            {Endpoint.of(OccurrenceAddress.parse(nextTurn), site,
+                    ExecutionIndex.of(Arrays.asList(Frame.of("a.X#y", 1))),
+                    0), "7", false, true},
+            {Endpoint.of(OccurrenceAddress.parse(nextTurn), site,
+                    ExecutionIndex.empty(), 1), "7", false, true},
+            {endpoint(nextTurn.replace("nn0", "nn1"), site), "7", false,
+                true},
+            {chosen, "7", false, false},
+        };
+        for (Object[] row : table) {
+            Confirmation.Compared compared = Confirmation.attached(consumer,
+                    (Endpoint) row[0], null, (String) row[1]);
+            String subject = row[0] + " delivering " + row[1];
+            assertEquals(subject + ": " + compared.substitution, row[2],
+                    !compared.substitution.isEmpty());
+            assertEquals(subject + ": " + compared.mismatch, row[3],
+                    !compared.mismatch.isEmpty());
+        }
     }
 
     /** The poll's read at one turn of its loop. */
@@ -267,5 +315,64 @@ public class ConfirmationTest {
         } finally {
             System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
         }
+    }
+
+    /**
+     * An ORDER on claimed work (a server pipeline's request) is held at the
+     * send that started it, up the chain of claimed work; on any other
+     * activation, where it runs; and refused where no send runs outside
+     * claimed work.
+     */
+    @Test
+    public void claimedWorkIsHeldAtTheSendThatStartedIt() {
+        OccurrenceAddress client = OccurrenceAddress.parse(
+                "zk/client0#epoch0/region/REGION.start/ctx:Root:CLIENT/test#1"
+                        + "/idx:<a.Election: void start()>@0");
+        Endpoint send = Endpoint.of(client, "ZOOKEEPER#REQUEST",
+                ExecutionIndex.of(Arrays.asList(Frame.of(
+                        "<a.ZooKeeper: byte[] getData()>", 0))), 0);
+        OccurrenceAddress prep = OccurrenceAddress.parse(
+                "zk/server0#epoch0/region/REGION.prep/ctx:Anchor:"
+                        + send.id() + "@ZOOKEEPER/test/idx:<a.Prep: void p()>@0");
+        Endpoint relayed = Endpoint.of(prep, "SYNC#REQUEST",
+                ExecutionIndex.empty(), 0);
+        OccurrenceAddress served = OccurrenceAddress.parse(
+                "zk/server0#epoch0/region/REGION.final/ctx:Anchor:"
+                        + relayed.id() + "@SYNC/test/idx:<a.Final: void f()>@0");
+        // row of each occurrence: claimed, its anchor's producer
+        Object[][] table = {
+                // held at the client's send, through the relaying stage
+                {served, true, relayed, prep, true, send, send},
+                // a client thread's own activation is held where it runs
+                {client, false, null, null, false, null, null},
+                // claimed work that names no send: no hold
+                {served, true, null, null, false, null, "ORDER_UNHELD"},
+        };
+        for (Object[] row : table) {
+            Map<String, ActivationRow> rows =
+                    new HashMap<String, ActivationRow>();
+            put(rows, (OccurrenceAddress) row[0], (Boolean) row[1],
+                    (Endpoint) row[2]);
+            if (row[3] != null) {
+                put(rows, (OccurrenceAddress) row[3], (Boolean) row[4],
+                        (Endpoint) row[5]);
+            }
+            Object held;
+            try {
+                held = Confirmation.submitter((OccurrenceAddress) row[0],
+                        rows::get);
+            } catch (IllegalStateException unheld) {
+                held = unheld.getMessage().split(":")[0];
+            }
+            assertEquals(String.valueOf(row[0]), row[6], held);
+        }
+    }
+
+    private static void put(Map<String, ActivationRow> rows,
+                            OccurrenceAddress at, boolean claimed,
+                            Endpoint producer) {
+        rows.put(at.id(), ActivationRow.of("s0", at, "", false, true,
+                claimed ? ActivationRow.CLAIMED + at.id() : "main#1",
+                producer));
     }
 }

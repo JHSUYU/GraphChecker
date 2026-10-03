@@ -15,7 +15,7 @@ instead of clearing its cached key and retrying once, which is what the PR adds.
 | `pathB` | the move TARGET, on `DataXceiver.replaceBlock` (`DataXceiver.java:1241`) | the PROXY | `DataXceiver.java:1285 throw ioe` |
 | `pathC` | the RECONSTRUCTING node, on `StripedBlockWriter.init` | the reconstruction TARGET | `StripedWriter.java:122 throw new IOException("All targets are failed.")` |
 
-All three run on the unified HDFS tree `/u/vnr3ne/hadoop-hdfs-unified`, branch `gc/hdfs-unified` (trunk 734dd8a67cd; inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`). It has the bug: no HDFS-17967 fix is in trunk (its
+All three run on the HDFS tree `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`, branch `gc/hdfs-unified-dtx` (the unified tree `gc/hdfs-unified`, trunk 734dd8a67cd, inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`, plus the DataTransfer op's envelope). It has the bug: no HDFS-17967 fix is in trunk (its
 `DataXceiver.java` handles no `InvalidEncryptionKeyException` in the relays). Do not base
 this case on the upstream follow-up branch `HDFS-17899-followup-invalid-encryption-key`: it
 has the fix, so there is no fatal arm to reach.
@@ -59,9 +59,11 @@ carries what is per case, including the per-case analysis scope.
 
 **Fault points.** The engine's library catalog doors (`docs/design/SYMBOL-SCOPE.md` §4.2):
 `FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest`, `FAULT:HADOOP_IPC:RESPONSE`,
-`FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake` and
-`FAULT:HDFS_DATA_TRANSFER:SEND` in `datatransfer.Sender.send`, the same code in every tree. The
-recorded polarity is false; true throws the transport's failure before the request leaves.
+`FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake`,
+`FAULT:HDFS_DATA_TRANSFER:REQUEST` in `datatransfer.Sender.send` and
+`FAULT:HDFS_DATA_TRANSFER:RESPONSE` after a response parse of a class in scope (`DFSClient` for
+A), the same code in every tree. The recorded polarity is false; true throws the transport's
+failure before the request leaves (after the response arrives).
 `ipc/Client` stays in the analysis scope: the door and the IPC message-propagation calls the
 causal context travels on live in the same file.
 

@@ -1,6 +1,9 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -17,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -42,14 +46,21 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  *
  * <p>WIRE is compared at the attach, where the producer is known -- a
  * codec's hole at its mint, by the store version its message was and the
- * text it decoded too (WIRE-CODEC §6.5); STATE at the close, since a
- * writer's log is read out after the read that saw it.
+ * text it decoded too (WIRE-CODEC §6.5); a delivery into the anchor by the
+ * value that arrived too, and, where the model's arm answered the anchor by
+ * its question, by its producer's question ({@link Wire#answeredBy}); STATE
+ * at the close, since a writer's log is read out after the read that saw
+ * it.
  * An expected consumer or reader that never ran is a mismatch too, and so is
  * a CONFIRM run whose edges could not be read: it compared nothing, and the
  * fatal alone confirms no model.</p>
  */
 public final class Confirmation {
     public static final String FILE = "expected_edges.jsonl";
+    /** A WIRE row's member: the question its producer answers, stated for a
+     *  consumer of the anchor when the model's arm answered the anchor by
+     *  its question ({@code explore.ConfirmMain#question}). */
+    public static final String PRODUCER_QUESTION = "producerQuestion";
     /** How long an activation waits for those ordered before it, in ms. */
     public static final String ORDER_TIMEOUT_PROPERTY =
             "causynth.confirm.order.timeout.ms";
@@ -112,19 +123,80 @@ public final class Confirmation {
     /**
      * One delivery the model chose: its producer endpoint; for a codec's
      * hole, the store version its message was (null for an exchange, whose
-     * correlation is its run's own) and the text the hole must decode to
-     * (null where the model's value rests on a clock, which a replay reads
-     * afresh).
+     * correlation is its run's own); for a hole or a consumer of the anchor,
+     * the text that must arrive (null where the model's value rests on a
+     * clock, which a replay reads afresh).
      */
     private static final class Wire {
         private final String producer;
         private final String messageKey;
         private final String value;
+        /** The question the model's producer answers, or null: its
+         *  occurrence, site, site index, attempt and context shape. */
+        private final OccurrenceAddress questionOccurrence;
+        private final String questionSite;
+        private final String questionSiteIndex;
+        private final int questionAttempt;
+        private final List<String> questionShape;
 
-        private Wire(String producer, String messageKey, String value) {
+        private Wire(String producer, String messageKey, String value,
+                     JsonObject question) {
             this.producer = producer;
             this.messageKey = messageKey;
             this.value = value;
+            this.questionOccurrence = question == null ? null
+                    : OccurrenceAddress.parse(
+                            optionalString(question, "occurrence"));
+            this.questionSite = question == null ? ""
+                    : optionalString(question, "site");
+            this.questionSiteIndex = question == null ? ""
+                    : optionalString(question, "siteIndex");
+            this.questionAttempt = question == null ? -1
+                    : question.get("attempt").getAsInt();
+            List<String> shape = new ArrayList<String>();
+            if (question != null && question.has("shape")) {
+                for (JsonElement hop : question.getAsJsonArray("shape")) {
+                    shape.add(hop.getAsString());
+                }
+            }
+            this.questionShape = shape;
+        }
+
+        /**
+         * Whether {@code producer} answers the model's producer's question:
+         * the anchor is answered by its question (IDENTITY §9), so a
+         * delivery into it is the model's when its producer is the same
+         * site, at the same site index and attempt, of an occurrence of the
+         * same region and node under a chain of the same shape over this
+         * run's senders -- which turn or iteration of the chain carried it
+         * is the run's timing, and only the chain's counts may differ.
+         */
+        private boolean answeredBy(Endpoint producer) {
+            return questionOccurrence != null && producer != null
+                    && questionSite.equals(producer.site())
+                    && questionSiteIndex.equals(producer.siteIndex().hash())
+                    && questionAttempt == producer.attempt()
+                    && ContextShape.answers(producer.occurrence(),
+                    questionOccurrence,
+                    ScheduleLog.shape(producer.occurrence().context()),
+                    questionShape);
+        }
+    }
+
+    /**
+     * What one delivery's comparison found, each {@code ""} when none: a
+     * difference from the edge the model chose, and the substitution of
+     * another producer answering the model's producer's question.
+     */
+    static final class Compared {
+        static final Compared NOTHING = new Compared("", "");
+
+        final String mismatch;
+        final String substitution;
+
+        private Compared(String mismatch, String substitution) {
+            this.mismatch = mismatch;
+            this.substitution = substitution;
         }
     }
 
@@ -137,39 +209,46 @@ public final class Confirmation {
     }
 
     /**
-     * One delivery this run paired: the mismatch to file, or {@code ""}.
-     * A codec's hole states the message it was decoded from and the text
-     * it decoded (null for a declared port's attach).
+     * One delivery this run paired, with the message it was decoded from (a
+     * codec's hole; null for a declared port's attach) and the text that
+     * arrived.
      */
-    static String attached(Endpoint consumer, Endpoint producer,
-                           String messageKey, String text) {
-        if (!expected() || consumer == null) return "";
+    static Compared attached(Endpoint consumer, Endpoint producer,
+                             String messageKey, String text) {
+        if (!expected() || consumer == null) return Compared.NOTHING;
         String actual = producer == null ? "" : id(producer);
+        Wire chosen;
         synchronized (LOCK) {
             ATTACHED.put(id(consumer), actual);
-            Wire chosen = WIRE.get(id(consumer));
-            if (chosen == null) return "";
-            List<String> differs = new ArrayList<String>();
-            if (!chosen.producer.equals(actual)) {
-                differs.add("the model chose producer " + chosen.producer
-                        + ", the run paired "
-                        + (actual.isEmpty() ? "no export" : actual));
-            }
-            if (chosen.messageKey != null
-                    && !chosen.messageKey.equals(messageKey)) {
-                differs.add("the model's arm came from message "
-                        + chosen.messageKey + ", the run decoded "
-                        + messageKey);
-            }
-            if (chosen.value != null && !chosen.value.equals(text)) {
-                differs.add("the model's value is \"" + chosen.value
-                        + "\", the run decoded "
-                        + (text == null ? "none" : "\"" + text + "\""));
-            }
-            return differs.isEmpty() ? ""
-                    : "WIRE " + id(consumer) + ": " + String.join("; ",
-                    differs);
+            chosen = WIRE.get(id(consumer));
         }
+        if (chosen == null) return Compared.NOTHING;
+        // A Wire is never changed once read: it is compared outside the
+        // monitor, where ScheduleLog's senders (a leaf) shape the producer.
+        boolean substituted = !chosen.producer.equals(actual)
+                && chosen.answeredBy(producer);
+        List<String> differs = new ArrayList<String>();
+        if (!chosen.producer.equals(actual) && !substituted) {
+            differs.add("the model chose producer " + chosen.producer
+                    + ", the run paired "
+                    + (actual.isEmpty() ? "no export" : actual));
+        }
+        if (chosen.messageKey != null
+                && !chosen.messageKey.equals(messageKey)) {
+            differs.add("the model's arm came from message "
+                    + chosen.messageKey + ", the run decoded " + messageKey);
+        }
+        if (chosen.value != null && !chosen.value.equals(text)) {
+            differs.add("the model's value is \"" + chosen.value
+                    + "\", the run delivered "
+                    + (text == null ? "none" : "\"" + text + "\""));
+        }
+        return new Compared(differs.isEmpty() ? ""
+                : "WIRE " + id(consumer) + ": " + String.join("; ", differs),
+                substituted ? "WIRE " + id(consumer) + ": the run paired "
+                        + "producer " + actual + ", which answers the "
+                        + "question of the model's producer "
+                        + chosen.producer + " at another address" : "");
     }
 
     static void wrote(LocationId location, long version, Endpoint writer) {
@@ -219,6 +298,46 @@ public final class Confirmation {
     public static String activation(OccurrenceAddress occurrence,
                                     ExecutionIndex frames) {
         return Endpoint.activation(occurrence.anyDelivery(), frames);
+    }
+
+    /** How many sends {@link #submitter} follows up a chain of claimed
+     *  work, as {@code Attribution} follows starters. */
+    private static final int SUBMITTER_HOPS = 32;
+
+    /**
+     * Where an ORDER holds an event of {@code occurrence} so that it comes
+     * after what the model orders before it ({@code explore.ConfirmMain}):
+     * null where it runs, unless it runs as claimed work on a consumer
+     * thread ({@link ActivationRow#claimed}) -- a server's pipeline applying
+     * one request after another.  Held there it would hold every item
+     * queued behind it, the writer's among them, so it is held where it was
+     * sent: its anchor's producer ({@link ActivationRow#anchorProducer}, the
+     * send that started the request), followed up the chain while that
+     * send is itself claimed work.  Not its claim's START, which runs on
+     * the upstream stage, a consumer too.
+     *
+     * @throws IllegalStateException naming the chain where no send of it
+     *         runs outside claimed work: no hold realizes the order
+     */
+    public static Endpoint submitter(OccurrenceAddress occurrence,
+                                     Function<String, ActivationRow> rows) {
+        ActivationRow row = rows.apply(occurrence.id());
+        if (row == null || !row.claimed()) return null;
+        for (int hop = 0; hop < SUBMITTER_HOPS; hop++) {
+            Endpoint send = row.anchorProducer();
+            if (send == null) {
+                throw new IllegalStateException("ORDER_UNHELD: "
+                        + row.occurrence().render() + " runs as claimed "
+                        + "work on a consumer thread and names no send of "
+                        + "this run that started it, so no hold realizes an "
+                        + "order on " + occurrence.render());
+            }
+            row = rows.apply(send.occurrence().id());
+            if (row == null || !row.claimed()) return send;
+        }
+        throw new IllegalStateException("ORDER_UNHELD: past "
+                + SUBMITTER_HOPS + " sends of claimed work above "
+                + occurrence.render() + ", no send outside one");
     }
 
     /** Whether this run is held to an order: every frame hook asks. */
@@ -369,7 +488,10 @@ public final class Confirmation {
                         WIRE.put(optionalString(row, "consumer"), new Wire(
                                 optionalString(row, "producer"),
                                 stated(row, "messageKey"),
-                                stated(row, "value")));
+                                stated(row, "value"),
+                                row.has(PRODUCER_QUESTION)
+                                        ? row.getAsJsonObject(
+                                        PRODUCER_QUESTION) : null));
                     } else if ("STATE".equals(kind)
                             && row.has("mint") && !row.get("mint").isJsonNull()
                             && row.get("mint").getAsBoolean()) {

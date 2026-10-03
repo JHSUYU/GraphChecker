@@ -77,17 +77,20 @@ public final class RegionContainerLiveInApiSmoke {
         require(relation(abstractIterator.next(),
                         "\"operation\":\"NEXT\""),
                 "AbstractList iterator result");
+        // The head or null, and the queue without its head where it has one.
         Integer peekResult = queue.peek();
-        require(read(peekResult), "Queue.peek result");
+        require(relation(peekResult, "\"operation\":\"PEEK\""),
+                "Queue.peek result");
         Integer pollResult = queue.poll();
-        require(read(pollResult), "Queue.poll result");
-        require(relation(queue, "\"operation\":\"REMOVE\""),
+        require(relation(pollResult, "\"operation\":\"PEEK\""),
+                "Queue.poll result");
+        require(relation(queue, "\"operation\":\"POLL\""),
                 "Queue.poll state");
         require(System.trackContainerExpression(
                         queue, "REGION.container.in.redundant"),
                 "repeated queue live-in rejected");
         String queueState = System.getSymbolicExpression(queue);
-        require(queueState.contains("\"operation\":\"REMOVE\"")
+        require(queueState.contains("\"operation\":\"POLL\"")
                         && queueState.contains("REGION.container.in.queue")
                         && !queueState.contains(
                         "REGION.container.in.redundant"),

@@ -1504,8 +1504,7 @@ public final class ConcolicRegionRuntime {
                                     + rootCause(throwable));
                 }
             }
-            // What the summary states that is read: the rest of it (a Solr
-            // region's was 58 MB) is skipped, never built.
+            // What the summary states that is read; the rest is skipped.
             JsonObject summary = members(api.finish(), "aborted",
                     "abortReason", "modelGaps");
             engineFinished = true;
@@ -1669,9 +1668,8 @@ public final class ConcolicRegionRuntime {
      * The members {@code names} of one VM read-out (a region summary, a
      * read-out page's header), streamed off its top level: every other
      * member is skipped, never built, and the reading stops once each named
-     * one is read -- parsed whole, a Solr region's summary was a 58 MB tree
-     * for three members, and a page's header sits behind its records.  A
-     * blank read-out states none; null when it is no JSON object.
+     * one is read (a page's header sits behind its records).  A blank
+     * read-out states none; null when it is no JSON object.
      */
     static JsonObject members(String serialized, String... names) {
         JsonObject read = new JsonObject();

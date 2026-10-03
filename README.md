@@ -73,20 +73,24 @@ checks per system) is superseded by this one; Phase 1's eleven cases stay the re
 - **main** (local; `origin/main` = `4027318f5`; push only when the owner asks) = this commit: the V9 main plus,
   one large change per live round, `symbolic-scope` (V10 11/11, V11), `system-zookeeper` + the recorded-address
   identity rule (V12, V13), `vm-streams` (V14 12/12, VM `vm-streams2`), `retire-adhoc-pipeline` (V15),
-  `seed-functional` (V16 + V16b 12/12, snapshot `~/gc-run/p229`) and `preWindow-loop-root` (V17 12/12, snapshot
-  `~/gc-run/p230`). The twelve regression cases are the eleven named ones plus `zk-bugs-quota-init`. The HDFS
+  `seed-functional` (V16 + V16b 12/12, snapshot `~/gc-run/p229`), `preWindow-loop-root` (V17 12/12, snapshot
+  `~/gc-run/p230`), `zk-election-offer` (V18 13/13, snapshot `~/gc-run/p231`; hdfs-11741 on its rerun V18b: the first run
+  met the 11741 balancer race) `pairing-port` (the race fixed, DataTransfer doors, the eight named HDFS cases on the
+  dtx tree; rounds PP1 + PP1b 13/13 and 11741 twice, snapshot `~/gc-run/pp1`) and `vm-model-guards` (V19 13/13,
+  snapshot `~/gc-run/p232`, VM `vm-model-guards2`). The thirteen regression cases are the eleven named ones plus
+  `zk-bugs-quota-init` and `zk-bugs-election-offer`. The HDFS
   RPC-fault cases move either direction of one IPC door from round to round (`Client$Connection#sendRpcRequest`
   or `Client#getRpcResponse`, the target DataNode's heartbeat request or response lost): the same chain, valid
   under the mechanism mandate.
-- **VM**: main's is `/bigtemp/vnr3ne/vm-streams2/j2sdk-image` (round V14); `vm-w4h` serves older rounds; `vm-w4i`,
+- **VM**: main's is `/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image` (round V19; vm-streams2 + the model guards); `vm-w4h` serves older rounds; `vm-w4i`,
   `vm-nr41` kept for the parked branches of §0.4.
 - **Trees** (never rebuild one a run reads; each new tree builds with its own Maven repo `/bigtemp/vnr3ne/m2/<name>`):
 
 | tree (worktree) | branch, head | of | what |
 | --- | --- | --- | --- |
-| `~/hadoop-hdfs-unified` | `gc/hdfs-unified` | `~/hadoop` | the eight named HDFS cases (unchanged) |
+| `~/hadoop-hdfs-unified` | `gc/hdfs-unified` `89f4c5348df` | `~/hadoop` | the base of the dtx and bugs trees; the eight named HDFS cases ran here until `pairing-port` merged |
 | `~/hadoop-hdfs-11741` | `gc/hdfs-11741` | `~/hadoop` | hdfs-11741 (unchanged) |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` | `gc/hdfs-unified-dtx` `51f1e058380` | `~/hadoop` | for `dtx-on-main`/`pairing-on-main` (§3.7), Maven repo `/bigtemp/vnr3ne/wt/dtx/m2` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` | `gc/hdfs-unified-dtx` `51f1e058380` | `~/hadoop` | the eight named HDFS cases (since `pairing-port`, rounds PP1/PP1b): `gc/hdfs-unified` + the DataTransfer op's envelope (two adapter commits), Maven repo `/bigtemp/vnr3ne/wt/dtx/m2` |
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-bugs` | `gc/hdfs-bugs` `89f4c5348df` + WIP | `~/hadoop` | HDFS bug_study #15 (§0.3); its last commit is a SCAFFOLD ("BlockReceiver's close tolerates a removed replica", to be replaced); uncommitted: the target marker in `RoundRobinVolumeChoosingPolicy` and the workload `TestCausynthSlowDiskZeroMax` (`handover/tree-gc-hdfs-bugs-wip.patch`) |
 | `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `663e0ef` | `~/lucene-solr-8_11` | solr-18406, solr-18413 (unchanged) |
 | `/bigtemp/vnr3ne/wt/lucene-solr-bugs` | `gc/solr-bugs` `01aa353` | `~/lucene-solr-8_11` | the storing tree + Solr bug_study #04's target marker |
@@ -121,12 +125,12 @@ can plant (a door fault, a clock, a configuration value, a re-pairing) from a ru
 | case id | bug | fatal throw | counterfactual | workload | needs | state |
 | --- | --- | --- | --- | --- | --- | --- |
 | `zk-bugs-quota-init` | ZooKeeper #01: `SetQuotaCommand.createQuota` creates the limit znode, then the stat znode, in two requests; a lost reply of the limit create leaves no stat, the retry takes the update branch and `getData(statPath)` hits NoNode; meanwhile `ZooKeeperServer.checkQuota` sees no stat, logs "should not happen" and returns: the hard quota is silently off | server NoNode guard (`FinalRequestProcessor` handleGetDataRequest, ~:692 on 3.9; the tree marks the one the agent chose) | ZOOKEEPER WRITE door fault on the limit `create` (catalog door: the write happened, the client sees ConnectionLoss) | `CausynthQuotaRetryTest` (self-written: set a hard quota retrying on ConnectionLoss, then raise it) | client->server causal context (done in the tree), a campaign | PASS (round ZK8; a regression case since V12): MARKER_FLIPPED, confirmed, chain checked by hand |
-| `zk-bugs-election-offer` | ZooKeeper #05: `LeaderElectionSupport.determineElectionStatus` lists offers then `getData`s each; a competitor's concurrent `stop()` delete makes it NoNode; `start()` goes FAILED and never deletes its own committed offer, which blocks every later candidate | the same server NoNode guard, reached by `toLeaderOffers`'s getData (LES ~:310) | STATE re-pairing of the server's node lookup with the competitor's delete | `LeaderElectionSupportTest#testOfferShuffle` (or `#testNodes3`) | the serving-thread concurrency rule (below); STATE pairing end to end | EO6 on branch `zk-election-offer`: STATE_PAIRING_FLIPPED, confirmed, chain checked by hand -- the first confirmed STATE witness; next EO7 on the merged head, then its merge round |
+| `zk-bugs-election-offer` | ZooKeeper #05: `LeaderElectionSupport.determineElectionStatus` lists offers then `getData`s each; a competitor's concurrent `stop()` delete makes it NoNode; `start()` goes FAILED and never deletes its own committed offer, which blocks every later candidate | the same server NoNode guard, reached by `toLeaderOffers`'s getData (LES ~:310) | STATE re-pairing of the server's node lookup with the competitor's delete | `LeaderElectionSupportTest#testOfferShuffle` (or `#testNodes3`) | the serving-thread concurrency rule (below); STATE pairing end to end | PASS (EO6, EO7; round V18 on main): STATE_PAIRING_FLIPPED, confirmed, chain checked by hand -- the first confirmed STATE witness; a regression case since V18 |
 | `solr-bugs-reindex-cleanup` | Solr #04 on 8.11: a same-target REINDEXCOLLECTION creates its own alias `X -> .rx_X_n` (RCC ~:444); any failure after it runs `cleanup` (RCC ~:773), whose DELETE of the target throws in `DeleteCollectionCmd.checkAliasReference` (~:245) on that alias; cleanup has no try/catch, so the source's read-only reset (RCC ~:810-815) never runs: the source stays read-only | DCC ~:245 `SolrException` "is part of aliases" | one SolrJ HTTP or ZooKeeper door fault after the alias step (e.g. the checkpoint DELETE's UNLOAD response, RCC ~:466-468) | `ReindexCollectionTest#testSameTargetReindexing` (2 nodes) | nothing new | branch `solr-bug-reindex`, SB11 stopped in EXPLORE with no verdict: every obligation replay ran the whole 26-min test; a replay whose question closed is to conclude (in progress) |
 | `hdfs-bugs-slowdisk-zero` | HDFS #15: `DataNodeDiskMetrics`'s detector replaces `slowDisksToExclude` only `if (maxSlowDisksToExclude > 0)` (~:151); setting the documented "disabled" value 0 by run-time reconfiguration never clears a published list; `FsVolumeList` (~:111) filters the only SSD out | `RoundRobinVolumeChoosingPolicy.chooseVolume` `DiskOutOfSpaceException("No more available volumes")` (~:82-83) | STATE re-pairing: one detector iteration reads `maxSlowDisksToExclude` before the reconfiguration (version 0, value 1, between flagging the SSD and the reconfig) and publishes [SSD]; later iterations read 0 and never clear it | `TestCausynthSlowDiskZeroMax` (self-written, WIP in the tree: flag the SSD slow by `addSlowDiskForTesting`, reconfigure 1 -> 0, write an ALL_SSD file) | version-0 writer arm (from `fix-no-root`, in `state-pairing`); STATE pairing end to end | branch `slowdisk-dev` (SD1, SD2): the stream model makes the chooser's guard symbolic; the detector turns' `max > 0` flips wait for the INITIAL arm (`state-pairing` `94e1390fc`, ported onto `zk-election-offer`) and an obligation replay that plants a moved writer choice by ORDER |
 | `hbase-bugs-master-active-time` | HBase #14: `HMaster.masterActiveTime = EnvironmentEdgeManager.currentTime()` (~:986) travels with remote procedures; `MasterRpcServices.throwOnOldMaster` (~:2620-2629) refuses a report whose initiating time exceeds the current master's: wall clocks compared across masters as an epoch | `throwOnOldMaster`'s `MasterNotRunningException` | CLOCK: the OLD master's activation clock jumps forward (clock domains move forward only), its value crosses old master -> RS -> new master | `TestSplitWALProcedure#testMasterRestart` or `TestSnapshotVerifyProcedure#testRestartMaster` (3 RS) | the clock rule through an interface delegate (`EnvironmentEdge`, WIP in `system-hbase`), the HBase RPC causal context + derived protobuf ports, masters on distinct node clocks; JDK 8 feasibility | parked (branch `system-hbase`, round HBA1): builds and runs on Java 8; three blockers (§0.4) |
 
-**Second tier** (real, high-quality coordination bugs that need STATE/MESSAGE pairing and a self-written
+**Second tier** (not a TODO: the owner dropped them 2026-10-03; real, high-quality coordination bugs that need STATE/MESSAGE pairing and a self-written
 concurrent workload; take them once the picks' pairing works): ZooKeeper #08 (concurrent `delquota -N/-B`,
 read-modify-write with version -1, `ZooKeeperServer` QuotaExceeded), #02 (concurrent parent/child setquota);
 Solr #05 (DELETENODE vs count DELETEREPLICA empties a shard), #06 (CREATESNAPSHOT recounts replicas after a
@@ -144,7 +148,7 @@ only (HDFS #11); contrib REST (ZooKeeper #09, 10); queue parent recreation needi
 (ZooKeeper #07); client-tool static flag (HBase #02); string/enum config with a ZooKeeper watch chain (HBase
 #04, #07). **HDFS has no pick with today's scope except #15** (which needs the STATE pairing work).
 
-**The serving-thread concurrency rule ZooKeeper #05 needs** (built on `zk-election-offer`: a claimed occurrence's
+**The serving-thread concurrency rule ZooKeeper #05 needs** (on main since V18: a claimed occurrence's
 `threadKey` is the START it claims, and CONFIRM holds an ORDER on claimed work at its submitter's send,
 `Confirmation#submitter`): `smt/Arms#concurrent` calls two
 occurrences on one thread ordered (`sameThread`). A ZooKeeper server applies every client's request on its
@@ -157,26 +161,23 @@ submission order (ORDER edges on the submitters).
 ### 0.4 Branches (heads at 2026-10-03; WIP = uncommitted, saved under `/bigtemp/vnr3ne/handover/`)
 
 `main`: §0.2. Merged and kept for now: `system-zookeeper`, `vm-streams` (its worktree `wt/gc-vm-streams`),
-`seed-functional`, `preWindow-loop-root`, `main-sf`, `main-pw` (candidates of V16 and V17). Live agents: A1
-(`slowdisk-dev`), A2 (`solr-bug-reindex`), A5 (`zk-election-offer`), A6 (`vm-model-guards`); merge order after V17:
-`zk-election-offer`, then `slowdisk-dev`'s INITIAL/ORDER work, `vm-model-guards`, `solr-bug-reindex`'s pieces, one
-per round.
+`seed-functional`, `preWindow-loop-root`, `zk-election-offer`, `pairing-port`, `vm-model-guards`, `main-sf`, `main-pw`,
+`main-eo`, `main-pp`, `main-vg` (candidates of V16-V19 and PP1). Live agents: A1 (`slowdisk-dev`), A2 (`solr-bug-reindex`), A6 (read-out streaming);
+merge order: `replay-address-only` (A5), the ledger's leased charges (A5), `slowdisk-dev`'s INITIAL/ORDER work,
+`solr-bug-reindex`'s pieces, one per round.
 
 | branch | head | content | state / next step |
 | --- | --- | --- | --- |
 | `state-pairing` | `aa961ff78` | `fix-no-root`'s commits carried onto an older main (NO_ROOT fixes, final containers as cells, D0 by test, `94e1390fc` Writers_W(l)'s writer at version 0), case `hdfs-bugs-slowdisk-zero` | the source of `slowdisk-dev`'s INITIAL port; delete once that merges |
 | `slowdisk-dev` | `5fe7ef941` | main-sf + `preWindow-loop-root` + the case's declarations; a tracked read through an accessor (`65f231091`), a demanded container state tied to the read that returned the container (`5fe7ef941`) | agent A1: merge `zk-election-offer`, port `94e1390fc` (one re-paired query: A5's `SmtLowering#movedQuery`), obligation replays plant a moved writer choice by CONFIRM's ORDER rows; then SD3 |
 | `solr-bug-reindex` | `35cdd1e6b` | case `reindex-cleanup` (tree `gc/solr-bugs`, two declared loop bounds); seeded random draws, the recorded-address identity rule (on main), the codec boundary for scope growth, region roots only at writers, recording rows only inside occurrences, CLAIMs keyed by the START they claim, stall rules (a response settles once its request ended, no fabricated timeout) | agent A2: a focused replay concludes once its question closed; then SB12; its pieces merge one per round |
-| `zk-election-offer` | `bb47023a6` | ZooKeeper #05: the serving-thread rule, COMPOSE re-pairs only the anchor's reads (`SmtLowering#movedQuery`), ORDER at the submitter, `repairedArms` + report.py's pairing rule; main 813937524 merged in | agent A5: EO7 + quota-init on the merged head; then its merge round |
-| `vm-model-guards` | `c0ba4a955` | VM: no model records a condition; a muted body's choice is a guard on its chain, a fact its node's answer | agent A6: two review blockers (`asOf` keeps the answer; EXPLORE's re-pairing invisible to the pin rule) + five should-fix; offline gate; then its round on a new image |
 | `system-hbase` | `11ddd06e1` | HBase harness (`experiments/hbase`, case `hbase-bugs-master-active-time` on `gc/hbase-unified`); an interface delegate's clock is a CLOCK root when every implementation in scope is one (`RootCatalog#dispatchesToClocks`) | Phase A done (Java 8 builds and runs, round HBA1 in `gc-out/hbase-bugs/`); parked on three blockers: the old master's activation time is written before the window (no root); a WAKE turn's k counts arrivals of every thread at one wait site (seed replay stalls); async start chains nest without bound (contexts up to 686 KB). When it resumes, its `experiments/hbase/system.sh` drops the keys the pipeline retirement retired (`system_cluster_class`, `system_roots`, `system_package`, `system_node_class`, `classpath_test`) |
-| `pairing-on-main` | `efaa032d7` + WIP `pairing-on-main-wip.patch` (in worktree `agent-aee27b43…`) | main + `dtx-on-main` + `fix-11741-pairing`, with the review rework (#1 CONFIRM's substitution must compare value and attempt/site index, file a DIAGNOSTIC gap per substitution, only where the arm's session has ADDRESS_UNSTABLE; #2 an `answered` bit so the session state does not depend on landing order) half done in the WIP | finish #1/#2, offline check on `accept-V7-11741` and the gate, snapshot with the HDFS cases on the dtx tree (§3.7), ONE live round (11741 twice), merge, then move `gc/hdfs-unified` to `gc/hdfs-unified-dtx` |
-| `dtx-on-main`, `fix-11741-pairing` | `e3b2efb1f`, `9fd01c95f` + WIP `fix-11741-pairing-review-rework-wip.patch` (in worktree `agent-a9f2c23f…`) | DataTransfer messages and doors; 11741's balancer race | both contained in `pairing-on-main`; delete once it merges |
+| `pairing-port` | `b818815fe` + this docs commit | `dtx-on-main` (DataTransfer messages and doors) and `fix-11741-pairing` (11741's balancer race) ported onto `main-eo`, the review rework done: CONFIRM takes a delivery into the anchor from another producer of its question only where the arm's session answered the anchor, compares site index, attempt and value, names each substitution (`ADDRESS_UNSTABLE`); a slot's answered bit is read off its opening session, so no landing order matters; the named HDFS cases move to the dtx tree | rounds `PP1` + `PP1b` (snapshot `pp1`, `gc-out/pairing-port/`): 13/13 and 11741 twice; merged into main (`main-pp`) |
+| `pairing-on-main`, `dtx-on-main`, `fix-11741-pairing` | `efaa032d7`, `e3b2efb1f`, `9fd01c95f` + WIPs (`pairing-on-main-wip.patch`, `fix-11741-pairing-review-rework-wip.patch`) | the sources of `pairing-port` | contained in main through `pairing-port` (`7ad095d0f` dropped: main's `c5878482f` covers it); to delete |
 | `fix-no-root` | `2e931192e` + WIP `fix-no-root-hb-edges-wip.patch` and its four new files `fix-no-root-hb-edges-wip-untracked.patch` (in worktree `agent-a5fe8997…`) | NO_ROOT fixes + version-0 writer; HB-edges WIP | commits carried by `state-pairing`; the HB-edges WIP is not |
 | `fix-hdfs-seed-stalls` | `bfd7492bd` | one rule set for seed-replay stalls | needs a live round on the 11 cases and the new checks |
-| `replay-random-draws` | `d656860b2` | every random draw recorded and replayed | on `dtx-on-main`; needs a live round |
-| `fix-replay-equivalent-context` | `71fedd858` | a root admitted by its address alone | rebase after `pairing-on-main` |
-| `perf-expr-store` | `dd89bc65b` | no whole-run map keeps a replay expression alive | verify (heap, seed rows unchanged) |
+| `replay-random-draws` | `d656860b2` | every random draw recorded and replayed | on `dtx-on-main` (in `pairing-port`); needs a live round |
+| `fix-replay-equivalent-context` | `71fedd858` | a root admitted by its address alone | rebase after `pairing-port` |
 | `perf-vm-readout`, `vm-ref-compare` | `3cbea0bee`, `bba1ee25d` | VM read-out per activation; reference compare with an enum constant | parked; each needs a VM review (images `vm-w4i`, `vm-nr41`) |
 | `worktree-agent-a49c8bf5715a00c40` | `90ca7724e` | WIRE-CODEC W3/W6 + the first WP-D integration | deferred; the source of W3/W6 when they are taken up |
 
@@ -200,7 +201,7 @@ does not merge until fixed (§1). The new checks join the round once they pass.
 
 1. **Symbolic scope (top priority).** `symbolic-scope` is merged (V10). Then, bug-driven and general: (a) STATE
    pairing end to end on HDFS #15 (`slowdisk-dev`, A1: the INITIAL arm and ORDER-planted pairings); (b) the
-   serving-thread concurrency rule for ZooKeeper #05 (built on `zk-election-offer`, merges after V17); (c) the
+   serving-thread concurrency rule for ZooKeeper #05 (on main, V18); (c) the
    clock rule through an interface delegate for HBase #14 (committed on `system-hbase`, parked with HBase); (d) configuration values set by run-time reconfiguration
    (`ReconfigurableBase.reconfigureProperty`'s new value as a CONFIG root, its domain from the parser's accepted
    values and the compared literals) and String/enum configuration (a finite-set domain), when a pick needs them.
@@ -210,17 +211,18 @@ does not merge until fixed (§1). The new checks join the round once they pass.
    (HBase first needs Phase A feasibility). Each new check: workload passes natively 5x; campaign to IMPORT; full
    campaign; read the chain against the code; add it to `experiments/accept/report.py` and STATUS "Acceptance".
 3. ~~Merge the pipeline retirement~~ (done, V15).
-4. **README TODO carried over**: `pairing-on-main` (the 11741 balancer race + DataTransfer doors; then move the
-   HDFS tree to dtx), then one round each: `fix-hdfs-seed-stalls`, `replay-random-draws`,
-   `fix-replay-equivalent-context` (rebased), `perf-expr-store`.
-5. **Second-tier bugs** (§0.3) with self-written concurrent workloads, once pairing works.
+4. **README TODO carried over**: ~~`pairing-on-main`~~ (`pairing-port`, rounds PP1/PP1b, on main), then one round
+   each: `fix-hdfs-seed-stalls`, `replay-random-draws`, `fix-replay-equivalent-context` (rebased). (`perf-expr-store`
+   was measured and dropped: no heap effect; the replay heap is the whole read-out page the publication decodes,
+   being streamed instead.)
+5. ~~Second-tier bugs~~: dropped by the owner (2026-10-03, "second tier bugs都先不管了。不用作为你的todo").
 6. Then the deferred WIRE-CODEC W3/W6 (`worktree-agent-a49c8bf5715a00c40`), one piece per round.
 
 ### 0.6 Open problems
 
 | class | state |
 | --- | --- |
-| STATE_PAIRING: one confirmed witness so far (ZooKeeper #05, EO6, on its branch); a re-pairing whose reader path the recording never ran (HDFS #15) needs the INITIAL arm and an obligation replay that plants the moved writer choice | `zk-election-offer`, `slowdisk-dev` |
+| STATE_PAIRING: one confirmed witness so far (ZooKeeper #05, on main since V18); a re-pairing whose reader path the recording never ran (HDFS #15) needs the INITIAL arm and an obligation replay that plants the moved writer choice | `zk-election-offer`, `slowdisk-dev` |
 | `Arms#concurrent` knows happens-before only from anchor ancestry and one thread: sequential requests of one test thread through a queue (Solr's Overseer tasks) look concurrent, so they join the closure and each other's factor (Solr #04: 105 of 137 obligations on the test's later sub-tests) | lead's design item; start from `handover/fix-no-root-hb-edges-wip*.patch` (OrderRow START/QUEUE edges); request/response completion edges still to design |
 | A focused replay runs to the workload's end even once its question is closed (Solr #04: 26-min replays after a 4.5-min answer) | `solr-bug-reindex` (A2) |
 | Clocks behind an interface delegate (HBase `EnvironmentEdgeManager`) are not roots | WIP in `system-hbase` |
@@ -461,8 +463,8 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | local scratch | `/localtmp/$USER` on each lift (replay working directories go to `/localtmp/$USER/graphchecker/`). |
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | z3 | `~/.local/bin/z3` (4.14.1) |
-| concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-streams2/j2sdk-image`** (vm-w4h + the java.util.stream model, branch `vm-streams` fe68c3409, merged 770a64c8f after round V14 12/12; a jar before 770a64c8f refuses its STATE_COLLECT versions by name). `vm-w4h` (the previous one: vm-w4e + the `frame::metadata_do` fix + caches cleared when metadata is freed + demand-driven tracking) serves rounds up to V13. Parked, unreviewed: `vm-w4i` (per-activation tracked-location read-out, branch `perf-vm-readout`; a jar from that branch refuses vm-w4h by name), `vm-nr41` (reference-compare identity, branch `vm-ref-compare`). Older images are deleted (2026-10-02). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
-| HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
+| concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image`** (vm-streams2 + the model guards: no model records a condition, a muted body's choice is a guard on its chain; branch `vm-model-guards` af18b3a5d, merged dda07c51b after round V19 13/13). `vm-streams2` (vm-w4h + the java.util.stream model, branch `vm-streams` fe68c3409, merged 770a64c8f after round V14; a jar before 770a64c8f refuses its STATE_COLLECT versions by name) serves rounds V14-V18. `vm-w4h` (the previous one: vm-w4e + the `frame::metadata_do` fix + caches cleared when metadata is freed + demand-driven tracking) serves rounds up to V13. Parked, unreviewed: `vm-w4i` (per-activation tracked-location read-out, branch `perf-vm-readout`; a jar from that branch refuses vm-w4h by name), `vm-nr41` (reference-compare identity, branch `vm-ref-compare`). Older images are deleted (2026-10-02). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
+| HDFS trees | `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` (worktree of `~/hadoop`, branch `gc/hdfs-unified-dtx`: `gc/hdfs-unified`, trunk 734dd8a67cd, plus the DataTransfer op's envelope; its own Maven repo `/bigtemp/vnr3ne/wt/dtx/m2`): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
 | Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406 and solr-18413 name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | ZooKeeper tree | `/bigtemp/vnr3ne/wt/zookeeper-unified` (branch `gc/zk-unified` on `branch-3.9`, a worktree of `~/zookeeper`): the adapter (`CausynthZk`, `CausynthZkCluster`), the `zk-bugs` cases' target markers and the quota workload. Maven build into its own repository `/bigtemp/vnr3ne/m2/zookeeper` (`experiments/zookeeper/build.sh`, which installs the GraphChecker jar there; never `~/.m2`). Build a case's workload before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/zookeeper/zk-bugs <case> build`. Its only remote is apache/zookeeper: never push it. |
 | HBase and bug trees | `gc/hbase-unified`, `gc/solr-bugs`, `gc/hdfs-bugs` under `/bigtemp/vnr3ne/wt/` (§0.2); clone `~/hbase`; private Maven repos `/bigtemp/vnr3ne/m2/<name>` |
@@ -499,7 +501,7 @@ Never overwrite an image a round uses; build a new directory.
 ```bash
 git worktree add --detach ~/gc-run/p<N> <commit>
 (cd ~/gc-run/p<N> && /bigtemp/vnr3ne/bin/onlift.sh -g 10 mvn -q -o package -DskipTests)
-GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-streams2/j2sdk-image \
+GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image \
   tools/rounds/launch-round.sh ~/gc-run/p<N> <round>              # all 11 cases, heads chosen by room
 CASES="hdfs-17960 solr-18413" ... tools/rounds/launch-round.sh ... # a subset (or any case id)
 DRY=1 ... tools/rounds/launch-round.sh ...                         # the heads it would choose
@@ -572,14 +574,14 @@ breaks a campaign's time down by stage.
 ### 3.7 A snapshot for a branch that needs another tree
 
 There is no override for a case's tree: each `experiments/<system>/<case>/case.sh` names its `repo=`. To
-validate a branch that needs a different tree
-(today: `dtx-on-main` and everything on it needs `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`), edit those lines in the
-**snapshot only**, uncommitted, never on main:
+validate a branch that needs a different tree (no branch does today; `pairing-port` needed
+`/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` before its merge), edit those lines in the **snapshot only**, uncommitted,
+never on main:
 
 ```bash
 git worktree add -q --detach ~/gc-run/p<N> <main>
 cd ~/gc-run/p<N> && git merge --no-ff -q <branch> -m "Validation merge: <branch>"     # resolve docs conflicts by keeping both sides
-sed -i 's#repo=/u/vnr3ne/hadoop-hdfs-unified$#repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx#' \
+sed -i 's#repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx$#repo=<tree>#' \
   experiments/hadoop/hdfs-17967/case.sh experiments/hadoop/hdfs-17899/case.sh \
   experiments/hadoop/hdfs-17960/case.sh experiments/hadoop/hdfs-17897/case.sh
 /bigtemp/vnr3ne/bin/onlift.sh -g 10 bash -c 'cd ~/gc-run/p<N> && mvn -q -o package && bash src/test/shell/run_engine_campaign_helpers_test.sh'
@@ -604,8 +606,8 @@ build resolves. A Solr workload must be built in the Solr tree the case names be
   lift waits silently (`waiting for memory for a head step … on any host`). Main now holds the best host for a
   waiting step and starts GROW's planner at 2 GB; if a log goes quiet for many minutes, read the step's own
   stderr (`obligations-<NNNN>/grow-stderr.log`).
-- **Never rebuild a tree that someone reads.** Agents run checks on `~/hadoop-hdfs-unified` and the Solr
-  trees too: check `pgrep -fc '[h]adoop-hdfs-unified'` (etc.) on every lift first; replays read the tree's
+- **Never rebuild a tree that someone reads.** Agents run checks on `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` and the
+  Solr trees too: check `pgrep -fc '[h]adoop-hdfs-dtx'` (etc.) on every lift first; replays read the tree's
   `target/classes` directly.
 - **Parallel coverage or test runs can corrupt a tree's `target/test-classes`** (a broken `ssl-client.xml`
   once failed every HDFS workload; the backup is in `/bigtemp/vnr3ne/analysis/corrupt-test-classes/`).
@@ -672,7 +674,7 @@ parts are in `experiments/<system>/{system.sh,build.sh,classpath.py}`.
 
 ```bash
 experiments/lib/run.sh experiments/hadoop/hdfs-17960 "" build      # build the tree, run the workload once
-export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-streams2/j2sdk-image
+export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image
 CASES=hdfs-17960 bash experiments/accept/accept.sh                  # campaign + probe + report
 ```
 
@@ -722,7 +724,7 @@ stays the cluster's one):
 ```bash
 cd ~/gc-run/p<N>        # a built snapshot of main (§3.4; a case on another tree, §3.7)
 out=/bigtemp/vnr3ne/gc-out/checks-<round>
-GC_OUT=${out} VM_IMAGE=/bigtemp/vnr3ne/vm-streams2/j2sdk-image setsid nohup \
+GC_OUT=${out} VM_IMAGE=/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image setsid nohup \
   bash tools/adhoc/sweep.sh ~/gc-run/p<N> <round> <cases-file> 1 > ${out}-sweep.log 2>&1 < /dev/null &
 GC_OUT=${out} tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
 GC_OUT=${out} python3 tools/adhoc/triage.py <round>         # class, stage, reason per case

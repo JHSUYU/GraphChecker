@@ -49,6 +49,17 @@ public final class ContextShape {
             return context;
         }
 
+        /** Where an occurrence stands: its node and causal context. */
+        public static Stance of(OccurrenceAddress occurrence) {
+            return new Stance(occurrence.node().render(),
+                    occurrence.context());
+        }
+
+        /** {@code node|context}: a schedule context without its handoffs. */
+        public String render() {
+            return node + "|" + context.render();
+        }
+
         /** A schedule SEND's context, {@code node|context[|...]}; null when
          *  it states no context. */
         public static Stance ofSend(String sendContext) {

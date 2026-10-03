@@ -20,6 +20,9 @@ namespace {
 
 // POD, so it can live in thread-local storage.
 __thread UnsafeAccess::Intent _intent;
+// What the last captured compare-and-swap of this thread answered, for its
+// native's finish (UnsafeAccess::take_result); NULL once taken.
+__thread Expression *_result;
 
 // The location an Unsafe (holder, offset) names, as the bytecode hooks name
 // it: an instance field by its owner's identity, a static field by its
@@ -61,7 +64,16 @@ Expression *concrete(const SharedFieldVersions::ConcreteBits &word,
 
 UnsafeAccess::Intent *UnsafeAccess::intent() { return &_intent; }
 
-void UnsafeAccess::clear_intent() { memset(&_intent, 0, sizeof(_intent)); }
+void UnsafeAccess::clear_intent() {
+  memset(&_intent, 0, sizeof(_intent));
+  _result = NULL;
+}
+
+Expression *UnsafeAccess::take_result() {
+  Expression *result = _result;
+  _result = NULL;
+  return result;
+}
 
 void UnsafeAccess::capture(MethodSymbolizerHandle &handle) {
   // An ordinary caller's Unsafe write: its operands' shadows are on the
@@ -231,10 +243,10 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
 
   Expression *value = NULL;
   Expression *guard = access->path_guard;
-  // A captured compare-and-swap's decision, which no model states as a
-  // result (AtomicReference.compareAndSet, AtomicBoolean's): the path
-  // condition says which way it went over the value it compared.
-  Expression *decision = NULL;
+  // What a captured compare-and-swap answered, which no model states
+  // (AtomicReference.compareAndSet, AtomicBoolean's): whether the word it
+  // compared matched, the result of the native its caller's finish reads.
+  Expression *answered = NULL;
   int kind = SharedFieldVersions::VERSION_WRITE;
   if (intent != NULL) {
     if (intent->kind == ADD) {
@@ -260,14 +272,14 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
             intent->expect != NULL
                 ? intent->expect : concrete(witnessed, witnessed_reference),
             op_eq, true);
-        // Recorded only when it compared something symbolic: a tracked
+        // Answered only when it compared something symbolic: a tracked
         // location's read, or a symbolic expected value.  Every concrete CAS
         // of an unmuted JDK body (a lambda's bootstrap interning its method
-        // types) would otherwise put `x == x` into the path.
+        // types) would otherwise answer `x == x`.
         if (intent->model) {
           intent->new_value = matched;
         } else if (read_tracked || intent->expect != NULL) {
-          decision = succeeded ? matched : matched->logical_negation();
+          answered = matched;
         }
         if (succeeded) {
           guard = guard == NULL ? matched
@@ -296,9 +308,6 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
     }
   }
   SharedFieldVersions::unlock(access->location);
-  if (decision != NULL && ConcolicMngr::ctx != NULL) {
-    ConcolicMngr::record_path_condition(decision);
-  }
   if (intent != NULL) {
     intent->done = true;
     intent->succeeded = succeeded;
@@ -306,6 +315,9 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
     if (intent->kind != CAS || !intent->model) intent->new_value = value;
     consume(intent);
   }
+  // After consume, which clears a caller's intent and with it any answer
+  // still waiting.
+  _result = answered;
   if (succeeded) update_shadow(*access, value, stored, stored_reference);
 }
 

@@ -36,9 +36,18 @@ public enum GapKind {
      */
     TASK_UNANSWERED,
     /**
-     * One planned task answered at two addresses across the corpus.
-     * DIAGNOSTIC, read by EXPLORE: arms answered at one address settle
-     * nothing at the other; the cause is the execution index, upstream.
+     * An address a run did not reproduce, DIAGNOSTIC, in one of three
+     * places.  EXPLORE ({@code explore.ExploreMain}): one planned task
+     * answered at two addresses across the corpus, its subject the task id
+     * -- arms answered at one address settle nothing at the other; the
+     * cause is the execution index, upstream.  A replay ({@code
+     * runtime.RowRuntime#answered}): the declared occurrence ran at another
+     * address and answers it by its question (IDENTITY §9), its rows stated
+     * at the declared address, its subject that address -- read by {@code
+     * explore.SlotTable} and CONFIRM.  A CONFIRM run ({@code
+     * runtime.Confirmation#attached}): a delivery into the anchor came from
+     * a producer at another address than the model's that answers the
+     * model's producer's question, its subject the consumer endpoint.
      */
     ADDRESS_UNSTABLE,
     /** The solver gave no answer in the time it was given. */

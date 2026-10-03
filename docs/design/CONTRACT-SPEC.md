@@ -79,7 +79,7 @@ or zero. Every row but a `ScheduleEvent` carries `sessionId`; every row but an `
 
 | row | fields (`?` = omitted when null) | meaning |
 | --- | --- | --- |
-| `ActivationRow` | `occurrence, taskId, focused, instrumented, threadKey, anchorProducer?` | one per activation. `focused`: ran symbolically as a task's region. `instrumented=false`: only the entry hook ran, so "no decisions" is no evidence. Same `threadKey` = program order. `anchorProducer`: the endpoint of this run that sent the message the context's anchor names. No thread-start edge exists |
+| `ActivationRow` | `occurrence, taskId, focused, instrumented, threadKey, anchorProducer?` | one per activation. `focused`: ran symbolically as a task's region. `instrumented=false`: only the entry hook ran, so "no decisions" is no evidence. Same `threadKey` = program order: the claimed start the activation runs inside (a queue item or task claimed on a consumer thread, `start:<node>\|<context>\|<start frames>`), else its thread (`<name>#<id>`); two items one consumer claims run in the order their starters queued them. `anchorProducer`: the endpoint of this run that sent the message the context's anchor names. No thread-start edge exists |
 | `DecisionRow` | `seq, occurrence, siteId, ordinal, outcome, term, clockReadings{symbol: reading}` | one branch: `ordinal` = k-th decision of the site in the occurrence (1-based); `term` = the predicate as written at the site (SMT-LIB over declared symbols and `EXPR.` refs; empty for a concrete branch); `outcome` = whether the term held. The conjunct is `outcome ? term : (not term)`, applied by the readers (`smt.Arms.conjunct`, `Arms.pathCondition`), never by the runtime |
 | `ExportRow` | `seq, endpoint, expressionRef, javaType, handle, recordedValue, codec?, keyPath?, hole?, messageKey?` | a value put on the wire (`e_p`); `seq` cuts the producer's path condition; the sort comes from `javaType`. A codec's export states its hole and `messageKey`, both or neither: the message that carried it, spelled as its consumers' `correlationId` (`<transport> <path>@<version>` for a store, the exchange's correlation id otherwise) |
 | `AttachRow` | `seq, endpoint, symbol, javaType, arrival, answered, answeredValue?, producer?, correlationId, pairedBy?, codec?, keyPath?, hole?` | a value taken off the wire: `symbol` = the handoff variable `v_H` minted at the port; `producer` absent = unpaired; `pairedBy` = `HANDLE`, `CORRELATION_PORT` or `ENVELOPE` (absent = unstated); `answered` = an obligation's answer replaced the arrival. A codec's attach states the hole it minted; its `correlationId` is the message's key and it is paired by `ENVELOPE`: the producer endpoint the message carried. A String hole's `arrival` and `answeredValue` are spelled as a read row spells a String, its JSON string literal |
@@ -232,11 +232,14 @@ field=<f> <subject>`.
   the replay adds to its own host reading, a jump its node's clock runs on from; a root is planted only at a focused mint, so each assigned
   root's mint occurrence is focused.
 - CONFIRM's worker adds `expected_edges.jsonl` (`runtime.Confirmation.FILE`): `WIRE {consumer,
-  producer, selector, messageKey?, value?}` (a codec hole's: `messageKey` the store version its
-  arm's message was, when that key is a store's `<transport> <path>@<version>` -- an exchange's
-  correlation id is its own run's; `value` the text the hole must decode to, the claim's
-  `holeTexts`), `STATE {reader, readerAnyTurn, mint, writer, version, location}`, `ORDER {before, after}`
-  (activation keys; `after` the last activation entered before the event it orders), every endpoint
+  producer, selector, messageKey?, value?, producerQuestion?}` (a codec hole's `messageKey`: the
+  store version its arm's message was, when that key is a store's `<transport> <path>@<version>` --
+  an exchange's correlation id is its own run's; `value`: the text a held leaf -- a codec hole, a
+  delivery into the anchor -- must receive, the arm's `texts` in the claim; `producerQuestion
+  {occurrence, site, siteIndex, attempt, shape}`: for a delivery into the anchor where the arm's
+  session answered the anchor by its question, IDENTITY §9), `STATE {reader, readerAnyTurn, mint, writer, version, location}`, `ORDER {before, after}`
+  (activation keys; `after` the last activation entered before the event it orders, or, for claimed
+  work on a consumer thread, the send that started it, `Confirmation#submitter`), every endpoint
   id and activation key as every delivery of its stored message names it (`Confirmation#id`), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation
   flips nothing (`Obligation.confirming`) owes these rows: missing or unreadable, it files a
   `CONFIRM_MISMATCH`. `final/confirm.json` is `{schemaVersion 1, kind CONFIRMATION, confirmed,

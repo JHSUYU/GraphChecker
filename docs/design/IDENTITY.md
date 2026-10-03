@@ -20,8 +20,10 @@ id = sha16(node/regionId/context/index-hash)
   epoch advances only when the workload calls `restartSource`.
 - **r**: a `REGION.<hash>` skeleton id (`causynth/SymbolicRegionPlanner`, a region rooted at an
   execution-context entry: `MAIN_ENTRY`, `THREAD_ENTRY`, `TASK_ENTRY`, `COMMUNICATION_ENTRY`,
-  `STATE_WRITER_ENTRY`, `EXPLICIT_FAULT_ENTRY`, `FAILURE_TARGET_ENTRY`), or `ROLE.<role>` for work
-  under no region (`runtime/Identity#roleOccurrence`). Where a region's root runs a service loop the
+  `STATE_WRITER_ENTRY`, `FAILURE_TARGET_ENTRY`, `EXPLICIT_FAULT_ENTRY` where neither an execution
+  context nor the target already roots the method that reads a fault marker), or `ROLE.<role>` for
+  work under no region (`runtime/Identity#roleOccurrence`). A region whose closure holds the
+  failure is the failure's exception context whatever roots it. Where a region's root runs a service loop the
   recording iterated more than once, one loop iteration is the activation (`LOOP_BODY_ROOT`,
   `causynth/StaticProgram#loopBodyRoot`).
 - **c**, **i**: §2 and §3. Nothing else enters the id: no thread id, object address or run ordinal.
@@ -178,10 +180,15 @@ the flip solver:
 - a WIRE interaction's arms are the producer endpoint's exports from runs whose own pairing named
   this consumer;
 - a STATE read's arms are its observed writer plus every attested writer occurrence of the same
-  session that is HB-concurrent with the reader (not the same thread, not an anchor-chain
+  session that is HB-concurrent with the reader (not the same `threadKey`, not an anchor-chain
   ancestor either way, both chains reaching a `Root`; a `Lost` context is never concurrent), one
   arm per writer occurrence: the observed writer's at the write the read observed, any other at
-  its last write of the location. Locks are not constraints.
+  its last write of the location. Locks are not constraints. An activation's `threadKey` is the
+  claimed start it runs inside (§6: a queue item or task claimed on a consumer thread,
+  `start:<node>|<context>|<frames>`, `ActivationRow#claimed`), else its thread (a thread's own start
+  included, `RowRuntime#threadKey`): two items one consumer thread claims (a ZooKeeper server's
+  pipeline applying two clients' requests) run in the order their starters queued them, so they
+  are compared by their chains, not by the thread.
 - an occurrence is attested in a session that has an instrumented activation row for it
   (`Arms#attested`); no witness may move a root inside an unattested arm.
 
@@ -267,18 +274,44 @@ it.
 - `inbound(trace, symbolic, ...)`: ends the exchange the thread served and installs this one until
   the next message or `endInbound`, with the codec holes its envelope carried for the decodes the
   thread runs; `keepSymbolic` keeps a multi-message exchange's values of both schemes.
+- `received(symbolic, ...)`: a request taken into the thread's own context, which it does not
+  anchor (a DataTransfer op a DataNode's turn received): its values are installed for the decodes
+  the thread runs, and `CausynthTraceRecorder#receivedExchange` records its RECV naming the producer
+  endpoint it took in (`ScheduleEvent#received`) and its RECEIVE leg; no response endpoint is
+  minted, since nothing answers it through a door.
 - `setAside` / `restore`: a serving thread that runs an exchange of its own as a client.
 - `beginTick` / `vacant` / `endTick`: a daemon turn as a root; a vacant turn is one the recording
   never made, which a replay held and let go only because the run could go no further.
 
 The Hadoop adapter is `src/shim/java/org/apache/hadoop/ipc/CausynthMessagePropagation`, shipped
-with GraphChecker: transports `HADOOP_IPC` (IPC correlation) and `HDFS_SASL` (a handshake of
-several messages on one thread, possibly opened by a thread serving a request). The HDFS trees call
-it from IPC `Client`/`Server` and the SASL data-transfer classes; the Solr trees call
+with GraphChecker: transports `HADOOP_IPC` (IPC correlation), `HDFS_SASL` (a handshake of
+several messages on one thread, possibly opened by a thread serving a request) and
+`HDFS_DATA_TRANSFER` (one op, a request on a correlation of its own: `outboundOp`, `inboundOp`). The HDFS trees call
+it from IPC `Client`/`Server`, the SASL data-transfer classes and the DataTransfer op's two ends; the Solr trees call
 `MessageDoors` directly (HTTP headers through `CausynthHttp`, ZooKeeper through `SolrZkClient`), and
 so does the ZooKeeper tree (`CausynthZk`: transport `ZOOKEEPER`, one `REQUEST` message per client
 request, sent where `ClientCnxn` queues it, its header beside the bytes under the session and xid
 they carry, served by the server's `PrepRequestProcessor` and `FinalRequestProcessor` stages).
+
+A DataTransfer op leaves in `Sender#send`, whose SEND names the op's producer endpoint; it sets the
+op's correlation and every value the thread exported for the op on the op's trace info
+(`DataTransferTraceInfoProto`, in its header's base header, or its own for the two short-circuit
+shared-memory ops; `DataTransferProtoUtil#withCausynth` on `gc/hdfs-unified-dtx`). The DataNode
+takes it in at `Receiver#continueTraceSpan`, after the op's parse and before any of its fields is
+read, inside the op's turn (`DataXceiver` ends the exchange a SASL handshake opened before the turn
+begins, and the op's with the turn). The turn keeps its own `Root:DATA_XCEIVER` address: standing
+on the sender would hand the DataNode's occurrences the sender thread's IPC chain, whose counts a
+replay does not reproduce (b20h FsDatasetImpl-1843: 15 of 16 such tasks unanswered). The op is a
+message for everything else: its header's protobuf leaves pair with the sender's exports by handle,
+its RECEIVE binds the receiver's captures to the op's leg so the walk plans the sender (SYMBOL-SCOPE
+§4.4), and its RECV names the message that made the turn, which the control producers read as they
+read an anchor (§7.3; `ScheduleEvent#received`, `causynth/RecordedMessages#doorsOf`,
+`explore/Corpus#startedBy`). The order holds the op's SEND and RECV as slots like any other (§8):
+nothing settles one the replay does not make, so a SEND from a sender context the replay does not
+reproduce, or a RECV at a DataNode the replay's pipeline does not reach, stalls the order a timeout
+and a grace. The op's response and the pipeline's acks carry no envelope: none of their messages is
+one a protobuf service carries, so none holds a port (SYMBOL-SCOPE.md §6.2); their fault doors are
+SYMBOL-SCOPE.md §4.2's.
 
 ### 7.2 Store doors
 
@@ -319,8 +352,8 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
 
 The library catalog's doors and the woven markers are SYMBOL-SCOPE.md §4.2. A marker's branch is a decision of
 the occurrence that runs the door; `explore/ClosurePlanner#controlProducer` adds the sender and the
-receiver of the message a demanded occurrence served (found through its `Anchor`,
-`explore/Corpus#senderOf`, `#receiverOf`) as control producers, so their door faults are proposed
+receiver of the message a demanded occurrence served (its `Anchor`, else the message its turn took
+in, `explore/Corpus#startedBy`; `#senderOf`, `#receiverOf`) as control producers, so their door faults are proposed
 as flips. PLAN plans the door occurrences that read a fault marker on the same relation, over the
 recording's schedule (`causynth/RecordedMessages#doorsOf`, SYMBOL-SCOPE.md §4.4), so the faults EXPLORE
 proposes are minted.
@@ -458,7 +491,10 @@ order:
   (`explore/ObligationFactory`). CONFIRM writes the selected session's schedule unheld
   (`explore/ConfirmMain`, `SchedulePrefix#write` with `held` false): every event is rest, so only
   a `WAKE` still waits for what it followed, and the model's order is held by the `ORDER` rows of
-  its expected edges (`runtime/Confirmation`, PIPELINE.md §10);
+  its expected edges (`runtime/Confirmation`, PIPELINE.md §10): an activation held where it runs,
+  except claimed work on a consumer thread (§4's `threadKey`), which held there would hold every
+  item queued behind it: it is held at the send that started it, its anchor's producer
+  (`Confirmation#submitter`), up the chain while that send is claimed work too;
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
   runs on virtual time (it ends at a real signal or when its slot is due), and a woven notify marks
   the longest-standing wait.
@@ -503,7 +539,17 @@ turn of a daemon carries another node's asynchronous work is that node's timing,
 holds: in round `a40h` a NameNode command (block recovery queued by the lease monitor, replication
 after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
 so every anchor below it differed in the root's k alone and the target was never admitted; two
-recordings of one workload differ the same way.
+recordings of one workload differ the same way. A GROW does it to every replay after it: a region
+woven since the seed opens occurrences of its own, so every send under it, and every anchor below,
+has new ids, and no planned address there recurs. The answered occurrence's consumers then pair
+with that chain's producers, not the recorded chain's: the slot table takes them as growth beside
+the declared occurrence's slots, never as replacing them, whichever session lands first (PIPELINE.md
+§7.1 step 4; hdfs-11741 V4, whose declared balancer handshake was answered by the other move's).
+Where the model's arm came from such a session, CONFIRM takes a delivery into the anchor from any
+producer that answers the model's producer's question -- the same site, site index and attempt
+under a chain of the same shape -- and still holds it to the model's value; each substitution is a
+named `ADDRESS_UNSTABLE` row (PIPELINE.md §10; hdfs-11741 V6: which balancer dispatcher iteration
+carried the second move to dn1 is the balancer's timing).
 
 ## 10. Pass equality
 
@@ -533,9 +579,11 @@ randomness is seeded by endpoint (SYMBOL-SCOPE.md §4.5).
 - A codec decode on a thread no node is attributed to mints its holes under the unregistered
   address (the Solr Overseer reads its queue item before its tick opens, so the queue's holes are
   minted there, not in the tick).
-- Contexts and anchors exist only where a transport calls the doors. In the HDFS trees a
-  DataTransfer operation is a tick root, not anchored to its sender; Solr's Overseer queue turns
-  keep their own context; ZooKeeper watch work is outside the schedule.
+- Contexts and anchors exist only where a transport calls the doors. A DataNode's DataTransfer op
+  is a tick root, made by the op only through its RECV (§7.1); on a tree without the op's envelope
+  (`gc/hdfs-unified`, `gc/hdfs-11741`) nothing names the op and its header's leaves pair with
+  nothing; Solr's Overseer queue turns keep their own context; ZooKeeper watch work is outside the
+  schedule.
 - Threads started inside unscanned libraries have no start frame and inherit their creator's
   scope; pools other than the three in `PoolWorkers` are not recognized; timed waits outside the
   `WorkStartSites` list (`CountDownLatch.await(t)`, `Future.get(t)`, `Thread.join(t)`, ...) run on

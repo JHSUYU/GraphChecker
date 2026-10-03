@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -54,6 +55,9 @@ import java.util.Map;
  * claim is acceptable.</p>
  */
 public final class ComposeMain {
+    /** A selected arm's member: consumer endpoint id -> the text the model
+     *  delivers there, for each held leaf ({@link ComposedFamilies#texts}). */
+    public static final String TEXTS = "texts";
 
     private ComposeMain() {
     }
@@ -215,7 +219,7 @@ public final class ComposeMain {
         row.addProperty("unsatClosureComplete", decided && !anySat);
         row.addProperty("solverRuns", solver.runs());
         // One question per valuation, so the valuation IS the model.
-        row.add("valuations", valuations(decision));
+        row.add("valuations", valuations(composition, decision));
         row.add("campaignClaim",
                 campaignClaim(composition, decision, decided, anySat));
         return row;
@@ -347,7 +351,8 @@ public final class ComposeMain {
         return states;
     }
 
-    private static JsonArray valuations(ClaimPolicy.Decision decision) {
+    private static JsonArray valuations(Composer.Composition composition,
+                                        ClaimPolicy.Decision decision) {
         JsonArray valuations = new JsonArray();
         for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
             JsonObject answer = new JsonObject();
@@ -366,9 +371,9 @@ public final class ComposeMain {
                     && outcome.selected().fatalObserved());
             // The arm of each family the model took: the causal chain.
             JsonArray arms = new JsonArray();
-            Map<String, String> holeTexts = ComposedFamilies.holeTexts(
+            Map<String, String> received = ComposedFamilies.texts(
                     outcome.selectedArms().values(),
-                    outcome.answer().values());
+                    outcome.answer().values(), composition.anchor().id());
             for (Map.Entry<String, ComposedFamilies.ArmChoice> taken
                     : outcome.selectedArms().entrySet()) {
                 ComposedFamilies.ArmChoice arm = taken.getValue();
@@ -388,16 +393,23 @@ public final class ComposeMain {
                 row.addProperty("attested", arm.attested());
                 JsonArray states = referentStates(arm);
                 if (states.size() > 0) row.add("referentStates", states);
-                // What each of its holes must decode to in CONFIRM.
+                // What each of its held leaves must receive in CONFIRM.
                 JsonObject texts = new JsonObject();
-                for (String consumer : arm.holes().keySet()) {
-                    String text = holeTexts.get(consumer);
+                for (String consumer : arm.leaves().keySet()) {
+                    String text = received.get(consumer);
                     if (text != null) texts.addProperty(consumer, text);
                 }
-                if (texts.size() > 0) row.add("holeTexts", texts);
+                if (texts.size() > 0) row.add(TEXTS, texts);
                 arms.add(row);
             }
             answer.add("selectedArms", arms);
+            // What a pairing kind moved: the arms taken that are no pairing
+            // the selected path's own run had.
+            answer.add("repairedArms", GSON.toJsonTree(
+                    outcome.selected() == null
+                            ? Collections.<String>emptyList()
+                            : composition.repaired(outcome.selected()
+                            .selector(), outcome.selectedArms().keySet())));
             answer.add("unsatCore", GSON.toJsonTree(outcome.answer().core()));
             valuations.add(answer);
         }
@@ -415,7 +427,7 @@ public final class ComposeMain {
         row.addProperty("solverRuns", solver.runs());
         row.addProperty("seedSessionId",
                 JsonFields.nonNull(composition.seedSessionId()));
-        row.add("valuations", valuations(decision));
+        row.add("valuations", valuations(composition, decision));
         row.add("gaps", gaps(decision.claim().gaps()));
         return row;
     }

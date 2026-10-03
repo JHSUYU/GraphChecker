@@ -678,9 +678,12 @@ final class SeedBackwardStaticAnalyzer {
         if (allocation == null) {
             return null;
         }
+        // The ordinal is the class file's (ExceptionTargetLineResolver): a
+        // door's woven construction is not the program's.
         int ordinal = 0;
         for (Fact candidate : facts) {
-            if (!target.seedException.equals(
+            if (DoorWeave.isWoven(candidate.unit)
+                    || !target.seedException.equals(
                     allocatedExceptionType(candidate))) {
                 continue;
             }

@@ -1,7 +1,7 @@
 # HDFS-17899: three paths to a stale block key.  Declarations only.
 case "${1:?usage: case.sh bug1|bug2|bug3}" in
   bug1)
-    repo=/u/vnr3ne/hadoop-hdfs-unified
+    repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx
     test_class=org.apache.hadoop.hdfs.server.balancer.TestCausynthBalancerCachedKey
     test_method=testBlockMoveWithCachedKeyAfterRotations
     target_occurrence="hdfs-17899/target-dn#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122@hdfs-17899/balancer#epoch0/balance-block#1"
@@ -11,7 +11,7 @@ case "${1:?usage: case.sh bug1|bug2|bug3}" in
       hdfs:org/apache/hadoop/hdfs/server/datanode/DataNode)
     ;;
   bug2)
-    repo=/u/vnr3ne/hadoop-hdfs-unified
+    repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx
     test_class=org.apache.hadoop.hdfs.server.sps.TestExternalStoragePolicySatisfier
     test_method=testCausynthSpsKeyRefreshRpcFailure
     target_occurrence="hdfs-17899/target-dn#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122@hdfs-17899/sps#epoch0/satisfy-storage-policy#1"
@@ -22,7 +22,7 @@ case "${1:?usage: case.sh bug1|bug2|bug3}" in
       hdfs:org/apache/hadoop/hdfs/server/namenode/sps/StoragePolicySatisfier)
     ;;
   bug3)
-    repo=/u/vnr3ne/hadoop-hdfs-unified
+    repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx
     test_class=org.apache.hadoop.hdfs.server.datanode.TestCausynthDataTransferRpcFailure
     test_method=testReplicationAfterModeledKeyRefreshRpcFailure
     loop_bounds=${here}/loop-bounds-datanode.jsonl

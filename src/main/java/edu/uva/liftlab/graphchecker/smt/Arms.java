@@ -458,9 +458,11 @@ public final class Arms {
     }
 
     /**
-     * Whether two occurrences of one session are HB-concurrent: neither same
-     * thread nor causal-anchor ancestors.  Thread start/join is not in the
-     * rows.  Unknown (Lost, unfollowable chain) is NOT concurrent.
+     * Whether two occurrences of one session are HB-concurrent: neither one
+     * program order ({@link ActivationRow#threadKey}: the claimed start each
+     * runs inside, else its thread) nor causal-anchor ancestors.  Thread
+     * start/join is not in the rows.  Unknown (Lost, unfollowable chain) is
+     * NOT concurrent.
      */
     public boolean concurrent(OccurrenceAddress reader,
                               OccurrenceAddress writer, String session) {
@@ -498,7 +500,8 @@ public final class Arms {
         return false;
     }
 
-    /** Whether one session ran these two occurrences on one thread. */
+    /** Whether one session ran these two occurrences in one program order:
+     *  one claimed start, else one thread. */
     private boolean sameThread(String session, OccurrenceAddress left,
                                OccurrenceAddress right) {
         String one = threadKey(session, left);

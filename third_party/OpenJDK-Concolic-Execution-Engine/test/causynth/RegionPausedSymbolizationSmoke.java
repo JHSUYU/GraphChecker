@@ -86,7 +86,9 @@ public final class RegionPausedSymbolizationSmoke {
         String mapReadExpression = System.getSymbolicExpression(found);
         String mapFinished = System.finishConcolicRegion();
         require(found != null, "concrete map lookup unexpectedly failed");
-        require(!"[]".equals(mapPc), "symbolic map get was not recorded");
+        // Recorded on the read itself: a query adds nothing to the path.
+        require("[]".equals(mapPc), "a map get recorded a condition: "
+                + mapPc);
         require(has(mapExpression, "paused_helper_values"), mapExpression);
         require(has(mapReadExpression, "\"operation\":\"READ\""),
                 mapReadExpression);

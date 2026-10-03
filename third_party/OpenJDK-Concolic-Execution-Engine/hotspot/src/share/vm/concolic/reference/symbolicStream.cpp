@@ -63,18 +63,8 @@ const char *const UNMODELED[] = {
   "spliterator", "parallel", "reduce", "min", "max", NULL
 };
 
-Expression *conjunction(Expression *left, Expression *right) {
-  if (left == NULL) return right;
-  if (right == NULL) return left;
-  return new OpSymExpression(left, right, op_land, true);
-}
-
-Expression *negation(Expression *condition) {
-  Expression *flipped = condition->logical_negation();
-  return flipped != NULL ? flipped
-      : static_cast<Expression *>(new OpSymExpression(
-            condition, new ConExpression((jboolean) false), op_eq, true));
-}
+using ContainerSupport::conjunction;
+using ContainerSupport::negation;
 
 Expression *relation(const char *shape, const char *operation,
                      Expression *receiver, const exp_list_t &arguments,

@@ -2944,16 +2944,17 @@ public class ComposerTest {
             long flagged = ++version;
             session.write(Endpoint.of(mine, "Policy#update#5:WRITE",
                     at("flag#2", 0), 0), flag, flagged, "EXPR.v1.false");
-            session.read(Endpoint.of(reader, "Stream#latest#6:READ",
-                    at("read#1", 0), 0), latest, stored,
-                    SmtLowering.locationKey(latest) + "@v" + stored + "@s0",
-                    "L", null);
+            long latestRead = session.read(Endpoint.of(reader,
+                    "Stream#latest#6:READ", at("read#1", 0), 0), latest,
+                    stored, SmtLowering.locationKey(latest) + "@v" + stored
+                            + "@s0", "L", null);
             session.read(Endpoint.of(reader, "Stream#flag#7:READ",
                     at("read#2", 0), 0), flag, flagged,
                     SmtLowering.locationKey(flag) + "@v" + flagged + "@s0",
                     "Z", null);
             // The VM's pair: concreteValue is the run's cell, 11#24.
             JsonObject owner = read("INSTANCE_FIELD", 8L, 48L, stored, "L");
+            owner.addProperty("readEventId", latestRead);
             JsonObject generationThroughOwner = fieldRead(commit, 24L, "I",
                     owner, read("INSTANCE_FIELD", 11L, 24L, constructed, "I"));
             session.expression("EXPR.v1.copied", generationThroughOwner);
@@ -3087,7 +3088,7 @@ public class ComposerTest {
             lowering.path();
             lowering.begin("s0", corpus.join("s0"),
                     corpus.expressions("s0"));
-            if ((Boolean) path[1]) lowering.movable("kc@s0");
+            if ((Boolean) path[1]) lowering.movable(corpus.read("s0", "kc@s0"));
             String asked = lowering.term("EXPR.00000000000000d1", "test")
                     .text + " " + lowering.end();
             assertEquals((String) path[0] + ": " + asked, path[1],
@@ -3272,9 +3273,9 @@ public class ComposerTest {
                         at("m#9", 0), 0), own, version = 7L,
                         "EXPR.0000000000000040");
             }
-            session.read(Endpoint.of(reader, "Wrapper#getAndSave#3:READ",
-                    at("kc#3", 0), 0), known, 6L, "kc", "Ljava/util/Map;",
-                    null);
+            owner.addProperty("readEventId", session.read(Endpoint.of(reader,
+                    "Wrapper#getAndSave#3:READ", at("kc#3", 0), 0), known,
+                    6L, "kc", "Ljava/util/Map;", null));
             JsonObject get = relation("ASSOCIATIVE", "READ", "L", query,
                     integer("J", 5L));
             get.add("owner", owner);
@@ -3552,13 +3553,15 @@ public class ComposerTest {
                 "EXPR.00000000000000c4", "L", WriteRow.Referent.of(newerMap,
                         built), null));
         // The reader: the reference, then the query through it.
-        session.read(Endpoint.of(reader, "Wrapper#getAndSave#3:READ",
-                at("kc#3", 0), 0), known, stored, "kc@" + id,
-                "Ljava/util/Map;", "M_L'" + map + "'_30");
+        long reference = session.read(Endpoint.of(reader,
+                "Wrapper#getAndSave#3:READ", at("kc#3", 0), 0), known,
+                stored, "kc@" + id, "Ljava/util/Map;", "M_L'" + map + "'_30");
         JsonObject query = relation("ASSOCIATIVE", "READ", "L", six,
                 integer("J", 5L));
-        query.add("owner", read("INSTANCE_FIELD", 8L, 16L, stored,
-                "Ljava/util/Map;"));
+        JsonObject owner = read("INSTANCE_FIELD", 8L, 16L, stored,
+                "Ljava/util/Map;");
+        owner.addProperty("readEventId", reference);
+        query.add("owner", owner);
         JsonObject answered = read("MAP_STATE", 30L, -3L, built, "L");
         answered.getAsJsonObject("observedVersion").add("expression", query);
         session.read(Endpoint.of(reader, "Wrapper#getAndSave#9:READ",
@@ -5536,13 +5539,15 @@ public class ComposerTest {
                 session.write(Endpoint.of(second, "TickB#set#4:WRITE",
                         at("w#2", 0), 0), stamp, 1L, "EXPR.00000000000000b2");
             }
-            session.read(Endpoint.of(reader, "Block#getStamp#29:READ",
-                            at("r#1", 0), 0), stamp, 2L, symbol, "I",
+            long stamped = session.read(Endpoint.of(reader,
+                            "Block#getStamp#29:READ", at("r#1", 0), 0),
+                    stamp, 2L, symbol, "I",
                     "unstated".equals(name) ? null : "H1".equals(name) ? "3"
                             : "H2b".equals(name) || "own".equals(name) ? "2"
                             : "1001");
             JsonObject node = read("INSTANCE_FIELD", stamp.owner(), "value",
                     2L, "I");
+            node.addProperty("readEventId", stamped);
             // own: then a version no row wrote, which phi compares with it.
             JsonObject later = read("INSTANCE_FIELD", stamp.owner(), "value",
                     9L, "I");
@@ -5875,17 +5880,227 @@ public class ComposerTest {
     }
 
     /**
+     * A muted body's choices lower as the guards it stated and its facts as
+     * pins (VM model guards): MATCHES is whether the value at a key, null
+     * where absent, is the expected cell; PEEK a queue's head or null and
+     * POLL the queue without it, decided by a stated size and refused by
+     * name over none; an UNKNOWN cell is free, and a read at another literal
+     * key passes a guarded put; a query whose chain stands on no stated base
+     * answers what its call stated it returned -- pinned where nothing it
+     * rests on moves, free where its key does or where the stage may re-pair
+     * the read it rests on -- and one over a stated base is its chain's,
+     * whatever it states; asked of another object, a query states no answer.
+     * {asked, sat?}.
+     */
+    @Test
+    public void aModelsChoiceIsItsGuardAndItsFactAPin() {
+        Z3 solver = solver();
+        JsonObject n = vmLeaf("SymbolExpression", "n", "I");
+        JsonObject opaque = relation("ASSOCIATIVE", "STATE", symbol(
+                "M_L'java/util/HashMap'_3", "java/util/HashMap"));
+        // {n -> 7} over a stated empty base.
+        JsonObject map = relation("ASSOCIATIVE", "PUT", relation(
+                "ASSOCIATIVE", "SNAPSHOT_BASE", opaque), n, integer("I", 7L));
+        JsonObject base = relation("INDEXED", "SNAPSHOT_BASE", null);
+        JsonObject queue = relation("INDEXED", "APPEND", base,
+                integer("I", 7L));
+        JsonObject maybe = guarded(relation("INDEXED", "APPEND_IF", base,
+                integer("I", 7L)), binary("<", n, integer("I", 5L)));
+        String models = streamQuery(new String[] {"absent5", "seven5",
+                        "head", "polled", "drained"},
+                relation("ASSOCIATIVE", "MATCHES", "Z", map,
+                        integer("I", 5L), vmNull()),
+                relation("ASSOCIATIVE", "MATCHES", "Z", map,
+                        integer("I", 5L), integer("I", 7L)),
+                relation("INDEXED", "PEEK", "I", queue),
+                relation("INDEXED", "SIZE", "I",
+                        relation("INDEXED", "POLL", queue)),
+                relation("INDEXED", "SIZE", "I",
+                        relation("INDEXED", "POLL", base)));
+        // A head that is there where n < 5, and null -- no Int -- elsewhere.
+        String unsized = streamQuery(new String[] {"maybeHead"},
+                relation("INDEXED", "PEEK", "I", maybe));
+        String facts = streamQuery(new String[] {"opaqueRead", "chainRead",
+                        "opaqueHas"},
+                answered(relation("ASSOCIATIVE", "READ", "I", opaque,
+                        integer("I", 5L)), integer("I", 11L), 1L),
+                answered(relation("ASSOCIATIVE", "READ", "I", map,
+                        integer("I", 5L)), integer("I", 12L), 2L),
+                answered(relation("ASSOCIATIVE", "CONTAINS", "Z", opaque,
+                        n), integer("Z", 1L), 3L));
+        // The same membership, where a witness may move its key.
+        String moving = streamQuery(joined("n", "", null),
+                new String[] {"movedHas"},
+                answered(relation("ASSOCIATIVE", "CONTAINS", "Z", opaque,
+                        n), integer("Z", 1L), 4L));
+        // A membership over a state read: pinned where the stage holds the
+        // read to the version it observed, free where it may re-pair it.
+        SmtLowering.SessionJoin observed = joined("", "MAP/9#-3",
+                opaque);
+        JsonObject stateRead = read("MAP_STATE", 9L, -3L, 2L, "L");
+        String held = streamQuery(SmtLowering.repairing(observed,
+                        (location, event) -> false, (reader, writer) -> false),
+                new String[] {"heldHas"}, answered(relation("ASSOCIATIVE",
+                        "CONTAINS", "Z", stateRead, n), integer("Z", 1L), 5L));
+        String repaired = streamQuery(SmtLowering.repairing(observed,
+                        (location, event) -> true, (reader, writer) -> false),
+                new String[] {"repairedHas"}, answered(relation("ASSOCIATIVE",
+                        "CONTAINS", "Z", stateRead, n), integer("Z", 1L), 6L));
+        // {5 -> 7, 6 -> what a callback never run would have stored where
+        // n < 5}.
+        JsonObject unknownCell = relation("ASSOCIATIVE", "UNKNOWN", "L",
+                null);
+        unknownCell.addProperty(ContainerSmtCodec.ANSWER, 7L);
+        JsonObject filled = guarded(relation("ASSOCIATIVE", "PUT_IF",
+                relation("ASSOCIATIVE", "PUT", relation("ASSOCIATIVE",
+                        "SNAPSHOT_BASE", opaque), integer("I", 5L),
+                        integer("I", 7L)), integer("I", 6L), unknownCell),
+                binary("<", n, integer("I", 5L)));
+        String cells = streamQuery(new String[] {"nine6"},
+                relation("ASSOCIATIVE", "MATCHES", "Z", filled,
+                        integer("I", 6L), integer("I", 9L)));
+        String passed = streamQuery(new String[] {"read5"},
+                relation("ASSOCIATIVE", "READ", "I", filled,
+                        integer("I", 5L)));
+        assertFalse("a read at another literal key lowers a guarded put: "
+                + passed, passed.contains("assoc_put_if"));
+        JsonObject other = SmtLowering.asOf(answered(relation("ASSOCIATIVE",
+                "READ", "I", opaque, integer("I", 5L)), integer("I", 11L),
+                8L), map);
+        assertFalse("another object's query states the run's answer",
+                other.has("concreteValue")
+                        || other.has(ContainerSmtCodec.ANSWER));
+        String[][] cases = {
+            {models, "(and (= n 5) absent5)", "unsat"},
+            {models, "(and (= n 4) absent5)", "sat"},
+            {models, "(and (= n 5) seven5)", "sat"},
+            {models, "(and (= n 4) seven5)", "unsat"},
+            {models, "(= head 7)", "sat"},
+            {models, "(not (= head 7))", "unsat"},
+            {models, "(= polled 0)", "sat"},
+            {models, "(not (= polled 0))", "unsat"},
+            {models, "(= drained 0)", "sat"},
+            {unsized, "(and (= n 3) (= maybeHead 7))", "sat"},
+            {unsized, "(= n 7)", "unsat"},
+            {facts, "(= opaqueRead 11)", "sat"},
+            {facts, "(not (= opaqueRead 11))", "unsat"},
+            {facts, "(and (= n 5) (= chainRead 7))", "sat"},
+            {facts, "(= chainRead 12)", "unsat"},
+            {facts, "(not opaqueHas)", "unsat"},
+            {moving, "(not movedHas)", "sat"},
+            {moving, "movedHas", "sat"},
+            {held, "(not heldHas)", "unsat"},
+            {repaired, "(not repairedHas)", "sat"},
+            {repaired, "repairedHas", "sat"},
+            {cells, "(and (= n 3) nine6)", "sat"},
+            {cells, "(and (= n 3) (not nine6))", "sat"},
+            {cells, "(and (= n 7) nine6)", "unsat"},
+            {passed, "(= read5 7)", "sat"},
+            {passed, "(not (= read5 7))", "unsat"},
+        };
+        for (String[] asked : cases) {
+            Z3.Answer answer = solver.ask(asked[0] + "\n(assert " + asked[1]
+                    + ")", Collections.<String>emptyList(), false);
+            assertTrue(asked[1] + " " + answer.status(), answer.decided()
+                    && answer.sat() == "sat".equals(asked[2]));
+        }
+        assertTrue("a pin is named for an unsat core",
+                facts.contains(":named pinned_answer__"));
+        String refusal = "";
+        try {
+            streamQuery(new String[] {"unstated"}, relation("INDEXED",
+                    "SIZE", "I", relation("INDEXED", "POLL", relation(
+                            "INDEXED", "STATE", symbol(
+                                    "M_L'java/util/ArrayDeque'_4",
+                                    "java/util/ArrayDeque")))));
+        } catch (AssertionError refused) {
+            refusal = refused.getMessage();
+        }
+        assertTrue("a poll over no stated size: " + refusal, refusal.contains(
+                "ContainerRelation:INDEXED:POLL:unstated-size"));
+    }
+
+    /**
+     * The join of no session, where a witness may move {@code symbol} and
+     * every version of {@code written}'s location wrote it.
+     */
+    private static SmtLowering.SessionJoin joined(final String symbol,
+                                                  final String location,
+                                                  final JsonObject written) {
+        final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
+        return new SmtLowering.SessionJoin() {
+            @Override
+            public com.google.gson.JsonElement writeExpression(
+                    String at, long version) {
+                return location.equals(at) ? written
+                        : none.writeExpression(at, version);
+            }
+
+            @Override
+            public List<WriteRow> writes(String at) {
+                return none.writes(at);
+            }
+
+            @Override
+            public List<ReadRow> reads(String at) {
+                return none.reads(at);
+            }
+
+            @Override
+            public Set<String> mintedReadSymbols(long version) {
+                return none.mintedReadSymbols(version);
+            }
+
+            @Override
+            public Set<String> readSymbols(String at, long version) {
+                return none.readSymbols(at, version);
+            }
+
+            @Override
+            public boolean moves(String named) {
+                return symbol.equals(named);
+            }
+
+            @Override
+            public boolean repaired(String at, long readEvent) {
+                return false;
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return false;
+            }
+        };
+    }
+
+    /** A query stating what its call returned, under its answer id. */
+    private static JsonObject answered(JsonObject query, JsonObject value,
+                                       long id) {
+        query.add("concreteValue", value);
+        query.addProperty(ContainerSmtCodec.ANSWER, id);
+        return query;
+    }
+
+    /**
      * One query defining each of {@code names} as what its expression
-     * lowers to over an Int symbol {@code n}, with every condition the
-     * lowering requires asserted.
+     * lowers to over an Int symbol {@code n}, with every condition and
+     * assertion the lowering states.
      */
     private static String streamQuery(String[] names,
+                                      JsonObject... expressions) {
+        return streamQuery(SmtLowering.NO_JOIN, names, expressions);
+    }
+
+    /** The same, under {@code join}. */
+    private static String streamQuery(SmtLowering.SessionJoin join,
+                                      String[] names,
                                       JsonObject... expressions) {
         Map<String, VmTermLowering.Sort> declared =
                 new LinkedHashMap<String, VmTermLowering.Sort>();
         declared.put("n", VmTermLowering.Sort.INT);
         SmtLowering lowering = new SmtLowering(declared);
-        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        lowering.begin("t", join, ExpressionTable.empty());
         List<String> texts = new ArrayList<String>();
         StringBuilder defined = new StringBuilder();
         for (int index = 0; index < names.length; index++) {
@@ -5904,11 +6119,7 @@ public class ComposerTest {
                 lowering.openRefusals().isEmpty());
         List<String> conditions = lowering.end();
         texts.addAll(conditions);
-        StringBuilder query = new StringBuilder(
-                String.join("\n", lowering.preambleLines()));
-        for (SmtLowering.Declaration declaration : lowering.reachedBy(texts)) {
-            query.append('\n').append(declaration.render());
-        }
+        StringBuilder query = new StringBuilder(lowering.body(texts));
         for (String fact : lowering.facts(texts)) {
             query.append("\n(assert ").append(fact).append(')');
         }
@@ -6135,7 +6346,7 @@ public class ComposerTest {
                 body.contains("clk_o") && body.contains("1000"));
         assertEquals("each hole's symbol is asked of the model",
                 new LinkedHashSet<String>(Arrays.asList(n1, n2)),
-                new LinkedHashSet<String>(composition.holeSymbols()));
+                new LinkedHashSet<String>(composition.heldSymbols()));
 
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver());
@@ -6146,8 +6357,9 @@ public class ComposerTest {
             if (!outcome.witness()) continue;
             assertEquals("a replay reads its clocks afresh, so no hole of a "
                     + "clock is held to the model's value", 0,
-                    ComposedFamilies.holeTexts(outcome.selectedArms()
-                            .values(), outcome.answer().values()).size());
+                    ComposedFamilies.texts(outcome.selectedArms()
+                            .values(), outcome.answer().values(),
+                            composition.anchor().id()).size());
         }
     }
 
@@ -6239,30 +6451,36 @@ public class ComposerTest {
         }
 
         // CONFIRM: a value resting on no clock, through the selected arms.
-        Map<String, ComposedFamilies.BoundHole> own = new LinkedHashMap<
-                String, ComposedFamilies.BoundHole>();
-        own.put("c.num", new ComposedFamilies.BoundHole("h_num",
-                "J", false,
+        Map<String, ComposedFamilies.BoundLeaf> own = new LinkedHashMap<
+                String, ComposedFamilies.BoundLeaf>();
+        own.put("c.num", new ComposedFamilies.BoundLeaf("h_num",
+                "J", "occ.other", true, false,
                 Collections.<String>emptySet()));
-        own.put("c.str", new ComposedFamilies.BoundHole("h_str",
-                "Ljava/lang/String;", false,
+        own.put("c.str", new ComposedFamilies.BoundLeaf("h_str",
+                "Ljava/lang/String;", "occ.other", true, false,
                 Collections.<String>emptySet()));
-        own.put("c.relay", new ComposedFamilies.BoundHole("h_relay",
-                "J", false,
+        own.put("c.relay", new ComposedFamilies.BoundLeaf("h_relay",
+                "J", "occ.other", true, false,
                 Collections.singleton("h_num")));
-        own.put("c.clock", new ComposedFamilies.BoundHole("h_clock",
-                "J", true,
+        own.put("c.clock", new ComposedFamilies.BoundLeaf("h_clock",
+                "J", "occ.other", true, true,
                 Collections.<String>emptySet()));
-        own.put("c.late", new ComposedFamilies.BoundHole("h_late",
-                "J", false,
+        own.put("c.late", new ComposedFamilies.BoundLeaf("h_late",
+                "J", "occ.other", true, false,
                 Collections.singleton("h_clock")));
-        own.put("c.free", new ComposedFamilies.BoundHole("h_free",
-                "J", false,
+        own.put("c.free", new ComposedFamilies.BoundLeaf("h_free",
+                "J", "occ.other", true, false,
                 Collections.singleton("h_unbound")));
-        own.put("c.float", new ComposedFamilies.BoundHole("h_float",
-                "D", false, Collections.<String>emptySet()));
-        own.put("c.char", new ComposedFamilies.BoundHole("h_char", "C",
+        own.put("c.float", new ComposedFamilies.BoundLeaf("h_float",
+                "D", "occ.other", true, false, Collections.<String>emptySet()));
+        own.put("c.char", new ComposedFamilies.BoundLeaf("h_char", "C", "occ.other", true,
                 false, Collections.<String>emptySet()));
+        // A declared port's delivery is held into the anchor only.
+        own.put("c.port", new ComposedFamilies.BoundLeaf("h_port", "J",
+                "occ.anchor", false, false, Collections.<String>emptySet()));
+        own.put("c.elsewhere", new ComposedFamilies.BoundLeaf("h_elsewhere",
+                "J", "occ.other", false, false,
+                Collections.<String>emptySet()));
         Map<String, String> model = new LinkedHashMap<String, String>();
         model.put("h_num", "-5");
         model.put("h_str", "\"a\"\"b\\u{e9}\"");
@@ -6272,17 +6490,22 @@ public class ComposerTest {
         model.put("h_free", "3");
         model.put("h_float", "(fp #b0 #b01111111111 #x0000000000000)");
         model.put("h_char", "65");
-        Map<String, String> texts = ComposedFamilies.holeTexts(
+        model.put("h_port", "7");
+        model.put("h_elsewhere", "8");
+        Map<String, String> texts = ComposedFamilies.texts(
                 Collections.singletonList(ComposedFamilies.ArmChoice.of(
                         "f", "g", new ArrayList<String>(own.keySet()), "s0",
                         Collections.<edu.uva.liftlab.graphchecker.smt.Arms
-                                .Arm>emptyList(), own)), model);
+                                .Arm>emptyList(), own)), model,
+                "occ.anchor");
         Map<String, String> expected = new LinkedHashMap<String, String>();
         expected.put("c.num", "-5");
         expected.put("c.str", "a\"bé");
         expected.put("c.relay", "-5");
-        assertEquals("held: the holes resting on no clock, and on no hole "
-                + "no arm binds; a floating or char one is not rendered",
+        expected.put("c.port", "7");
+        assertEquals("held: the holes and the anchor's deliveries resting "
+                + "on no clock and on no hole no arm binds; a floating or "
+                + "char one is not rendered, a delivery elsewhere not held",
                 expected,
                 texts);
     }
@@ -6775,10 +6998,13 @@ public class ComposerTest {
             read(endpoint, location, version, symbol, "Z", concrete);
         }
 
-        void read(Endpoint endpoint, LocationId location, long version,
+        /** @return the read's seq: the VM event its ReadFrom names
+         *  ({@code readEventId}). */
+        long read(Endpoint endpoint, LocationId location, long version,
                   String symbol, String javaType, String concrete) {
             reads.add(ReadRow.of(id, ++seq, endpoint, location, version,
                     symbol, javaType, concrete));
+            return seq;
         }
 
         /**

@@ -237,8 +237,17 @@ public final class RowRuntime {
     private static final Map<String, Boolean> AMBIENT =
             new ConcurrentHashMap<String, Boolean>();
 
-    /** Thread name plus id: the name repeats across a pool. */
+    /**
+     * What an activation is program-ordered by (CONTRACT-SPEC §2.2): the
+     * start of the work it runs in, claimed on this thread (a queue item, a
+     * task: {@link Identity#claimedStart}), else its thread, by name plus id
+     * (the name repeats across a pool).  Two items one consumer thread
+     * claims run in their queue's order, which their starters decide: a
+     * server's pipeline applies two clients' requests on one thread.
+     */
     private static String threadKey() {
+        String claimed = Identity.claimedStart();
+        if (claimed != null) return ActivationRow.CLAIMED + claimed;
         Thread thread = Thread.currentThread();
         return thread.getName() + "#" + thread.getId();
     }
@@ -318,13 +327,7 @@ public final class RowRuntime {
                             + ", so the producer is the message's and not"
                             + " the staged expression's");
         }
-        // CONFIRM (b): compared with the model's producer, never enforced.
-        String mismatch = Confirmation.attached(endpoint, producer, null,
-                null);
-        if (!mismatch.isEmpty()) {
-            gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, endpoint.id(),
-                    mismatch);
-        }
+        confirm(endpoint, producer, null, arrival);
         SessionPublisher session = publisher;
         if (session != null) {
             String type = statedJavaType("attach", endpoint.id(), javaType,
@@ -347,6 +350,26 @@ public final class RowRuntime {
         return endpoint;
     }
 
+
+    /**
+     * CONFIRM (b): one delivery compared with the edge the model chose --
+     * its producer, message and value -- never enforced.  A difference is a
+     * {@code CONFIRM_MISMATCH}; a producer taken because it answers the
+     * model's producer's question is never silent either.
+     */
+    private static void confirm(Endpoint consumer, Endpoint producer,
+                                String messageKey, String arrival) {
+        Confirmation.Compared compared = Confirmation.attached(consumer,
+                producer, messageKey, arrival);
+        if (!compared.mismatch.isEmpty()) {
+            gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, consumer.id(),
+                    compared.mismatch);
+        }
+        if (!compared.substitution.isEmpty()) {
+            gap(GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC, consumer.id(),
+                    compared.substitution);
+        }
+    }
 
     /**
      * One hole a codec's encode exported, published when a message carries
@@ -378,14 +401,7 @@ public final class RowRuntime {
                              String messageKey, Hole hole, String symbol,
                              String javaType, String arrival,
                              boolean answered, String answeredValue) {
-        // CONFIRM (b): compared with the model's producer, message and
-        // value, never enforced.
-        String mismatch = Confirmation.attached(endpoint, producer,
-                messageKey, arrival);
-        if (!mismatch.isEmpty()) {
-            gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, endpoint.id(),
-                    mismatch);
-        }
+        confirm(endpoint, producer, messageKey, arrival);
         SessionPublisher session = publisher;
         if (session == null) return;
         session.attach(AttachRow.of(sessionId(), sequence(seq), endpoint,

@@ -2370,6 +2370,74 @@ public class ExploreTest {
         assertTrue("and it is BLOCKING: the campaign opens an epoch",
                 blocking);
 
+        // A slot stands on the session that opened it.  GROW withdraws the
+        // replay that exposed a region and re-runs it under the grown plan
+        // (hdfs-11741 V4): the re-run's pairing replaces nothing, since the
+        // session the old slot stood on is no longer the corpus's.
+        Path before = tree.newFolder("closure-before-grow").toPath();
+        Session exposing = new Session(before, "s-seed");
+        exposing.activation(writer, false);
+        exposing.activation(producer, false);
+        exposing.constant("e.119992", "119992");
+        exposing.export(exported, "e.119992", 11L, "119992");
+        exposing.attach(attached, "M_HOFF_KEY", "119992", exported);
+        exposing.flush();
+        Path after = tree.newFolder("closure-after-grow").toPath();
+        Session rerun = new Session(after, "s-two");
+        rerun.activation(writer, false);
+        rerun.activation(producer, false);
+        rerun.constant("e.119993", "119993");
+        rerun.export(otherPort, "e.119993", 13L, "119993");
+        rerun.attach(attached, "M_HOFF_KEY", "119993", otherPort);
+        rerun.flush();
+        SlotTable grown = new SlotTable();
+        grown.reconcile(Corpus.read(before, null), pairedMembers, 1);
+        SlotTable.Reconciliation reopened = grown.reconcile(
+                Corpus.read(after, null), pairedMembers, 2);
+        assertFalse("a withdrawn session's slot contradicts nothing",
+                reopened.replaced);
+        assertEquals("the session in its place opens the slot again",
+                otherPort.id(), slotsOf(reopened).get(0).producer.id());
+
+        // An occurrence a replay answered by its question (IDENTITY §9)
+        // stands at the declared address under another chain: its pairing
+        // is that chain's, a slot beside the declared one's, no replacement
+        // -- whichever session lands first, and through the slot file too,
+        // since which slots are answered is read off their opening sessions.
+        String[][] chains = {{"s-seed", "119992", "11"},
+                {"s-two", "119993", "13"}};
+        Path answeredRun = tree.newFolder("closure-answered").toPath();
+        for (String[] chain : chains) {
+            chainOf(answeredRun, chain, writer, producer, attached,
+                    chain[0].equals("s-seed") ? exported : otherPort);
+        }
+        SlotTable.Reconciliation ownChain = new SlotTable().reconcile(
+                Corpus.read(answeredRun, null), pairedMembers, 2);
+        assertFalse("an answered occurrence's pairing replaces nothing",
+                ownChain.replaced);
+        assertEquals("and opens its own slot beside the declared one's", 2,
+                slotsOf(ownChain).size());
+        for (String[] landing : new String[][] {{"0", "table"},
+                {"1", "table"}, {"0", "file"}, {"1", "file"}}) {
+            String[] chain = chains[Integer.parseInt(landing[0])];
+            Path alone = tree.newFolder("closure-landed-" + chain[0] + "-"
+                    + landing[1]).toPath();
+            chainOf(alone, chain, writer, producer, attached,
+                    chain[0].equals("s-seed") ? exported : otherPort);
+            SlotTable landed = new SlotTable();
+            landed.reconcile(Corpus.read(alone, null), pairedMembers, 1);
+            if (landing[1].equals("file")) {
+                landed.write(alone);
+                landed = SlotTable.read(alone);
+            }
+            SlotTable.Reconciliation both = landed.reconcile(
+                    Corpus.read(answeredRun, null), pairedMembers, 2);
+            assertFalse(chain[0] + " landing first by " + landing[1]
+                    + " makes no replacement", both.replaced);
+            assertEquals(chain[0] + " landing first by " + landing[1]
+                    + " holds both chains' slots", 2, landed.size());
+        }
+
         // ONLY AN ADMITTED REPLAY STATES A TOPOLOGY.  The same foreign
         // pairing, from a replay whose own result row says NOT_ADMITTED, is
         // a replay that did not run the world it was asked for: it states
@@ -3053,6 +3121,28 @@ public class ExploreTest {
     }
 
     /** The slots one reconciliation opened, for an assertion to look at. */
+    /** One session pairing {@code attached} with {@code port}'s key
+     *  {@code chain[1]}: the declared one ({@code s-seed}) or one that
+     *  answered the consumer's occurrence by its question. */
+    private static void chainOf(Path iteration, String[] chain,
+                                OccurrenceAddress writer,
+                                OccurrenceAddress producer, Endpoint attached,
+                                Endpoint port) throws IOException {
+        Session session = new Session(iteration, chain[0]);
+        session.activation(writer, false);
+        session.activation(producer, false);
+        session.constant("e." + chain[1], chain[1]);
+        session.export(port, "e." + chain[1], Long.parseLong(chain[2]),
+                chain[1]);
+        session.attach(attached, "M_HOFF_KEY", chain[1], port);
+        if (!chain[0].equals("s-seed")) {
+            session.gap(GapRow.of(chain[0], GapKind.ADDRESS_UNSTABLE,
+                    GapClass.DIAGNOSTIC, attached.occurrence().render(),
+                    "the declared occurrence ran at another address"));
+        }
+        session.flush();
+    }
+
     private static List<SlotTable.Slot> slotsOf(
             SlotTable.Reconciliation reconciliation) {
         return new ArrayList<SlotTable.Slot>(reconciliation.opened);
@@ -4461,6 +4551,7 @@ public class ExploreTest {
         private final List<ReadRow> reads = new ArrayList<>();
         private final List<RootMintRow> roots = new ArrayList<>();
         private final List<TargetRow> targets = new ArrayList<>();
+        private final List<GapRow> gaps = new ArrayList<>();
         /** What this replay SETTLED, as its own obligations.jsonl states. */
         private final List<ObligationResult> answered = new ArrayList<>();
         private final Map<String, JsonObject> expressions =
@@ -4612,6 +4703,10 @@ public class ExploreTest {
             answered.add(result);
         }
 
+        private void gap(GapRow gap) {
+            gaps.add(gap);
+        }
+
         private void flush() throws IOException {
             dir.create();
             RowCodec.writeAll(dir.obligations(), answered,
@@ -4626,6 +4721,7 @@ public class ExploreTest {
             RowCodec.writeAll(dir.reads(), reads, RowCodec::writeRead);
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
+            RowCodec.writeAll(dir.gaps(), gaps, RowCodec::writeGap);
             RowCodec.writeExpressions(dir.expressions(),
                     ExpressionTable.of(expressions));
             // The fixture STATES the role, as a campaign's own session

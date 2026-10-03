@@ -4,7 +4,6 @@
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/utils.hpp"
-#include <concolic/exp/methodExpression.hpp>
 #include <concolic/exp/stringExpression.hpp>
 
 std::set<std::string> SymStrUtils::target_class_names = init_target_class_names();

@@ -267,7 +267,8 @@ public final class ScheduleLog {
         return observe(kind, site, "");
     }
 
-    /** For a SEND: {@code endpoint} is the producer endpoint it carries. */
+    /** For a SEND: {@code endpoint} is the producer endpoint it carries; for
+     *  a RECV into the receiver's own context, the one it took in. */
     public static boolean observe(ScheduleEvent.Kind kind, String site,
                                   String endpoint) {
         return observe(kind, site, endpoint, null);

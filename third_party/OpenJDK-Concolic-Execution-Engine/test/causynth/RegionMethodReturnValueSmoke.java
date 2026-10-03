@@ -2,13 +2,13 @@
  * The result of a call the VM does not model states the value it returned.
  *
  * <p>Integer.parseInt and Long.parseLong of a symbolic String mint a fresh
- * return symbol, tied to the String only by the MethodExpression recorded
- * beside it.  Nothing else declares that symbol, so the composer cut
+ * return symbol.  Nothing else declares that symbol, so the composer cut
  * SOLR-18406's SolrParams.getLong of a request parameter (M_J_return28) as
- * an undeclared free symbol.  The symbol now states what the call returned
- * as `concreteValue`, spelled as a read states it: the constant's node.  A
- * negative int and longs past 2^32 show the whole word is taken from the
- * result, not a slot beside it.</p>
+ * an undeclared free symbol.  The symbol states what the call returned as
+ * `concreteValue`, spelled as a read states it: the constant's node; and the
+ * call it is the result of, which no path condition repeats.  A negative int
+ * and longs past 2^32 show the whole word is taken from the result, not a
+ * slot beside it.</p>
  */
 public final class RegionMethodReturnValueSmoke {
     public static void main(String[] args) {
@@ -27,34 +27,48 @@ public final class RegionMethodReturnValueSmoke {
         int parsedHexInt = Integer.parseInt(hexInt, 16);
         long parsedWideLong = Long.parseLong(wideLong);
         long parsedNegativeLong = Long.parseLong(negativeLong);
+        // A box carries its value's expression: the return symbol.
+        String negativeIntResult = System.getSymbolicExpression(
+                Integer.valueOf(parsedNegativeInt));
+        String hexIntResult = System.getSymbolicExpression(
+                Integer.valueOf(parsedHexInt));
+        String wideLongResult = System.getSymbolicExpression(
+                Long.valueOf(parsedWideLong));
+        String negativeLongResult = System.getSymbolicExpression(
+                Long.valueOf(parsedNegativeLong));
         String summary = System.finishConcolicRegion();
 
         require(parsedNegativeInt == -42 && parsedHexInt == -27
                         && parsedWideLong == 6000000123L
                         && parsedNegativeLong == -5000000000L,
                 "the parses returned the wrong values");
-        requireReturn(summary, "java/lang/Integer parseInt",
+        require(!summary.contains("parseInt") && !summary.contains("parseLong"),
+                "the summary repeats a call its result states: " + summary);
+        requireReturn(negativeIntResult, "java/lang/Integer parseInt",
                 "negative_int_text", "I", "Y_I_" + parsedNegativeInt);
-        requireReturn(summary, "java/lang/Integer parseInt",
+        requireReturn(hexIntResult, "java/lang/Integer parseInt",
                 "hex_int_text", "I", "Y_I_" + parsedHexInt);
-        String wide = requireReturn(summary, "java/lang/Long parseLong",
+        String wide = requireReturn(wideLongResult, "java/lang/Long parseLong",
                 "wide_long_text", "J", "Y_J_" + parsedWideLong);
-        requireReturn(summary, "java/lang/Long parseLong",
+        requireReturn(negativeLongResult, "java/lang/Long parseLong",
                 "negative_long_text", "J", "Y_J_" + parsedNegativeLong);
         System.out.println("METHOD_RETURN " + wide);
         System.out.println("RegionMethodReturnValueSmoke OK");
     }
 
     /**
-     * The return symbol of the `method` call on the String named `marker`,
-     * checked to state `constant`; returns its definition and the constant's.
+     * The return symbol `artifact` states (a result's expression), checked
+     * to be the `method` call on the String named `marker` and to state
+     * `constant`; returns its definition and the constant's.
      */
-    private static String requireReturn(String summary, String method,
+    private static String requireReturn(String artifact, String method,
                                         String marker, String javaType,
                                         String constant) {
-        String call = methodObject(summary, method, marker);
-        String symbol = resolve(summary,
-                jsonObjectAt(call, valueAt(call, "_res_exp")));
+        String summary = artifact;
+        int named = artifact.indexOf("\"_exp\":\"M_" + javaType + "_return");
+        require(named >= 0, "the result is not a return symbol: " + artifact);
+        String symbol = jsonObjectAt(artifact,
+                artifact.lastIndexOf('{', named));
         require(symbol.contains("\"_type\":\"SymbolExpression\"")
                         && symbol.contains("\"_java_type\":\"" + javaType
                                 + "\"")
@@ -84,23 +98,6 @@ public final class RegionMethodReturnValueSmoke {
                         new java.util.HashSet<String>()),
                 "the call's argument does not reach " + marker + ": " + invoked);
         return symbol + " -> " + value;
-    }
-
-    /** The MethodExpression of `method` whose arguments reach `marker`. */
-    private static String methodObject(String json, String method,
-                                       String marker) {
-        String needle = "\"_name\":\"" + method + "\"";
-        int offset = 0;
-        while ((offset = json.indexOf(needle, offset)) >= 0) {
-            String object = jsonObjectAt(json, json.lastIndexOf('{', offset));
-            if (reaches(json, object, marker,
-                    new java.util.HashSet<String>())) {
-                return object;
-            }
-            offset += needle.length();
-        }
-        throw new AssertionError("missing " + method + " of " + marker
-                + ": " + json);
     }
 
     private static boolean reaches(String artifact, String value,
