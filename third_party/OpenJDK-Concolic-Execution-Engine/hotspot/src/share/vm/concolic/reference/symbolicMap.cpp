@@ -4,6 +4,7 @@
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
 #include "concolic/reference/symbolicMap.hpp"
+#include "concolic/reference/symbolicStream.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/utils.hpp"
 
@@ -54,7 +55,11 @@ const char *const KEY_VIEWS[] = {
 const char *const ENTRY_VIEWS[] = {
   "java/util/HashMap$EntrySet", "java/util/LinkedHashMap$LinkedEntrySet",
   "java/util/concurrent/ConcurrentHashMap$EntrySetView",
-  "java/util/Hashtable$EntrySet", NULL
+  "java/util/Hashtable$EntrySet",
+  // An unmodifiable map's entry set wraps its map's: its members are
+  // UnmodifiableEntry wrappers of the map's entries (OopUtils::
+  // key_of_map_node looks through them).
+  "java/util/Collections$UnmodifiableMap$UnmodifiableEntrySet", NULL
 };
 const char *const VALUE_VIEWS[] = {
   "java/util/HashMap$Values", "java/util/LinkedHashMap$LinkedValues",
@@ -212,21 +217,6 @@ void dispose_conditional_removal(oop cursor, Expression *owner) {
   ctx->clear_conditional_removal();
 }
 
-// A callback's boolean result as a removal guard.
-Expression *as_guard(Expression *result) {
-  return result->is_boolean_expression() ? result
-      : static_cast<Expression *>(new OpSymExpression(
-            result, new ConExpression((jint) 0), op_ne, true));
-}
-
-// The removal condition of one removeIf visit: the predicate's own boolean
-// expression, else what its path decided in the direction it answered;
-// NULL when nothing symbolic decided it.
-Expression *removal_guard(const CallbackResult &visit) {
-  if (visit.symbolic) return as_guard(visit.result);
-  return (visit.returned_int & 1) != 0 ? visit.path : visit.path_negation;
-}
-
 // The value a visiting callback's element stands for: the state's READ of
 // its key when the map has a state, else the value's own expression.
 Expression *element_value(Expression *state, Expression *key,
@@ -280,6 +270,9 @@ std::set<std::string> SymMap::init_target_class_names() {
     "java/util/Hashtable", "java/util/Hashtable$KeySet",
     "java/util/Hashtable$EntrySet", "java/util/Hashtable$ValueCollection",
     "java/util/Hashtable$Entry",
+    // An unmodifiable entry set's member: a stream or forEach over it
+    // visits these, seeded as its map's entries.
+    "java/util/Collections$UnmodifiableMap$UnmodifiableEntrySet$UnmodifiableEntry",
     NULL
   };
   std::set<std::string> set;
@@ -317,8 +310,12 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
   oop target = callee == NULL || callee->is_static()
       ? (oop) NULL : handle.get_param<oop>(0);
   // Collection's default removeIf is this model's only on a map's key or
-  // entry view.  A values view cannot name what it removes.
+  // entry view.  A values view cannot name what it removes.  Its default
+  // stream() is the stream model's source (SymStream::invoke_source).
   if (handle.get_callee_holder_name() == "java/util/Collection") {
+    if (callee_name == "stream" || callee_name == "parallelStream") {
+      return SymStream::invoke_source(handle);
+    }
     if (callee_name != "removeIf") return false;
     if (klass_is_one_of(target, VALUE_VIEWS)) {
       ContainerSupport::abandon_state(
@@ -408,7 +405,7 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
 }
 
 // The contract of a callback: what its parameters are, in terms of the call.
-void SymMap::seed_callback(MethodSymbolizerHandle &call,
+void SymMap::seed_callback(MethodSymbolizerHandle &call, sym_rid_t,
                            const std::vector<oop> &arguments,
                            exp_list_t *seeds, Expression **key) {
   const std::string &method = call.get_callee_name();
@@ -436,26 +433,45 @@ void SymMap::seed_callback(MethodSymbolizerHandle &call,
     seeds->push_back(*key);
     seeds->push_back(element_value(state, *key, owner, arguments[1]));
   } else if (arguments.size() == 1 && arguments[0] != NULL) {
-    // A view's forEach/removeIf: its element.  An entry is the state's entry
-    // of its key, so getKey/getValue are that key and its READ.
-    oop view = call.get_param<oop>(0);
-    if (klass_is_one_of(view, ENTRY_VIEWS)) {
-      *key = key_expression(OopUtils::key_of_map_node(arguments[0]));
-      exp_list_t entry;
-      entry.push_back(*key);
-      seeds->push_back(state == NULL ? NULL
-          : relation("ENTRY", state, entry, owner));
-    } else if (klass_is_one_of(view, KEY_VIEWS)) {
-      *key = key_expression(arguments[0]);
-      seeds->push_back(*key);
-    } else {
-      seeds->push_back(ContainerSupport::semantic_value(arguments[0]));
-    }
+    // A view's forEach/removeIf: its element.
+    seeds->push_back(visited_member(view_kind(call.get_param<oop>(0)),
+                                    state, owner, arguments[0], key));
   }
+}
+
+SymMap::ViewKind SymMap::view_kind(oop view) {
+  if (klass_is_one_of(view, ENTRY_VIEWS)) return VIEW_ENTRIES;
+  if (klass_is_one_of(view, KEY_VIEWS)
+      || ContainerSupport::capability(view)
+             == ContainerSupport::CAPABILITY_HASH_SET) {
+    return VIEW_KEYS;
+  }
+  if (klass_is_one_of(view, VALUE_VIEWS)) return VIEW_VALUES;
+  return VIEW_NONE;
+}
+
+Expression *SymMap::visited_member(ViewKind kind, Expression *state,
+                                   Expression *owner, oop member,
+                                   Expression **key) {
+  if (kind == VIEW_ENTRIES) {
+    *key = key_expression(OopUtils::key_of_map_node(member));
+    exp_list_t entry;
+    entry.push_back(*key);
+    return state == NULL ? NULL : relation("ENTRY", state, entry, owner);
+  }
+  if (kind == VIEW_KEYS) {
+    *key = key_expression(member);
+    return *key;
+  }
+  return ContainerSupport::semantic_value(member);
 }
 
 Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &method = handle.get_callee_name();
+  if (handle.get_callee_holder_name() == "java/util/Collection"
+      && (method == "stream" || method == "parallelStream")) {
+    return SymStream::finish_source(handle);
+  }
   exp_list_t &parameters = handle.get_param_list();
   if (parameters.empty() || handle.reentered()) return NULL;
 
@@ -494,7 +510,8 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
           state = put(container, state, visit.key, visit.result, owner);
           continue;
         }
-        Expression *guard = removal_guard(visit);
+        // The removal condition: true where the predicate answered true.
+        Expression *guard = visit.truth();
         if (guard != NULL) {
           exp_list_t key;
           key.push_back(visit.key);

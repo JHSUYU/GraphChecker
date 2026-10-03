@@ -37,14 +37,28 @@ struct CallbackResult {
   CallbackResult()
       : result(NULL), symbolic(false), returned_null(false), returned_int(0),
         threw(false), key(NULL), path(NULL), path_negation(NULL) {}
+
+  /**
+   * A predicate callback's answer as a condition that holds exactly where
+   * it answered true: its own boolean expression, else what its path
+   * decided in the direction it answered (`path` for true, `path_negation`
+   * for false); NULL when nothing symbolic decided it -- or when a false
+   * answer's path has no relational complement, which `undecided()` tells
+   * apart.
+   */
+  Expression *truth() const;
+  /** A symbolic decision `truth()` cannot state. */
+  bool undecided() const { return !symbolic && path != NULL && truth() == NULL; }
 };
 
 /**
  * A model's contract for its callbacks: the expressions a callback's
- * parameters carry (one per parameter, NULL for none), given the arguments
- * the muted body passes it, and the key of the element it visits, if any.
+ * parameters carry (one per parameter, NULL for none), given the session id
+ * of the functional object called back and the arguments the muted body
+ * passes it, and the key of the element it visits, if any.
  */
 typedef void (*CallbackSeeder)(MethodSymbolizerHandle &call,
+                               sym_rid_t receiver,
                                const std::vector<oop> &arguments,
                                exp_list_t *seeds, Expression **key);
 

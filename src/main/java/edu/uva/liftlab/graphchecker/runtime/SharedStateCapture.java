@@ -370,7 +370,7 @@ final class SharedStateCapture {
             "RMW", "UNOBSERVED", "STATE", "STATE_PUT", "STATE_PUT_ALL",
             "STATE_REMOVE", "STATE_REMOVE_IF", "STATE_CLEAR",
             "STATE_REMOVE_AT", "STATE_CLEAR_VIEW", "STATE_ADD",
-            "STATE_APPEND", "STATE_INSERT", "STATE_WRITE");
+            "STATE_APPEND", "STATE_INSERT", "STATE_WRITE", "STATE_COLLECT");
     /**
      * A reference write's container state (R3-REFCONT §1.1): {@code
      * {ownerSymRid, slot, locationKind: MAP_STATE, fieldVersionId}}, the

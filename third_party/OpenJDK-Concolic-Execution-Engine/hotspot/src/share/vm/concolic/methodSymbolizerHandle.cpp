@@ -21,6 +21,15 @@ bool value_operand(oop obj) {
 
 }  // namespace
 
+Expression *CallbackResult::truth() const {
+  if (symbolic) {
+    return result->is_boolean_expression() ? result
+        : static_cast<Expression *>(new OpSymExpression(
+              result, new ConExpression((jint) 0), op_ne, true));
+  }
+  return (returned_int & 1) != 0 ? path : path_negation;
+}
+
 Expression *MethodSymbolizerHandle::get_primitive_exp(int offset, BasicType type) {
   Expression *exp;
   offset += type2size[type] - 1;

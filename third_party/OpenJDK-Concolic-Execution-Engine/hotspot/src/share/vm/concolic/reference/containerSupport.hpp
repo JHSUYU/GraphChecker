@@ -63,6 +63,11 @@ bool names_container(oop value);
 // Returns the backing container (or `value` itself).
 oop canonicalize(oop value);
 
+// How many members `container` holds now, read from its own count field
+// (no walk), or -1 when its class keeps none this engine reads
+// (ConcurrentHashMap, an AbstractList other than ArrayList).
+int member_count(oop container);
+
 BasicType result_type(oop result, BasicType declared);
 std::string java_type(oop result, BasicType declared);
 Expression *concrete_value(oop value);
@@ -336,6 +341,17 @@ SharedFieldVersions::Location state_location(oop container);
 bool guarded_mutation(const std::string &callee);
 
 jlong publish_state(oop container, Expression *new_state,
+                    const char *operation);
+
+/**
+ * Installs the state of a container a model filled in one call -- a
+ * stream's collected result -- whose log starts at `base`, the exact empty
+ * container it was made as, with `state` (built on `base`) its first
+ * version.  Without the log, a later store of the container would start
+ * one from a walk of its members and put their run values in place of the
+ * stated chain (referent_state).
+ */
+void publish_filled(oop container, Expression *base, Expression *state,
                     const char *operation);
 
 // Records that a mutation this engine does not model has run on a selected

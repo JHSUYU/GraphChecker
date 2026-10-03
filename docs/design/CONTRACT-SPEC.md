@@ -143,7 +143,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `TOPOLOGY_DIVERGENCE` | a pairing that contradicts the slot table or the run's order, an interaction outside the closure |
 | `UNATTESTED_ARM` | an arm whose producer states no path condition (no instrumented activation) |
 | `SCHEDULE_DIVERGED` | a focused replay left its schedule prefix (stated with both events; DIAGNOSTIC) |
-| `UNSTATED_VALUE` | a value no row states: a read joining no version and pinning no value, a lowering refusal, a malformed row; a STATE location at the anchor whose reads' recorded pairing no family arm states (BLOCKING, [PIPELINE.md §8](PIPELINE.md)); filed by a replay on an occurrence (its subject the address), the frame's own refusal, which COMPOSE applies to the paths and arms whose closure reaches it |
+| `UNSTATED_VALUE` | a value no row states: a read joining no version and pinning no value, a lowering refusal, a malformed row; a STATE location at the anchor whose reads' recorded pairing no family arm states (BLOCKING, [PIPELINE.md §8](PIPELINE.md)); filed by a replay on an occurrence (its subject the address), the frame's own refusal, which COMPOSE applies to the paths and arms whose closure reaches it; a VM model's statement it could not make, a region's `modelGaps` (DIAGNOSTIC, its subject the model's name, e.g. `STREAM_PINNED:LIMIT_EXHAUSTED`, [VM.md §8](VM.md)), which refuses nothing |
 | `UNPRODUCIBLE_ANSWER` | an attach answered or needed with a value no producer arm can produce |
 | `FORMULA_SAT_AT_RECORDED_VALUATION` | the composed formula reaches the fatal arm at the recorded valuation on a healthy path |
 | `DECLARATION_MISSING` | a root, port or name the case never declared; an undecided or erroring solver ask |

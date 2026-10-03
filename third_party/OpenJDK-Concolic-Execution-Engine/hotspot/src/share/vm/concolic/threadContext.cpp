@@ -11,9 +11,12 @@
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/reference/symbolicStringBuilder.hpp"
 #include "concolic/reference/symbolicBigDecimal.hpp"
+#include "concolic/reference/symbolicStream.hpp"
 #include "utilities/exceptions.hpp"
 #include "classfile/javaClasses.hpp"
 #include "runtime/osThread.hpp"
+
+#include <algorithm>
 
 namespace {
 
@@ -70,6 +73,7 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
       _pending_branch_event_id(0), _pending_branch_owner_frame(NULL),
       _pending_branch_occurrence(0) {
   _pending_view_removal_argument = NULL;
+  _streams = NULL;
   guarantee(GlobalSymbolicSession::is_open(),
             "a thread context requires an open symbolic session");
 }
@@ -439,6 +443,45 @@ ThreadContext::~ThreadContext() {
     delete frame;
   }
   _path_condition.gc();
+  delete _streams;
+}
+
+StreamTable *ThreadContext::streams(bool create) {
+  if (_streams == NULL && create) _streams = new StreamTable();
+  return _streams;
+}
+
+void ThreadContext::note_model_gap(const std::string &name) {
+  if (_region_stack.empty()) return;
+  RegionFrame *frame = _region_stack.back();
+  const std::pair<std::string, std::string> gap(name, get_current_code_pos());
+  // A bounded list: a model in a loop names its gap once per site.
+  if (frame->model_gaps.size() >= 64
+      || std::find(frame->model_gaps.begin(), frame->model_gaps.end(), gap)
+         != frame->model_gaps.end()) {
+    return;
+  }
+  frame->model_gaps.push_back(gap);
+}
+
+std::string ThreadContext::serialize_model_gaps() const {
+  using namespace rapidjson;
+  StringBuffer buffer;
+  Writer<StringBuffer> writer(buffer);
+  writer.StartArray();
+  if (!_region_stack.empty()) {
+    const RegionFrame *frame = _region_stack.back();
+    for (size_t index = 0; index < frame->model_gaps.size(); ++index) {
+      writer.StartObject();
+      writer.Key("name");
+      writer.String(frame->model_gaps[index].first.c_str());
+      writer.Key("site");
+      writer.String(frame->model_gaps[index].second.c_str());
+      writer.EndObject();
+    }
+  }
+  writer.EndArray();
+  return std::string(buffer.GetString(), buffer.GetLength());
 }
 
 // ---------------------------------------------------------------------------

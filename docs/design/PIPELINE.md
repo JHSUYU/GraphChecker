@@ -1204,6 +1204,16 @@ over arrays, and z3 answered such queries "incomplete (theory array)" or not at 
 valuation 0 undecided on two fatal-observing paths, each sat in seconds without it). Every
 array-valued choice of a put is a `store` of a chosen element, never an `ite` over arrays.
 
+**Stream results** (VM.md §4, `SymStream`). A collected list is an `INDEXED` chain from an exact empty
+`SNAPSHOT_BASE`: `APPEND_IF [v]` with a `guard` is `indexed_append_if`, the guard inside the store
+(with it false the state is the receiver's); a collected set's `PUT_IF [k, v]` is `assoc_put_if`. A
+`PIN` (no arguments, a `guard`, either shape) is its receiver's state with the guard required
+wherever it is lowered (`ContainerSmtCodec#pinned`): what the run decided that no relation states. A
+count is the `SIZE` and a match the `IS_EMPTY` of such a chain on a base no object holds.
+`CONTAINS [x]` on a list is a disjunction over the positions its chain can fill -- the appends and
+insertions above an exact base within `VIEW_CHAIN_LIMIT` (`ContainerSmtCodec#indexedBound`), each
+below the size -- and is refused by name otherwise (`ContainerRelation:INDEXED:CONTAINS:unbounded-chain`).
+
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
 before it at the guard sites of the mutations its method made on a container it then published
@@ -1211,8 +1221,9 @@ before it at the guard sites of the mutations its method made on a container it 
 store's recorded type may be held by, `StaticScopeMap#carriersAt`), those that skipped a mutation included. `Independence` keeps them: a kept
 read brings the guards of the write it observed, and an arm (`ComposedFamilies#producerBody`) seeds
 the guards of the writes it delivers (`Arms.Arm#write`); the closure then conjoins them in the
-polarity they took, and the reads they name are joined in turn. A decision whose condition is a
-REMOVE_IF guard of the referent's chain, or that guard's complement, stays free. `ComposeMain`
+polarity they took, and the reads they name are joined in turn. A decision whose condition guards a
+conditional mutation of the referent's chain (`REMOVE_IF`, `PUT_IF`, `APPEND_IF`), or that guard's
+complement, stays free. `ComposeMain`
 reads the epoch's scope map (`--static-scope-map`, required; `run_engine.sh do_compose` passes it).
 
 **An owner kept to the run's pairing** (`Composer#pinnedOwners`): a location a STATE family may

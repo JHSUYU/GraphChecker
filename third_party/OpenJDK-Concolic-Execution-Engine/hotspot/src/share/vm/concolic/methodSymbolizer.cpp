@@ -10,6 +10,7 @@
 #include "concolic/reference/symbolicStringBuilder.hpp"
 #include "concolic/reference/symbolicStringUtils.hpp"
 #include "concolic/reference/symbolicMap.hpp"
+#include "concolic/reference/symbolicStream.hpp"
 #include "concolic/reference/symbolicSet.hpp"
 #include "concolic/reference/symbolicList.hpp"
 #include "concolic/reference/symbolicBigDecimal.hpp"
@@ -34,6 +35,7 @@ void MethodSymbolizer::init_helper_methods() {
   SymStrBuilder::init_register_class(this);
   SymStrUtils::init_register_class(this);
   SymMap::init_register_class(this);
+  SymStream::init_register_class(this);
   SymSet::init_register_class(this);
   SymList::init_register_class(this);
   SymBigDecimal::init_register_class(this);
@@ -270,7 +272,8 @@ bool MethodSymbolizer::enter_callback(ZeroFrame *caller_frame,
   window.key = NULL;
   window.path_start = ConcolicMngr::ctx->get_path_condition().size();
   if (_handle.seeder() != NULL) {
-    _handle.seeder()(_handle, arguments, &seeds, &window.key);
+    _handle.seeder()(_handle, receiver->get_sym_rid(), arguments, &seeds,
+                     &window.key);
   }
   _windows.push_back(window);
   _suspended.push_back(_handle);

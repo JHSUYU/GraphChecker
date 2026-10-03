@@ -75,6 +75,10 @@ public:
   bool reenters(oop container);
   /** Whether a callback window is open on this thread. */
   inline bool in_callback() const { return !_windows.empty(); }
+  /** Whether a call made now could still open callback windows. */
+  inline bool callbacks_available() const {
+    return _windows.size() < MAX_CALLBACK_DEPTH;
+  }
 
 private:
   void init_helper_methods();

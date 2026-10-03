@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.contract.Clock;
@@ -5680,6 +5681,123 @@ public class ComposerTest {
             assertTrue("and only on its own side: " + shown[1] + " "
                     + refuted.status(), refuted.decided() && !refuted.sat());
         }
+    }
+
+    /**
+     * A stream's stated result (VM SymStream) lowers as its chain: a guarded
+     * append or put is there exactly where its guard holds, a PIN's guard is
+     * required wherever its state is lowered, and a list's contains is a
+     * disjunction over the positions its chain can fill -- refused by name
+     * over a chain with no exact base.  {asked, sat?}.
+     */
+    @Test
+    public void aStreamsStatedResultLowersAsItsChain() {
+        Z3 solver = solver();
+        JsonObject n = vmLeaf("SymbolExpression", "n", "I");
+        JsonObject root = relation("INDEXED", "STATE", symbol(
+                "M_L'java/util/ArrayList'_3", "java/util/ArrayList"));
+        // [7 where n < 5, 8 where n >= 2].
+        JsonObject list = guarded(relation("INDEXED", "APPEND_IF",
+                guarded(relation("INDEXED", "APPEND_IF",
+                        relation("INDEXED", "SNAPSHOT_BASE", root),
+                        integer("I", 7L)),
+                        binary("<", n, integer("I", 5L))),
+                integer("I", 8L)), binary(">=", n, integer("I", 2L)));
+        JsonObject set = guarded(relation("ASSOCIATIVE", "PUT_IF",
+                relation("ASSOCIATIVE", "SNAPSHOT_BASE", null),
+                integer("I", 5L), integer("Z", 1L)),
+                binary("<", n, integer("I", 5L)));
+        String chains = streamQuery(
+                new String[] {"list_size", "read0", "contains8", "set5"},
+                relation("INDEXED", "SIZE", "I", list),
+                relation("INDEXED", "READ", "I", list, integer("I", 0L)),
+                relation("INDEXED", "CONTAINS", "Z", list, integer("I", 8L)),
+                relation("ASSOCIATIVE", "CONTAINS", "Z", set,
+                        integer("I", 5L)));
+        // The same list where the run held n < 4.
+        String pinned = streamQuery(new String[] {"pinned_size"},
+                relation("INDEXED", "SIZE", "I", guarded(relation("INDEXED",
+                        "PIN", list), binary("<", n, integer("I", 4L)))));
+        String[][] cases = {
+            {chains, "(and (= n 3) (= list_size 2))", "sat"},
+            {chains, "(and (= n 7) (= list_size 2))", "unsat"},
+            {chains, "(and (= n 1) (= list_size 1))", "sat"},
+            {chains, "(and (= n 7) (= read0 8))", "sat"},
+            {chains, "(and (= n 3) (= read0 8))", "unsat"},
+            {chains, "(and (= n 1) contains8)", "unsat"},
+            {chains, "(and (= n 3) contains8)", "sat"},
+            {chains, "(and (= n 7) set5)", "unsat"},
+            {chains, "(and (= n 1) set5)", "sat"},
+            {pinned, "(and (= n 4) (= pinned_size 2))", "unsat"},
+            {pinned, "(and (= n 3) (= pinned_size 2))", "sat"},
+        };
+        for (String[] asked : cases) {
+            Z3.Answer answer = solver.ask(asked[0] + "\n(assert " + asked[1]
+                    + ")", Collections.<String>emptyList(), false);
+            assertTrue(asked[1] + " " + answer.status(), answer.decided()
+                    && answer.sat() == "sat".equals(asked[2]));
+        }
+        // A list whose chain stands on no exact base bounds no position.
+        String refusal = "";
+        try {
+            streamQuery(new String[] {"unbounded"}, relation("INDEXED",
+                    "CONTAINS", "Z", root, integer("I", 8L)));
+        } catch (AssertionError refused) {
+            refusal = refused.getMessage();
+        }
+        assertTrue("a contains over an unbounded chain: " + refusal,
+                refusal.contains(
+                        "ContainerRelation:INDEXED:CONTAINS:unbounded-chain"));
+    }
+
+    /**
+     * One query defining each of {@code names} as what its expression
+     * lowers to over an Int symbol {@code n}, with every condition the
+     * lowering requires asserted.
+     */
+    private static String streamQuery(String[] names,
+                                      JsonObject... expressions) {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("n", VmTermLowering.Sort.INT);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        List<String> texts = new ArrayList<String>();
+        StringBuilder defined = new StringBuilder();
+        for (int index = 0; index < names.length; index++) {
+            boolean truth = "Z".equals(JsonFields.optionalString(
+                    expressions[index], "_java_type"));
+            VmTermLowering.Term term = lowering.dispatch(expressions[index],
+                    truth ? VmTermLowering.Sort.BOOL
+                            : VmTermLowering.Sort.INT, "test");
+            texts.add(term.text);
+            defined.append("\n(define-fun ").append(names[index])
+                    .append(truth ? " () Bool " : " () Int ")
+                    .append(term.text).append(')');
+        }
+        // Read before end(), which closes the conjunction they belong to.
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        List<String> conditions = lowering.end();
+        texts.addAll(conditions);
+        StringBuilder query = new StringBuilder(
+                String.join("\n", lowering.preambleLines()));
+        for (SmtLowering.Declaration declaration : lowering.reachedBy(texts)) {
+            query.append('\n').append(declaration.render());
+        }
+        for (String fact : lowering.facts(texts)) {
+            query.append("\n(assert ").append(fact).append(')');
+        }
+        for (String condition : conditions) {
+            query.append("\n(assert ").append(condition).append(')');
+        }
+        return query.append(defined).toString();
+    }
+
+    /** A relation with its {@code guard}. */
+    private static JsonObject guarded(JsonObject relation, JsonObject guard) {
+        relation.add("guard", guard);
+        return relation;
     }
 
     /**
