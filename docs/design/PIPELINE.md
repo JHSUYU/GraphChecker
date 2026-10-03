@@ -28,7 +28,8 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | — | `campaign_exit_verdict` (reads `result.json`) | — | exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
 
 There is one iteration (`iteration-0000`); what a replay learns past the recording is taken up by GROW
-inside EXPLORE. `campaign_stop_after=IMPORT` returns successfully after IMPORT (a measurement run).
+inside EXPLORE. `campaign_stop_after=IMPORT` returns successfully after IMPORT, `SEED` after SEED (a
+measurement run: the slice, the recording and its region plan).
 The campaign root is `schedule_output_dir` = `<causynth_output_dir>/schedule`; `do_campaign` refuses a
 root that already holds an iteration or `final/`, and claims it with `mkdir frozen-inputs`. Every
 directory a stage writes is written once.
@@ -83,7 +84,7 @@ marked * below.
 | `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth` | EXPLORE's bounds (§7.4, §7.9) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb`, `stream_max_in_flight` (0) | the pool's hosts, one replay's memory at the host gate (§7.7), the most heap a head JVM is given and a solver asked again, the obligations the capped explorations running at once keep in flight together (§7.7; 0 is no cap) |
-| `campaign_stop_after` | empty, or `IMPORT` |
+| `campaign_stop_after` | empty, `SEED` or `IMPORT` |
 | `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10), `reproduce_time_factor`* (3) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording; how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload (§10b) |
 
 Defaults in parentheses; `solver_timeout_ms`, `schedule_max_jobs` and `obligation_memory_mb` have

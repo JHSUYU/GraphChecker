@@ -694,14 +694,14 @@ validate_config() {
     || die "campaign_budget_s (${campaign_budget_s}) must exceed its reserve \
 campaign_reserve_s (${campaign_reserve_s}): the exploration would end before \
 it began"
-  # The one stage a campaign may be asked to stop after.  Refused here rather
+  # The stages a campaign may be asked to stop after.  Refused here rather
   # than in do_campaign so that `validate` and PREFLIGHT both name it before
   # any work starts: a value this table does not carry would otherwise match
   # nothing, run the whole campaign, and be read back as a measurement run
   # that never stopped.
   case "${campaign_stop_after}" in
-    ''|IMPORT) ;;
-    *) die "campaign_stop_after must be empty or IMPORT: \
+    ''|SEED|IMPORT) ;;
+    *) die "campaign_stop_after must be empty, SEED or IMPORT: \
 ${campaign_stop_after}" ;;
   esac
   [[ "${causynth_scope_growth_budget}" =~ ^[0-9]+$ ]] \
@@ -6165,6 +6165,10 @@ campaign_batch() {
   local name group index status failed=0
   local -a names=() planned=() members=() served=() pids=()
   campaign_stage SEED campaign_batch_seed
+  if [[ "${campaign_stop_after}" == "SEED" ]]; then
+    campaign_log "stopping after SEED: campaign_stop_after=SEED"
+    return 0
+  fi
   mapfile -t names < <(jq -r '.targets | to_entries[]
     | select(.value.state == "ACTIVATED") | .key' "${summary}")
   (( ${#names[@]} > 0 )) || campaign_fail SEED CausynthTraceRecorder \
@@ -6508,6 +6512,12 @@ do_campaign() {
     return
   fi
   campaign_stage SEED campaign_seed
+  # A measurement of the slice and the recording stops here: the static
+  # artifacts, the trace and its region plan are published.
+  if [[ "${campaign_stop_after}" == "SEED" ]]; then
+    campaign_log "stopping after SEED: campaign_stop_after=SEED"
+    return 0
+  fi
   campaign_iteration
 }
 
