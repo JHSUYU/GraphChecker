@@ -172,7 +172,7 @@ See Acceptance above. What remains (the branches are in README §0.3):
 
 The offline regression gate `tools/regress/offline-ab.sh` (with `ab_compare.py`) compares a
 candidate jar against a baseline on a recorded round, stage by stage, with no replay. It reads a
-round as HEAD reads it, so it needs a round recorded by a build whose rows HEAD still reads (r7 and later). `AB_BASELINE_REPO` runs the baseline under its own checkout's case
+round as HEAD reads it, so it needs a round recorded by a build whose rows HEAD still reads: every root row stating its category (`RootMintRow#category`), which no round up to `V9` does. A case whose tree marks its target is configured with the spec `run.sh` derives (`declared-target.yaml`) kept outside every stage's directory. `AB_BASELINE_REPO` runs the baseline under its own checkout's case
 declarations, for a change whose declarations move with the jar. Every stage gates on bytes: SEED (with its woven classes) and PLAN
 are byte-identical across lifts and runs (`/bigtemp/vnr3ne/analysis/det2/s6/`: hdfs-17897,
 11741, 17899-bug1, 17960 and solr-18413 on five lifts, two with the scope copied in opposite
