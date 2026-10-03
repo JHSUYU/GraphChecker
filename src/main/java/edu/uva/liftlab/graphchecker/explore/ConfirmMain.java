@@ -745,9 +745,10 @@ public final class ConfirmMain {
     }
 
     /** Why the selected session is itself the confirming run, or "": its
-     *  world planted nothing ({@code Corpus.World#plantsNothing}: a root, a
-     *  skew, an answer or a pairing it planted is a choice CONFIRM makes
-     *  again in a replay of its own, strict), all chosen arms are its own
+     *  world planted no pairing (a pairing is a moved choice its own run
+     *  took under an order the replay held, so CONFIRM makes it again in a
+     *  replay of its own, strict; a planted root, skew or answer is checked
+     *  on the session's rows below), all chosen arms are its own
      *  deliveries and its reads saw every write the model chose
      *  ({@code sawChosen}, {@link StateClosure#ran}: another writer, or
      *  another state of a delivered object, is a run a replay has to make),
@@ -759,7 +760,7 @@ public final class ConfirmMain {
     static String realizedBy(Moved moved, JsonObject world, String sessionId,
                              List<JsonObject> arms, SessionReader session,
                              TargetRow target, boolean sawChosen) {
-        if (!ExploreCodec.readWorld(world).plantsNothing()
+        if (!ExploreCodec.map(object(world, "pairings")).isEmpty()
                 || !target.observedFatal() || !sawChosen
                 || !moved.refusal.isEmpty()) {
             return "";

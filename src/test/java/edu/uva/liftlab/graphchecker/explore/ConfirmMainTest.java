@@ -643,16 +643,16 @@ public class ConfirmMainTest {
 
     /**
      * A selected session that took every edge the model chose, ran the
-     * moved root at the model's value and observed the fatal IS the run that
-     * confirms the claim -- only where its world planted nothing: a root it
-     * was assigned, a clock it was skewed, a handoff it was answered or a
-     * pairing it was held to is a choice CONFIRM makes again in a replay of
-     * its own, strict (Corpus.World#plantsNothing).  A replay drops the
-     * session's own skew on a clock cell the composition anchors (the
-     * model's clocks alone) and keeps one outside it.
+     * moved root at the model's value, ran the model's clocks and observed
+     * the fatal IS the run that confirms the claim -- unless its world
+     * planted a pairing: a choice its run took under an order its replay
+     * held, which CONFIRM makes again in a replay of its own, strict.  A
+     * planted root or answer is the session's own run; a skew planted on a
+     * clock cell the composition anchors is no clock of the model's, and
+     * its replay drops it and keeps one outside the composition.
      */
     @Test
-    public void aSessionIsItsConfirmationOnlyWhereItsWorldPlantedNothing()
+    public void aSessionIsItsConfirmationUnlessItsWorldPlantedAPairing()
             throws Exception {
         Path iteration = iteration();
         SessionDir sel = SessionDir.of(iteration, "sel");
@@ -668,9 +668,9 @@ public class ConfirmMainTest {
         // what the world planted (member -> key -> value), realized?
         Object[][] table = {
                 {null, null, null, true},
-                {"rootAssignments", "FAULT:IPC", "true", false},
+                {"rootAssignments", "FAULT:IPC", "true", true},
                 {"clockDeltas", "CLOCK.gone", "7000", false},
-                {"answers", consumer.id(), "119979", false},
+                {"answers", consumer.id(), "119979", true},
                 {"pairings", Confirmation.id(reader), Confirmation.id(writer),
                         false},
         };

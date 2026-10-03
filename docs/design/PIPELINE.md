@@ -1472,9 +1472,9 @@ Only a `SAT_CANDIDATE` is confirmed. ConfirmMain reads `claim.json` and the mani
 valuation, its selected path and session, and the selected arms of that path; the selected session
 must have a target row at the anchor that reached it (else refused, exit 1 → unconfirmed).
 
-- **Realized**: when the session's world planted nothing (`Corpus.World#plantsNothing`: no root
-  assigned, no clock skewed, no handoff answered, no pairing held -- a planted pairing is a moved
-  choice, and CONFIRM makes it again in its own replay, strict), that target row observed the fatal, every selected arm is the session's own
+- **Realized**: when the session's world planted no pairing (a pairing is a moved choice its own
+  run took under the order its replay held, which CONFIRM makes again in its own replay, strict),
+  that target row observed the fatal, every selected arm is the session's own
   delivery, every write the model chose for a read of the join closure at a location the fatal
   rests on (`restsOn`, below) is the one that read saw (`StateClosure#ran`), the session minted
   every moved non-clock root at the model's value, and its clocks are the model's (on every cell

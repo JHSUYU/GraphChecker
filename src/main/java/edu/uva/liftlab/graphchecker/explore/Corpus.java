@@ -143,20 +143,6 @@ public final class Corpus implements Arms.Rows {
             this.flips = Collections.unmodifiableList(flips);
         }
 
-        /**
-         * Whether this world plants nothing over the recording: no root
-         * assigned, no clock skewed, no handoff answered, no pairing held.
-         * Only such a session ran the recording's own world, so only it can
-         * be a confirming run without a replay ({@code
-         * ConfirmMain#realizedBy}); a planted pairing is a moved choice as
-         * an assigned root is a moved value.
-         */
-        public boolean plantsNothing() {
-            return rootAssignments.isEmpty()
-                    && !ObligationFactory.movesAClock(clockDeltas)
-                    && answers.isEmpty() && pairings.isEmpty();
-        }
-
         /** The seed's world, and that of a session with no worker. */
         static World empty() {
             return new World(new LinkedHashMap<String, String>(),
