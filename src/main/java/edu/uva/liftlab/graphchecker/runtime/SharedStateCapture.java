@@ -3,15 +3,11 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-import com.google.gson.stream.JsonReader;
-import com.google.gson.stream.JsonToken;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
-import java.io.IOException;
-import java.io.StringReader;
+import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -23,8 +19,8 @@ import java.util.List;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmEnvelope;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.parseJson;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmRecords;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.members;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
@@ -100,34 +96,15 @@ final class SharedStateCapture {
 
     /**
      * What one page says of itself ({@link #COMPLETE},
-     * {@link #NEXT_AFTER_EVENT_ID}), streamed off its top-level members:
-     * the locations before them are skipped, never built, and the
-     * expression table after them is not read.  The owner thread holds the
-     * VM context meanwhile; parsed whole, a 64 MB page took it eight times
-     * as long.  A blank page says nothing; null when it is no JSON object.
+     * {@link #NEXT_AFTER_EVENT_ID}), streamed off its top-level members
+     * ({@link ConcolicRegionRuntime#members}): the locations before them
+     * are skipped and the expression table after them is not read.  The
+     * owner thread holds the VM context meanwhile; parsed whole, a 64 MB
+     * page took it eight times as long.  A blank page says nothing; null
+     * when it is no JSON object.
      */
     static JsonObject pageHeader(String serialized) {
-        JsonObject header = new JsonObject();
-        if (serialized == null || serialized.trim().isEmpty()) return header;
-        try {
-            JsonReader reader = new JsonReader(new StringReader(serialized));
-            reader.setLenient(true);
-            if (reader.peek() != JsonToken.BEGIN_OBJECT) return null;
-            reader.beginObject();
-            while (reader.hasNext() && !(header.has(COMPLETE)
-                    && header.has(NEXT_AFTER_EVENT_ID))) {
-                String name = reader.nextName();
-                if (COMPLETE.equals(name)
-                        || NEXT_AFTER_EVENT_ID.equals(name)) {
-                    header.add(name, JsonParser.parseReader(reader));
-                } else {
-                    reader.skipValue();
-                }
-            }
-            return header;
-        } catch (IOException | RuntimeException malformed) {
-            return null;
-        }
+        return members(serialized, COMPLETE, NEXT_AFTER_EVENT_ID);
     }
 
     /**
@@ -136,19 +113,32 @@ final class SharedStateCapture {
      */
     private static final int MAX_READ_OUT_PAGES = 4096;
 
-    /** The byte budget of one page; the VM stops at a location boundary. */
-    private static final int READ_OUT_PAGE_BYTES = 64 * 1024 * 1024;
+    /**
+     * The byte budget of one page; the VM stops at a location boundary, and
+     * every page repeats the expression closure its locations share.
+     * Measured (solr-18406's V17 seed replay; SB12's obligation
+     * 0a1a085e98d056aa, whose read-outs are 50-60 MB): at 64 MB the seed
+     * peaked at 328 MB live after a full collection, at 16 and 8 MB at 229
+     * and 225; the obligation at 1480, 1290 and 1145 MB, reading 1.6 and 2
+     * times 64 MB's text.  Below one location's closure every page repeats
+     * it: the seed at 4 MB read 20 times its text in 198 pages and passed
+     * 2 GB resident, at 2 MB 4 GB.  16 MB keeps four times that away.
+     */
+    private static final int READ_OUT_PAGE_BYTES = 16 * 1024 * 1024;
 
-    /** Decodes and files the read-out after the VM context is closed. */
+    /**
+     * Decodes and files the read-out after the VM context is closed, a page
+     * at a time, each page's text let go once it is read.
+     */
     static void assembleRecordedSharedState(
             ActiveRegion active, RawSharedStateReadOut raw) {
         if (raw == null) return;
         if (!raw.fault.isEmpty()) {
             refuse(MALFORMED_ENVELOPE, "", raw.fault);
         }
-        for (String serialized : raw.pages) {
+        while (!raw.pages.isEmpty()) {
             try {
-                decodeTrackedLocations(serialized, active);
+                decodeTrackedLocations(raw.pages.remove(0), active);
             } catch (Throwable throwable) {
                 refuse(MALFORMED_ENVELOPE, "", rootCause(throwable));
             }
@@ -156,45 +146,49 @@ final class SharedStateCapture {
     }
 
     /**
-     * One page of the read-out: envelopes over one per-document expression
-     * table, imported once so every envelope resolves against it.
+     * One page of the read-out: location envelopes over the page's one
+     * expression table, read one location at a time
+     * ({@link ConcolicRegionRuntime#decodeVmRecords}), each filed as its
+     * write log record; the page is never parsed or copied whole (a Solr
+     * region's 52 MB page was its replay's largest tree).  A page that
+     * states another kind or another location count than it carries files
+     * nothing.
      */
     private static void decodeTrackedLocations(String serialized,
                                                ActiveRegion active) {
-        JsonElement parsed = parseJson(serialized);
-        if (!parsed.isJsonObject()) {
-            refuse(MALFORMED_ENVELOPE, "",
-                    "tracked-location read-out returned no JSON object");
-            return;
-        }
-        JsonObject document = decodeVmEnvelope(parsed.getAsJsonObject(),
-                active);
-        if (!TRACKED_LOCATIONS_KIND.equals(optionalString(document, "kind"))) {
-            refuse(MALFORMED_ENVELOPE, "",
-                    "unsupported tracked-location read-out schema");
-            return;
-        }
-        JsonArray locations = array(document, "locations");
-        int stated = optionalInteger(document, "locationCount", -1);
-        if (stated >= 0 && stated != locations.size()) {
-            refuse(MALFORMED_ENVELOPE, "",
-                    "tracked-location read-out states " + stated
-                            + " locations and carries " + locations.size());
-            return;
-        }
-        // One document's versions share their subexpressions (one import):
-        // a node scanned clean once is not scanned again.
+        // One page's versions share their subexpressions (one import): a
+        // node scanned clean once is not scanned again.
         Set<JsonElement> clean = Collections.newSetFromMap(
                 new IdentityHashMap<JsonElement, Boolean>());
-        for (JsonElement element : locations) {
+        decodeVmRecords(serialized, LOCATIONS, active, header -> {
+            if (!TRACKED_LOCATIONS_KIND.equals(
+                    optionalString(header, "kind"))) {
+                refuse(MALFORMED_ENVELOPE, "",
+                        "unsupported tracked-location read-out schema");
+                return false;
+            }
+            int stated = optionalInteger(header, "locationCount", -1);
+            int carried = optionalInteger(header,
+                    VmExpressionTable.RECORD_COUNT, -1);
+            if (stated >= 0 && stated != carried) {
+                refuse(MALFORMED_ENVELOPE, "",
+                        "tracked-location read-out states " + stated
+                                + " locations and carries " + carried);
+                return false;
+            }
+            return true;
+        }, element -> {
             if (!element.isJsonObject()) {
                 refuse(MALFORMED_ENVELOPE, "",
                         "tracked location is not an object");
-                continue;
+                return;
             }
             fileVersionsEnvelope(element.getAsJsonObject(), active, clean);
-        }
+        });
     }
+
+    /** The member a read-out page holds its location envelopes in. */
+    private static final String LOCATIONS = "locations";
 
     private static final String TRACKED_LOCATIONS_KIND =
             "SHARED_TRACKED_LOCATIONS";

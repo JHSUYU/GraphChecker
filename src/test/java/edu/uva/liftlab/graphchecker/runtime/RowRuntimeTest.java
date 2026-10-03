@@ -79,6 +79,23 @@ public class RowRuntimeTest {
         RowRuntime.resetForTests();
     }
 
+    /** A VM read-out is read for the members asked, the rest skipped: a
+     *  page's header behind its records, a summary's three members. */
+    @Test
+    public void aReadOutIsReadForTheMembersAsked() {
+        assertEquals(JsonParser.parseString(
+                        "{\"complete\":false,\"nextAfterEventId\":7}"),
+                ConcolicRegionRuntime.members("{\"locations\":[{\"a\":1}],"
+                                + "\"complete\":false,\"nextAfterEventId\":7,"
+                                + "\"vmExpressionTable\":{}}",
+                        "complete", "nextAfterEventId"));
+        assertEquals(new JsonObject(), ConcolicRegionRuntime.members(
+                " ", "aborted"));
+        assertNull(ConcolicRegionRuntime.members("[1]", "aborted"));
+        assertNull(ConcolicRegionRuntime.members("{\"modelGaps\":",
+                "aborted"));
+    }
+
     /**
      * A scope reaches the work, not the thread: a thread started inside a
      * request and a task submitted to a pool created before it both carry

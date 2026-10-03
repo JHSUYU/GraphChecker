@@ -304,11 +304,11 @@ Scale and robustness:
     ends (`PLANNER_HEAP_EXCEEDED`); a composer past it fails COMPOSE.
 38. An activation's tracked-location read-out asks the VM for every location the session tracked
     at or after the activation's entry event, from any thread, and holds every page as a String
-    until the publication thread decodes it (`gc/runtime/SharedStateCapture`
-    `#captureRecordedSharedStateRaw`, 64 MB pages): solr-adhoc SplitShardCmd-658's seed replay read
-    pages of 50-61 MB (one: 14,413 locations and a 139,094-node expression table of 45 MB), its
-    4 GB heap filled, and it collected until the seed bound killed it. Asking for the locations
-    the activation itself read or wrote, in small pages decoded as they come, needs the VM.
+    until the publication thread reads it, one location at a time (`gc/runtime/SharedStateCapture`,
+    16 MB pages): SB12's obligation 0a1a085e98d056aa still read 50-60 MB per activation, and each
+    page repeats the expression closure its locations share (1.6 times the text of 64 MB pages).
+    Asking for the locations the activation itself read or wrote, with one table across a
+    read-out's pages, needs the VM.
 39. An ad-hoc HDFS seed replay loses most of its time to schedule stalls: a request whose run took
     another path than the recording's never makes the request-scoped events the order holds for it
     (a NameNode handler answers a DataNode's RPC without the `BlockReportProcessingThread#enqueue`

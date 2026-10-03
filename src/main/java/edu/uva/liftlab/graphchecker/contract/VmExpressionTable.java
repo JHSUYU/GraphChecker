@@ -7,7 +7,11 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 
+import java.io.IOException;
+import java.io.StringReader;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -15,6 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
@@ -83,7 +88,34 @@ public final class VmExpressionTable {
             JsonElement value = envelope.get(field);
             return value == null || value.isJsonNull() ? null : value;
         }
+
+        /**
+         * One page of a paged VM read-out -- a JSON object holding one array
+         * of records ({@code records}, each self-contained but for the
+         * nodes it references) beside the page's one expression table --
+         * read as a stream: never parsed whole, never copied whole.  The
+         * table comes last on the page, so the page is read twice.  First
+         * every member but the records: the table is imported and checked
+         * closed, the records are counted, and the rest is the header;
+         * {@code admit} is asked of the header with the count stated as
+         * {@link #RECORD_COUNT}.  Admitted, each record is then parsed,
+         * expanded against the table and handed to {@code each} in page
+         * order, one at a time; a definition is let go once expanded (the
+         * expansion answers for its key from then on), and the rest when
+         * the page ends.  A page with no table is a plain envelope read the
+         * same way.
+         *
+         * @return the header, with the count
+         */
+        public synchronized JsonObject importRecords(
+                String page, String records, Predicate<JsonObject> admit,
+                Consumer<JsonElement> each) {
+            return rawResolver.importRecords(page, records, admit, each);
+        }
     }
+
+    /** The member {@link Store#importRecords} states the record count in. */
+    public static final String RECORD_COUNT = "__records";
 
     /**
      * One JVM's VM nodes, each expanded once and kept (Expansion).  What it
@@ -120,9 +152,89 @@ public final class VmExpressionTable {
         @Override
         JsonObject definition(RawKey key) {
             // Asked once per node, when it is first expanded: the copy its
-            // expansion keeps, in this store's names and strings.
-            JsonObject stated = definitions.get(key);
+            // expansion keeps, in this store's names and strings.  A page
+            // read record by record lets it go then, since the expansion
+            // answers for the key from now on.
+            JsonObject stated = streaming ? definitions.remove(key)
+                    : definitions.get(key);
             return stated == null ? null : canonical(stated).getAsJsonObject();
+        }
+
+        /** Whether a page is being read record by record. */
+        private boolean streaming;
+
+        private JsonObject importRecords(String page, String records,
+                                         Predicate<JsonObject> admit,
+                                         Consumer<JsonElement> each) {
+            Set<RawKey> supplied = new LinkedHashSet<>();
+            JsonObject header = new JsonObject();
+            try {
+                int count = 0;
+                JsonReader reader = reader(page);
+                while (reader.hasNext()) {
+                    String name = reader.nextName();
+                    if (FIELD.equals(name)) {
+                        importTable(JsonParser.parseReader(reader), supplied);
+                    } else if (records.equals(name)
+                            && reader.peek() == JsonToken.BEGIN_ARRAY) {
+                        reader.beginArray();
+                        for (; reader.hasNext(); count++) reader.skipValue();
+                        reader.endArray();
+                    } else {
+                        header.add(name, JsonParser.parseReader(reader));
+                    }
+                }
+                header.addProperty(RECORD_COUNT, count);
+                SharedExpressionTable.Dag<RawKey> dag =
+                        new SharedExpressionTable.Dag<>("VM expression",
+                                key -> supplied.contains(key)
+                                        ? definitions.get(key) : null,
+                                RawResolver::references);
+                for (RawKey key : supplied) dag.require(key);
+                if (!admit.test(header)) return header;
+                streaming = true;
+                reader = reader(page);
+                while (reader.hasNext()) {
+                    if (!records.equals(reader.nextName())
+                            || reader.peek() != JsonToken.BEGIN_ARRAY) {
+                        reader.skipValue();
+                        continue;
+                    }
+                    reader.beginArray();
+                    while (reader.hasNext()) {
+                        JsonElement record = JsonParser.parseReader(reader);
+                        // Self-contained but for the page's table.
+                        references(record, key -> {
+                            if (!supplied.contains(key)) {
+                                throw new IllegalArgumentException(
+                                        "missing VM expression definition: "
+                                                + key);
+                            }
+                        });
+                        each.accept(expand(record));
+                    }
+                    reader.endArray();
+                }
+                return header;
+            } catch (IOException malformed) {
+                throw new IllegalArgumentException(
+                        "malformed VM read-out page", malformed);
+            } finally {
+                streaming = false;
+                definitions.clear();
+            }
+        }
+
+        /** A reader at the first member of a page that is a JSON object. */
+        private static JsonReader reader(String page) throws IOException {
+            JsonReader reader = new JsonReader(new StringReader(
+                    page == null ? "" : page));
+            if (reader.peek() != JsonToken.BEGIN_OBJECT) {
+                throw new IllegalArgumentException(
+                        "VM read-out page must be an object");
+            }
+            reader.beginObject();
+            return reader;
         }
 
         @Override
