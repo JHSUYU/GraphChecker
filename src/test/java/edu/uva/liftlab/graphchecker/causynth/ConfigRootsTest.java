@@ -61,6 +61,9 @@ public class ConfigRootsTest {
             {"a clamp bounds the domain: Math.max(v, 1) is never 0",
                 "CONFIG:k.low int [1,4]", source(roots.field(
                         field("int low")))},
+            {"no floor at 0: a comparison with 0 flips at -1",
+                "CONFIG:k.debt int [-1,5]", source(roots.field(
+                        field("int debt")))},
             {"a constant stored after the configuration (if (f <= 0) f = 1)"
                     + " leaves the field no root", "null false true",
                 source(roots.field(field("int san"))) + " "
@@ -153,9 +156,10 @@ public class ConfigRootsTest {
      * and {@code low} (clamped), {@code counter} (which {@code bump} also
      * counts), {@code legacy} (initialized false, then a wrapper's answer)
      * and {@code san} (then set to 1 where it is not positive) from a {@code
-     * Configuration}; {@code check} compares {@code limit} with 10, {@code
-     * checkLow} {@code low} with 3; {@code run} calls the wrappers ({@code
-     * legacy}, the views {@code isA} and {@code isB}, the clamp {@code
+     * Configuration}, {@code setDebt} stores {@code debt}; {@code check}
+     * compares {@code limit} with 10, {@code checkLow} {@code low} with 3,
+     * {@code checkDebt} {@code debt} with 0; {@code run} calls the wrappers
+     * ({@code legacy}, the views {@code isA} and {@code isB}, the clamp {@code
      * limitOf}) and the getters: {@code k.only} with two defaults and as a
      * {@code long}, a key no literal names, one through {@code
      * HdfsConfiguration}.
@@ -196,6 +200,7 @@ public class ConfigRootsTest {
         SootField legacy = field(manager, "legacy", BooleanType.v());
         SootField low = field(manager, "low", IntType.v());
         SootField san = field(manager, "san", IntType.v());
+        SootField debt = field(manager, "debt", IntType.v());
 
         SootMethod wrapper = view(manager, "legacy", "k.legacy", "true",
                 confType, text, get, equals);
@@ -290,8 +295,23 @@ public class ConfigRootsTest {
         writers.put(field("int counter"), Arrays.asList(initSig + "#u9",
                 bump.getSignature() + "#u3"));
 
+        SootMethod setDebt = method(manager, "setDebt",
+                Collections.<Type>singletonList(confType), VoidType.v(), 0);
+        Local s0 = local(setDebt, "r0", self);
+        Local s1 = local(setDebt, "r1", confType);
+        Local s2 = local(setDebt, "$i0", IntType.v());
+        body(setDebt, J.newIdentityStmt(s0, J.newThisRef(self)),
+                J.newIdentityStmt(s1, J.newParameterRef(confType, 0)),
+                J.newAssignStmt(s2, J.newVirtualInvokeExpr(s1,
+                        getInt.makeRef(), StringConstant.v("k.debt"),
+                        IntConstant.v(5))),
+                store(s0, debt, s2), J.newReturnVoidStmt());
+        writers.put(field("int debt"), Collections.singletonList(
+                setDebt.getSignature() + "#u3"));
+
         compare(manager, self, "check", limit, 10, bump, edges);
         compare(manager, self, "checkLow", low, 3, bump, edges);
+        compare(manager, self, "checkDebt", debt, 0, bump, edges);
         String checkSig = "<" + MANAGER + ": void check()>";
         for (String read : new String[]{"boolean ordered", "int counter",
                 "boolean legacy", "int san"}) {

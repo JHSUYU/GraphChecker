@@ -374,10 +374,10 @@ getter call of the shape of its first call (by site), a `DECLARED_SITE` `CALL_RE
   in an occurrence is the box its first read minted.
 - **Domain.** A boolean is a MARKER, free over both values. An integral's domain is the hull of
   its anchors -- each getter call's literal default and `c - 1, c, c + 1` for each integral literal
-  `c` a branch compares the value with within eight flows of the slice, never through a field, at 0
-  or above where every anchor is -- mapped through its clamps (a planted value lies in their image:
-  `Math.max(v, 1)` is never 0), and of the value the mint read: the declaration states the static
-  hull, the mint row the whole (`runtime/ActiveRegion#configDomain`). A declaration stating half a
+  `c` a branch compares the value with within eight flows of the slice, never through a field, and
+  no floor (`if (limit < 0)` flips at -1) -- mapped through its clamps (a planted value lies in
+  their image: `Math.max(v, 1)` is never 0), and of the value the mint read: the declaration states
+  the static hull, the mint row the whole (`runtime/ActiveRegion#configDomain`). A declaration stating half a
   domain or a bound that is no integer states none, named, and the root is pinned.
 
 A tree may still call `CausynthSymbolicSource.symbolize(String sourceId, Object owner, String

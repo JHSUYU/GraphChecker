@@ -99,9 +99,9 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * <p>An integral source's domain is the hull of its anchors: each getter's
  * literal default and {@code c - 1, c, c + 1} for each integral literal
  * {@code c} a branch compares its value with within {@value #FLOWS} flows
- * of the slice, never through a field; at {@code 0} or above where every
- * anchor is; then through its clamps, whose image a planted value must lie
- * in.  The mint adds the value it read ({@code runtime.ActiveRegion}).</p>
+ * of the slice, never through a field; then through its clamps, whose
+ * image a planted value must lie in.  The mint adds the value it read
+ * ({@code runtime.ActiveRegion}).</p>
  *
  * <p>What is not minted is named ({@link #gaps}, {@code DECLARATION_MISSING}
  * DIAGNOSTIC): a read of a key no literal names ({@value #KEY_UNRESOLVED}),
@@ -647,10 +647,8 @@ final class ConfigRoots {
         if ("boolean".equals(javaType)) {
             return new Source(sourceId, javaType, "", "");
         }
-        List<BigInteger> anchors = new ArrayList<>(defaults);
         List<BigInteger> spread = new ArrayList<>(defaults);
         for (BigInteger compared : comparedLiterals(cells, out, guardsFrom)) {
-            anchors.add(compared);
             spread.add(compared.subtract(BigInteger.ONE));
             spread.add(compared);
             spread.add(compared.add(BigInteger.ONE));
@@ -658,11 +656,10 @@ final class ConfigRoots {
         if (spread.isEmpty()) {
             return new Source(sourceId, javaType, "", "");
         }
+        // No floor at 0: `if (limit < 0)` compares with 0, and -1 is the
+        // value that flips it.
         BigInteger min = Collections.min(spread);
         BigInteger max = Collections.max(spread);
-        if (Collections.min(anchors).signum() >= 0) {
-            min = min.max(BigInteger.ZERO);
-        }
         // A clamp's value lies in its image: Math.max(v, 1) is never 0, so
         // no plant may write 0 where it stores.  Monotone: the hull's ends.
         for (Clamp clamp : clamps) {
