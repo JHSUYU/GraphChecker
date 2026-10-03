@@ -7,10 +7,10 @@ system_paths: test_classes) with a class-file reader.
 A row is a JUnit 4 or Jupiter @Test method, declared or inherited from a
 superclass among the test classes, that the engine's runner can call
 (runtime.JUnitLifecycle: a concrete top-level class with a no-argument
-constructor, a method with no arguments), of a class that -- itself or a
-superclass among the test classes -- names the system's cluster class
-(system.sh's system_cluster_class) in its constant pool.  A method or class
-marked @Ignore or @Disabled is left out."""
+constructor, a method whose one argument, if any, is Jupiter's TestInfo), of
+a class that -- itself or a superclass among the test classes -- names the
+system's cluster class (system.sh's system_cluster_class) in its constant
+pool.  A method or class marked @Ignore or @Disabled is left out."""
 import os
 import struct
 import subprocess
@@ -18,6 +18,8 @@ import sys
 
 TEST = {"Lorg/junit/Test;", "Lorg/junit/jupiter/api/Test;"}
 IGNORED = {"Lorg/junit/Ignore;", "Lorg/junit/jupiter/api/Disabled;"}
+# The test method descriptors JUnitLifecycle calls.
+CALLABLE = {"()V", "(Lorg/junit/jupiter/api/TestInfo;)V"}
 ABSTRACT, INTERFACE = 0x0400, 0x0200
 
 
@@ -146,7 +148,7 @@ def main():
         seen = set()
         for c in chain:  # a subclass's own declaration wins
             for (method, descriptor), annotations in c.methods.items():
-                if descriptor != "()V" or method in seen:
+                if descriptor not in CALLABLE or method in seen:
                     continue
                 seen.add(method)
                 if annotations & TEST and not annotations & IGNORED:

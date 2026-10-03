@@ -176,11 +176,13 @@ public class ConcolicHookAbiTest {
 
         // What a Jupiter class states about its own set-up: a directory in
         // each @TempDir field, an extension's callbacks around the methods
-        // of its role, and the @Test among same-named methods.
+        // of its role, a TestInfo parameter, and the @Test among same-named
+        // methods.
         LIFECYCLE.clear();
         runWorkloadMethod(SetUpWorkload.class, "theWorkloadBody");
         assertEquals(Arrays.asList("beforeAll:SetUpWorkload",
-                        "beforeEach:theWorkloadBody", "theWorkloadBody",
+                        "beforeEach:theWorkloadBody",
+                        "starting:theWorkloadBody", "theWorkloadBody",
                         "afterEach:theWorkloadBody"),
                 new ArrayList<>(LIFECYCLE));
 
@@ -325,6 +327,12 @@ public class ConcolicHookAbiTest {
         static java.io.File shared;
         @org.junit.jupiter.api.io.TempDir
         java.nio.file.Path own;
+
+        /** As ZooKeeper's ZKTestCase#starting names the test it starts. */
+        @org.junit.jupiter.api.BeforeEach
+        void starting(org.junit.jupiter.api.TestInfo test) {
+            LIFECYCLE.add("starting:" + test.getTestMethod().get().getName());
+        }
 
         /** A helper sharing the test's name is not the test. */
         void theWorkloadBody(int ignored) {
@@ -473,9 +481,10 @@ public class ConcolicHookAbiTest {
             case "LongType.v()": case "long": return long.class;
             case "string": return String.class;
             case "object": return Object.class;
-            case "ArrayType.v(object, 1)": return Object[].class;
+            case "ArrayType.v(object, 1)": case "object[]": return Object[].class;
             case "byte[]": return byte[].class;
             case "doors.Outbound": return MessageDoors.Outbound.class;
+            case "doors.Inbound": return MessageDoors.Inbound.class;
             case "RefType.v(\"java.lang.Throwable\")": return Throwable.class;
             default: throw new IllegalStateException(
                     "unmapped type: " + name);
