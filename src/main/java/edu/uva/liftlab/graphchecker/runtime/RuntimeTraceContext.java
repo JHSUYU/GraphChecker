@@ -145,6 +145,7 @@ final class RuntimeTraceContext {
         // to the root that carried the thread here (Identity.Hop.SCOPE_ROOT).
         scope.scopeBaseBefore = Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         standIn(state, scope, source, requestKey, normalizedApi);
+        Identity.hopOpened(scope.lineageToken);
         publishCausalSource(state);
         return requestId;
     }
@@ -245,6 +246,7 @@ final class RuntimeTraceContext {
         if (seed.source != null) state.source = seed.source;
         state.flow = seed.flow;
         CARRIED.get().push(token);
+        Identity.hopOpened(scope.lineageToken);
         publishCausalSource(state);
     }
 
@@ -385,6 +387,7 @@ final class RuntimeTraceContext {
                 scope.source.key(), Role.of(roleName), api);
         // The carried scope is the work's, not the pool thread's.
         frame.scopeBaseBefore = Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        Identity.hopOpened(frame.lineageToken);
         publishCausalSource(state);
         return token;
     }
@@ -433,6 +436,7 @@ final class RuntimeTraceContext {
             scope.tickSite = site;
         }
         scope.vacant = ScheduleLog.vacated();
+        Identity.hopOpened(scope.lineageToken);
         return token;
     }
 
@@ -489,6 +493,7 @@ final class RuntimeTraceContext {
         standIn(state, scope, source, source.key() + "/wake/"
                 + normalizedApi + "#" + Lineage.rootWindowIndex(),
                 normalizedApi);
+        Identity.hopOpened(scope.lineageToken);
         publishCausalSource(state);
         return token;
     }
@@ -613,6 +618,7 @@ final class RuntimeTraceContext {
                 + MapFields.safe(remote.requestApi);
         Lineage.anchor(sender, rpcSite);
         if (sender.isEmpty()) unanchored(state, rpcSite);
+        Identity.hopOpened(scope.lineageToken);
         publishCausalSource(state);
         return token;
     }
@@ -757,6 +763,8 @@ final class RuntimeTraceContext {
     /** Closes the innermost scope and puts back what it replaced. */
     private static void restoreOne(State state, ScopeFrame scope) {
         state.scopes.pop();
+        // The occurrence the hop named ends while its context still stands.
+        Identity.hopClosed(scope.lineageToken);
         if (scope.lineageToken > 0L) Lineage.release(scope.lineageToken);
         if (scope.scopeBaseBefore >= 0) {
             Identity.scopeRestore(scope.scopeBaseBefore);

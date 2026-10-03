@@ -203,12 +203,14 @@ public class RowRuntimeTest {
     }
 
     /**
-     * An occurrence opened Lost folds only what is entered still Lost: once
-     * the thread has a context a declared region opens its own (a
-     * DataXceiver before and after its connection's first message).
+     * An occurrence opened Lost folds what is entered still Lost; a hop that
+     * gives the thread a context names its region for the hop's life, and
+     * what is entered under the hop folds into that occurrence, so no two
+     * contexts share the Lost address (a DataXceiver before and during its
+     * connection's message).  The hop's end leaves the region Lost again.
      */
     @Test
-    public void aLostOccurrenceFoldsNothingEnteredUnderAContext()
+    public void aHopNamesTheRegionALostOccurrenceStandsIn()
             throws Exception {
         Object anchor = new Object();
         RuntimeTraceContext.registerSource(anchor, NN);
@@ -216,7 +218,7 @@ public class RowRuntimeTest {
         final Object carried = RuntimeTraceContext.captureScope();
         RuntimeTraceContext.endRequest(request);
         final boolean[] folded = new boolean[2];
-        final String[] opened = new String[2];
+        final String[] opened = new String[3];
         Thread connection = poolThreadCreatedOutsideAnyScope(() -> {
             opened[0] = Identity.occurrence(NN.key(), "REGION.run", true)
                     .render();
@@ -225,20 +227,23 @@ public class RowRuntimeTest {
             Identity.regionExit();
             long scope = RuntimeTraceContext.enterCarriedScope(carried,
                     "DATA_XCEIVER", "write-block");
-            opened[1] = Identity.occurrence(NN.key(), "REGION.check", true)
-                    .render();
+            opened[1] = Identity.currentOccurrence(NN.key()).render();
+            Identity.occurrence(NN.key(), "REGION.check", true);
             folded[1] = Identity.openedNone();
             Identity.regionExit();
             RuntimeTraceContext.exitCarriedScope(scope);
+            opened[2] = Identity.currentOccurrence(NN.key()).render();
             Identity.regionExit();
         });
         connection.start();
         connection.join();
         assertTrue(opened[0], opened[0].contains("/ctx:Lost"));
         assertTrue("entered still Lost, it folds", folded[0]);
-        assertFalse("entered under a context, it opens its own", folded[1]);
-        assertTrue(opened[1], opened[1].contains("REGION.check")
+        assertTrue(opened[1], opened[1].contains("REGION.run")
                 && !opened[1].contains("/ctx:Lost"));
+        assertTrue("entered under the hop, it folds into its name",
+                folded[1]);
+        assertEquals(opened[0], opened[2]);
     }
 
     /**
@@ -1861,7 +1866,7 @@ public class RowRuntimeTest {
             }
         });
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.regionEnter();
+        Identity.occurrence(NN.key(), "REGION.save", true);
         Identity.regionKey(41L);
         // No event between the region entry and this call, so the entry the
         // clock stood at is replaced rather than duplicated.
