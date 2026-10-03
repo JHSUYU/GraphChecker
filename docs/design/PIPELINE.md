@@ -1521,7 +1521,9 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); an event in its
   occurrence's outermost activation -- a loop body's, standing on the loop's method, which spans
   every turn -- is held at the occurrence's opening and waited for until its close
-  (`StateClosure#exit`, `#outermost`); where that activation runs
+  (`StateClosure#exit`, `#outermost`), which the session ran at the occurrence's last recorded
+  event, so a writer it ran before that is a reordered occurrence (`StateClosure#closing`); where
+  that activation runs
   as claimed work on a consumer thread (`ActivationRow#claimed`: a server pipeline applying one
   request after another, the writer's among them, would deadlock held), the entry of the send that
   started it, its anchor's producer followed up the chain while that send is claimed work too

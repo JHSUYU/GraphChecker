@@ -460,7 +460,9 @@ public class ConfirmMainTest {
      * to close, and a store held after a read waits at the turn's opening
      * (hdfs-bugs-slowdisk-zero SD8: the anchor waited for the detector's
      * run() to exit, past the order's timeout).  A deeper call is its own
-     * activation.
+     * activation.  An occurrence closes at its last recorded event, so a
+     * store the session ran after the read but before the reader's
+     * occurrence closed is reordered, as its ORDER puts it after the close.
      */
     @Test
     public void aLoopTurnsOutermostEventIsOrderedByItsTurn()
@@ -482,30 +484,43 @@ public class ConfirmMainTest {
                 WriteRow.initial("sel", 9L, first, CELL, 4L, "EXPR.w", "I"),
                 WriteRow.of("sel", 20L, store, CELL, 5L, "EXPR.w", "I")),
                 RowCodec::writeWrite);
-        // the version the read saw, its pairing, the ORDER it needs
+        LocationId elsewhere = LocationId.of(LocationKind.INSTANCE, "1",
+                "41");
+        // the version the read saw, its pairing, the ORDER it needs, the
+        // read's seq, the reordered occurrences
         Object[][] table = {
-                {5L, Confirmation.id(store), turn + " < " + read},
-                {4L, Confirmation.INITIAL, read + " < " + turn},
+                {5L, Confirmation.id(store), turn + " < " + read, 30L,
+                        Collections.emptySet()},
+                {4L, Confirmation.INITIAL, read + " < " + turn, 30L,
+                        Collections.singleton(mint.id())},
+                {4L, Confirmation.INITIAL, read + " < " + turn, 15L,
+                        Collections.singleton(mint.id())},
         };
         for (Object[] row : table) {
             RowCodec.writeAll(sel.reads(), Arrays.asList(
-                    ReadRow.of("sel", 25L, scan, LocationId.of(
-                            LocationKind.INSTANCE, "1", "41"), 2L,
+                    ReadRow.of("sel", 25L, scan, elsewhere, 2L,
                             "INSTANCE_FIELD/1#41@v2", "I", "0"),
-                    ReadRow.of("sel", 30L, reader, CELL, (Long) row[0],
-                            "INSTANCE_FIELD/1#40@v" + row[0], "I", "3")),
+                    ReadRow.of("sel", (Long) row[3], reader, CELL,
+                            (Long) row[0], "INSTANCE_FIELD/1#40@v" + row[0],
+                            "I", "3"),
+                    ReadRow.of("sel", 31L, endpoint(ANCHOR,
+                            "a.Handler#h()#13:READ"), elsewhere, 2L,
+                            "INSTANCE_FIELD/1#41@v2", "I", "0")),
                     RowCodec::writeRead);
             List<String> orders = new ArrayList<String>();
-            for (JsonObject edge : ConfirmMain.holding(SessionReader.read(
-                    iteration, "sel"), Collections.singletonMap(
-                    Confirmation.id(reader), (String) row[1])).edges) {
+            ConfirmMain.Holding holding = ConfirmMain.holding(
+                    SessionReader.read(iteration, "sel"),
+                    Collections.singletonMap(Confirmation.id(reader),
+                            (String) row[1]));
+            for (JsonObject edge : holding.edges) {
                 if ("ORDER".equals(edge.get("kind").getAsString())) {
                     orders.add(edge.get("before").getAsString() + " < "
                             + edge.get("after").getAsString());
                 }
             }
-            assertEquals(String.valueOf(row[1]),
+            assertEquals(row[1] + "@" + row[3],
                     Collections.singletonList(row[2]), orders);
+            assertEquals(row[1] + "@" + row[3], row[4], holding.reordered);
         }
     }
 

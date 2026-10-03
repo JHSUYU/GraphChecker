@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
+import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
@@ -43,6 +44,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -958,6 +960,8 @@ public final class ConfirmMain {
         /** Occurrence id -> where its events sat: activation frames, seq. */
         private final Map<String, List<Placed>> placed =
                 new LinkedHashMap<String, List<Placed>>();
+        /** Occurrence id -> the seq of its last recorded event. */
+        private final Map<String, Long> last = new HashMap<String, Long>();
 
         /** One event's activation frames and its place in the order. */
         private static final class Placed {
@@ -974,6 +978,23 @@ public final class ConfirmMain {
             if (at == null) return;
             placed.computeIfAbsent(at.occurrence().id(),
                     key -> new ArrayList<Placed>()).add(new Placed(at, seq));
+            last(at.occurrence(), seq);
+        }
+
+        private void last(OccurrenceAddress occurrence, long seq) {
+            last.merge(occurrence.id(), seq, Math::max);
+        }
+
+        /**
+         * The close of an occurrence as an ORDER waits for it: entered at
+         * its opening, exited at its close ({@code runtime.Identity}), which
+         * the session ran at its last recorded event -- so a writer the
+         * session ran before that, whose ORDER puts it after, is reordered
+         * ({@link #order}).
+         */
+        private Exit closing(OccurrenceAddress occurrence) {
+            return new Exit(occurrence, Collections.<Frame>emptyList(),
+                    last.get(occurrence.id()));
         }
 
         /**
@@ -1008,13 +1029,6 @@ public final class ConfirmMain {
                 this.occurrence = occurrence.id();
                 this.seq = seq;
             }
-
-            /** Its occurrence as a whole: entered at its opening, exited
-             *  at its close ({@code runtime.Identity}). */
-            private static Exit occurrenceOf(Endpoint event, long seq) {
-                return new Exit(event.occurrence(),
-                        Collections.<Frame>emptyList(), seq);
-            }
         }
 
         /**
@@ -1028,7 +1042,7 @@ public final class ConfirmMain {
          * occurrence closes as its root activation exits.
          */
         private Exit exit(Endpoint event, long seq) {
-            return outermost(event) ? Exit.occurrenceOf(event, seq)
+            return outermost(event) ? closing(event.occurrence())
                     : new Exit(event.occurrence(), event.activationFrames(),
                     seq);
         }
@@ -1129,6 +1143,9 @@ public final class ConfirmMain {
             }
             for (AttachRow attach : session.attaches()) {
                 place(attach.endpoint(), attach.seq());
+            }
+            for (DecisionRow decision : session.decisions()) {
+                last(decision.occurrence(), decision.seq());
             }
             for (WriteRow write : session.writes()) {
                 // An INITIAL is no event of the access its row stands at
@@ -1332,8 +1349,7 @@ public final class ConfirmMain {
             // its whole occurrence -- a read the flip adds after the one
             // recorded is the block's too.
             StateClosure.Exit reading = block
-                    ? StateClosure.Exit.occurrenceOf(read.endpoint(),
-                    read.seq())
+                    ? closure.closing(read.endpoint().occurrence())
                     : closure.exit(read.endpoint(), read.seq());
             String reader = read.endpoint().id();
             WriteRow held = chosen.containsKey(reader) ? chosen.get(reader)
