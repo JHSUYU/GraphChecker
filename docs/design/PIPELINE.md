@@ -540,8 +540,9 @@ The obligations of an exploration that run on one host are answered by ONE solve
 (`campaign_solve_obligation`; `ObligationSolverMain --serve`, `explore.SolverService`): the first
 question starts it if its host has room for a start's worth now (`campaign_start_solver`:
 `campaign_solve_obligation` never waits for memory to start one), charged at the host ledger
-`campaign_solver_start_mb` (1 GB) for 120 s and what its resident memory grows past that as it
-grows, by a running JVM's rule (`campaign_watch_workload`: refused only when the host's real use
+`campaign_solver_start_mb` (1 GB) for as long as it runs (it holds the charge itself,
+`campaign_host_keep`, past the obligation that started it) and what its resident memory grows past
+that as it grows, by a running JVM's rule (`campaign_watch_workload`: refused only when the host's real use
 would pass the ceiling, and then the JVM is ended); its heap is capped at `campaign_solver_heap_mb`,
 8 GB. Charged that at its start, a solver waited for room it did not use, and every question of
 its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
@@ -726,20 +727,29 @@ for a return, its step's end or the poll interval (`campaign_host_poll_s`). A st
 a background subshell, or remotely through `ssh`: an obligation as `run_engine.sh --run-obligation`
 with the frozen jar and its sha256, a re-run as a placed step (below) (`campaign_stream_job`); each
 takes the class tree and plan of the generation current when it starts (§7.8). The memory gate
-(`campaign_host_try_start <host> <need> <ramp>`) is a ledger shared by all campaigns and
+(`campaign_host_try_start <host> <need>`) is a ledger shared by all campaigns, gates and
 `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/` (`tools/lib/gc-env.sh`, handed to every
-peer with the ceiling): each row is
-`<epoch> <mb> <ramp_s> <id>`, and a start is allowed when `MemAvailable − (rows still inside their
-own ramp) ≥ need + MemTotal × (100 − p) / 100`, where `p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no
-start leaves a host more than 70 % full. Every start states its measured need and its ramp; neither
-has a default. An obligation or a re-run needs `obligation_memory_mb` for 60 s: its
-replay's, since its question goes to its host's solver (§7.5), charged at its own start; its row is
-released as soon as its work returned, before the head waits to see what a peer wrote, so an answer
-in seconds does not hold its host's room for the ramp. A replay JVM is handed what its host was
+peer with the ceiling): one file per live charge, `charges/<mb>.<id>`, and a start is allowed when
+both `Σ live charges + held + need ≤ L` and `MemTotal − MemAvailable + held + need ≤ L`, where `L`
+is `CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal` and `held` the room a head holds there
+(below): no start leaves a host more than 70 % charged or used. A charge holds for the whole life
+of what it started: a JVM below its charge grows into it later, so its unused charge is room no
+other start may take (counted only for a 60 s ramp, the Solr replays of rounds SB11 and SB13,
+growing for minutes toward their 6000 MB, filled lift12-15 and lift06 to 29-30 GB). It lives by a
+lease, the file's mtime (`campaign_host_lease_s`, 120 s, beyond NFS's attribute cache), renewed
+every `campaign_host_renew_s` (10 s) by a process of its own while the shell that took it lives
+(`campaign_host_hold`; `campaign_host_keep` for one handed on, the host's solver), and is removed
+when what it ran returns (`campaign_host_release`); a killed run's charges lapse, and one ten
+leases old is deleted. Every start states its measured need, with no default. An obligation or a
+re-run needs `obligation_memory_mb`: its replay's, since its question goes to its host's solver
+(§7.5), charged at its own start; the head holds the charge, the job releases it as soon as its
+work returned, before the head waits to see what a peer wrote, and the head again once it
+collected or reaped the job (`campaign_stream_release`). A replay JVM is handed what its host was
 charged for it (`CAUSYNTH_CHARGED_MB`): its heap is half of it (2 GB at least), and
 `experiments/lib/execute.sh` watches it until it ends (`campaign_watch_workload`): one whose
-resident memory grows past its charge asks its host's ledger for the excess, as one more start,
-and holds what it was granted, released when it ends; one the host cannot take is ended, saying
+resident memory grows past its charge asks its host's ledger for the excess, as one more charge,
+granted unless the host's real use would pass `L` with it, and holds what it was granted, released
+when it ends; one the host cannot take is ended, saying
 so; each states its peak at its end.
 
 THE CAP. `stream_max_in_flight` = N > 0 is how many obligations the capped explorations running
@@ -768,7 +778,7 @@ head's exported `CAUSYNTH_`/`GRAPH_CHECKER_` variables, its output passed back a
 program, or a `run_engine.sh` function whose arguments are all it reads of the head. The steps are
 every engine JVM of every stage -- SEED's static passes, scope growth and trace aggregation, PLAN,
 INSTRUMENT and its verifier, the import gate, the planner, COMPOSE, CONFIRM's and REPRODUCE's
-`ConfirmMain`, GROW's planner and weave -- each charged for 120 s at the heap
+`ConfirmMain`, GROW's planner and weave -- each charged while it runs at the heap
 it starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured need
 (`campaign_engine_need_mb`: the static pass 4 GB, the planner and the composer 8 GB, the trace
 aggregation, scheduler, lineage scan, scope growth, woven-class verifier, CONFIRM, GROW's
@@ -781,7 +791,7 @@ the 16 GB engine heap at once found no lift of a running sweep with it free and 
 (a40s); every run ends
 at its first out-of-heap error, at `engine_memory_mb` too (exit 3: the most heap a head JVM is given,
 told apart from a crash) -- the seed
-and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged for 300 s
+and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged
 seven times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its
 native recording, up to 6.94 times in round x1) when above `obligation_memory_mb`, else that
 (`campaign_replay_need_mb`), and REPRODUCE's native runs (§10b). A running JVM that outgrows its
@@ -1657,7 +1667,7 @@ comparison.
   `gaps.jsonl`. A pool or a head that seems stalled logs `waiting for room: …` or `waiting for
   memory for a head step of <mb> MB on any host: …` (a host's solver: `waiting for memory on
   <host>: …`); a replay ended past its charge says why in its `replay.log`; the host ledger is
-  `$CAUSYNTH_HOST_LEDGER/<host>/{available,starts,cores}`.
+  `$CAUSYNTH_HOST_LEDGER/<host>/{available,charges/,cores}`.
 - How EXPLORE ended: `iteration-0000/exploration.json` (the stop, every COMPOSE attempt at a
   witness, every obligation cancelled or reaped) and the log's `round N (wave W): …` lines.
 - `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.

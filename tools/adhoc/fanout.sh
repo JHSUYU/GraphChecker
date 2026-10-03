@@ -7,8 +7,9 @@
 # "NEED_MB=<n> ", the memory the job needs (default JOB_MEMORY_MB, 4000).  A
 # job starts on a host only when the host ledger every campaign charges
 # (run_engine.sh campaign_host_try_start, CAUSYNTH_HOST_LEDGER) has room for
-# its need, and it is charged there until it returns or 120 s have passed, so
-# no lift is ever run out of memory by the jobs and the campaigns together.
+# its need, and it is charged there until it returns (a fanout ended before
+# leaves its charges to lapse with their lease), so no lift is ever run out
+# of memory by the jobs and the campaigns together.
 # A job on this machine runs here, with no ssh.
 #
 # Job n writes <log-dir>/<n>.log and, once it returned, <log-dir>/<n>.exit
@@ -62,7 +63,7 @@ while (( next < ${#commands[@]} )) || (( ${#pid_host[@]} > 0 )); do
         need=${BASH_REMATCH[1]}
         command=${BASH_REMATCH[2]}
       fi
-      campaign_host_try_start "${host}" "${need}" 120 || break
+      campaign_host_try_start "${host}" "${need}" || break
       if campaign_host_is_local "${host}"; then
         (cd "${checkout}" && exec bash -c "${command}") \
           > "${log_dir}/${next}.log" 2>&1 < /dev/null &
