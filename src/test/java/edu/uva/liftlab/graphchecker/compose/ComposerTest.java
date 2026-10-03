@@ -3693,6 +3693,77 @@ public class ComposerTest {
     }
 
     /**
+     * Writers_W(l)'s writer at version 0, the location's INITIAL: a read
+     * that observed a later write may have run before every write it
+     * followed.  Each of those an HB-concurrent occurrence's, the INITIAL is
+     * an arm, and a map lookup at the anchor asked of the state before the
+     * put reaches the fatal the run's state did not (hdfs a40 V4h-2: the
+     * block pool looked up before the DataNode registered it).  A write the
+     * owner's constructor made, or one the reader's own thread made before
+     * it, no read precedes.
+     */
+    @Test
+    public void theInitialIsTheWriterAtVersionZero() throws Exception {
+        String map = "java/util/concurrent/ConcurrentHashMap";
+        LocationId pools = LocationId.of(LocationKind.MAP, "21", "-3");
+        for (String variant : new String[]{"concurrent", "constructor",
+                "own-thread"}) {
+            boolean moves = "concurrent".equals(variant);
+            Path iteration = folder.newFolder("initial-" + variant).toPath();
+            OccurrenceAddress reader = occurrence("case/dn0", "REGION.get",
+                    CausalContext.of(Role.of("CLIENT"), "", 1),
+                    frame("Test#get#4", 0));
+            OccurrenceAddress writer = occurrence("case/dn0",
+                    "REGION.register", CausalContext.of(
+                            Role.of("BP_SERVICE_ACTOR"), "", 1),
+                    frame("Actor#register#2", 0));
+            Session session = new Session(iteration, "s0", false);
+            session.occurrence = reader;
+            session.activation(reader);
+            session.activation(writer, "own-thread".equals(variant)
+                    ? "thread#" + reader.regionId()
+                    : "thread#" + writer.regionId(), false);
+            JsonObject base = relation("ASSOCIATIVE", "SNAPSHOT_BASE", map,
+                    null);
+            JsonObject put = putCommit(base, 5L);
+            session.expression("EXPR.0000000000000010", base);
+            session.expression("EXPR.0000000000000011", put);
+            session.writes.add(WriteRow.initial("s0", ++session.seq,
+                    Endpoint.of(writer, "Pools#add#3:INITIAL", at("w#0", 0),
+                            0), pools, 1L, "EXPR.0000000000000010", "L"));
+            session.write(Endpoint.of(writer, "constructor".equals(variant)
+                            ? "Pools#<init>()V#3:WRITE" : "Pools#add#3:WRITE",
+                    at("w#1", 0), 0), pools, 2L, "EXPR.0000000000000011");
+            JsonObject answered = read("MAP_STATE", 21L, -3L, 2L, "L");
+            answered.getAsJsonObject("observedVersion").add("expression",
+                    relation("ASSOCIATIVE", "READ", "L", put,
+                            integer("J", 5L)));
+            Endpoint asking = Endpoint.of(reader, "Pools#get#5:READ",
+                    at("r#1", 0), 0);
+            answered.addProperty("readEventId", session.read(asking, pools,
+                    2L, "MAP_STATE/21#-3@v2@s0", "L", null));
+            session.expression("EXPR.0000000000000060", binary("==",
+                    answered, vmNull()));
+            session.target("EXPR.0000000000000060", false, true);
+            session.write();
+
+            edu.uva.liftlab.graphchecker.smt.Arms arms =
+                    new edu.uva.liftlab.graphchecker.smt.Arms(
+                            Corpus.read(iteration, null));
+            assertEquals(variant, moves ? 2 : 1, arms.stateArms(asking, "s0",
+                    SmtLowering.locationKey(pools), 2L, true).size());
+            Composer.Composition composition = compose(iteration, reader, 4,
+                    StaticScopeMap.empty());
+            assertEquals(variant + ": " + composition.body(), moves,
+                    composition.body().contains("state_family__"));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals(variant + ": " + decision.claim().gaps(), moves,
+                    decision.claim().kind() == ClaimKind.STATE_PAIRING_FLIPPED);
+        }
+    }
+
+    /**
      * The recorded arm is the pairing the run took, or there is none and the
      * claim is blocked by name.  (a) The observed writer wrote again after
      * the read: its arm is the write read, not the later one.  (b) Two reads

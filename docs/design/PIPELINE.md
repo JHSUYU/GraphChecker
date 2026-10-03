@@ -275,6 +275,12 @@ is withheld and its mints are published, as an abandoned one's are: other activa
 name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
 `System.exit` ends the in-process cluster (its threads and ports) with the JVM.
 
+Every logged version a region stored is a write row (`RowPublication#writes`; a store outside
+every region has no performer, a declared input is a mint), the location's INITIAL among them,
+flagged (`WriteRow#initial`): what the location held before every write its log names -- a
+scalar's word, a container's members -- at the access that started the log, spelled as its own
+site kind there (`Endpoint#initialSite`). A read of it joins it like any version.
+
 A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
 admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
 only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the
@@ -416,7 +422,9 @@ are counted, never dropped silently: the `NO_ROOT_REACHES_ANCHOR` detail states 
 - a read whose symbol is demanded: the writers `Corpus.eligibleWrites` names (the write of the observed
   version, and writes of the same session by HB-concurrent occurrences — `Arms.concurrent`: not the
   same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root, neither
-  Lost), and every activated occurrence on the reader's node holding a static write site of the
+  Lost; and the location's INITIAL where the read could have run before every write it followed,
+  `Arms#stateSeen`, whose expression's symbols are demanded and which is no task: no occurrence
+  wrote it), and every activated occurrence on the reader's node holding a static write site of the
   location's carrier, unless the read's session states it holding other objects only
   (`STATIC_CANDIDATE_WRITER`; a heap location is one object's, and a store reaches only an object its
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
@@ -580,8 +588,9 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   export's `messageKey` and hole are the attach's `correlationId` and hole), bound by COMPOSE's one
   hole-arm rule (`VmTermLowering#holeArm`, §8) over the query's names, and a relay's operand, the
   upstream hole's symbol, is a nested slot.
-- READ: the eligible writers (`Arms.stateArms`) become one Bool selector each (`wchoice_*`,
-  exactly one); no writer: pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`.
+- READ: the eligible writers (`Arms.stateArms`, the location's INITIAL among them, the writer at
+  version 0) become one Bool selector each (`wchoice_*`, exactly one); no writer: pinned to the
+  row's `concreteValue`; neither: refused `UNSTATED_VALUE`.
   Only reads the text names are variables: a container state behind a guard is inlined by its join
   (the closure demands its writers, §7.2), so the query declares nothing for it — a variable bound
   to each writer's state would constrain nothing, and its equalities over states built by removals
@@ -1042,7 +1051,10 @@ nothing twice.
 location whose owner is an object rid (`Arms.namedOwner`; a class-name owner gets no alternatives):
 one `writer_arm__` selector per writer occurrence of the same session (`Arms.stateArms`: the
 observed writer's arm is the write the read observed, any other writer's its last write of the
-location, and only attested HB-concurrent ones), plus an `observed_arm__` holding each read to its
+location, and only attested HB-concurrent ones), one for the location's INITIAL, the writer at
+version 0, where the read observed it or could have run before every write it followed
+(`Arms#stateSeen`; its arm binds the reads to what the location held and rests on nothing a run
+decided, `ComposedFamilies#initialBody`), plus an `observed_arm__` holding each read to its
 own join or pin when a version one of the reads observed has no writing row; exactly one per
 location that has two arms or more, one of them an HB-concurrent writer's, else the reads keep their
 own joins: arms that are each some read's own pairing (the writer one read saw, the pins of another
@@ -1123,7 +1135,8 @@ whose write and row name no object refuses the path (`UNSTATED_VALUE:OwnerCandid
 **A container read the family re-pairs** (`SmtLowering#movedQuery`). The anchor's read of a container
 location a STATE family re-pairs (`SessionJoin#repaired`, per read event: the anchor's reads up to its
 cutoff, `Composer#anchorReads`) asks its query of the read's own symbol, the state its join states at
-the container's sort and each writer arm binds to that writer's state, not of the run's chain, which
+the container's sort and each writer arm binds to that writer's state -- the INITIAL's arm to what the
+location held before every write (`ComposedFamilies#initialBody`) --, not of the run's chain, which
 inlined is the run's answer no family moves (zk-bugs-election-offer: the getData's lookup of an offer
 in ZooKeeper's node map). The base a query requires of its chain (`requireStatedContainerBase`) is the
 observed version's: every version of one location descends from it. A query through a view keeps the
@@ -1408,17 +1421,17 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   all; the write the model chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
   endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a
   query through a re-pointable reference the write of the state its arm's `referentStates` name,
-  §8; a recorded join to a container's INITIAL is no edge -- that version is the members the VM read
-  where it first observed the container, which no occurrence wrote and which access first observes
-  it is the run's own history, as a scalar's INITIAL is no row: `StateClosure#initial`, the write
-  whose expression is its `SNAPSHOT_BASE`'s `members` and nothing above them), `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
+  §8; a recorded join to an INITIAL is no edge -- no occurrence wrote it, and which access first
+  observes the location is the run's own history (`WriteRow#initial`), and an INITIAL the model
+  chose has no writer to compare), `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
   it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); where that activation runs
   as claimed work on a consumer thread (`ActivationRow#claimed`: a server pipeline applying one
   request after another, the writer's among them, would deadlock held), the entry of the send that
   started it, its anchor's producer followed up the chain while that send is claimed work too
   (`Confirmation#submitter`; none outside one refuses the confirmation, `ORDER_UNHELD`); every other
-  writer of the location the held write is of before the writer or after the reader, held alike), `MARKER`
+  writer of the location the held write is of before the writer or after the reader, held alike, and
+  for an INITIAL the model chose every writer of the location after the reader), `MARKER`
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
   stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
   delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where

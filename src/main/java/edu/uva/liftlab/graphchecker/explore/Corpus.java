@@ -645,10 +645,13 @@ public final class Corpus implements Arms.Rows {
             writesOn.add(row.endpoint().occurrence().id(), row.sessionId(), row);
             located(writtenLocations, row.endpoint().occurrence(), location);
             add(writesByLocation, session.sessionId() + "|" + location, row);
-            writeSitesByLocation.computeIfAbsent(location,
-                    ignored -> new LinkedHashMap<String, WriteRow>())
-                    .putIfAbsent(row.endpoint().site() + "|" + row.javaType(),
-                            row);
+            // An INITIAL's endpoint observed the location; it wrote nothing.
+            if (!row.initial()) {
+                writeSitesByLocation.computeIfAbsent(location,
+                        ignored -> new LinkedHashMap<String, WriteRow>())
+                        .putIfAbsent(row.endpoint().site() + "|"
+                                + row.javaType(), row);
+            }
             endpointById.put(row.endpoint().id(), row.endpoint());
             touch(row.endpoint().occurrence(), row.location());
         }
@@ -936,21 +939,26 @@ public final class Corpus implements Arms.Rows {
     // ---- The causal graph (GreyGraph §3.1) ----
 
     /**
-     * The writes one read could have taken its value from: the observed one and
-     * every HB-concurrent writer (IDENTITY §4, {@code smt.Arms}) -- the same
-     * alternatives the composition offers. ONE implementation, used by the
-     * closure ({@link ClosurePlanner#writers}).
+     * The writes one read could have taken its value from: the observed one,
+     * every HB-concurrent writer, and the location's INITIAL where the read
+     * could have run before every write it followed (IDENTITY §4,
+     * {@code smt.Arms#stateArms}) -- the same alternatives the composition
+     * offers. ONE implementation, used by the closure
+     * ({@link ClosurePlanner#writers}).
      *
      * @param reader the reading occurrence, for the concurrency rule
      */
     public List<WriteRow> eligibleWrites(String sessionId, String locationKey,
                                          long observedVersion,
                                          OccurrenceAddress reader) {
+        List<WriteRow> writes = writesOf(sessionId, locationKey);
         List<WriteRow> eligible = new ArrayList<WriteRow>();
-        for (WriteRow write : writesOf(sessionId, locationKey)) {
-            if (write.version() == observedVersion
-                    || arms.concurrent(reader,
-                            write.endpoint().occurrence(), sessionId)) {
+        for (WriteRow write : writes) {
+            if (write.version() == observedVersion || (write.initial()
+                    ? arms.stateSeen(reader, sessionId, writes,
+                    observedVersion, write)
+                    : arms.concurrent(reader, write.endpoint().occurrence(),
+                    sessionId))) {
                 eligible.add(write);
             }
         }

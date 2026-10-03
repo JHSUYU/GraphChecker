@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -29,7 +30,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -393,6 +396,49 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         assertNotNull("the read of the outside store is a row", stated);
         assertEquals("and states what the read returned", "1003",
                 stated.concreteValue());
+    }
+
+    /**
+     * A location's INITIAL is a write row, flagged: Writers_W(l)'s writer at
+     * version 0, placed at the access that started the log and spelled as
+     * its own kind there -- a log a store starts states the INITIAL and the
+     * store at one event, and they are two endpoints.
+     */
+    @Test
+    public void aLocationsInitialIsAFlaggedRowOfItsOwnSite()
+            throws Exception {
+        RowRuntime.configure(sessionFile());
+        OccurrenceAddress at = address();
+        ActiveRegion active = region(at);
+        RowRuntime.journalRegion(900L, at);
+        Map<Long, String> kinds = new LinkedHashMap<Long, String>();
+        kinds.put(455L, "INITIAL");
+        kinds.put(456L, "WRITE");
+        JsonObject log = null;
+        for (Map.Entry<Long, String> kind : kinds.entrySet()) {
+            JsonObject value = new JsonObject();
+            value.addProperty("_type", "ConstExpr");
+            value.addProperty("_java_type", "J");
+            value.addProperty("_exp", "Y_J_" + kind.getKey());
+            JsonObject logged = loggedAt(version(kind.getKey(), value));
+            logged.addProperty("versionKind", kind.getValue());
+            if (log == null) {
+                log = record("INSTANCE_FIELD/10#40", logged);
+            } else {
+                array(log, "versions").add(logged);
+            }
+        }
+        active.sharedStateRecords.put("INSTANCE_FIELD/10#40", log);
+        writes(active);
+        RowRuntime.closeSession();
+
+        Map<Long, WriteRow> rows = new LinkedHashMap<Long, WriteRow>();
+        for (WriteRow row : writes()) rows.put(row.version(), row);
+        assertTrue("the INITIAL is a row, flagged", rows.get(455L).initial());
+        assertFalse("the store is a write", rows.get(456L).initial());
+        assertEquals("at the store's site, as its own kind",
+                Endpoint.initialSite(rows.get(456L).endpoint().site()),
+                rows.get(455L).endpoint().site());
     }
 
     // ------------------------------------------------------------------

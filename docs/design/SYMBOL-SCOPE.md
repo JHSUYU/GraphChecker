@@ -20,10 +20,10 @@ Three things are kept apart:
 | where a value comes from | what it is | bound by |
 |---|---|---|
 | **F1** the environment: a clock read, a door fault, a configuration value, a tree's configured source hook (§4) | ROOT | its domain: a marker (a boolean configuration too) both values, an integral configuration the hull of its anchors (§4.3), a hook's source its `root-domains.jsonl` row (none: pinned), a clock its window (`contract/RootKind`, `contract/RootDomain`) |
-| **F2** a read of shared state another occurrence writes (§5) | TRACKED READ, or a READ placeholder where the accessor is unwoven | the version it observed, and every attested HB-concurrent writer occurrence of the same session (`smt/Arms#stateArms`) |
+| **F2** a read of shared state another occurrence writes (§5) | TRACKED READ, or a READ placeholder where the accessor is unwoven | the version it observed, every attested HB-concurrent writer occurrence of the same session, and the location's INITIAL where the read could have preceded every write it followed (`smt/Arms#stateArms`, `#stateSeen`) |
 | **F3** a message leaf that crosses a process (§6) | WIRE ATTACH, a fresh `v_H` per primitive leaf | the producer's export, paired within the run (message families) |
 | **F4** a return or parameter from code outside the analysis scope | grow the scope (§2.4); what stays outside has no root, tracked read or port, and is symbolic only by propagation | its inputs' expressions, else the recorded value |
-| a read of state from before the window | the INITIAL version of its log | pinned to the recorded value |
+| a read of state from before the window | the INITIAL version of its log, a write row (`contract/WriteRow#initial`): the writer at version 0 | joined to what it held, an arm of F2's |
 
 A value no rule makes symbolic is concrete: `plan/ConcolicScheduler.SymbolicInputSelection` marks
 every other proposed input `CONCRETE` (`UNDECLARED_SYMBOLIC_INPUT`), and its expression, if any,
@@ -621,7 +621,7 @@ through `DataNodeDiskMetrics.getSlowDisksToExclude()`, and its read had stated n
 which starts the location's log with an INITIAL version holding the current value -- an integral's
 or a wrapper's word, a reference's identity -- unless a log stands (VM.md §5). A concrete store
 after it is then a version, and a read states the version it saw, INITIAL when no store of the
-window came first. An access before its object's constructor call, and a read site that is neither a `getfield` of
+window came first; the INITIAL is a write row of its own (`contract/WriteRow#initial`). An access before its object's constructor call, and a read site that is neither a `getfield` of
 its cell nor an accessor's call, are left unobserved; a status the VM refuses with (`UNSUPPORTED_TARGET`
 for a `float` or `double` field) is an `UNSTATED_VALUE` DIAGNOSTIC row naming it.
 

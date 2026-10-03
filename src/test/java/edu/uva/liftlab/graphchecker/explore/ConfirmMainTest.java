@@ -4,11 +4,13 @@ import java.util.ArrayList;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -319,6 +321,53 @@ public class ConfirmMainTest {
                         state.get("version").getAsLong());
             }
         }
+    }
+
+    /**
+     * A model that chose a location's INITIAL for a read is held to no
+     * writer, since none wrote it: every write of the location goes after
+     * the read, and the read sees what it held before them.
+     */
+    @Test
+    public void aModelThatChoseTheInitialHoldsEveryWriteAfterTheRead()
+            throws Exception {
+        Path iteration = iteration();
+        Endpoint observedAt = endpoint(MINT, "a.Manager#tick()#7:INITIAL");
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                Arrays.asList(WriteRow.initial("sel", 9L, observedAt, CELL,
+                        4L, "EXPR.w", "I"), WriteRow.of("sel", 10L, writer,
+                        CELL, 5L, "EXPR.w", "I")), RowCodec::writeWrite);
+        Path claim = claim("FAULT:IPC", "true");
+        JsonObject document = JsonParser.parseString(new String(
+                Files.readAllBytes(claim), StandardCharsets.UTF_8))
+                .getAsJsonObject();
+        JsonObject arm = new JsonObject();
+        arm.addProperty("selector", "writer_arm__1__i");
+        arm.addProperty("groupId", "INITIAL|" + SmtLowering.locationKey(CELL));
+        JsonArray fills = new JsonArray();
+        fills.add(Interaction.of(InteractionKind.STATE, observedAt, reader)
+                .id());
+        arm.add("interactionIds", fills);
+        document.getAsJsonArray("valuations").get(1).getAsJsonObject()
+                .getAsJsonArray("selectedArms").add(arm);
+        Files.write(claim, document.toString()
+                .getBytes(StandardCharsets.UTF_8));
+        Path out = folder.newFolder("initial-chosen").toPath();
+        ConfirmMain.write(iteration, claim, manifest(), out);
+        List<String> orders = new ArrayList<String>();
+        for (JsonObject edge : RowCodec.readJsonl(
+                out.resolve(Confirmation.FILE))) {
+            String kind = edge.get("kind").getAsString();
+            assertFalse("no writer to compare: " + edge, "STATE".equals(kind)
+                    && edge.get("reader").getAsString().equals(
+                    Confirmation.id(reader)));
+            if ("ORDER".equals(kind)) {
+                orders.add(edge.get("before").getAsString() + " < "
+                        + edge.get("after").getAsString());
+            }
+        }
+        assertEquals("the write after the read", Collections.singletonList(
+                reader.activation() + " < " + writer.activation()), orders);
     }
 
     /**
@@ -678,30 +727,18 @@ public class ConfirmMainTest {
         }
         assertEquals(1, held);
 
-        // A pinned join to a container's INITIAL holds nothing: its version
-        // is the members the VM read where it first observed the map, which
-        // no occurrence wrote (SOLR-18413 stream7b: the leader's first
-        // lookup of the cluster state).  A write above its members is a
-        // write.  Every STATE row names its reader at any turn too.
-        for (int members : new int[]{1, 0}) {
-            JsonObject base = JsonParser.parseString("{\"_type\":"
-                    + "\"ContainerRelation\",\"shape\":\"ASSOCIATIVE\","
-                    + "\"operation\":\"SNAPSHOT_BASE\",\"members\":"
-                    + members + ",\"arguments\":[],\"receiver\":{"
-                    + "\"_type\":\"ContainerRelation\",\"operation\":"
-                    + "\"STATE\",\"receiver\":{\"_type\":"
-                    + "\"SymbolExpression\",\"_exp\":\"M_L_9\"}}}")
-                    .getAsJsonObject();
-            JsonObject put = JsonParser.parseString("{\"_type\":"
-                    + "\"ContainerRelation\",\"shape\":\"ASSOCIATIVE\","
-                    + "\"operation\":\"PUT\",\"arguments\":[{\"_type\":"
-                    + "\"ConstExpr\",\"_exp\":\"Y_I_1\"},{\"_type\":"
-                    + "\"ConstExpr\",\"_exp\":\"Y_I_1\"}]}")
-                    .getAsJsonObject();
-            put.add("receiver", base);
-            RowCodec.writeExpressions(sel.expressions(), ExpressionTable.of(
-                    Collections.singletonMap("EXPR.w", put)));
-            Path snapshot = folder.newFolder("snapshot" + members).toPath();
+        // A join the run took to an INITIAL holds nothing: no occurrence
+        // wrote it, only the access that first observed the location
+        // (SOLR-18413 stream7b: the leader's first lookup of the cluster
+        // state).  A write is a write.  Every STATE row names its reader at
+        // any turn too.
+        for (boolean initial : new boolean[]{true, false}) {
+            RowCodec.writeAll(sel.writes(), Collections.singletonList(initial
+                    ? WriteRow.initial("sel", 10L, writer, CELL, 5L, "EXPR.w",
+                    "I")
+                    : WriteRow.of("sel", 10L, writer, CELL, 5L, "EXPR.w",
+                    "I")), RowCodec::writeWrite);
+            Path snapshot = folder.newFolder("initial" + initial).toPath();
             ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
                     snapshot);
             int stated = 0;
@@ -712,8 +749,7 @@ public class ConfirmMainTest {
                 assertEquals(Confirmation.anyTurn(reader),
                         edge.get("readerAnyTurn").getAsString());
             }
-            assertEquals("members " + members, members == 1 ? 0 : 1,
-                    stated);
+            assertEquals("initial " + initial, initial ? 0 : 1, stated);
         }
 
         // A join at a location the fatal does not rest on is no edge: under

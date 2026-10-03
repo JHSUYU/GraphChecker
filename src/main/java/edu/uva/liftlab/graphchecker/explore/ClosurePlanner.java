@@ -983,8 +983,9 @@ public final class ClosurePlanner {
 
     /** One recorded write a demanded value may rest on: its writer, flipped
      *  at the guards of its method's write sites, contributing what it
-     *  wrote. */
+     *  wrote.  An INITIAL has no writer: no run decided it. */
     private static void wrote(Walk walk, WriteRow write, List<Demand> into) {
+        if (write.initial()) return;
         Demand paired = new Demand(write.endpoint().occurrence(),
                 CLOSURE_MEMBER, false);
         paired.contributed.add(write.sessionId() + "|"

@@ -243,7 +243,7 @@ final class SharedStateCapture {
             JsonObject version = element.getAsJsonObject();
             JsonObject entry = new JsonObject();
             copyIfPresent(version, entry, "fieldVersionId");
-            // Its kind: a scalar's INITIAL is no write (scalarInitial).
+            // Its kind: an INITIAL is a write row flagged as one.
             copyIfPresent(version, entry, "versionKind");
             // Site and activation: the two halves of the WriteRow's
             // endpoint identity (IDENTITY §4); dropping them merges
@@ -607,17 +607,15 @@ final class SharedStateCapture {
     }
 
     /**
-     * Whether a version is a scalar field's INITIAL: the value from before
-     * the window, which whichever access first observed the field started
-     * its log with.  No occurrence wrote it, so it is no write row, and a
-     * read of it is the recording's (pinned).  A container's INITIAL is the
-     * base its chain of mutations stands on, and stays one.
+     * Whether a version is its location's INITIAL: the value from before
+     * every store the log names, which whichever access first observed the
+     * location started its log with -- a scalar's word, a container's
+     * members (the base its chain of mutations stands on).  No occurrence
+     * wrote it (WriteRow#initial).
      */
-    static boolean scalarInitial(JsonObject version, LocationId location) {
+    static boolean initial(JsonObject version) {
         return INITIAL_VERSION_KIND.equals(
-                optionalString(version, "versionKind"))
-                && (location.kind() == LocationKind.INSTANCE
-                || location.kind() == LocationKind.STATIC);
+                optionalString(version, "versionKind"));
     }
 
     /** Whether a version was stored outside every region: it names no

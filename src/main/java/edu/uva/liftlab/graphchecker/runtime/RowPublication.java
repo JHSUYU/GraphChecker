@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -166,7 +167,7 @@ final class RowPublication {
                 if (!element.isJsonObject()) continue;
                 JsonObject version = element.getAsJsonObject();
                 long id = optionalLongInteger(version, "fieldVersionId", -1L);
-                if (!rowed(version, location, locationKey, mints)) continue;
+                if (!rowed(version, locationKey, mints)) continue;
                 if (!RowRuntime.claimEvent("write", locationKey + "#" + id)) {
                     continue;
                 }
@@ -182,13 +183,16 @@ final class RowPublication {
                     String unrowed = unrowedReferent(
                             active.sharedStateRefusals,
                             active.sharedStateRecords, version, mints);
-                    RowRuntime.write(performer, id, site, location, id,
-                            written, "", LoggedEventSites.siteIndex(version,
-                                    locationKey, id, site, true),
+                    boolean initial = SharedStateCapture.initial(version);
+                    RowRuntime.write(performer, id, initial
+                                    ? Endpoint.initialSite(site) : site,
+                            location, id, written, "",
+                            LoggedEventSites.siteIndex(version, locationKey,
+                                    id, site, true),
                             unrowed.isEmpty() ? referent(version) : null,
                             unrowed.isEmpty() ? optionalString(version,
                                     SharedStateCapture.REFERENT_STATE_REFUSED)
-                                    : unrowed);
+                                    : unrowed, initial);
                 }
                 collect(expression, published, seen);
             }
@@ -200,16 +204,15 @@ final class RowPublication {
 
     /**
      * Whether a logged version is a write row: a store outside every region
-     * has no performer to row, and a scalar's INITIAL no store at all; a
-     * declared input is a mint.
+     * has no performer to row, and a declared input is a mint.  An INITIAL
+     * is one, flagged (WriteRow#initial): no occurrence wrote it, and its
+     * performer is the access that first observed the location.
      */
-    private static boolean rowed(JsonObject version, LocationId location,
-                                 String locationKey,
+    private static boolean rowed(JsonObject version, String locationKey,
                                  Map<String, String> mints) {
         long id = optionalLongInteger(version, "fieldVersionId", -1L);
         return id >= 0L && !mints.containsKey(locationKey + "#" + id)
-                && !SharedStateCapture.unattributed(version)
-                && !SharedStateCapture.scalarInitial(version, location);
+                && !SharedStateCapture.unattributed(version);
     }
 
     /**
@@ -238,8 +241,8 @@ final class RowPublication {
                 "versions")) {
             if (logged.isJsonObject() && optionalLongInteger(
                     logged.getAsJsonObject(), "fieldVersionId", -2L) == named) {
-                return rowed(logged.getAsJsonObject(), locationId(key), key,
-                        mints) ? "" : "VERSION_NOT_ROWED";
+                return rowed(logged.getAsJsonObject(), key, mints) ? ""
+                        : "VERSION_NOT_ROWED";
             }
         }
         return "VERSION_NOT_RETAINED";

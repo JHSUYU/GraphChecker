@@ -153,7 +153,9 @@ siteIndex.hash / attempt)`, rendered `<address>/site:<site>/sidx:<frames>/att:<n
   same frames, counted over every logged event, published or not. The performer is the activation
   the VM states for the event, not the occurrence that read the log out.
 - `site` is the port id (WIRE), `<class>#<method><descriptor>#<bci>:WRITE|READ` (STATE,
-  `Endpoint#stateSite`), or `<transport>#<half>` for a whole message.
+  `Endpoint#stateSite`; a location's INITIAL is `:INITIAL` at the access that started its log,
+  `Endpoint#initialSite`, so it is no event of that access), or `<transport>#<half>` for a whole
+  message.
 - The id is recursive through the Anchor chain: one unreproduced link anywhere upstream changes it.
 
 **Message producers.** A sent message's producer endpoint is minted at the send
@@ -177,11 +179,18 @@ the flip solver:
 
 - a WIRE interaction's arms are the producer endpoint's exports from runs whose own pairing named
   this consumer;
-- a STATE read's arms are its observed writer plus every attested writer occurrence of the same
-  session that is HB-concurrent with the reader (not the same `threadKey`, not an anchor-chain
-  ancestor either way, both chains reaching a `Root`; a `Lost` context is never concurrent), one
-  arm per writer occurrence: the observed writer's at the write the read observed, any other at
-  its last write of the location. Locks are not constraints. An activation's `threadKey` is the
+- a STATE read's arms are Writers_W(l): its observed writer plus every attested writer occurrence
+  of the same session that is HB-concurrent with the reader (not the same `threadKey`, not an
+  anchor-chain ancestor either way, both chains reaching a `Root`; a `Lost` context is never
+  concurrent), one arm per writer occurrence: the observed writer's at the write the read
+  observed, any other at its last write of the location; and the writer at version 0, the
+  location's INITIAL (`WriteRow#initial`: what it held before every write its log names, a
+  constructor's or initializer's store from before the log began, the JVM default, a container's
+  members), an arm of its own under no prefix. A whole state -- the INITIAL, or a container
+  writer's version -- is an alternative only where the read could have run right after it
+  (`Arms#stateSeen`): every write between the two an HB-concurrent occurrence's, none a
+  constructor's or a class initializer's, which every reader of what they built follows. Locks
+  are not constraints. An activation's `threadKey` is the
   claimed start it runs inside (§6: a queue item or task claimed on a consumer thread,
   `start:<node>|<context>|<frames>`, `ActivationRow#claimed`), else its thread (a thread's own start
   included, `RowRuntime#threadKey`): two items one consumer thread claims (a ZooKeeper server's

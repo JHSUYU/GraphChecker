@@ -60,6 +60,17 @@ public final class Endpoint extends Value {
                 + (write ? "WRITE" : "READ");
     }
 
+    /**
+     * The site of a location's INITIAL ({@code WriteRow#initial}) at the
+     * STATE site of the access that first observed it: its own kind, so it
+     * is no event of that access (a log a store starts states the INITIAL
+     * and the store at one event).
+     */
+    public static String initialSite(String observedAt) {
+        return observedAt.substring(0, observedAt.lastIndexOf(':') + 1)
+                + "INITIAL";
+    }
+
     public OccurrenceAddress occurrence() {
         return occurrence;
     }

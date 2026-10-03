@@ -1674,7 +1674,8 @@ public final class Composer {
 
     /**
      * One write this path rests on (joined or an earlier version): its
-     * writer is reached and its location's earlier versions queued.
+     * writer is reached and its location's earlier versions queued.  An
+     * INITIAL has neither: no occurrence wrote it.
      */
     private void reach(WriteRow write, OccurrenceAddress start,
                        Map<String, Long> reached,
@@ -1682,7 +1683,10 @@ public final class Composer {
                        Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
         // Never the anchor or the start: their cutoff is fixed.
-        if (anchor.id().equals(writer) || start.id().equals(writer)) return;
+        if (write.initial() || anchor.id().equals(writer)
+                || start.id().equals(writer)) {
+            return;
+        }
         if (handled.add(SmtLowering.locationKey(write.location()) + "#"
                 + write.version())) {
             versions.add(write);
@@ -2085,7 +2089,8 @@ public final class Composer {
      * by a named object, by a read that could have seen a writer
      * occurrence besides the one it did ({@link Corpus#eligibleWrites}, the
      * writers the family's arms are drawn from: only an HB-concurrent one
-     * is another).  A version no row wrote has no writer of its own, so
+     * is another, or the location's INITIAL where every write before the
+     * read is one).  A version no row wrote has no writer of its own, so
      * any eligible writer is another; but a read whose only eligible writer
      * is the one it observed, or none, has no alternative: two reads that
      * saw two ordered writers, or a hot field whose earliest versions the
@@ -2105,10 +2110,10 @@ public final class Composer {
             }
             WriteRow observed = corpus.writeOf(session, key, version);
             String seen = observed == null ? null
-                    : observed.endpoint().occurrence().id();
+                    : ComposedFamilies.writer(observed);
             for (WriteRow write : corpus.eligibleWrites(session, key,
                     version, anchor)) {
-                if (!write.endpoint().occurrence().id().equals(seen)) {
+                if (!ComposedFamilies.writer(write).equals(seen)) {
                     repaired.add(key);
                     break;
                 }

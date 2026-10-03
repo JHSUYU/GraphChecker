@@ -9,7 +9,6 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
-import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
@@ -32,7 +31,6 @@ import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -884,8 +882,6 @@ public final class ConfirmMain {
                 new LinkedHashMap<String, WriteRow>();
         /** The reads of a reached occurrence at or past its cutoff. */
         private final Set<String> past = new LinkedHashSet<String>();
-        /** The session's expressions, for {@link #initial}. */
-        private final ExpressionTable expressions;
         /** Occurrence id -> the session's activation of it. */
         private final Map<String, ActivationRow> activations =
                 new LinkedHashMap<String, ActivationRow>();
@@ -978,40 +974,8 @@ public final class ConfirmMain {
                     ExecutionIndex.of(hold));
         }
 
-        /**
-         * Whether a write row is a container's INITIAL: the members the VM
-         * read when it began tracking the container, stated at whichever
-         * access first observed it -- a version no occurrence wrote, as a
-         * scalar's INITIAL is no row at all (runtime.SharedStateCapture
-         * #scalarInitial).  Its expression is the snapshot alone, its
-         * SNAPSHOT_BASE's {@code members} PUTs and nothing above them;
-         * a base stating no {@code members} (an image before it) is read
-         * as a write.
-         */
-        private boolean initial(WriteRow write) {
-            JsonElement at = expressions.expression(write.expressionRef());
-            int above = 0;
-            while (at != null && at.isJsonObject()) {
-                JsonObject relation = at.getAsJsonObject();
-                if (!"ContainerRelation".equals(
-                        optionalString(relation, "_type"))) {
-                    return false;
-                }
-                String operation = optionalString(relation, "operation");
-                if ("SNAPSHOT_BASE".equals(operation)) {
-                    return JsonFields.optionalInteger(relation, "members", -1)
-                            == above;
-                }
-                if (!"PUT".equals(operation)) return false;
-                above++;
-                at = relation.get("receiver");
-            }
-            return false;
-        }
-
         private StateClosure(SessionReader session, OccurrenceAddress anchor,
                              long cutoff) {
-            expressions = session.expressions();
             for (ActivationRow activation : session.activations()) {
                 activations.putIfAbsent(activation.occurrence().id(),
                         activation);
@@ -1180,10 +1144,11 @@ public final class ConfirmMain {
      * may make it at another endpoint or not at all (r7 hdfs-17960: the
      * fsimage's name maps, re-serialized after the flip).  A read no row
      * answers is held only where the model chose a writer for it; otherwise
-     * its outside store is the run's own -- and so is a container's INITIAL
-     * ({@link StateClosure#initial}).  Endpoints and activations are
-     * named as every delivery of their stored message is
-     * ({@link Confirmation#id}).
+     * its outside store is the run's own -- and so is an INITIAL
+     * ({@link WriteRow#initial}).  An INITIAL the model chose is no writer
+     * to compare: every write of its location goes after the read.
+     * Endpoints and activations are named as every delivery of their stored
+     * message is ({@link Confirmation#id}).
      */
     private static List<JsonObject> stateEdges(StateClosure closure,
                                                Map<String, WriteRow> chosen,
@@ -1198,40 +1163,44 @@ public final class ConfirmMain {
             WriteRow held = chosen.containsKey(reader.getKey())
                     ? chosen.get(reader.getKey())
                     : closure.joined.get(reader.getKey());
-            // A pinned join to a container's INITIAL holds nothing: no
+            // A join to the INITIAL the run took holds nothing: no
             // occurrence wrote it, only whichever access first observed the
-            // container, which is the run's own history.
+            // location, which is the run's own history.
             if (held == null || !chosen.containsKey(reader.getKey())
-                    && closure.initial(held)) {
+                    && held.initial()) {
                 continue;
             }
             String location = SmtLowering.locationKey(held.location());
-            JsonObject edge = new JsonObject();
-            edge.addProperty("kind", "STATE");
-            edge.addProperty("reader", Confirmation.id(read.endpoint()));
-            edge.addProperty("readerAnyTurn",
-                    Confirmation.anyTurn(read.endpoint()));
             // A mint read lands on whichever racing occurrence reads the cell
             // first, so it is held by the writer (runtime/Confirmation), not
             // the reader.
             boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
-            edge.addProperty("mint", mint);
-            edge.addProperty("writer", Confirmation.id(held.endpoint()));
-            edge.addProperty("version", held.version());
-            edge.addProperty("location", location);
-            edges.add(edge);
-            if (mint) continue;
-            closure.order(orders, held.endpoint(), read.endpoint(),
-                    read.seq());
+            if (!held.initial()) {
+                JsonObject edge = new JsonObject();
+                edge.addProperty("kind", "STATE");
+                edge.addProperty("reader", Confirmation.id(read.endpoint()));
+                edge.addProperty("readerAnyTurn",
+                        Confirmation.anyTurn(read.endpoint()));
+                edge.addProperty("mint", mint);
+                edge.addProperty("writer", Confirmation.id(held.endpoint()));
+                edge.addProperty("version", held.version());
+                edge.addProperty("location", location);
+                edges.add(edge);
+                if (mint) continue;
+                closure.order(orders, held.endpoint(), read.endpoint(),
+                        read.seq());
+            } else if (mint) {
+                continue;
+            }
             // No other writer of the location it reads between the two: one
             // recorded before the write goes before it, any other after the
             // read.
             for (WriteRow other : closure.byLocation.get(location)) {
                 if (other.endpoint().equals(held.endpoint())
-                        || closure.initial(other)) {
+                        || other.initial()) {
                     continue;
                 }
-                if (other.seq() < held.seq()) {
+                if (!held.initial() && other.seq() < held.seq()) {
                     closure.order(orders, other.endpoint(), held.endpoint(),
                             held.seq());
                 } else {
@@ -1251,13 +1220,14 @@ public final class ConfirmMain {
         return edges;
     }
 
-    /** One write the path rests on: reach its writer, sweep older versions. */
+    /** One write the path rests on: reach its writer, sweep older versions
+     *  (an INITIAL has neither). */
     private static void reach(WriteRow write, OccurrenceAddress anchor,
                               Map<String, Long> reached, List<String> pending,
                               List<WriteRow> versions, Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
         // Never the anchor: its cutoff is the target observation.
-        if (anchor.id().equals(writer)) return;
+        if (write.initial() || anchor.id().equals(writer)) return;
         if (handled.add(version(write.location(), write.version()))) {
             versions.add(write);
         }
