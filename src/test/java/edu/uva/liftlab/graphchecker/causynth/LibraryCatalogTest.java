@@ -27,6 +27,9 @@ public class LibraryCatalogTest {
             + "\"DOOR\", \"transport\": \"T\", \"direction\": \"SEND\", "
             + "\"method\": \"<a.B: void send(int)>\", \"before\": "
             + "\"<a.C: void flush()>\", \"faults\": [\"java.io.IOException\"]";
+    /** A door at every call of its anchor: no method. */
+    private static final String AT_CALLS = DOOR.replace(
+            "\"method\": \"<a.B: void send(int)>\", ", "");
     private static final String CONFIG = "{\"schemaVersion\": 1, \"kind\": "
             + "\"CONFIG_SOURCE\", \"method\": \"<a.Conf: int getInt("
             + "java.lang.String,int)>\"";
@@ -38,16 +41,38 @@ public class LibraryCatalogTest {
                 "HDFS_DATA_TRANSFER", "SOLR_HTTP", "SOLR_HTTP2", "ZOOKEEPER"),
                 transports);
         LinkedHashSet<String> response = new LinkedHashSet<>();
+        List<String> dataTransfer = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
-            if (door.method.startsWith(IPC)) {
+            if (!door.atCalls() && door.method.startsWith(IPC)) {
                 response.add(door.doorMethod());
                 assertEquals("org.apache.hadoop.ipc.Client", door.family());
+            }
+            if (door.transport.equals("HDFS_DATA_TRANSFER")) {
+                dataTransfer.add(door.direction + " " + door.place());
             }
         }
         // trunk's and 3.4's signatures are one door method.
         assertEquals(Arrays.asList("FAULT:HADOOP_IPC:RESPONSE at "
                         + "org.apache.hadoop.ipc.Client#getRpcResponse"),
                 new ArrayList<>(response));
+        // An op leaves in Sender#send; each side that sent one reads its
+        // response or ack where it calls the parse.
+        String proto = "org.apache.hadoop.hdfs.protocol.proto."
+                + "DataTransferProtos$";
+        assertEquals(Arrays.asList("REQUEST <org.apache.hadoop.hdfs.protocol."
+                        + "datatransfer.Sender: void send(java.io."
+                        + "DataOutputStream,org.apache.hadoop.hdfs.protocol."
+                        + "datatransfer.Op,org.apache.hadoop.thirdparty."
+                        + "protobuf.Message)>",
+                "RESPONSE every call of <" + proto + "BlockOpResponseProto: "
+                        + proto + "BlockOpResponseProto parseFrom(java.io."
+                        + "InputStream)>",
+                "RESPONSE every call of <" + proto + "DNTransferAckProto: "
+                        + proto + "DNTransferAckProto parseFrom(java.io."
+                        + "InputStream)>",
+                "RESPONSE every call of <org.apache.hadoop.hdfs.protocol."
+                        + "datatransfer.PipelineAck: void readFields(java.io."
+                        + "InputStream)>"), dataTransfer);
     }
 
     /**
@@ -122,6 +147,9 @@ public class LibraryCatalogTest {
                     "is stated again; first at t.jsonl:1"},
             {"{\"schemaVersion\": 1, \"kind\": \"CONFIG_FIELD_OWNER\", "
                     + "\"class\": \"Settings\"}", "class is no"},
+            {AT_CALLS + "}\n" + AT_CALLS + "}",
+                    "FAULT:T:SEND every call of <a.C: void flush()> is "
+                            + "stated again"},
         };
         for (String[] row : refused) {
             try {

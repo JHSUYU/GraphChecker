@@ -77,6 +77,121 @@ public class FaultPropagationTest {
         }
     }
 
+    /**
+     * SYMBOL-SCOPE §4.2: a door at calls (the catalog's DataTransfer
+     * responses) is woven after the anchor in each analysed caller, its
+     * kinds in row order, its units tagged as the weave's, and goes to that
+     * caller's handler, which its marker branches decide; a library caller
+     * is not woven.
+     */
+    @Test
+    public void aDoorAtCallsIsWovenInEveryAnalysedCaller() {
+        G.reset();
+        soot.options.Options.v().set_allow_phantom_refs(true);
+        SootClass object = library("java.lang.Object", null, 0);
+        SootClass throwable = library("java.lang.Throwable", object, 0);
+        SootClass exception = library("java.lang.Exception", throwable, 0);
+        SootClass ioe = library(IOE, exception, 0);
+        for (SootClass kind : new SootClass[]{ioe,
+                library("java.io.EOFException", ioe, 0),
+                library("java.net.SocketTimeoutException", ioe, 0)}) {
+            method(kind, "<init>", Collections.<Type>singletonList(
+                    RefType.v("java.lang.String")), VoidType.v(), 0);
+        }
+        SootClass stream = library("java.io.InputStream", object, 0);
+        SootClass ack = library(
+                "org.apache.hadoop.hdfs.protocol.datatransfer.PipelineAck",
+                object, 0);
+        SootMethod readFields = method(ack, "readFields",
+                Collections.<Type>singletonList(stream.getType()),
+                VoidType.v(), Modifier.NATIVE);
+        SootMethod analysed = reader(application("g.Reader", object), ack,
+                stream, readFields, ioe);
+        SootMethod unanalysed = reader(library("g.Library", object, 0), ack,
+                stream, readFields, ioe);
+
+        DoorWeave.apply();
+        List<String> names = new ArrayList<>();
+        Unit handler = null;
+        List<Unit> throwsAt = new ArrayList<>();
+        int program = 0;
+        for (Unit unit : analysed.getActiveBody().getUnits()) {
+            if (!DoorWeave.isWoven(unit)) program++;
+            DoorWeave.Fault woven = DoorWeave.woven(analysed.getActiveBody(),
+                    unit);
+            if (woven != null) {
+                names.add(woven.name);
+                throwsAt.add(unit);
+            }
+            if (unit instanceof soot.jimple.IdentityStmt && ((soot.jimple
+                    .IdentityStmt) unit).getRightOp()
+                    instanceof soot.jimple.CaughtExceptionRef) {
+                handler = unit;
+            }
+        }
+        FaultPropagation faults = FaultPropagation.current();
+        Object[][] rows = {
+            {"the caller's markers, in the row's order",
+                "[FAULT:HDFS_DATA_TRANSFER:RESPONSE, "
+                        + "FAULT:HDFS_DATA_TRANSFER:RESPONSE:EOFException, "
+                        + "FAULT:HDFS_DATA_TRANSFER:RESPONSE:"
+                        + "SocketTimeoutException]", names.toString()},
+            {"each goes to the caller's handler",
+                Collections.nCopies(3, Collections.singleton(handler))
+                        .toString(), handlersOf(faults,
+                        analysed.getSignature(), throwsAt)},
+            {"the handler's store is decided by each marker branch, on "
+                    + "its throwing arm", "[" + analysed.getSignature()
+                    + "#u5=false, " + analysed.getSignature()
+                    + "#u10=false, " + analysed.getSignature()
+                    + "#u15=false]", SiteControlDependence.MethodGuards.of(
+                            analysed.getSignature()).at(22).toString()},
+            {"the weave's units are its own, not the program's", "9 of 24",
+                program + " of " + analysed.getActiveBody().getUnits()
+                        .size()},
+            {"a library caller is not woven", 9,
+                unanalysed.getActiveBody().getUnits().size()}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1], row[2]);
+        }
+    }
+
+    private static String handlersOf(FaultPropagation faults, String method,
+                                     List<Unit> raises) {
+        List<Object> found = new ArrayList<>();
+        for (Unit raise : raises) found.add(faults.handlers(method, raise));
+        return found.toString();
+    }
+
+    /** {@code void read(PipelineAck, InputStream)}: {@code readFields}
+     *  under an IOException handler, a store on each arm. */
+    private static SootMethod reader(SootClass owner, SootClass ack,
+                                     SootClass stream, SootMethod readFields,
+                                     SootClass ioe) {
+        SootField ok = new SootField("ok", IntType.v(), 0);
+        owner.addField(ok);
+        SootMethod read = method(owner, "read", Arrays.<Type>asList(
+                ack.getType(), stream.getType()), VoidType.v(), 0);
+        Local r0 = local(read, "r0", owner.getType());
+        Local r1 = local(read, "r1", ack.getType());
+        Local r2 = local(read, "r2", stream.getType());
+        Local caught = local(read, "$r3", ioe.getType());
+        Unit called = J.newInvokeStmt(J.newVirtualInvokeExpr(r1,
+                readFields.makeRef(), r2));
+        Unit left = J.newReturnVoidStmt();
+        Unit handler = J.newIdentityStmt(caught, J.newCaughtExceptionRef());
+        body(read, J.newIdentityStmt(r0, J.newThisRef(owner.getType())),
+                J.newIdentityStmt(r1, J.newParameterRef(ack.getType(), 0)),
+                J.newIdentityStmt(r2, J.newParameterRef(stream.getType(), 1)),
+                called, J.newAssignStmt(J.newInstanceFieldRef(r0,
+                        ok.makeRef()), IntConstant.v(1)), left, handler,
+                J.newAssignStmt(J.newInstanceFieldRef(r0, ok.makeRef()),
+                        IntConstant.v(0)), J.newReturnVoidStmt());
+        read.getActiveBody().getTraps().add(J.newTrap(ioe, called, left,
+                handler));
+        return read;
+    }
+
     private static String markers(java.util.Collection<FaultPropagation.Raise>
                                           raises) {
         List<String> found = new ArrayList<>();

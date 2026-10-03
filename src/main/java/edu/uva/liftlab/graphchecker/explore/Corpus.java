@@ -262,6 +262,10 @@ public final class Corpus implements Arms.Rows {
     /** Producer endpoint id of a RECV -> the occurrence that took it in. */
     private final Map<String, String> receiverByEndpoint =
             new LinkedHashMap<String, String>();
+    /** Where a context anchored on nothing stands -> the message it took
+     *  into itself (a DataNode's turn and its DataTransfer op). */
+    private final Map<String, String> takenInByStance =
+            new HashMap<String, String>();
     /** session|occurrence -> the first value its run refused there. */
     private final Map<String, GapRow> refusedIn =
             new HashMap<String, GapRow>();
@@ -527,9 +531,22 @@ public final class Corpus implements Arms.Rows {
         return sender == null ? null : occurrenceById.get(sender);
     }
 
+    /**
+     * The message that started {@code occurrence}: its context's anchor,
+     * else the message that context took into itself (a DataNode's turn
+     * received its DataTransfer op without standing on it), or "".
+     */
+    public String startedBy(OccurrenceAddress occurrence) {
+        return occurrence.context() instanceof CausalContext.Anchor
+                ? ((CausalContext.Anchor) occurrence.context())
+                        .producerEndpointId()
+                : takenInByStance.getOrDefault(
+                        ContextShape.Stance.of(occurrence).render(), "");
+    }
+
     /** The occurrence that TOOK IN the message served under {@code
-     *  producerEndpointId} (its RECV runs under that anchor), or null: the
-     *  receiving door whose fault point decides delivery (IDENTITY §7.3). */
+     *  producerEndpointId} (its RECV of it), or null: the receiving door
+     *  whose fault point decides delivery (IDENTITY §7.3). */
     public OccurrenceAddress receiverOf(String producerEndpointId) {
         String receiver = receiverByEndpoint.get(producerEndpointId);
         return receiver == null ? null : occurrenceById.get(receiver);
@@ -543,6 +560,17 @@ public final class Corpus implements Arms.Rows {
             throw new UncheckedIOException(unreadable);
         }
         for (ScheduleEvent event : events) {
+            // A context that took a message into itself stands under it,
+            // in or out of a region.
+            if (!event.received().isEmpty()) {
+                ContextShape.Stance at =
+                        ContextShape.Stance.ofSend(event.context());
+                if (at != null
+                        && !(at.context() instanceof CausalContext.Anchor)) {
+                    takenInByStance.putIfAbsent(at.render(),
+                            event.received());
+                }
+            }
             // Where every message was sent from, in or out of a region: a
             // daemon tick's heartbeat is sent from the tick's root alone.
             if (event.kind() == ScheduleEvent.Kind.SEND
@@ -558,15 +586,8 @@ public final class Corpus implements Arms.Rows {
                     && !event.endpoint().isEmpty()) {
                 senderByEndpoint.put(event.endpoint(), event.occurrence());
                 named(session.sessionId(), event.occurrence());
-            } else if (event.kind() == ScheduleEvent.Kind.RECV) {
-                // "node|Anchor:<producer endpoint>@<site>[|handoffs]"
-                String[] parts = event.context().split("\\|", -1);
-                CausalContext anchor = CausalContext.parse(
-                        parts.length < 2 ? parts[0] : parts[1]);
-                if (anchor instanceof CausalContext.Anchor) {
-                    receiverByEndpoint.put(((CausalContext.Anchor) anchor)
-                            .producerEndpointId(), event.occurrence());
-                }
+            } else if (!event.received().isEmpty()) {
+                receiverByEndpoint.put(event.received(), event.occurrence());
             }
         }
     }

@@ -68,7 +68,10 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   what it caught (a `finally` or `synchronized` block). A kind goes to the handler of the first trap
   covering the raise that catches it, else it escapes the method; to a fixed point. A call that can
   leave a fault to a handler is a *fault branch* (§3): the sites only one of its exits reaches
-  depend on it, and its operand is `<callee>.throws` of each callee it escapes. A demanded
+  depend on it, and its operand is `<callee>.throws` of each callee it escapes. So is the marker
+  branch of a woven throw a handler of its own method catches (a door at calls): its throwing arm
+  reaches the handler only over the fault edges, and without it the handler, reached from both
+  exits of every earlier fault branch, would depend on nothing. A demanded
   `<m>.throws` (`expandThrows`) takes an `exception_flow` edge from the origin of each raise a fault
   escapes `m` from -- the woven throw's marker local, a callee's `<callee>.throws` -- under the
   raise's guards, so a handler's effects lead back to the door's marker.
@@ -221,7 +224,8 @@ some successor of `b` is post-dominated by `t` and `b` is not; the outcome names
 reaches `t`. The CFG has no exception edges (`BriefUnitGraph`), but for door faults a handler
 catches (§2.2): over the CFG with those edges, a site also depends on each fault branch (a call
 that can leave a fault to a handler) that decides it, with outcome `null` (no decision is ever
-recorded at a call; a fault flips at its marker), and on that call's own guards. A fault branch
+recorded at a call; a fault flips at its marker), and on that call's own guards; a woven marker
+branch that is a fault branch carries its arm toward the handler. A fault branch
 adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
 behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
@@ -269,7 +273,8 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 | `HADOOP_IPC` | `REQUEST` | `Client$Connection#sendRpcRequest` | after the request's `RpcWritable#writeTo` (serialized, not yet queued) |
 | `HADOOP_IPC` | `RESPONSE` | `Client#getRpcResponse` | after `CompletableFuture#get` (trunk); before `Call#getRpcResponse` (3.4) |
 | `HDFS_SASL` | `REQUEST` | `SaslDataTransferClient#doSaslHandshake` | before `DataOutputStream#writeInt` |
-| `HDFS_DATA_TRANSFER` | `SEND` | `datatransfer.Sender#send` | before `DataOutputStream#flush` |
+| `HDFS_DATA_TRANSFER` | `REQUEST` | `datatransfer.Sender#send` (every op) | before `DataOutputStream#flush` |
+| `HDFS_DATA_TRANSFER` | `RESPONSE` | every analysed caller (no door method) | after `BlockOpResponseProto#parseFrom(InputStream)` (an op's response), `DNTransferAckProto#parseFrom(InputStream)` (a transfer's close ack), `PipelineAck#readFields(InputStream)` (a write pipeline's ack) |
 | `SOLR_HTTP` | `REQUEST` / `RESPONSE` | `HttpSolrClient#executeMethod` | before / after `HttpClient#execute` |
 | `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
 | `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
@@ -290,12 +295,26 @@ operation's, so a multi's later operations are unpaired under a fault); the `SOL
 `Client#getRpcResponse` after `installCausynthResponse`, the response's inbound hook (the 3.4 line's
 catalog anchor already follows it). These rows are the tree adapters' hooks spelled out; they go
 when the engine finds a door's following hook itself (a hook call of the door method or of its
-caller after the anchor). There is no door on a read (DataTransfer's `PacketReceiver`, ZooKeeper `getData`/`exists`/
-`getChildren`): every packet and cluster-state read would be one.
+caller after the anchor). There is no door on a data read (DataTransfer's `PacketReceiver`, ZooKeeper
+`getData`/`exists`/`getChildren`): every packet and cluster-state read would be one.
 
-A door applies where its class family (the method's outermost class with its nested classes) is
-analysed. `plan/ScopeGrowth --doors`, before the first static pass and again after every growth,
-outside the growth budget (§2.4, `run_engine.sh campaign_scope_doors`), copies into
+A row with no `method` is a door at calls: a library call whose outcome each caller reads where it
+makes it. A caller that an execution context or the target already roots keeps that region (its
+address and, holding the failure, its exception context; `causynth/SymbolicRegionPlanner`): rooted
+anew as an explicit fault entry and selected as a fault context, `BlockReceiver$PacketResponder#run`
+lost BlockReceiver-1448's throw (`FATAL_TARGET_NOT_IN_WINDOW`). A caller no other rule roots (a
+communication endpoint such as `DataXceiver#writeBlock`) is an explicit fault entry, so its address
+is not the one it had before its door. DataTransfer has no response method of its own: every side that sent an op (the client's
+`DataStreamer`, a DataNode's mirror in `DataXceiver#writeBlock` and its `DataNode$DataTransfer`, the
+`Dispatcher`, a `BlockReader`) parses the response itself, so the door sits after the first call of
+the anchor in every analysed method that makes one, and its fault goes to that caller's own handler
+(`BlockReceiver$PacketResponder` tells an `EOFException` from other failures). A door at calls has
+no family: it is woven where the analysis scope already holds the caller, and a scope with no caller
+has none.
+
+A door with a method applies where its class family (the method's outermost class with its nested
+classes) is analysed. `plan/ScopeGrowth --doors`, before the first static pass and again after every
+growth, outside the growth budget (§2.4, `run_engine.sh campaign_scope_doors`), copies into
 `scope-classes/` the family of every door that a class of the analysis scope (the case's scope and
 what it grew) outside the family calls, from the first of the roots and the workload classpath
 holding it (the system's own classes or a library jar), unless the scope holds it; its `GROWN`
@@ -313,7 +332,10 @@ resolves is refused (`DOOR_METHOD_UNAVAILABLE`), as is an exception class that d
 caller tells apart (a retry policy fails over on one and retries another); a semantic server
 exception is never a kind, it must come from the causal chain. The weave runs before any analysis
 (`CausynthPipeline#run`), so every pass numbers units over the same woven body and site ids agree
-across passes; they differ from the unwoven method's.
+across passes; they differ from the unwoven method's. The woven units are tagged
+(`DoorWeave#isWoven`): a declared throw's ordinal among its method's constructions of its type is
+the class file's (`ExceptionTargetLineResolver`), so the seed counts only the program's own (a door
+at calls in the method that holds the throw, `Dispatcher$PendingMove#receiveResponse`).
 
 The catalog's rows each state `schemaVersion 1` and their `kind` and are keyed by
 `library-catalog.jsonl:<line>`, the shape `contract/WireDeclarations` reads (CONTRACT-SPEC §6.1). A
@@ -485,8 +507,9 @@ reaches, to a fixed point:
     recording bound to the same exchange leg (correlation, attempt and half:
     `RuntimeRegionPlanner#bindObservedCommunicationCaptures`) -- the other side of that one
     message -- and demands there the cells the export hands on (`WIRE_PRODUCER_V1`). A consumer the
-    recording paired with no export (no exchange bound: a ZooKeeper read, a data-transfer stream)
-    is a DIAGNOSTIC `ADMISSION_GAP` naming its cell and ports, and its value stays the one attached.
+    recording paired with no export (no exchange bound: a ZooKeeper read, a DataTransfer op on a
+    tree without the op's envelope, IDENTITY.md §7.1) is a DIAGNOSTIC `ADMISSION_GAP` naming its
+    cell and ports, and its value stays the one attached.
     No capture is admitted for being one: admitting every occurrence that captured a declared port
     planned 2673 occurrences for one ad-hoc check (`DataStreamer-1451`, round a40h).
 
@@ -514,8 +537,9 @@ reaches, to a fixed point:
   is demanded, and a value attached and then stored (hdfs-11741: the DataNode converting the
   KeyUpdateCommand's keys into the map its handshake reads) is found from the store it reaches.
 - **Doors of a demanded message** (`RecordedMessages#doorsOf`): an occurrence that read a fault marker
-  and sent, or took in, the message that started an admitted occurrence (its `Anchor`; the
-  recorded schedule's `SEND` names the sender, a `RECV` under that anchor a receiver) is admitted
+  and sent, or took in, the message that started an admitted occurrence (its `Anchor`, else the
+  message its turn took in, a DataNode's DataTransfer op; the recorded schedule's `SEND` names the
+  sender, a `RECV` of the message a receiver) is admitted
   (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists. These are the control
   producers EXPLORE proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS
   `MARKER_FLIPPED` witnesses move such an IPC door.
@@ -738,7 +762,11 @@ carries values over, and derives no port.
 
 The rule is by type. A message that an RPC carries and a stream also writes (`ExtendedBlockProto`,
 in `LocatedBlockProto` and in a DataTransfer op header) exports at every setter call, including one
-whose message never reaches a door.
+whose message never reaches a door. A DataTransfer op is itself a message (IDENTITY.md §7.1): the
+leaves of such a type in its header and fields cross with it, so the block a DataNode decodes from
+an op is paired by handle with the export of the client or the upstream DataNode that sent it, and
+the recording binds both captures to the op's leg, which the walk crosses (§4.4); the DataNode's
+turn keeps its own address. The op's own messages (`Op*Proto`) still derive no port.
 
 ### 6.3 At run time
 

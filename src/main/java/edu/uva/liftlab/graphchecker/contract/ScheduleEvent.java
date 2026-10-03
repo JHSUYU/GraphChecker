@@ -52,7 +52,11 @@ public final class ScheduleEvent extends Value {
     private final String site;
     private final int k;
     private final String occurrence;
-    /** The producer endpoint a SEND minted (its receiver's ANCHOR), else "". */
+    /**
+     * The producer endpoint a SEND minted (its receiver's ANCHOR), or the
+     * one a RECV took into the receiver's own context, which it does not
+     * anchor (a DataTransfer op a DataNode's turn received), else "".
+     */
     private final String endpoint;
 
     private ScheduleEvent(long seq, Kind kind, String context, String site,
@@ -123,6 +127,25 @@ public final class ScheduleEvent extends Value {
     }
 
     public String endpoint() {
+        return endpoint;
+    }
+
+    /**
+     * The message a RECV took in -- the producer endpoint its context is
+     * anchored on, else the one it names -- or "" (any other event).
+     */
+    public String received() {
+        if (kind != Kind.RECV) return "";
+        try {
+            ContextShape.Stance stance = ContextShape.Stance.ofSend(context);
+            if (stance != null
+                    && stance.context() instanceof CausalContext.Anchor) {
+                return ((CausalContext.Anchor) stance.context())
+                        .producerEndpointId();
+            }
+        } catch (IllegalArgumentException unnamed) {
+            // A context no CausalContext spells is anchored on nothing.
+        }
         return endpoint;
     }
 

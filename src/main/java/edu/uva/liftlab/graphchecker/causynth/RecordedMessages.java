@@ -16,10 +16,11 @@ import java.util.Set;
 /**
  * The messages of the recording, read off its schedule (IDENTITY §4, §8):
  * the stance each was sent from and the occurrence that sent it (its SEND),
- * and the occurrences that took it in (each RECV under its anchor).  What
- * PLAN asks of them: the doors of the message that started an occurrence
- * ({@link #doorsOf}), and a context's shape ({@link #shape}), the same rule
- * EXPLORE reads off its corpus ({@code explore.Corpus#contextShape}).
+ * and the occurrences that took it in (each RECV of it: under its anchor, or
+ * into a context of the receiver's own, {@link ScheduleEvent#received}).
+ * What PLAN asks of them: the doors of the message that started an
+ * occurrence ({@link #doorsOf}), and a context's shape ({@link #shape}), the
+ * same rules EXPLORE reads off its corpus ({@code explore.Corpus}).
  */
 final class RecordedMessages {
     /** Producer endpoint id -> the occurrence id that sent the message. */
@@ -28,6 +29,9 @@ final class RecordedMessages {
     private final Map<String, ContextShape.Stance> stances = new HashMap<>();
     /** Producer endpoint id -> the occurrence ids that took it in. */
     private final Map<String, Set<String>> receivers = new HashMap<>();
+    /** Where a context anchored on nothing stands -> the message it took
+     *  into itself (a DataNode's turn and its DataTransfer op). */
+    private final Map<String, String> takenIn = new HashMap<>();
 
     RecordedMessages(Collection<ScheduleEvent> schedule) {
         for (ScheduleEvent event : schedule) {
@@ -41,15 +45,16 @@ final class RecordedMessages {
                 if (!event.occurrence().isEmpty()) {
                     senders.put(event.endpoint(), event.occurrence());
                 }
-            } else if (event.kind() == ScheduleEvent.Kind.RECV
-                    && !event.occurrence().isEmpty()) {
-                // "node|Anchor:<producer endpoint>@<site>[|...]"
-                String[] stance = event.context().split("\\|", -1);
-                CausalContext context = CausalContext.parse(
-                        stance.length < 2 ? stance[0] : stance[1]);
-                if (context instanceof CausalContext.Anchor) {
-                    receivers.computeIfAbsent(((CausalContext.Anchor) context)
-                            .producerEndpointId(),
+            } else if (!event.received().isEmpty()) {
+                String message = event.received();
+                ContextShape.Stance at =
+                        ContextShape.Stance.ofSend(event.context());
+                if (at != null
+                        && !(at.context() instanceof CausalContext.Anchor)) {
+                    takenIn.putIfAbsent(at.render(), message);
+                }
+                if (!event.occurrence().isEmpty()) {
+                    receivers.computeIfAbsent(message,
                             ignored -> new LinkedHashSet<>())
                             .add(event.occurrence());
                 }
@@ -59,15 +64,17 @@ final class RecordedMessages {
 
     /**
      * The occurrence ids at the doors of the message that started {@code
-     * occurrence}: its sender, and every occurrence that took it in.  None
-     * when its context is no {@code Anchor}.
+     * occurrence} -- its context's anchor, else the message that context
+     * took into itself: its sender, and every occurrence that took it in.
+     * None when no message started it.
      */
     Set<String> doorsOf(OccurrenceAddress occurrence) {
-        if (!(occurrence.context() instanceof CausalContext.Anchor)) {
-            return Collections.emptySet();
-        }
-        String endpoint = ((CausalContext.Anchor) occurrence.context())
-                .producerEndpointId();
+        String endpoint = occurrence.context() instanceof CausalContext.Anchor
+                ? ((CausalContext.Anchor) occurrence.context())
+                        .producerEndpointId()
+                : takenIn.getOrDefault(
+                        ContextShape.Stance.of(occurrence).render(), "");
+        if (endpoint.isEmpty()) return Collections.emptySet();
         Set<String> doors = new LinkedHashSet<>(receivers.getOrDefault(
                 endpoint, Collections.<String>emptySet()));
         String sender = senders.get(endpoint);
