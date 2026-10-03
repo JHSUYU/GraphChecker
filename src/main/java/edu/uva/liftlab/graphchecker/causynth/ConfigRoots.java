@@ -361,10 +361,10 @@ final class ConfigRoots {
         return configFields.contains(field);
     }
 
-    /** Whether a callee of the slice is a configuration getter or a
-     *  wrapper of one. */
-    boolean configCallee(String callee) {
-        return configCallees.contains(callee);
+    /** The slice's callees that are configuration getters or wrappers of
+     *  one: roots, never a scope frontier. */
+    Set<String> callees() {
+        return Collections.unmodifiableSet(configCallees);
     }
 
     private static String callSite(String method, int unitIndex,

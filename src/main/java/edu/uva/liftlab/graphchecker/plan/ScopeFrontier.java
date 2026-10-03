@@ -33,9 +33,11 @@ import java.util.regex.Pattern;
  * </ul>
  * A formal the throw depends on without a field in between is on the target's
  * own call chain: its callers would move the region root, the identity of the
- * occurrence under test, so it stays pinned to its recording.  A clock callee
- * is a root, not a frontier, and a cell the throw does not depend on (a
- * declared wire flow's or fault's own seed) is no part of the slice.
+ * occurrence under test, so it stays pinned to its recording.  A clock or a
+ * configuration getter is a root, not a frontier (grown into, hdfs-17960's
+ * {@code Configuration} made every {@code get} a region anchor: 533
+ * occurrences against the 128-job cap), and a cell the throw does not depend
+ * on (a declared wire flow's or fault's own seed) is no part of the slice.
  *
  * <p>Each row carries its {@code distance}, the edges from its cell to the
  * throw's guards (the thrown value's own construction, its message, is not
@@ -58,14 +60,15 @@ public final class ScopeFrontier {
     }
 
     /**
-     * @param analysed whether a callee's body is the analysed program's: a
-     *                 concrete method of a class in scope
-     * @param demanded the root demand's frontier signatures, each with its
-     *                 boundary class
+     * @param analysed    whether a callee's body is the analysed program's:
+     *                    a concrete method of a class in scope
+     * @param rootCallees the clocks and configuration getters: roots
+     * @param demanded    the root demand's frontier signatures, each with
+     *                    its boundary class
      */
     public static List<JsonObject> rows(List<Map<String, Object>> edges,
                                         Predicate<String> analysed,
-                                        Collection<String> clockCallees,
+                                        Collection<String> rootCallees,
                                         Map<String, String> demanded) {
         Map<String, List<String>> into = new LinkedHashMap<>();
         Set<String> fields = new LinkedHashSet<>();
@@ -89,7 +92,7 @@ public final class ScopeFrontier {
             String callee = text(edge.get("invoke"));
             if ("call_return".equals(text(edge.get("kind")))
                     && !callee.isEmpty() && !analysed.test(callee)
-                    && !clockCallees.contains(callee)) {
+                    && !rootCallees.contains(callee)) {
                 add(found, CALLEE, callee, hops);
             }
             String field = StaticScopeMap.field(edge);

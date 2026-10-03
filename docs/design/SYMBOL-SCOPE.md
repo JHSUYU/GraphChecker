@@ -160,7 +160,8 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
    cell back to the throw's sinks); a row the root demand chose as a boundary (§4.6: a `SCOPE`
    callee or formal, a `PRE_WINDOW` field) states its class as `demand`, and demanded rows come
    first, the rest after, each nearest first:
-   - `CALLEE`: a callee whose return `S` demands but whose body is not analysed (and is no clock);
+   - `CALLEE`: a callee whose return `S` demands but whose body is not analysed (and is no clock
+     and no configuration getter: a root, §4.1, §4.3);
    - `FIELD`: a field `S` reads or stores;
    - `FORMAL`: a method whose primitive or `String` formal `S` demands only through a field. A
      formal reached without a field in between is on the target's own call chain and is never a

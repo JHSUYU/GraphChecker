@@ -192,9 +192,11 @@ public final class CausynthPipeline {
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
                         StaticScopeMap.siteIds(scopeSites)));
+        Set<String> rootCallees = new LinkedHashSet<>(clocks.keySet());
+        rootCallees.addAll(recognized.callees());
         List<JsonObject> frontier = ScopeFrontier.rows(result.edges,
-                CausynthStaticFacts::analysedMethod,
-                clocks.keySet(), demand.frontier());
+                CausynthStaticFacts::analysedMethod, rootCallees,
+                demand.frontier());
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
                 target.outputDir, result, scopeMap, frontier, demand.rows());

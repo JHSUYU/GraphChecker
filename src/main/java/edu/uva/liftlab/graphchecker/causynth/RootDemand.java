@@ -453,7 +453,7 @@ final class RootDemand {
 
         private Kind returned(String cell, String callee) {
             if (clocks.containsKey(callee)) return Kind.CLOCK;
-            if (config.configCallee(callee)) return Kind.CONFIG_CALL;
+            if (config.callees().contains(callee)) return Kind.CONFIG_CALL;
             if (Debug.isBooleanMarkerSignature(callee)) return Kind.FAULT;
             // An expanded body, or the call's operand edges, carry it.
             if (into.containsKey(cell) || carried.contains(callee)) {
