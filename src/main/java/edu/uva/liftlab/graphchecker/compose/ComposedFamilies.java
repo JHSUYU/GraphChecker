@@ -1327,7 +1327,7 @@ final class ComposedFamilies {
      * the run took -- the observed writer's selector, or the pins' when no
      * region wrote a version read: the pairing a witness re-pairs if it
      * needs another.  At a location the session's world {@code planted} a
-     * pairing on (location -> planted writer, {@code Composer#planted}) the
+     * pairing on (location -> planted writer, {@code Composer#repairing}) the
      * recording's pairing is any arm but the plant: a witness resting on it
      * names the plant as the arm it re-paired.  A read's value is no such statement, since a joined
      * value moves with the valuation while its pairing stays.  Where no arm
@@ -1440,7 +1440,7 @@ final class ComposedFamilies {
             // alternative is an HB-concurrent writer: arms that are each the
             // run's own pairing of some read (the writer one read saw, the
             // pins of another whose version no row wrote) re-pair nothing,
-            // and their location is none Composer#repaired names.
+            // and their location is none Composer#repairing names.
             boolean alternative = false;
             for (Arms.Arm arm : found) {
                 alternative |= arms.concurrent(reads.get(0).endpoint()

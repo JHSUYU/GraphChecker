@@ -3829,14 +3829,19 @@ public class ComposerTest {
                 at("g#1", 0), 0);
         Endpoint asking = Endpoint.of(writer, "Volumes#excluded#5:READ",
                 at("r#1", 0), 0);
-        // planted?, the claim
+        // planted?, the reconfiguration writes under construction?, the
+        // claim: a planted read is admitted by the anchor's test, so a
+        // write no read could have preceded leaves it the run's
         Object[][] table = {
-                {true, ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, ClaimKind.NO_SUPPORTED_WITNESS},
+                {true, false, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, false, ClaimKind.NO_SUPPORTED_WITNESS},
+                {true, true, ClaimKind.NO_SUPPORTED_WITNESS},
         };
         for (Object[] row : table) {
             boolean planted = (Boolean) row[0];
-            Path iteration = folder.newFolder("planted-" + planted).toPath();
+            boolean constructing = (Boolean) row[1];
+            Path iteration = folder.newFolder("planted-" + planted + "-"
+                    + constructing).toPath();
             for (boolean explored : new boolean[]{false, true}) {
                 String id = explored ? "s1" : "s0";
                 Session session = new Session(iteration, id, explored);
@@ -3856,7 +3861,11 @@ public class ComposerTest {
                                 at("r#0", 0), 0), list, 3L,
                         "EXPR.0000000000000000", "I"));
                 Endpoint set = Endpoint.of(reconf, "Metrics#set#5:WRITE",
-                        at("w#1", 0), 0);
+                        ExecutionIndex.of(constructing ? Arrays.asList(
+                                Frame.of("<Metrics: void <init>()>", 0),
+                                Frame.of("w#1", 0))
+                                : Collections.singletonList(
+                                Frame.of("w#1", 0))), 0);
                 // The recording: the reconfiguration's 0 before the turn
                 // read it.  The world: the turn first, held to the INITIAL.
                 if (!explored) session.write(set, bound, 2L,
@@ -3901,10 +3910,11 @@ public class ComposerTest {
                     StaticScopeMap.empty());
             ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                     solver());
-            String detail = "planted " + planted + ": "
-                    + decision.claim().gaps() + "\n" + composition.body();
-            assertEquals(detail, row[1], decision.claim().kind());
-            if (!planted) continue;
+            String detail = "planted " + planted + ", constructing "
+                    + constructing + ": " + decision.claim().gaps() + "\n"
+                    + composition.body();
+            assertEquals(detail, row[2], decision.claim().kind());
+            if (!planted || constructing) continue;
             assertTrue(detail, decision.claim().polarityDecides());
             ClaimPolicy.Outcome witness = decision.outcomes().get(
                     decision.claim().valuationOrdinal());

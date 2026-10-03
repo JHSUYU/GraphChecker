@@ -1102,9 +1102,11 @@ are stated as they are made and taken back with a refused path (`ComposedFamilie
 nothing twice.
 
 **State families** (`stateFamilies`), for the joined reads the stage re-pairs (`SessionJoin#repaired`,
-one rule): the anchor's, and every read the selected session's world planted a pairing on
-(`Composer#planted`: `Corpus.World#pairings`, each with every read its occurrence made of the
-location, as the replay held them) -- away from the anchor, its occurrence reached by the closure
+one rule, one entry point, `Composer#repairing`): the anchor's up to its cutoff, and every read the
+selected session's world planted a pairing on (`Corpus.World#pairings`, each with every read its
+occurrence made of the location, as the replay held them), each block of one occurrence's reads of
+one location by the same test -- a named owner, and a read of it that could have seen a writer
+besides the one it did -- and both less the owners `Composer#pinnedOwners` keeps; away from the anchor, its occurrence reached by the closure
 (hdfs-bugs-slowdisk-zero: the detector turn's read of the exclusion bound, whose guard and store
 the anchor's read of the published list rests on); of a static field or of a heap
 location whose owner is an object rid (`Arms.namedOwner`; a class-name owner gets no alternatives):
@@ -1117,10 +1119,10 @@ decided, `ComposedFamilies#initialBody`), plus an `observed_arm__` holding each 
 own join or pin when a version one of the reads observed has no writing row; exactly one per
 location that has two arms or more, one of them an HB-concurrent writer's, else the reads keep their
 own joins: arms that are each some read's own pairing (the writer one read saw, the pins of another
-whose version no row wrote) re-pair nothing. The read rule's "an anchor location a STATE family may
-re-pair" (`Composer#repaired`) is the same alternative: a read of it at the anchor could have seen
-a writer occurrence besides the one it did (`Corpus#eligibleWrites`; a version no row wrote has none
-of its own). A hot field the reader's own occurrence alone writes, whose earliest versions the VM's
+whose version no row wrote) re-pair nothing. The read rule's "a location a STATE family may
+re-pair" (`Composer#repairing`) is the same alternative: a read of it could have seen a writer
+occurrence besides the one it did (`Corpus#eligibleWrites`; a version no row wrote has none of its
+own). A hot field the reader's own occurrence alone writes, whose earliest versions the VM's
 64-version bound dropped, is none (hdfs-17960 e1c: the checkpoint saver's configuration parse,
 whose `Hashtable` entries' hashes, a `String.hashCode` no lowering models, are pinned). The arm the
 run took (the observed arm, else the one writer every read observed) is part of the path's recorded
@@ -1196,7 +1198,7 @@ whose write and row name no object refuses the path (`UNSTATED_VALUE:OwnerCandid
 
 **A container read the family re-pairs** (`SmtLowering#movedQuery`). The anchor's read of a container
 location a STATE family re-pairs (`SessionJoin#repaired`, per read event: the anchor's reads up to its
-cutoff, `Composer#anchorReads`) asks its query of the read's own symbol, the state its join states at
+cutoff, `Composer#repairing`) asks its query of the read's own symbol, the state its join states at
 the container's sort and each writer arm binds to that writer's state -- the INITIAL's arm to what the
 location held before every write (`ComposedFamilies#initialBody`) --, not of the run's chain, which
 inlined is the run's answer no family moves (zk-bugs-election-offer: the getData's lookup of an offer
@@ -1295,7 +1297,8 @@ reads the epoch's scope map (`--static-scope-map`, required; `run_engine.sh do_c
 
 **An owner kept to the run's pairing** (`Composer#pinnedOwners`): a location a STATE family may
 re-pair keeps the run's pairing (no family, no movable owner), named DIAGNOSTIC, only where a read the
-family moves -- the anchor's, up to its cutoff (`Composer#anchorReads`) -- would leave something
+family moves -- the anchor's up to its cutoff and the world's planted ones (`Composer#repairing`) --
+would leave something
 unnamed; a reached writer's own read of the location keeps the run's pairing, so what is asked
 through it names the run's object and pins nothing (zk-bugs-election-offer: each create and delete
 looks up its parent in the node map the anchor's getData re-pairs). So when a reached occurrence's
