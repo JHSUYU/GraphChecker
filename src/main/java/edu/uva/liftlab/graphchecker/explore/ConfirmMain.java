@@ -1013,7 +1013,12 @@ public final class ConfirmMain {
                 place(attach.endpoint(), attach.seq());
             }
             for (WriteRow write : session.writes()) {
-                place(write.endpoint(), write.seq());
+                // An INITIAL is no event of the access its row stands at
+                // (Endpoint#initialSite): its frames name no activation the
+                // run enters, so no hold is placed by it (hdfs-bugs-
+                // slowdisk-zero SD4: the reconfiguration held at a
+                // reflective accessor's frame, which never waits).
+                if (!write.initial()) place(write.endpoint(), write.seq());
                 writes.put(version(write.location(), write.version()), write);
                 byLocation.computeIfAbsent(SmtLowering.locationKey(
                         write.location()),

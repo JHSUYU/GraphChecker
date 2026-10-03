@@ -327,13 +327,17 @@ public class ConfirmMainTest {
      * the INITIAL's version, which no occurrence wrote: every write of the
      * location goes after the read.  An obligation whose world pairs the
      * read so is held by the same rows ({@link ConfirmMain#holding}), and
-     * the writer the recording ran first is where its prefix ends.
+     * the writer the recording ran first is where its prefix ends.  The
+     * INITIAL's row, which stands at the access that started the log with
+     * that access's frames, places no hold (hdfs-bugs-slowdisk-zero SD4).
      */
     @Test
     public void aModelThatChoseTheInitialHoldsEveryWriteAfterTheRead()
             throws Exception {
         Path iteration = iteration();
-        Endpoint observedAt = endpoint(MINT, "a.Manager#tick()#7:INITIAL");
+        Endpoint observedAt = Endpoint.of(mint, "a.Manager#tick()#7:INITIAL",
+                ExecutionIndex.of(Collections.singletonList(Frame.of(
+                        "a.Manager#tick()#7:WRITE", 0))), 0);
         RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
                 Arrays.asList(WriteRow.initial("sel", 9L, observedAt, CELL,
                         4L, "EXPR.w", "I"), WriteRow.of("sel", 10L, writer,
