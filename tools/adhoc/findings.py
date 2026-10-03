@@ -10,13 +10,12 @@ mechanism when they share a signature:
   sig = the first 16 hex digits of
   sha256(the check -- its TARGET_SITE, out/<case>/static_scope_map.jsonl --,
          the finding kind,
-         per moved root, sorted: its kind (MARKER, INTEGRAL, CLOCK; a marker
-         of a fault door is FAULT, a configuration root -- its category in
-         result.json's movedRootCategories -- CONFIG), the method of its
-         site, its declared callee, the role of its node (the node name
-         without its digits and epoch: dn, nn, node), the role and api of
-         its causal context, and for a clock how far the model moved it off
-         the recording: <=1s, <=1min, <=1h or >1h)
+         per moved root, sorted: its category (CLOCK, FAULT, CONFIG, READ,
+         HOOK: its root row's, as COMPOSE states it in movedRootCategories),
+         the method of its site, its declared callee, the role of its node
+         (the node name without its digits and epoch: dn, nn, node), the
+         role and api of its causal context, and for a clock how far the
+         model moved it off the recording: <=1s, <=1min, <=1h or >1h)
 
 A moved root's site and callee are its plan input action's (portId, or
 sourceId for a declared source, = the root; execution_task_plan.jsonl); its
@@ -41,10 +40,10 @@ Weight, per witness (a signature takes its best):
   extra roots      1 per moved root beyond the first
 
 Writes <sweep-dir>/findings.tsv, best weight first, with the best case's native
-reproduction (runs at the anchor / runs); a mechanism every moved root of which
-is a configuration (CONFIG_ONLY, as triage.py classes it) comes after every
-other, whatever its weight: a finding, but a configuration-validation throw
-fires by design.  With --ledger, the ledger (one JSON row per signature: sig,
+reproduction (runs at the anchor / runs); a configuration-only witness
+(result.json configurationOnly, COMPOSE's rule; CONFIG_ONLY in triage.py) comes
+after every other, whatever its weight: a finding, but a throw validating a
+configuration fires by design.  With --ledger, the ledger (one JSON row per signature: sig,
 firstSeen, lastSeen, cases, status) is read and rewritten: a signature it did
 not hold is new, one it held is known, and one dismissed.tsv beside it names
 (sig, reason, JIRA id; by hand) is dismissed.  With --annotated, a witness whose campaign declared its target
@@ -71,7 +70,6 @@ import annotated  # noqa: E402
 
 KIND_WEIGHT = {"STATE_PAIRING_FLIPPED": 5, "MESSAGE_PAIRING_FLIPPED": 5,
                "RECORDED_FAILURE_EXPLAINED": 3}
-FAULT_SOURCE = "EXPLICIT_SYMBOLIC_FAULT"
 BUCKETS = ((1e9, "<=1s"), (60e9, "<=1min"), (3600e9, "<=1h"))
 
 
@@ -156,7 +154,6 @@ def witness(final):
     schedule = os.path.dirname(final)
     case_dir = os.path.dirname(schedule)
     moved = result["movedRoots"]
-    categories = result.get("movedRootCategories") or {}
     manifest = json.load(open(os.path.join(
         final, "candidate_composition_manifest.json")))
     readings = {root["rootId"]: root["recordedValue"]
@@ -186,11 +183,7 @@ def witness(final):
         action = plans.get(row["rootId"])
         if action is None:
             raise ValueError("no plan action defines %s" % row["rootId"])
-        kind = row["kind"]
-        if kind == "MARKER" and action.get("sourceKind") == FAULT_SOURCE:
-            kind = "FAULT"
-        if categories.get(key) == "CONFIG":
-            kind = "CONFIG"
+        kind = row["category"]
         bucket = ""
         if kind == "CLOCK":
             if "clockNanos" not in row:
@@ -216,7 +209,7 @@ def witness(final):
     runs = reproduction.get("runs", 0)
     return {"target": target_site(case_dir), "kind": kind, "parts": parts,
             "weight": weight, "extra": len(parts) - 1,
-            "configOnly": all(part[0] == "CONFIG" for part in parts),
+            "configOnly": result.get("configurationOnly") is True,
             "native": "%d/%d" % (reproduction.get("atAnchor", 0), runs),
             "rate": reproduction.get("atAnchor", 0) / runs if runs else 0.0}
 

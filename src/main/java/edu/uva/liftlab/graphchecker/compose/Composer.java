@@ -184,6 +184,9 @@ public final class Composer {
         private final List<RootDomain> roots;
         /** Each root's category, by root id. */
         private final Map<String, RootCategory> categories;
+        /** Each configuration root's reads its plant leaves at the
+         *  recording's value (StaticScopeMap#concreteConfigurationReads). */
+        private final Map<String, List<String>> unplantedReads;
         private final List<Valuation> valuations;
         private final List<GapRow> gaps;
         private final List<String> clockCells;
@@ -226,6 +229,18 @@ public final class Composer {
                         root.getValue().get(0).category());
             }
             this.categories = Collections.unmodifiableMap(categories);
+            Map<String, List<String>> unplanted =
+                    new LinkedHashMap<String, List<String>>();
+            for (Map.Entry<String, RootCategory> root
+                    : categories.entrySet()) {
+                List<String> reads = composed.scope
+                        .concreteConfigurationReads(root.getKey());
+                if (root.getValue() == RootCategory.CONFIG
+                        && !reads.isEmpty()) {
+                    unplanted.put(root.getKey(), reads);
+                }
+            }
+            this.unplantedReads = Collections.unmodifiableMap(unplanted);
             this.valuations = Collections.unmodifiableList(valuations);
             this.gaps = Collections.unmodifiableList(composed.gaps);
             this.clockCells = Collections.unmodifiableList(clockCells);
@@ -450,6 +465,25 @@ public final class Composer {
         public RootCategory categoryOf(String moved) {
             return clockCells.contains(moved) ? RootCategory.CLOCK
                     : categories.get(moved);
+        }
+
+        /** Whether these moves move configuration only
+         *  ({@link Composer#configurationOnly}): the claim states it. */
+        public boolean configurationOnly(Collection<String> moved) {
+            return Composer.configurationOnly(moved, this::categoryOf);
+        }
+
+        /** Each moved configuration root whose plant leaves reads of its
+         *  key at the recording's value, with those reads: a world moving
+         *  it is no configuration a cluster could hold. */
+        public Map<String, List<String>> unplanted(Collection<String> moved) {
+            Map<String, List<String>> found =
+                    new LinkedHashMap<String, List<String>>();
+            for (String key : moved) {
+                List<String> reads = unplantedReads.get(key);
+                if (reads != null) found.put(key, reads);
+            }
+            return found;
         }
 
         public List<Valuation> valuations() {
@@ -2694,9 +2728,10 @@ public final class Composer {
 
     /**
      * One question per declared root; ordinal 0 is the run as it happened,
-     * then single moves by distance, then pairs.  A declared MARKER flips;
-     * an INTEGRAL without a domain is pinned, not enumerated; CLOCKs are not
-     * enumerated.  Every skipped root is named: the claim's polarity gate
+     * then single moves by distance, a configuration's after any other
+     * move of that distance ({@link #configurationOnly}), then pairs.  A
+     * declared MARKER flips; an INTEGRAL without a domain is pinned, not
+     * enumerated; CLOCKs are not enumerated.  Every skipped root is named: the claim's polarity gate
      * reads which valuations were asked.
      */
     private List<Valuation> valuations() {
@@ -2748,7 +2783,9 @@ public final class Composer {
                 moves.add(move);
             }
         }
-        moves.sort(Comparator.comparingLong(this::distance));
+        moves.sort(Comparator.comparingLong(this::distance)
+                .thenComparing(move -> configurationOnly(move.keySet(),
+                        rootId -> corpus.anyRoot(rootId).category())));
         List<Map<String, String>> pairs =
                 new ArrayList<Map<String, String>>();
         for (int first = 0; first < moves.size(); first++) {
@@ -2774,6 +2811,23 @@ public final class Composer {
             valuations.add(valuation(ordinal++, assignment, move));
         }
         return valuations;
+    }
+
+    /**
+     * Whether moves move configuration only: every moved key a CONFIG root.
+     * The one rule a configuration-only witness ranks by -- after a move of
+     * any other category at equal distance (#valuations), after every other
+     * witness, clocks and pairings included ({@code ClaimPolicy}) -- and the
+     * claim states ({@code configurationOnly}, read by triage and findings).
+     */
+    static boolean configurationOnly(Collection<String> moved,
+                                     java.util.function.Function<String,
+                                             RootCategory> categoryOf) {
+        if (moved.isEmpty()) return false;
+        for (String key : moved) {
+            if (categoryOf.apply(key) != RootCategory.CONFIG) return false;
+        }
+        return true;
     }
 
     /**

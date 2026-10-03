@@ -123,7 +123,17 @@ public class ConfigRootsTest {
                     + " <init>(" + CONF + ")>#u19, CONFIG_KEY_UNRESOLVED@"
                     + run() + "#u7, CONFIG_READ_CONCRETE@" + run() + "#u9]",
                 gaps(roots.limitedTo(Collections.singleton(
-                        "CONFIG:k.only")))}};
+                        "CONFIG:k.only")))},
+            {"each root's reads its plant leaves, over the whole scope: the"
+                    + " getter's other shape; a field's own reads planted,"
+                    + " its stored getter call its own; a key read at no"
+                    + " plant (a hook's field) is no root",
+                "[CONFIG:k.limit " + field("int limit") + " [], CONFIG:k.only "
+                        + run() + "#u4 [" + run() + "#u9]]",
+                keyRows(roots.keyRows(new java.util.HashSet<>(Arrays.asList(
+                        "CONFIG:k.only", "CONFIG:k.limit",
+                        "CONFIG:k.ordered")), Collections.singleton(
+                        "<t.Manager: void check()>#u1")))}};
         for (Object[] row : rows) {
             assertEquals((String) row[0], row[1], row[2]);
         }
@@ -133,6 +143,16 @@ public class ConfigRootsTest {
         List<String> found = new ArrayList<>();
         for (Map<String, Object> gap : roots.gaps()) {
             found.add(gap.get("reason") + "@" + gap.get("siteId"));
+        }
+        return found.toString();
+    }
+
+    private static String keyRows(List<com.google.gson.JsonObject> rows) {
+        List<String> found = new ArrayList<>();
+        for (com.google.gson.JsonObject row : rows) {
+            found.add(row.get("sourceId").getAsString() + " "
+                    + row.get("mintedAt").getAsString() + " "
+                    + row.get("concreteReads").toString().replace("\"", ""));
         }
         return found.toString();
     }

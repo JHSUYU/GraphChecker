@@ -73,12 +73,18 @@ final class StaticSymbolicSourceDiscovery {
         }
     }
 
-    /** Attaches declarations to every region that can execute a site, and
-     *  names the configuration reads left concrete. */
-    static void discover(StaticProgram program, ConfigRoots config)
+    /**
+     * Attaches declarations to every region that can execute a site, and
+     * names the configuration reads left concrete.
+     *
+     * @return the configuration field reads declared, each a plant of the
+     *         world's value ({@link ConfigRoots#keyRows})
+     */
+    static Set<String> discover(StaticProgram program, ConfigRoots config)
             throws IOException {
         program.communicationGaps.addAll(config.gaps());
-        if (program.regions.isEmpty()) return;
+        Set<String> planted = new LinkedHashSet<>();
+        if (program.regions.isEmpty()) return planted;
         Set<String> regionRoots = new LinkedHashSet<>();
         for (Map<String, Object> region : program.regions) {
             regionRoots.addAll(strings(Arrays.asList(
@@ -99,7 +105,14 @@ final class StaticSymbolicSourceDiscovery {
         for (Map.Entry<Map<String, Object>, List<Site>> region
                 : sites.entrySet()) {
             attach(region.getKey(), region.getValue(), hooked);
+            for (Site site : region.getValue()) {
+                if (!site.hook() && !hooked.contains(site.field())) {
+                    planted.add(JsonFields.optionalString(site.phase,
+                            "siteId"));
+                }
+            }
         }
+        return planted;
     }
 
     /** The mint sites one region's text holds, in walk order. */

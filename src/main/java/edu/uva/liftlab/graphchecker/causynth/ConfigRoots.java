@@ -1,8 +1,10 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import soot.Body;
 import soot.FastHierarchy;
 import soot.Local;
@@ -405,6 +407,15 @@ final class ConfigRoots {
     /** The getter calls a configuration field's writers store: the field's
      *  reads, minted (or refused) there. */
     private final Set<String> fieldReads = new HashSet<>();
+    /** The same, per field. */
+    private final Map<String, Set<String>> fieldStoredReads = new HashMap<>();
+    /** Each key's one shape, by key. */
+    private final Map<String, Shape> shapes = new HashMap<>();
+    /** What each field of the scope holds, once asked ({@link #census}). */
+    private final Map<String, FieldValue> fieldValues = new HashMap<>();
+    /** Each application field's store sites, over the analysed scope. */
+    private Map<String, List<String>> fieldWriters =
+            Collections.emptyMap();
 
     private ConfigRoots() {
     }
@@ -419,6 +430,7 @@ final class ConfigRoots {
     static ConfigRoots of(Collection<Map<String, Object>> edges,
                           Map<String, List<String>> fieldWriters) {
         ConfigRoots roots = new ConfigRoots();
+        roots.fieldWriters = fieldWriters;
         Map<String, List<Map<String, Object>>> out = new HashMap<>();
         Map<String, List<Map<String, Object>>> guardsFrom = new HashMap<>();
         Set<String> readFields = new TreeSet<>();
@@ -441,7 +453,7 @@ final class ConfigRoots {
         }
         // One key, one shape: its first field, by signature, else its first
         // call, by site.
-        Map<String, Shape> shapes = new HashMap<>();
+        Map<String, Shape> shapes = roots.shapes;
         for (String field : readFields) {
             FieldValue stored = roots.fieldValue(field, fieldWriters);
             if (stored == null) continue;
@@ -614,6 +626,125 @@ final class ConfigRoots {
      *  one: roots, never a scope frontier. */
     Set<String> callees() {
         return Collections.unmodifiableSet(configCallees);
+    }
+
+    /**
+     * One {@code CONFIG_KEY} row per chosen root ({@code
+     * StaticScopeMap#configKeyRow}): where its plant stands, and every
+     * other read of its key in the analysed scope ({@link #census}), which a
+     * world moving the key leaves at the recording's value -- no
+     * configuration a cluster could hold while one is left ({@code
+     * compose.ClaimPolicy}).
+     *
+     * @param plantedFieldReads the configuration field reads the regions
+     *                          declare ({@link StaticSymbolicSourceDiscovery}),
+     *                          each woven to plant the world's value
+     */
+    List<JsonObject> keyRows(Set<String> sourceIds,
+                             Set<String> plantedFieldReads) {
+        Map<String, Set<String>> reads = census();
+        Map<String, Shape> chosen = new TreeMap<>();
+        for (Shape shape : shapes.values()) {
+            if (sourceIds.contains(shape.sourceId)) {
+                chosen.put(shape.sourceId, shape);
+            }
+        }
+        List<JsonObject> rows = new ArrayList<>();
+        for (Shape shape : chosen.values()) {
+            // Where a plant stands: the field's declared reads, else the
+            // minted getter calls.  The getter calls the field's writers
+            // store are the field's own, overwritten at every planted read.
+            Set<String> planted = new HashSet<>();
+            Set<String> stored = shape.field ? fieldStoredReads.getOrDefault(
+                    shape.at, Collections.<String>emptySet())
+                    : Collections.<String>emptySet();
+            if (shape.field) planted.addAll(plantedFieldReads);
+            for (Map.Entry<String, Source> call : calls.entrySet()) {
+                if (call.getValue().sourceId.equals(shape.sourceId)) {
+                    planted.add(call.getKey().substring(0,
+                            call.getKey().indexOf('|')));
+                }
+            }
+            List<String> concrete = new ArrayList<>();
+            boolean minted = false;
+            for (String site : reads.getOrDefault(shape.value.key,
+                    Collections.<String>emptySet())) {
+                if (planted.contains(site)) {
+                    minted = true;
+                } else if (!stored.contains(site)) {
+                    concrete.add(site);
+                }
+            }
+            // A key no read of which is planted (a field a tree's hook owns,
+            // or read outside every region) is no engine root.
+            if (minted) {
+                rows.add(StaticScopeMap.configKeyRow(shape.sourceId,
+                        shape.at, concrete));
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * Every read of a configuration key in the analysed scope (its
+     * application classes), by key: each call of a JVM or catalog getter or
+     * of a wrapper the recognition found, in any shape -- a known wrapper's
+     * own body is its callers' read --, and each read of a field holding
+     * the key.  A wrapper outside the slice is not followed: its getter call
+     * is the read.
+     */
+    private Map<String, Set<String>> census() {
+        Map<String, Set<String>> reads = new HashMap<>();
+        List<SootClass> classes = new ArrayList<>(
+                Scene.v().getApplicationClasses());
+        classes.sort(Comparator.comparing(SootClass::getName));
+        for (SootClass type : classes) {
+            List<SootMethod> methods = new ArrayList<>(type.getMethods());
+            methods.sort(Comparator.comparing(SootMethod::getSignature));
+            for (SootMethod method : methods) {
+                if (!method.isConcrete()
+                        || getters.get(method.getSignature()) != null) {
+                    continue;
+                }
+                Body body = CausynthStaticFacts.activeBody(method);
+                if (body == null) continue;
+                int index = 0;
+                for (Unit unit : body.getUnits()) {
+                    String key = keyRead(unit, body);
+                    if (key != null) {
+                        reads.computeIfAbsent(key,
+                                ignored -> new TreeSet<>()).add(
+                                SiteId.render(method.getSignature(), index));
+                    }
+                    index++;
+                }
+            }
+        }
+        return reads;
+    }
+
+    /** The key one unit reads, or null: a known getter's call, or a read
+     *  of a field holding one key. */
+    private String keyRead(Unit unit, Body body) {
+        InvokeExpr invoke = invokeOf(unit);
+        if (invoke != null) {
+            Getter getter = libraryGetter(invoke.getMethodRef());
+            if (getter == null) {
+                getter = getters.get(invoke.getMethodRef().getSignature());
+            }
+            return getter == null ? null : called(getter, invoke, body).key;
+        }
+        if (!(unit instanceof AssignStmt) || !(((AssignStmt) unit)
+                .getRightOp() instanceof FieldRef)) {
+            return null;
+        }
+        String field = CausynthStaticFacts.declaredFieldSignature(
+                ((FieldRef) ((AssignStmt) unit).getRightOp()).getFieldRef());
+        if (!fieldValues.containsKey(field)) {
+            fieldValues.put(field, fieldValue(field, fieldWriters));
+        }
+        FieldValue held = fieldValues.get(field);
+        return held == null || held.value == null ? null : held.value.key;
     }
 
     /**
@@ -799,6 +930,7 @@ final class ConfigRoots {
         if (unresolved != null || stored != null) {
             // The getter calls it stores are its reads, not the slice's.
             fieldReads.addAll(through);
+            fieldStoredReads.put(field, through);
         }
         if (unresolved != null) {
             return new FieldValue(null, new Refusal(KEY_UNRESOLVED,
@@ -937,6 +1069,20 @@ final class ConfigRoots {
      */
     private Getter getter(SootMethodRef reference, int depth) {
         String signature = reference.getSignature();
+        Getter library = libraryGetter(reference);
+        if (library != null) return library;
+        if (getters.containsKey(signature)) return getters.get(signature);
+        if (open.contains(signature) || depth >= MAX_DEPTH) return null;
+        open.add(signature);
+        Getter wrapper = wrapper(signature, depth);
+        open.remove(signature);
+        getters.put(signature, wrapper);
+        return wrapper;
+    }
+
+    /** A JVM or catalog getter, on its class or a subclass; or null. */
+    private static Getter libraryGetter(SootMethodRef reference) {
+        String signature = reference.getSignature();
         for (Object[] jvm : JVM_GETTERS) {
             if (jvm[0].equals(signature)) {
                 return new Getter((Integer) jvm[1], (Integer) jvm[2]);
@@ -949,13 +1095,7 @@ final class ConfigRoots {
                 return new Getter(row.keyArg, row.defaultArg);
             }
         }
-        if (getters.containsKey(signature)) return getters.get(signature);
-        if (open.contains(signature) || depth >= MAX_DEPTH) return null;
-        open.add(signature);
-        Getter wrapper = wrapper(signature, depth);
-        open.remove(signature);
-        getters.put(signature, wrapper);
-        return wrapper;
+        return null;
     }
 
     /** A wrapper: a method each of whose returns is a configuration value

@@ -1256,9 +1256,10 @@ constant span) in that session's terms is lowered that much earlier (`SmtLowerin
 each replay's startup keys, 9 to 11 minutes late on the recording's timeline, with the one dn1 clock.
 
 **Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
-moves sorted by distance, then pairs of moves, cut at
-`compose_max_valuations` (a MARKER's move is its other polarity; an INTEGRAL's values come from its
-window, outward from its recorded value, nearest first; clocks are not enumerated).
+moves by distance, at equal distance a configuration-only move after any other
+(`Composer#configurationOnly`), then pairs of moves, cut at `compose_max_valuations` (a MARKER's move
+is its other polarity; an INTEGRAL's values come from its window, outward from its recorded value,
+nearest first; clocks are not enumerated).
 
 ComposeMain writes three files. `candidate.smt2`: the body, then valuation 0 as named pins
 `(assert (! (= <root symbol> <value>) :named valuation__<symbol>))` (so the file as published asks
@@ -1338,7 +1339,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
-4. The claim, first match:
+4. The claim, first match. A witness moving configuration only (`Composition#configurationOnly`:
+   every moved root `CONFIG`) ranks after every other, so the first rule takes the others, then the
+   second, and only then the first rule takes a configuration-only one. A witness moving a
+   configuration whose plant leaves reads of its key at the recording's value (the scope map's
+   `CONFIG_KEY` row, SYMBOL-SCOPE §4.3) is not claimed: no cluster holds that world, so no replay can
+   confirm it as one; `UNPRODUCIBLE_ANSWER` DIAGNOSTIC names the root and the reads, once.
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
      whose moved roots are in no unattested arm (else BLOCKING `UNATTESTED_ARM`): its `mechanism`;
      without `recordingDecides` it also needs `polarityDecides`, checked before the witness is
@@ -1383,7 +1389,8 @@ than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else every valuation decided un
 `reachability`, `unsatClosureComplete`, `valuations` (status, assignment, moved, selected path and
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
 `findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved
-root's category, `contract.RootCategory`), `blockers`, `whyNotAccepted`, `witnessFindings`).
+root's category, `contract.RootCategory`), `configurationOnly` (the claim moves configuration only:
+the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witnessFindings`).
 
 ## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
 
@@ -1534,7 +1541,7 @@ refutes it. Then the campaign exits by its verdict (`campaign_exit_verdict`).
    `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in);
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `findingKind`,
    `polarityDecides`, `valuationOrdinal`, `movedRoots`, `movedRootCategories` (each moved root's
-   category, `contract.RootCategory`), `blockers`, `reachability`, `finalStatus`, `gapCount`,
+   category, `contract.RootCategory`), `configurationOnly`, `blockers`, `reachability`, `finalStatus`, `gapCount`,
    `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
    `targetOccurrence`, `valuations`, `witnessFindings`.
 4. `final/run-manifest.json`: provenance, iteration manifests, the path, size and sha256 of each
@@ -1577,9 +1584,9 @@ is then skipped as `no disk`.
 
 Ad-hoc sweeps do not use `report.py`: `tools/adhoc/triage.py` classes a case with a `result.json`
 `CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true -- `CONFIG_ONLY`
-when every moved root's `movedRootCategories` entry is `CONFIG`, a finding read after the others
-(`findings.py` ranks its mechanism after every other: a configuration-validation throw fires by
-design) --, `REFUTED` when
+when `configurationOnly` is true (COMPOSE's rule, read, never re-derived), a finding read after the
+others (`findings.py` ranks its mechanism after every other: a configuration-validation throw fires
+by design) --, `REFUTED` when
 `claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `NO_ROOT` when a
 BLOCKING `NO_ROOT_REACHES_ANCHOR` gap ended EXPLORE (§7.1; the gap's detail is the reason), else
 `NO_WITNESS` (`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row

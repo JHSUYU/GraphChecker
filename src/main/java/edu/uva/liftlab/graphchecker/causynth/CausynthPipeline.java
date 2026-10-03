@@ -174,7 +174,8 @@ public final class CausynthPipeline {
                 clocks, recognized, targetPathSites(result.edges),
                 CausynthStaticFacts::trackedKind, systemClass());
         ConfigRoots config = recognized.limitedTo(demand.configSources());
-        StaticSymbolicSourceDiscovery.discover(result, config);
+        Set<String> plantedConfigReads =
+                StaticSymbolicSourceDiscovery.discover(result, config);
         long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
                 result.edges, result.regions, clocks,
@@ -192,6 +193,8 @@ public final class CausynthPipeline {
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
                         StaticScopeMap.siteIds(scopeSites)));
+        scopeMap.addAll(recognized.keyRows(demand.configSources(),
+                plantedConfigReads));
         Set<String> rootCallees = new LinkedHashSet<>(clocks.keySet());
         rootCallees.addAll(recognized.callees());
         List<JsonObject> frontier = ScopeFrontier.rows(result.edges,

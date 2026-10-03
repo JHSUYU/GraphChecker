@@ -104,6 +104,9 @@ public class ComposerTest {
     private static final String ANCHOR_SITE = "BlockManager#get#8:READ";
     private static final String MARKER = "marker_m";
     private static final String MARKER_ROOT = "ROOT.MARKER";
+    /** A configuration flag's root and the symbol its mint names. */
+    private static final String CONFIG_ROOT = "CONFIG:k.flag";
+    private static final String CONFIG = "config_k";
     private static final String SERIAL = "serial_s";
     private static final String SERIAL_ROOT = "ROOT.SERIAL";
     private static final String CLOCK = "clock_now";
@@ -1784,6 +1787,62 @@ public class ComposerTest {
             }
             assertEquals(Arrays.toString(row),
                     Arrays.asList(row[3].split(" ")), moved);
+        }
+    }
+
+    /**
+     * A WITNESS MOVING CONFIGURATION ONLY RANKS LAST, AND ONE WHOSE WORLD
+     * NO CLUSTER COULD HOLD IS NO CLAIM.  {what reaches the fatal arm, the
+     * configuration's reads its plant leaves (the scope map's CONFIG_KEY
+     * row), the claim's kind, its moves, whether it states configuration
+     * only, whether a gap names the partial world}: the fault and the
+     * configuration each alone, the configuration declared first; the
+     * configuration alone, whole; the same, a read of its key left.
+     */
+    @Test
+    public void aConfigurationWitnessRanksLastAndAPartialOneIsNoClaim()
+            throws Exception {
+        Object[][] rows = {
+            {"(or (not " + MARKER + ") (not " + CONFIG + "))", "",
+                ClaimKind.MARKER_FLIPPED, MARKER_ROOT, false, false},
+            {"(not " + CONFIG + ")", "", ClaimKind.MARKER_FLIPPED,
+                CONFIG_ROOT, true, false},
+            {"(not " + CONFIG + ")", "<t.A: void a()>#u3",
+                ClaimKind.NO_SUPPORTED_WITNESS, "", false, true}};
+        int variant = 0;
+        for (Object[] row : rows) {
+            Path iteration = folder.newFolder("config-rank-" + variant++)
+                    .toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.configuration("true");
+            session.marker("true");
+            session.target((String) row[0], false, true);
+            session.write();
+            Path map = iteration.resolve(StaticScopeMap.FILE);
+            Files.write(map, Collections.singletonList(
+                    StaticScopeMap.configKeyRow(CONFIG_ROOT, "<t.A: int f>",
+                            ((String) row[1]).isEmpty()
+                                    ? Collections.<String>emptyList()
+                                    : Collections.singletonList(
+                                    (String) row[1])).toString()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            Composer.Composition composition = compose(iteration, ANCHOR, 8,
+                    StaticScopeMap.read(map));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            String moved = String.join(",",
+                    decision.claim().movedRoots().keySet());
+            boolean named = false;
+            for (GapRow gap : decision.claim().gaps()) {
+                named |= gap.kind() == GapKind.UNPRODUCIBLE_ANSWER
+                        && CONFIG_ROOT.equals(gap.subject());
+            }
+            assertEquals((String) row[0] + " " + row[1],
+                    row[2] + " " + row[3] + " " + row[4] + " " + row[5],
+                    decision.claim().kind() + " " + moved + " "
+                            + composition.configurationOnly(
+                            decision.claim().movedRoots().keySet())
+                            + " " + named);
         }
     }
 
@@ -6430,6 +6489,13 @@ public class ComposerTest {
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
                     RootKind.MARKER, RootCategory.FAULT, recorded, null, null, true, null, 0L));
+        }
+
+        /** A boolean configuration, as the engine mints one. */
+        void configuration(String recorded) {
+            roots.add(RootMintRow.of(id, ++seq, PRODUCER, CONFIG_ROOT, CONFIG,
+                    RootKind.MARKER, RootCategory.CONFIG, recorded, null,
+                    null, true, null, 0L));
         }
 
         /**

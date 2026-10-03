@@ -275,6 +275,10 @@ public final class ComposeMain {
         row.addProperty("polarityDecides", claim.polarityDecides());
         row.add("movedRoots", GSON.toJsonTree(claim.movedRoots()));
         row.add("movedRootCategories", categories(composition, claim));
+        // The one rule a configuration-only witness ranks by
+        // (Composer#configurationOnly); triage and findings read it here.
+        row.addProperty("configurationOnly",
+                composition.configurationOnly(claim.movedRoots().keySet()));
         row.add("blockers", refusals);
         row.addProperty("blockerCount", blockers);
         row.addProperty("whyNotAccepted",

@@ -77,6 +77,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  * on by post-dominance (SYMBOL-SCOPE §3), i.e. what exploration may flip;
  * computed where Soot is, supplied via {@link Guards}.</p>
  *
+ * <p>Beside the sites, one {@value #CONFIG_KEY} row per configuration root
+ * ({@link #configKeyRow}): the reads of its key no plant stands at.</p>
+ *
  * <p>Scoping only: never what a site wrote, a port carried, or which occurrence
  * ran.</p>
  */
@@ -446,10 +449,46 @@ public final class StaticScopeMap {
      *  region-id equality cannot see. Empty when skeletons were absent. */
     private final Map<String, Set<String>> regionMethods;
 
+    /** Each configuration root's reads no plant stands at, by source id. */
+    private final Map<String, List<String>> concreteConfigurationReads;
+
     private StaticScopeMap(List<Site> sites,
-                           Map<String, Set<String>> regionMethods) {
+                           Map<String, Set<String>> regionMethods,
+                           Map<String, List<String>> concreteReads) {
         this.sites = Collections.unmodifiableList(sites);
         this.regionMethods = Collections.unmodifiableMap(regionMethods);
+        this.concreteConfigurationReads =
+                Collections.unmodifiableMap(concreteReads);
+    }
+
+    /** The kind of a configuration root's row. */
+    public static final String CONFIG_KEY = "CONFIG_KEY";
+
+    /**
+     * One configuration root's row (causynth.ConfigRoots#keyRows): where
+     * its plant stands ({@code mintedAt}: its field, or its first getter
+     * call), and every other read of its key in the analysed scope ({@code
+     * concreteReads}), which a world moving the root leaves at the
+     * recording's value.
+     */
+    public static JsonObject configKeyRow(String sourceId, String mintedAt,
+                                          List<String> concreteReads) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", CONFIG_KEY);
+        row.addProperty("sourceId", sourceId);
+        row.addProperty("mintedAt", mintedAt);
+        JsonArray reads = new JsonArray();
+        for (String read : concreteReads) reads.add(read);
+        row.add("concreteReads", reads);
+        return row;
+    }
+
+    /** The reads of a configuration root's key no plant stands at; empty
+     *  for any other root, or a map that states none. */
+    public List<String> concreteConfigurationReads(String sourceId) {
+        List<String> reads = concreteConfigurationReads.get(sourceId);
+        return reads == null ? Collections.<String>emptyList() : reads;
     }
 
     /** Methods one retained region holds; empty means "cannot say" (no
@@ -1117,7 +1156,15 @@ public final class StaticScopeMap {
     public static StaticScopeMap read(Path file) throws IOException {
         if (file == null || !Files.isRegularFile(file)) return empty();
         List<Site> sites = new ArrayList<Site>();
+        Map<String, List<String>> concreteReads =
+                new LinkedHashMap<String, List<String>>();
         for (JsonObject row : ArtifactIO.readJsonl(file)) {
+            if (CONFIG_KEY.equals(optionalString(row, "kind"))) {
+                concreteReads.put(optionalString(row, "sourceId"),
+                        Collections.unmodifiableList(strings(row,
+                                "concreteReads")));
+                continue;
+            }
             if (!SITE_KIND.equals(optionalString(row, "kind"))) continue;
             List<String> guards = strings(row, "guards");
             List<Boolean> outcomes = new ArrayList<Boolean>();
@@ -1159,7 +1206,7 @@ public final class StaticScopeMap {
                     optionalString(row, "publishedFrom"),
                     (int) optionalLongInteger(row, "demandDistance", -1L)));
         }
-        return new StaticScopeMap(sites, readRegions(file));
+        return new StaticScopeMap(sites, readRegions(file), concreteReads);
     }
 
     /** A row's {@code chain}. */
@@ -1219,7 +1266,8 @@ public final class StaticScopeMap {
     /** No map: every join answers nothing. */
     public static StaticScopeMap empty() {
         return new StaticScopeMap(new ArrayList<Site>(),
-                Collections.<String, Set<String>>emptyMap());
+                Collections.<String, Set<String>>emptyMap(),
+                Collections.<String, List<String>>emptyMap());
     }
 
     public boolean stated() {

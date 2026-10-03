@@ -131,7 +131,7 @@ causynth output directory:
 | `candidate_dataflow_edges.jsonl.gz` | the slice's edges (`kind`, `fromCell`, `toCell`, `method`, `unitIndex`, `invoke`, ...) |
 | `region_skeletons.jsonl.gz` | the regions built around execution-context entries (`causynth/SymbolicRegionPlanner`), with their ports and retained loops |
 | `communication_gaps.jsonl.gz` | ports or loops the planner could not place, and the configuration reads left concrete (§4.3) |
-| `static_scope_map.jsonl` | §3; built before any hook is woven, over the door-woven bodies (§4.2), so site ids are the unit indices every pass and every replay decides at |
+| `static_scope_map.jsonl` | §3; built before any hook is woven, over the door-woven bodies (§4.2), so site ids are the unit indices every pass and every replay decides at; and a `CONFIG_KEY` row per configuration root (§4.3) |
 | `scope_frontier.jsonl` | §2.4 |
 | `root_demand.jsonl` | §4.6: every boundary where the values the throw's path guards decide on enter, every path cut at the bound, and why each is not chosen |
 
@@ -363,6 +363,16 @@ getter call of the shape of its first call (by site), a `DECLARED_SITE` `CALL_RE
   get(k); if (f <= 0) f = 1`: a plant would write a value the field never holds); and
   `CONFIG_READ_CONCRETE`, a read of a chosen key in another shape (a second field, another view,
   clamp or type, a getter beside the key's field).
+- **Its reads left at the recording.** A plant stands where the key is minted: its field's declared
+  reads, else its minted getter calls. Every other read of the key in the analysed scope (its
+  application classes) -- a getter call in another shape or outside the slice, a read of another
+  field holding it, a read of its field outside every region -- keeps the recording's value when a
+  world moves the key (`ConfigRoots#keyRows`, over `#census`: JVM and catalog getters and the
+  wrappers the recognition found; the getter calls a field's writers store are the field's own).
+  The scope map states them, one `CONFIG_KEY` row per root (`sourceId`, `mintedAt`,
+  `concreteReads`; `StaticScopeMap#configKeyRow`), and COMPOSE does not claim a witness moving a
+  root that has any: no cluster holds that world (`compose/ClaimPolicy`, `UNPRODUCIBLE_ANSWER`
+  DIAGNOSTIC). A key no read of which is planted (a field a tree's hook owns) has no row.
 - **The world.** A configuration belongs to the world, not to an occurrence: the value an
   obligation assigns it is written at every read of its field, on every node, whatever occurrence
   runs it (`runtime/RootMint#configuration`), and planted at every getter return a symbolic
@@ -726,6 +736,10 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   on a read, §4.2), configuration (§4.3) and tree hooks. A clock read through a field, a parameter,
   `java.time`, or an interface whose implementation is outside the scope is not recognized;
   pre-window state is a root only where a tree hook says so.
+- Configuration reads left at the recording (§4.3) are counted over the analysed scope only: a read
+  in a class outside it, a read whose key no literal names, and a minted getter's return in an
+  occurrence a replay runs concretely are not, so such a world can still be claimed (and CONFIRM
+  then runs it as planted).
 - Configuration (§4.3): one symbol per key per JVM, a homogeneous cluster, by design; a node read
   at another value than the JVM's first is read concretely. The VM names a field mint by its
   owner's class, so one key is minted in one shape, at one field (the first by signature) or, with

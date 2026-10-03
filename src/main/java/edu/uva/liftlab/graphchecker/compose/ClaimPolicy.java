@@ -59,7 +59,10 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  * roots, clocks and pairings) on a session that took the HEALTHY arm raises
  * the blocking FORMULA_SAT_AT_RECORDED_VALUATION, and enumeration continues
  * past it; a witness moving a root inside an UNATTESTED arm is refused,
- * since no producer path condition says the delivery survives the move.</p>
+ * since no producer path condition says the delivery survives the move.  A
+ * witness moving configuration only is claimed after every other, clocks
+ * and pairings included, and one moving a configuration whose plant leaves
+ * reads of its key at the recording's value is not claimed, named.</p>
  */
 public final class ClaimPolicy {
 
@@ -257,87 +260,75 @@ public final class ClaimPolicy {
         // unsat) is a CONDITION on the claim.  When the recording decides
         // the arm, a moved root must reach the fatal arm with clocks and
         // pairings held as recorded, so neither is part of the witness.
-        if (recordingDecides) {
-            List<String> held = asHappened;
-            for (int index = 0; index < outcomes.size(); index++) {
-                Outcome free = outcomes.get(index);
-                if (free.valuation().ordinal() == 0 || !free.witness()) {
-                    continue;
+        // A witness moving configuration only ranks after every other, the
+        // clocks and pairings of 2 included (Composer#configurationOnly):
+        // it is asked last.
+        Set<String> partial = new LinkedHashSet<String>();
+        for (boolean configuration : new boolean[]{false, true}) {
+            if (configuration) {
+                Decision timed = clockOrPairing(composition, asks, outcomes,
+                        recorded, recordingDecides, polarityDecides,
+                        clockDriven, gaps);
+                if (timed != null) return timed;
+            }
+            if (recordingDecides) {
+                List<String> held = asHappened;
+                for (int index = 0; index < outcomes.size(); index++) {
+                    Outcome free = outcomes.get(index);
+                    if (free.valuation().ordinal() == 0 || !free.witness()
+                            || !ranked(composition, free, configuration)
+                            || unplanted(composition, free, partial, gaps)) {
+                        continue;
+                    }
+                    Outcome asked = outcome(composition, asks,
+                            free.valuation(), held, false);
+                    if (!asked.witness()
+                            || unattested(composition, asked, gaps)) {
+                        continue;
+                    }
+                    outcomes.set(index, asked);
+                    outcomes.set(0, asRecorded);
+                    return new Decision(Claim.of(mechanism(composition,
+                            asks, asked, outcomes, clockDriven),
+                            asked.valuation().ordinal(),
+                            movedRoots(composition, asked), true, gaps),
+                            outcomes);
                 }
-                Outcome asked = outcome(composition, asks,
-                        free.valuation(), held, false);
-                if (!asked.witness() || unattested(composition, asked, gaps)) {
-                    continue;
+            }
+            if (!recordingDecides) {
+                for (Outcome found : new ArrayList<Outcome>(outcomes)) {
+                    if (found.valuation().ordinal() == 0 || !found.witness()
+                            || !ranked(composition, found, configuration)
+                            || unplanted(composition, found, partial,
+                            gaps)) {
+                        continue;
+                    }
+                    // Unpublishable, so not refined: each clock pinned back
+                    // is a round of path asks (hdfs-11741 L1: hours of
+                    // leastClocks over a witness its polarity then refused).
+                    if (!polarityDecides) {
+                        undecidedPolarity(gaps, recorded, "a witness moving "
+                                + found.valuation().moved().keySet());
+                        break;
+                    }
+                    // Publish the witness under every clock pin it can keep,
+                    // and each clock it still moves moved with room.
+                    Outcome outcome = withMargin(composition, asks,
+                            leastClocks(composition, asks, found, cells,
+                                    false, gaps),
+                            gaps);
+                    outcomes.set(outcomes.indexOf(found), outcome);
+                    if (unattested(composition, outcome, gaps)) continue;
+                    // A moved root: #mechanism answers MARKER_FLIPPED or a
+                    // narrower replaced slot, never NO_SUPPORTED_WITNESS.
+                    ClaimKind moved = mechanism(composition, asks, outcome,
+                            outcomes, clockDriven);
+                    return new Decision(Claim.of(moved,
+                            outcome.valuation().ordinal(),
+                            movedRoots(composition, outcome), true, gaps),
+                            outcomes);
                 }
-                outcomes.set(index, asked);
-                outcomes.set(0, asRecorded);
-                return new Decision(Claim.of(mechanism(composition, asks,
-                        asked, outcomes, clockDriven),
-                        asked.valuation().ordinal(),
-                        movedRoots(composition, asked), true, gaps),
-                        outcomes);
             }
-        }
-        if (!recordingDecides) {
-            for (Outcome found : new ArrayList<Outcome>(outcomes)) {
-                if (found.valuation().ordinal() == 0 || !found.witness()) {
-                    continue;
-                }
-                // Unpublishable, so not refined: each clock pinned back is a
-                // round of path asks (hdfs-11741 L1: hours of leastClocks
-                // over a witness its polarity then refused).
-                if (!polarityDecides) {
-                    undecidedPolarity(gaps, recorded, "a witness moving "
-                            + found.valuation().moved().keySet());
-                    break;
-                }
-                // Publish the witness under every clock pin it can keep,
-                // and each clock it still moves moved with room.
-                Outcome outcome = withMargin(composition, asks,
-                        leastClocks(composition, asks, found, cells, false,
-                                gaps),
-                        gaps);
-                outcomes.set(outcomes.indexOf(found), outcome);
-                if (unattested(composition, outcome, gaps)) continue;
-                // A moved root: #mechanism answers MARKER_FLIPPED or a
-                // narrower replaced slot, never NO_SUPPORTED_WITNESS.
-                ClaimKind moved = mechanism(composition, asks, outcome,
-                        outcomes, clockDriven);
-                return new Decision(Claim.of(moved,
-                        outcome.valuation().ordinal(),
-                        movedRoots(composition, outcome), true, gaps),
-                        outcomes);
-            }
-        }
-
-        // 2. No root moves, and the clocks are necessary -- with the same
-        //    polarity condition, for the same reason.
-        for (Outcome outcome : outcomes) {
-            if (!outcome.witness()
-                    || !outcome.valuation().moved().isEmpty()) {
-                continue;
-            }
-            // RECORDED_FAILURE_EXPLAINED is asked below, with the flips.
-            ClaimKind still = mechanism(composition, asks, outcome,
-                    outcomes, clockDriven);
-            if (still != ClaimKind.CLOCK_SKEW
-                    && still != ClaimKind.STATE_PAIRING_FLIPPED
-                    && still != ClaimKind.MESSAGE_PAIRING_FLIPPED) {
-                continue;
-            }
-            // A clock or pairing the recording decides carries its own
-            // polarity (recordingDecides); recorded.answer().unsat() asks
-            // with them free and so could never publish CLOCK_SKEW.
-            if (!recordingDecides && !polarityDecides) {
-                undecidedPolarity(gaps, recorded, still.name());
-                break;
-            }
-            Outcome roomy = withMargin(composition, asks, outcome, gaps);
-            outcomes.set(outcomes.indexOf(outcome), roomy);
-            return new Decision(Claim.of(still,
-                    roomy.valuation().ordinal(),
-                    movedRoots(composition, roomy), true,
-                    gaps), outcomes);
         }
 
         // 3 and 4. The recorded valuation reaches the fatal arm on a path
@@ -383,6 +374,83 @@ public final class ClaimPolicy {
                 recorded == null ? 0 : recorded.valuation().ordinal(),
                 Collections.<String, String>emptyMap(), polarityDecides,
                 gaps), outcomes);
+    }
+
+    /**
+     * 2. No root moves, and the clocks are necessary -- with the same
+     * polarity condition, for the same reason -- or a pairing is: the claim,
+     * or null.
+     */
+    private static Decision clockOrPairing(
+            Composer.Composition composition, Disjunction asks,
+            List<Outcome> outcomes, Outcome recorded,
+            boolean recordingDecides, boolean polarityDecides,
+            boolean clockDriven, List<GapRow> gaps) {
+        for (Outcome outcome : outcomes) {
+            if (!outcome.witness()
+                    || !outcome.valuation().moved().isEmpty()) {
+                continue;
+            }
+            // RECORDED_FAILURE_EXPLAINED is asked below, with the flips.
+            ClaimKind still = mechanism(composition, asks, outcome,
+                    outcomes, clockDriven);
+            if (still != ClaimKind.CLOCK_SKEW
+                    && still != ClaimKind.STATE_PAIRING_FLIPPED
+                    && still != ClaimKind.MESSAGE_PAIRING_FLIPPED) {
+                continue;
+            }
+            // A clock or pairing the recording decides carries its own
+            // polarity (recordingDecides); recorded.answer().unsat() asks
+            // with them free and so could never publish CLOCK_SKEW.
+            if (!recordingDecides && !polarityDecides) {
+                undecidedPolarity(gaps, recorded, still.name());
+                return null;
+            }
+            Outcome roomy = withMargin(composition, asks, outcome, gaps);
+            outcomes.set(outcomes.indexOf(outcome), roomy);
+            return new Decision(Claim.of(still,
+                    roomy.valuation().ordinal(),
+                    movedRoots(composition, roomy), true,
+                    gaps), outcomes);
+        }
+        return null;
+    }
+
+    /** Whether a moved-root witness is of this pass's rank: configuration
+     *  only, or anything else ({@code Composer#configurationOnly}). */
+    private static boolean ranked(Composer.Composition composition,
+                                  Outcome outcome, boolean configuration) {
+        return composition.configurationOnly(
+                outcome.valuation().moved().keySet()) == configuration;
+    }
+
+    /**
+     * Whether a witness moves a configuration root whose plant leaves other
+     * reads of its key at the recording's value (a second field caching
+     * it, a getter in another shape or outside the slice; {@code
+     * Composition#unplanted}): no configuration a cluster could hold, so no
+     * replay can confirm it as one.  Not claimed; named once per root,
+     * UNPRODUCIBLE_ANSWER DIAGNOSTIC.
+     */
+    private static boolean unplanted(Composer.Composition composition,
+                                     Outcome outcome, Set<String> named,
+                                     List<GapRow> gaps) {
+        Map<String, List<String>> partial = composition.unplanted(
+                outcome.valuation().moved().keySet());
+        for (Map.Entry<String, List<String>> root : partial.entrySet()) {
+            if (named.add(root.getKey())) {
+                gaps.add(GapRow.of(Composer.COMPOSITION,
+                        GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
+                        root.getKey(), "a witness moving this configuration"
+                                + " is not claimed: its plant leaves "
+                                + root.getValue().size() + " read(s) of the"
+                                + " key at the recording's value, so the"
+                                + " world it moves to is no configuration a"
+                                + " cluster could hold: "
+                                + root.getValue()));
+            }
+        }
+        return !partial.isEmpty();
     }
 
     /** The label every valuation pin carries ({@code Composer}'s spelling). */
