@@ -1101,6 +1101,30 @@ bool ContainerSupport::guarded_mutation(const std::string &callee) {
   return SharedFieldVersions::guarded_store_admitted(NULL, "CALL " + callee);
 }
 
+bool ContainerSupport::mutator(const std::string &callee) {
+  static const char *const MUTATORS[] = {
+      "put", "remove", "clear", "add", "offer", "set", "poll", "putAll",
+      "putIfAbsent", "replace", "replaceAll", "compute", "computeIfAbsent",
+      "computeIfPresent", "merge", "removeIf"};
+  for (size_t index = 0; index < sizeof(MUTATORS) / sizeof(MUTATORS[0]);
+       ++index) {
+    if (callee == MUTATORS[index]) return true;
+  }
+  return false;
+}
+
+bool ContainerSupport::reenters_from_callback(oop container,
+                                              const std::string &callee) {
+  if (container == NULL || ConcolicMngr::ctx == NULL || !mutator(callee)
+      || !ConcolicMngr::ctx->get_method_symbolizer().in_callback()
+      || !ConcolicMngr::ctx->get_method_symbolizer().reenters(container,
+                                                               true)) {
+    return false;
+  }
+  abandon_state(container, "CALLBACK_REENTERS_CONTAINER");
+  return true;
+}
+
 jlong ContainerSupport::publish_state(oop container, Expression *new_state,
                                       const char *operation) {
   // A container state expression exists only because something symbolic went

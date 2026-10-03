@@ -356,7 +356,8 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
         && (map_level(callee_name) || callee_name == "remove"
             || callee_name == "clear")
         && ConcolicMngr::ctx->get_method_symbolizer().in_callback()
-        && ConcolicMngr::ctx->get_method_symbolizer().reenters(container)) {
+        && ConcolicMngr::ctx->get_method_symbolizer().reenters(
+               container, ContainerSupport::mutator(callee_name))) {
       // A callback called back into the container its call is changing:
       // no chain can say in which order the two happened.
       ContainerSupport::abandon_state(container,

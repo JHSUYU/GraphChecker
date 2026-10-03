@@ -339,6 +339,14 @@ SharedFieldVersions::Location state_location(oop container);
  * add/offer/set/remove/clear (indexed), add/remove/clear (set).
  */
 bool guarded_mutation(const std::string &callee);
+// Whether a modeled container call changes what its container holds (the
+// three models' mutators, a callback's included).
+bool mutator(const std::string &callee);
+// A mutation a callback makes of a container a suspended call is on
+// (MethodSymbolizer::reenters): true when that call cannot state it, and
+// the container then leaves the model by name.  Asked by every container
+// model before it admits a mutation.
+bool reenters_from_callback(oop container, const std::string &callee);
 
 jlong publish_state(oop container, Expression *new_state,
                     const char *operation);

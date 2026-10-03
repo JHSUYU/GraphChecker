@@ -73,6 +73,9 @@ typedef void (*CallbackListener)(MethodSymbolizerHandle &call,
                                  const CallbackResult &result, oop returned,
                                  const std::vector<oop> &arguments);
 
+/** A model's word on a call of its that unwound with an exception. */
+typedef void (*CallUnwound)(MethodSymbolizerHandle &call);
+
 class MethodSymbolizerHandle {
 private:
   ZeroFrame *_caller_frame;
@@ -92,6 +95,14 @@ private:
   std::vector<sym_rid_t> _functional;
   CallbackSeeder _seeder;
   CallbackListener _listener;
+  CallUnwound _unwound;
+  // The container a call reads as its callbacks run (a stream's source), as
+  // a weak global handle its model owns: a callback mutating it marks the
+  // call reentered (MethodSymbolizer::reenters).
+  jobject _source;
+  // The first application method the muted body entered that was no
+  // callback (MethodSymbolizer::enter_callback), or empty.
+  std::string _muted_application;
   std::vector<CallbackResult> _callbacks;
   // The state the call's container held when it began, when it had one.
   Expression *_pre_state;
@@ -107,7 +118,8 @@ private:
 public:
   MethodSymbolizerHandle()
       : _caller_frame(NULL), _callee_frame(NULL), _callee_istate(NULL),
-        _recording(false), _seeder(NULL), _listener(NULL), _pre_state(NULL),
+        _recording(false), _seeder(NULL), _listener(NULL), _unwound(NULL),
+        _source(NULL), _pre_state(NULL),
         _reentered(false), _callback_refusal(NULL),
         _mutates_per_callback(false) {}
 
@@ -129,6 +141,22 @@ public:
     _listener = listener;
   }
   inline CallbackListener listener() const { return _listener; }
+  inline void set_unwound(CallUnwound unwound) { _unwound = unwound; }
+  inline CallUnwound unwound() const { return _unwound; }
+  inline void set_source(jobject source) { _source = source; }
+  inline jobject source() const { return _source; }
+  inline bool muted_application_noted() const {
+    return !_muted_application.empty();
+  }
+  inline void note_muted_application(const std::string &method) {
+    if (_muted_application.empty()) _muted_application = method;
+  }
+  // Takes the name: whoever reads it states it.
+  inline std::string take_muted_application() {
+    std::string method = _muted_application;
+    _muted_application.clear();
+    return method;
+  }
   inline std::vector<CallbackResult> &callbacks() { return _callbacks; }
   inline void set_pre_state(Expression *pre_state) { _pre_state = pre_state; }
   inline Expression *pre_state() const { return _pre_state; }
@@ -294,6 +322,9 @@ public:
     _functional.clear();
     _seeder = NULL;
     _listener = NULL;
+    _unwound = NULL;
+    _source = NULL;
+    _muted_application.clear();
     _callbacks.clear();
     _pre_state = NULL;
     _reentered = false;

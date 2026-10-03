@@ -247,6 +247,20 @@ static void callback_arguments(interpreterState istate,
   }
 }
 
+// Application code -- a class no boot loader defined -- a muted call with
+// callbacks entered other than as a callback: the body ran it unhooked.
+static void note_muted_application(MethodSymbolizerHandle &handle,
+                                   Method *method) {
+  if (handle.muted_application_noted()
+      || method->method_holder()->class_loader() == NULL) {
+    return;
+  }
+  ResourceMark rm;
+  handle.note_muted_application(
+      std::string(method->method_holder()->name()->as_C_string()) + "."
+      + method->name()->as_C_string());
+}
+
 bool MethodSymbolizer::enter_callback(ZeroFrame *caller_frame,
                                       ZeroFrame *callee_frame) {
   if (!_symbolizing_method || !_handle.has_functional()
@@ -256,9 +270,10 @@ bool MethodSymbolizer::enter_callback(ZeroFrame *caller_frame,
   interpreterState istate =
       callee_frame->as_interpreter_frame()->interpreter_state();
   Method *method = istate->method();
-  if (method->is_static() || method->is_native()) return false;
-  oop receiver = *(oop *) istate->locals();
+  oop receiver = method->is_static() || method->is_native()
+      ? (oop) NULL : *(oop *) istate->locals();
   if (receiver == NULL || !_handle.is_functional(receiver->get_sym_rid())) {
+    note_muted_application(_handle, method);
     return false;
   }
   if (_windows.size() >= MAX_CALLBACK_DEPTH) {
@@ -355,13 +370,20 @@ bool MethodSymbolizer::exit_callback(ZeroFrame *callee_frame) {
   return true;
 }
 
-bool MethodSymbolizer::reenters(oop container) {
+bool MethodSymbolizer::reenters(oop container, bool mutation) {
   if (container == NULL) return false;
   // A suspended call's frame is still on the stack, under its callback.
   for (size_t index = 0; index < _suspended.size(); ++index) {
-    if (ContainerSupport::backing_container(
-            _suspended[index].get_param<oop>(0)) == container) {
-      _suspended[index].mark_reentered();
+    MethodSymbolizerHandle &call = _suspended[index];
+    if (call.source() != NULL) {
+      if (mutation && JNIHandles::resolve(call.source()) == container) {
+        call.mark_reentered();
+      }
+      continue;
+    }
+    if (ContainerSupport::backing_container(call.get_param<oop>(0))
+        == container) {
+      call.mark_reentered();
       return true;
     }
   }
@@ -384,6 +406,7 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
             ContainerSupport::backing_container(_handle.get_param<oop>(0)),
             "CALLBACK_THREW_AFTER_MUTATION");
       }
+      if (_handle.unwound() != NULL) _handle.unwound()(_handle);
       this->_handle.reset();
       this->set_symbolizing_method(false);
       return;
@@ -406,6 +429,11 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
       exp = _finish_helper_methods[callee_holder_name](_handle);
     } else {
       exp = finish_method_helper(_handle);
+    }
+    // Application code the body ran unhooked that its model did not state.
+    const std::string muted = _handle.take_muted_application();
+    if (!muted.empty()) {
+      ConcolicMngr::ctx->note_model_gap("MUTED_APPLICATION_CODE:" + muted);
     }
 
     BasicType type = _handle.get_result_type();

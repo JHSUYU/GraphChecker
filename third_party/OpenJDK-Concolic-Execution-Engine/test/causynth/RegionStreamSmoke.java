@@ -1,10 +1,13 @@
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collector;
 import java.util.stream.Collectors;
 
 /**
@@ -24,8 +27,18 @@ import java.util.stream.Collectors;
  * and names nothing; an unmodeled operation on a pipeline over a symbolic
  * source stops its recording and is named in the region's model gaps, as
  * are the pins that replace a counterfactual.</p>
+ *
+ * <p>And the review's shapes: a barrier ahead of the first callback over a
+ * stateful source pins the result (it once pinned the source empty); a
+ * forEach names what it pinned; a values view reads its map's state; a
+ * callback mutating the source unstates the result; a natural order an
+ * application compareTo decided is pinned and named; a collector kept in a
+ * field is known at every use.</p>
  */
 public final class RegionStreamSmoke {
+    private static final Collector<Object, ?, List<Object>> TO_LIST =
+            Collectors.toList();
+
     private static final class Input {
         String disk = new String("/ssd");
         String alias = new String("alias-x");
@@ -44,6 +57,19 @@ public final class RegionStreamSmoke {
         }
     }
 
+    private static final class Disk implements Comparable<Disk> {
+        final String path;
+
+        Disk(String path) {
+            this.path = path;
+        }
+
+        @Override
+        public int compareTo(Disk other) {
+            return path.compareTo(other.path);
+        }
+    }
+
     private static final class Sink {
         int kept;
         int capped;
@@ -51,6 +77,7 @@ public final class RegionStreamSmoke {
         long counted;
         boolean any;
         long skipped;
+        int seen;
     }
 
     public static void main(String[] args) {
@@ -127,6 +154,56 @@ public final class RegionStreamSmoke {
 
         // 7. An unmodeled operation over a symbolic source.
         sink.skipped = slow.stream().skip(1).count();
+
+        // 8. A barrier ahead of the first callback over a stateful source:
+        // its members entered sorted unseen, so the result is the run's
+        // (never a pin of the source's size to 0); over a concrete source
+        // the members past the barrier are stated.
+        List<String> sortedFast = slow.stream().sorted()
+                .filter(s -> s.startsWith("/s"))
+                .collect(Collectors.toList());
+        String sortedFastVersions = System.getSharedMapVersions(sortedFast);
+        List<Volume> sortedKept = volumes.stream()
+                .sorted(Comparator.comparing(Volume::path))
+                .filter(v -> !slow.contains(v.path))
+                .collect(Collectors.toList());
+        String sortedKeptVersions = System.getSharedMapVersions(sortedKept);
+
+        // 9. forEach after a symbolic filter: no chain, so what it pinned
+        // is named.
+        List<String> two = new ArrayList<String>();
+        two.add(input.disk);
+        two.add(new String("/x"));
+        two.stream().filter(s -> s.startsWith("/s"))
+                .forEach(s -> sink.seen++);
+
+        // 10. A values view of a stateful map reads the map's state.
+        Map<String, Integer> weights = new HashMap<String, Integer>();
+        weights.put(input.disk, Integer.valueOf(3));
+        List<Integer> heavy = weights.values().stream()
+                .filter(w -> w.intValue() > 1).collect(Collectors.toList());
+        String heavyVersions = System.getSharedMapVersions(heavy);
+
+        // 11. A callback mutating the source.
+        Map<String, Integer> live = new ConcurrentHashMap<String, Integer>();
+        live.put(input.disk, Integer.valueOf(1));
+        List<String> touched = live.keySet().stream().filter(k -> {
+            live.put(new String("/z"), Integer.valueOf(2));
+            return true;
+        }).collect(Collectors.toList());
+
+        // 12. A natural order an application compareTo decides.
+        List<Disk> disks = new ArrayList<Disk>();
+        disks.add(new Disk(new String("/hdd")));
+        disks.add(new Disk(new String("/ssd")));
+        List<Disk> ordered = disks.stream().sorted()
+                .filter(d -> !slow.contains(d.path))
+                .collect(Collectors.toList());
+
+        // 13. A collector kept in a field.
+        List<Object> reused = volumes.stream()
+                .filter(v -> !slow.contains(v.path)).collect(TO_LIST);
+        String reusedVersions = System.getSharedMapVersions(reused);
         String summary = System.getConcolicRegionSummary();
         System.endConcolic();
 
@@ -138,8 +215,36 @@ public final class RegionStreamSmoke {
         require(kept.size() == 1 && capped.size() == 1 && refs.size() == 1
                         && sink.counted == 1L && sink.any
                         && paths.size() == 1 && plain.size() == 2
-                        && sink.skipped == 0L,
+                        && sink.skipped == 0L && sortedFast.size() == 1
+                        && sortedKept.size() == 1 && sink.seen == 1
+                        && heavy.size() == 1 && touched.size() >= 1
+                        && ordered.size() == 1 && reused.size() == 1,
                 "a modeled pipeline changed what the program computed");
+        require(sortedFastVersions.contains("\"selected\":false")
+                        && summary.contains("STREAM_PINNED:SORTED"),
+                "a barrier ahead of the first callback was stated: "
+                        + sortedFastVersions);
+        require(sortedKeptVersions.contains("\"operation\":\"APPEND_IF\"")
+                        && !sortedKeptVersions.contains(
+                                "\"operation\":\"PIN\""),
+                "members past a barrier over a concrete source are not "
+                        + "stated as they are: " + sortedKeptVersions);
+        require(summary.contains("STREAM_PINNED:FOR_EACH")
+                        && count(summary, "STREAM_PINNED:DROPPED") >= 2
+                        && count(summary, "STREAM_PINNED:SOURCE_END") >= 2,
+                "forEach does not name what it pinned: " + summary);
+        require(heavyVersions.contains("\"operation\":\"READ\"")
+                        && heavyVersions.contains("APPEND_IF"),
+                "a values view does not read its map's state: "
+                        + heavyVersions);
+        require(summary.contains("STREAM_PINNED:CALLBACK_MUTATES_SOURCE"),
+                "a callback mutating the source was not named: " + summary);
+        require(summary.contains("STREAM_PINNED:MUTED_APPLICATION:"
+                        + "RegionStreamSmoke$Disk.compareTo"),
+                "application compareTo run muted was not named: " + summary);
+        require(reusedVersions.contains("\"operation\":\"APPEND_IF\""),
+                "a collector kept in a field was not known: "
+                        + reusedVersions);
         require(keptVersions.contains("\"versionKind\":\"STATE_COLLECT\"")
                         && keptVersions.contains("\"initialSnapshot\":"
                                 + "{\"stated\":true,\"entries\":0,")
@@ -186,6 +291,15 @@ public final class RegionStreamSmoke {
                                 Object value) {
         return System.getSymbolicFieldExpression(sink, Sink.class.getName(),
                 name, descriptor, value);
+    }
+
+    private static int count(String text, String needle) {
+        int found = 0;
+        for (int at = text.indexOf(needle); at >= 0;
+             at = text.indexOf(needle, at + 1)) {
+            found++;
+        }
+        return found;
     }
 
     private static void require(boolean condition, String message) {

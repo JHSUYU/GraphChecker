@@ -7,6 +7,9 @@
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicMap.hpp"
 #include "concolic/reference/symbolicStream.hpp"
+#include "concolic/sharedFieldVersions.hpp"
+#include "concolic/utils.hpp"
+#include "runtime/jniHandles.hpp"
 
 #include <string.h>
 
@@ -149,19 +152,23 @@ struct Stage {
   }
 };
 
-// An element on its way: the next stage it meets, what it is, the
-// conjunction of the decisions that let it this far (NULL: true), and
-// whether the run pushed it (an element a symbolic filter dropped goes on
-// unseen, in the worlds where that filter answers true).
+// An element on its way: the next stage it meets, what it is, where a
+// stateful source holds it (`existence`, NULL: always), the conjunction of
+// the decisions that let it this far (NULL: true), and whether the run
+// pushed it (an element a symbolic filter dropped goes on unseen, in the
+// worlds where that filter answers true).
 struct Element {
   size_t stage;
   Expression *value;
   bool symbolic_value;
+  Expression *existence;
   Expression *guard;
   bool in_run;
   Element()
-      : stage(0), value(NULL), symbolic_value(false), guard(NULL),
-        in_run(true) {}
+      : stage(0), value(NULL), symbolic_value(false), existence(NULL),
+        guard(NULL), in_run(true) {}
+  // Where it is there at all: its existence and its decisions.
+  Expression *whole() const { return conjunction(existence, guard); }
 };
 
 // One member of the stated result: its value and the condition it is
@@ -182,21 +189,26 @@ const size_t IGNORED = (size_t) -2;
 
 class StreamPipeline {
 public:
-  StreamPipeline(SymMap::ViewKind view, Expression *state, const char *shape,
-                 Expression *owner, int members)
-      : _view(view), _state(state), _shape(shape), _owner(owner),
-        _members(members), _staged(FILTER), _has_staged(false),
+  StreamPipeline(SymMap::ViewKind view, const char *shape, Expression *owner,
+                 jobject source, bool stateful)
+      : _view(view), _shape(shape), _owner(owner), _source(source),
+        _stateful(stateful), _state(NULL), _members(-1),
+        _staged(FILTER), _has_staged(false),
         _terminal(NO_TERMINAL), _pending(NO_PENDING), _pending_argument(0),
         _live(false), _pulled(0), _symbolic(false), _pinned(NULL),
         _barrier_met(false), _seen_callback(false), _stopped(false),
         _over_bound(false), _deciding(NULL), _guarded_action(false) {}
+
+  ~StreamPipeline() {
+    if (_source != NULL) JNIHandles::destroy_weak_global(_source);
+  }
 
   // ---- recording ----------------------------------------------------------
 
   // Something symbolic is in the pipeline before it runs: the source's
   // state or a LIMIT's bound.
   bool carries_symbolic() const {
-    if (_state != NULL) return true;
+    if (_stateful || _state != NULL) return true;
     for (size_t index = 0; index < _stages.size(); ++index) {
       if (_stages[index].bound != NULL) return true;
     }
@@ -233,6 +245,7 @@ public:
         handle.add_functional(_stages[index].function);
       }
     }
+    bind(handle);
     _symbolic = carries_symbolic();
   }
 
@@ -279,6 +292,9 @@ public:
 
   Expression *finish(MethodSymbolizerHandle &handle);
 
+  // Whether a terminal unwinding now leaves something symbolic unstated.
+  bool unwinds() const { return _symbolic; }
+
 private:
   // The first stage that calls `receiver` back, or NO_PENDING.
   size_t stage_of(sym_rid_t receiver) const {
@@ -312,6 +328,20 @@ private:
   Expression *source_member(int pull, oop member, Expression **existence) {
     *existence = NULL;
     if (_state == NULL) return ContainerSupport::semantic_value(member);
+    if (_view == SymMap::VIEW_VALUES) {
+      // The key the map's iteration holds this value under (bind).
+      if (pull >= (int) _value_keys.size()) {
+        pin_all("PROGRESS");
+        return NULL;
+      }
+      exp_list_t key;
+      key.push_back(_value_keys[pull]);
+      *existence = relation("ASSOCIATIVE", "CONTAINS", _state, key,
+                            T_BOOLEAN, NULL, _owner);
+      return relation("ASSOCIATIVE", "READ", _state, key,
+                      ContainerSupport::result_type(member, T_OBJECT), NULL,
+                      _owner, ContainerSupport::java_type(member, T_OBJECT));
+    }
     if (_view == SymMap::VIEW_NONE) {
       exp_list_t at;
       at.push_back(new ConExpression((jint) pull));
@@ -335,19 +365,39 @@ private:
   // member, or -- past a barrier, whose output order this model does not
   // follow -- an element of the run's own values entering after it.
   void start(size_t called, oop member) {
-    _current = Element();
     const size_t barrier = barrier_before(called);
-    if (barrier != NO_PENDING) {
-      _current.stage = barrier + 1;
-    } else {
-      Expression *existence = NULL;
-      _current.value = source_member(_pulled, member, &existence);
-      _current.symbolic_value = _current.value != NULL;
-      _current.guard = existence;
-      if (_current.value != NULL) _symbolic = true;
-      ++_pulled;
+    if (barrier == NO_PENDING) {
+      pull(member);
+      return;
     }
+    // Members went into the barrier unseen: what entered it is symbolic
+    // when the source's state or a bound ahead of it is, or the member
+    // carries its own value.
+    _barrier_met = true;
+    bool bound_ahead = false;
+    for (size_t index = 0; index < barrier; ++index) {
+      bound_ahead = bound_ahead || _stages[index].bound != NULL;
+    }
+    if (_state != NULL || bound_ahead
+        || ContainerSupport::semantic_value(member) != NULL) {
+      pin_all(_stages[barrier].kind == SORTED ? "SORTED" : "DISTINCT");
+      return;
+    }
+    _current = Element();
+    _current.stage = barrier + 1;
     _live = true;
+    advance();
+  }
+
+  // The source's next member, as `member` is.
+  void pull(oop member) {
+    _current = Element();
+    _current.value = source_member(_pulled, member, &_current.existence);
+    _current.symbolic_value = _current.value != NULL;
+    if (_current.value != NULL) _symbolic = true;
+    if (_current.existence != NULL) _present.push_back(_current.existence);
+    ++_pulled;
+    _live = _pinned == NULL;
     advance();
   }
 
@@ -387,7 +437,8 @@ private:
     }
     if (called.kind == ACTION) {
       // The action ran, its effects hooked; under a symbolic decision it
-      // would not have run in every world.
+      // would not have run in every world.  (Where the source holds the
+      // element is no decision: the element is there or not.)
       if (_current.guard != NULL) _guarded_action = true;
       _live = false;
       return;
@@ -447,6 +498,7 @@ private:
       return;
     }
     Expression *alive = conjunction(_current.guard, truth);
+    Expression *there = conjunction(_current.existence, alive);
     bool stated = true;
     for (size_t later = _current.stage + 1; later < _stages.size(); ++later) {
       stated = stated && !_stages[later].calls_back()
@@ -456,7 +508,7 @@ private:
     if (!stated || _current.value == NULL) {
       // What it would have been past here is unknown (or, its frame no
       // longer holding the object it was called with, what it was).
-      pin(negation(alive), "DROPPED");
+      pin(negation(there), "DROPPED");
       _live = false;
       return;
     }
@@ -477,7 +529,7 @@ private:
         return;
       }
       if (next.barrier()) {
-        if (_current.guard != NULL || _current.symbolic_value) {
+        if (_current.whole() != NULL || _current.symbolic_value) {
           pin_all(next.kind == SORTED ? "SORTED" : "DISTINCT");
         }
         _barrier_met = true;
@@ -512,7 +564,8 @@ private:
       _current.guard = conjunction(_current.guard, new OpSymExpression(
           position, cap.bound_expression(), op_lt, true));
     }
-    if (cap.arrivals != NULL || _current.guard != NULL) {
+    Expression *arrived = _current.whole();
+    if (cap.arrivals != NULL || arrived != NULL) {
       if (before >= ConcolicMngr::initialSnapshotMaxEntries()) {
         // Past the bound no position is stated (as no member is).
         pin_all("OVER_BOUND");
@@ -520,12 +573,12 @@ private:
       }
       cap.arrivals = appended(
           cap.arrivals != NULL ? cap.arrivals : counted(before), mark(),
-          _current.guard);
+          arrived);
     }
   }
 
   void arrive() {
-    output(Output(_current.value, _current.guard, _current.in_run));
+    output(Output(_current.value, _current.whole(), _current.in_run));
     if (_terminal == FIND && _current.in_run) _stopped = true;
   }
 
@@ -548,7 +601,7 @@ private:
     Expression *condition = truth == NULL ? NULL
         : all ? negation(truth) : truth;
     if (condition != NULL || counts) {
-      Expression *guard = conjunction(_current.guard, condition);
+      Expression *guard = conjunction(_current.whole(), condition);
       // A match's chain holds marks, made when it is stated.
       output(Output(NULL, guard, counts));
       if (counts) {
@@ -564,6 +617,13 @@ private:
     if (condition == NULL) return;
     _pins.push_back(condition);
     if (reason != NULL) _pin_reasons.push_back(reason);
+  }
+
+  void bind(MethodSymbolizerHandle &handle);
+  void name_reasons() const {
+    for (size_t index = 0; index < _pin_reasons.size(); ++index) {
+      name(_pin_reasons[index].c_str());
+    }
   }
 
   // The result is the run's own: nothing more is followed.
@@ -595,12 +655,19 @@ private:
     return with_pins("INDEXED", chain);
   }
 
-  // The source, as stream() read it.
+  // The source, as stream() named it.
   SymMap::ViewKind _view;  // VIEW_NONE: a list's or a deque's positions
-  Expression *_state;
   const char *_shape;
   Expression *_owner;
+  // A weak global handle of the source container, which this pipeline
+  // owns; and whether the container carried state at stream().
+  jobject _source;
+  bool _stateful;
+  // The source as the terminal bound it (streams bind late): its state,
+  // its member count, and a values view's keys in the order it iterates.
+  Expression *_state;
   int _members;
+  std::vector<Expression *> _value_keys;
   std::vector<Stage> _stages;
   Stage _staged;
   bool _has_staged;
@@ -622,8 +689,12 @@ private:
   Expression *_deciding;
   bool _guarded_action;
   std::vector<Output> _outputs;
+  // Where a stateful source holds each member pulled.
+  std::vector<Expression *> _present;
   std::vector<Expression *> _pins;
-  std::vector<const char *> _pin_reasons;
+  std::vector<std::string> _pin_reasons;
+  // The application method the body ran unhooked, or empty.
+  std::string _muted;
 };
 
 // A pipeline no stage of which calls back: its elements are the result's
@@ -656,16 +727,37 @@ void StreamPipeline::reconstruct(MethodSymbolizerHandle &handle, oop result) {
     return;
   }
   for (int index = 0; index < count && _pinned == NULL; ++index) {
-    oop member = index < (int) members.size() ? members[index] : (oop) NULL;
-    _current = Element();
-    Expression *existence = NULL;
-    _current.value = source_member(_pulled, member, &existence);
-    _current.symbolic_value = _current.value != NULL;
-    _current.guard = existence;
-    if (_current.value != NULL) _symbolic = true;
-    ++_pulled;
-    _live = true;
-    advance();
+    pull(index < (int) members.size() ? members[index] : (oop) NULL);
+  }
+}
+
+// Streams bind late: the source's state, member count and (a values view
+// of a stateful map) iteration keys are read when the terminal runs, and
+// the source is the call's for MethodSymbolizer::reenters.
+void StreamPipeline::bind(MethodSymbolizerHandle &handle) {
+  oop container = _source == NULL ? (oop) NULL : JNIHandles::resolve(_source);
+  if (container == NULL) return;
+  handle.set_source(_source);
+  _members = ContainerSupport::member_count(container);
+  _state = ContainerSupport::observed_state(container);
+  if (_view != SymMap::VIEW_VALUES || _state == NULL) return;
+  std::vector<oop> keys;
+  std::vector<oop> values;
+  const char *unreadable = NULL;
+  bool over_bound = false;
+  if (!ContainerSupport::read_concrete_members(container, &keys, &values,
+                                               &unreadable, &over_bound)
+      || over_bound || keys.size() != values.size()) {
+    // The values of a stateful map no walk names a key for.
+    _state = NULL;
+    _pin_reasons.push_back("VALUES");
+    _symbolic = true;
+    return;
+  }
+  for (size_t index = 0; index < keys.size(); ++index) {
+    Expression *key = NULL;
+    SymMap::visited_member(SymMap::VIEW_KEYS, NULL, NULL, keys[index], &key);
+    _value_keys.push_back(key);
   }
 }
 
@@ -696,8 +788,29 @@ bool StreamPipeline::fill_values(oop result) {
 }
 
 Expression *StreamPipeline::finish(MethodSymbolizerHandle &handle) {
-  if (_live) advance();
+  if (_live) {
+    // An element still waiting for a callback the body never made.
+    if (_current.stage < _stages.size()
+        && _stages[_current.stage].calls_back()) {
+      pin_all("PROGRESS");
+    } else {
+      advance();
+    }
+  }
   if (handle.callback_refusal() != NULL) pin_all("CALLBACK_DEPTH");
+  // A callback changed the source it ran over: no chain orders the two.
+  if (handle.reentered()) pin_all("CALLBACK_MUTATES_SOURCE");
+  // Application code the body ran unhooked (an element's compareTo, equals
+  // or hashCode, a list's own get): a natural order it decided is unstated.
+  _muted = handle.take_muted_application();
+  if (!_muted.empty()) {
+    for (size_t index = 0; index < _stages.size(); ++index) {
+      if (_stages[index].kind == SORTED
+          && _stages[index].function == NULL_SYM_RID) {
+        pin_all("SORTED");
+      }
+    }
+  }
   const BasicType type = handle.get_result_type();
   oop result = type == T_OBJECT || type == T_ARRAY
       ? handle.get_result<oop>(type) : (oop) NULL;
@@ -746,8 +859,18 @@ Expression *StreamPipeline::finish(MethodSymbolizerHandle &handle) {
   }
   if (cut && _stopped) pin(_deciding, "SHORT_CIRCUIT");
   if (!cut && _state != NULL && !_barrier_met) {
+    // The source held exactly what the stream pulled: as many members as
+    // pulled positions, or -- keyed -- as pulled keys it holds.
+    Expression *held = new ConExpression((jint) _pulled);
+    if (!_present.empty()) {
+      Expression *present = empty_base("INDEXED", NULL);
+      for (size_t index = 0; index < _present.size(); ++index) {
+        present = appended(present, mark(), _present[index]);
+      }
+      held = query("INDEXED", "SIZE", present, T_INT);
+    }
     pin(new OpSymExpression(query(_shape, "SIZE", _state, T_INT, _owner),
-                            new ConExpression((jint) _pulled), op_le, true),
+                            held, op_eq, true),
         "SOURCE_END");
   }
   for (size_t index = 0; index < _stages.size(); ++index) {
@@ -758,19 +881,20 @@ Expression *StreamPipeline::finish(MethodSymbolizerHandle &handle) {
           NULL);
     }
   }
+  if (!_muted.empty()) name(("MUTED_APPLICATION:" + _muted).c_str());
   if (_terminal == FIND) pin_all("FIND");
   if (_terminal == FOR_EACH) {
+    // No chain holds what was pinned: each is named.
     if (_guarded_action) name("FOR_EACH");
     if (_pinned != NULL) name(_pinned);
+    name_reasons();
     return NULL;
   }
   if (_pinned != NULL) {
     name(_pinned);
     return NULL;
   }
-  for (size_t index = 0; index < _pin_reasons.size(); ++index) {
-    name(_pin_reasons[index]);
-  }
+  name_reasons();
   switch (_terminal) {
     case TO_LIST:
     case TO_ARRAY: {
@@ -859,16 +983,14 @@ StreamPipeline *StreamTable::take(sym_rid_t stream) {
   return pipeline;
 }
 
-void StreamTable::name_collector(sym_rid_t collector, int kind) {
-  if (collector != NULL_SYM_RID) _collectors[collector] = kind;
+void StreamTable::name_collector(sym_rid_t accumulator, int kind) {
+  if (accumulator != NULL_SYM_RID) _collectors[accumulator] = kind;
 }
 
-int StreamTable::take_collector(sym_rid_t collector) {
-  std::map<sym_rid_t, int>::iterator found = _collectors.find(collector);
-  if (found == _collectors.end()) return 0;
-  const int kind = found->second;
-  _collectors.erase(found);
-  return kind;
+int StreamTable::collector(sym_rid_t accumulator) const {
+  std::map<sym_rid_t, int>::const_iterator found =
+      _collectors.find(accumulator);
+  return found == _collectors.end() ? 0 : found->second;
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +1018,17 @@ void stop_recording(oop stream, const char *prefix,
   delete pipeline;
 }
 
+// A collector's accumulator.  Collectors.toList()/toSet() make a new
+// collector per call around the one accumulator their non-capturing method
+// reference (List::add, Set::add) always yields, so the accumulator names
+// the kind: one entry per kind, and a collector kept in a field is known
+// at every use.
+oop accumulator_of(oop collector) {
+  return collector == NULL ? (oop) NULL
+      : OopUtils::obj_field_by_name(collector, "accumulator",
+                                    "Ljava/util/function/BiConsumer;");
+}
+
 Terminal terminal_of(MethodSymbolizerHandle &handle) {
   const std::string &method = handle.get_callee_name();
   if (method == "count") return COUNT;
@@ -907,10 +1040,10 @@ Terminal terminal_of(MethodSymbolizerHandle &handle) {
   if (method == "toArray") return TO_ARRAY;
   if (method == "collect" && handle.get_callee_method()->size_of_parameters()
                                  == 2) {
-    oop collector = handle.get_param<oop>(1);
-    const int kind = collector == NULL ? 0
-        : ConcolicMngr::ctx->streams(true)->take_collector(
-              collector->get_sym_rid());
+    oop accumulator = accumulator_of(handle.get_param<oop>(1));
+    const int kind = accumulator == NULL ? 0
+        : ConcolicMngr::ctx->streams(true)->collector(
+              accumulator->get_sym_rid());
     if (kind == COLLECTOR_TO_LIST) return TO_LIST;
     if (kind == COLLECTOR_TO_SET) return TO_SET;
   }
@@ -945,17 +1078,21 @@ Expression *SymStream::finish_source(MethodSymbolizerHandle &handle) {
       && ContainerSupport::capability(container)
              == ContainerSupport::CAPABILITY_INDEXED;
   if (!positional && view == SymMap::VIEW_NONE) return NULL;
-  // A value has no key to read it by: a values view's members are their
-  // own (SymMap::visited_member), so its state seeds nothing.
-  Expression *state = view == SymMap::VIEW_VALUES ? NULL
-      : ContainerSupport::observed_state(container);
   Expression *owner = ContainerSupport::receiver_owner(
       ConcolicMngr::ctx->find_stack_slot(
           handle.get_caller_stack_begin_offset()));
+  // The state is read when the terminal runs (StreamPipeline::bind); here
+  // only whether there is one, for an operation that ends the recording
+  // before it.
+  const bool stateful =
+      ConcolicMngr::ctx->find_container_state(container) != NULL
+      || SharedFieldVersions::is_tracked(
+             ContainerSupport::state_location(container));
+  Handle held(Thread::current(), container);
   ConcolicMngr::ctx->streams(true)->put(
       ConcolicMngr::ctx->name_reference(stream),
-      new StreamPipeline(view, state, ContainerSupport::shape(container),
-                         owner, ContainerSupport::member_count(container)));
+      new StreamPipeline(view, ContainerSupport::shape(container), owner,
+                         JNIHandles::make_weak_global(held), stateful));
   return NULL;
 }
 
@@ -1020,6 +1157,7 @@ bool SymStream::invoke_method_helper(MethodSymbolizerHandle &handle) {
   pipeline->begin(kind, handle);
   handle.set_seeder(seed_callback);
   handle.set_listener(fold_callback);
+  handle.set_unwound(unwound);
   return true;
 }
 
@@ -1031,6 +1169,19 @@ void SymStream::seed_callback(MethodSymbolizerHandle &call,
   if (pipeline == NULL) return;
   seeds->push_back(pipeline->enter(receiver, arguments.empty() ? (oop) NULL
                                                                : arguments[0]));
+}
+
+void SymStream::unwound(MethodSymbolizerHandle &call) {
+  oop stream = call.get_param<oop>(0);
+  StreamTable *table = ConcolicMngr::ctx->streams(false);
+  StreamPipeline *pipeline = table == NULL || stream == NULL ? NULL
+      : table->take(stream->get_sym_rid());
+  if (pipeline == NULL) return;
+  // What the body decided before the exception is stated nowhere.
+  if (pipeline->unwinds()) {
+    ConcolicMngr::ctx->note_model_gap("STREAM_PINNED:UNWOUND");
+  }
+  delete pipeline;
 }
 
 void SymStream::fold_callback(MethodSymbolizerHandle &call,
@@ -1046,10 +1197,10 @@ Expression *SymStream::finish_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &holder = handle.get_callee_holder_name();
   const std::string &method = handle.get_callee_name();
   if (named(holder, COLLECTORS)) {
-    oop collector = handle.get_result<oop>(T_OBJECT);
-    if (collector != NULL) {
+    oop accumulator = accumulator_of(handle.get_result<oop>(T_OBJECT));
+    if (accumulator != NULL) {
       ConcolicMngr::ctx->streams(true)->name_collector(
-          ConcolicMngr::ctx->name_reference(collector),
+          ConcolicMngr::ctx->name_reference(accumulator),
           method == "toList" ? COLLECTOR_TO_LIST : COLLECTOR_TO_SET);
     }
     return NULL;

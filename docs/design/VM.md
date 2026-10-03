@@ -131,7 +131,15 @@ answer as a condition is `CallbackResult::truth`), and the model's finish builds
 the log. A model may instead read each callback as it returns (`CallbackListener`: its result, the
 object it returned, its arguments as its frame then holds them); a concrete result is then not built
 into an expression, so a call whose callbacks stay concrete allocates nothing per callback (the stream
-model). Its side effects are hooked like any interpreted
+model). A model may name the container its call reads as its callbacks run (`MethodSymbolizerHandle::
+set_source`, a stream's source): a mutation of it by a callback marks the call reentered without
+refusing the mutation (`MethodSymbolizer::reenters`, asked by all three container models before a
+mutation, `ContainerSupport::reenters_from_callback`), and the call's model states the rest. Any
+application method -- a class no boot loader defined -- that a muted call with callbacks enters other
+than as a callback (an element's `compareTo`, `equals` or `hashCode`, a custom list's `get`) ran
+unhooked: the first one is named in the region's model gaps as `MUTED_APPLICATION_CODE:<class.method>`
+unless the call's model states it itself. A call that unwinds with an exception tells its model
+(`CallUnwound`). Its side effects are hooked like any interpreted
 code. A callback the stack declines (a fifth window) runs muted and unlogged, and its call refuses
 its map (`CALLBACK_DEPTH_EXCEEDED`). A callback that calls back into its call's map is refused
 (`CALLBACK_REENTERS_CONTAINER`). A call that mutates as its callbacks answer (`removeIf`,
@@ -174,13 +182,16 @@ one path condition per element per call; past the snapshot bound (64,
 **Streams** (`VM/concolic/reference/symbolicStream.cpp`, `SymStream`). `Collection.stream()` of a
 modeled container (`ContainerSupport::backing_container`; SymMap holds `java/util/Collection` and
 routes it) records the pipeline on the stream object it returns -- bookkeeping in the thread's
-`StreamTable`, never an expression: the source's state as the stream read it
-(`ContainerSupport::observed_state`, none for a values view), its view (`SymMap::view_kind`) and
-member count (`ContainerSupport::member_count`). Each modeled intermediate call keeps one stage on
-the stream it returns; every body runs muted. The terminal call runs muted with every stage's
-functional object a callback: an element's first callback is seeded with the source's member (a
-`READ` of the list's state at its position, a map view's `ENTRY`/key by `SymMap::visited_member`,
-under `CONTAINS` of its key), each later one with the previous map's result, and the elements'
+`StreamTable`, never an expression: the source (a weak global handle) and its view
+(`SymMap::view_kind`). Each modeled intermediate call keeps one stage on the stream it returns; every
+body runs muted. Streams bind late: the terminal reads the source's state
+(`ContainerSupport::observed_state`), member count (`ContainerSupport::member_count`) and, for a
+values view of a stateful map, the keys its iteration holds the values under, and names the source
+as the call's (a callback mutating it unstates the result, `CALLBACK_MUTATES_SOURCE`). The terminal
+call runs muted with every stage's functional object a callback: an element's first callback is
+seeded with the source's member (a `READ` of the list's state at its position, a map view's
+`ENTRY`/key by `SymMap::visited_member`, a value's `READ` at its key, the keyed ones where the state
+`CONTAINS` the key), each later one with the previous map's result, and the elements'
 progress is reconstructed from the answers as each callback returns (a sequential pipeline calls
 the stages per element in order and stops an element at the first filter that answers false; a
 `LIMIT` lets an element through while fewer than maxSize passed before it in that world, `SIZE` of
@@ -195,18 +206,25 @@ first version (`ContainerSupport::publish_filled`, `STATE_COLLECT`); a set the s
 chain of its matches (misses for `allMatch`). What the run decided and nothing states is a `PIN` on
 the chain, in the run's polarity: an element a symbolic filter dropped before a stage that calls back
 (`DROPPED`), the members an exhausted limit or a short-circuiting match never pulled
-(`LIMIT_EXHAUSTED`, `SHORT_CIRCUIT`), the members past a stateful source's end (`SOURCE_END`), a
-symbolic maxSize's sign. A result no relation states -- a symbolic element entering `sorted` or
-`distinct`, a symbolic comparator, more members than the snapshot bound, callbacks the
-reconstruction contradicts, a collected list whose members are not the run's, `findFirst`/`findAny`
--- is the run's own concrete value; `forEach`'s action runs seeded, its effects hooked. Each is
-named in the region's model gaps (`ThreadContext::note_model_gap`, §8) as `STREAM_PINNED:<reason>`,
-as is a mapped value or an answer a callback's path decided (`MAP_PATH`, `CALLBACK_PATH`, not
-pinned: the path holds models' concrete-answer conditions too); an unmodeled call ends the recording
-and the rest runs as bytecode, named `STREAM_OPERATION_UNMODELED:<operation>` when the source's
-state or a symbolic bound was in it; and a terminal past the callback window stack runs as bytecode,
-`STREAM_PINNED:CALLBACK_DEPTH`. A pipeline nothing symbolic reached returns the run's result and
-names nothing. `Collectors.toList`/`toSet` are muted to name the collector they return.
+(`LIMIT_EXHAUSTED`, `SHORT_CIRCUIT`), a stateful source holding exactly what the stream pulled
+(`SOURCE_END`: its `SIZE` equals the positions pulled, or the `SIZE` of the chain of the pulled keys
+it `CONTAINS`), a symbolic maxSize's sign. A result no relation states -- a symbolic element entering
+`sorted` or `distinct` (members of a stateful source, or past a symbolic bound, entering one ahead
+of every callback count), a symbolic comparator, a natural order an application `compareTo`
+decided, more members than the snapshot bound, callbacks the reconstruction contradicts (an element
+left waiting for a callback included), a collected list whose members are not the run's, a callback
+mutating the source, `findFirst`/`findAny` -- is the run's own concrete value; `forEach`'s action
+runs seeded, its effects hooked, and each pin, which no chain holds, is only named. Each is named in
+the region's model gaps (`ThreadContext::note_model_gap`, §8) as `STREAM_PINNED:<reason>`, as are a
+mapped value or an answer a callback's path decided (`MAP_PATH`, `CALLBACK_PATH`, not pinned: the
+path holds models' concrete-answer conditions too), application code the body ran unhooked
+(`MUTED_APPLICATION:<class.method>`) and a terminal that unwound (`UNWOUND`); an unmodeled call ends
+the recording and the rest runs as bytecode, named `STREAM_OPERATION_UNMODELED:<operation>` when the
+source's state or a symbolic bound was in it; and a terminal past the callback window stack runs as
+bytecode, `STREAM_PINNED:CALLBACK_DEPTH`. A pipeline nothing symbolic reached returns the run's
+result and names nothing. `Collectors.toList`/`toSet` are muted to name the kind of collector by its
+accumulator, the one non-capturing method reference every such collector holds, so a collector kept
+in a field is known at every use.
 
 ## 5. Shared-state versioning
 
@@ -463,8 +481,8 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   as `{"_type":"TruncatedValue","length":n}`); a method-return symbol states `concreteValue` and
   `call: {holder, name, descriptor, arguments}`.
 - A region's summary (`finishConcolicRegion`) states its `modelGaps`: `{name, site}` per call a
-  model ran on the run's own values though symbolic content reached it (§4, streams), once per name
-  and site; `runtime/ConcolicRegionRuntime#modelGaps` files each as a DIAGNOSTIC `UNSTATED_VALUE`
+  model ran on the run's own values though symbolic content reached it (§4: streams, application code
+  a muted call with callbacks ran unhooked), once per name and site; `runtime/ConcolicRegionRuntime#modelGaps` files each as a DIAGNOSTIC `UNSTATED_VALUE`
   gap whose subject is the name.
 - Natives no engine code calls: `getPathCondition`, `trackContainerExpression`,
   `getSharedFieldVersions`, `getSharedElementVersions`, `getSharedMapVersions`,

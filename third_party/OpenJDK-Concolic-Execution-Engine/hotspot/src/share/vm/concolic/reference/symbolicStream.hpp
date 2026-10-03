@@ -69,13 +69,14 @@ private:
   static void fold_callback(MethodSymbolizerHandle &call,
                             const CallbackResult &result, oop returned,
                             const std::vector<oop> &arguments);
+  static void unwound(MethodSymbolizerHandle &call);
 };
 
 /**
  * One thread's recorded pipelines, by the session id of the stream object
- * that holds them, and the collectors Collectors.toList/toSet made.  Owned
- * by the thread's context, so a pipeline a thread never ended dies with
- * it.
+ * that holds them, and the collector kinds Collectors.toList/toSet named,
+ * by their accumulator.  Owned by the thread's context, so a pipeline a
+ * thread never ended dies with it.
  */
 class StreamTable {
 public:
@@ -86,9 +87,9 @@ public:
   void put(sym_rid_t stream, StreamPipeline *pipeline);
   // Releases ownership.
   StreamPipeline *take(sym_rid_t stream);
-  void name_collector(sym_rid_t collector, int kind);
-  // The kind named, 0 for none; forgets it.
-  int take_collector(sym_rid_t collector);
+  void name_collector(sym_rid_t accumulator, int kind);
+  // The kind named, 0 for none.
+  int collector(sym_rid_t accumulator) const;
 
 private:
   std::map<sym_rid_t, StreamPipeline *> _pipelines;

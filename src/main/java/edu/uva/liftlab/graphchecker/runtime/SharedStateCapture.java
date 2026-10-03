@@ -370,7 +370,8 @@ final class SharedStateCapture {
             "RMW", "UNOBSERVED", "STATE", "STATE_PUT", "STATE_PUT_ALL",
             "STATE_REMOVE", "STATE_REMOVE_IF", "STATE_CLEAR",
             "STATE_REMOVE_AT", "STATE_CLEAR_VIEW", "STATE_ADD",
-            "STATE_APPEND", "STATE_INSERT", "STATE_WRITE", "STATE_COLLECT");
+            "STATE_APPEND", "STATE_INSERT", "STATE_WRITE", "STATE_COLLECT",
+            "STATE_ATTACH");
     /**
      * A reference write's container state (R3-REFCONT §1.1): {@code
      * {ownerSymRid, slot, locationKind: MAP_STATE, fieldVersionId}}, the
@@ -634,7 +635,9 @@ final class SharedStateCapture {
         if (id <= 0L) return "version has no fieldVersionId";
         String versionKind = optionalString(version, "versionKind");
         if (!VERSION_KINDS.contains(versionKind)) {
-            return "version " + id + " has no declared kind";
+            return "version " + id + " has kind \"" + versionKind
+                    + "\", which this jar does not know (a VM image newer"
+                    + " than its jar?)";
         }
         if (!INITIAL_VERSION_KIND.equals(versionKind)
                 && stateVersionKind(versionKind) != mapState) {
