@@ -634,24 +634,32 @@ long refuses), controls as answers keyed by attach endpoint id (`ObligationFacto
 control -- a codec's STR hole -- as its JSON string literal, which the replay plants verbatim; one
 whose model value is no string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
 (an arrival, a read's `concreteValue`, a root) is a literal of the sort its variable is declared at
-by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A model that plants
-nothing its path's session did not run -- no moved clock, no answer, and every assigned root at
-the value that session minted -- would have its replay run that session's world again. Before it
-is refused, the query is asked again with every writer choice held to the writer the recording's
-read observed (`ObligationFactory#heldToRecording`; a container state follows its writer's, and a
-refused term `unsupported__*` has no recorded value and stays free): a model that then plants
-something is the one issued. Else it is refused before any replay (`NOT_ADMITTED`, a DIAGNOSTIC
-`ADMISSION_GAP` under `EXPLORATION`). Assigning roots, all at their recorded values, it names the
-polarity or binding fault that implies; assigning none (`EMPTY_WORLD`), it names the symbols it sets
-that no replay plants (writer choices `wchoice_*`, container states `st__*`, refused terms
-`unsupported__*`) and what the held query answered (SOLR-18413 r5: 67 such focused replays, r7 14,
-r9 2, none ever admitted). The
-parent world is overlaid (model wins) and its flips inherited. Every assigned root must
-have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`). The worker writes
-`obligation_result.jsonl` (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`,
-`gaps.jsonl`, `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)) and the
-schedule cut (`SchedulePrefix.write`, held): the source session's schedule up to the first event or
-mark of the flip occurrence, the focused occurrence or a factor member goes to
+by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A writer choice the
+model sets away from the writer the recording's reads observed, the location's INITIAL among them,
+is a **planted pairing**, counted like an answered handoff (`ObligationFactory#planted`: reader →
+writer, each as CONFIRM names them, `ConfirmMain#writer`; one of a read another session made refuses,
+`PAIRING_UNPLANTABLE`). A pairing is planted only where the recorded ones take no flip: a model
+that moves one is asked again with every writer choice held to the recorded writer
+(`ObligationFactory#heldToRecording`; a container state follows its writer's, and a refused term
+`unsupported__*` has no recorded value and stays free), and a model that then plants something is
+the one issued. A model that plants nothing its path's session did not run -- no moved clock, no
+answer, no pairing, and every assigned root at the value that session minted -- would have its
+replay run that session's world again, and is refused before any replay (`NOT_ADMITTED`, a
+DIAGNOSTIC `ADMISSION_GAP` under `EXPLORATION`). Assigning roots, all at their recorded values, it
+names the polarity or binding fault that implies; assigning none (`EMPTY_WORLD`), it names the
+symbols it sets that no replay plants (container states `st__*`, refused terms `unsupported__*`).
+The parent world is overlaid (model wins: roots, skews, answers, pairings) and its flips inherited.
+Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`,
+`NOT_ADMITTED`). The world's pairings are held by CONFIRM's rows over the session the path was cut
+from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
+for an INITIAL every writer of the location after the read); a pairing that session states no read
+or write of refuses (`PAIRING_UNSTATED`). The worker writes `obligation_result.jsonl`
+(`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`, `gaps.jsonl`,
+`focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)), the pairings'
+`expected_edges.jsonl` and the schedule cut (`SchedulePrefix.write`, held): the source session's
+schedule up to the first event or mark of the flip occurrence, the focused occurrence, a factor
+member, or an occurrence an `ORDER` moves after another's that the session ran first (the
+prefix is followed only up to the first event the pairings reorder) goes to
 `schedule_prefix.jsonl`, the rest to `schedule_suffix.jsonl`.
 
 ### 7.6 The obligation replay
@@ -678,8 +686,10 @@ launcher gets TERM, the kill grace, then KILL), so no replay JVM writes after it
 five JVMs past their bound rewrote the answer ADMITTED during their shutdown hooks, naming sessions
 the worker had withdrawn, and the head waited for them until the campaign failed). `ADMITTED` = the flipped
 decision took the other arm, the focused prefix was not abandoned, the session published a mint row
-for every assigned root and clock skew, and every inherited flip held; anything else is
-`NOT_ADMITTED` naming why. A mint that ran without planting its assignment is a BLOCKING
+for every assigned root and clock skew, every inherited flip held, and every edge of its
+`expected_edges.jsonl` was taken (`runtime.Confirmation`, the world's pairings: a read that did
+not observe its paired writer's version, or an order that stalled, is `PAIRING_UNTAKEN`);
+anything else is `NOT_ADMITTED` naming why. A mint that ran without planting its assignment is a BLOCKING
 `ASSIGNMENT_UNPLANTED` gap of the session. A replay ends once the focus row's `declaredTarget`
 publishes a target row that reached the anchor and observed the fatal (`AT_WITNESS`, §5).
 
@@ -1422,8 +1432,9 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a
   query through a re-pointable reference the write of the state its arm's `referentStates` name,
   §8; a recorded join to an INITIAL is no edge -- no occurrence wrote it, and which access first
-  observes the location is the run's own history (`WriteRow#initial`), and an INITIAL the model
-  chose has no writer to compare), `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
+  observes the location is the run's own history (`WriteRow#initial`) -- and an INITIAL the model
+  chose names writer `INITIAL`, `Confirmation#INITIAL`, which every INITIAL a run logs is to it),
+  `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
   it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); where that activation runs
   as claimed work on a consumer thread (`ActivationRow#claimed`: a server pipeline applying one

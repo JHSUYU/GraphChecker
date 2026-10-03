@@ -112,16 +112,19 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** THE WORLD one session ran in, from its focus row: the recording plus its
-     *  planted roots, clock skews, answers and the flips it was held to (own
-     *  and inherited). A path cut from it exists only there, so a child
-     *  inherits all of it ({@link ObligationFactory#solve} merges, {@link
-     *  FlipQuery} asserts). Empty for the seed and for sessions no worker
-     *  states a focus row for. */
+     *  planted roots, clock skews, answers, pairings and the flips it was
+     *  held to (own and inherited). A path cut from it exists only there, so
+     *  a child inherits all of it ({@link ObligationFactory#solve} merges,
+     *  {@link FlipQuery} asserts). Empty for the seed and for sessions no
+     *  worker states a focus row for. */
     public static final class World {
         public final Map<String, String> rootAssignments;
         public final Map<String, String> clockDeltas;
         public final Map<String, String> answers;
         public final Map<String, String> rootMints;
+        /** Reader -> the writer it was held to, each as a confirmation names
+         *  it ({@code ConfirmMain#holding}). */
+        public final Map<String, String> pairings;
         /** The row's own flip first, then the flips it inherited. */
         public final List<Flip> flips;
 
@@ -129,18 +132,21 @@ public final class Corpus implements Arms.Rows {
               Map<String, String> clockDeltas,
               Map<String, String> answers,
               Map<String, String> rootMints,
+              Map<String, String> pairings,
               List<Flip> flips) {
             this.rootAssignments =
                     Collections.unmodifiableMap(rootAssignments);
             this.clockDeltas = Collections.unmodifiableMap(clockDeltas);
             this.answers = Collections.unmodifiableMap(answers);
             this.rootMints = Collections.unmodifiableMap(rootMints);
+            this.pairings = Collections.unmodifiableMap(pairings);
             this.flips = Collections.unmodifiableList(flips);
         }
 
         /** The seed's world, and that of a session with no worker. */
         static World empty() {
             return new World(new LinkedHashMap<String, String>(),
+                    new LinkedHashMap<String, String>(),
                     new LinkedHashMap<String, String>(),
                     new LinkedHashMap<String, String>(),
                     new LinkedHashMap<String, String>(),

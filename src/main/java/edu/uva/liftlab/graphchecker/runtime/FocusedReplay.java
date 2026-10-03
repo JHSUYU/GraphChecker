@@ -402,6 +402,10 @@ public final class FocusedReplay {
     /** The reason a prefix abandonment opens its gap detail with. */
     private static final String PREFIX_UNMATCHED = "REPLAY_PREFIX_UNMATCHED";
 
+    /** The reason a verdict opens with when a pairing the obligation's
+     *  world plants was not taken: the run is not that world. */
+    static final String PAIRING_UNTAKEN = "PAIRING_UNTAKEN";
+
     /**
      * Keeps the first prefix-abandonment gap, recognised by the reason word
      * it opens with ({@code ConcolicResultPublisher#taskUnanswered}).
@@ -466,17 +470,21 @@ public final class FocusedReplay {
      * is EXPLORE's finding (PIPELINE §7.1), not decided here.
      *
      * <p>FAIL-CLOSED: ADMITTED is a claim about the SESSION's rows, so the
-     * flip alone does not admit -- an abandoned prefix, a missing mint row or
-     * a broken inherited flip is NOT_ADMITTED naming the gap.  A replay a
-     * refusal decided ({@link #refusedAt}) says in each detail that it ended
-     * there.</p>
+     * flip alone does not admit -- an abandoned prefix, a missing mint row,
+     * a broken inherited flip or a pairing its world plants and the run did
+     * not take ({@link Confirmation#close}) is NOT_ADMITTED naming the gap.
+     * A replay a refusal decided ({@link #refusedAt}) says in each detail
+     * that it ended there.</p>
      */
     public static List<ObligationResult> results(String sessionId) {
         load();
         List<ObligationResult> results = new ArrayList<ObligationResult>();
         if (task == null) return results;
+        // Asked outside this class's lock: Confirmation reads its rows under
+        // its own, and asks this class whether it confirms.
+        List<String> untaken = Confirmation.close();
         synchronized (LOCK) {
-            for (ObligationResult result : settled(sessionId)) {
+            for (ObligationResult result : settled(sessionId, untaken)) {
                 results.add(refusedAt.isEmpty() ? result
                         : ObligationResult.of(result.obligationId(),
                                 result.verdict(), result.sessionId(),
@@ -497,7 +505,8 @@ public final class FocusedReplay {
     }
 
     /** What each obligation settled; called under {@link #LOCK}. */
-    private static List<ObligationResult> settled(String sessionId) {
+    private static List<ObligationResult> settled(String sessionId,
+                                                  List<String> untaken) {
         List<ObligationResult> results = new ArrayList<ObligationResult>();
         for (Obligation obligation : OBLIGATIONS) {
             String id = Text.safe(obligation.obligationId());
@@ -507,8 +516,15 @@ public final class FocusedReplay {
             } else if (FLIPPED.contains(id)) {
                 // The one place ADMITTED is stated.
                 String unstated = unstated(obligation);
-                // And the inherited world has to hold.
+                // And the inherited world has to hold, pairings and all
+                // (a CONFIRM run's edges are its decision's to read).
                 if (unstated.isEmpty()) unstated = inherited();
+                if (unstated.isEmpty() && obligation.flips()
+                        && !untaken.isEmpty()) {
+                    unstated = PAIRING_UNTAKEN + ": the world this replay "
+                            + "ran plants pairings it did not take: "
+                            + String.join("; ", untaken);
+                }
                 results.add(unstated.isEmpty()
                         ? ObligationResult.of(id, Verdict.ADMITTED,
                                 sessionId, obligation.flips()

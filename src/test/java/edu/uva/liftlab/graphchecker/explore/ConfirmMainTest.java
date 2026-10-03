@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.google.gson.JsonArray;
@@ -324,9 +323,11 @@ public class ConfirmMainTest {
     }
 
     /**
-     * A model that chose a location's INITIAL for a read is held to no
-     * writer, since none wrote it: every write of the location goes after
-     * the read, and the read sees what it held before them.
+     * A model that chose a location's INITIAL for a read holds the read to
+     * the INITIAL's version, which no occurrence wrote: every write of the
+     * location goes after the read.  An obligation whose world pairs the
+     * read so is held by the same rows ({@link ConfirmMain#holding}), and
+     * the writer the recording ran first is where its prefix ends.
      */
     @Test
     public void aModelThatChoseTheInitialHoldsEveryWriteAfterTheRead()
@@ -354,20 +355,31 @@ public class ConfirmMainTest {
                 .getBytes(StandardCharsets.UTF_8));
         Path out = folder.newFolder("initial-chosen").toPath();
         ConfirmMain.write(iteration, claim, manifest(), out);
-        List<String> orders = new ArrayList<String>();
-        for (JsonObject edge : RowCodec.readJsonl(
-                out.resolve(Confirmation.FILE))) {
-            String kind = edge.get("kind").getAsString();
-            assertFalse("no writer to compare: " + edge, "STATE".equals(kind)
-                    && edge.get("reader").getAsString().equals(
-                    Confirmation.id(reader)));
-            if ("ORDER".equals(kind)) {
-                orders.add(edge.get("before").getAsString() + " < "
-                        + edge.get("after").getAsString());
+        ConfirmMain.Holding paired = ConfirmMain.holding(
+                SessionReader.read(iteration, "sel"),
+                Collections.singletonMap(Confirmation.id(reader),
+                        Confirmation.INITIAL));
+        for (List<JsonObject> edges : Arrays.asList(RowCodec.readJsonl(
+                out.resolve(Confirmation.FILE)), paired.edges)) {
+            List<String> held = new ArrayList<String>();
+            for (JsonObject edge : edges) {
+                String kind = edge.get("kind").getAsString();
+                if ("ORDER".equals(kind)) {
+                    held.add(edge.get("before").getAsString() + " < "
+                            + edge.get("after").getAsString());
+                } else if ("STATE".equals(kind) && edge.get("reader")
+                        .getAsString().equals(Confirmation.id(reader))) {
+                    held.add(edge.get("writer").getAsString() + "@"
+                            + edge.get("version").getAsString());
+                }
             }
+            assertEquals("the INITIAL's version, the write after the read",
+                    Arrays.asList(Confirmation.INITIAL + "@4",
+                            reader.activation() + " < "
+                                    + writer.activation()), held);
         }
-        assertEquals("the write after the read", Collections.singletonList(
-                reader.activation() + " < " + writer.activation()), orders);
+        assertEquals("the write the session ran before the read",
+                Collections.singleton(mint.id()), paired.reordered);
     }
 
     /**

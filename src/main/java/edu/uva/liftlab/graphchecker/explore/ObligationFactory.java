@@ -21,6 +21,8 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
+import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 
 import java.math.BigInteger;
 import java.nio.file.Path;
@@ -141,6 +143,13 @@ public final class ObligationFactory {
          *  with its ORIGINAL obligation id; the replay is held to all ({@code
          *  runtime/FocusedReplay}). */
         public final List<Corpus.Flip> inheritedFlips;
+        /** Reader -> writer, the world's pairings (the model's moved writer
+         *  choices over the parent's), each as a confirmation names it. */
+        public final Map<String, String> pairings;
+        /** The rows that hold the replay to them ({@code
+         *  runtime.Confirmation}) and the occurrences their order moves,
+         *  where the schedule prefix ends ({@link ConfirmMain#holding}). */
+        public final ConfirmMain.Holding holding;
         public final List<GapRow> gaps;
         /** The question asked ({@link #question}). */
         public final String question;
@@ -153,6 +162,8 @@ public final class ObligationFactory {
                         String smt2, Map<String, String> clockDeltas,
                         Map<String, String> rootMints,
                         List<Corpus.Flip> inheritedFlips,
+                        Map<String, String> pairings,
+                        ConfirmMain.Holding holding,
                         List<GapRow> gaps, String question,
                         boolean settles) {
             this.obligation = obligation;
@@ -164,6 +175,8 @@ public final class ObligationFactory {
             this.rootMints = Collections.unmodifiableMap(rootMints);
             this.inheritedFlips =
                     Collections.unmodifiableList(inheritedFlips);
+            this.pairings = Collections.unmodifiableMap(pairings);
+            this.holding = holding;
             this.gaps = Collections.unmodifiableList(gaps);
         }
 
@@ -189,7 +202,8 @@ public final class ObligationFactory {
                 verdict, "", detail), query,
                 Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(),
-                Collections.<Corpus.Flip>emptyList(), gaps, question,
+                Collections.<Corpus.Flip>emptyList(),
+                Collections.<String, String>emptyMap(), null, gaps, question,
                 settles);
     }
 
@@ -332,7 +346,8 @@ public final class ObligationFactory {
                         : "refused: " + built.refusal).append('\n')
                 .append(new TreeMap<String, String>(world.rootAssignments))
                 .append(new TreeMap<String, String>(world.clockDeltas))
-                .append(new TreeMap<String, String>(world.answers));
+                .append(new TreeMap<String, String>(world.answers))
+                .append(new TreeMap<String, String>(world.pairings));
         for (Corpus.Flip flip : world.flips) {
             // Never the id it was first asked under: ids drift.
             text.append('\n').append(flip.focusedOccurrenceId).append('|')
@@ -512,12 +527,16 @@ public final class ObligationFactory {
                 new LinkedHashMap<String, String>();
         final Map<String, String> answers =
                 new LinkedHashMap<String, String>();
+        /** Reader -> writer: the writer choices the model moved off the
+         *  recording ({@link ConfirmMain#writer}). */
+        final Map<String, String> pairings =
+                new LinkedHashMap<String, String>();
         final List<String> unproducible = new ArrayList<String>();
         /** Why no replay can run it, or "". */
         String refusal = "";
     }
 
-    /** The roots, clock skews and answers one model assigns. */
+    /** The roots, clock skews, answers and pairings one model assigns. */
     private static Planted planted(Corpus corpus, Candidate candidate,
                                    FlipQuery.Built built,
                                    Map<String, String> values,
@@ -586,29 +605,57 @@ public final class ObligationFactory {
                 planted.unproducible.add(control.attachEndpointId);
             }
         }
+        // A writer the model chose that is not the one the recording's reads
+        // observed is a pairing the replay is held to, the location's
+        // INITIAL among them; a read another session made is no event of
+        // the world this replay runs.
+        for (FlipQuery.WriterChoice choice : built.choices) {
+            String chosen = "";
+            for (String selector : choice.writes.keySet()) {
+                if ("true".equals(values.get(selector))) chosen = selector;
+            }
+            if (chosen.isEmpty() || chosen.equals(choice.recorded)) continue;
+            WriteRow write = choice.writes.get(chosen);
+            for (ReadRow read : choice.reads) {
+                if (write == null || !read.sessionId().equals(
+                        candidate.path.sessionId)) {
+                    planted.refusal = "PAIRING_UNPLANTABLE: the model takes "
+                            + "the other arm with read " + read.endpoint()
+                            + " of session " + read.sessionId() + " paired "
+                            + "to " + (write == null ? "an arm stating no "
+                            + "write" : "writer " + ConfirmMain.writer(write))
+                            + ", and the replay runs the world of "
+                            + candidate.path.sessionId;
+                    return planted;
+                }
+                planted.pairings.put(Confirmation.id(read.endpoint()),
+                        ConfirmMain.writer(write));
+            }
+        }
         return planted;
     }
 
     /**
      * Why this model plants nothing its path's own session did not already
-     * run, or "": no clock moved, no handoff answered, and every assigned
-     * root at the value that session ran it at (none assigned included) --
-     * its mint's, or, where it read the root and minted none, its stated
-     * reading ({@link Corpus#rootValue}).  The
-     * replay it asks for then runs the world that session ran -- its path's
-     * world, inherited whole -- and a replay sets nothing else: which writer
-     * a read observes ({@code wchoice_*}), a container's state ({@code
-     * st__*}) and a term the lowering refused ({@code unsupported__*}) are
-     * the run's, never planted.  A moved clock is a counterfactual of its
-     * own and is checked FIRST (a pinned root beside moved clocks is not
-     * that replay).  Asked of the model's own skews, roots and answers,
-     * before the parent's world is laid under them.
+     * run, or "": no clock moved, no handoff answered, no writer choice
+     * moved off the recording, and every assigned root at the value that
+     * session ran it at (none assigned included) -- its mint's, or, where it
+     * read the root and minted none, its stated reading ({@link
+     * Corpus#rootValue}).  The replay it asks for then runs the world that
+     * session ran -- its path's world, inherited whole -- and a replay sets
+     * nothing else: a container's state ({@code st__*}) follows its writer's
+     * and a term the lowering refused ({@code unsupported__*}) is the run's,
+     * never planted.  A moved clock is a counterfactual of its own and is
+     * checked FIRST (a pinned root beside moved clocks is not that replay).
+     * Asked of the model's own skews, roots, answers and pairings, before
+     * the parent's world is laid under them.
      */
     private static String plantsNothing(Corpus corpus, Candidate candidate,
                                         FlipQuery.Built built,
                                         Map<String, String> values,
                                         Planted planted) {
-        if (movesAClock(planted.clockDeltas) || !planted.answers.isEmpty()) {
+        if (movesAClock(planted.clockDeltas) || !planted.answers.isEmpty()
+                || !planted.pairings.isEmpty()) {
             return "";
         }
         List<String> same = new ArrayList<String>();
@@ -646,10 +693,11 @@ public final class ObligationFactory {
                 run.add(symbol);
             }
         }
-        return "EMPTY_WORLD: the model assigns no root, moves no clock and "
-                + "answers no handoff, so the replay it asks for would run "
-                + "the world of " + candidate.path.sessionId + " again, "
-                + "where " + candidate.decision.siteId() + "#"
+        return "EMPTY_WORLD: the model assigns no root, moves no clock, "
+                + "answers no handoff and moves no writer choice, so the "
+                + "replay it asks for would run the world of "
+                + candidate.path.sessionId + " again, where "
+                + candidate.decision.siteId() + "#"
                 + candidate.decision.ordinal() + " took "
                 + candidate.decision.outcome() + "; the " + run.size()
                 + " symbol(s) it sets are ones no replay plants"
@@ -660,16 +708,17 @@ public final class ObligationFactory {
 
     /**
      * The query with every writer choice held to the writer the recording's
-     * read observed ({@link FlipQuery.Built#recordedChoices}); a container
+     * reads observed ({@link FlipQuery.WriterChoice#recorded}); a container
      * state follows its writer's.  A term the lowering refused ({@code
      * unsupported__*}) has no recorded value and stays free.  "" when the
      * query has no writer choice to hold.
      */
     private static String heldToRecording(FlipQuery.Built built) {
         StringBuilder held = new StringBuilder();
-        for (String selector : built.recordedChoices) {
-            if (built.modelSymbols.contains(selector)) {
-                held.append("(assert ").append(selector).append(")\n");
+        for (FlipQuery.WriterChoice choice : built.choices) {
+            if (built.modelSymbols.contains(choice.recorded)) {
+                held.append("(assert ").append(choice.recorded)
+                        .append(")\n");
             }
         }
         return held.length() == 0 ? "" : built.smt2 + held;
@@ -795,53 +844,38 @@ public final class ObligationFactory {
             return refused(candidate, Verdict.NOT_ADMITTED, planted.refusal,
                     query, gaps, question);
         }
-        // A model that plants nothing its path's session did not run asks
-        // for that session's replay again (PIPELINE §7: exploration collects
-        // arms the corpus lacks).  Before it is refused, the query is asked
-        // again with every writer choice held to the recorded writer: a
-        // model that then plants something is the one to run.  DIAGNOSTIC
-        // under EXPLORATION, never BLOCKING in the recording's ledger.
-        String nothing = plantsNothing(corpus, candidate, built,
-                answer.values(), planted);
-        // An undecided held query leaves the refusal unsettled.
-        boolean decided = true;
-        if (!nothing.isEmpty()) {
+        // A pairing is planted only where the recorded ones take no flip:
+        // a model that moves a writer choice is asked again with every
+        // choice held to the writer the recording's reads observed, and one
+        // that then plants something is the one run -- a root moved under
+        // the run's own pairings, which no order has to realize.
+        if (!planted.pairings.isEmpty()) {
             String held = heldToRecording(built);
-            String holding = "; with every writer choice held to the "
-                    + "writer the recording observed, ";
-            if (held.isEmpty()) {
-                nothing += "; the query has no writer choice to hold to the "
-                        + "recording";
-            } else {
-                Z3.Answer again = solver.ask(held, built.modelSymbols, false);
-                if (!again.decided()) {
-                    decided = false;
-                    nothing += holding + "the solver did not decide ("
-                            + again.status() + ")";
-                } else if (!again.sat()) {
-                    nothing += holding + "no model takes the other arm";
-                } else {
-                    Planted recorded = planted(corpus, candidate, built,
-                            again.values(), gaps);
-                    if (recorded.refusal.isEmpty() && plantsNothing(corpus,
-                            candidate, built, again.values(), recorded)
-                            .isEmpty()) {
-                        planted = recorded;
-                        query = Z3.modelQuery(held, built.modelSymbols);
-                        nothing = "";
-                    } else {
-                        nothing += holding + "the model still plants "
-                                + "nothing a replay can run";
-                    }
+            Z3.Answer again = held.isEmpty() ? null
+                    : solver.ask(held, built.modelSymbols, false);
+            if (again != null && again.decided() && again.sat()) {
+                Planted recorded = planted(corpus, candidate, built,
+                        again.values(), gaps);
+                if (recorded.refusal.isEmpty() && plantsNothing(corpus,
+                        candidate, built, again.values(), recorded)
+                        .isEmpty()) {
+                    planted = recorded;
+                    query = Z3.modelQuery(held, built.modelSymbols);
                 }
             }
         }
+        // A model that plants nothing its path's session did not run asks
+        // for that session's replay again (PIPELINE §7: exploration collects
+        // arms the corpus lacks).  DIAGNOSTIC under EXPLORATION, never
+        // BLOCKING in the recording's ledger.
+        String nothing = plantsNothing(corpus, candidate, built,
+                answer.values(), planted);
         if (!nothing.isEmpty()) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,
                     nothing));
             return refused(candidate, Verdict.NOT_ADMITTED, nothing, query,
-                    gaps, question, decided);
+                    gaps, question);
         }
         // The world this flip extends ({@link Corpus.World}): the parent's
         // values are the floor, the model overlays them (model wins), and the
@@ -853,6 +887,18 @@ public final class ObligationFactory {
                 overlay(inherited.clockDeltas, planted.clockDeltas);
         Map<String, String> answers =
                 overlay(inherited.answers, planted.answers);
+        Map<String, String> pairings =
+                overlay(inherited.pairings, planted.pairings);
+        // The world's pairings held as CONFIRM holds a model's, over the
+        // session the path was cut from (ConfirmMain#holding).
+        ConfirmMain.Holding holding;
+        try {
+            holding = ConfirmMain.holding(
+                    corpus.session(candidate.path.sessionId), pairings);
+        } catch (ConfirmMain.Refused unheld) {
+            return refused(candidate, Verdict.NOT_ADMITTED,
+                    unheld.getMessage(), query, gaps, question);
+        }
         Obligation solved = Obligation.of(id, candidate.task.taskId(),
                 candidate.path.pathId, decision.siteId(), decision.ordinal(),
                 !decision.outcome(), roots, answers, planted.unproducible);
@@ -888,11 +934,12 @@ public final class ObligationFactory {
                 Verdict.SAT_MODEL_READY, "", "the flip at "
                         + decision.siteId() + "#" + decision.ordinal()
                         + " is reachable under " + roots.size()
-                        + " root value(s) and " + answers.size()
-                        + " answered handoff(s), planted at " + mints.size()
+                        + " root value(s), " + answers.size()
+                        + " answered handoff(s) and " + pairings.size()
+                        + " planted pairing(s), planted at " + mints.size()
                         + " mint(s)"),
-                query, clockDeltas, mints, inherited.flips, gaps, question,
-                false);
+                query, clockDeltas, mints, inherited.flips, pairings,
+                holding, gaps, question, false);
     }
 
     /**

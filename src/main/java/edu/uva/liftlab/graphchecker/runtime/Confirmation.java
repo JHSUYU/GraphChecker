@@ -42,6 +42,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * this program: it goes on, and the stall is a {@code CONFIRM_MISMATCH}, so
  * the claim is not confirmed.  Any other difference is one too.</p>
  *
+ * <p>An obligation replay whose world plants pairings
+ * ({@code explore.ObligationFactory}) is handed the same rows over them:
+ * held to the same order, and an edge it did not take un-admits it
+ * ({@code FocusedReplay}, {@code PAIRING_UNTAKEN}).</p>
+ *
  * <p>WIRE is compared at the attach, where the producer is known -- a
  * codec's hole at its mint, by the store version its message was and the
  * text it decoded too (WIRE-CODEC §6.5); STATE at the close, since a
@@ -52,6 +57,12 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  */
 public final class Confirmation {
     public static final String FILE = "expected_edges.jsonl";
+    /**
+     * The writer a STATE row names for a location's INITIAL
+     * ({@code contract.WriteRow#initial}): no occurrence wrote it, and the
+     * access its row stands at is whichever first observed the location.
+     */
+    public static final String INITIAL = "INITIAL";
     /** How long an activation waits for those ordered before it, in ms. */
     public static final String ORDER_TIMEOUT_PROPERTY =
             "causynth.confirm.order.timeout.ms";
@@ -174,10 +185,12 @@ public final class Confirmation {
         }
     }
 
-    static void wrote(LocationId location, long version, Endpoint writer) {
+    static void wrote(LocationId location, long version, Endpoint writer,
+                      boolean initial) {
         if (!expected() || location == null || writer == null) return;
         synchronized (LOCK) {
-            WROTE.put(key(location, version), id(writer));
+            WROTE.put(key(location, version), initial ? INITIAL
+                    : id(writer));
         }
     }
 

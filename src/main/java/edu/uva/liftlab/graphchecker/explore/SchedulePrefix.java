@@ -16,7 +16,9 @@ import java.util.Map;
 /**
  * The schedule half of a task's world, cut at the target (first event or
  * opening mark of the focused occurrence, its factor, or the flip's
- * occurrence). Before the cut the replay follows the discovering run's order;
+ * occurrence), or earlier at the first occurrence an ORDER of the world's
+ * pairings moves after another's ({@code ConfirmMain#holding}): the order the
+ * prefix follows is the one the pairings change. Before the cut the replay follows the discovering run's order;
  * past it the flip runs free, but each timeout WAKE in {@link #REST_FILE} still
  * waits for the events it followed ({@code runtime.ScheduleLog}) -- on a slower
  * replay's wall clock every daemon would be due at once. No cut found: whole

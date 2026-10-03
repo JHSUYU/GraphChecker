@@ -467,7 +467,7 @@ public final class RowRuntime {
                 version, ref, type)
                 : WriteRow.of(sessionId(), sequenced, at, location, version,
                 ref, type, referent, referentRefused));
-        Confirmation.wrote(location, version, at);
+        Confirmation.wrote(location, version, at, initial);
     }
 
     /**
@@ -1092,7 +1092,8 @@ public final class RowRuntime {
             gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING,
                     sessionId(), shortfall);
         }
-        // CONFIRM (b) edges only the whole run can answer for.
+        // CONFIRM (b) edges only the whole run can answer for, and the
+        // pairings an obligation's world plants (FocusedReplay#results).
         for (String mismatch : Confirmation.close()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC,
                     mismatch.substring(0, mismatch.indexOf(':')), mismatch);

@@ -40,6 +40,7 @@ import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
 import org.junit.Assume;
@@ -3424,21 +3425,20 @@ public class ExploreTest {
                 skew + 1000L <= 100000L - ClockMargin.margin(1_000_000L));
     }
 
-    // ---- (6a) a flip no replay can plant is refused before its replay --
+    // ---- (6a) a flip only another writer takes plants that pairing -----
 
     /**
-     * A model that assigns no root, moves no clock and answers no handoff
-     * asks for a replay of the world its path already ran: it takes the
-     * other arm only through which writer a read observes, which no replay
-     * sets.  SOLR-18413 r5: all 67 focused replays were such, each ended
-     * NOT_ADMITTED after 10 to 22 minutes; now the solver says so.
+     * A model that takes the other arm only through which writer a read
+     * observes plants that pairing: the focus row states it, and the replay
+     * is held to it by CONFIRM's rows (SOLR-18413 r5: 67 such focused
+     * replays ran the world they were cut from again, each NOT_ADMITTED).
      */
     @Test
-    public void aFlipOnlyAnotherWriterTakesIsRefusedBeforeItsReplay()
+    public void aFlipOnlyAnotherWriterTakesPlantsThatPairing()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        Path iteration = twoWriters("empty-world", "(= M_READ_KEY 2)", null);
-        Path out = tree.newFolder("empty-world-out").toPath();
+        Path iteration = twoWriters("paired-world", "(= M_READ_KEY 2)", null);
+        Path out = tree.newFolder("paired-world-out").toPath();
         Path wave = out.resolve("obligations-0000");
         plan(iteration, TARGET_SELECTOR, null,
                 out.resolve("results.jsonl"), wave, 0);
@@ -3447,23 +3447,35 @@ public class ExploreTest {
         Worker worker = solve(iteration, wave, lookup, out, "w0");
         assertTrue("the other writer is the flip's only way: "
                 + query(worker), query(worker).contains("wchoice_"));
-        assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
-        assertTrue(detail(worker), detail(worker).startsWith("EMPTY_WORLD: "
-                + "the model assigns no root, moves no clock and answers no "
-                + "handoff, so the replay it asks for would run the world of "
-                + "s-seed again")
-                && detail(worker).endsWith("; with every writer choice held "
-                + "to the writer the recording observed, no model takes the "
-                + "other arm"));
-        assertEquals("and no replay is asked for", 0L, Files.size(
-                worker.directory.resolve(ObligationDir.FOCUSED_TASK)));
+        assertEquals(detail(worker), Verdict.SAT_MODEL_READY, worker.verdict);
+        assertTrue(detail(worker),
+                detail(worker).contains("1 planted pairing(s)"));
+        JsonObject pairings = RowCodec.readJsonl(worker.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0)
+                .getAsJsonObject("pairings");
+        String reader = Confirmation.id(LOOKED_UP);
+        assertEquals(pairings.toString(), 1, pairings.size());
+        String writer = pairings.get(reader).getAsString();
+        assertFalse("another writer than the one the read observed",
+                writer.equals(Confirmation.id(STORED)));
+        List<String> state = new ArrayList<String>();
+        for (JsonObject edge : RowCodec.readJsonl(
+                worker.directory.resolve(Confirmation.FILE))) {
+            if ("STATE".equals(edge.get("kind").getAsString())) {
+                state.add(edge.get("reader").getAsString() + " -> "
+                        + edge.get("writer").getAsString());
+            }
+        }
+        assertEquals(Collections.singletonList(reader + " -> " + writer),
+                state);
     }
 
     /**
-     * A model that plants nothing is asked again with every writer choice
+     * A model that moves a writer choice is asked again with every choice
      * held to the recorded writer; one that then plants a root is the one
-     * run.  The nearest-world objective keeps the root at its recording and
-     * lets the other writer take the arm; held, only the root can.
+     * run, and no pairing is.  The nearest-world objective keeps the root
+     * at its recording and lets the other writer take the arm; held, only
+     * the root can.
      */
     @Test
     public void aModelHeldToTheRecordedWriterPlantsTheRootInstead()
@@ -3506,8 +3518,8 @@ public class ExploreTest {
         Obligation lookup = named(obligations(wave0), "Lookup#u8");
         Worker first = solve(iteration, wave0, lookup, out, "w0");
         String asked = new String(Files.readAllBytes(first.directory
-                .resolve(ObligationDir.QUESTION)), StandardCharsets.UTF_8)
-                .trim();
+                .resolve(ObligationDir.QUESTION_ASKED)),
+                StandardCharsets.UTF_8).trim();
         assertEquals("the question's first half is the flip a round holds "
                         + "in flight (Frontier#inFlight)",
                 ObligationFactory.flip(lookup.taskId(), lookup.pathId(),
@@ -3523,7 +3535,7 @@ public class ExploreTest {
         answer(iteration, "OB.admitted", ObligationDir.QUESTION, asked,
                 Verdict.ADMITTED, "S.gone", "flipped");
         Worker again = solve(iteration, wave0, lookup, out, "w1");
-        assertTrue(detail(again), detail(again).startsWith("EMPTY_WORLD"));
+        assertEquals(detail(again), Verdict.SAT_MODEL_READY, again.verdict);
         // Settled under an id that has since drifted: its answer, no solver.
         answer(iteration, "OB.drifted", ObligationDir.QUESTION, asked,
                 Verdict.NOT_ADMITTED, "", "refused");

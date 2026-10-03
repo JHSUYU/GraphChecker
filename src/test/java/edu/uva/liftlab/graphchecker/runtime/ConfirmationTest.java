@@ -186,10 +186,10 @@ public class ConfirmationTest {
         // it, so the state edge is answered at the close.
         Confirmation.read(reader, cell, 121L,
                 edu.uva.liftlab.graphchecker.contract.ReadRow.UNKNOWN_VERSION);
-        Confirmation.wrote(cell, 121L, other);
+        Confirmation.wrote(cell, 121L, other, false);
         Confirmation.read(turn(1), cell, 123L,
                 edu.uva.liftlab.graphchecker.contract.ReadRow.UNKNOWN_VERSION);
-        Confirmation.wrote(cell, 123L, writer);
+        Confirmation.wrote(cell, 123L, writer, false);
         List<String> close = Confirmation.close();
         assertEquals(close.toString(), 2, close.size());
         assertTrue(close.get(0), close.get(0).startsWith("STATE "
@@ -199,6 +199,45 @@ public class ConfirmationTest {
                 + other.id()));
         assertTrue(close.get(1), close.get(1).contains(absent.id())
                 && close.get(1).endsWith("the run never read here"));
+    }
+
+    /**
+     * An obligation replay whose world pairs a read with its location's
+     * INITIAL is admitted only where the read observed the INITIAL's
+     * version: the flip taken over another pairing is not that world.
+     */
+    @Test
+    public void anObligationReplayIsAdmittedOnlyOverItsPairing()
+            throws Exception {
+        Endpoint reader = endpoint(ANCHOR, "a.Handler#handle()#12:READ");
+        Endpoint first = endpoint(ANCHOR, "a.Handler#handle()#12:INITIAL");
+        Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
+        LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
+        String site = "<a.Handler: void handle()>#u8";
+        OccurrenceAddress anchor = OccurrenceAddress.parse(ANCHOR);
+        for (boolean taken : new boolean[]{true, false}) {
+            handed("{\"taskId\":\"T\",\"obligationId\":\"OBL.1\","
+                    + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
+                    + "\"focusedOccurrenceId\":\"" + anchor.id() + "\","
+                    + "\"seedSessionId\":\"seed\",\"flip\":{\"siteId\":\""
+                    + site + "\",\"ordinal\":1,\"outcome\":true}}\n",
+                    Arrays.asList("{\"kind\":\"STATE\",\"reader\":\""
+                            + reader.id() + "\",\"writer\":\""
+                            + Confirmation.INITIAL + "\",\"version\":\"4\"}"));
+            FocusedReplay.observeDecision(anchor, site, 1, true);
+            Confirmation.wrote(cell, 4L, taken ? first : writer, true);
+            if (!taken) Confirmation.wrote(cell, 5L, writer, false);
+            Confirmation.read(reader, cell, taken ? 4L : 5L,
+                    edu.uva.liftlab.graphchecker.contract.ReadRow
+                            .UNKNOWN_VERSION);
+            String detail = FocusedReplay.results("s").get(0).detail();
+            assertEquals(detail, taken ? Verdict.ADMITTED
+                            : Verdict.NOT_ADMITTED,
+                    FocusedReplay.results("s").get(0).verdict());
+            assertEquals(detail, !taken,
+                    detail.startsWith("PAIRING_UNTAKEN: "));
+            reset();
+        }
     }
 
     /** The poll's read at one turn of its loop. */

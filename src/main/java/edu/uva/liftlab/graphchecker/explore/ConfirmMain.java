@@ -294,7 +294,13 @@ public final class ConfirmMain {
         // The edges the model chose.
         List<JsonObject> edges = new ArrayList<JsonObject>();
         edges.addAll(wireEdges(arms, armSessions));
-        edges.addAll(stateEdges(closure, chosen, restsOn));
+        List<ReadRow> resting = new ArrayList<ReadRow>();
+        for (ReadRow read : closure.readers.values()) {
+            if (restsOn.contains(SmtLowering.locationKey(read.location()))) {
+                resting.add(read);
+            }
+        }
+        edges.addAll(stateEdges(closure, resting, chosen).edges);
         edges.addAll(markers);
         JsonObject anchorRow = new JsonObject();
         anchorRow.addProperty("kind", "ANCHOR");
@@ -309,7 +315,8 @@ public final class ConfirmMain {
                 Collections.<OccurrenceAddress>emptyList(),
                 Obligation.confirming(OBLIGATION_ID, OBLIGATION_ID, pathId,
                         assignments, answers, Collections.<String>emptyList()),
-                Collections.<Corpus.Flip>emptyList(), clockDeltas, mints, cut);
+                Collections.<Corpus.Flip>emptyList(), clockDeltas, mints,
+                Collections.<String, String>emptyMap(), cut);
         // {@code flip: null} is the statement: serialize nulls.
         Files.write(out.resolve(ObligationDir.FOCUSED_TASK),
                 (new GsonBuilder().serializeNulls().create().toJson(focus)
@@ -912,14 +919,31 @@ public final class ConfirmMain {
          * program order already orders them.  The hold is the last
          * activation entry before the event on its thread
          * ({@link #holdBefore}), or the send that started claimed work
-         * ({@link #held}).
+         * ({@link #held}).  Where the session ran {@code then} first, the
+         * order moves the held occurrence's events after {@code first}'s:
+         * it is {@code reordered}.
          */
-        private void order(Set<String> orders, Endpoint first, Endpoint then,
-                           long thenSeq) {
+        private void order(Holding holding, Endpoint first, long firstSeq,
+                           Endpoint then, long thenSeq) {
             if (first.occurrence().id().equals(then.occurrence().id())) return;
-            orders.add(Confirmation.activation(first.occurrence(),
+            Hold hold = held(then, thenSeq);
+            holding.orders.add(Confirmation.activation(first.occurrence(),
                     ExecutionIndex.of(first.activationFrames())) + "\n"
-                    + held(then, thenSeq));
+                    + hold.activation);
+            if (thenSeq < firstSeq) holding.reordered.add(hold.occurrence);
+        }
+
+        /** Where an event is held: the activation entry, and the
+         *  occurrence it is of. */
+        private static final class Hold {
+            private final String occurrence;
+            private final String activation;
+
+            private Hold(OccurrenceAddress occurrence, List<Frame> frames) {
+                this.occurrence = occurrence.id();
+                this.activation = Confirmation.activation(occurrence,
+                        ExecutionIndex.of(frames));
+            }
         }
 
         /**
@@ -930,7 +954,7 @@ public final class ConfirmMain {
          * server applies a getData on the thread that must apply the
          * delete ordered before it, so the client's getData is held.
          */
-        private String held(Endpoint event, long seq) {
+        private Hold held(Endpoint event, long seq) {
             Endpoint send;
             try {
                 send = Confirmation.submitter(event.occurrence(),
@@ -939,8 +963,7 @@ public final class ConfirmMain {
                 throw new Refused(unheld.getMessage());
             }
             return send == null ? holdBefore(event, seq)
-                    : Confirmation.activation(send.occurrence(),
-                    ExecutionIndex.of(send.activationFrames()));
+                    : new Hold(send.occurrence(), send.activationFrames());
         }
 
         /**
@@ -955,7 +978,7 @@ public final class ConfirmMain {
          * it there waits out the order's timeout.  The last call before the
          * read (the poll's {@code getRoutingRules}) is entered after.
          */
-        private String holdBefore(Endpoint event, long seq) {
+        private Hold holdBefore(Endpoint event, long seq) {
             List<Frame> own = event.activationFrames();
             List<Frame> hold = own;
             long latest = Long.MIN_VALUE;
@@ -970,12 +993,12 @@ public final class ConfirmMain {
                 latest = other.seq;
                 hold = other.frames.subList(0, own.size() + 1);
             }
-            return Confirmation.activation(event.occurrence(),
-                    ExecutionIndex.of(hold));
+            return new Hold(event.occurrence(), hold);
         }
 
-        private StateClosure(SessionReader session, OccurrenceAddress anchor,
-                             long cutoff) {
+        /** Where the session's events sat, and its writes: what an ORDER is
+         *  built from ({@link #order}), with no closure. */
+        private StateClosure(SessionReader session) {
             for (ActivationRow activation : session.activations()) {
                 activations.putIfAbsent(activation.occurrence().id(),
                         activation);
@@ -996,6 +1019,11 @@ public final class ConfirmMain {
                         write.location()),
                         key -> new ArrayList<WriteRow>()).add(write);
             }
+        }
+
+        private StateClosure(SessionReader session, OccurrenceAddress anchor,
+                             long cutoff) {
+            this(session);
             Map<String, List<ReadRow>> readsOn =
                     new LinkedHashMap<String, List<ReadRow>>();
             for (ReadRow read : session.reads()) {
@@ -1136,61 +1164,69 @@ public final class ConfirmMain {
     }
 
     /**
-     * STATE and ORDER edges over the join closure at the locations the
-     * fatal rests on ({@code restsOn}): every such join, the write the model
-     * chose or else the one the run read -- the run is held to no recorded
-     * order, so a pinned join is the model's as much as a choice.  A read
-     * elsewhere holds no value the witness needs; under a moved root the run
-     * may make it at another endpoint or not at all (r7 hdfs-17960: the
-     * fsimage's name maps, re-serialized after the flip).  A read no row
-     * answers is held only where the model chose a writer for it; otherwise
-     * its outside store is the run's own -- and so is an INITIAL
-     * ({@link WriteRow#initial}).  An INITIAL the model chose is no writer
-     * to compare: every write of its location goes after the read.
-     * Endpoints and activations are named as every delivery of their stored
-     * message is ({@link Confirmation#id}).
+     * The rows that hold a replay to pairings, and the occurrences the
+     * order they need moves: {@code reordered}, each held where the session
+     * ran it before what the order puts first.
      */
-    private static List<JsonObject> stateEdges(StateClosure closure,
-                                               Map<String, WriteRow> chosen,
-                                               Set<String> restsOn) {
-        List<JsonObject> edges = new ArrayList<JsonObject>();
-        Set<String> orders = new LinkedHashSet<String>();
-        for (Map.Entry<String, ReadRow> reader : closure.readers.entrySet()) {
-            ReadRow read = reader.getValue();
-            if (!restsOn.contains(SmtLowering.locationKey(read.location()))) {
-                continue;
-            }
-            WriteRow held = chosen.containsKey(reader.getKey())
-                    ? chosen.get(reader.getKey())
-                    : closure.joined.get(reader.getKey());
+    static final class Holding {
+        final List<JsonObject> edges = new ArrayList<JsonObject>();
+        final Set<String> reordered = new LinkedHashSet<String>();
+        /** Each ORDER as "before\nafter", once. */
+        private final Set<String> orders = new LinkedHashSet<String>();
+    }
+
+    /**
+     * STATE and ORDER edges for {@code reads}: CONFIRM's over the join
+     * closure at the locations the fatal rests on, an obligation's over the
+     * reads its world pairs ({@link #holding}).  Each read is held to the
+     * write chosen for it or else the one it joined -- the run is held to no
+     * recorded order, so a pinned join is the model's as much as a choice.
+     * A read elsewhere holds no value the witness needs; under a moved root
+     * the run may make it at another endpoint or not at all (r7 hdfs-17960:
+     * the fsimage's name maps, re-serialized after the flip).  A read no
+     * row answers is held only where a writer was chosen for it; otherwise
+     * its outside store is the run's own -- and so is an INITIAL the run
+     * joined ({@link WriteRow#initial}).  A chosen INITIAL is the version
+     * the read must observe ({@link Confirmation#INITIAL}), and every write
+     * of its location goes after the read.  Endpoints and activations are
+     * named as every delivery of their stored message is
+     * ({@link Confirmation#id}).
+     */
+    private static Holding stateEdges(StateClosure closure,
+                                      List<ReadRow> reads,
+                                      Map<String, WriteRow> chosen) {
+        Holding holding = new Holding();
+        for (ReadRow read : reads) {
+            String reader = read.endpoint().id();
+            WriteRow held = chosen.containsKey(reader) ? chosen.get(reader)
+                    : closure.joined.get(reader);
             // A join to the INITIAL the run took holds nothing: no
             // occurrence wrote it, only whichever access first observed the
             // location, which is the run's own history.
-            if (held == null || !chosen.containsKey(reader.getKey())
+            if (held == null || !chosen.containsKey(reader)
                     && held.initial()) {
                 continue;
             }
             String location = SmtLowering.locationKey(held.location());
             // A mint read lands on whichever racing occurrence reads the cell
             // first, so it is held by the writer (runtime/Confirmation), not
-            // the reader.
+            // the reader; an INITIAL has none.
             boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
+            if (mint && held.initial()) continue;
+            JsonObject edge = new JsonObject();
+            edge.addProperty("kind", "STATE");
+            edge.addProperty("reader", Confirmation.id(read.endpoint()));
+            edge.addProperty("readerAnyTurn",
+                    Confirmation.anyTurn(read.endpoint()));
+            edge.addProperty("mint", mint);
+            edge.addProperty("writer", writer(held));
+            edge.addProperty("version", held.version());
+            edge.addProperty("location", location);
+            holding.edges.add(edge);
+            if (mint) continue;
             if (!held.initial()) {
-                JsonObject edge = new JsonObject();
-                edge.addProperty("kind", "STATE");
-                edge.addProperty("reader", Confirmation.id(read.endpoint()));
-                edge.addProperty("readerAnyTurn",
-                        Confirmation.anyTurn(read.endpoint()));
-                edge.addProperty("mint", mint);
-                edge.addProperty("writer", Confirmation.id(held.endpoint()));
-                edge.addProperty("version", held.version());
-                edge.addProperty("location", location);
-                edges.add(edge);
-                if (mint) continue;
-                closure.order(orders, held.endpoint(), read.endpoint(),
-                        read.seq());
-            } else if (mint) {
-                continue;
+                closure.order(holding, held.endpoint(), held.seq(),
+                        read.endpoint(), read.seq());
             }
             // No other writer of the location it reads between the two: one
             // recorded before the write goes before it, any other after the
@@ -1201,23 +1237,87 @@ public final class ConfirmMain {
                     continue;
                 }
                 if (!held.initial() && other.seq() < held.seq()) {
-                    closure.order(orders, other.endpoint(), held.endpoint(),
-                            held.seq());
+                    closure.order(holding, other.endpoint(), other.seq(),
+                            held.endpoint(), held.seq());
                 } else {
-                    closure.order(orders, read.endpoint(), other.endpoint(),
-                            other.seq());
+                    closure.order(holding, read.endpoint(), read.seq(),
+                            other.endpoint(), other.seq());
                 }
             }
         }
-        for (String order : orders) {
+        for (String order : holding.orders) {
             String[] ends = order.split("\n", 2);
             JsonObject row = new JsonObject();
             row.addProperty("kind", "ORDER");
             row.addProperty("before", ends[0]);
             row.addProperty("after", ends[1]);
-            edges.add(row);
+            holding.edges.add(row);
         }
-        return edges;
+        return holding;
+    }
+
+    /** The writer a STATE row names: its endpoint as {@link Confirmation#id}
+     *  names it, or {@link Confirmation#INITIAL}, which no occurrence
+     *  wrote. */
+    static String writer(WriteRow write) {
+        return write.initial() ? Confirmation.INITIAL
+                : Confirmation.id(write.endpoint());
+    }
+
+    /**
+     * What holds an obligation replay to the pairings its world plants
+     * ({@code ObligationFactory}: reader -> writer, each as {@link #writer}
+     * names it): CONFIRM's rows ({@link #stateEdges}) over the session its
+     * path was cut from, which the replay compares and holds
+     * ({@code runtime.Confirmation}).  A pairing's write is the reader's
+     * location's write by that writer, the one the read observed else the
+     * last ({@code smt.Arms#stateArms}), or its INITIAL.
+     *
+     * @throws Refused naming a pairing whose read or write the session does
+     *         not state
+     */
+    static Holding holding(SessionReader session,
+                           Map<String, String> pairings) {
+        StateClosure closure = new StateClosure(session);
+        List<ReadRow> reads = new ArrayList<ReadRow>();
+        Map<String, WriteRow> chosen = new LinkedHashMap<String, WriteRow>();
+        Set<String> found = new LinkedHashSet<String>();
+        for (ReadRow read : session.reads()) {
+            String reader = Confirmation.id(read.endpoint());
+            String writer = pairings.get(reader);
+            if (writer == null) continue;
+            WriteRow held = null;
+            for (WriteRow write : closure.byLocation.getOrDefault(
+                    SmtLowering.locationKey(read.location()),
+                    Collections.<WriteRow>emptyList())) {
+                if (!writer.equals(writer(write))
+                        || held != null && held.version()
+                        == read.observedVersion()) {
+                    continue;
+                }
+                if (held == null || write.version() == read.observedVersion()
+                        || write.seq() > held.seq()) {
+                    held = write;
+                }
+            }
+            if (held == null) {
+                throw new Refused("PAIRING_UNSTATED: the world pairs read "
+                        + reader + " with writer " + writer + ", which "
+                        + "session " + session.sessionId() + " states no "
+                        + "write of " + read.location() + " by");
+            }
+            found.add(reader);
+            reads.add(read);
+            chosen.put(read.endpoint().id(), held);
+        }
+        Set<String> unread = new LinkedHashSet<String>(pairings.keySet());
+        unread.removeAll(found);
+        if (!unread.isEmpty()) {
+            throw new Refused("PAIRING_UNSTATED: the world pairs read(s) "
+                    + unread + ", which session " + session.sessionId()
+                    + " states no read at");
+        }
+        return stateEdges(closure, reads, chosen);
     }
 
     /** One write the path rests on: reach its writer, sweep older versions

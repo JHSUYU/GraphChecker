@@ -220,22 +220,26 @@ field=<f> <subject>`.
   `focused_task.jsonl`, plus `obligation_query.smt2`, `question.txt` (the question its answer
   settles, `explore.ObligationFactory#question`) or `question.asked` (a SAT model's, until its
   replay decides it), `gaps.jsonl`, `schedule_prefix.jsonl`,
-  `schedule_suffix.jsonl`, the replay's `replay_verdict.jsonl` (what it stated) and its logs.
+  `schedule_suffix.jsonl`, `expected_edges.jsonl` where its world plants pairings (CONFIRM's rows
+  below, `STATE` and `ORDER` only), the replay's `replay_verdict.jsonl` (what it stated) and its
+  logs.
   `ObligationDir.workersIn` lists the workers whose result row names a session.
 - The focus row (`focused_task.jsonl`, `explore.ExploreCodec.writeFocusRow`, read by
   `runtime.FocusedReplay` and, as the session's world, by `ExploreCodec.readWorld`):
   `{schemaVersion 1, kind FOCUSED_TASK, taskId, focused, focusedOccurrenceId, declaredTarget?,
   seedSessionId, factor, obligationId, pathId, flip: {siteId, ordinal, outcome} | null,
   inheritedFlips: [{focusedOccurrenceId, siteId, ordinal, outcome, obligationId}], rootAssignments,
-  clockDeltas: {rootId: skew}, answers, rootMints: {rootId: rendered mint occurrence}, unproducible,
-  schedulePrefix?: {sessionId, events, rest, of, cutAtFocus}}`. A clock's counterfactual is a skew
+  clockDeltas: {rootId: skew}, answers, pairings: {reader: writer} (each as `Confirmation#id`
+  names it, `INITIAL` for a location's INITIAL), rootMints: {rootId: rendered mint occurrence},
+  unproducible, schedulePrefix?: {sessionId, events, rest, of, cutAtFocus}}`. A clock's counterfactual is a skew
   the replay adds to its own host reading, a jump its node's clock runs on from; a root is planted only at a focused mint, so each assigned
   root's mint occurrence is focused.
 - CONFIRM's worker adds `expected_edges.jsonl` (`runtime.Confirmation.FILE`): `WIRE {consumer,
   producer, selector, messageKey?, value?}` (a codec hole's: `messageKey` the store version its
   arm's message was, when that key is a store's `<transport> <path>@<version>` -- an exchange's
   correlation id is its own run's; `value` the text the hole must decode to, the claim's
-  `holeTexts`), `STATE {reader, readerAnyTurn, mint, writer, version, location}`, `ORDER {before, after}`
+  `holeTexts`), `STATE {reader, readerAnyTurn, mint, writer, version, location}` (`writer`
+  `INITIAL` for a location's INITIAL, `Confirmation#INITIAL`), `ORDER {before, after}`
   (activation keys; `after` the last activation entered before the event it orders, or, for claimed
   work on a consumer thread, the send that started it, `Confirmation#submitter`), every endpoint
   id and activation key as every delivery of its stored message names it (`Confirmation#id`), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation

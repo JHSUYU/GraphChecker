@@ -82,9 +82,10 @@ public final class ExploreCodec {
     /**
      * THE FOCUS ROW ({@code focused_task.jsonl}) a replay runs: focus, factor,
      * the flip ({@code null} when {@code obligation} flips nothing), inherited
-     * flips, mint values (a clock as a skew), answers, each root's mint
-     * occurrence, unproducible handoffs and the schedule cut ({@code cut} null:
-     * none). Read back by {@link #readWorld}.  {@code declaredTarget}, the
+     * flips, mint values (a clock as a skew), answers, pairings (the replay
+     * is held to them by its {@code expected_edges.jsonl}), each root's mint
+     * occurrence, unproducible handoffs and the schedule cut ({@code cut}
+     * null: none). Read back by {@link #readWorld}.  {@code declaredTarget}, the
      * case's one occurrence (null: none resolved), is where the replay stops
      * once it observes the fatal ({@code runtime.FocusedReplay}).
      */
@@ -102,6 +103,7 @@ public final class ExploreCodec {
                                     List<Corpus.Flip> inheritedFlips,
                                     Map<String, String> clockDeltas,
                                     Map<String, String> rootMints,
+                                    Map<String, String> pairings,
                                     SchedulePrefix.Cut cut) {
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", 1);
@@ -137,6 +139,7 @@ public final class ExploreCodec {
         // A clock's counterfactual is a SKEW off the replay's own reading.
         row.add("clockDeltas", strings(clockDeltas));
         row.add("answers", strings(obligation.answers()));
+        row.add("pairings", strings(pairings));
         // Each root's mint occurrence is focused, or it reads the recording.
         row.add("rootMints", strings(rootMints));
         row.add("unproducible", list(obligation.unproducible()));
@@ -160,7 +163,8 @@ public final class ExploreCodec {
         return new Corpus.World(map(object(json, "rootAssignments")),
                 map(object(json, "clockDeltas")),
                 map(object(json, "answers")),
-                map(object(json, "rootMints")), flips);
+                map(object(json, "rootMints")),
+                map(object(json, "pairings")), flips);
     }
 
     /** One flip's decision; {@code owner} states whose and which obligation
