@@ -15,7 +15,7 @@ case "${1:?usage: case.sh quota-init|election-offer}" in
     scope=(
       server:org/apache/zookeeper/server/FinalRequestProcessor
       server:org/apache/zookeeper/cli/SetQuotaCommand
-      server:=org/apache/zookeeper/server/DataTree
+      server=:org/apache/zookeeper/server/DataTree
       server:org/apache/zookeeper/server/NodeHashMapImpl
     )
     ;;
@@ -30,7 +30,7 @@ case "${1:?usage: case.sh quota-init|election-offer}" in
     scope=(
       server:org/apache/zookeeper/server/FinalRequestProcessor
       election:org/apache/zookeeper/recipes/leader/LeaderElectionSupport
-      server:=org/apache/zookeeper/server/DataTree
+      server=:org/apache/zookeeper/server/DataTree
       server:org/apache/zookeeper/server/NodeHashMapImpl
     )
     ;;
