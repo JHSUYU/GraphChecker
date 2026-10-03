@@ -2803,6 +2803,20 @@ public final class SmtLowering {
     }
 
     /**
+     * States one name the recording gives a meaning to, as a corpus's own
+     * are ({@link #SmtLowering(Map)}): a read of it lowers to it from now on
+     * ({@link #rowSymbol}), and it joins the query only once the formula
+     * names it.  A name already stated, or declared at another sort, stands.
+     */
+    public void state(String name, Sort sort) {
+        Declared held = declarations.get(name);
+        if (held != null && (held.stated || held.sort != sort)) return;
+        declarations.put(name, new Declared(sort, true,
+                held != null && held.inQuery));
+        memo = new HashMap<MemoKey, Attempt<?>>();
+    }
+
+    /**
      * Puts a name the recording already states into the query, answering
      * whether it is stated; for callers holding text rather than leaves.
      */

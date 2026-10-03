@@ -250,6 +250,10 @@ final class FlipQuery {
         /** reader occurrence + location -> its one choice of writer. */
         private final Map<String, WriterChoice> choicesByReader =
                 new LinkedHashMap<String, WriterChoice>();
+        /** The flipped occurrence's own reads, by symbol ({@link
+         *  #readOf}). */
+        private final Map<String, ReadRow> ownReads =
+                new LinkedHashMap<String, ReadRow>();
         private final Map<String, String> rootVariables =
                 new LinkedHashMap<String, String>();
         private final Map<String, String> clockVariables =
@@ -308,6 +312,7 @@ final class FlipQuery {
 
         private Built build(int flipIndex) {
             DecisionRow flipped = path.decisions.get(flipIndex);
+            movableReads();
             for (int index = 0; index <= flipIndex; index++) {
                 DecisionRow decision = path.decisions.get(index);
                 Set<String> unknown = new LinkedHashSet<String>();
@@ -590,7 +595,7 @@ final class FlipQuery {
                         handoff(corpus.attach(ref.sessionId, ref.symbol));
                         break;
                     case READ:
-                        read(corpus.read(ref.sessionId, ref.symbol));
+                        read(readOf(ref.sessionId, ref.symbol));
                         break;
                     default:
                         break;
@@ -972,6 +977,51 @@ final class FlipQuery {
             bind(row, variable(row.sessionId(), row.symbol()));
         }
 
+        /**
+         * The flipped occurrence's reads another writer could have answered
+         * ({@link #eligible}: more than one arm) are their own symbols, as
+         * COMPOSE keeps the anchor's ({@code Composer#stateJoins},
+         * {@code SmtLowering#rowSymbol}): inlined, the written value is a
+         * constant no writer choice moves (hdfs-bugs-slowdisk-zero: the
+         * detector turn's {@code maxSlowDisksToExclude <= 0}, the
+         * reconfiguration's 0, its INITIAL 1).  The text then names each,
+         * and its {@code wchoice_*} selectors bind it ({@link #bind}).  A
+         * container's state stays inlined (see {@link #rename}); a
+         * placeholder's mint is a root's.
+         */
+        private void movableReads() {
+            SmtLowering lowering = corpus.lowering(path.sessionId);
+            if (lowering == null) return;
+            for (ReadRow row : corpus.readsOn(path.sessionId,
+                    path.occurrence)) {
+                if (row.observedVersion() < 0L || row.symbol() == null
+                        || row.symbol().isEmpty()
+                        || row.mintVersion() != ReadRow.UNKNOWN_VERSION) {
+                    continue;
+                }
+                ownReads.putIfAbsent(row.symbol(), row);
+                VmTermLowering.Sort sort =
+                        JavaSmtSorts.sortOfJava(row.javaType());
+                if (sort.containerState() || eligible(row).size() < 2) {
+                    continue;
+                }
+                lowering.state(row.symbol(), sort);
+            }
+        }
+
+        /**
+         * The read a session's symbol names here: a session states one
+         * symbol per location and version, so reads of one version by
+         * several occurrences share it (hdfs-bugs-slowdisk-zero: the
+         * detector's three turns each read the reconfigured bound), and in
+         * the flipped occurrence's text it is that occurrence's own read.
+         */
+        private ReadRow readOf(String sessionId, String symbol) {
+            ReadRow own = path.sessionId.equals(sessionId)
+                    ? ownReads.get(symbol) : null;
+            return own != null ? own : corpus.read(sessionId, symbol);
+        }
+
         /** The writer occurrences one read could have taken its value from. */
         private List<Arms.Arm> eligible(ReadRow row) {
             List<Arms.Arm> eligible = corpus.arms().stateArms(row.endpoint(),
@@ -1184,7 +1234,7 @@ final class FlipQuery {
                     return name;
                 }
                 case READ: {
-                    ReadRow row = corpus.read(sessionId, symbol);
+                    ReadRow row = readOf(sessionId, symbol);
                     String name = readVariable(sessionId, row);
                     declare(name, sortOf(row.javaType(), name,
                             "read " + row.endpoint()),

@@ -3432,12 +3432,15 @@ public class ExploreTest {
      * observes plants that pairing: the focus row states it, and the replay
      * is held to it by CONFIRM's rows (SOLR-18413 r5: 67 such focused
      * replays ran the world they were cut from again, each NOT_ADMITTED).
+     * The read is the VM's guarded read, joined to the write it observed: a
+     * read another writer could have answered is its own symbol, or no
+     * choice could move it.
      */
     @Test
     public void aFlipOnlyAnotherWriterTakesPlantsThatPairing()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        Path iteration = twoWriters("paired-world", "(= M_READ_KEY 2)", null);
+        Path iteration = twoWriters("paired-world", VM_LOOKUP, null);
         Path out = tree.newFolder("paired-world-out").toPath();
         Path wave = out.resolve("obligations-0000");
         plan(iteration, TARGET_SELECTOR, null,
@@ -3572,6 +3575,9 @@ public class ExploreTest {
      *  the first write, and {@code Lookup#u8} deciding {@code term} over it
      *  (and over root {@code CASE.LIMIT}, recorded {@code limit}, when one
      *  is given). */
+    /** {@link #twoWriters}' lookup over the read node the VM writes. */
+    private static final String VM_LOOKUP = "EXPR.0000000000000002";
+
     private Path twoWriters(String name, String term, String limit)
             throws IOException {
         Path iteration = tree.newFolder(name).toPath();
@@ -3590,6 +3596,10 @@ public class ExploreTest {
                 "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
                 ALL_KEYS, 6L, "e.2");
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "1");
+        // The lookup as the VM states it: the guarded read, joined to the
+        // write it observed, compared.
+        seed.expression(VM_LOOKUP, binary("==", readNode(ALL_KEYS, 5L, "I",
+                literal(1)), literal(2)));
         if (limit != null) {
             seed.root(TARGET, "CASE.LIMIT", "M_LIMIT", RootKind.INTEGRAL,
                     limit, "0", "10", true);

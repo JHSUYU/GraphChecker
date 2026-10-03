@@ -590,7 +590,11 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   upstream hole's symbol, is a nested slot.
 - READ: the eligible writers (`Arms.stateArms`, the location's INITIAL among them, the writer at
   version 0) become one Bool selector each (`wchoice_*`, exactly one); no writer: pinned to the
-  row's `concreteValue`; neither: refused `UNSTATED_VALUE`.
+  row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A scalar read of the flipped occurrence
+  with more than one eligible writer is its own symbol, as COMPOSE keeps the anchor's
+  (`FlipQuery#movableReads`, `SmtLowering#rowSymbol`): inlined, the VM's guarded read is the
+  written value, a constant no selector moves (hdfs-bugs-slowdisk-zero: the detector turn's
+  `maxSlowDisksToExclude <= 0` over the reconfiguration's 0 and its INITIAL 1).
   Only reads the text names are variables: a container state behind a guard is inlined by its join
   (the closure demands its writers, §7.2), so the query declares nothing for it — a variable bound
   to each writer's state would constrain nothing, and its equalities over states built by removals
