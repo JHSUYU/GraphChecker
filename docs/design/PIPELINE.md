@@ -433,11 +433,13 @@ are counted, never dropped silently: the `NO_ROOT_REACHES_ANCHOR` detail states 
   (`STATIC_CANDIDATE_PRODUCER`); an unpaired attach is `LINEAGE_LOST` (DIAGNOSTIC) and its static
   candidates are taken on every node;
 - a read whose symbol is demanded: the writers `Corpus.eligibleWrites` names (the write of the observed
-  version, and writes of the same session by HB-concurrent occurrences — `Arms.concurrent`: not the
-  same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root, neither
-  Lost; and the location's INITIAL where the read could have run before every write it followed,
-  `Arms#stateSeen`, whose expression's symbols are demanded and which is no task: no occurrence
-  wrote it), and every activated occurrence on the reader's node holding a static write site of the
+  version, and every other the one eligibility rule `Arms#eligible` admits: a write of the same
+  session the read could have run right after -- its occurrence HB-concurrent, `Arms.concurrent`: not
+  the same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root,
+  neither Lost; every write between the two an HB-concurrent occurrence's; none of them under
+  construction, a constructor or class initializer anywhere on its frame chain; no version between
+  them a read observed and no row states -- or the location's INITIAL by the same test, whose
+  expression's symbols are demanded and which is no task: no occurrence wrote it), and every activated occurrence on the reader's node holding a static write site of the
   location's carrier, unless the read's session states it holding other objects only
   (`STATIC_CANDIDATE_WRITER`; a heap location is one object's, and a store reaches only an object its
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
@@ -1108,9 +1110,9 @@ the anchor's read of the published list rests on); of a static field or of a hea
 location whose owner is an object rid (`Arms.namedOwner`; a class-name owner gets no alternatives):
 one `writer_arm__` selector per writer occurrence of the same session (`Arms.stateArms`: the
 observed writer's arm is the write the read observed, any other writer's its last write of the
-location, and only attested HB-concurrent ones), one for the location's INITIAL, the writer at
-version 0, where the read observed it or could have run before every write it followed
-(`Arms#stateSeen`; its arm binds the reads to what the location held and rests on nothing a run
+location, and only attested ones the read could have run right after, `Arms#eligible`), one for the
+location's INITIAL, the writer at version 0, where the read observed it or the same rule admits it
+(its arm binds the reads to what the location held and rests on nothing a run
 decided, `ComposedFamilies#initialBody`), plus an `observed_arm__` holding each read to its
 own join or pin when a version one of the reads observed has no writing row; exactly one per
 location that has two arms or more, one of them an HB-concurrent writer's, else the reads keep their

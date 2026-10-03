@@ -188,11 +188,14 @@ the flip solver:
   observed, any other at its last write of the location; and the writer at version 0, the
   location's INITIAL (`WriteRow#initial`: what it held before every write its log names, a
   constructor's or initializer's store from before the log began, the JVM default, a container's
-  members), an arm of its own under no prefix. A whole state -- the INITIAL, or a container
-  writer's version -- is an alternative only where the read could have run right after it
-  (`Arms#stateSeen`): every write between the two an HB-concurrent occurrence's, none a
-  constructor's or a class initializer's, which every reader of what they built follows. Locks
-  are not constraints. An activation's `threadKey` is the
+  members), an arm of its own under no prefix. Every writer but the observed one -- the
+  INITIAL included -- is an alternative only where the read could have run right after it, ONE
+  rule (`Arms#eligible`, asked by the arms and by EXPLORE's closure and flip query alike): its
+  writer HB-concurrent, every write between the two an HB-concurrent occurrence's, none of
+  them made under construction (a constructor or a class initializer anywhere on the writer's
+  frame chain, which every reader of what it built follows), and no version between the two
+  that a read observed without a write row stating it (a writer no row names, which no order
+  moves). Locks are not constraints. An activation's `threadKey` is the
   claimed start it runs inside (§6: a queue item or task claimed on a consumer thread,
   `start:<node>|<context>|<frames>`, `ActivationRow#claimed`), else its thread (a thread's own start
   included, `RowRuntime#threadKey`): two items one consumer thread claims (a ZooKeeper server's

@@ -3714,17 +3714,22 @@ public class ComposerTest {
      * followed.  Each of those an HB-concurrent occurrence's, the INITIAL is
      * an arm, and a map lookup at the anchor asked of the state before the
      * put reaches the fatal the run's state did not (hdfs a40 V4h-2: the
-     * block pool looked up before the DataNode registered it).  A write the
-     * owner's constructor made, or one the reader's own thread made before
-     * it, no read precedes.
+     * block pool looked up before the DataNode registered it).  A write
+     * made under construction -- in a constructor, or in a method one
+     * called on the writer's own thread -- or one the reader's own thread
+     * made before it, no read precedes; nor one past a version a read saw
+     * that no row states.  A thread a constructor started is not under it.
      */
     @Test
     public void theInitialIsTheWriterAtVersionZero() throws Exception {
         String map = "java/util/concurrent/ConcurrentHashMap";
         LocationId pools = LocationId.of(LocationKind.MAP, "21", "-3");
         for (String variant : new String[]{"concurrent", "constructor",
-                "own-thread"}) {
-            boolean moves = "concurrent".equals(variant);
+                "constructor-caller", "started-in-constructor", "own-thread",
+                "unrowed-between"}) {
+            boolean moves = "concurrent".equals(variant)
+                    || "started-in-constructor".equals(variant);
+            long observed = "unrowed-between".equals(variant) ? 3L : 2L;
             Path iteration = folder.newFolder("initial-" + variant).toPath();
             OccurrenceAddress reader = occurrence("case/dn0", "REGION.get",
                     CausalContext.of(Role.of("CLIENT"), "", 1),
@@ -3747,17 +3752,32 @@ public class ComposerTest {
             session.writes.add(WriteRow.initial("s0", ++session.seq,
                     Endpoint.of(writer, "Pools#add#3:INITIAL", at("w#0", 0),
                             0), pools, 1L, "EXPR.0000000000000010", "L"));
+            List<Frame> chain = new ArrayList<Frame>();
+            if ("constructor-caller".equals(variant)) {
+                chain.add(Frame.of("<Pools: void <init>()>", 0));
+            } else if ("started-in-constructor".equals(variant)) {
+                chain.add(Frame.of("<Pools: void <init>()>", 0));
+                chain.add(Frame.of("<Pools$1: void run()>", 0));
+            }
+            chain.add(Frame.of("w#1", 0));
             session.write(Endpoint.of(writer, "constructor".equals(variant)
                             ? "Pools#<init>()V#3:WRITE" : "Pools#add#3:WRITE",
-                    at("w#1", 0), 0), pools, 2L, "EXPR.0000000000000011");
-            JsonObject answered = read("MAP_STATE", 21L, -3L, 2L, "L");
+                    ExecutionIndex.of(chain), 0), pools, observed,
+                    "EXPR.0000000000000011");
+            if ("unrowed-between".equals(variant)) {
+                session.read(Endpoint.of(writer, "Pools#size#7:READ",
+                        at("w#2", 0), 0), pools, 2L, "MAP_STATE/21#-3@v2@s0",
+                        "L", null);
+            }
+            JsonObject answered = read("MAP_STATE", 21L, -3L, observed, "L");
             answered.getAsJsonObject("observedVersion").add("expression",
                     relation("ASSOCIATIVE", "READ", "L", put,
                             integer("J", 5L)));
             Endpoint asking = Endpoint.of(reader, "Pools#get#5:READ",
                     at("r#1", 0), 0);
             answered.addProperty("readEventId", session.read(asking, pools,
-                    2L, "MAP_STATE/21#-3@v2@s0", "L", null));
+                    observed, "MAP_STATE/21#-3@v" + observed + "@s0", "L",
+                    null));
             session.expression("EXPR.0000000000000060", binary("==",
                     answered, vmNull()));
             session.target("EXPR.0000000000000060", false, true);
@@ -3767,7 +3787,7 @@ public class ComposerTest {
                     new edu.uva.liftlab.graphchecker.smt.Arms(
                             Corpus.read(iteration, null));
             assertEquals(variant, moves ? 2 : 1, arms.stateArms(asking, "s0",
-                    SmtLowering.locationKey(pools), 2L, true).size());
+                    SmtLowering.locationKey(pools), observed, true).size());
             Composer.Composition composition = compose(iteration, reader, 4,
                     StaticScopeMap.empty());
             assertEquals(variant + ": " + composition.body(), moves,

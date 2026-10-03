@@ -20,7 +20,7 @@ Three things are kept apart:
 | where a value comes from | what it is | bound by |
 |---|---|---|
 | **F1** the environment: a clock read, a door fault, a configuration value, a tree's configured source hook (§4) | ROOT | its domain: a marker (a boolean configuration too) both values, an integral configuration the hull of its anchors (§4.3), a hook's source its `root-domains.jsonl` row (none: pinned), a clock its window (`contract/RootKind`, `contract/RootDomain`) |
-| **F2** a read of shared state another occurrence writes (§5) | TRACKED READ, or a READ placeholder where the accessor is unwoven | the version it observed, every attested HB-concurrent writer occurrence of the same session, and the location's INITIAL where the read could have preceded every write it followed (`smt/Arms#stateArms`, `#stateSeen`) |
+| **F2** a read of shared state another occurrence writes (§5) | TRACKED READ, or a READ placeholder where the accessor is unwoven | the version it observed, and every attested writer occurrence of the same session or the location's INITIAL the read could have run right after (`smt/Arms#stateArms`, the one rule `#eligible`) |
 | **F3** a message leaf that crosses a process (§6) | WIRE ATTACH, a fresh `v_H` per primitive leaf | the producer's export, paired within the run (message families) |
 | **F4** a return or parameter from code outside the analysis scope | grow the scope (§2.4); what stays outside has no root, tracked read or port, and is symbolic only by propagation | its inputs' expressions, else the recorded value |
 | a read of state from before the window | the INITIAL version of its log, a write row (`contract/WriteRow#initial`): the writer at version 0 | joined to what it held, an arm of F2's |

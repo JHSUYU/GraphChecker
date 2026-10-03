@@ -966,12 +966,11 @@ public final class Corpus implements Arms.Rows {
     // ---- The causal graph (GreyGraph §3.1) ----
 
     /**
-     * The writes one read could have taken its value from: the observed one,
-     * every HB-concurrent writer, and the location's INITIAL where the read
-     * could have run before every write it followed (IDENTITY §4,
-     * {@code smt.Arms#stateArms}) -- the same alternatives the composition
-     * offers. ONE implementation, used by the closure
-     * ({@link ClosurePlanner#writers}).
+     * The writes one read could have taken its value from: the observed one
+     * and every other the one eligibility rule admits ({@code
+     * smt.Arms#eligible}, which {@code Arms#stateArms} asks too: the
+     * composition offers the same alternatives).  Used by the closure
+     * ({@link ClosurePlanner#writers}) and the flip query.
      *
      * @param reader the reading occurrence, for the concurrency rule
      */
@@ -981,11 +980,8 @@ public final class Corpus implements Arms.Rows {
         List<WriteRow> writes = writesOf(sessionId, locationKey);
         List<WriteRow> eligible = new ArrayList<WriteRow>();
         for (WriteRow write : writes) {
-            if (write.version() == observedVersion || (write.initial()
-                    ? arms.stateSeen(reader, sessionId, writes,
-                    observedVersion, write)
-                    : arms.concurrent(reader, write.endpoint().occurrence(),
-                    sessionId))) {
+            if (arms.eligible(reader, sessionId, locationKey, writes,
+                    observedVersion, write)) {
                 eligible.add(write);
             }
         }
@@ -1295,6 +1291,11 @@ public final class Corpus implements Arms.Rows {
     public List<WriteRow> writesOf(String sessionId, String locationKey) {
         return writesByLocation.getOrDefault(sessionId + "|" + locationKey,
                 Collections.<WriteRow>emptyList());
+    }
+
+    @Override
+    public List<ReadRow> readsOf(String sessionId, String locationKey) {
+        return join(sessionId).reads(locationKey);
     }
 
     /** One write per (site, java type) that wrote a location, in any session,

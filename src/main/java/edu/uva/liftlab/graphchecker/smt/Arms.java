@@ -9,11 +9,13 @@ import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -21,11 +23,13 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * THE family-arm rule, shared by the composer and the flip solver so the two
@@ -69,6 +73,9 @@ public final class Arms {
 
         /** The writes of this location in this session, any version. */
         List<WriteRow> writesOf(String sessionId, String locationKey);
+
+        /** The reads of this location in this session, in read order. */
+        List<ReadRow> readsOf(String sessionId, String locationKey);
 
         /** This session's decisions at this occurrence, in seq order. */
         List<DecisionRow> decisionsOf(String sessionId,
@@ -269,6 +276,10 @@ public final class Arms {
         }
     }
 
+    /** A thread's entry frame: a start's own frame, or a {@code run()}. */
+    private static final Pattern THREAD_ENTRY =
+            Pattern.compile("#u\\d+$|: void run\\(\\)>$");
+
     private final Rows rows;
     /** {@code slotId|sessionId|rootId}, in the order the arms were refused. */
     private final Set<String> refusals = new LinkedHashSet<String>();
@@ -404,8 +415,8 @@ public final class Arms {
      * The writers a read could have seen, as arms (IDENTITY §4,
      * Writers_W(l)): the observed writer plus every ATTESTED writer
      * occurrence HB-concurrent with the reader, and the location's INITIAL;
-     * a container's state or the INITIAL only where the read could have
-     * run right after it ({@link #stateSeen}).  Locks are not constraints.
+     * each only where the read could have run right after it ({@link
+     * #eligible}).  Locks are not constraints.
      * A writer's
      * writes move as a BLOCK, so there is one arm per writer at its last
      * write of L, and the caller binds every read of L in the reader to it
@@ -437,7 +448,7 @@ public final class Arms {
         for (WriteRow write : writes) {
             if (write.initial()) {
                 if (write.version() == observedVersion || alternatives
-                        && stateSeen(reader, session, writes,
+                                && eligible(reader, session, location, writes,
                         observedVersion, write)) {
                     Arm arm = arm(slot(write, readerEndpoint), "", session,
                             write.endpoint().occurrence(),
@@ -458,11 +469,8 @@ public final class Arms {
         for (WriteRow write : armOf.values()) {
             OccurrenceAddress writer = write.endpoint().occurrence();
             boolean observed = write.version() == observedVersion;
-            if (!observed && (!alternatives
-                    || !concurrent(reader, writer, session)
-                    || write.location().kind() == LocationKind.MAP
-                    && !stateSeen(reader, session, writes, observedVersion,
-                    write))) {
+            if (!observed && (!alternatives || !eligible(reader, session,
+                    location, writes, observedVersion, write))) {
                 continue;
             }
             Arm arm = arm(slot(write, readerEndpoint), "", session, writer,
@@ -483,36 +491,77 @@ public final class Arms {
     }
 
     /**
-     * Whether a read that observed one version of its location could have
-     * seen {@code state}, a whole value, instead: run right after it, every
-     * write between the two -- after {@code state} up to the observed one,
-     * or after the observed one up to {@code state} -- an HB-concurrent
-     * occurrence's moved to the read's other side, and none a constructor's
-     * or a class initializer's, which every reader of what they built
-     * follows.  The INITIAL ({@link WriteRow#initial}) is the state before
-     * every write; a container's version is its whole state, a scalar
-     * writer's value its own ({@link #concurrent} alone).  ONE rule: the
-     * arms here and the writers EXPLORE and COMPOSE ask of a read
-     * ({@code Corpus#eligibleWrites}).
+     * THE ONE ELIGIBILITY RULE, asked by these arms and by the writers
+     * EXPLORE and COMPOSE ask of a read ({@code Corpus#eligibleWrites}):
+     * whether a read that observed one version of its location could have
+     * seen {@code state}, a whole value, instead.  The version it observed
+     * it saw.  Any other -- a writer's, or the location's INITIAL, the state
+     * before every write ({@link WriteRow#initial}) -- only where the read
+     * could have run right after it: its writer an HB-concurrent occurrence
+     * ({@link #concurrent}), every write between the two (after {@code
+     * state} up to the observed one, or after the observed one up to {@code
+     * state}) an HB-concurrent occurrence's moved to the read's other side,
+     * and none of them made under construction -- a constructor or a class
+     * initializer anywhere on its frame chain ({@link #constructs}), which
+     * every reader of what it built follows.  A version between the two
+     * that a read of the location observed and no write row states was
+     * made by a writer no row names, which no order moves: refused.
      */
-    public boolean stateSeen(OccurrenceAddress reader, String session,
-                             List<WriteRow> writes, long observedVersion,
-                             WriteRow state) {
+    public boolean eligible(OccurrenceAddress reader, String session,
+                            String location, List<WriteRow> writes,
+                            long observedVersion, WriteRow state) {
+        if (state.version() == observedVersion) return true;
+        if (!state.initial() && (constructs(state) || !concurrent(reader,
+                state.endpoint().occurrence(), session))) {
+            return false;
+        }
         long low = Math.min(state.version(), observedVersion);
         long high = Math.max(state.version(), observedVersion);
+        Set<Long> rowed = new HashSet<Long>();
         for (WriteRow write : writes) {
+            rowed.add(write.version());
             if (write.initial() || write.version() <= low
                     || write.version() > high) {
                 continue;
             }
-            String site = write.endpoint().site();
-            if (site.contains("#<init>(") || site.contains("#<clinit>(")
-                    || !concurrent(reader, write.endpoint().occurrence(),
-                    session)) {
+            if (constructs(write) || !concurrent(reader,
+                    write.endpoint().occurrence(), session)) {
+                return false;
+            }
+        }
+        for (ReadRow read : rows.readsOf(session, location)) {
+            long seen = read.observedVersion();
+            if (seen > low && seen < high && !rowed.contains(seen)) {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * Whether a write was made under construction: a constructor or a class
+     * initializer anywhere on the frames its own thread stood on, its own
+     * site included.  A started thread stands on its creator's frames
+     * ({@code runtime.Identity}: a child thread copies them), so the chain
+     * is read from the write out to the thread's entry -- the start frame a
+     * named start opens ({@code plan.SiteId}, {@code #u}), else its {@code
+     * run()}: a thread a constructor started writes after it, not under it
+     * (hdfs-bugs-slowdisk-zero: the disk-outlier detector, which
+     * {@code DataNodeDiskMetrics.<init>} starts).
+     */
+    private static boolean constructs(WriteRow write) {
+        if (constructing(write.endpoint().site())) return true;
+        List<Frame> frames = write.endpoint().siteIndex().frames();
+        for (int at = frames.size() - 1; at >= 0; at--) {
+            String site = frames.get(at).callSite();
+            if (constructing(site)) return true;
+            if (THREAD_ENTRY.matcher(site).find()) return false;
+        }
+        return false;
+    }
+
+    private static boolean constructing(String site) {
+        return site.contains("<init>(") || site.contains("<clinit>(");
     }
 
     /**
