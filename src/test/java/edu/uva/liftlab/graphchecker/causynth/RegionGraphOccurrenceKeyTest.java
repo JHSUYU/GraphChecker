@@ -713,6 +713,7 @@ public class RegionGraphOccurrenceKeyTest {
         String value = "<java.lang.Long: long value>";
         String unbox = "<java.lang.Long: long longValue()>";
         String registry = "<example.Rule: java.util.Map f9>";
+        String getter = "<example.Rule: java.lang.Long getExpireAt()>";
         List<Map<String, Object>> edges = Arrays.asList(
                 row("kind", "field_write", "method", init, "unitIndex", 34,
                         "fromCell", init + "::$r16", "toCell", expireAt),
@@ -737,7 +738,15 @@ public class RegionGraphOccurrenceKeyTest {
                         "accessorImplementationMethod", unbox),
                 row("kind", "guard_dependency", "method", expired,
                         "unitIndex", 6, "fromCell", expired + "::$l0",
-                        "toCell", expired + "#u6"));
+                        "toCell", expired + "#u6"),
+                row("kind", "accessor_field_return", "method", expired,
+                        "unitIndex", 12, "fromCell", expireAt,
+                        "toCell", expired + "::$r5", "invoke", getter,
+                        "declaredFieldSignature", expireAt,
+                        "accessorImplementationMethod", getter),
+                row("kind", "guard_dependency", "method", expired,
+                        "unitIndex", 13, "fromCell", expired + "::$r5",
+                        "toCell", expired + "#u13"));
         List<Map<String, Object>> regions = Arrays.asList(
                 row("regionId", "REGION.update", "methods",
                         Collections.singletonList(expired)),
@@ -760,17 +769,21 @@ public class RegionGraphOccurrenceKeyTest {
         for (int index = 0; index < map.observedSites().size(); index++) {
             JsonObject site = map.observedSites().get(index)
                     .getAsJsonObject();
+            String callee = site.get("declaredCallee").getAsString();
             observed.put(site.get("siteId").getAsString(),
                     site.get("cell").getAsString()
-                            + (site.has("static") ? " static" : ""));
+                            + (site.has("static") ? " static" : "")
+                            + (callee.isEmpty() ? "" : " via " + callee));
         }
         Map<String, String> expected = new LinkedHashMap<>();
         expected.put(init + "#u34", expireAt);
         expected.put(expired + "#u1", expireAt);
         expected.put(init + "#u40", registry + " static");
         expected.put(expired + "#u8", registry + " static");
+        expected.put(expired + "#u12", expireAt + " via " + getter);
         assertEquals("the wrapper's putfield and getfield, not the box's"
-                + " value, and the static map's store and read", expected,
+                + " value, the static map's store and read, and a read"
+                + " through an application getter at its call", expected,
                 observed);
         assertEquals(Collections.singleton("REGION.update"),
                 map.trackedRegions());
@@ -788,6 +801,10 @@ public class RegionGraphOccurrenceKeyTest {
                 Collections.singleton(expireAt),
                 map.carriersAt("example.Rule#isExpired()Z#30:READ", "J",
                         LocationKind.INSTANCE));
+        assertEquals("a read through the getter is recorded in its body",
+                Collections.singleton(expireAt), map.carriersAt(
+                        "example.Rule#getExpireAt()Ljava/lang/Long;#1:READ",
+                        "L", LocationKind.INSTANCE));
     }
 
     private static List<String> scoped(List<StaticScopeMap.Site> sites) {

@@ -2112,8 +2112,9 @@ public final class CausynthPipeline {
      * Observes a tracked cell before each access of it, starting its version
      * log where none stands: before the {@code putfield}/{@code putstatic},
      * before the call when the store is an atomic's RMW (no application
-     * {@code putfield}), and before the {@code getfield}/{@code getstatic} of
-     * a read.  A static cell's owner is its declaring class's mirror, the key
+     * {@code putfield}), before the {@code getfield}/{@code getstatic} of
+     * a read, and before the call of a read through an accessor (the site
+     * names it), on the call's receiver.  A static cell's owner is its declaring class's mirror, the key
      * the VM versions it by.  An instance access before the constructor call
      * that makes its object has no object to observe yet, and a read site
      * that is no field read of its cell observes nothing.
