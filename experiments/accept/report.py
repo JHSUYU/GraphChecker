@@ -107,6 +107,10 @@ EXPECTED_MECHANISM = {
                            "fault": "org.apache.zookeeper.ZooKeeper",
                            "clocks": False},
     "zk-bugs-election-offer": {"kinds": ("STATE_PAIRING_FLIPPED",)},
+    # HDFS bug study #15: a detector turn that reads the slow-disk bound
+    # before the reconfiguration to 0 lands (its INITIAL, 1) publishes the
+    # SSD, which no later turn clears, so the ALL_SSD write has no volume.
+    "hdfs-bugs-slowdisk-zero": {"kinds": ("STATE_PAIRING_FLIPPED",)},
 }
 
 
