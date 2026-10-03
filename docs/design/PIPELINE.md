@@ -1540,13 +1540,17 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   consumer, `RowRuntime#confirm`, and the value must still arrive), STATE at close (both by
   `Confirmation#id`; a STATE edge is taken when the model's reader observed the model's writer, or
   when a read at its site at another turn of the loops on its path did, `readerAnyTurn`,
-  `Endpoint#anyTurn`: how many turns a loop that polls for a write takes is that write's timing),
+  `Endpoint#anyTurn`: how many turns a loop that polls for a write takes is that write's timing --
+  never for an INITIAL, which every read observes before the first write, so the exact reader must),
   and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
   mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
   are not read by the runtime. A CONFIRM run (`FocusedReplay.confirming`: its obligation flips
-  nothing) whose `expected_edges.jsonl` is missing or unreadable compares nothing and files one
-  `EDGES:` mismatch at the close, so it confirms nothing.
+  nothing), or a replay whose world plants pairings (`FocusedReplay.pairs`), whose
+  `expected_edges.jsonl` is missing or unreadable compares nothing and files one `EDGES:` mismatch
+  at the close, so it confirms nothing and the obligation is `PAIRING_UNTAKEN`. One read is held to
+  one writer: two STATE rows naming two are refused by `ConfirmMain` (`STATE_CONFLICT`) and, read at
+  runtime, compare nothing.
 - Decision (`ConfirmMain --claim --output <worker> --sessions <dir>`, `ConfirmMain#decide`, which
   prints `final/confirm.json`), conditions in order, the first that fails named as the reason: the
   replay's verdict is `ADMITTED`; its session directory exists and its `gaps.jsonl` and

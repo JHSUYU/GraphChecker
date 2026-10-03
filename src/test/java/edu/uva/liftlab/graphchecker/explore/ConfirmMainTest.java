@@ -438,6 +438,19 @@ public class ConfirmMainTest {
         }
         assertEquals("the write the session ran before the read",
                 Collections.singleton(mint.id()), paired.reordered);
+        // The model chose the INITIAL and the world held the read to the
+        // write: one read, two writers, refused by name.
+        pairings.addProperty(Confirmation.id(polled), Confirmation.id(writer));
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+        String refused = "";
+        try {
+            ConfirmMain.write(iteration, claim, manifest(),
+                    folder.newFolder("initial-conflict").toPath());
+        } catch (ConfirmMain.Refused conflict) {
+            refused = conflict.getMessage();
+        }
+        assertTrue(refused, refused.startsWith("STATE_CONFLICT: read "
+                + Confirmation.id(polled)));
     }
 
     /**

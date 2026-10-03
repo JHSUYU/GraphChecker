@@ -429,7 +429,14 @@ public final class Confirmation {
             for (Map.Entry<String, String> edge : STATE.entrySet()) {
                 String observed = READ.get(edge.getKey());
                 String version = VERSION.get(edge.getKey());
-                if (atAnotherTurn(edge.getKey(), edge.getValue())) continue;
+                // An INITIAL is what every read observes before the first
+                // write: another turn's read of it says nothing of this one
+                // (hdfs-bugs-slowdisk-zero SD5: the guard read the INITIAL,
+                // the limit, one site at any turn, the reconfiguration's 0).
+                if (!INITIAL.equals(edge.getValue())
+                        && atAnotherTurn(edge.getKey(), edge.getValue())) {
+                    continue;
+                }
                 if (observed == null) {
                     mismatches.add("STATE " + edge.getKey() + ": the model"
                             + " joined this read to writer "
@@ -453,7 +460,8 @@ public final class Confirmation {
     /**
      * Whether a read at this reader's site, at some turn of the loops on its
      * path, observed a version the model's writer wrote: a loop that polls
-     * for the write reads it at whichever turn it lands.
+     * for the write reads it at whichever turn it lands.  Never asked of an
+     * INITIAL, which the exact reader must observe.
      */
     private static boolean atAnotherTurn(String reader, String writer) {
         Set<String> observed = READ_TURNS.get(TURNS.get(reader));
@@ -485,12 +493,15 @@ public final class Confirmation {
             ordering = 1;
             Path file = FocusedReplay.workerFile(FILE);
             if (file == null) {
-                // Only a CONFIRM run is handed edges; one that finds none
-                // beside its focus row has nothing to compare.
-                if (FocusedReplay.confirming()) {
-                    unread = "EDGES: this CONFIRM run found no readable "
-                            + FILE + " in its worker directory, so no edge"
-                            + " the model chose was compared";
+                // A CONFIRM run is handed edges, and so is a replay whose
+                // world plants pairings; one that finds none beside its focus
+                // row compared nothing, and says so: it is no such run.
+                if (FocusedReplay.confirming() || FocusedReplay.pairs()) {
+                    unread = "EDGES: this " + (FocusedReplay.confirming()
+                            ? "CONFIRM run" : "replay, whose world plants "
+                            + "pairings,") + " found no readable " + FILE
+                            + " in its worker directory, so no edge it is"
+                            + " held to was compared";
                 }
                 return;
             }
@@ -511,8 +522,15 @@ public final class Confirmation {
                         MINT.put(optionalString(row, "writer"),
                                 optionalString(row, "version"));
                     } else if ("STATE".equals(kind)) {
-                        STATE.put(optionalString(row, "reader"),
-                                optionalString(row, "writer"));
+                        String reader = optionalString(row, "reader");
+                        String writer = optionalString(row, "writer");
+                        String held = STATE.put(reader, writer);
+                        // One read, one writer: two are no model.
+                        if (held != null && !held.equals(writer)) {
+                            throw new IllegalStateException("STATE_CONFLICT:"
+                                    + " read " + reader + " is held to "
+                                    + "writers " + held + " and " + writer);
+                        }
                         VERSION.put(optionalString(row, "reader"),
                                 optionalString(row, "version"));
                         String turns = stated(row, "readerAnyTurn");

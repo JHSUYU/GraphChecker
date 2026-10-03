@@ -662,6 +662,7 @@ public final class FocusedReplay {
                 }
                 FOCUS.put(obligationId,
                         optionalString(row, "focusedOccurrenceId"));
+                pairs |= !strings(row, "pairings").isEmpty();
                 CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
                 // Each assigned root's mint is focused too.
                 for (Map.Entry<String, String> mint
@@ -764,6 +765,18 @@ public final class FocusedReplay {
             return handedAFocusRow;
         }
     }
+
+    /** Whether this replay's world plants pairings (the focus row's {@code
+     *  pairings}): it owes the edges that hold it ({@link Confirmation}). */
+    static boolean pairs() {
+        load();
+        synchronized (LOCK) {
+            return pairs;
+        }
+    }
+
+    /** Whether the focus row stated a pairing. */
+    private static boolean pairs;
 
     /** Whether this replay confirms a claim: it was handed an obligation that
      *  flips nothing ({@link Obligation#confirming}). */
@@ -932,6 +945,7 @@ public final class FocusedReplay {
         synchronized (LOCK) {
             loaded = false;
             handedAFocusRow = false;
+            pairs = false;
             PLANTED.clear();
             MINTED.clear();
             REACHED.clear();

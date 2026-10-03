@@ -310,6 +310,7 @@ public final class ConfirmMain {
         // as much as its roots: held by the rows its replay was held to.
         edges.addAll(holding(session, ExploreCodec.map(object(world,
                 "pairings"))).edges);
+        heldOnce(edges);
         edges.addAll(markers);
         JsonObject anchorRow = new JsonObject();
         anchorRow.addProperty("kind", "ANCHOR");
@@ -1391,6 +1392,29 @@ public final class ConfirmMain {
             holding.edges.add(row);
         }
         return holding;
+    }
+
+    /**
+     * One read, one writer: the model's choice and the world's pairing
+     * holding one read to two writers is no model a run can take, refused
+     * by name ({@code STATE_CONFLICT}), never the later row's.
+     *
+     * @throws Refused naming the read and its writers
+     */
+    private static void heldOnce(List<JsonObject> edges) {
+        Map<String, String> writers = new LinkedHashMap<String, String>();
+        for (JsonObject edge : edges) {
+            if (!"STATE".equals(optionalString(edge, "kind"))) continue;
+            String reader = optionalString(edge, "reader");
+            String writer = optionalString(edge, "writer");
+            String held = writers.put(reader, writer);
+            if (held != null && !held.equals(writer)) {
+                throw new Refused("STATE_CONFLICT: read " + reader
+                        + " is held to writers " + held + " and " + writer
+                        + ": the model's choice and the selected session's"
+                        + " world disagree");
+            }
+        }
     }
 
     /** The writer a STATE row names: its endpoint as {@link Confirmation#id}

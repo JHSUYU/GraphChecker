@@ -10,6 +10,8 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -203,41 +205,74 @@ public class ConfirmationTest {
 
     /**
      * An obligation replay whose world pairs a read with its location's
-     * INITIAL is admitted only where the read observed the INITIAL's
-     * version: the flip taken over another pairing is not that world.
+     * INITIAL is admitted only where that exact read observed the INITIAL's
+     * version.  hdfs-bugs-slowdisk-zero SD5: the guard read the INITIAL and
+     * the limit, the same accessor site one call later -- one read at any
+     * turn -- the reconfiguration's 0; another turn's INITIAL says nothing
+     * of this one.  A focus row with pairings and no edges compared nothing,
+     * and two writers for one read are no model: neither is admitted.
      */
     @Test
     public void anObligationReplayIsAdmittedOnlyOverItsPairing()
             throws Exception {
-        Endpoint reader = endpoint(ANCHOR, "a.Handler#handle()#12:READ");
-        Endpoint first = endpoint(ANCHOR, "a.Handler#handle()#12:INITIAL");
+        Frame loop = Frame.of("<a.Detector: void run()>", 0);
+        String site = "a.Metrics#bound()#43:READ";
+        Endpoint guard = Endpoint.of(OccurrenceAddress.parse(ANCHOR), site,
+                ExecutionIndex.of(Arrays.asList(loop, Frame.of(site, 0))), 0);
+        Endpoint limit = Endpoint.of(OccurrenceAddress.parse(ANCHOR), site,
+                ExecutionIndex.of(Arrays.asList(loop, Frame.of(site, 1))), 0);
+        Endpoint first = endpoint(ANCHOR, "a.Metrics#bound()#43:INITIAL");
         Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
-        LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
-        String site = "<a.Handler: void handle()>#u8";
+        LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "48");
+        String flipped = "<a.Detector: void run()>#u63";
         OccurrenceAddress anchor = OccurrenceAddress.parse(ANCHOR);
-        for (boolean taken : new boolean[]{true, false}) {
+        String initial = state(guard, Confirmation.INITIAL);
+        // rows, the version each of guard and limit observed (0: no read),
+        // admitted?, what refused it
+        Object[][] table = {
+                {Arrays.asList(initial), 4L, 0L, true, ""},
+                {Arrays.asList(initial), 5L, 0L, false, "STATE"},
+                {Arrays.asList(initial, state(limit, Confirmation.INITIAL)),
+                        4L, 5L, false, "STATE " + limit.id()},
+                {null, 4L, 0L, false, "EDGES"},
+                {Arrays.asList(initial, state(guard, writer.id())), 4L, 0L,
+                        false, "STATE_CONFLICT"},
+        };
+        for (Object[] row : table) {
+            @SuppressWarnings("unchecked")
+            List<String> edges = (List<String>) row[0];
             handed("{\"taskId\":\"T\",\"obligationId\":\"OBL.1\","
                     + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
                     + "\"focusedOccurrenceId\":\"" + anchor.id() + "\","
                     + "\"seedSessionId\":\"seed\",\"flip\":{\"siteId\":\""
-                    + site + "\",\"ordinal\":1,\"outcome\":true}}\n",
-                    Arrays.asList("{\"kind\":\"STATE\",\"reader\":\""
-                            + reader.id() + "\",\"writer\":\""
-                            + Confirmation.INITIAL + "\",\"version\":\"4\"}"));
-            FocusedReplay.observeDecision(anchor, site, 1, true);
-            Confirmation.wrote(cell, 4L, taken ? first : writer, true);
-            if (!taken) Confirmation.wrote(cell, 5L, writer, false);
-            Confirmation.read(reader, cell, taken ? 4L : 5L,
-                    edu.uva.liftlab.graphchecker.contract.ReadRow
-                            .UNKNOWN_VERSION);
-            String detail = FocusedReplay.results("s").get(0).detail();
-            assertEquals(detail, taken ? Verdict.ADMITTED
-                            : Verdict.NOT_ADMITTED,
-                    FocusedReplay.results("s").get(0).verdict());
-            assertEquals(detail, !taken,
-                    detail.startsWith("PAIRING_UNTAKEN: "));
+                    + flipped + "\",\"ordinal\":1,\"outcome\":true},"
+                    + "\"pairings\":{\"" + Confirmation.id(guard) + "\":\""
+                    + Confirmation.INITIAL + "\"}}\n", edges);
+            FocusedReplay.observeDecision(anchor, flipped, 1, true);
+            Confirmation.wrote(cell, 4L, first, true);
+            Confirmation.wrote(cell, 5L, writer, false);
+            Confirmation.read(guard, cell, (Long) row[1],
+                    ReadRow.UNKNOWN_VERSION);
+            if ((Long) row[2] > 0L) {
+                Confirmation.read(limit, cell, (Long) row[2],
+                        ReadRow.UNKNOWN_VERSION);
+            }
+            ObligationResult result = FocusedReplay.results("s").get(0);
+            boolean admitted = (Boolean) row[3];
+            assertEquals(result.detail(), admitted ? Verdict.ADMITTED
+                    : Verdict.NOT_ADMITTED, result.verdict());
+            assertEquals(result.detail(), !admitted, result.detail()
+                    .startsWith("PAIRING_UNTAKEN: ")
+                    && result.detail().contains((String) row[4]));
             reset();
         }
+    }
+
+    /** One STATE row of an obligation's edges. */
+    private static String state(Endpoint reader, String writer) {
+        return "{\"kind\":\"STATE\",\"reader\":\"" + reader.id()
+                + "\",\"readerAnyTurn\":\"" + Confirmation.anyTurn(reader)
+                + "\",\"writer\":\"" + writer + "\",\"version\":\"4\"}";
     }
 
     /** A delivery into the anchor is the model's when its producer answers
