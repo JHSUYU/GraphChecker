@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# build.sh <zookeeper checkout> <module> <test class> <test method> -- builds
-# the workload's module and what it needs with the current GraphChecker jar,
-# and runs the workload once natively, as an automatic cluster.  Its surefire
-# report states the classpath every workload JVM runs on.
+# build.sh <zookeeper checkout> <module> <test class> <test method> <modules>
+# -- builds the workload's module, the modules of the lineage scope (comma
+# separated; system.sh zk_lineage_modules) and what they need with the
+# current GraphChecker jar, and runs the workload once natively, as an
+# automatic cluster.  Its surefire report states the classpath every workload
+# JVM runs on.
 #
 # MAVEN_REPO_LOCAL is the tree's own Maven repository (system.sh
 # zk_maven_repo): the tree's SNAPSHOT artifacts and the GraphChecker jar its
@@ -13,6 +15,7 @@ repo=${1:?missing ZooKeeper checkout}
 module=${2:?missing module}
 test_class=${3:?missing test class}
 test_method=${4:?missing test method}
+lineage_modules=${5:?missing lineage modules}
 m2=${MAVEN_REPO_LOCAL:?missing MAVEN_REPO_LOCAL}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker=$(cd "${here}/../.." && pwd -P)
@@ -30,7 +33,7 @@ mvn "${common[@]}" install:install-file "-Dfile=${jar}" \
   -Dpackaging=jar
 cd "${repo}"
 common+=(-Dcheckstyle.skip -Dspotbugs.skip -Dmaven.javadoc.skip=true)
-mvn "${common[@]}" -DskipTests install -pl "${module}" -am
+mvn "${common[@]}" -DskipTests install -pl "${module},${lineage_modules}" -am
 mvn "${common[@]}" test -pl "${module}" \
   -Dtest="${test_class##*.}#${test_method}" -Dcausynth.cluster.automatic=true
 

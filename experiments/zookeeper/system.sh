@@ -40,16 +40,22 @@ system_sources=(
 # choose it (tools/adhoc/select.py).
 system_node_class=org/apache/zookeeper/server/ZooKeeperServer
 
+# The modules whose classes are the lineage scope: the whole tree's, whatever
+# the case analyses (plan.LineageScan); scope growth and the library doors
+# grow from it, so the build installs every one of them.
+zk_lineage_modules=(zookeeper-jute zookeeper-server
+  zookeeper-recipes/zookeeper-recipes-election
+  zookeeper-recipes/zookeeper-recipes-lock
+  zookeeper-recipes/zookeeper-recipes-queue)
+
 system_paths() {
   module=${repo}/${zk_module}
   report=${module}/target/surefire-reports/TEST-${classpath_test:-${test_class}}.xml
   test_classes=${module}/target/test-classes
-  # The lineage scope is the whole tree's, whatever the case analyses
-  # (plan.LineageScan); scope growth and the library doors grow from it.
-  lineage_roots="${repo}/zookeeper-jute/target/classes:${repo}/zookeeper-server/target/classes"
-  local recipe
-  for recipe in election lock queue; do
-    lineage_roots+=":${repo}/zookeeper-recipes/zookeeper-recipes-${recipe}/target/classes"
+  local each
+  lineage_roots=
+  for each in "${zk_lineage_modules[@]}"; do
+    lineage_roots+=${lineage_roots:+:}${repo}/${each}/target/classes
   done
 }
 
@@ -74,7 +80,7 @@ system_classpath() {
 system_build() {
   MAVEN_REPO_LOCAL=${MAVEN_REPO_LOCAL:-${zk_maven_repo}} \
     bash "${system_dir}/build.sh" "${repo}" "${zk_module}" "${test_class}" \
-    "${test_method}"
+    "${test_method}" "$(IFS=,; echo "${zk_lineage_modules[*]}")"
 }
 
 # What surefire hands every test JVM of the tree, for a workload JVM the
