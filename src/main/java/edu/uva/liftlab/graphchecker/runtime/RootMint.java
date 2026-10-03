@@ -955,7 +955,7 @@ final class RootMint {
                     action.cell))) {
                 return concrete;
             }
-            Object read = active.configurationRead(root);
+            Object read = active.configurationRead(root, action.symbol);
             if (read != null) return read;
         }
         // A clock site read again in the occurrence that read it (a loop's

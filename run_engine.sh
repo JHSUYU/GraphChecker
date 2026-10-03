@@ -1096,6 +1096,10 @@ campaign_record_batch() {
   for name in "${names[@]}"; do
     require_file "static slice of ${name}" \
       "${causynth_static_root}/${name}/static_scope_map.jsonl"
+    # A static root written before the root demand has none: refused here,
+    # by name, not by the copy below.
+    require_file "root demand of ${name}" \
+      "${causynth_static_root}/${name}/root_demand.jsonl"
   done
   for name in "${names[@]}"; do
     static="${causynth_static_root}/${name}"

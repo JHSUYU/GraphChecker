@@ -640,9 +640,6 @@ public final class StaticScopeMap {
         Demanded at(String siteId, String cell);
     }
 
-    /** No demand: a map built over no root demand. */
-    public static final Demand NO_DEMAND = (siteId, cell) -> null;
-
     /** The root demand's classes of shared state a replay versions: a
      *  chosen read of one is a {@link #READ_SITE}. */
     private static final Set<String> TRACKED_DEMAND = new LinkedHashSet<>(

@@ -86,6 +86,9 @@ final class ActiveRegion {
     /** The box each configuration key's first getter read here minted. */
     private final Map<String, Object> configurationReads =
             new LinkedHashMap<>();
+    /** The declared inputs that took such a box: symbolic, and stated by
+     *  the first read's row. */
+    private final Set<String> configurationReuses = new LinkedHashSet<>();
     final ConcolicRegionRuntime.OccurrenceCounter
             materializationOccurrences =
             new ConcolicRegionRuntime.OccurrenceCounter();
@@ -339,9 +342,18 @@ final class ActiveRegion {
     }
 
     /** The box a getter read of this configuration minted here, or null
-     *  ({@code RootMint#materializePrimitiveValue}). */
-    synchronized Object configurationRead(String sourceId) {
-        return configurationReads.get(sourceId);
+     *  ({@code RootMint#materializePrimitiveValue}); a non-null answer is
+     *  the box the asking input {@code symbol} takes. */
+    synchronized Object configurationRead(String sourceId, String symbol) {
+        Object box = configurationReads.get(sourceId);
+        if (box != null) configurationReuses.add(symbol);
+        return box;
+    }
+
+    /** Whether this declared input took the box of its key's first read
+     *  here: no input left unsymbolized. */
+    synchronized boolean configurationReused(String symbol) {
+        return configurationReuses.contains(symbol);
     }
 
     synchronized void configurationMinted(String sourceId, Object box) {
