@@ -97,6 +97,16 @@ EXPECTED_MECHANISM = {
     # generation the follower asks for.
     "solr-18413":      {"kinds": ("CLOCK_SKEW",)},
     "solr-18406":      {"kinds": ("CLOCK_SKEW",)},
+    # ZooKeeper 3.9.  zk-bugs-quota-init: createQuota's limit node is
+    # written and its client sees the request fail (a ZooKeeper write door's
+    # fault), so the stat node is never created and the retried call's
+    # update branch reads it; the witness is the fault alone.
+    # zk-bugs-election-offer: the server's lookup of an offer the election
+    # listed is paired with a competitor's delete of it.
+    "zk-bugs-quota-init": {"kinds": ("MARKER_FLIPPED",),
+                           "fault": "org.apache.zookeeper.ZooKeeper",
+                           "clocks": False},
+    "zk-bugs-election-offer": {"kinds": ("STATE_PAIRING_FLIPPED",)},
 }
 
 

@@ -2454,9 +2454,12 @@ public final class SmtLowering {
     // ------------------------------------------------------------------
 
     /**
-     * One execution-local identity, opaque but not free: it is non-null and
-     * distinct from other rids of its session, both recorded facts.  Left
-     * unsaid, a model can null a reference or merge two keys.
+     * One execution-local identity, opaque but not free: an object the VM
+     * named (a rid) is non-null and distinct from other rids of its session,
+     * and one it placed unnamed ({@link VmRows#placedObject}) is non-null,
+     * all recorded facts.  Left unsaid, a model can null a reference or merge
+     * two keys (ZK7: the stat node a DataTree lookup returned, placed
+     * unnamed, made the recording's own path reach the NoNode throw).
      */
     private String opaque(String raw, Sort sort) {
         String name = symbols.mint("identity__",
@@ -2464,8 +2467,11 @@ public final class SmtLowering {
         declare(name, sort);
         boolean minted = opaqueIdentities.put(name, raw) == null;
         long rid = VmRows.referencedObjectRid(raw);
-        if (minted && sort == Sort.REF && rid > 0L) {
+        if (minted && sort == Sort.REF
+                && (rid > 0L || VmRows.placedObject(raw))) {
             assertPlain("(not (= " + name + " nullRef))");
+        }
+        if (minted && sort == Sort.REF && rid > 0L) {
             recordedObjects.computeIfAbsent(scope,
                     session -> new LinkedHashMap<Long, String>())
                     .put(rid, name);

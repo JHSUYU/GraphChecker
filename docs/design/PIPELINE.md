@@ -13,7 +13,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | SETUP (optional) | `campaign_setup` | whatever `campaign_setup_command` does | the command fails |
 | FREEZE | `campaign_freeze` | the provenance (published by EMIT) | an input cannot be digested |
 | SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` (a batch: `campaign_batch_seed`, §2b) | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
-| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | not even the target's demand depth fits `schedule_max_jobs`; the index does not commit the frozen plan; no target |
+| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json`, `plan.log` | the scheduler refuses (its deepest throwable is the reason: not even the target's demand depth fits `schedule_max_jobs`, no declared occurrence, no target); the index does not commit the frozen plan |
 | UNION (a batch) | `campaign_batch_union`; `plan.PlanUnion` | `groups/groups.json`, `groups/group-<n>/execution_task_plan.jsonl` | `PlanUnion` exits nonzero |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/`, `instrument.log` | the weave refuses (its deepest throwable is the reason); no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
@@ -213,8 +213,8 @@ recording's schedule to `recorded_schedule.jsonl`, and runs `plan.ConcolicSchedu
 (`scheduleTargetFirst`). `RuntimeWorkflowDiscovery.workflow` schedules the declared target first, then
 every other occurrence the plan states is replayable, in recorded order; no slice is applied here
 (the closure is EXPLORE's). The declaration is `declared_target_occurrence`: a resolved address, a
-selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first` (also
-when none is stated). SEED's aggregation resolves it once against the recording's target occurrences
+selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first` (none stated:
+SEED resolves `first` and PLAN refuses, `DECLARED_TARGET_OCCURRENCE_MISSING`). SEED's aggregation resolves it once against the recording's target occurrences
 (`RuntimeWorkflowDiscovery#declaredOccurrence`) and marks that row `declaredOccurrence`; PLAN takes
 the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNED`), and the shell
 uses the address PLAN's index states for every later stage, whatever form the declaration had
@@ -235,7 +235,10 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 `campaign_instrument` clears `iteration-0000/instrumented-classes/` and runs `do_analyze` with
 `CAUSYNTH_CONCOLIC_TASK_PLAN`/`_TASK_ID` set to the whole plan: one union weave of every task. The
 tree must hold a class file, and `causynth.VerifyWovenClasses` must verify every woven class against
-the replay's class path, or the stage fails naming the class. GROW re-runs this stage's function.
+the replay's class path, or the stage fails naming the class; a woven class that fails as the class the
+class path holds fails unwoven (the same throwable and message, or both a `NoClassDefFoundError` for types
+no entry holds: Jetty, for ZooKeeper's admin server under a recipe's workload) is listed `UNLINKED` and does
+not fail it, since the workload cannot link it either way. GROW re-runs this stage's function.
 The union weave opens ONE region entry per root hook group (`plan.ExecutionTask#rootHookGroup`: the
 region and its root method, and a loop-body root's loop) and one enclosing entry per loop root
 (`#loopRootHookGroup`), however many planned occurrences share it; a replay's entry offers each
@@ -246,6 +249,11 @@ A loop-body root's controls are the branches leaving its loop, as the catalog's 
 throws); its frame opens on the outermost control edge into the body whose target dominates the
 demanded unit, and closes on every backedge and every exit of a control
 (`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`).
+Each conditional of a woven method gets the VM's decision marker just before it and, on every
+arm it can take, one observation of the arm taken (`ConcolicRegionRuntime#resolveBranch`,
+`#resolveSwitchBranch`; a switch gets one entry per case label), which never steers the run: the
+woven body grows with the labels, not their square (ZooKeeper's `FinalRequestProcessor` switches
+on 120, which a dispatch per label and successor took past the JVM's 64 KB method limit).
 
 The union weave also hooks the codecs and exchange brackets the wire declarations state
 (`causynth.CodecWeave`, [IDENTITY.md §7.5](IDENTITY.md)): the file the property
@@ -1186,7 +1194,10 @@ each component as `assoc_remove_if`'s); a source whose chain bounds no keys is r
 the source's keys. The presence and match conditions of `putIfAbsent`, `replace` and `remove(k, v)`
 are comparisons of a `READ` with null or the argument, lowered as any comparison. A String a map
 answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
-(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A view's positions are
+(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). An object reference is an
+opaque identity: one the VM named (`M_L'c'_rid`) is non-null and distinct from its session's other
+named objects, one it placed unnamed (`P_L'c'_`, made only for a non-null object) is non-null
+(`SmtLowering#opaque`). A view's positions are
 stated linearly in its chain's puts: each position below the size names a present key held at that
 position, and each put key present is held at a position below the size. A position is the run's
 iteration count, so the chain's order is the positions' only where it is the order the map's class

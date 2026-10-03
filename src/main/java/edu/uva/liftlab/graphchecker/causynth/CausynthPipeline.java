@@ -2760,8 +2760,6 @@ public final class CausynthPipeline {
             return;
         }
 
-        Local decision = newTraceLocal(body, BooleanType.v(),
-                "$causynthBranchDecision");
         Local prepared = newTraceLocal(body, LongType.v(),
                 "$causynthPreparedBranch");
         Local vmEvent = newTraceLocal(body, LongType.v(),
@@ -2772,21 +2770,19 @@ public final class CausynthPipeline {
         insertExactBranchMarkerPrefix(body, method, branch, unitIndex,
                 expression, prepared, vmEvent, vmOccurrence, refs);
 
-        // Each arm asks which way to go given the observed one (0 fell
-        // through, 1 jumped) and jumps when the answer is true.
+        // Each arm states the decision it observed (0 fell through, 1
+        // jumped) and goes on where the branch sent it: the observation
+        // never steers the run.
         List<List<Unit>> arms = new ArrayList<>();
         for (int observed = 0; observed <= 1; observed++) {
             List<Unit> arm = new ArrayList<>();
-            refs.bracket(arm, decision, Hook.RESOLVE_BRANCH, prepared,
+            refs.bracket(arm, Hook.RESOLVE_BRANCH, prepared,
                     vmEvent, StringConstant.v(method.getSignature()),
                     IntConstant.v(unitIndex), StringConstant.v(expression),
                     IntConstant.v(observed));
-            arm.add(Jimple.v().newIfStmt(
-                    Jimple.v().newNeExpr(decision, IntConstant.v(0)),
-                    previousTarget));
             arms.add(arm);
         }
-        arms.get(1).add(Jimple.v().newGotoStmt(falseSuccessor));
+        arms.get(1).add(Jimple.v().newGotoStmt(previousTarget));
         splitIfArms(body, branch, arms.get(0), arms.get(1));
     }
 
@@ -2820,31 +2816,24 @@ public final class CausynthPipeline {
                 "$causynthVmSwitchEvent");
         Local vmOccurrence = newTraceLocal(body, IntType.v(),
                 "$causynthVmSwitchOccurrence");
-        Local effectiveSuccessor = newTraceLocal(body, IntType.v(),
-                "$causynthSwitchSuccessor");
 
         insertExactBranchMarkerPrefix(body, method, branch, unitIndex,
                 expression, prepared, vmEvent, vmOccurrence, refs);
 
+        // One entry per case label: it states the successor it observed and
+        // goes on to it, so the weave grows with the labels, not their
+        // square (ZooKeeper's FinalRequestProcessor switches on 120).
         List<Unit> entries = new ArrayList<>();
         for (int observed = 0; observed < shape.successorCount(); observed++) {
             Unit entry = Jimple.v().newNopStmt();
             entries.add(entry);
             body.getUnits().add(entry);
-            refs.bracket(body.getUnits(), effectiveSuccessor,
+            refs.bracket(body.getUnits(),
                     Hook.RESOLVE_SWITCH_BRANCH, prepared, vmEvent,
                     StringConstant.v(method.getSignature()),
                     IntConstant.v(unitIndex), StringConstant.v(expression),
                     StringConstant.v(shape.kind),
                     StringConstant.v(encodedKeys), IntConstant.v(observed));
-            for (int targetIndex = 0;
-                 targetIndex < shape.successorCount(); targetIndex++) {
-                body.getUnits().add(Jimple.v().newIfStmt(
-                        Jimple.v().newEqExpr(effectiveSuccessor,
-                                IntConstant.v(targetIndex)),
-                        shape.successors.get(targetIndex)));
-            }
-            // A malformed result keeps the concrete arm.
             body.getUnits().add(Jimple.v().newGotoStmt(
                     shape.successors.get(observed)));
         }
@@ -3772,10 +3761,10 @@ public final class CausynthPipeline {
                             "markConcolicBranch", LongType.v(), string,
                             IntType.v())
                     .add(Hook.RESOLVE_BRANCH, runtime, "resolveBranch",
-                            BooleanType.v(), LongType.v(), LongType.v(), string,
+                            VoidType.v(), LongType.v(), LongType.v(), string,
                             IntType.v(), string, BooleanType.v())
                     .add(Hook.RESOLVE_SWITCH_BRANCH, runtime,
-                            "resolveSwitchBranch", IntType.v(), LongType.v(),
+                            "resolveSwitchBranch", VoidType.v(), LongType.v(),
                             LongType.v(), string, IntType.v(), string, string,
                             string, IntType.v())
                     .add(Hook.CHECK_LOOP_BACKEDGE, runtime,

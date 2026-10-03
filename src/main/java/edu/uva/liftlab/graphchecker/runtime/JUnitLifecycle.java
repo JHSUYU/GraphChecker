@@ -34,7 +34,10 @@ import java.util.Set;
  * {@code @RegisterExtension} field holds gets its lifecycle callbacks around
  * the methods of the same role, with a context that answers what the test
  * is ({@link #context}).  A test method name a helper shares is the
- * {@code @Test} one.</p>
+ * {@code @Test} one.  A lifecycle or test method may take Jupiter's {@code
+ * TestInfo}, which the same context answers (ZooKeeper's {@code
+ * ZKTestCase#starting} logs the test it starts); any other parameter is
+ * refused by name.</p>
  */
 final class JUnitLifecycle {
     /** What marks the method the adapter names, in either vocabulary. */
@@ -46,6 +49,8 @@ final class JUnitLifecycle {
             "org.junit.jupiter.api.extension.RegisterExtension"};
     private static final String EXTENSIONS =
             "org.junit.jupiter.api.extension.";
+    /** The one parameter type a lifecycle or test method may take. */
+    private static final String TEST_INFO = "org.junit.jupiter.api.TestInfo";
 
     /** The four roles; {@code onTheClass} roles are static. */
     private enum Lifecycle {
@@ -97,7 +102,8 @@ final class JUnitLifecycle {
             prepareFields(testClass, null, classExtensions);
             around(Lifecycle.BEFORE_ALL, testClass, null, null,
                     classExtensions);
-            invokeAll(null, lifecycleMethods(testClass, Lifecycle.BEFORE_ALL));
+            invokeAll(null, lifecycleMethods(testClass, Lifecycle.BEFORE_ALL),
+                    testClass, null);
             Constructor<?> constructor = testClass.getDeclaredConstructor();
             constructor.setAccessible(true);
             Object test = constructor.newInstance();
@@ -107,13 +113,15 @@ final class JUnitLifecycle {
                 around(Lifecycle.BEFORE_EACH, testClass, test, testMethod,
                         extensions);
                 invokeAll(test,
-                        lifecycleMethods(testClass, Lifecycle.BEFORE_EACH));
-                invoke(test, testMethod);
+                        lifecycleMethods(testClass, Lifecycle.BEFORE_EACH),
+                        testClass, testMethod);
+                invoke(test, testMethod, testClass, testMethod);
             } catch (Throwable thrown) {
                 failure = thrown;
             } finally {
                 failure = alsoInvoke(failure, test,
-                        lifecycleMethods(testClass, Lifecycle.AFTER_EACH));
+                        lifecycleMethods(testClass, Lifecycle.AFTER_EACH),
+                        testClass, testMethod);
                 failure = alsoAround(failure, Lifecycle.AFTER_EACH,
                         testClass, test, testMethod, extensions);
             }
@@ -122,7 +130,8 @@ final class JUnitLifecycle {
             failure = merge(failure, thrown);
         } finally {
             failure = alsoInvoke(failure, null,
-                    lifecycleMethods(testClass, Lifecycle.AFTER_ALL));
+                    lifecycleMethods(testClass, Lifecycle.AFTER_ALL),
+                    testClass, null);
             failure = alsoAround(failure, Lifecycle.AFTER_ALL, testClass,
                     null, null, classExtensions);
         }
@@ -201,7 +210,7 @@ final class JUnitLifecycle {
                 if (!hasAnnotation(method.getDeclaredAnnotations(), TEST)) {
                     continue;
                 }
-                if (method.getParameterCount() != 0) {
+                if (!resolvable(method)) {
                     throw new NoSuchMethodException(
                             "test method takes parameters: "
                                     + testClass.getName() + "#" + methodName);
@@ -293,9 +302,11 @@ final class JUnitLifecycle {
     }
 
     /**
-     * The extension context a callback is handed: which class, instance and
-     * method the test is.  What it cannot answer is refused by name, so an
-     * extension that needs more fails the workload instead of seeing a lie.
+     * The extension context a callback is handed, or the {@code TestInfo} a
+     * method takes (a subset of the same questions): which class, instance
+     * and method the test is.  What it cannot answer is refused by name, so
+     * an extension that needs more fails the workload instead of seeing a
+     * lie.
      */
     private static Object context(Class<?> contextType, Class<?> testClass,
                                   Object test, Method testMethod) {
@@ -338,7 +349,7 @@ final class JUnitLifecycle {
                         case "equals":
                             return proxy == arguments[0];
                         case "toString":
-                            return "ExtensionContext["
+                            return contextType.getSimpleName() + "["
                                     + testClass.getName() + "]";
                         default:
                             throw new UnsupportedOperationException(
@@ -369,7 +380,7 @@ final class JUnitLifecycle {
                         method.getDeclaredAnnotations(), role.annotations)) {
                     continue;
                 }
-                if (method.getParameterCount() != 0) {
+                if (!resolvable(method)) {
                     throw new IllegalStateException(
                             "lifecycle method takes parameters: " + role
                                     + " " + type.getName() + "#"
@@ -435,10 +446,11 @@ final class JUnitLifecycle {
         return false;
     }
 
-    private static void invokeAll(Object receiver, List<Method> methods)
+    private static void invokeAll(Object receiver, List<Method> methods,
+                                  Class<?> testClass, Method testMethod)
             throws Throwable {
         for (Method method : methods) {
-            invoke(receiver, method);
+            invoke(receiver, method, testClass, testMethod);
         }
     }
 
@@ -447,11 +459,13 @@ final class JUnitLifecycle {
      * ones are suppressed under it.
      */
     private static Throwable alsoInvoke(Throwable failure, Object receiver,
-                                        List<Method> methods) {
+                                        List<Method> methods,
+                                        Class<?> testClass,
+                                        Method testMethod) {
         Throwable standing = failure;
         for (Method method : methods) {
             try {
-                invoke(receiver, method);
+                invoke(receiver, method, testClass, testMethod);
             } catch (Throwable thrown) {
                 standing = merge(standing, thrown);
             }
@@ -469,10 +483,28 @@ final class JUnitLifecycle {
         return failure;
     }
 
-    private static void invoke(Object receiver, Method method)
+    /** Whether every parameter of {@code method} is a {@code TestInfo}. */
+    private static boolean resolvable(Method method) {
+        for (Class<?> parameter : method.getParameterTypes()) {
+            if (!TEST_INFO.equals(parameter.getName())) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Calls {@code method} of the test {@code testMethod} names (null for a
+     * class role), a {@code TestInfo} parameter answered by its context.
+     */
+    private static void invoke(Object receiver, Method method,
+                               Class<?> testClass, Method testMethod)
             throws Throwable {
+        Class<?>[] types = method.getParameterTypes();
+        Object[] arguments = new Object[types.length];
+        for (int i = 0; i < types.length; i++) {
+            arguments[i] = context(types[i], testClass, receiver, testMethod);
+        }
         try {
-            method.invoke(receiver);
+            method.invoke(receiver, arguments);
         } catch (InvocationTargetException exception) {
             throw exception.getCause();
         }
