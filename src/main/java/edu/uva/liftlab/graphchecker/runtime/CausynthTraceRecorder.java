@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -63,6 +64,14 @@ public final class CausynthTraceRecorder {
             ThreadLocal.withInitial(ArrayDeque::new);
     private static final ThreadLocal<Deque<ActiveCallSite>> ACTIVE_CALL_SITES =
             ThreadLocal.withInitial(ArrayDeque::new);
+    /**
+     * The call id a standing call's rows state where it is not its own: a
+     * call standing in a region a hop named states itself again under the
+     * occurrence ({@link #regionNamed}), and once more under its own chain
+     * when the hop ends ({@link #regionUnnamed}).
+     */
+    private static final ThreadLocal<Map<Long, Long>> STATED_IDS =
+            ThreadLocal.withInitial(HashMap::new);
     /** A concolic replay keeps call stacks but does not publish a trace. */
     private static volatile boolean contextOnlyConcolicReplay;
 
@@ -198,7 +207,7 @@ public final class CausynthTraceRecorder {
         ActiveCall parent = calls.peek();
         Deque<ActiveCallSite> sites = ACTIVE_CALL_SITES.get();
         ActiveCallSite parentSite = sites.peek();
-        long parentCallId = parent == null ? 0L : parent.callId;
+        long parentCallId = parent == null ? 0L : stated(parent.callId);
         long parentSiteId = parentSite == null ? 0L : parentSite.invocationId;
         RuntimeTraceContext.View context = parent == null
                 ? RuntimeTraceContext.enterRoot(receiver)
@@ -223,8 +232,10 @@ public final class CausynthTraceRecorder {
             // it skips.
             folded = Identity.openedNone();
         }
-        calls.push(new ActiveCall(id, parentSiteId, method,
-                context.spanId, parent == null, !region.isEmpty(), address));
+        calls.push(new ActiveCall(id, parentCallId, parentSiteId, method,
+                receiver, context.spanId, parent == null,
+                region.isEmpty() ? -1 : Identity.regionDepth() - 1,
+                address));
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
                         threadName, tid, method, objectId,
@@ -257,6 +268,90 @@ public final class CausynthTraceRecorder {
         // push the marker.
         if (Identity.openedNone()) return "";
         return address == null ? "" : address.render();
+    }
+
+    /**
+     * A hop named the region at position {@code region} of this thread's
+     * region stack ({@code Identity#hopOpened}): its root's call and every
+     * call standing above it state themselves again under the occurrence --
+     * an entry row each under a new id, the root's with the address -- and
+     * their rows state those ids while the occurrence stands, so the
+     * aggregation reads it as an activation of its own, keyed by its
+     * address, with what ran under the hop as its calls.  The real entry
+     * stood earlier, outside the window or under no name.
+     */
+    static void regionNamed(int region, OccurrenceAddress address) {
+        if (!INITIALIZED.get() || contextOnlyConcolicReplay) return;
+        List<ActiveCall> standing = standingFrom(region);
+        if (standing.isEmpty()) return;
+        restate(standing, standing.get(0).parentCallId, address.render());
+    }
+
+    /**
+     * The occurrence a hop named ends with the region still standing: the
+     * standing calls' rows close under it and state themselves once more
+     * under the root's own chain; the root's own id is its own again.
+     * Nothing stands when the root itself exited, its exit row already
+     * stated under the occurrence.
+     */
+    static void regionUnnamed(int region) {
+        if (!INITIALIZED.get() || contextOnlyConcolicReplay) return;
+        List<ActiveCall> standing = standingFrom(region);
+        if (standing.isEmpty()) return;
+        for (int index = standing.size() - 1; index >= 0; index--) {
+            ActiveCall call = standing.get(index);
+            emitExecutionEvent(newExecutionEvent("METHOD_EXIT_NORMAL",
+                    call.method, call.callId));
+        }
+        ActiveCall root = standing.get(0);
+        STATED_IDS.get().remove(root.callId);
+        restate(standing.subList(1, standing.size()), root.callId, "");
+    }
+
+    /**
+     * Writes an entry row for each call, outermost first, each under the
+     * one before it and the first under {@code parentCallId}; the first
+     * states {@code address}.  A call that entered a region states it folded,
+     * as its own entry did: it is work of the occurrence below it.
+     */
+    private static void restate(List<ActiveCall> calls, long parentCallId,
+                                String address) {
+        RuntimeTraceContext.View context = RuntimeTraceContext.current();
+        Thread thread = Thread.currentThread();
+        long parent = parentCallId;
+        for (ActiveCall call : calls) {
+            long id = EVENT_COUNTER.incrementAndGet();
+            boolean opens = call == calls.get(0) && !address.isEmpty();
+            RuntimeRegionPlanner.MethodEvent event =
+                    new RuntimeRegionPlanner.MethodEvent(id, testName,
+                            thread.getName(), thread.getId(), call.method,
+                            identity(call.receiver), runtimeType(call.receiver),
+                            id, parent, call.parentSiteId, context.laneId,
+                            context.spanId, context.remoteParentSpanId,
+                            context.source, context.source != null
+                            && context.source.equals(RuntimeTraceContext
+                            .sourceFor(call.receiver)), context.requestKey,
+                            context.requestApi, opens ? address : "",
+                            call.regionFrame && !opens);
+            synchronized (LOCK) {
+                writeTraceLine(event);
+            }
+            STATED_IDS.get().put(call.callId, id);
+            parent = id;
+        }
+    }
+
+    /**
+     * The calls standing from the root call of the region at position
+     * {@code region} up, outermost first; empty when it does not stand.
+     */
+    private static List<ActiveCall> standingFrom(int region) {
+        List<ActiveCall> standing = new ArrayList<>();
+        for (ActiveCall call : ACTIVE_CALLS.get()) {
+            standing.add(0, call);
+            if (call.region == region) return standing;
+        }
+        return Collections.emptyList();
     }
 
     /** The recording's half of {@link RowRuntime#claimStart}. */
@@ -448,14 +543,15 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(returnValue);
         event.primitiveValue = MapFields.safe(primitiveValue);
         emitExecutionEvent(event);
-        closeCall(call, resolvedCallId);
+        closeCall(call, resolvedCallId, null);
     }
 
     /** Ends one activation: its region and root context close with it. */
-    private static void closeCall(ActiveCall call, long resolvedCallId) {
+    private static void closeCall(ActiveCall call, long resolvedCallId,
+                                  Throwable thrown) {
         removeCall(resolvedCallId);
         if (call != null && call.regionFrame) {
-            Identity.regionExit();
+            Identity.regionExit(thrown);
         }
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
@@ -483,7 +579,7 @@ public final class CausynthTraceRecorder {
                 closeCallSite(parentSite, "CALL_SITE_THROW");
             }
         }
-        closeCall(call, resolvedCallId);
+        closeCall(call, resolvedCallId, throwable);
     }
 
     public static void recordField(String kind, String method, int unitIndex,
@@ -503,7 +599,7 @@ public final class CausynthTraceRecorder {
         ActiveCall activeCall = ACTIVE_CALLS.get().peek();
         RuntimeRegionPlanner.FieldAccessEvent event =
                 new RuntimeRegionPlanner.FieldAccessEvent(id, kind, method,
-                        activeCall == null ? 0L : activeCall.callId,
+                        activeCall == null ? 0L : stated(activeCall.callId),
                         unitIndex, SiteId.render(method, unitIndex), field,
                         receiverObjectId, valueObjectId, primitiveValue);
         synchronized (LOCK) {
@@ -891,7 +987,7 @@ public final class CausynthTraceRecorder {
         event.id = id;
         event.kind = MapFields.safe(kind);
         event.method = MapFields.safe(method);
-        event.callId = callId;
+        event.callId = stated(callId);
         // No index or context: only METHOD_ENTER and exchange rows are read
         // for them, and computing them per event dominated recording cost.
         return event;
@@ -1000,7 +1096,14 @@ public final class CausynthTraceRecorder {
         ActiveCall found = activeCall(callId);
         if (found != null) {
             ACTIVE_CALLS.get().remove(found);
+            STATED_IDS.get().remove(found.callId);
         }
+    }
+
+    /** The id {@code callId}'s rows state ({@link #STATED_IDS}). */
+    private static long stated(long callId) {
+        Long stated = STATED_IDS.get().get(callId);
+        return stated == null ? callId : stated;
     }
 
     private static void removeCallSite(long invocationId) {
@@ -2140,24 +2243,34 @@ public final class CausynthTraceRecorder {
 
     private static final class ActiveCall {
         private final long callId;
+        /** The id its entry row stated as its caller's. */
+        private final long parentCallId;
         private final long parentSiteId;
         private final String method;
+        private final Object receiver;
         private final long spanId;
         private final boolean rootContext;
         /** Whether this activation pushed an execution-index frame. */
         private final boolean regionFrame;
+        /** Its region entry's position on the thread's region stack
+         *  ({@code Identity}), or -1 with none. */
+        private final int region;
         /** The occurrence this entry opened, rendered; "" for none. */
         private final String occurrence;
 
-        private ActiveCall(long callId, long parentSiteId, String method,
-                           long spanId, boolean rootContext,
-                           boolean regionFrame, String occurrence) {
+        private ActiveCall(long callId, long parentCallId, long parentSiteId,
+                           String method, Object receiver, long spanId,
+                           boolean rootContext, int region,
+                           String occurrence) {
             this.callId = callId;
+            this.parentCallId = parentCallId;
             this.parentSiteId = parentSiteId;
             this.method = MapFields.safe(method);
+            this.receiver = receiver;
             this.spanId = spanId;
             this.rootContext = rootContext;
-            this.regionFrame = regionFrame;
+            this.regionFrame = region >= 0;
+            this.region = region;
             this.occurrence = occurrence;
         }
     }
