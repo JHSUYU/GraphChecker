@@ -15,7 +15,8 @@ Pointers are `path` plus class and method. `gc/` stands for
 ## Acceptance
 
 Main after the merges of `symbolic-scope` (rounds `V10`, `V11`), `system-zookeeper` + the recorded-address identity rule
-(`V12`, `V13`) and `vm-streams` (round `V14`, snapshot `p227`, 12/12 incl. zk-bugs-quota-init), VM
+(`V12`, `V13`), `vm-streams` (round `V14`, 12/12 incl. zk-bugs-quota-init), `retire-adhoc-pipeline` (`V15`),
+`seed-functional` (`V16` + `V16b`, snapshot `p229`, 12/12) and `preWindow-loop-root` (round `V17`, snapshot `p230`, 12/12), VM
 `/bigtemp/vnr3ne/vm-streams2/j2sdk-image`, trees `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741`
 (`gc/hdfs-11741`) and `/bigtemp/vnr3ne/wt/lucene-solr-storing` (`gc/solr-unified-storing` `663e0ef`). Runs under
 `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`, each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every
@@ -25,16 +26,16 @@ the system's code (the moved roots are those of the Phase 1 release, rounds `F1`
 
 | case | run | time | mechanism (moved roots) |
 | --- | --- | --- | --- |
-| hdfs-17897 | `V9` | 8 min | MARKER_FLIPPED, IPC door of the target DataNode's first in-window heartbeat (V9: response, `REGION.9ffdee3d`; V8: request, `REGION.763d087e`) |
-| hdfs-17899-bug1 | `V9` | 7 min | MARKER_FLIPPED, the same heartbeat's IPC door (V9: request, `REGION.763d087e`; V8: response) |
-| hdfs-17899-bug2, bug3 | `V9` | 10, 8 min | MARKER_FLIPPED, IPC response door |
-| hdfs-17967-pathA, B, C | `V9` | 7, 8, 6 min | MARKER_FLIPPED, IPC response door (pathB in V9: the request door of the same heartbeat) |
-| hdfs-17960 | `V9` | 10 min | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
-| hdfs-11741 | `V9` | 28 min | CLOCK_SKEW: the NameNode key-rotation clock (`REGION.08ab84c9`) sets a key's `expiryDate`, which crosses to dn1 as a handoff; dn1's `removeExpiredKeys` (`assoc_remove_if` over `allKeys`, `expiry < clock`) by its own clock (`REGION.ba3902cd`) drops the key the Balancer holds, and `retrieveDataEncryptionKey` throws |
-| solr-18406 | `V9` | 15 min | CLOCK_SKEW: the `IndexCommitWrapper.delete()` clock jumps past the commit's one-hour reservation, generation 2 is deleted and `getAndSaveCommitPoint(2)` throws |
-| solr-18413 | `V9` | 17 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
+| hdfs-17897 | `V17` | 6 min | MARKER_FLIPPED, IPC door of the target DataNode's first in-window heartbeat (V17: response, `REGION.9ffdee3d`, `Client#getRpcResponse`; other rounds: request, `REGION.763d087e`, `Client$Connection#sendRpcRequest`) |
+| hdfs-17899-bug1 | `V17` | 9 min | MARKER_FLIPPED, the same heartbeat's IPC door (V17: response; V16: request) |
+| hdfs-17899-bug2, bug3 | `V17` | 10, 10 min | MARKER_FLIPPED, IPC door (V17: bug2 response, bug3 request) |
+| hdfs-17967-pathA, B, C | `V17` | 6, 9, 7 min | MARKER_FLIPPED, IPC door (V17: pathA and pathC response, pathB request) |
+| hdfs-17960 | `V17` | 11 min | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
+| hdfs-11741 | `V17` | 25 min | CLOCK_SKEW: the NameNode key-rotation clock (`REGION.08ab84c9`) sets a key's `expiryDate`, which crosses to dn1 as a handoff; dn1's `removeExpiredKeys` (`assoc_remove_if` over `allKeys`, `expiry < clock`) by its own clock (`REGION.ba3902cd`) drops the key the Balancer holds, and `retrieveDataEncryptionKey` throws |
+| solr-18406 | `V17` | 17 min | CLOCK_SKEW: the `IndexCommitWrapper.delete()` clock jumps past the commit's one-hour reservation, generation 2 is deleted and `getAndSaveCommitPoint(2)` throws |
+| solr-18413 | `V17` | 21 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
 
-| zk-bugs-quota-init | `ZK8` (branch `system-zookeeper`, tree `gc/zk-unified` `8f18cf3a4`) | 5 min | MARKER_FLIPPED, the ZOOKEEPER WRITE door's ConnectionLoss on `SetQuotaCommand.createQuota`'s limit create (`REGION.acedb7d4`, `createQuota@0/create@1`): the limit is written, the client retries, the retry finds the limit and takes the update branch, and the server's `getData` of the stat node the failed call never created throws NoNode |
+| zk-bugs-quota-init | `V17` (tree `/bigtemp/vnr3ne/wt/zookeeper-unified`, `gc/zk-unified` `8f18cf3a4`) | 6 min | MARKER_FLIPPED, the ZOOKEEPER WRITE door's ConnectionLoss on `SetQuotaCommand.createQuota`'s limit create (`REGION.acedb7d4`, `createQuota@0/create@1`): the limit is written, the client retries, the retry finds the limit and takes the update branch, and the server's `getData` of the stat node the failed call never created throws NoNode |
 
 The workload of solr-18413 places the source shard's leader off the Overseer's node (tree `b41116b`): with
 both on one node, the per-node clock order leaves no witness short of the node's wall clock stepping back.
