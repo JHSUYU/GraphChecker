@@ -305,9 +305,10 @@ Scale and robustness:
     of it expressions) planned round 4 at 9.5 GB resident. Past `engine_memory_mb` the exploration
     ends (`PLANNER_HEAP_EXCEEDED`); a composer past it fails COMPOSE.
 38. An activation's tracked-location read-out asks the VM for every location the session tracked
-    at or after the activation's entry event, from any thread, and holds every page as a String
-    until the publication thread reads it, one location at a time (`gc/runtime/SharedStateCapture`,
-    16 MB pages): SB12's obligation 0a1a085e98d056aa still read 50-60 MB per activation, and each
+    at or after the activation's entry event, from any thread; each page goes to the publication
+    thread as it is read, once fewer than four pages' text wait there undecoded
+    (`ConcolicResultPublisher#decodeBeforePublication`), and is decoded there one location at a time
+    (`gc/runtime/SharedStateCapture`, 16 MB pages): SB12's obligation 0a1a085e98d056aa still read 50-60 MB per activation, and each
     page repeats the expression closure its locations share (1.6 times the text of 64 MB pages).
     Asking for the locations the activation itself read or wrote, with one table across a
     read-out's pages, needs the VM.

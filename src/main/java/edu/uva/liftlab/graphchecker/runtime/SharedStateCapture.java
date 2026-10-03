@@ -46,13 +46,21 @@ final class SharedStateCapture {
     /**
      * Reads out every location this activation touched, paging until the VM
      * says the answer is complete.  Called while the owner thread holds the VM
-     * context; decoding is {@link #assembleRecordedSharedState}.  A short page
-     * that names no resume point is a gap: a short write log reads as "never
-     * written".
+     * context.  Each page goes to the publication thread as soon as it is
+     * read ({@link SharedStateReadOut#decodeLater}), where it is decoded
+     * while the next is read and ahead of this activation's publication,
+     * which that thread runs later, in order; no page waits for the rest of
+     * the read-out, and none outlives its decoding (SB12's obligation
+     * replay held 8 pages, 220 MB, a fifth of its live heap at its peak,
+     * awaiting decoding once the region closed).  The next page is read
+     * once this one is handed on, which waits for room among those still
+     * undecoded ({@code ConcolicResultPublisher#decodeBeforePublication}).
+     * A short page that names no resume point is a gap: a short write log
+     * reads as "never written".
      */
-    static RawSharedStateReadOut captureRecordedSharedStateRaw(
+    static SharedStateReadOut captureRecordedSharedState(
             ActiveRegion active, ConcolicVmBroker api) {
-        List<String> pages = new ArrayList<>();
+        SharedStateReadOut readOut = new SharedStateReadOut();
         String fault = "";
         long after = active == null ? 0L : active.vmRegionEnterEventId;
         for (int page = 0; page < MAX_READ_OUT_PAGES; page++) {
@@ -65,14 +73,18 @@ final class SharedStateCapture {
                         + rootCause(throwable);
                 break;
             }
-            pages.add(serialized);
+            if (!readOut.decodeLater(serialized, active)) {
+                fault = "a tracked-location read-out page could not be"
+                        + " handed to the publication thread";
+                break;
+            }
             JsonObject header = pageHeader(serialized);
             if (header == null) {
                 fault = "tracked-location read-out returned no JSON object";
                 break;
             }
             if (optionalBool(header, COMPLETE, false)) {
-                return new RawSharedStateReadOut(pages, "");
+                return readOut;
             }
             long next = optionalLongInteger(header, NEXT_AFTER_EVENT_ID, 0L);
             if (next <= after) {
@@ -86,7 +98,8 @@ final class SharedStateCapture {
             fault = "tracked-location read-out did not complete in "
                     + MAX_READ_OUT_PAGES + " pages";
         }
-        return new RawSharedStateReadOut(pages, fault);
+        readOut.fault = fault;
+        return readOut;
     }
 
     /** A page's members that say whether it is the last, and where the
@@ -127,22 +140,18 @@ final class SharedStateCapture {
     private static final int READ_OUT_PAGE_BYTES = 16 * 1024 * 1024;
 
     /**
-     * Decodes and files the read-out after the VM context is closed, a page
-     * at a time, each page's text let go once it is read.
+     * Files what decoding the read-out refused, at the activation's
+     * publication, where its pages' decoding used to run: the read-out's
+     * fault, then each page's refusals in page order.  A publication that
+     * is withheld files none of them, as one that never decoded.
      */
     static void assembleRecordedSharedState(
-            ActiveRegion active, RawSharedStateReadOut raw) {
-        if (raw == null) return;
-        if (!raw.fault.isEmpty()) {
-            refuse(MALFORMED_ENVELOPE, "", raw.fault);
+            ActiveRegion active, SharedStateReadOut readOut) {
+        if (readOut == null) return;
+        if (!readOut.fault.isEmpty()) {
+            refuse(MALFORMED_ENVELOPE, "", readOut.fault);
         }
-        while (!raw.pages.isEmpty()) {
-            try {
-                decodeTrackedLocations(raw.pages.remove(0), active);
-            } catch (Throwable throwable) {
-                refuse(MALFORMED_ENVELOPE, "", rootCause(throwable));
-            }
-        }
+        for (Runnable refusal : readOut.refusals) refusal.run();
     }
 
     /**
@@ -285,6 +294,11 @@ final class SharedStateCapture {
      */
     private static void refuse(int status, String locationKey,
                                String detail) {
+        List<Runnable> deferred = DECODING.get();
+        if (deferred != null) {
+            deferred.add(() -> refuse(status, locationKey, detail));
+            return;
+        }
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                 // A blank subject would refuse inside Fields.text.
                 firstNonBlank(safe(locationKey), STAGE_VERSIONS,
@@ -292,15 +306,46 @@ final class SharedStateCapture {
                 reason(status) + ": " + safe(detail));
     }
 
-    /** Raw read-out pages frozen before one VM region is finished. */
-    static final class RawSharedStateReadOut {
-        private final List<String> pages;
-        private final String fault;
+    /**
+     * The refusals of the page the publication thread is decoding, held for
+     * its activation's publication ({@link #assembleRecordedSharedState}),
+     * or null outside a page's decoding.
+     */
+    private static final ThreadLocal<List<Runnable>> DECODING =
+            new ThreadLocal<List<Runnable>>();
 
-        private RawSharedStateReadOut(List<String> pages,
-                                      String fault) {
-            this.pages = pages;
-            this.fault = fault;
+    /**
+     * One activation's read-out: its pages are decoded into the activation
+     * on the publication thread as they are read; what is left for its
+     * publication is what that decoding refused, and the read-out's fault.
+     */
+    static final class SharedStateReadOut {
+        /** Written by the owner thread before the publication is queued. */
+        private String fault = "";
+        /** Appended to and read on the publication thread only. */
+        private final List<Runnable> refusals = new ArrayList<>();
+
+        /**
+         * Queues one page's decoding on the publication thread, ahead of
+         * this activation's publication, once the pages queued before it
+         * leave room ({@code ConcolicResultPublisher
+         * #decodeBeforePublication}).
+         *
+         * @return false when the publication thread refused the work
+         */
+        private boolean decodeLater(String page, ActiveRegion active) {
+            return ConcolicResultPublisher.decodeBeforePublication(
+                    page.length(), () -> {
+                        DECODING.set(refusals);
+                        try {
+                            decodeTrackedLocations(page, active);
+                        } catch (Throwable throwable) {
+                            refuse(MALFORMED_ENVELOPE, "",
+                                    rootCause(throwable));
+                        } finally {
+                            DECODING.remove();
+                        }
+                    });
         }
     }
 
