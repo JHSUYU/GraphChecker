@@ -2401,31 +2401,42 @@ public class ExploreTest {
 
         // An occurrence a replay answered by its question (IDENTITY §9)
         // stands at the declared address under another chain: its pairing
-        // is that chain's, a slot beside the declared one's, no replacement.
+        // is that chain's, a slot beside the declared one's, no replacement
+        // -- whichever session lands first, and through the slot file too,
+        // since which slots are answered is read off their opening sessions.
+        String[][] chains = {{"s-seed", "119992", "11"},
+                {"s-two", "119993", "13"}};
         Path answeredRun = tree.newFolder("closure-answered").toPath();
-        Session declared = new Session(answeredRun, "s-seed");
-        declared.activation(writer, false);
-        declared.activation(producer, false);
-        declared.constant("e.119992", "119992");
-        declared.export(exported, "e.119992", 11L, "119992");
-        declared.attach(attached, "M_HOFF_KEY", "119992", exported);
-        declared.flush();
-        Session answering = new Session(answeredRun, "s-two");
-        answering.activation(writer, false);
-        answering.activation(producer, false);
-        answering.constant("e.119993", "119993");
-        answering.export(otherPort, "e.119993", 13L, "119993");
-        answering.attach(attached, "M_HOFF_KEY", "119993", otherPort);
-        answering.gap(GapRow.of("s-two", GapKind.ADDRESS_UNSTABLE,
-                GapClass.DIAGNOSTIC, attached.occurrence().render(),
-                "the declared occurrence ran at another address"));
-        answering.flush();
+        for (String[] chain : chains) {
+            chainOf(answeredRun, chain, writer, producer, attached,
+                    chain[0].equals("s-seed") ? exported : otherPort);
+        }
         SlotTable.Reconciliation ownChain = new SlotTable().reconcile(
                 Corpus.read(answeredRun, null), pairedMembers, 2);
         assertFalse("an answered occurrence's pairing replaces nothing",
                 ownChain.replaced);
         assertEquals("and opens its own slot beside the declared one's", 2,
                 slotsOf(ownChain).size());
+        for (String[] landing : new String[][] {{"0", "table"},
+                {"1", "table"}, {"0", "file"}, {"1", "file"}}) {
+            String[] chain = chains[Integer.parseInt(landing[0])];
+            Path alone = tree.newFolder("closure-landed-" + chain[0] + "-"
+                    + landing[1]).toPath();
+            chainOf(alone, chain, writer, producer, attached,
+                    chain[0].equals("s-seed") ? exported : otherPort);
+            SlotTable landed = new SlotTable();
+            landed.reconcile(Corpus.read(alone, null), pairedMembers, 1);
+            if (landing[1].equals("file")) {
+                landed.write(alone);
+                landed = SlotTable.read(alone);
+            }
+            SlotTable.Reconciliation both = landed.reconcile(
+                    Corpus.read(answeredRun, null), pairedMembers, 2);
+            assertFalse(chain[0] + " landing first by " + landing[1]
+                    + " makes no replacement", both.replaced);
+            assertEquals(chain[0] + " landing first by " + landing[1]
+                    + " holds both chains' slots", 2, landed.size());
+        }
 
         // ONLY AN ADMITTED REPLAY STATES A TOPOLOGY.  The same foreign
         // pairing, from a replay whose own result row says NOT_ADMITTED, is
@@ -3110,6 +3121,28 @@ public class ExploreTest {
     }
 
     /** The slots one reconciliation opened, for an assertion to look at. */
+    /** One session pairing {@code attached} with {@code port}'s key
+     *  {@code chain[1]}: the declared one ({@code s-seed}) or one that
+     *  answered the consumer's occurrence by its question. */
+    private static void chainOf(Path iteration, String[] chain,
+                                OccurrenceAddress writer,
+                                OccurrenceAddress producer, Endpoint attached,
+                                Endpoint port) throws IOException {
+        Session session = new Session(iteration, chain[0]);
+        session.activation(writer, false);
+        session.activation(producer, false);
+        session.constant("e." + chain[1], chain[1]);
+        session.export(port, "e." + chain[1], Long.parseLong(chain[2]),
+                chain[1]);
+        session.attach(attached, "M_HOFF_KEY", chain[1], port);
+        if (!chain[0].equals("s-seed")) {
+            session.gap(GapRow.of(chain[0], GapKind.ADDRESS_UNSTABLE,
+                    GapClass.DIAGNOSTIC, attached.occurrence().render(),
+                    "the declared occurrence ran at another address"));
+        }
+        session.flush();
+    }
+
     private static List<SlotTable.Slot> slotsOf(
             SlotTable.Reconciliation reconciliation) {
         return new ArrayList<SlotTable.Slot>(reconciliation.opened);

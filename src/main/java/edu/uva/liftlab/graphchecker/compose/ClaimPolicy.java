@@ -788,8 +788,8 @@ public final class ClaimPolicy {
         for (String cell : composition.clockCells()) {
             asked.add(SmtNames.legalSymbols(cell));
         }
-        for (String hole : composition.holeSymbols()) {
-            asked.add(SmtNames.legalSymbols(hole));
+        for (String held : composition.heldSymbols()) {
+            asked.add(SmtNames.legalSymbols(held));
         }
         List<String> assertions =
                 new ArrayList<String>(valuation.assertions());

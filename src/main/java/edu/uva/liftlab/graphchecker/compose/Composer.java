@@ -642,15 +642,16 @@ public final class Composer {
         }
 
         /**
-         * Every codec hole's symbol an arm binds
-         * ({@link ComposedFamilies.ArmChoice#holes}), so a claim can state
-         * the model's valuation of each for CONFIRM.
+         * The symbol of every leaf an arm binds that CONFIRM holds a run to
+         * ({@link ComposedFamilies.BoundLeaf#held}: a codec hole, a
+         * delivery into the anchor), so a claim can state the model's
+         * valuation of each ({@link ComposedFamilies#texts}).
          */
-        public List<String> holeSymbols() {
+        public List<String> heldSymbols() {
             Set<String> symbols = new LinkedHashSet<String>();
             for (ComposedFamilies.ArmChoice arm : armChoices.values()) {
-                for (ComposedFamilies.BoundHole hole : arm.holes().values()) {
-                    symbols.add(hole.symbol);
+                for (ComposedFamilies.BoundLeaf leaf : arm.leaves().values()) {
+                    if (leaf.held(anchor.id())) symbols.add(leaf.symbol);
                 }
             }
             return new ArrayList<String>(symbols);

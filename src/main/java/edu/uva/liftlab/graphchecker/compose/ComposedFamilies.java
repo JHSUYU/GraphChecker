@@ -90,7 +90,7 @@ final class ComposedFamilies {
         private final List<String> expressionRefs;
         private final boolean attested;
         private final List<SmtLowering.StateChoice> states;
-        private final Map<String, BoundHole> holes;
+        private final Map<String, BoundLeaf> leaves;
 
         private ArmChoice(String family, String groupId,
                           List<String> attachEndpointIds,
@@ -98,7 +98,7 @@ final class ComposedFamilies {
                           List<String> interactionIds,
                           List<String> expressionRefs, boolean attested,
                           List<SmtLowering.StateChoice> states,
-                          Map<String, BoundHole> holes) {
+                          Map<String, BoundLeaf> leaves) {
             this.family = family;
             this.groupId = groupId;
             this.attachEndpointIds = Collections.unmodifiableList(
@@ -111,12 +111,12 @@ final class ComposedFamilies {
                     expressionRefs);
             this.attested = attested;
             this.states = Collections.unmodifiableList(states);
-            this.holes = Collections.unmodifiableMap(holes);
+            this.leaves = Collections.unmodifiableMap(leaves);
         }
 
         static ArmChoice of(String family, String groupId,
                             List<String> attachEndpointIds, String session,
-                            List<Arms.Arm> arms, Map<String, BoundHole> holes) {
+                            List<Arms.Arm> arms, Map<String, BoundLeaf> leaves) {
             List<String> slots = new ArrayList<String>();
             List<String> refs = new ArrayList<String>();
             String path = "";
@@ -132,7 +132,7 @@ final class ComposedFamilies {
             return new ArmChoice(family, groupId, attachEndpointIds,
                     new ArrayList<String>(Collections.singletonList(
                             session)), path, slots, refs, attested,
-                    Collections.<SmtLowering.StateChoice>emptyList(), holes);
+                    Collections.<SmtLowering.StateChoice>emptyList(), leaves);
         }
 
         /** The same arm, stated by one more run. */
@@ -141,7 +141,7 @@ final class ComposedFamilies {
             sessions.add(session);
             return new ArmChoice(family, groupId, attachEndpointIds,
                     sessions, producerPathId, interactionIds,
-                    expressionRefs, attested, states, holes);
+                    expressionRefs, attested, states, leaves);
         }
 
         /** The same arm, with the states of the objects its stores deliver
@@ -149,7 +149,7 @@ final class ComposedFamilies {
         ArmChoice seeing(List<SmtLowering.StateChoice> seen) {
             return new ArmChoice(family, groupId, attachEndpointIds,
                     sessionIds, producerPathId, interactionIds,
-                    expressionRefs, attested, seen, holes);
+                    expressionRefs, attested, seen, leaves);
         }
 
         /** The same arm, with only the states a model's nested selectors
@@ -223,76 +223,96 @@ final class ComposedFamilies {
         }
 
         /**
-         * The codec holes this arm binds, by consumer endpoint id: what a
-         * model's valuation of each is checked against in CONFIRM
-         * ({@link #holeTexts}).
+         * The leaves this arm binds -- a codec's hole or a declared port's
+         * delivery -- by consumer endpoint id: what a model's valuation of
+         * each delivers ({@link #texts}).
          */
-        public Map<String, BoundHole> holes() {
-            return holes;
+        public Map<String, BoundLeaf> leaves() {
+            return leaves;
         }
     }
 
     /**
-     * One codec hole an arm binds (WIRE-CODEC §6.5): its symbol and the
-     * decoded leaf's {@code javaType} (a primitive or a String, invariant
-     * 5), and whether the value it was bound to rests on a clock -- directly,
-     * or through the {@code nested} holes its operand names.  A replay
-     * reads its clocks afresh (CONFIRM holds a run to the model's edges
-     * and roots, never to its instants), so only a value resting on no
-     * clock is one a replay reproduces.
+     * One leaf an arm binds: its symbol, the consumer's {@code javaType} (a
+     * primitive or a String), the occurrence it was delivered into, whether
+     * it is a codec's hole (WIRE-CODEC §6.5), and whether the value it was
+     * bound to rests on a clock -- directly, or through the {@code nested}
+     * deliveries its operand names.  A replay reads its clocks afresh
+     * (CONFIRM holds a run to the model's edges and roots, never to its
+     * instants), so only a value resting on no clock is one a replay
+     * reproduces.
      */
-    public static final class BoundHole {
+    public static final class BoundLeaf {
         public final String symbol;
         public final String javaType;
+        public final String occurrenceId;
+        public final boolean hole;
         public final boolean clocked;
         public final Set<String> nested;
 
-        BoundHole(String symbol, String javaType, boolean clocked,
-                  Set<String> nested) {
+        BoundLeaf(String symbol, String javaType, String occurrenceId,
+                  boolean hole, boolean clocked, Set<String> nested) {
             this.symbol = symbol;
             this.javaType = javaType;
+            this.occurrenceId = occurrenceId;
+            this.hole = hole;
             this.clocked = clocked;
             this.nested = Collections.unmodifiableSet(nested);
+        }
+
+        /**
+         * Whether CONFIRM holds a run to this leaf's value: a hole's
+         * always, and a delivery into the anchor, which CONFIRM may take
+         * from another producer of the model's producer's question
+         * (PIPELINE §10).
+         */
+        public boolean held(String anchorId) {
+            return hole || occurrenceId.equals(anchorId);
         }
     }
 
     /**
-     * WHAT A REPLAY MUST DECODE AT EACH HOLE of these selected arms
-     * (WIRE-CODEC §6.5): the model's valuation of the hole as the decoded
-     * text -- an integral's decimal, a boolean's {@code true}/{@code
-     * false}, a String's characters -- by consumer endpoint id, for every
-     * hole whose value rests on no clock through the selected arms.  A
-     * hole resting on a nested hole no selected arm binds, or a char or a
-     * floating value (no decimal text the model states), is not stated.
+     * WHAT A REPLAY MUST RECEIVE AT EACH HELD LEAF of these selected arms
+     * ({@link BoundLeaf#held}: every codec hole, WIRE-CODEC §6.5, and every
+     * delivery into the anchor {@code anchorId}): the model's valuation of
+     * the leaf as the text that arrives -- an integral's decimal, a
+     * boolean's {@code true}/{@code false}, a String's characters -- by
+     * consumer endpoint id, for every held leaf whose value rests on no
+     * clock through the selected arms.  A leaf resting on a nested delivery
+     * no selected arm binds, or a char or a floating value (no decimal text
+     * the model states), is not stated.
      */
-    public static Map<String, String> holeTexts(
-            Collection<ArmChoice> selected, Map<String, String> model) {
-        Map<String, BoundHole> bySymbol =
-                new LinkedHashMap<String, BoundHole>();
+    public static Map<String, String> texts(Collection<ArmChoice> selected,
+                                            Map<String, String> model,
+                                            String anchorId) {
+        Map<String, BoundLeaf> bySymbol =
+                new LinkedHashMap<String, BoundLeaf>();
         Map<String, String> consumerOf = new LinkedHashMap<String, String>();
         for (ArmChoice arm : selected) {
-            for (Map.Entry<String, BoundHole> hole : arm.holes().entrySet()) {
-                bySymbol.put(hole.getValue().symbol, hole.getValue());
-                consumerOf.put(hole.getValue().symbol, hole.getKey());
+            for (Map.Entry<String, BoundLeaf> leaf
+                    : arm.leaves().entrySet()) {
+                bySymbol.put(leaf.getValue().symbol, leaf.getValue());
+                consumerOf.put(leaf.getValue().symbol, leaf.getKey());
             }
         }
         Map<String, String> texts = new LinkedHashMap<String, String>();
-        for (Map.Entry<String, BoundHole> hole : bySymbol.entrySet()) {
-            if (clocked(hole.getKey(), bySymbol,
+        for (Map.Entry<String, BoundLeaf> leaf : bySymbol.entrySet()) {
+            if (!leaf.getValue().held(anchorId)
+                    || clocked(leaf.getKey(), bySymbol,
                     new LinkedHashSet<String>())) {
                 continue;
             }
-            String value = model.get(hole.getKey());
+            String value = model.get(leaf.getKey());
             String text = value == null ? null
-                    : text(hole.getValue().javaType, value);
+                    : text(leaf.getValue().javaType, value);
             if (text != null) {
-                texts.put(consumerOf.get(hole.getKey()), text);
+                texts.put(consumerOf.get(leaf.getKey()), text);
             }
         }
         return texts;
     }
 
-    /** A model's value as the text a hole of this type decodes, or null. */
+    /** A model's value as the text a leaf of this type receives, or null. */
     private static String text(String javaType, String value) {
         VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(javaType);
         if (sort == VmTermLowering.Sort.STRING) return Z3.javaString(value);
@@ -301,14 +321,14 @@ final class ComposedFamilies {
                 ? value : null;
     }
 
-    /** Whether a hole's value rests on a clock, or on what no arm binds. */
+    /** Whether a leaf's value rests on a clock, or on what no arm binds. */
     private static boolean clocked(String symbol,
-                                   Map<String, BoundHole> bySymbol,
+                                   Map<String, BoundLeaf> bySymbol,
                                    Set<String> seen) {
-        BoundHole hole = bySymbol.get(symbol);
-        if (hole == null || !seen.add(symbol)) return true;
-        if (hole.clocked) return true;
-        for (String nested : hole.nested) {
+        BoundLeaf leaf = bySymbol.get(symbol);
+        if (leaf == null || !seen.add(symbol)) return true;
+        if (leaf.clocked) return true;
+        for (String nested : leaf.nested) {
             if (clocked(nested, bySymbol, seen)) return true;
         }
         return false;
@@ -682,11 +702,11 @@ final class ComposedFamilies {
             // Declared BEFORE the body, whose nested families name it.
             lowering.declare(selector, VmTermLowering.Sort.BOOL);
             List<String> nested = new ArrayList<String>();
-            Map<String, BoundHole> holes =
-                    new LinkedHashMap<String, BoundHole>();
+            Map<String, BoundLeaf> bound =
+                    new LinkedHashMap<String, BoundLeaf>();
             int[] mark = mark();
             String body = producerBody(ordinal, selector, message, session,
-                    bindings(held), reached, nested, depth, holes);
+                    bindings(held), reached, nested, depth, bound);
             String same = body == null ? null : selectorOf.get(body);
             // A refused arm, or a copy of one taken already (which rests on
             // the same nested messages), states nothing.
@@ -705,7 +725,7 @@ final class ComposedFamilies {
             selectors.add(selector);
             cases.add("(=> " + selector + " " + body + ")");
             choose(selector, ArmChoice.of(family.name, group,
-                    endpointIds(leaves), session, held, holes));
+                    endpointIds(leaves), session, held, bound));
         }
         if (selectors.isEmpty()) {
             refusals.add(GapRow.of(corpus.seedSessionId(),
@@ -840,13 +860,12 @@ final class ComposedFamilies {
      * the decoded leaf's sort, bound to the operand the producer's export
      * cut out of its leaf by the one hole-arm rule
      * ({@link VmTermLowering#holeArm}); a relay's operand is the upstream
-     * hole's symbol, closed below as a nested family.  What the value rests
-     * on is noted for CONFIRM ({@link BoundHole}).
+     * hole's symbol, closed below as a nested family.
      *
      * @return the binding, or null with the refusal in {@code refused}
      */
     private String hole(String session, Arms.Arm arm, Term delivered,
-                        Map<String, BoundHole> holes, List<GapRow> refused) {
+                        List<GapRow> refused) {
         AttachRow consumer = arm.attach();
         VmTermLowering.HoleArm bound = VmTermLowering.holeArm(arm.symbol(),
                 delivered, arm.export().javaType(), consumer.javaType());
@@ -857,6 +876,17 @@ final class ComposedFamilies {
         }
         lowering.declareStated(arm.symbol(),
                 JavaSmtSorts.sortOfJava(consumer.javaType()));
+        return bound.formula;
+    }
+
+    /**
+     * What one wire leaf an arm binds rests on, noted for CONFIRM ({@link
+     * BoundLeaf}): the clock roots and the deliveries of its session that
+     * its delivered term names.
+     */
+    private void bind(String session, Arms.Arm arm, Term delivered,
+                      Map<String, BoundLeaf> bound) {
+        AttachRow consumer = arm.attach();
         boolean clocked = false;
         Set<String> nested = new LinkedHashSet<String>();
         for (String name : lowering.reachedSymbols(
@@ -868,10 +898,9 @@ final class ComposedFamilies {
                 nested.add(name);
             }
         }
-        holes.put(consumer.endpoint().id(),
-                new BoundHole(arm.symbol(), consumer.javaType(), clocked,
-                        nested));
-        return bound.formula;
+        bound.put(consumer.endpoint().id(), new BoundLeaf(arm.symbol(),
+                consumer.javaType(), consumer.endpoint().occurrence().id(),
+                arm.hole(), clocked, nested));
     }
 
     /**
@@ -884,8 +913,8 @@ final class ComposedFamilies {
      * WHAT was delivered, not why.
      *
      * @param selector this arm's selector, which (iv)'s families rest on
-     * @param holes receives the codec holes the outs bind, by consumer
-     *              endpoint id ({@link ArmChoice#holes})
+     * @param leaves receives the wire leaves the outs bind, by consumer
+     *               endpoint id ({@link ArmChoice#leaves})
      * @return the arm-set's conjunction, or null when a value it rests on is
      *         not stated -- refusing this {@code (P, S)}, not the path
      */
@@ -894,7 +923,7 @@ final class ComposedFamilies {
                                 String session,
                                 List<Out> outs, Set<String> reachedSlots,
                                 List<String> nestedStated, int depth,
-                                Map<String, BoundHole> holes) {
+                                Map<String, BoundLeaf> leaves) {
         List<GapRow> local = new ArrayList<GapRow>();
         SmtLowering.SessionJoin rows = corpus.join(session);
         lowering.begin(session, rows, corpus.expressions(session));
@@ -911,14 +940,15 @@ final class ComposedFamilies {
                 stated = false;
                 break;
             }
+            if (out.arm.attach() != null) bind(session, out.arm, delivered,
+                    leaves);
             if (out.arm.hole()) {
-                String bound = hole(session, out.arm, delivered, holes,
-                        local);
-                if (bound == null) {
+                String arm = hole(session, out.arm, delivered, local);
+                if (arm == null) {
                     stated = false;
                     break;
                 }
-                conjuncts.add(bound);
+                conjuncts.add(arm);
                 guards.putAll(out.arm.guard());
                 guardMints.putAll(out.arm.guardMints());
                 continue;
@@ -1444,7 +1474,7 @@ final class ComposedFamilies {
             String body = producerBody(ordinal, name, writer.getKey(),
                     session, writer.getValue(), reached,
                     new ArrayList<String>(), 0,
-                    new LinkedHashMap<String, BoundHole>());
+                    new LinkedHashMap<String, BoundLeaf>());
             if (body == null) {
                 rollback(mark);
                 continue;
@@ -1471,7 +1501,7 @@ final class ComposedFamilies {
             choose(name, ArmChoice.of(assertion,
                     writer.getKey(), Collections.<String>emptyList(),
                     session, armsOf(writer.getValue()),
-                    Collections.<String, BoundHole>emptyMap()).seeing(states));
+                    Collections.<String, BoundLeaf>emptyMap()).seeing(states));
         }
         // Every nested selector this path minted holds only under an arm
         // of it delivering a store its state was seen through: under none
@@ -1525,7 +1555,7 @@ final class ComposedFamilies {
                         "observed:" + location.getKey(),
                         Collections.<String>emptyList(), session,
                         Collections.<Arms.Arm>emptyList(),
-                        Collections.<String, BoundHole>emptyMap()));
+                        Collections.<String, BoundLeaf>emptyMap()));
                 selectors.add(name);
                 taken = name;
             }

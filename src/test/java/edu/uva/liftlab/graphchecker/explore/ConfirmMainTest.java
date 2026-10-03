@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import java.util.ArrayList;
+import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import static org.junit.Assert.assertEquals;
@@ -14,6 +15,9 @@ import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.Frame;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
@@ -518,7 +522,7 @@ public class ConfirmMainTest {
      * WIRE-CODEC §6.5: a codec hole's WIRE edge states the store version its
      * message was, so a reader of another version is a mismatch, and the
      * text the model's valuation of it decodes to, where COMPOSE stated one
-     * ({@code holeTexts}: a value resting on no clock).  An exchange's
+     * ({@code texts}: a value resting on no clock).  An exchange's
      * correlation id is its own run's, so its hole is held to its producer
      * alone.
      */
@@ -549,7 +553,7 @@ public class ConfirmMainTest {
         arm.getAsJsonArray("attachEndpointIds").add(exchange.id());
         JsonObject texts = new JsonObject();
         texts.addProperty(consumer.id(), "2000");
-        arm.add("holeTexts", texts);
+        arm.add(ComposeMain.TEXTS, texts);
         Files.write(claim, written.toString().getBytes(
                 StandardCharsets.UTF_8));
         Path out = folder.newFolder("hole-worker").toPath();
@@ -677,6 +681,41 @@ public class ConfirmMainTest {
                     edge.get("after").getAsString());
         }
         assertEquals(1, held);
+
+        // A delivery into the anchor is held to the producer the arm's
+        // session paired; only where that session answered the anchor by
+        // its question (IDENTITY §9, an ADDRESS_UNSTABLE row naming it) did
+        // another chain of the question's shape carry it, and the edge
+        // states its producer's question, which CONFIRM compares by site,
+        // site index, attempt and shape.
+        for (boolean answered : new boolean[]{false, true}) {
+            if (answered) {
+                List<GapRow> gaps = new ArrayList<GapRow>(RowCodec.readAll(
+                        sel.gaps(), RowCodec::readGap));
+                gaps.add(GapRow.of("sel", GapKind.ADDRESS_UNSTABLE,
+                        GapClass.DIAGNOSTIC, anchor.render(),
+                        "the declared occurrence ran at another address"));
+                RowCodec.writeAll(sel.gaps(), gaps, RowCodec::writeGap);
+            }
+            Path asked = folder.newFolder("asked-" + answered).toPath();
+            ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
+                    asked);
+            for (JsonObject edge : RowCodec.readJsonl(
+                    asked.resolve(Confirmation.FILE))) {
+                if (!"WIRE".equals(edge.get("kind").getAsString())) continue;
+                assertEquals("answered " + answered, answered,
+                        edge.has(Confirmation.PRODUCER_QUESTION));
+                if (!answered) continue;
+                JsonObject question = edge.getAsJsonObject(
+                        Confirmation.PRODUCER_QUESTION);
+                assertEquals(producer.site(),
+                        question.get("site").getAsString());
+                assertEquals(producer.siteIndex().hash(),
+                        question.get("siteIndex").getAsString());
+                assertEquals(producer.attempt(),
+                        question.get("attempt").getAsInt());
+            }
+        }
 
         // A pinned join to a container's INITIAL holds nothing: its version
         // is the members the VM read where it first observed the map, which

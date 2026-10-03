@@ -20,6 +20,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -43,21 +45,19 @@ import java.util.Set;
  * <p>A slot stands on the session that opened it: one whose session left the
  * corpus holds nothing ({@link #standing}).  GROW withdraws the replay that
  * exposed a region and re-runs it under the grown plan, whose new occurrences
- * give the region's endpoints new ids; the withdrawn run's slots then paired
- * its consumers with producers no session of the corpus states, and the
- * re-run and every later session of its world read as replacing them
- * (hdfs-11741 V4: two BLOCKING rows against a slot of the withdrawn
- * 6b2d8a87f0ab7480-ea09d180 withheld the witness's composition).</p>
+ * give the region's endpoints new ids; a withdrawn run's slots would pair its
+ * consumers with producers no session of the corpus states, and the re-run
+ * and every later session of its world would read as replacing them.</p>
  *
  * <p>An occurrence a replay answered by its question (IDENTITY §9) stands
  * at the declared address but ran under another chain of its shape, so its
  * consumers' producers are that chain's: its pairings open slots of their
- * own beside the declared occurrence's and replace none.  After a GROW no
- * planned address under a newly woven region recurs (its sends stand in new
- * occurrences), and hdfs-11741 V4's declared balancer handshake was answered
- * by the other move's, whose key id came from that move's export: four more
- * sessions of the seed's world were BLOCKING replacements of the seed's
- * pairing.</p>
+ * own beside the declared occurrence's, replace none, and are no pairing a
+ * later one replaces -- whichever session lands first, and however a slot
+ * file orders them, since which slots are answered is read off their opening
+ * sessions ({@link #standing}).  Only another answered pairing fills such a
+ * slot: a session that ran the declared address itself and pairs its
+ * consumer with that chain's producer replaces the declared pairing.</p>
  */
 public final class SlotTable {
     public static final String FILE = "slots.jsonl";
@@ -108,9 +108,15 @@ public final class SlotTable {
     /** interaction id | world -> the slot. */
     private final Map<String, Slot> byInteraction =
             new LinkedHashMap<String, Slot>();
-    /** WIRE consumer endpoint id | world -> the slot pairing it there. */
+    /** The keys of {@link #byInteraction} an answered occurrence opened. */
+    private final Set<String> answeredSlots = new HashSet<String>();
+    /** WIRE consumer endpoint id | world -> the slot a later pairing of it
+     *  there replaces: never one an answered occurrence opened. */
     private final Map<String, Slot> slotOfConsumer =
-            new LinkedHashMap<String, Slot>();
+            new HashMap<String, Slot>();
+    /** WIRE consumer endpoint id | world | session -> the slot an answered
+     *  occurrence of that session opened for it. */
+    private final Map<String, Slot> ownChainOf = new HashMap<String, Slot>();
     private boolean stated;
 
     SlotTable() {
@@ -122,8 +128,9 @@ public final class SlotTable {
         if (iteration == null) return table;
         Path file = iteration.resolve(FILE);
         table.stated = Files.isRegularFile(file);
+        // Indexed by standing(), which knows the sessions they stand on.
         for (Slot slot : RowCodec.readAll(file, ExploreCodec::readSlot)) {
-            table.hold(slot);
+            table.byInteraction.put(key(slot), slot);
         }
         return table;
     }
@@ -134,8 +141,11 @@ public final class SlotTable {
 
     /** Whether this consumer endpoint has a WIRE slot in any world. */
     public boolean opened(String consumerEndpointId) {
-        for (Slot slot : slotOfConsumer.values()) {
-            if (slot.consumer.id().equals(consumerEndpointId)) return true;
+        for (Slot slot : byInteraction.values()) {
+            if (slot.kind == InteractionKind.WIRE
+                    && slot.consumer.id().equals(consumerEndpointId)) {
+                return true;
+            }
         }
         return false;
     }
@@ -153,56 +163,62 @@ public final class SlotTable {
         return byInteraction.size();
     }
 
-    private void hold(Slot slot) {
-        byInteraction.put(slot.interactionId() + "|" + slot.world, slot);
-        // The first pairing of a consumer in a world is the one a later one
-        // replaces; an answered occurrence's own chain opens beside it.
-        if (slot.kind == InteractionKind.WIRE) {
-            slotOfConsumer.putIfAbsent(slot.consumer.id() + "|" + slot.world,
-                    slot);
-        }
+    private static String key(Slot slot) {
+        return slot.interactionId() + "|" + slot.world;
     }
 
-    /**
-     * The occurrences {@code session} answered by their question (IDENTITY
-     * §9: its {@code ADDRESS_UNSTABLE} rows, each naming the declared
-     * address): each ran under a chain of the declared one's shape whose
-     * counts differ, so whom it was paired with is that chain's, and the
-     * declared occurrence's slots stand for the recorded chain only.
-     */
-    private static Set<String> answered(SessionReader session) {
-        Set<String> occurrences = new LinkedHashSet<String>();
-        for (GapRow gap : session.gaps()) {
-            if (gap.kind() == GapKind.ADDRESS_UNSTABLE) {
-                occurrences.add(gap.subject());
-            }
+    /** {@code answered}: the slot's consumer stands in an occurrence its
+     *  opening session answered by its question ({@link
+     *  SessionReader#answered}). */
+    private void hold(Slot slot, boolean answered) {
+        byInteraction.put(key(slot), slot);
+        if (answered) {
+            answeredSlots.add(key(slot));
+        } else {
+            answeredSlots.remove(key(slot));
         }
-        return occurrences;
+        if (slot.kind != InteractionKind.WIRE) return;
+        if (answered) {
+            ownChainOf.put(slot.consumer.id() + "|" + slot.world + "|"
+                    + slot.openedBySession, slot);
+        } else {
+            slotOfConsumer.put(slot.consumer.id() + "|" + slot.world, slot);
+        }
     }
 
     /**
      * Keeps the slots whose opening session is in {@code corpus}: a session
      * that left it (a GROW swap) takes its slots with it, and the session
-     * standing in its place opens them again.
+     * standing in its place opens them again.  Each slot is indexed as its
+     * opening session answered its consumer's occurrence.
+     *
+     * @return each session's answered occurrences, by session id
      */
-    private void standing(Corpus corpus) {
-        Set<String> sessions = new LinkedHashSet<String>();
+    private Map<String, Set<String>> standing(Corpus corpus) {
+        Map<String, Set<String>> answeredIn =
+                new HashMap<String, Set<String>>();
         for (SessionReader session : corpus.sessions()) {
-            sessions.add(session.sessionId());
+            answeredIn.put(session.sessionId(), session.answered());
         }
         List<Slot> held = slots();
         byInteraction.clear();
+        answeredSlots.clear();
         slotOfConsumer.clear();
+        ownChainOf.clear();
         for (Slot slot : held) {
-            if (sessions.contains(slot.openedBySession)) hold(slot);
+            Set<String> answered = answeredIn.get(slot.openedBySession);
+            if (answered == null) continue;
+            hold(slot, slot.kind == InteractionKind.WIRE && answered.contains(
+                    slot.consumer.occurrence().render()));
         }
+        return answeredIn;
     }
 
     /** Takes every interaction the corpus states; only a consumer in {@code
      *  closure} opens a slot. */
     public Reconciliation reconcile(Corpus corpus, Set<String> closure,
                                     int round) {
-        standing(corpus);
+        Map<String, Set<String>> answeredIn = standing(corpus);
         List<Slot> opened = new ArrayList<Slot>();
         List<GapRow> gaps = new ArrayList<GapRow>();
         Set<String> outside = new LinkedHashSet<String>();
@@ -212,7 +228,7 @@ public final class SlotTable {
             boolean authority = session.admitted();
             String world = ObligationFactory.worldDigest(
                     corpus.world(session.sessionId()));
-            Set<String> answered = answered(session);
+            Set<String> answered = answeredIn.get(session.sessionId());
             for (AttachRow attach : session.attaches()) {
                 if (attach.producer() == null) continue;
                 Endpoint consumer = attach.endpoint();
@@ -376,12 +392,12 @@ public final class SlotTable {
     public List<Replacement> replacements(Corpus corpus) {
         List<Replacement> found = new ArrayList<Replacement>();
         if (!stated) return found;
-        standing(corpus);
+        Map<String, Set<String>> answeredIn = standing(corpus);
         Set<String> seen = new LinkedHashSet<String>();
         for (SessionReader session : corpus.sessions()) {
             String world = ObligationFactory.worldDigest(
                     corpus.world(session.sessionId()));
-            Set<String> answered = answered(session);
+            Set<String> answered = answeredIn.get(session.sessionId());
             for (AttachRow attach : session.attaches()) {
                 if (attach.producer() == null) continue;
                 if (answered.contains(
@@ -404,13 +420,14 @@ public final class SlotTable {
         return found;
     }
 
-    /** The slot this pairing contradicts: same-world WIRE consumer, other
+    /** The slot this pairing, of an occurrence its session did not answer
+     *  by its question, contradicts: same-world WIRE consumer, other
      *  producer, other session. */
     private Slot replaced(InteractionKind kind, Endpoint producer,
                           Endpoint consumer, String sessionId, String world) {
         if (kind != InteractionKind.WIRE) return null;
-        if (byInteraction.containsKey(
-                Interaction.of(kind, producer, consumer).id() + "|" + world)) {
+        if (holds(Interaction.of(kind, producer, consumer).id() + "|" + world,
+                false)) {
             return null;
         }
         Slot held = slotOfConsumer.get(consumer.id() + "|" + world);
@@ -420,6 +437,13 @@ public final class SlotTable {
         return held.openedBySession.equals(sessionId) ? null : held;
     }
 
+    /** Whether a slot holds this pairing: one an answered occurrence opened
+     *  holds an answered pairing only. */
+    private boolean holds(String key, boolean answered) {
+        return byInteraction.containsKey(key)
+                && (answered || !answeredSlots.contains(key));
+    }
+
     private enum Outcome { OPENED, FILLED, REPLACED, AMBIGUOUS, REPORTED }
 
     static final String UNADMITTED =
@@ -427,19 +451,18 @@ public final class SlotTable {
 
     /**
      * One pair against the skeleton: grow it, fill it, or contradict it.
-     * {@code ownChain}: the consumer stands in an occurrence its session
-     * answered by its question ({@link #answered}), whose pairing is its own
-     * chain's: growth, never a replacement of the declared one's.
+     * {@code answered}: the consumer stands in an occurrence its session
+     * answered by its question ({@link SessionReader#answered}), whose
+     * pairing is its own chain's: growth, never a replacement of the
+     * declared one's.
      */
     private Outcome take(InteractionKind kind, Endpoint producer,
                          Endpoint consumer, String sessionId, String world,
-                         boolean authority, boolean ownChain, int round,
+                         boolean authority, boolean answered, int round,
                          List<Slot> opened, List<GapRow> gaps) {
         Slot slot = new Slot(kind, producer, consumer, sessionId, round, world);
-        if (byInteraction.containsKey(slot.interactionId() + "|" + world)) {
-            return Outcome.FILLED;
-        }
-        Slot contradicted = ownChain ? null
+        if (holds(key(slot), answered)) return Outcome.FILLED;
+        Slot contradicted = answered ? null
                 : replaced(kind, producer, consumer, sessionId, world);
         if (contradicted != null) {
             gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
@@ -463,8 +486,9 @@ public final class SlotTable {
                             + UNADMITTED));
             return Outcome.REPORTED;
         }
-        Slot held = kind == InteractionKind.WIRE && !ownChain
-                ? slotOfConsumer.get(consumer.id() + "|" + world) : null;
+        Slot held = kind != InteractionKind.WIRE ? null : answered
+                ? ownChainOf.get(consumer.id() + "|" + world + "|" + sessionId)
+                : slotOfConsumer.get(consumer.id() + "|" + world);
         if (held != null && !held.producer.id().equals(producer.id())) {
             gaps.add(GapRow.of(sessionId, GapKind.LINEAGE_LOST,
                     GapClass.DIAGNOSTIC, consumer.toString(),
@@ -475,7 +499,7 @@ public final class SlotTable {
                             + "neither opens a slot"));
             return Outcome.AMBIGUOUS;
         }
-        hold(slot);
+        hold(slot, answered);
         opened.add(slot);
         return Outcome.OPENED;
     }

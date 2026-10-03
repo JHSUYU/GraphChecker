@@ -4,6 +4,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
@@ -820,9 +821,12 @@ public final class ConfirmMain {
 
     /** One WIRE edge per consumer of each selected message arm, paired as that
      *  arm's session recorded; a codec hole's with its message's store
-     *  version and the text the model's valuation of it decodes to
-     *  ({@code holeTexts}, COMPOSE's); a consumer of the anchor's with its
-     *  producer's question ({@link #question}). */
+     *  version; a held leaf's (a hole, a consumer of the anchor) with the
+     *  text the model's valuation of it delivers ({@code texts}, COMPOSE's);
+     *  a consumer of the anchor's, where the arm's own session answered the
+     *  anchor by its question, with its producer's question
+     *  ({@link #question}): only there did another chain of the question's
+     *  shape carry the delivery the model chose. */
     private static List<JsonObject> wireEdges(
             List<JsonObject> arms, Map<String, SessionReader> armSessions,
             OccurrenceAddress anchor) throws IOException {
@@ -852,21 +856,22 @@ public final class ConfirmMain {
                 edge.addProperty("producer",
                         Confirmation.id(paired.producer()));
                 edge.addProperty("selector", selector);
-                if (paired.endpoint().occurrence().id().equals(anchor.id())) {
+                if (paired.endpoint().occurrence().id().equals(anchor.id())
+                        && producerSession.answered().contains(
+                        anchor.render())) {
                     edge.add(Confirmation.PRODUCER_QUESTION,
                             question(paired.producer(), producerSession));
                 }
-                if (paired.hole() != null) {
-                    // A codec's hole (WIRE-CODEC §6.5): the version of the
-                    // store its message was, and what it must decode to.
-                    if (STORE_KEY.matcher(paired.correlationId()).matches()) {
-                        edge.addProperty("messageKey",
-                                paired.correlationId());
-                    }
-                    JsonObject texts = object(arm, "holeTexts");
-                    if (texts.has(consumerId)) {
-                        edge.add("value", texts.get(consumerId));
-                    }
+                // A codec's hole (WIRE-CODEC §6.5): the version of the store
+                // its message was.
+                if (paired.hole() != null
+                        && STORE_KEY.matcher(paired.correlationId()).matches()) {
+                    edge.addProperty("messageKey", paired.correlationId());
+                }
+                // A held leaf: what must arrive there.
+                JsonObject texts = object(arm, ComposeMain.TEXTS);
+                if (texts.has(consumerId)) {
+                    edge.add("value", texts.get(consumerId));
                 }
                 edges.add(edge);
             }
@@ -876,9 +881,9 @@ public final class ConfirmMain {
 
     /**
      * The question {@code producer} answers (IDENTITY §9): its occurrence,
-     * its site, and its context's shape over the SEND stances of the session
-     * that paired it, as a replay shapes its own ({@code
-     * runtime.ScheduleLog#shape}).  The anchor is answered by its question,
+     * its site, site index and attempt, and its context's shape over the
+     * SEND stances of the session that paired it, as a replay shapes its own
+     * ({@code runtime.ScheduleLog#shape}).  The anchor is answered by its question,
      * so a delivery into it is too: which turn of a daemon or an iteration
      * carried the message to it is the run's timing (hdfs-11741 V6: the
      * witness's second move to dn1 rode the balancer's next dispatcher
@@ -901,6 +906,8 @@ public final class ConfirmMain {
         JsonObject question = new JsonObject();
         question.addProperty("occurrence", producer.occurrence().render());
         question.addProperty("site", producer.site());
+        question.addProperty("siteIndex", producer.siteIndex().hash());
+        question.addProperty("attempt", producer.attempt());
         JsonArray shape = new JsonArray();
         for (String hop : ContextShape.of(producer.occurrence().context(),
                 senders::get)) {

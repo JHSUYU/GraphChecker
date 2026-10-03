@@ -353,7 +353,9 @@ schedule) and:
    where COMPOSE reads the table, and the session in its place opens them again. An occurrence a
    replay answered by its question (IDENTITY §9, its `ADDRESS_UNSTABLE` row) stands at the declared
    address under another chain, so its pairings are that chain's: they open slots beside the
-   declared occurrence's and replace none.
+   declared occurrence's and replace none, whichever session lands first, since each slot is
+   indexed by whether its opening session answered its consumer's occurrence; only another
+   answered pairing fills such a slot.
 5. Builds the ledger (§7.3), takes the arms in flight (`--in-flight`: the obligation rows the
    campaign has queued or running), builds the candidates (§7.4) and opens the round:
    `obligations.jsonl`, nothing settled and nothing in flight.
@@ -1038,9 +1040,10 @@ integral (`(= (java_int_to_string v) s)` within the hole's range) or a boolean h
 `CODEC_MISMATCH` `NULL_LEAF`; a String operand that may be null holds only where it is not, and one
 whose nullness nothing states is refused (`JavaStringNullnessUnknown`). A relay's operand is the
 upstream hole's symbol, closed as a nested family (SOLR-18413: the leader's `n2` is the Overseer's
-`n1`, which is the overseer's clock plus the timeout). Each hole an arm binds is noted with whether
-its value rests on a clock (`ComposedFamilies.BoundHole`: a CLOCK root the delivered value reaches,
-or a nested hole that does), for CONFIRM. A path's
+`n1`, which is the overseer's clock plus the timeout). Each leaf an arm binds (a hole, a declared
+port's delivery) is noted with the occurrence it was delivered into and whether its value rests on
+a clock (`ComposedFamilies.BoundLeaf`: a CLOCK root the delivered value reaches, or a nested
+delivery that does), for CONFIRM. A path's
 families (message and state) are all or nothing: their named assertions, arm choices and families
 are stated as they are made and taken back with a refused path (`ComposedFamilies#discard`,
 `SmtLowering#retract`), so the next path, composed at the ordinal a refused one left free, names
@@ -1257,11 +1260,12 @@ ClaimPolicy held outcome 0 under (clock pins `clock_pinned__*`, recorded pairing
 with the blocker named when the claim is blocked or there is no path, and `(check-sat)`.
 `candidate_composition_manifest.json`: the `CompositionManifest` fields plus `finalStatus`
 (`FINAL_READY` | `FINAL_REFUSED`), `finalStatusRefusals`, `gaps` and `solver` (§9). `claim.json`:
-`{kind CLAIM, anchor, claim, solverRuns, seedSessionId, valuations, gaps}`, what CONFIRM reads; a
-selected arm binding codec holes states `holeTexts`, consumer endpoint id -> the model's value of
-the hole as the text it decodes to (an integral's decimal, a boolean's `true`/`false`, a String's
-characters; none for a char or a floating value), for every hole whose value rests on no clock through the valuation's selected arms
-(`ComposedFamilies#holeTexts`; a replay reads its clocks afresh).
+`{kind CLAIM, anchor, claim, solverRuns, seedSessionId, valuations, gaps}`, what CONFIRM reads; each
+selected arm states `texts`, consumer endpoint id -> the model's value of each leaf CONFIRM holds
+(`ComposedFamilies.BoundLeaf#held`: a codec hole, a delivery into the anchor) as the text that
+arrives (an integral's decimal, a boolean's `true`/`false`, a String's characters; none for a char
+or a floating value), for every such leaf whose value rests on no clock through the valuation's
+selected arms (`ComposedFamilies#texts`; a replay reads its clocks afresh).
 
 ## 9. SOLVE and DECIDE: `compose.ClaimPolicy.decide`
 
@@ -1406,7 +1410,7 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
   as that arm's session paired it; a codec hole's also with `messageKey`, the store version the arm's
   message was when its key is a store's, `<transport> <path>@<version>`, and `value`, the arm's
-  `holeTexts` entry), `STATE` per read of the anchor's join closure (each reached
+  `texts` entry, which a delivery into the anchor also states), `STATE` per read of the anchor's join closure (each reached
   occurrence's reads before its cutoff, the anchor's before its target seq) at a location the
   selected path's fatal rests on (its manifest `restsOn`: `Composer`'s constraint independence of
   what the fatal rests on -- phi, or for a concrete fatal condition the path condition before the
@@ -1434,14 +1438,16 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   read), at a read that is no read of the closure, or naming a write the session does not state
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
-  `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, and for a codec
-  hole the message key and the decoded text the mint states; a consumer of the anchor's is also
-  taken from a producer that answers the model's producer's question, `producerQuestion` on its
-  row, `ConfirmMain#question`: the same site of an occurrence of the same region and node under a
-  chain of the same shape over this run's senders, since the anchor is answered by its question
-  (IDENTITY §9) and which turn or iteration carried the message to it is the run's timing --
-  hdfs-11741 V6's witness took the balancer's second move to dn1 from its next dispatcher
-  iteration, its CONFIRM run from the first, as recorded), STATE at close (both by
+  `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, for a codec
+  hole the message key, and the text that arrived where the arm states one; a consumer of the
+  anchor's, where the arm's session answered the anchor by its question (IDENTITY §9, its
+  `ADDRESS_UNSTABLE` row), is also taken from a producer that answers the model's producer's question, `producerQuestion` on its row,
+  `ConfirmMain#question`: the same site at the same site index and attempt of an occurrence of the
+  same region and node under a chain of the same shape over this run's senders, since which turn
+  or iteration carried the message to it is the run's timing -- hdfs-11741 V6's witness took the
+  balancer's second move to dn1 from its next dispatcher iteration, its CONFIRM run from the
+  first, as recorded; each such substitution is named, an `ADDRESS_UNSTABLE` DIAGNOSTIC row on the
+  consumer, `RowRuntime#confirm`, and the value must still arrive), STATE at close (both by
   `Confirmation#id`; a STATE edge is taken when the model's reader observed the model's writer, or
   when a read at its site at another turn of the loops on its path did, `readerAnyTurn`,
   `Endpoint#anyTurn`: how many turns a loop that polls for a write takes is that write's timing),

@@ -8,8 +8,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -327,6 +329,23 @@ public final class SessionReader {
     /** What the run refused or noted, each on the subject it names. */
     public List<GapRow> gaps() {
         return gaps;
+    }
+
+    /**
+     * The occurrences this run answered by their question (IDENTITY §9):
+     * the declared address each of its {@code ADDRESS_UNSTABLE} rows names
+     * ({@code runtime.RowRuntime#answered}).  Each ran under a chain of the
+     * declared one's shape whose counts differ, so whom it was paired with
+     * is that chain's, not the recorded one's.
+     */
+    public Set<String> answered() {
+        Set<String> occurrences = new LinkedHashSet<String>();
+        for (GapRow gap : gaps) {
+            if (gap.kind() == GapKind.ADDRESS_UNSTABLE) {
+                occurrences.add(gap.subject());
+            }
+        }
+        return occurrences;
     }
 
     /** The replay's verdicts, one per obligation run; the only authority. */

@@ -6140,7 +6140,7 @@ public class ComposerTest {
                 body.contains("clk_o") && body.contains("1000"));
         assertEquals("each hole's symbol is asked of the model",
                 new LinkedHashSet<String>(Arrays.asList(n1, n2)),
-                new LinkedHashSet<String>(composition.holeSymbols()));
+                new LinkedHashSet<String>(composition.heldSymbols()));
 
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver());
@@ -6151,8 +6151,9 @@ public class ComposerTest {
             if (!outcome.witness()) continue;
             assertEquals("a replay reads its clocks afresh, so no hole of a "
                     + "clock is held to the model's value", 0,
-                    ComposedFamilies.holeTexts(outcome.selectedArms()
-                            .values(), outcome.answer().values()).size());
+                    ComposedFamilies.texts(outcome.selectedArms()
+                            .values(), outcome.answer().values(),
+                            composition.anchor().id()).size());
         }
     }
 
@@ -6244,30 +6245,36 @@ public class ComposerTest {
         }
 
         // CONFIRM: a value resting on no clock, through the selected arms.
-        Map<String, ComposedFamilies.BoundHole> own = new LinkedHashMap<
-                String, ComposedFamilies.BoundHole>();
-        own.put("c.num", new ComposedFamilies.BoundHole("h_num",
-                "J", false,
+        Map<String, ComposedFamilies.BoundLeaf> own = new LinkedHashMap<
+                String, ComposedFamilies.BoundLeaf>();
+        own.put("c.num", new ComposedFamilies.BoundLeaf("h_num",
+                "J", "occ.other", true, false,
                 Collections.<String>emptySet()));
-        own.put("c.str", new ComposedFamilies.BoundHole("h_str",
-                "Ljava/lang/String;", false,
+        own.put("c.str", new ComposedFamilies.BoundLeaf("h_str",
+                "Ljava/lang/String;", "occ.other", true, false,
                 Collections.<String>emptySet()));
-        own.put("c.relay", new ComposedFamilies.BoundHole("h_relay",
-                "J", false,
+        own.put("c.relay", new ComposedFamilies.BoundLeaf("h_relay",
+                "J", "occ.other", true, false,
                 Collections.singleton("h_num")));
-        own.put("c.clock", new ComposedFamilies.BoundHole("h_clock",
-                "J", true,
+        own.put("c.clock", new ComposedFamilies.BoundLeaf("h_clock",
+                "J", "occ.other", true, true,
                 Collections.<String>emptySet()));
-        own.put("c.late", new ComposedFamilies.BoundHole("h_late",
-                "J", false,
+        own.put("c.late", new ComposedFamilies.BoundLeaf("h_late",
+                "J", "occ.other", true, false,
                 Collections.singleton("h_clock")));
-        own.put("c.free", new ComposedFamilies.BoundHole("h_free",
-                "J", false,
+        own.put("c.free", new ComposedFamilies.BoundLeaf("h_free",
+                "J", "occ.other", true, false,
                 Collections.singleton("h_unbound")));
-        own.put("c.float", new ComposedFamilies.BoundHole("h_float",
-                "D", false, Collections.<String>emptySet()));
-        own.put("c.char", new ComposedFamilies.BoundHole("h_char", "C",
+        own.put("c.float", new ComposedFamilies.BoundLeaf("h_float",
+                "D", "occ.other", true, false, Collections.<String>emptySet()));
+        own.put("c.char", new ComposedFamilies.BoundLeaf("h_char", "C", "occ.other", true,
                 false, Collections.<String>emptySet()));
+        // A declared port's delivery is held into the anchor only.
+        own.put("c.port", new ComposedFamilies.BoundLeaf("h_port", "J",
+                "occ.anchor", false, false, Collections.<String>emptySet()));
+        own.put("c.elsewhere", new ComposedFamilies.BoundLeaf("h_elsewhere",
+                "J", "occ.other", false, false,
+                Collections.<String>emptySet()));
         Map<String, String> model = new LinkedHashMap<String, String>();
         model.put("h_num", "-5");
         model.put("h_str", "\"a\"\"b\\u{e9}\"");
@@ -6277,17 +6284,22 @@ public class ComposerTest {
         model.put("h_free", "3");
         model.put("h_float", "(fp #b0 #b01111111111 #x0000000000000)");
         model.put("h_char", "65");
-        Map<String, String> texts = ComposedFamilies.holeTexts(
+        model.put("h_port", "7");
+        model.put("h_elsewhere", "8");
+        Map<String, String> texts = ComposedFamilies.texts(
                 Collections.singletonList(ComposedFamilies.ArmChoice.of(
                         "f", "g", new ArrayList<String>(own.keySet()), "s0",
                         Collections.<edu.uva.liftlab.graphchecker.smt.Arms
-                                .Arm>emptyList(), own)), model);
+                                .Arm>emptyList(), own)), model,
+                "occ.anchor");
         Map<String, String> expected = new LinkedHashMap<String, String>();
         expected.put("c.num", "-5");
         expected.put("c.str", "a\"bé");
         expected.put("c.relay", "-5");
-        assertEquals("held: the holes resting on no clock, and on no hole "
-                + "no arm binds; a floating or char one is not rendered",
+        expected.put("c.port", "7");
+        assertEquals("held: the holes and the anchor's deliveries resting "
+                + "on no clock and on no hole no arm binds; a floating or "
+                + "char one is not rendered, a delivery elsewhere not held",
                 expected,
                 texts);
     }
