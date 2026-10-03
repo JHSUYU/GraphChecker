@@ -393,7 +393,7 @@ public class RegionGraphOccurrenceKeyTest {
                         Collections.singletonList(port)));
 
         List<StaticScopeMap.Site> sites = StaticScopeMap.sites(edges, regions,
-                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, method -> false,
+                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, StaticScopeMap.NO_DEMAND, method -> false,
                 cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false);
         Path file = tree.newFolder("scope-map").toPath()
                 .resolve(StaticScopeMap.FILE);
@@ -635,7 +635,7 @@ public class RegionGraphOccurrenceKeyTest {
                         Collections.singletonList(init)));
         StringBuilder text = new StringBuilder();
         for (JsonObject written : StaticScopeMap.rows(StaticScopeMap.sites(
-                edges, regions, Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null,
+                edges, regions, Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, StaticScopeMap.NO_DEMAND,
                 method -> !method.startsWith("<example."),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField), null)) {

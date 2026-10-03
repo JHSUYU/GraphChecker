@@ -319,6 +319,25 @@ final class ConfigRoots {
         return roots;
     }
 
+    /** The same recognition, minting only these roots ({@link
+     *  RootDemand#configSources}). */
+    ConfigRoots limitedTo(Set<String> sourceIds) {
+        ConfigRoots limited = new ConfigRoots();
+        limited.configFields.addAll(configFields);
+        limited.configCallees.addAll(configCallees);
+        for (Map.Entry<String, Source> field : fields.entrySet()) {
+            if (sourceIds.contains(field.getValue().sourceId)) {
+                limited.fields.put(field.getKey(), field.getValue());
+            }
+        }
+        for (Map.Entry<String, Source> call : calls.entrySet()) {
+            if (sourceIds.contains(call.getValue().sourceId)) {
+                limited.calls.put(call.getKey(), call.getValue());
+            }
+        }
+        return limited;
+    }
+
     /** The root a read of {@code field} mints, or null when it mints none:
      *  no configuration field, or not its key's declared one. */
     Source field(String field) {

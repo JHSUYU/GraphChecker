@@ -242,6 +242,12 @@ public final class StaticScopeMap {
          * ({@link #constructionGuards}).
          */
         public final String publishedFrom;
+        /**
+         * DECLARED_SITE, READ_SITE: how many edges the root demand found
+         * this read from the target's path guards (causynth.RootDemand,
+         * SYMBOL-SCOPE §4.6), where it found one; -1 elsewhere.
+         */
+        public final int demandDistance;
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
@@ -251,7 +257,7 @@ public final class StaticScopeMap {
                     declaredCallee, local, declared, guards, guardOutcomes,
                     Collections.<String, Guard>emptyMap(),
                     Collections.<Guard>emptyList(),
-                    Collections.<String>emptyList(), "", false, "");
+                    Collections.<String>emptyList(), "", false, "", -1);
         }
 
         Site(String role, String regionId, String siteId, String vmSite,
@@ -260,7 +266,7 @@ public final class StaticScopeMap {
              List<String> guards, List<Boolean> guardOutcomes,
              Map<String, Guard> guardDeciders, List<Guard> chain,
              List<String> callers, String trackedKind, boolean staticField,
-             String publishedFrom) {
+             String publishedFrom, int demandDistance) {
             this.declared = declared;
             this.role = role;
             this.regionId = regionId;
@@ -284,6 +290,7 @@ public final class StaticScopeMap {
             this.trackedKind = trackedKind == null ? "" : trackedKind;
             this.staticField = staticField;
             this.publishedFrom = publishedFrom == null ? "" : publishedFrom;
+            this.demandDistance = demandDistance;
         }
 
         Site withGuards(List<Guard> found) {
@@ -297,24 +304,40 @@ public final class StaticScopeMap {
                     deciders.put(guard.siteId(), guard.decider());
                 }
             }
-            return new Site(role, regionId, siteId, vmSite, cell, carrier,
-                    portId, declaredCallee, local, declared, sites,
-                    outcomes, deciders, chain, callers, trackedKind,
-                    staticField, publishedFrom);
+            return copy(regionId, declared, sites, outcomes, deciders, chain,
+                    callers);
         }
 
         Site withChain(List<Guard> found) {
-            return new Site(role, regionId, siteId, vmSite, cell, carrier,
-                    portId, declaredCallee, local, declared, guards,
-                    guardOutcomes, guardDeciders, found, callers,
-                    trackedKind, staticField, publishedFrom);
+            return copy(regionId, declared, guards, guardOutcomes,
+                    guardDeciders, found, callers);
         }
 
         Site withCallers(List<String> found) {
-            return new Site(role, regionId, siteId, vmSite, cell, carrier,
-                    portId, declaredCallee, local, declared, guards,
-                    guardOutcomes, guardDeciders, chain, found, trackedKind,
-                    staticField, publishedFrom);
+            return copy(regionId, declared, guards, guardOutcomes,
+                    guardDeciders, chain, found);
+        }
+
+        /** This site, declared otherwise. */
+        Site withDeclared(Declared marked) {
+            return copy(regionId, marked, guards, guardOutcomes,
+                    guardDeciders, chain, callers);
+        }
+
+        /** This site, held by one region. */
+        Site inRegion(String held) {
+            return copy(held, declared, guards, guardOutcomes, guardDeciders,
+                    chain, callers);
+        }
+
+        private Site copy(String held, Declared stated, List<String> sites,
+                          List<Boolean> outcomes,
+                          Map<String, Guard> deciders, List<Guard> chained,
+                          List<String> calling) {
+            return new Site(role, held, siteId, vmSite, cell, carrier,
+                    portId, declaredCallee, local, stated, sites, outcomes,
+                    deciders, chained, calling, trackedKind, staticField,
+                    publishedFrom, demandDistance);
         }
 
         /**
@@ -453,6 +476,8 @@ public final class StaticScopeMap {
      *                     published whole.
      * @param configCalls  the configuration getter calls the slice reads;
      *                     they are {@code CALL_RETURN} rows too
+     * @param demand       the root demand of the slice's reads
+     *                     (causynth.RootDemand)
      * @param unwoven      whether a method runs outside the woven program
      * @param trackedKind  how the replay versions a field (SYMBOL-SCOPE F2)
      * @param staticField  whether a field is static
@@ -460,7 +485,8 @@ public final class StaticScopeMap {
     public static List<Site> sites(
             List<Map<String, Object>> edges,
             List<Map<String, Object>> regions, Map<String, Clock> clocks,
-            ConfigCalls configCalls, Predicate<String> unwoven,
+            ConfigCalls configCalls, Demand demand,
+            Predicate<String> unwoven,
             Function<String, SharedFieldFlow.TrackedKind> trackedKind,
             Predicate<String> staticField) {
         Set<String> deciding = decidingCells(edges);
@@ -486,18 +512,23 @@ public final class StaticScopeMap {
             }
             addRootSite(found, seen, retained, edge, method, unitIndex);
             addDeclaredSite(found, seen, retained, edge, kind, method,
-                    unitIndex, clocks, configCalls, regionRoots);
+                    unitIndex, clocks, configCalls, demand, regionRoots);
             String field = field(edge);
             if (READ_KINDS.contains(kind)) {
                 SharedFieldFlow.TrackedKind tracked =
                         kinds.computeIfAbsent(field, trackedKind);
+                String siteId = SiteId.of(method, unitIndex);
+                Demanded mark = demand.at(siteId, field);
+                // A read the demand chose decides the anchor's own guard,
+                // however many flows away.
                 if (tracked != SharedFieldFlow.TrackedKind.NONE
-                        && deciding.contains(text(edge.get("toCell")))) {
+                        && (deciding.contains(text(edge.get("toCell")))
+                        || chosen(mark, "TRACK"))) {
                     add(found, seen, retained, new Site(READ_SITE, "",
-                            SiteId.of(method, unitIndex), vmSite(method),
-                            field, field, "", "", "", null, NO_GUARDS,
-                            NO_OUTCOMES, NO_DECIDERS, NO_CHAIN, NO_CALLERS,
-                            tracked.name(), staticField.test(field), ""));
+                            siteId, vmSite(method), field, field, "", "", "",
+                            null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS,
+                            NO_CHAIN, NO_CALLERS, tracked.name(),
+                            staticField.test(field), "", distance(mark)));
                 }
                 continue;
             }
@@ -509,9 +540,9 @@ public final class StaticScopeMap {
                     leaf.isEmpty() ? field : leaf, field, "", invoke, "",
                     null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS, NO_CHAIN,
                     NO_CALLERS, "", leaf.isEmpty() && staticField.test(field),
-                    text(edge.get("publishedFrom"))));
+                    text(edge.get("publishedFrom")), -1));
         }
-        markReads(found, unwoven);
+        markReads(found, unwoven, demand);
         keepTrackedReads(found);
         for (Region region : retained) {
             for (Map<String, Object> port : region.ports) {
@@ -547,11 +578,12 @@ public final class StaticScopeMap {
     /**
      * Marks {@link #READ_INPUT} each accessor read the weave cannot version
      * (its accessor runs outside the woven program: {@code
-     * AtomicInteger.get()}) of a location some other region stores.  A
+     * AtomicInteger.get()}) of a location some other region stores -- or,
+     * one the root demand chose, any region (causynth.RootDemand).  A
      * woven read needs no mark: the replay versions it where it runs.
      */
     private static void markReads(List<Site> found,
-                                  Predicate<String> unwoven) {
+                                  Predicate<String> unwoven, Demand demand) {
         Map<String, Set<String>> storers =
                 new LinkedHashMap<String, Set<String>>();
         for (Site site : found) {
@@ -573,18 +605,48 @@ public final class StaticScopeMap {
             Set<String> regions = storers.getOrDefault(site.cell,
                     Collections.<String>emptySet());
             if (regions.isEmpty() || regions.size() == 1
-                    && regions.contains(site.regionId)) {
+                    && regions.contains(site.regionId)
+                    && !chosen(demand.at(site.siteId, site.cell), "READ")) {
                 continue;
             }
-            found.set(index, new Site(site.role, site.regionId, site.siteId,
-                    site.vmSite, site.cell, site.carrier, site.portId,
-                    site.declaredCallee, site.local,
-                    new Declared(declared.kind, declared.edgeId,
-                            declared.dependencyCell,
-                            declared.implementationMethod,
-                            declared.javaType, READ_INPUT, null, null),
-                    site.guards, site.guardOutcomes));
+            found.set(index, site.withDeclared(new Declared(declared.kind,
+                    declared.edgeId, declared.dependencyCell,
+                    declared.implementationMethod, declared.javaType,
+                    READ_INPUT, null, null)));
         }
+    }
+
+    /** What the root demand says of one read (causynth.RootDemand): its
+     *  boundary class, its distance from the target's path guards, and
+     *  whether it is among the nearest of its class. */
+    public static final class Demanded {
+        public final String kind;
+        public final int distance;
+        public final boolean chosen;
+
+        public Demanded(String kind, int distance, boolean chosen) {
+            this.kind = kind;
+            this.distance = distance;
+            this.chosen = chosen;
+        }
+    }
+
+    /** The root demand of the slice's reads, by site and cell. */
+    public interface Demand {
+        /** The boundary a read at {@code siteId} of {@code cell} is, or
+         *  null. */
+        Demanded at(String siteId, String cell);
+    }
+
+    /** No demand: a map built over no root demand. */
+    public static final Demand NO_DEMAND = (siteId, cell) -> null;
+
+    private static boolean chosen(Demanded mark, String kind) {
+        return mark != null && mark.chosen && kind.equals(mark.kind);
+    }
+
+    private static int distance(Demanded mark) {
+        return mark == null ? -1 : mark.distance;
     }
 
     private static final String WIRE_KIND = "wire_handoff";
@@ -713,6 +775,9 @@ public final class StaticScopeMap {
         if (!site.publishedFrom.isEmpty()) {
             row.addProperty("publishedFrom", site.publishedFrom);
         }
+        if (site.demandDistance >= 0) {
+            row.addProperty("demandDistance", site.demandDistance);
+        }
         if (site.declared != null) {
             row.addProperty("declaredKind", site.declared.kind);
             row.addProperty("edgeId", site.declared.edgeId);
@@ -837,7 +902,8 @@ public final class StaticScopeMap {
             List<Site> into, Set<String> seen, List<Region> retained,
             Map<String, Object> edge, String kind, String method,
             int unitIndex, Map<String, Clock> clocks,
-            ConfigCalls configCalls, Set<String> regionMethods) {
+            ConfigCalls configCalls, Demand demand,
+            Set<String> regionMethods) {
         String callee = text(edge.get("invoke"));
         if (callee.isEmpty()) return;
         String cell;
@@ -891,9 +957,9 @@ public final class StaticScopeMap {
                     vmSite(method), cell, "", "", callee, "",
                     new Declared(declaredKind, text(edge.get("id")),
                             dependencyCell, implementation, javaType,
-                            inputKind, clock, config),
-                    Collections.<String>emptyList(),
-                    Collections.<Boolean>emptyList()));
+                            inputKind, clock, config), NO_GUARDS,
+                    NO_OUTCOMES, NO_DECIDERS, NO_CHAIN, NO_CALLERS, "", false,
+                    "", distance(demand.at(siteId, cell))));
         }
     }
 
@@ -948,12 +1014,7 @@ public final class StaticScopeMap {
                     + "|" + site.carrier)) {
                 continue;
             }
-            into.add(new Site(site.role, regionId, site.siteId, site.vmSite,
-                    site.cell, site.carrier, site.portId,
-                    site.declaredCallee, site.local, site.declared,
-                    site.guards, site.guardOutcomes, site.guardDeciders,
-                    site.chain, site.callers, site.trackedKind,
-                    site.staticField, site.publishedFrom));
+            into.add(site.inRegion(regionId));
         }
     }
 
@@ -1091,7 +1152,8 @@ public final class StaticScopeMap {
                     deciders(row), chain(row), strings(row, "callers"),
                     optionalString(row, "trackedKind"),
                     row.has("static") && row.get("static").getAsBoolean(),
-                    optionalString(row, "publishedFrom")));
+                    optionalString(row, "publishedFrom"),
+                    (int) optionalLongInteger(row, "demandDistance", -1L)));
         }
         return new StaticScopeMap(sites, readRegions(file));
     }

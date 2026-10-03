@@ -930,10 +930,11 @@ campaign_scope_doors() {
 # slice: SEED's static half alone -- the case's scope copied in by the setup
 # adapter, then campaign_analyze_grown_scope -- writing what SEED's does into
 # causynth_output_dir: candidate_dataflow_edges.jsonl.gz,
-# static_scope_map.jsonl, region_skeletons.jsonl.gz, scope_frontier.jsonl
-# and scope-classes/.  No workload runs and nothing is frozen: an ad-hoc
-# selection reads it (tools/adhoc/slice.sh, score.py).  The discovery pass's
-# woven classes go: the recording weaves its own (do_workload).
+# static_scope_map.jsonl, region_skeletons.jsonl.gz, scope_frontier.jsonl,
+# root_demand.jsonl and scope-classes/.  No workload runs and nothing is
+# frozen: an ad-hoc selection reads it (tools/adhoc/slice.sh, score.py).  The
+# discovery pass's woven classes go: the recording weaves its own
+# (do_workload).
 do_slice() {
   validate_config >/dev/null
   [[ -z "${campaign_setup_command}" ]] || campaign_setup
@@ -1102,6 +1103,7 @@ campaign_record_batch() {
     mkdir -p "${target}/runtime"
     cp -- "${static}/candidate_dataflow_edges.jsonl.gz" \
       "${static}/static_scope_map.jsonl" "${static}/scope_frontier.jsonl" \
+      "${static}/root_demand.jsonl" \
       "${static}/communication_gaps.jsonl.gz" "${target}/"
     awk -v name="${name}" '$1 == "exception_target:" && $2 == name' \
       "${causynth_target_spec}" >"${target}/target.yaml"

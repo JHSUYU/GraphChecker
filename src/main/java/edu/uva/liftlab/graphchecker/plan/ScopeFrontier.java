@@ -39,7 +39,11 @@ import java.util.regex.Pattern;
  *
  * <p>Each row carries its {@code distance}, the edges from its cell to the
  * throw's guards (the thrown value's own construction, its message, is not
- * the fatal condition), and the rows come nearest first.</p>
+ * the fatal condition).  A row the root demand found to be the nearest
+ * boundary of a path to the target's guards (causynth.RootDemand: a SCOPE
+ * callee or formal, a PRE_WINDOW field) states its class as {@code demand};
+ * demanded rows come first, then the rest, each nearest first, and scope
+ * growth takes them in that order.</p>
  */
 public final class ScopeFrontier {
     public static final String FILE = "scope_frontier.jsonl";
@@ -56,10 +60,13 @@ public final class ScopeFrontier {
     /**
      * @param analysed whether a callee's body is the analysed program's: a
      *                 concrete method of a class in scope
+     * @param demanded the root demand's frontier signatures, each with its
+     *                 boundary class
      */
     public static List<JsonObject> rows(List<Map<String, Object>> edges,
                                         Predicate<String> analysed,
-                                        Collection<String> clockCallees) {
+                                        Collection<String> clockCallees,
+                                        Map<String, String> demanded) {
         Map<String, List<String>> into = new LinkedHashMap<>();
         Set<String> fields = new LinkedHashSet<>();
         Set<String> sinks = new LinkedHashSet<>();
@@ -95,8 +102,12 @@ public final class ScopeFrontier {
             }
         }
         List<JsonObject> rows = new ArrayList<>(found.values());
-        rows.sort(Comparator.comparingInt((JsonObject row)
-                        -> row.get("distance").getAsInt())
+        for (JsonObject row : rows) {
+            String demand = demanded.get(row.get("signature").getAsString());
+            if (demand != null) row.addProperty("demand", demand);
+        }
+        rows.sort(Comparator.comparing((JsonObject row) -> !row.has("demand"))
+                .thenComparingInt(row -> row.get("distance").getAsInt())
                 .thenComparing(row -> row.get("kind").getAsString())
                 .thenComparing(row -> row.get("signature").getAsString()));
         return rows;

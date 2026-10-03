@@ -92,6 +92,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 
 /** Target-directed static backward data-flow analysis. */
@@ -163,14 +164,18 @@ public final class CausynthPipeline {
         long skeletonPlanningStart = System.nanoTime();
         SymbolicRegionPlanner.planSelectedSkeleton(result,
                 result.traceMethods);
-        ConfigRoots config = ConfigRoots.of(result.edges,
-                result.fieldWriters);
-        StaticSymbolicSourceDiscovery.discover(result, config);
-        long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
         // SYMBOL-SCOPE §2.3: over the door-woven bodies, before any hook is
         // woven, so site and guard ids are the unit indices a replay decides
         // at.
         Map<String, Clock> clocks = RootCatalog.clocks(result.edges);
+        ConfigRoots recognized = ConfigRoots.of(result.edges,
+                result.fieldWriters);
+        RootDemand demand = RootDemand.of(result.edges, result.regions,
+                clocks, recognized, targetPathSites(result.edges),
+                CausynthStaticFacts::trackedKind, systemClass());
+        ConfigRoots config = recognized.limitedTo(demand.configSources());
+        StaticSymbolicSourceDiscovery.discover(result, config);
+        long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
                 result.edges, result.regions, clocks,
                 (method, unitIndex, callee) -> {
@@ -180,6 +185,7 @@ public final class CausynthPipeline {
                             : new StaticScopeMap.ConfigCall(source.sourceId,
                                     source.domainMin, source.domainMax);
                 },
+                demand.marks(),
                 method -> !CausynthStaticFacts.applicationMethod(method),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField);
@@ -188,10 +194,10 @@ public final class CausynthPipeline {
                         StaticScopeMap.siteIds(scopeSites)));
         List<JsonObject> frontier = ScopeFrontier.rows(result.edges,
                 CausynthStaticFacts::analysedMethod,
-                clocks.keySet());
+                clocks.keySet(), demand.frontier());
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
-                target.outputDir, result, scopeMap, frontier);
+                target.outputDir, result, scopeMap, frontier, demand.rows());
         long artifactWriteMillis = elapsedMillis(artifactWriteStart);
         LOG.info("Discovery phase timing: seedAnalysis={} ms, "
                         + "skeletonPlanning={} ms, artifactWrite={} ms",
@@ -204,6 +210,52 @@ public final class CausynthPipeline {
 
     private static long elapsedMillis(long startNanos) {
         return (System.nanoTime() - startNanos) / 1_000_000L;
+    }
+
+    /**
+     * The decisions an occurrence the declared throw is about takes on its
+     * way there ({@code StaticScopeMap.Site#pathSites}): the throw's guards,
+     * their chain and the chain's deciders.
+     */
+    private static Set<String> targetPathSites(
+            List<Map<String, Object>> edges) {
+        Set<String> sites = new LinkedHashSet<>();
+        for (Map<String, Object> edge : edges) {
+            if (!"exception_throw".equals(MapFields.text(edge.get("kind")))) {
+                continue;
+            }
+            String target = SiteId.of(MapFields.text(edge.get("method")),
+                    MapFields.number(edge.get("unitIndex"), -1));
+            StaticScopeMap.Guards control = SiteControlDependence.over(
+                    Collections.singleton(target));
+            for (StaticScopeMap.Guard guard : control.of(target)) {
+                sites.add(guard.siteId());
+            }
+            for (StaticScopeMap.Guard guard : control.chainOf(target)) {
+                sites.add(guard.siteId());
+                if (guard.decider() != null) {
+                    sites.add(guard.decider().siteId());
+                }
+            }
+        }
+        return sites;
+    }
+
+    /** Whether a class is the system's own (LibraryReceivers), asked of the
+     *  campaign's lineage roots at the first class it is asked of. */
+    private static Predicate<String> systemClass() {
+        return new Predicate<String>() {
+            private Predicate<String> roots;
+
+            @Override
+            public boolean test(String owner) {
+                if (roots == null) {
+                    roots = LibraryReceivers.systemClasses(
+                            System.getProperty(LibraryReceivers.ROOTS));
+                }
+                return roots.test(owner);
+            }
+        };
     }
 
     /**

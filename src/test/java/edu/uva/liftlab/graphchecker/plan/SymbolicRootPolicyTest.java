@@ -234,7 +234,7 @@ public class SymbolicRootPolicyTest {
         }
         StringBuilder text = new StringBuilder();
         for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(edges,
-                regions, clocks, (m, u, c) -> null, unwoven,
+                regions, clocks, (m, u, c) -> null, StaticScopeMap.NO_DEMAND, unwoven,
                 cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false),
                 null)) {
             text.append(row.toString()).append('\n');

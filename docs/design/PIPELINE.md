@@ -115,8 +115,8 @@ none.
    over `project_classes_dir`, target from `causynth_target_spec`, per-loop bounds from
    `causynth_loop_bounds`, wire flows from `causynth_communication_mappings`) writes under
    `causynth_output_dir`: `candidate_dataflow_edges.jsonl.gz`, `region_skeletons.jsonl.gz`,
-   `communication_gaps.jsonl.gz`, `static_scope_map.jsonl`, `scope_frontier.jsonl`
-   (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
+   `communication_gaps.jsonl.gz`, `static_scope_map.jsonl`, `scope_frontier.jsonl`,
+   `root_demand.jsonl` (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
    `causynth_lineage_roots` is set, `plan.ScopeGrowth` adds classes where the slice stops at the scope
    into `scope-classes/` and the pass runs again, until it adds nothing ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md)).
    The target spec holds one line, `exception_target: <name> <binary class name> <source line>

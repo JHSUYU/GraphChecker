@@ -46,7 +46,9 @@ import java.util.zip.ZipFile;
  *   <li>a {@link ScopeFrontier#FORMAL}: every class calling the method.</li>
  * </ul>
  * A protobuf message is a wire payload (F3), never scope.  Rows are taken
- * nearest first until the budget of grown classes is spent; each class taken
+ * in the frontier's order -- the root demand's first, then nearest first
+ * ({@link ScopeFrontier}) -- until the budget of grown classes is spent;
+ * each class taken
  * is copied into the grown directory and listed in its {@value #MANIFEST}
  * with the row that took it.
  *
