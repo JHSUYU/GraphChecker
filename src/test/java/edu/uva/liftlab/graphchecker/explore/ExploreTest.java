@@ -3739,6 +3739,62 @@ public class ExploreTest {
                 "READS_SAW_TWO_WRITES"));
     }
 
+    /**
+     * A flip is asked only where its own predicate reaches a variable: a
+     * movable read a PREFIX decision names binds nothing the flipped
+     * predicate rests on, and a predicate over a read only one writer wrote
+     * is the recording's arm whatever the prefix does -- refused by name,
+     * not asked to an UNSAT that claims no world takes it.
+     */
+    @Test
+    public void aFlipWhosePredicateReachesNoVariableIsNotAsked()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("prefix-only").toPath();
+        OccurrenceAddress again = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.of("KEY_UPDATE"), "",
+                        2), "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        LocationId other = LocationId.of(LocationKind.INSTANCE, "21", "41");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(WRITER, false);
+        seed.activation(again, false, true, "fixture#key-updater");
+        seed.constant("e.1", "1");
+        seed.constant("e.2", "2");
+        seed.constant("e.3", "3");
+        seed.write(STORED, KEY_ID, 5L, "e.1");
+        seed.write(at(again, Endpoint.stateSite("BlockTokenSecretManager",
+                "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
+                KEY_ID, 6L, "e.2");
+        seed.write(STORED, other, 7L, "e.3");
+        seed.read(LOOKED_UP, KEY_ID, 5L, "M_READ_KEY", "1");
+        seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                "retrieveDataEncryptionKey", 9, false),
+                "BlockTokenSecretManager#retrieveDataEncryptionKey#9"),
+                other, 7L, "M_OTHER", "3");
+        seed.expression(VM_LOOKUP, binary("==", readNode(other, 7L, "I",
+                literal(3)), literal(4)));
+        seed.decision(TARGET, "Prefix#u7", 1, false, "(= M_READ_KEY 2)");
+        seed.decision(TARGET, "Lookup#u8", 1, false, VM_LOOKUP);
+        seed.flush();
+        scopeMap(iteration,
+                targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""));
+        Path out = tree.newFolder("prefix-only-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Worker worker = solve(iteration, wave,
+                named(obligations(wave), "Lookup#u8"), out, "w0");
+        assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
+        assertTrue(detail(worker), detail(worker).contains(
+                "ADMISSION_GAP:Lookup#u8#1"));
+    }
+
     // ---- (6b) a handoff nobody can answer moves only with its own run --
 
     /**

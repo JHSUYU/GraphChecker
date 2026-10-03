@@ -367,6 +367,7 @@ final class FlipQuery {
                 }
                 // The obligation IS the complement of the recorded arm, with
                 // clock margin.
+                if (last) flippedText = held;
                 assertions.add(last
                         ? demanded("(not " + held + ")", decision)
                         : held);
@@ -387,11 +388,13 @@ final class FlipQuery {
                                 + "with a value the chain does not reach",
                         flipped);
             }
-            // A query with no variable of its own is not sent: every name is a
-            // definition or a recorded fact, so the answer is entailed by the
-            // recording alone (UNSAT would be a false "no world", SAT the seed
-            // replay).
-            if (sorts.isEmpty()) {
+            // A query whose FLIPPED predicate reaches no variable of its own
+            // is not sent: whatever the other conjuncts bind, every name the
+            // predicate rests on is a definition or a recorded fact, so its
+            // arm is the recording's (UNSAT would be a false "no world", SAT
+            // the seed replay); a variable a prefix decision binds is no
+            // reason to ask it.
+            if (!flipMoves()) {
                 return refuse(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         ExploreCodec.EXPLORATION,
                         flipped.siteId() + "#" + flipped.ordinal(),
@@ -1369,6 +1372,28 @@ final class FlipQuery {
                     new ArrayList<Control>(controls.values()),
                     rootVariables, clockVariables,
                     Collections.<WriterChoice>emptyList(), gaps);
+        }
+
+        /** The flipped decision's predicate, in this query's names. */
+        private String flippedText = "";
+
+        /**
+         * Whether the flipped predicate reaches a variable of this query:
+         * one it names, or one a definition it rests on names (the
+         * declarations its text reaches, {@link
+         * FlipQueryText#statedDeclarations}).
+         */
+        private boolean flipMoves() {
+            Set<String> cone = new LinkedHashSet<String>(
+                    SmtNames.names(flippedText));
+            for (String declaration : FlipQueryText.statedDeclarations(corpus,
+                    lowered, this, Collections.singletonList(flippedText))) {
+                cone.addAll(SmtNames.names(declaration));
+            }
+            for (String name : cone) {
+                if (sorts.containsKey(name)) return true;
+            }
+            return false;
         }
 
         /** Every text this query ASSERTS (assertions, root facts, stated

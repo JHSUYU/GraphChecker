@@ -626,7 +626,9 @@ operator the lowering writes (the string operators `str.substr`, `str.indexof`, 
 `str.from_code`, `str.to_code`, and `str.in_re`, `re.*`, `re.range` of `String.trim` among them,
 the floating-point operators, `to_fp`, `int2bv`, `bv2int`
 and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
-refuses (`UNPRODUCIBLE_ANSWER`); a query with no variable of its own is not asked. A construct the
+refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no variable of its own --
+none it names, none a definition it rests on names (`FlipQuery#flipMoves`) -- is not asked
+(`ADMISSION_GAP`), whatever variables a prefix decision binds. A construct the
 lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays
 in the query. Demanded conjuncts (the flip and the inherited flips) get a one-minute clock margin on
 each comparison atom over a clock whose polarity `not`/`and`/`or` resolve (`explore.ClockMargin`;
