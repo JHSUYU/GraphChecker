@@ -20,7 +20,7 @@ Main after the merges of `symbolic-scope` (rounds `V10`, `V11`), `system-zookeep
 `zk-election-offer` (round `V18`, snapshot `p231`, 13/13, hdfs-11741 on its rerun `V18b`) and `pairing-port` (rounds `PP1` +
 `PP1b`, snapshot `pp1`, under `/bigtemp/vnr3ne/gc-out/pairing-port/`: 13/13 and hdfs-11741 twice) `vm-model-guards` (round
 `V19`, snapshot `p232`, 13/13), `host-ledger-lease` (`V20`, `p233`) and `replay-address-only` + `readout-stream`
-(`V21`, `p234`), `hbase-identity` (`V22c`, `p236`) and `slice-matched-returns` (`V23`, `p237`), each 13/13, VM `/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image`, trees `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` (`gc/hdfs-unified-dtx`, the eight
+(`V21`, `p234`), `hbase-identity` (`V22c`, `p236`), `slice-matched-returns` (`V23`, `p237`), each 13/13, and `slowdisk-dev` (`V24`, `p238`, 14/14), VM `/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image`, trees `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` (`gc/hdfs-unified-dtx`, the eight
 named HDFS cases), `~/hadoop-hdfs-11741`
 (`gc/hdfs-11741`) and `/bigtemp/vnr3ne/wt/lucene-solr-storing` (`gc/solr-unified-storing` `663e0ef`). Runs under
 `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`, each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every
@@ -41,6 +41,7 @@ the system's code (the moved roots are those of the Phase 1 release, rounds `F1`
 
 | zk-bugs-quota-init | `V17` (tree `/bigtemp/vnr3ne/wt/zookeeper-unified`, `gc/zk-unified` `8f18cf3a4`) | 6 min | MARKER_FLIPPED, the ZOOKEEPER WRITE door's ConnectionLoss on `SetQuotaCommand.createQuota`'s limit create (`REGION.acedb7d4`, `createQuota@0/create@1`): the limit is written, the client retries, the retry finds the limit and takes the update branch, and the server's `getData` of the stat node the failed call never created throws NoNode |
 | zk-bugs-election-offer | `V18` (tree `gc/zk-unified`) | 12 min | STATE_PAIRING_FLIPPED (no root moved): the anchor, Thread-3's `getData` of its offer `n_0` (`LeaderElectionSupport` ~:310, server `FinalRequestProcessor` -> `DataTree.getNode` -> `NodeHashMapImpl.get`), re-paired to the competitor's `stop()` delete of `n_0` (`DataTree.deleteNode`, the arm binds the node map to `assoc_remove(.., "/../n_0000000000")` with `lastProcessedZxid`=6); the lookup returns null and `FinalRequestProcessor` throws NoNode; CONFIRM holds Thread-3's `getData` send until the delete exited (claim `repairedArms`) |
+| hdfs-bugs-slowdisk-zero | `V24` (tree `/bigtemp/vnr3ne/wt/hadoop-hdfs-bugs`, `gc/hdfs-bugs`) | 9 min | STATE_PAIRING_FLIPPED (no root moved): a `DataNodeDiskMetrics` detector turn's read of `maxSlowDisksToExclude` re-paired to the field's INITIAL (1, the value before the run-time reconfiguration wrote 0; claim `repairedArms` = that INITIAL arm); its `if (max > 0)` takes the store of `slowDisksToExclude` = [the SSD] (`limit(max)` over the outliers), `FsVolumeList.chooseVolume`'s filter removes the only SSD and `RoundRobinVolumeChoosingPolicy` throws `DiskOutOfSpaceException`; CONFIRM's own replay holds the reconfiguration after the turn's occurrence closes |
 
 The workload of solr-18413 places the source shard's leader off the Overseer's node (tree `b41116b`): with
 both on one node, the per-node clock order leaves no witness short of the node's wall clock stepping back.
