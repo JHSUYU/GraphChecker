@@ -850,6 +850,14 @@ public final class ConcolicRegionRuntime {
         return RootMint.configuredSource(sourceId, owner, fieldSignature);
     }
 
+    /** The engine's configuration read, woven before a configuration
+     *  field's {@code getfield} (SYMBOL-SCOPE §4.3); it names a failure
+     *  and never throws into the workload's own read. */
+    public static void readConfiguration(
+            String sourceId, Object owner, String fieldSignature) {
+        RootMint.configuration(sourceId, owner, fieldSignature);
+    }
+
     /** Records a stable logical source a live occurrence just entered. */
     static void observeCausalSource(String sourceKey) {
         ActiveRegion active = activeRegion();

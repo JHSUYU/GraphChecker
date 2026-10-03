@@ -27,6 +27,7 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -4276,8 +4277,10 @@ public class ExploreTest {
     /**
      * D0 (R1-ROOTS §2.3, PIPELINE §7.2): an anchor every admitted path
      * decided on no symbol demands the shared state it read BEFORE it
-     * decided, so the fault that chose what that state's writer wrote is
-     * asked; a read made after the decision reaches nothing.  Each round
+     * decided on its guards' cone (the scope map's demandDistance,
+     * SYMBOL-SCOPE §4.6), so the fault that chose what that state's writer
+     * wrote is asked; a read made after the decision, or off the cone,
+     * reaches nothing.  Each round
      * names it NO_ROOT_REACHES_ANCHOR: DIAGNOSTIC while there is work,
      * BLOCKING at the fixed point.  An anchor whose predicate names a
      * symbol, an unreached one with a symbolic decision on the way to the
@@ -4288,21 +4291,23 @@ public class ExploreTest {
             throws Exception {
         LocationId stored = LocationId.of(LocationKind.INSTANCE, "5", "8");
         // phi (null: unreached), observed fatal, the anchor's read before
-        // its decision at its guard, that decision's term (null: none) ->
-        // the writer is a task, the gap's class (null: none) and the start
-        // of its detail.
+        // its decision at its guard, the read on the guards' cone, that
+        // decision's term (null: none) -> the writer is a task, the gap's
+        // class (null: none) and the start of its detail.
         Object[][] cases = {
-            {"false", false, true, "", true, GapClass.DIAGNOSTIC,
+            {"false", false, true, true, "", true, GapClass.DIAGNOSTIC,
                 "its closure demands the 1 "},
-            {"false", false, false, "", false, GapClass.BLOCKING,
+            {"false", false, false, true, "", false, GapClass.BLOCKING,
                 "it read no shared state"},
-            {null, false, true, "", true, GapClass.DIAGNOSTIC,
+            {"false", false, true, false, "", false, GapClass.BLOCKING,
+                "it read no shared state"},
+            {null, false, true, true, "", true, GapClass.DIAGNOSTIC,
                 "its closure demands the 1 "},
-            {null, false, true, null, false, GapClass.BLOCKING,
+            {null, false, true, true, null, false, GapClass.BLOCKING,
                 "none of its 1 admitted paths decided"},
-            {null, false, true, "(= M_OTHER 0)", false, null, ""},
-            {"(= M_OTHER 0)", false, true, "", false, null, ""},
-            {"true", true, true, "", false, null, ""},
+            {null, false, true, true, "(= M_OTHER 0)", false, null, ""},
+            {"(= M_OTHER 0)", false, true, true, "", false, null, ""},
+            {"true", true, true, true, "", false, null, ""},
         };
         for (int at = 0; at < cases.length; at++) {
             Object[] row = cases[at];
@@ -4322,8 +4327,8 @@ public class ExploreTest {
                     "1", "0", "9", true);
             Endpoint read = at(TARGET, "Lookup#get#2:READ", "Lookup#get#2");
             if (before) seed.read(read, stored, 1L, "M_READ", "7");
-            if (row[3] != null) {
-                seed.decision(TARGET, "Guard#u8", 1, false, (String) row[3]);
+            if (row[4] != null) {
+                seed.decision(TARGET, "Guard#u8", 1, false, (String) row[4]);
             }
             if (phi == null) {
                 seed.targets.add(TargetRow.of("s-seed", ++seed.seq, TARGET,
@@ -4335,8 +4340,13 @@ public class ExploreTest {
             }
             if (!before) seed.read(read, stored, 1L, "M_READ", "7");
             seed.flush();
+            JsonObject lookup = com.google.gson.JsonParser.parseString(
+                    scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
+                            "Lookup#get#u2", "Lookup#get", "<L: int stored>",
+                            "<L: int stored>", "")).getAsJsonObject();
+            if ((Boolean) row[3]) lookup.addProperty("demandDistance", 3);
             scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
-                    "Guard#u8"));
+                    "Guard#u8"), lookup.toString());
 
             Path out = tree.newFolder("concrete-" + at + "-out").toPath();
             Path results = out.resolve("obligation_results.jsonl");
@@ -4350,18 +4360,18 @@ public class ExploreTest {
                         .getAsString());
             }
             String label = "case " + at + ": " + focused;
-            assertEquals(label, row[4], focused.contains(WRITER.render()));
-            assertEquals(label, row[4], named(obligations(wave),
+            assertEquals(label, row[5], focused.contains(WRITER.render()));
+            assertEquals(label, row[5], named(obligations(wave),
                     "Door#u3") != null);
             GapRow noRoot = null;
             for (GapRow gap : RowCodec.readAll(wave.resolve("gaps.jsonl"),
                     RowCodec::readGap)) {
                 if (gap.kind() == GapKind.NO_ROOT_REACHES_ANCHOR) noRoot = gap;
             }
-            assertEquals(label, row[5], noRoot == null ? null : noRoot.cls());
+            assertEquals(label, row[6], noRoot == null ? null : noRoot.cls());
             if (noRoot != null) {
                 assertTrue(label + ": " + noRoot.detail(),
-                        noRoot.detail().startsWith((String) row[6]));
+                        noRoot.detail().startsWith((String) row[7]));
             }
         }
     }
@@ -4512,7 +4522,9 @@ public class ExploreTest {
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
             roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId,
-                    symbol, kind, recorded, min, max, declared,
+                    symbol, kind, kind == RootKind.CLOCK ? RootCategory.CLOCK
+                            : kind == RootKind.MARKER ? RootCategory.FAULT
+                            : RootCategory.HOOK, recorded, min, max, declared,
                     kind == RootKind.CLOCK
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
         }

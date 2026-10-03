@@ -642,8 +642,11 @@ ab_main() {
       mkdir -p "${dir}"
       printf '%s %s %s %s\n' "${acc}" "${decl}" "${arg}" "${repo}" \
         >"${dir}/inputs.txt"
+      # run.sh derives the target spec of a case its tree marks into the
+      # output directory it is given (declared-target.yaml): one no stage
+      # clears, or SEED.static's fresh directory deletes the spec it reads.
       (cd "${decl}" && env -i HOME="${HOME}" PATH="${PATH}" \
-          CAUSYNTH_OUTPUT_DIR="${dir}/SEED.static/out" "${override[@]}" \
+          CAUSYNTH_OUTPUT_DIR="${dir}/declared" "${override[@]}" \
           bash "${repo}/experiments/lib/run.sh" "${decl}" \
           "$([[ ${arg} == - ]] || echo "${arg}")" config) \
         >"${dir}/config.txt" 2>"${dir}/config.log" \

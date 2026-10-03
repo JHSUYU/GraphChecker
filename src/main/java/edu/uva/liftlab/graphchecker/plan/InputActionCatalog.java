@@ -24,6 +24,12 @@ public final class InputActionCatalog {
     /** The JVM clock a clock input wraps ({@code contract.Clock#source}),
      *  beside its tick: the two are one clock's identity. */
     public static final String DECLARED_CLOCK_SOURCE = "clockSource";
+    /** Input that is a configuration getter's return, stating the root it
+     *  is ({@code CONFIG:<key>}): every read of one key is one symbol. */
+    public static final String DECLARED_CONFIG_SOURCE = "configSource";
+    /** A configuration input's static domain bounds, beside its source. */
+    public static final String DECLARED_DOMAIN_MIN = "domainMin";
+    public static final String DECLARED_DOMAIN_MAX = "domainMax";
 
     public enum Mode {
         SYMBOLIC, CONCRETE, DECLARATION_ONLY

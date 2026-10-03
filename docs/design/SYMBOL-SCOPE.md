@@ -6,8 +6,9 @@ nothing. Java paths below are under `src/main/java/edu/uva/liftlab/graphchecker/
 
 Three things are kept apart:
 
-- a **root** is a fresh symbol the replay mints (a clock reading, a fault marker, a configured
-  source). Only roots add freedom.
+- a **root** is a fresh symbol the replay mints (a clock reading, a fault marker, a configuration
+  value or a tree's configured source). Only roots add freedom; each states its category (`CLOCK`,
+  `FAULT`, `CONFIG`, `READ`, `HOOK`, `contract/RootCategory`): what moving it means.
 - a value is **symbolic by propagation** when the VM's shadow carries an upstream root's expression.
   The VM propagates through every bytecode a region's thread interprets, whatever the analysis
   scope (VM.md); the slice decides only where roots, tracked reads and ports are.
@@ -18,7 +19,7 @@ Three things are kept apart:
 
 | where a value comes from | what it is | bound by |
 |---|---|---|
-| **F1** the environment: a clock read, a door fault, a configured source hook (§4) | ROOT | its domain: a marker both values, a configured source its `root-domains.jsonl` row (none: pinned), a clock its window (`contract/RootKind`, `contract/RootDomain`) |
+| **F1** the environment: a clock read, a door fault, a configuration value, a tree's configured source hook (§4) | ROOT | its domain: a marker (a boolean configuration too) both values, an integral configuration the hull of its anchors (§4.3), a hook's source its `root-domains.jsonl` row (none: pinned), a clock its window (`contract/RootKind`, `contract/RootDomain`) |
 | **F2** a read of shared state another occurrence writes (§5) | TRACKED READ, or a READ placeholder where the accessor is unwoven | the version it observed, and every attested HB-concurrent writer occurrence of the same session (`smt/Arms#stateArms`) |
 | **F3** a message leaf that crosses a process (§6) | WIRE ATTACH, a fresh `v_H` per primitive leaf | the producer's export, paired within the run (message families) |
 | **F4** a return or parameter from code outside the analysis scope | grow the scope (§2.4); what stays outside has no root, tracked read or port, and is symbolic only by propagation | its inputs' expressions, else the recorded value |
@@ -129,9 +130,10 @@ causynth output directory:
 |---|---|
 | `candidate_dataflow_edges.jsonl.gz` | the slice's edges (`kind`, `fromCell`, `toCell`, `method`, `unitIndex`, `invoke`, ...) |
 | `region_skeletons.jsonl.gz` | the regions built around execution-context entries (`causynth/SymbolicRegionPlanner`), with their ports and retained loops |
-| `communication_gaps.jsonl.gz` | ports or loops the planner could not place |
-| `static_scope_map.jsonl` | §3; built before any hook is woven, over the door-woven bodies (§4.2), so site ids are the unit indices every pass and every replay decides at |
+| `communication_gaps.jsonl.gz` | ports or loops the planner could not place, and the configuration reads left concrete (§4.3) |
+| `static_scope_map.jsonl` | §3; built before any hook is woven, over the door-woven bodies (§4.2), so site ids are the unit indices every pass and every replay decides at; and a `CONFIG_KEY` row per configuration root (§4.3) |
 | `scope_frontier.jsonl` | §2.4 |
+| `root_demand.jsonl` | §4.6: every boundary where the values the throw's path guards decide on enter, every path cut at the bound, and why each is not chosen |
 
 These files are a function of the scope's classes, the same bytes on every host and run
 (`tools/regress/offline-ab.sh` gates on it):
@@ -155,8 +157,11 @@ The case's `scope=(...)` class list is where `S` starts. `run_engine.sh
 campaign_analyze_grown_scope` reruns the static pass until nothing is added or the budget is spent:
 
 1. `plan/ScopeFrontier#rows` lists where `S` stops, each row with its `distance` (edges from its
-   cell back to the throw's sinks), nearest first:
-   - `CALLEE`: a callee whose return `S` demands but whose body is not analysed (and is no clock);
+   cell back to the throw's sinks); a row the root demand chose as a boundary (§4.6: a `SCOPE`
+   callee or formal, a `PRE_WINDOW` field) states its class as `demand`, and demanded rows come
+   first, the rest after, each nearest first:
+   - `CALLEE`: a callee whose return `S` demands but whose body is not analysed (and is no clock
+     and no configuration getter: a root, §4.1, §4.3);
    - `FIELD`: a field `S` reads or stores;
    - `FORMAL`: a method whose primitive or `String` formal `S` demands only through a field. A
      formal reached without a field in between is on the target's own call chain and is never a
@@ -170,7 +175,7 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
    - never a generated protobuf class (a supertype in `*.protobuf.*`).
    Each class taken is copied into `<causynth_output_dir>/scope-classes/` and listed in `GROWN`
    (`class`, `kind`, `signature`, `distance`) until `causynth_scope_growth_budget` classes
-   (default 24; `0` disables growth) are grown.
+   (default 24; `0` disables growth) are grown, taking the rows in the frontier's order.
 3. The grown directory joins every later pass as `-Dcausynth.process.dirs`: one application scope.
 
 Only classes under the lineage roots are indexed, so nothing else (the JDK, a library jar) is
@@ -189,8 +194,8 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 |---|---|---|
 | `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
-| `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both) |
-| `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field) |
+| `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `demandDistance` (the root demand's distance to this read, §4.6) |
+| `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field), `demandDistance` (§4.6) |
 | `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
@@ -297,25 +302,109 @@ The catalog's rows each state `schemaVersion 1` and their `kind` and are keyed b
 `library-catalog.jsonl:<line>`, the shape `contract/WireDeclarations` reads (CONTRACT-SPEC §6.1). A
 malformed row, a member its kind lacks and a row stated twice are refused by name. `CONFIG_SOURCE`
 rows (`method`, `keyArg` naming the String key argument, optional `defaultArg`) list configuration
-getters (Hadoop `Configuration.get*`, Solr `getClusterProperty` and `XmlConfigFile.get*`); only
-`tools/analysis/rootcov.py` reads them yet.
+getters (Hadoop `Configuration.get*`, Solr `getClusterProperty` and `XmlConfigFile.get*`);
+`CONFIG_FIELD_OWNER` rows (`class`) name a configuration object built from a file no getter of the
+catalog reads, whose every field is configuration (Solr's `NodeConfig`, `CloudConfig`). Both are
+`causynth/ConfigRoots`' (§4.3).
 
 A `FAULT:` marker is a `DECLARED_SITE` (`inputKind: FAULT`) iff its transport is a catalog door's
 (`StaticScopeMap#declaredFault`, `LibraryCatalog#transports`); a marker whose name does not start
 with `FAULT:` is the workload's own and always declared. The recorded polarity is `false`. How
 fault decisions become flip sites is IDENTITY.md §7.
 
-### 4.3 Configured sources
+### 4.3 Configuration and configured sources
 
-A tree calls `CausynthSymbolicSource.symbolize(String sourceId, Object owner, String
-fieldSignature)` (the Hadoop copy is `src/shim/java/org/apache/hadoop/ipc/CausynthSymbolicSource`).
-`causynth/StaticSymbolicSourceDiscovery` finds the call by class simple name and signature and
-attaches one declaration per source to every region that can run it (one hook site per source
-per region, else refused). At the hook, `runtime/RootMint#configuredSource` mints one symbol per
-source on the owner's primitive instance field, keeps a propagated expression instead when the
-field already carries one (`reused`), and plants the value the obligation asks for. Its domain is
-the `root-domains.jsonl` row for `sourceId` (absolute or `+k`/`-k` from the recording); without a
-row it is pinned.
+Configuration is recognized by category, as a clock is (`causynth/ConfigRoots`, over the slice):
+
+- a *getter*: a JVM one (`System.getProperty`, `System.getenv`, `Boolean.getBoolean`,
+  `Integer.getInteger`, `Long.getLong`) or a `CONFIG_SOURCE` row of the library catalog (§4.2),
+  called on its class or a subclass (Hadoop's `HdfsConfiguration`);
+- a *wrapper*: a method every return of which is a configuration value of one key in one shape --
+  its key a literal, or the wrapper's own `String` parameter -- followed four wrappers deep (Solr's
+  `Overseer.isLegacy`, `"true".equals(getClusterProperty(LEGACY_CLOUD, "false"))`). A getter
+  call in a wrapper's body is the wrapper's read: its callers mint it;
+- a *field*: an integral or boolean instance field every writer of which, over the whole analysed
+  scope (`StaticProgram#fieldWriters`), stores a configuration value of one key in one shape, or a
+  constant that a store of the configuration post-dominates in the same method (an initializer it
+  overwrites, javac's `boolean legacy = false;` before the constructor's store) -- hdfs-17960's
+  `SnapshotManager.snapshotDeletionOrdered`, stored once, in the constructor, from
+  `conf.getBoolean("dfs.namenode.snapshot.deletion.ordered", false)` -- or such a field of a
+  `CONFIG_FIELD_OWNER` class, its own key. A getter call its writers store is the field's read.
+
+A configuration value is a getter's or wrapper's return through locals, casts, a parse or an
+unboxing (`Integer.parseInt`, `Boolean.parseBoolean`/`valueOf`, `intValue`, `trim`), a literal's
+`equals` (a *view*) and `Math.max`/`min` with a constant (a *clamp*); arithmetic makes another
+value. Its key is the key argument where that is a literal (javac inlines a `static final
+String`); a read whose key no literal names is no root. Its root is `CONFIG:<key>`, or
+`CONFIG:<key>==<literal>` for a view: `"a".equals(get(k))` is not `k`, nor the `"b"` view. Its
+*shape* is its view, its clamps and its type. A key is minted only where
+the root demand chose it (§4.6): its nearest read within sixteen edges of the throw's path guards
+on the cone, among the twelve nearest keys. One key is one root, minted in one shape: at each read
+of the key's field (the first by signature where a field holds it), else at the return of each
+getter call of the shape of its first call (by site), a `DECLARED_SITE` `CALL_RETURN` with
+`inputKind: CONFIG`, its `sourceId` and domain (the plan's input action states them as
+`configSource`, `domainMin`, `domainMax`). Only an integral or boolean value is minted.
+
+- **The field's reads.** `causynth/StaticSymbolicSourceDiscovery` declares each read (`getfield`)
+  of a configuration field in a region's text -- its methods and their application callees -- as it
+  declares a hook site (below), under the authority `EXACT_STATIC_CONFIG_READ_SITE_V1`; the
+  recording's read of the field there (a `FIELD_READ` trace event) is the site's evidence in an
+  occurrence (`runtime/RuntimeRegionPlanner#configuredSourcePhases`). Before the `getfield`,
+  INSTRUMENT weaves `ConcolicRegionRuntime.readConfiguration(sourceId, owner, field)` under the
+  site's context (`CausynthPipeline#instrumentConfigurationRead`), the hook a tree would have
+  carried; it never throws into the read, and a failure is named (`UNSTATED_VALUE`, BLOCKING
+  where the obligation assigns the root). A field a tree's hook mints is the hook's: none of its
+  reads is declared.
+- **Named, not minted.** What these rules leave concrete is a `DECLARATION_MISSING` DIAGNOSTIC row
+  of `communication_gaps.jsonl.gz` (`ConfigRoots#gaps`, published with the declarations), its
+  reason first in its detail: `CONFIG_KEY_UNRESOLVED`, a read whose key no literal names (`for (k :
+  keys) conf.getInt(k, 0)`: a site is no key, and one symbol would stand for every key);
+  `CONFIG_FIELD_OVERWRITTEN`, a field a constant store can leave holding the constant (`f =
+  get(k); if (f <= 0) f = 1`: a plant would write a value the field never holds); and
+  `CONFIG_READ_CONCRETE`, a read of a chosen key in another shape (a second field, another view,
+  clamp or type, a getter beside the key's field).
+- **Its reads left at the recording.** A plant stands where the key is minted: its field's declared
+  reads, else its minted getter calls. Every other read of the key in the analysed scope (its
+  application classes) -- a getter call in another shape or outside the slice, a read of another
+  field holding it, a read of its field outside every region -- keeps the recording's value when a
+  world moves the key (`ConfigRoots#keyRows`, over `#census`: JVM and catalog getters and the
+  wrappers the recognition found; the getter calls a field's writers store are the field's own).
+  The scope map states them, one `CONFIG_KEY` row per root (`sourceId`, `mintedAt`,
+  `concreteReads`; `StaticScopeMap#configKeyRow`), and COMPOSE does not claim a witness moving a
+  root that has any: no cluster holds that world (`compose/ClaimPolicy`, `UNPRODUCIBLE_ANSWER`
+  DIAGNOSTIC). A key no read of which is planted (a field a tree's hook owns) has no row.
+- **The world.** A configuration belongs to the world, not to an occurrence: the value an
+  obligation assigns it is written at every read of its field, on every node, whatever occurrence
+  runs it (`runtime/RootMint#configuration`), and planted at every getter return a symbolic
+  occurrence reads. The VM label is the source's alone (`ConfiguredSourcePhaseContract#engineLabel`),
+  so the reads of one key in one JVM are one symbol: a homogeneous cluster. That symbol holds ONE
+  value: the first mint of the root in a JVM fixes it, and a later mint at another value -- an
+  unset key's other default, another node's configuration -- is read concretely, an
+  `UNSTATED_VALUE` DIAGNOSTIC row (`RootMint#configurationAgrees`); a second getter read of one key
+  in an occurrence is the box its first read minted.
+- **Domain.** A boolean is a MARKER, free over both values. An integral's domain is the hull of
+  its anchors -- each getter call's literal default and `c - 1, c, c + 1` for each integral literal
+  `c` a branch compares the value with within eight flows of the slice, never through a field, and
+  no floor (`if (limit < 0)` flips at -1) -- mapped through its clamps (a planted value lies in
+  their image: `Math.max(v, 1)` is never 0), and of the value the mint read: the declaration states
+  the static hull, the mint row the whole (`runtime/ActiveRegion#configDomain`). A declaration stating half a
+  domain or a bound that is no integer states none, named, and the root is pinned.
+
+A tree may still call `CausynthSymbolicSource.symbolize(String sourceId, Object owner, String
+fieldSignature)` (the Hadoop copy is `src/shim/java/org/apache/hadoop/ipc/CausynthSymbolicSource`):
+the block-key trees' `HDFS.BLOCK_KEY.SERIAL_NO` and `EXPIRY_DATE*`, and hdfs-17960's
+`HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` in `SnapshotManager.isSnapshotDeletionOrdered()`, on the
+field this section's rules recognize as `CONFIG:dfs.namenode.snapshot.deletion.ordered`: the hook
+owns it until its tree drops the hook.
+`StaticSymbolicSourceDiscovery` finds the call by class simple name and signature and attaches one
+declaration per source to every region that can run it (one hook site per source per region, else
+refused). Its value is planted at a focused occurrence only, and its domain is the
+`root-domains.jsonl` row for `sourceId` (absolute or `+k`/`-k` from the recording); without a row it
+is pinned.
+
+Either way `runtime/RootMint#configuredSource` mints one symbol per source on the owner's
+primitive instance field, keeps a propagated expression instead when the field already carries one
+(`reused`), and its root row states the category, `CONFIG` or `HOOK`.
 
 ### 4.4 Admission
 
@@ -323,8 +412,8 @@ row it is pinned.
 
 | input | verdict |
 |---|---|
-| a clock's return, a READ placeholder's own site, a `FAULT` marker | declared root: the replay mints (`DECLARED_SYMBOLIC_ROOT`; a clock also `DECLARED_WALL_CLOCK` = its tick) |
-| a field a configured-source hook of the region mints | `CONCRETE`, `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` (the hook mints) |
+| a clock's return, a configuration getter's return (`configSource`), a READ placeholder's own site, a `FAULT` marker | declared root: the replay mints (`DECLARED_SYMBOLIC_ROOT`; a clock also `DECLARED_WALL_CLOCK` = its tick) |
+| a field a configured source of the region mints (a tree's hook, or the engine's configuration read) | `CONCRETE`, `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` (the source mints) |
 | a declared communication port (`COMMUNICATION_SITE_PORT`) | tracked, never minted (the attach installs the producer's value) |
 | anything else | `CONCRETE`, `UNDECLARED_SYMBOLIC_INPUT` |
 
@@ -378,13 +467,14 @@ reaches, to a fixed point:
   consumer cells it demanded. Every admission states its `demandDepth`: the hops of the shortest
   chain from the question that reached it (a target 0, a root's or a door's occurrence one past
   what it was found from).
-- **Roots by relevance** (`causynth/RootRelevance`). A root read is a capture of a `CLOCK` or
-  `FAULT` `DECLARED_SITE`. Its influence is the forward reach of its `dependencyCell` over the
-  candidate edges of the methods its occurrence performed -- value, guard and exception edges
-  alike -- ended at a stored location (a cell some `WRITE_SITE` names) and at a wire producer
-  (recording the consumer cell its `wire_handoff` names). The influence is static: the arm a root
-  decides counts whether the recording took it or not (an expiry check that removed nothing), and
-  a value leaving by a wire counts on the consumer's side. An occurrence one of whose roots reaches
+- **Roots by relevance** (`causynth/RootRelevance`). A root read is a capture of a `CLOCK`,
+  `FAULT` or `CONFIG` `DECLARED_SITE`; a configuration field's read (§4.3) is a configured-source
+  phase, no capture, and plans with whichever occurrence another rule admits. Its influence is the
+  forward reach of its `dependencyCell` over the candidate edges of the methods its occurrence
+  performed -- value, guard and exception edges alike -- ended at a stored location (a cell some
+  `WRITE_SITE` names) and at a wire producer (recording the consumer cell its `wire_handoff` names).
+  The influence is static: the arm a root decides counts whether the recording took it or not (an
+  expiry check that removed nothing), and a value leaving by a wire counts on the consumer's side. An occurrence one of whose roots reaches
   a location the walk demanded on its node -- unless the recording saw it access that field on
   other objects only (`Demanded#heldBy`) -- or a consumer cell it demanded anywhere, is admitted
   (`ROOT_RELEVANT_V1`, unless another rule admitted it), and every such occurrence seeds the walk
@@ -413,6 +503,47 @@ The weave replaces `new Random()`, `Math.random()`, `Collections.shuffle(List)` 
 `UUID.randomUUID()` in both passes with `runtime/Randoms`, seeded by the draw's endpoint inside the
 window (by site and count before it), so a replay draws what the recording drew.
 
+### 4.6 Root demand
+
+`causynth/RootDemand` asks where the values the declared throw's path guards decide on enter what
+the slice follows. Backward from the operands of the `exception_guard` edges at the TARGET_SITE's
+guards, its chain and the chain's deciders (`Site#pathSites`), over the candidate edges, nearest
+first, every path stops at its first *boundary*, at most sixteen edges out; a receiver edge
+(`accessor_receiver`, `method_receiver`, ...) names which object is read, not the value, and is
+followed only to a value-like receiver (a box, a `String`). The classes:
+
+| class | the boundary | what the demand does |
+| --- | --- | --- |
+| `CLOCK` | a clock's return (§4.1) | nothing more: it is declared |
+| `FAULT` | a fault marker's return (§4.2) | nothing more: it is declared |
+| `CONFIG_CALL`, `CONFIG_FIELD` | a configuration (§4.3) | the twelve nearest keys within sixteen edges are minted |
+| `READ` | a JDK atomic's value | a chosen read is a READ placeholder (§5.4) though only its own region stores it |
+| `TRACK` | an integral or boxed field a region stores | a chosen read is a READ_SITE (§5.1) however many flows from a branch |
+| `TRACK_IDENTITY` | a reference, `String` or enum field a region stores | a chosen read is a READ_SITE as well; its value is never freed (R3) |
+| `TRACK_CONTAINER` | a container's state (a field of a container type, a container query's return) | a chosen field read is a READ_SITE as well; its state is never freed (R3) |
+| `PRE_WINDOW` | a field no region of the slice stores | chosen, first in scope growth (§2.4): a writer out of scope (a configuration holder's constructor) may store it |
+| `WIRE` | a region root's formal: what a message or a thread start hands over | named (R2) |
+| `IO` | a stream, file, socket, channel or native result | named |
+| `SCOPE` | a call into the system's own code outside the scope, a formal no caller in scope passes | chosen, first in scope growth (§2.4) |
+| `LIBRARY` | any other library result | named |
+| `CUT` | a path still open sixteen edges out, no boundary yet | named |
+
+Of each class the twelve nearest boundaries are *chosen* (a cell per boundary); every row states
+why it is not (`cut`: `WIDTH`, past the twelve nearest of its class; `DISTANCE`, past sixteen edges,
+every `CUT` row and a configuration key measured beyond the bound on the cone; `NO_SOURCE`, a
+configuration no source declares, a `String` getter). A configuration
+belongs to the world: it is read in whichever occurrence wrote what the anchor reads, beyond the
+boundary between them (hdfs-17960's key stands behind the `READ` of `numSnapshots`, in the edit-log
+replay that decremented it), so its keys are measured on the whole cone (every edge, no boundary
+stops it), a field's at the field, a getter call's one past the local it lands in. A named class
+is a row, never a freed value: freeing it would invent a value no execution produces.
+`root_demand.jsonl` lists every boundary (`class`, `distance`, `cell`, `siteId`, `edgeKind`,
+`chosen`, `cut`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
+That mark is the static half of a concrete anchor's demand: an anchor every admitted path decided
+on no symbol demands the reads it made before it decided that carry it
+(`explore.ClosurePlanner#concrete`, `StaticScopeMap#demandedAt`; PIPELINE §7.2), their writers
+asked as a symbolic predicate's are.
+
 ## 5. Tracked shared state (F2)
 
 ### 5.1 Which reads are tracked
@@ -435,7 +566,9 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
     constructor, so there is nothing to re-pair;
 - decides a branch: the read's value reaches a branch operand within eight flows
   (`StaticScopeMap#decidingCells`, `DECIDING_FLOWS`), never through a field and never across a
-  `wire_handoff` edge; a read that only feeds data stays untracked;
+  `wire_handoff` edge, or the root demand chose it, a `TRACK`, `TRACK_IDENTITY` or
+  `TRACK_CONTAINER` boundary of the throw's own guards however many flows away (§4.6); a read that
+  only feeds data stays untracked;
 - is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
 
 `WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,
@@ -484,8 +617,8 @@ join its store's line: SOLR-18406's `updateKnownCommitPoints` lists the `isDelet
 ### 5.4 READ placeholders
 
 A `DECLARED_SITE` `ACCESSOR_RETURN` whose accessor runs outside the woven program (not an
-application method) and whose cell some other region stores becomes `inputKind: READ`
-(`StaticScopeMap#markReads`). Keyed by site and cell (`#readSites`, `#readKey`), since the cell
+application method) and whose cell some other region stores -- any region, where the root demand
+chose the read (§4.6) -- becomes `inputKind: READ` (`StaticScopeMap#markReads`). Keyed by site and cell (`#readSites`, `#readKey`), since the cell
 alone (`AtomicInteger.value`) names every object of its type. The replay mints a placeholder there
 (`runtime/RowPlaceholderMint`) that the closure binds to that location's writers.
 
@@ -600,10 +733,30 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
 ## 7. Current limits
 
 - Roots are clocks recognized by the call-return rule, the library catalog's door faults (no door
-  on a read, §4.2) and tree hooks. A clock
-  read through a field, a parameter, `java.time`, or an interface whose implementation is outside
-  the scope is not recognized; configuration values and pre-window state are roots only where a
-  tree hook says so.
+  on a read, §4.2), configuration (§4.3) and tree hooks. A clock read through a field, a parameter,
+  `java.time`, or an interface whose implementation is outside the scope is not recognized;
+  pre-window state is a root only where a tree hook says so.
+- Configuration reads left at the recording (§4.3) are counted over the analysed scope only: a read
+  in a class outside it, a read whose key no literal names, and a minted getter's return in an
+  occurrence a replay runs concretely are not, so such a world can still be claimed (and CONFIRM
+  then runs it as planted).
+- Configuration (§4.3): one symbol per key per JVM, a homogeneous cluster, by design; a node read
+  at another value than the JVM's first is read concretely. The VM names a field mint by its
+  owner's class, so one key is minted in one shape, at one field (the first by signature) or, with
+  none, at its getter returns, and every other read of the key -- a second field caching it, a
+  getter beside its field, another view, clamp or type -- is read concretely
+  (`CONFIG_READ_CONCRETE`): a world that flips the key leaves those reads at the recording's
+  value. A field declared in a class two runtime classes extend mints one symbol per class. A
+  static field, a `float` or `double`, a box, a `String` or an enum is no root (an enum or `String`
+  key would need a finite-set domain, so a String key is minted under one view, a boolean),
+  nor a value computed from a configuration by arithmetic, nor a value whose key no literal names.
+  A domain is bounded by clamps only: a field the constructor validates (a throw on a bad value)
+  can be planted with a value the validation would refuse. A getter's return is planted only where
+  a symbolic occurrence reads it, a field at every read of it.
+- Root demand (§4.6) is chosen once, at SEED: no re-seed admits a boundary the seed left unminted
+  or untracked. Its classes read the slice's edges, so a value the slice never reached is no
+  boundary, and a concrete anchor's demand joins a read row to a demanded read by its method, kind
+  and type, not its bci (`StaticScopeMap#demandedAt`).
 - The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
   and `AtomicReference.value`, a static one on its class's mirror) and the atomics' integral
   `value` from an observed access (§5.2). A container reached through a

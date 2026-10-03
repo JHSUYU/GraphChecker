@@ -107,17 +107,23 @@ public class ScopeGrowthTest {
                         "<A: long own()>"),
                 edge("field_write", "w::$l0", "<W: long far>", ""));
         List<String> found = new ArrayList<>();
+        // The root demand's boundaries come first, each nearest first.
+        Map<String, String> demanded = new LinkedHashMap<>();
+        demanded.put(set, "SCOPE");
+        demanded.put(SHARED, "PRE_WINDOW");
         for (JsonObject row : ScopeFrontier.rows(edges,
                 "<A: long own()>"::equals,
-                Collections.singleton("<C: long now()>"))) {
+                Collections.singleton("<C: long now()>"), demanded)) {
             found.add(row.get("kind").getAsString() + " "
                     + row.get("signature").getAsString() + " "
-                    + row.get("distance").getAsInt());
+                    + row.get("distance").getAsInt()
+                    + (row.has("demand") ? " " + row.get("demand")
+                    .getAsString() : ""));
         }
         assertEquals(Arrays.asList(
-                "FIELD " + SHARED + " 1",
-                "CALLEE " + GET + " 2",
-                "FORMAL " + set + " 3"), found);
+                "FIELD " + SHARED + " 1 PRE_WINDOW",
+                "FORMAL " + set + " 3 SCOPE",
+                "CALLEE " + GET + " 2"), found);
     }
 
     @Test

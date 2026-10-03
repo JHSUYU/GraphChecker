@@ -28,6 +28,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.PathEntry;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -181,6 +182,11 @@ public final class Composer {
         private final List<PathEntry> paths;
         private final List<Family> families;
         private final List<RootDomain> roots;
+        /** Each root's category, by root id. */
+        private final Map<String, RootCategory> categories;
+        /** Each configuration root's reads its plant leaves at the
+         *  recording's value (StaticScopeMap#concreteConfigurationReads). */
+        private final Map<String, List<String>> unplantedReads;
         private final List<Valuation> valuations;
         private final List<GapRow> gaps;
         private final List<String> clockCells;
@@ -215,6 +221,26 @@ public final class Composer {
                     new ArrayList<Family>(composed.families.values()));
             this.roots = Collections.unmodifiableList(
                     new ArrayList<RootDomain>(composed.roots.values()));
+            Map<String, RootCategory> categories =
+                    new LinkedHashMap<String, RootCategory>();
+            for (Map.Entry<String, List<RootMintRow>> root
+                    : composed.corpus.roots().entrySet()) {
+                categories.put(root.getKey(),
+                        root.getValue().get(0).category());
+            }
+            this.categories = Collections.unmodifiableMap(categories);
+            Map<String, List<String>> unplanted =
+                    new LinkedHashMap<String, List<String>>();
+            for (Map.Entry<String, RootCategory> root
+                    : categories.entrySet()) {
+                List<String> reads = composed.scope
+                        .concreteConfigurationReads(root.getKey());
+                if (root.getValue() == RootCategory.CONFIG
+                        && !reads.isEmpty()) {
+                    unplanted.put(root.getKey(), reads);
+                }
+            }
+            this.unplantedReads = Collections.unmodifiableMap(unplanted);
             this.valuations = Collections.unmodifiableList(valuations);
             this.gaps = Collections.unmodifiableList(composed.gaps);
             this.clockCells = Collections.unmodifiableList(clockCells);
@@ -432,6 +458,32 @@ public final class Composer {
 
         public List<RootDomain> roots() {
             return roots;
+        }
+
+        /** Where a moved root's value enters the world: a clock cell's
+         *  CLOCK, else its mint's category; null for a key no mint names. */
+        public RootCategory categoryOf(String moved) {
+            return clockCells.contains(moved) ? RootCategory.CLOCK
+                    : categories.get(moved);
+        }
+
+        /** Whether these moves move configuration only
+         *  ({@link Composer#configurationOnly}): the claim states it. */
+        public boolean configurationOnly(Collection<String> moved) {
+            return Composer.configurationOnly(moved, this::categoryOf);
+        }
+
+        /** Each moved configuration root whose plant leaves reads of its
+         *  key at the recording's value, with those reads: a world moving
+         *  it is no configuration a cluster could hold. */
+        public Map<String, List<String>> unplanted(Collection<String> moved) {
+            Map<String, List<String>> found =
+                    new LinkedHashMap<String, List<String>>();
+            for (String key : moved) {
+                List<String> reads = unplantedReads.get(key);
+                if (reads != null) found.put(key, reads);
+            }
+            return found;
         }
 
         public List<Valuation> valuations() {
@@ -2676,7 +2728,10 @@ public final class Composer {
 
     /**
      * One question per declared root; ordinal 0 is the run as it happened,
-     * then single moves by distance, then pairs.  A declared MARKER flips;
+     * then single moves -- a marker's flip and an integral's domain-end
+     * anchors before its other values ({@link #tier}), each by distance, a
+     * configuration's after any other move of that distance
+     * ({@link #configurationOnly}) --, then pairs.  A declared MARKER flips;
      * an INTEGRAL without a domain is pinned, not enumerated; CLOCKs are not
      * enumerated.  Every skipped root is named: the claim's polarity gate
      * reads which valuations were asked.
@@ -2730,7 +2785,10 @@ public final class Composer {
                 moves.add(move);
             }
         }
-        moves.sort(Comparator.comparingLong(this::distance));
+        moves.sort(Comparator.comparingInt(this::tier)
+                .thenComparingLong(this::distance)
+                .thenComparing(move -> configurationOnly(move.keySet(),
+                        rootId -> corpus.anyRoot(rootId).category())));
         List<Map<String, String>> pairs =
                 new ArrayList<Map<String, String>>();
         for (int first = 0; first < moves.size(); first++) {
@@ -2756,6 +2814,66 @@ public final class Composer {
             valuations.add(valuation(ordinal++, assignment, move));
         }
         return valuations;
+    }
+
+    /**
+     * Whether moves move configuration only: every moved key a CONFIG root.
+     * The one rule a configuration-only witness ranks by -- after a move of
+     * any other category at equal distance (#valuations), after every other
+     * witness, clocks and pairings included ({@code ClaimPolicy}) -- and the
+     * claim states ({@code configurationOnly}, read by triage and findings).
+     */
+    static boolean configurationOnly(Collection<String> moved,
+                                     java.util.function.Function<String,
+                                             RootCategory> categoryOf) {
+        if (moved.isEmpty()) return false;
+        for (String key : moved) {
+            if (categoryOf.apply(key) != RootCategory.CONFIG) return false;
+        }
+        return true;
+    }
+
+    /**
+     * 0 when every root a move moves sits where a comparison flips -- a
+     * marker's flip, an integral at an end anchor of its domain
+     * ({@link #anchors}) --, else 1: those values are asked first.
+     */
+    private int tier(Map<String, String> move) {
+        for (Map.Entry<String, String> entry : move.entrySet()) {
+            RootDomain domain = roots.get(entry.getKey());
+            if (domain == null || domain.kind() == RootKind.MARKER) continue;
+            String value = entry.getValue().trim();
+            if (integralLiteral(value).isEmpty()
+                    || !anchors(domain).contains(new BigInteger(value))) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * An integral domain's end anchors: each bound and its two inward
+     * neighbours.  The domain is the hull of its anchors' c - 1, c, c + 1
+     * (causynth.ConfigRoots), so its ends are where its outermost
+     * comparisons flip, however far from the recording; an interior anchor
+     * is not stated past SEED.
+     */
+    private static Set<BigInteger> anchors(RootDomain domain) {
+        Set<BigInteger> anchors = new LinkedHashSet<BigInteger>();
+        if (domain.min() == null || domain.max() == null
+                || integralLiteral(domain.min()).isEmpty()
+                || integralLiteral(domain.max()).isEmpty()) {
+            return anchors;
+        }
+        BigInteger low = new BigInteger(domain.min().trim());
+        BigInteger high = new BigInteger(domain.max().trim());
+        for (int step = 0; step <= 2; step++) {
+            BigInteger up = low.add(BigInteger.valueOf(step));
+            BigInteger down = high.subtract(BigInteger.valueOf(step));
+            if (up.compareTo(high) <= 0) anchors.add(up);
+            if (down.compareTo(low) >= 0) anchors.add(down);
+        }
+        return anchors;
     }
 
     /**
@@ -2816,16 +2934,40 @@ public final class Composer {
         BigInteger high = new BigInteger(max.trim());
         BigInteger centre = integralLiteral(recorded).isEmpty()
                 ? low : new BigInteger(recorded);
-        List<BigInteger> candidates = new ArrayList<BigInteger>();
-        for (BigInteger value = low; value.compareTo(high) <= 0;
-             value = value.add(BigInteger.ONE)) {
-            if (value.equals(centre)) continue;
-            candidates.add(value);
-            if (candidates.size() >= maxValuations) break;
+        // A recording outside the domain moves to its nearest bound first.
+        if (centre.compareTo(low) < 0 || centre.compareTo(high) > 0) {
+            centre = centre.compareTo(low) < 0 ? low : high;
+            values.add(centre.toString());
         }
-        candidates.sort(Comparator.comparing(
-                value -> value.subtract(centre).abs()));
-        for (BigInteger value : candidates) values.add(value.toString());
+        // The domain's end anchors first, nearest first: a far threshold
+        // (a literal 1000 against a recorded 3) is reached under the cap.
+        List<BigInteger> ends = new ArrayList<BigInteger>(anchors(domain));
+        final BigInteger from = centre;
+        ends.sort(Comparator.comparing((BigInteger end) ->
+                end.subtract(from).abs()).thenComparing(end -> end));
+        for (BigInteger end : ends) {
+            if (!end.toString().equals(recorded)
+                    && !values.contains(end.toString())
+                    && values.size() < maxValuations) {
+                values.add(end.toString());
+            }
+        }
+        // Then outward from the recording, nearest first, within the domain:
+        // a wide domain's minimum is no nearer move than any other.
+        for (BigInteger step = BigInteger.ONE;
+             values.size() < maxValuations
+                     && (centre.subtract(step).compareTo(low) >= 0
+                     || centre.add(step).compareTo(high) <= 0);
+             step = step.add(BigInteger.ONE)) {
+            for (BigInteger value : new BigInteger[]{
+                    centre.subtract(step), centre.add(step)}) {
+                if (value.compareTo(low) >= 0 && value.compareTo(high) <= 0
+                        && !values.contains(value.toString())
+                        && values.size() < maxValuations) {
+                    values.add(value.toString());
+                }
+            }
+        }
         return values;
     }
 

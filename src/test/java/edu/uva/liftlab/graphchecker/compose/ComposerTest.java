@@ -36,6 +36,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -103,6 +104,9 @@ public class ComposerTest {
     private static final String ANCHOR_SITE = "BlockManager#get#8:READ";
     private static final String MARKER = "marker_m";
     private static final String MARKER_ROOT = "ROOT.MARKER";
+    /** A configuration flag's root and the symbol its mint names. */
+    private static final String CONFIG_ROOT = "CONFIG:k.flag";
+    private static final String CONFIG = "config_k";
     private static final String SERIAL = "serial_s";
     private static final String SERIAL_ROOT = "ROOT.SERIAL";
     private static final String CLOCK = "clock_now";
@@ -1687,7 +1691,7 @@ public class ComposerTest {
                 session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
                         !"s0".equals(id), true);
                 if (!"s2".equals(id)) {
-                    session.serial("119994", "+0", "+3");
+                    session.serial("119994", "119994", "119997");
                 } else if (!variant.equals("never read")) {
                     session.serialReadConcretely("119994");
                 }
@@ -1742,9 +1746,106 @@ public class ComposerTest {
                 {"s1", "119997", "true"}}) {
             Session session = new Session(iteration, each[0],
                     "true".equals(each[2]));
-            session.serial(each[1], "+0", "+3");
+            session.serial(each[1], each[1],
+                    String.valueOf(Long.parseLong(each[1]) + 3L));
             session.target("true", false, true);
             session.write();
+        }
+    }
+
+    /**
+     * An integral's moves are its domain's end anchors (each bound and its
+     * two inward neighbours: where its outermost comparisons flip) first,
+     * then outward from the value it ran at, each nearest first, within its
+     * domain: a far threshold is reached under the cap, and a recording
+     * outside the domain moves to the nearest bound first.  {recorded, min,
+     * max, the values moved to, in order, under a cap of four valuations}.
+     */
+    @Test
+    public void anIntegralMovesToItsDomainsEndsThenOutward()
+            throws Exception {
+        String[][] rows = {
+                {"500", "0", "1000", "2 998 1"},
+                {"0", "0", "1000", "1 2 998"},
+                {"3", "3", "1001", "4 5 999"},
+                {"7", "5", "8", "6 8 5"},
+                {"20", "5", "8", "8 7 6"},
+        };
+        for (String[] row : rows) {
+            Path iteration = folder.newFolder("outward-" + row[0] + "-"
+                    + row[1]).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.serial(row[0], row[1], row[2]);
+            // The fatal rests on the counter, so the valuations move it.
+            session.expression("EXPR.0000000000000e01", binary(">",
+                    symbol(SERIAL, "I"), integer("I", 2_000L)));
+            session.target("EXPR.0000000000000e01", false, true);
+            session.write();
+            List<String> moved = new ArrayList<String>();
+            for (Composer.Valuation valuation
+                    : compose(iteration, 4).valuations()) {
+                if (!valuation.moved().isEmpty()) {
+                    moved.add(valuation.moved().get(SERIAL_ROOT));
+                }
+            }
+            assertEquals(Arrays.toString(row),
+                    Arrays.asList(row[3].split(" ")), moved);
+        }
+    }
+
+    /**
+     * A WITNESS MOVING CONFIGURATION ONLY RANKS LAST, AND ONE WHOSE WORLD
+     * NO CLUSTER COULD HOLD IS NO CLAIM.  {what reaches the fatal arm, the
+     * configuration's reads its plant leaves (the scope map's CONFIG_KEY
+     * row), the claim's kind, its moves, whether it states configuration
+     * only, whether a gap names the partial world}: the fault and the
+     * configuration each alone, the configuration declared first; the
+     * configuration alone, whole; the same, a read of its key left.
+     */
+    @Test
+    public void aConfigurationWitnessRanksLastAndAPartialOneIsNoClaim()
+            throws Exception {
+        Object[][] rows = {
+            {"(or (not " + MARKER + ") (not " + CONFIG + "))", "",
+                ClaimKind.MARKER_FLIPPED, MARKER_ROOT, false, false},
+            {"(not " + CONFIG + ")", "", ClaimKind.MARKER_FLIPPED,
+                CONFIG_ROOT, true, false},
+            {"(not " + CONFIG + ")", "<t.A: void a()>#u3",
+                ClaimKind.NO_SUPPORTED_WITNESS, "", false, true}};
+        int variant = 0;
+        for (Object[] row : rows) {
+            Path iteration = folder.newFolder("config-rank-" + variant++)
+                    .toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.configuration("true");
+            session.marker("true");
+            session.target((String) row[0], false, true);
+            session.write();
+            Path map = iteration.resolve(StaticScopeMap.FILE);
+            Files.write(map, Collections.singletonList(
+                    StaticScopeMap.configKeyRow(CONFIG_ROOT, "<t.A: int f>",
+                            ((String) row[1]).isEmpty()
+                                    ? Collections.<String>emptyList()
+                                    : Collections.singletonList(
+                                    (String) row[1])).toString()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            Composer.Composition composition = compose(iteration, ANCHOR, 8,
+                    StaticScopeMap.read(map));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            String moved = String.join(",",
+                    decision.claim().movedRoots().keySet());
+            boolean named = false;
+            for (GapRow gap : decision.claim().gaps()) {
+                named |= gap.kind() == GapKind.UNPRODUCIBLE_ANSWER
+                        && CONFIG_ROOT.equals(gap.subject());
+            }
+            assertEquals((String) row[0] + " " + row[1],
+                    row[2] + " " + row[3] + " " + row[4] + " " + row[5],
+                    decision.claim().kind() + " " + moved + " "
+                            + composition.configurationOnly(
+                            decision.claim().movedRoots().keySet())
+                            + " " + named);
         }
     }
 
@@ -1828,7 +1929,8 @@ public class ComposerTest {
             String id = "s" + row[0];
             Session session = new Session(iteration, id, row[0] == 1L);
             session.roots.add(RootMintRow.of(id, 1L, ANCHOR, "ROOT.NOW",
-                    "clk_now", RootKind.CLOCK, Long.toString(row[1]), null,
+                    "clk_now", RootKind.CLOCK, RootCategory.CLOCK,
+                    Long.toString(row[1]), null,
                     null, true, Clock.of(1_000_000L, Clock.WALL), row[2]));
             session.expression("EXPR.00000000000003e1", binary("<",
                     integer("J", row[3]), symbol("clk_now", "J")));
@@ -1855,7 +1957,7 @@ public class ComposerTest {
                                          String rootId, String symbol,
                                          String reading) {
         return RootMintRow.of(session, seq, ANCHOR, rootId, symbol,
-                RootKind.CLOCK, reading, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L);
+                RootKind.CLOCK, RootCategory.CLOCK, reading, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L);
     }
 
     // ------------------------------------------------------------------
@@ -1934,7 +2036,7 @@ public class ComposerTest {
         Session twice = new Session(runs, "s0", false);
         twice.clock("700");
         twice.roots.add(RootMintRow.of("s0", ++twice.seq, ANCHOR, "ROOT.THEN",
-                "clock_then", RootKind.CLOCK, "705", null, null, true,
+                "clock_then", RootKind.CLOCK, RootCategory.CLOCK, "705", null, null, true,
                 Clock.of(1_000_000L, Clock.WALL), 0L));
         twice.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
                 + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
@@ -1962,7 +2064,7 @@ public class ComposerTest {
         Path driven = folder.newFolder("clock-driven").toPath();
         Session both = new Session(driven, "s0", false);
         both.clock("700");
-        both.serial("119994", "+0", "+3");
+        both.serial("119994", "119994", "119997");
         both.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
                 + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
         both.target("(and (> " + CLOCK + " 1000) (>= " + SERIAL
@@ -3165,7 +3267,7 @@ public class ComposerTest {
             if (guarded) {
                 session.roots.add(RootMintRow.of("s0", ++session.seq,
                         writers[2], "ROOT.CLEAN", "M_J_clean",
-                        RootKind.CLOCK, "1000", null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
+                        RootKind.CLOCK, RootCategory.CLOCK, "1000", null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
                 session.expression("EXPR.0000000000000090", binary("<",
                         symbol("M_J_clean", "J"), integer("J", 2_000L)));
                 session.decision(writers[2], "Cleaner#clean#u3", true,
@@ -3338,7 +3440,7 @@ public class ComposerTest {
         // The reservation of 5: the reserver's clock plus 6000.
         LocationId reserves = LocationId.of(LocationKind.MAP, "50", "-3");
         session.roots.add(RootMintRow.of(id, ++session.seq, reserver,
-                "ROOT.RESERVED", RESERVED, RootKind.CLOCK,
+                "ROOT.RESERVED", RESERVED, RootKind.CLOCK, RootCategory.CLOCK,
                 Long.toString(seed - 1_000L), null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
         // As the VM publishes it: an arithmetic node states no Java type,
         // and the deadline is a Long cell by its width alone.
@@ -3353,7 +3455,7 @@ public class ComposerTest {
                 at("reserve#1", 0), 0), reserves, 70L,
                 "EXPR.00000000000000e1");
         session.roots.add(RootMintRow.of(id, ++session.seq, newer,
-                "ROOT.RESERVE", NANO, RootKind.CLOCK, Long.toString(
+                "ROOT.RESERVE", NANO, RootKind.CLOCK, RootCategory.CLOCK, Long.toString(
                         expired ? seed + 10_000L : seed), null, null, true,
                 Clock.of(1L, Clock.MONOTONIC), 0L));
         // The older commit's map, then its store.
@@ -4744,7 +4846,7 @@ public class ComposerTest {
         StringBuilder phi = new StringBuilder("(and");
         for (String[] cell : cells) {
             session.roots.add(RootMintRow.of("s0", ++session.seq, ANCHOR,
-                    cell[0], cell[1], RootKind.CLOCK, cell[2], null, null,
+                    cell[0], cell[1], RootKind.CLOCK, RootCategory.CLOCK, cell[2], null, null,
                     true, Clock.of(1_000_000L, cell[3]), 0L));
             phi.append(" (> ").append(cell[1]).append(" 0)");
         }
@@ -4899,7 +5001,7 @@ public class ComposerTest {
     /** One session whose decision carries the size model over {@code body}. */
     private void letCorpus(Path iteration, String body) throws IOException {
         Session session = new Session(iteration, "s0", false);
-        session.serial("5", "+0", "+3");
+        session.serial("5", "5", "8");
         session.decision(ANCHOR, "removeExpiredKeys#u7",
                 "(= " + SERIAL + " " + sizeModel(SERIAL, body) + ")");
         session.target("true", false, true);
@@ -6389,7 +6491,14 @@ public class ComposerTest {
 
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
-                    RootKind.MARKER, recorded, null, null, true, null, 0L));
+                    RootKind.MARKER, RootCategory.FAULT, recorded, null, null, true, null, 0L));
+        }
+
+        /** A boolean configuration, as the engine mints one. */
+        void configuration(String recorded) {
+            roots.add(RootMintRow.of(id, ++seq, PRODUCER, CONFIG_ROOT, CONFIG,
+                    RootKind.MARKER, RootCategory.CONFIG, recorded, null,
+                    null, true, null, 0L));
         }
 
         /**
@@ -6402,7 +6511,7 @@ public class ComposerTest {
          */
         void clock(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,
-                    RootKind.CLOCK, recorded, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
+                    RootKind.CLOCK, RootCategory.CLOCK, recorded, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
         }
 
         /** One decision, and the clock cells its predicate read. */
@@ -6413,10 +6522,12 @@ public class ComposerTest {
                     Collections.singletonMap(clockRoot, reading)));
         }
 
-        /** A declared counter, with the window the CASE states around it. */
+        /** A declared counter, with its absolute window (a row's bounds
+         *  are absolute; only a case's declaration is relative). */
         void serial(String recorded, String min, String max) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
-                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true, null, 0L));
+                    SERIAL, RootKind.INTEGRAL, RootCategory.HOOK, recorded,
+                    min, max, true, null, 0L));
         }
 
         /** Root id -> occurrence -> what this replay read the root at
@@ -6503,6 +6614,9 @@ public class ComposerTest {
         void root(OccurrenceAddress at, String rootId, String symbol,
                   RootKind kind, String recorded) {
             roots.add(RootMintRow.of(id, ++seq, at, rootId, symbol, kind,
+                    kind == RootKind.CLOCK ? RootCategory.CLOCK
+                            : kind == RootKind.MARKER ? RootCategory.FAULT
+                            : RootCategory.HOOK,
                     recorded, null, null, true,
                     kind == RootKind.CLOCK
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
