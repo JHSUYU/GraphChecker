@@ -498,13 +498,14 @@ public final class Corpus implements Arms.Rows {
         return from;
     }
 
-    /** Per-site counts of the writes to {@code locations} (not values). */
+    /** Per-site counts of the writes to {@code locations} (not values); an
+     *  INITIAL row is no write. */
     private List<String> writeSites(String sessionId,
                                     OccurrenceAddress occurrence,
                                     Set<String> locations) {
         List<String> sites = new ArrayList<String>();
         for (WriteRow write : writesOn.of(occurrence.id(), sessionId)) {
-            if (!locations.contains(
+            if (write.initial() || !locations.contains(
                     SmtLowering.locationKey(write.location()))) {
                 continue;
             }
@@ -670,10 +671,11 @@ public final class Corpus implements Arms.Rows {
             writeByVersion.put(versionKey(session.sessionId(), location,
                     row.version()), row);
             writesOn.add(row.endpoint().occurrence().id(), row.sessionId(), row);
-            located(writtenLocations, row.endpoint().occurrence(), location);
             add(writesByLocation, session.sessionId() + "|" + location, row);
             // An INITIAL's endpoint observed the location; it wrote nothing.
             if (!row.initial()) {
+                located(writtenLocations, row.endpoint().occurrence(),
+                        location);
                 writeSitesByLocation.computeIfAbsent(location,
                         ignored -> new LinkedHashMap<String, WriteRow>())
                         .putIfAbsent(row.endpoint().site() + "|"
