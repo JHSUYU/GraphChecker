@@ -40,8 +40,12 @@ system_sources=(
 # choose it (tools/adhoc/select.py).
 system_node_class=org/apache/zookeeper/server/ZooKeeperServer
 
-# The modules the build installs (build.sh): every one a case's lineage scope
-# may name, since the static pass reads each class root.
+# The modules whose classes are the lineage scope: the whole tree's, whatever
+# the case analyses (plan.LineageScan); scope growth and the library doors
+# grow from it, so the build installs every one of them.  The workload's own
+# test classes join it (system_paths): a ZooKeeper workload's clients are
+# threads its test starts (an election's contenders), which stand on their
+# creator's frames and share one address unless the start is a start site.
 zk_lineage_modules=(zookeeper-jute zookeeper-server
   zookeeper-recipes/zookeeper-recipes-election
   zookeeper-recipes/zookeeper-recipes-lock
@@ -51,16 +55,11 @@ system_paths() {
   module=${repo}/${zk_module}
   report=${module}/target/surefire-reports/TEST-${classpath_test:-${test_class}}.xml
   test_classes=${module}/target/test-classes
-  # The lineage scope (plan.LineageScan; scope growth and the library doors
-  # grow from it): the classes the workload can load -- jute, the server and
-  # its own module; a recipe's tests load no other recipe, and a woven class
-  # whose neighbours the classpath lacks fails INSTRUMENT's verifier -- and
-  # its test classes: a ZooKeeper workload's clients are threads its test
-  # starts (an election's contenders), which stand on their creator's frames
-  # and share one address unless the start is a start site.
-  lineage_roots=${repo}/zookeeper-jute/target/classes:${repo}/zookeeper-server/target/classes
-  [[ ${zk_module} == zookeeper-server ]] \
-    || lineage_roots+=:${module}/target/classes
+  local each
+  lineage_roots=
+  for each in "${zk_lineage_modules[@]}"; do
+    lineage_roots+=${lineage_roots:+:}${repo}/${each}/target/classes
+  done
   lineage_roots+=:${test_classes}
 }
 

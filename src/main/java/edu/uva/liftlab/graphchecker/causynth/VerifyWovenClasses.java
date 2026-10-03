@@ -22,7 +22,12 @@ import java.util.List;
  *
  * <p>The loader mirrors {@code execute.sh}'s {@code ${classes}:${jar}:${cp}}.
  * {@code Class.forName(name, false, loader)} runs no static initializer; the
- * reflective read after it links the class, which runs the verifier.</p>
+ * reflective read after it links the class, which runs the verifier.  A
+ * class that cannot link because a class it names is on no classpath (and
+ * is none of the engine's) cannot load in the workload either, woven or not
+ * -- the lineage scope is a system's whole class roots, and a ZooKeeper
+ * recipe's test lacks the server's Jetty console, which it falls back
+ * from -- so it is counted UNLOADABLE by name, not refused.</p>
  *
  * <p>Usage: {@code VerifyWovenClasses <instrumented-classes-dir>
  * [<classpath>]}.  Exit 0 all verified, 1 one did not, 2 could not ask.</p>
@@ -69,6 +74,7 @@ public final class VerifyWovenClasses {
         }
         int verified = 0;
         List<String> failures = new ArrayList<>();
+        List<String> unloadable = new ArrayList<>();
         String firstDetail = null;
         for (Path file : files) {
             String name = binaryName(classes, file);
@@ -78,6 +84,11 @@ public final class VerifyWovenClasses {
             } catch (LinkageError | ClassNotFoundException | RuntimeException
                     error) {
                 String message = String.valueOf(error.getMessage());
+                if (unloadable(loader, error)) {
+                    unloadable.add(name + ": " + message.trim()
+                            + " is on no classpath");
+                    continue;
+                }
                 failures.add(name + ": " + error.getClass().getName()
                         + " at " + location(message) + ": "
                         + reason(message));
@@ -86,17 +97,36 @@ public final class VerifyWovenClasses {
                 }
             }
         }
+        System.out.println("verified " + verified + " of " + files.size()
+                + " woven class(es) under " + classes + "; "
+                + unloadable.size() + " cannot load in this workload");
+        for (String each : unloadable) {
+            System.out.println("UNLOADABLE " + each);
+        }
         if (!failures.isEmpty()) {
-            System.out.println("verified " + verified + " of " + files.size()
-                    + " woven class(es) under " + classes);
             for (String failure : failures) {
                 System.out.println("UNVERIFIABLE " + failure);
             }
             System.out.println("first failure in full:\n" + firstDetail);
             System.exit(1);
         }
-        System.out.println("verified " + verified + " woven class(es) under "
-                + classes + "; the JVM verifier rejected none");
+    }
+
+    /** The engine's own classes: one a woven hook names is never missing. */
+    private static final String ENGINE = "edu/uva/liftlab/graphchecker/";
+
+    /**
+     * Whether {@code error} is a link failure on a class neither the woven
+     * tree nor the classpath holds, other than the engine's: the workload
+     * cannot load the failing class either, so its weave is not in question.
+     */
+    static boolean unloadable(ClassLoader loader, Throwable error) {
+        if (!(error instanceof NoClassDefFoundError)) return false;
+        String missing = String.valueOf(error.getMessage()).trim()
+                .replace('.', '/');
+        return !missing.isEmpty() && !missing.contains(" ")
+                && !missing.startsWith(ENGINE)
+                && loader.getResource(missing + ".class") == null;
     }
 
     private static void refuse(String reason) {
