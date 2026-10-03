@@ -4,13 +4,21 @@ package edu.uva.liftlab.graphchecker.contract;
  * CONTRACT-SPEC §2.2: one activation a replay session entered, with its address.
  * {@code focused}: ran symbolically as the task's region (others run
  * concretely).  {@code instrumented=false}: entry hook only, so "no decisions"
- * is a hole, not evidence.  {@code threadKey}: same key means program order.
+ * is a hole, not evidence.  {@code threadKey}: same key means program order
+ * -- the claimed start the activation runs inside (a queue item or a task a
+ * consumer thread claimed), else its thread: two items one consumer thread
+ * claims run in the order their starters queued them, which is no program
+ * order of theirs.
  *
  * <p>No thread-start edge: happens-before is {@code threadKey} plus the
  * {@link CausalContext.Anchor}; anything else is concurrent.  Re-add the edge
  * only with a producer that publishes it.</p>
  */
 public final class ActivationRow extends Value {
+    /** The {@link #threadKey} prefix of an activation that runs as claimed
+     *  work: a queue item or task a consumer thread claimed. */
+    public static final String CLAIMED = "start:";
+
     private final String sessionId;
     private final OccurrenceAddress occurrence;
     private final String taskId;
@@ -72,9 +80,16 @@ public final class ActivationRow extends Value {
         return instrumented;
     }
 
-    /** The session's stable key for the thread this activation ran on. */
+    /** The session's stable key for the claimed start, else the thread,
+     *  this activation ran on. */
     public String threadKey() {
         return threadKey;
+    }
+
+    /** Whether it ran as claimed work on a consumer thread ({@link
+     *  #CLAIMED}): what holds it holds the items queued behind it. */
+    public boolean claimed() {
+        return threadKey.startsWith(CLAIMED);
     }
 
     /**

@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -17,6 +18,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -219,6 +221,46 @@ public final class Confirmation {
     public static String activation(OccurrenceAddress occurrence,
                                     ExecutionIndex frames) {
         return Endpoint.activation(occurrence.anyDelivery(), frames);
+    }
+
+    /** How many sends {@link #submitter} follows up a chain of claimed
+     *  work, as {@code Attribution} follows starters. */
+    private static final int SUBMITTER_HOPS = 32;
+
+    /**
+     * Where an ORDER holds an event of {@code occurrence} so that it comes
+     * after what the model orders before it ({@code explore.ConfirmMain}):
+     * null where it runs, unless it runs as claimed work on a consumer
+     * thread ({@link ActivationRow#claimed}) -- a server's pipeline applying
+     * one request after another.  Held there it would hold every item
+     * queued behind it, the writer's among them, so it is held where it was
+     * sent: its anchor's producer ({@link ActivationRow#anchorProducer}, the
+     * send that started the request), followed up the chain while that
+     * send is itself claimed work.  Not its claim's START, which runs on
+     * the upstream stage, a consumer too.
+     *
+     * @throws IllegalStateException naming the chain where no send of it
+     *         runs outside claimed work: no hold realizes the order
+     */
+    public static Endpoint submitter(OccurrenceAddress occurrence,
+                                     Function<String, ActivationRow> rows) {
+        ActivationRow row = rows.apply(occurrence.id());
+        if (row == null || !row.claimed()) return null;
+        for (int hop = 0; hop < SUBMITTER_HOPS; hop++) {
+            Endpoint send = row.anchorProducer();
+            if (send == null) {
+                throw new IllegalStateException("ORDER_UNHELD: "
+                        + row.occurrence().render() + " runs as claimed "
+                        + "work on a consumer thread and names no send of "
+                        + "this run that started it, so no hold realizes an "
+                        + "order on " + occurrence.render());
+            }
+            row = rows.apply(send.occurrence().id());
+            if (row == null || !row.claimed()) return send;
+        }
+        throw new IllegalStateException("ORDER_UNHELD: past "
+                + SUBMITTER_HOPS + " sends of claimed work above "
+                + occurrence.render() + ", no send outside one");
     }
 
     /** Whether this run is held to an order: every frame hook asks. */
