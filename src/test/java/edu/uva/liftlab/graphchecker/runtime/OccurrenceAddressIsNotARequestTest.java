@@ -27,6 +27,7 @@ import static java.util.Collections.singletonList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -44,6 +45,7 @@ public class OccurrenceAddressIsNotARequestTest {
     private static final String BALANCER_REGION = "REGION.r";
     private static final String PORT = "XCH.1.resp.block-key-array";
     private static final String NN0 = "hdfs/nn0";
+    private static final String CLIENT = "hdfs/client0";
     private static final String SNAPSHOT_REGION = "REGION.9492ec77";
     private static final String SNAPSHOT_ROOT =
             "<a.Manager: void deleteSnapshot()>";
@@ -162,6 +164,34 @@ public class OccurrenceAddressIsNotARequestTest {
         assertNotNull("the address is the whole admission",
                 plan(unobserved).select(unobserved.rootHookGroup,
                         SNAPSHOT_ROOT, node, new Object[0]));
+
+        // The address is minted where the attribution rule says the root
+        // ran (IDENTITY §5), and nothing else says it: the workload calling
+        // a NameNode's object on its own thread ran in its own scope, as the
+        // recording addressed it, whatever node the receiver is registered
+        // to (b20h: FSNamesystem#startActiveServices under the test's
+        // transitionToActive).
+        RecordingWindow.open();
+        Object client = new Object();
+        RuntimeTraceContext.registerSource(client,
+                new SourceRef("CLIENT", "client", CLIENT, 0L));
+        long call = RuntimeTraceContext.beginRequest(client, "failover");
+        try {
+            OccurrenceAddress ran = Identity.occurrence(CLIENT + "#epoch0",
+                    SNAPSHOT_REGION, false);
+            ConcolicTaskPlan.RuntimeTask atClient = new ConcolicTaskPlan
+                    .RuntimeTask(ExecutionTask.decode(encoded("TASK.client",
+                    CLIENT + "#epoch0", SNAPSHOT_REGION, SNAPSHOT_ROOT,
+                    ran.render(), 1, "REGISTERED_SOURCE")));
+            assertEquals("its address answers it", atClient,
+                    plan(atClient).select(atClient.rootHookGroup,
+                            SNAPSHOT_ROOT, node, new Object[0]));
+            assertNull("a task at the receiver's node is another address",
+                    plan(unobserved).select(unobserved.rootHookGroup,
+                            SNAPSHOT_ROOT, node, new Object[0]));
+        } finally {
+            RuntimeTraceContext.endRequest(call);
+        }
 
         // A loop-body task whose occurrence names no k is refused at PLAN.
         try {

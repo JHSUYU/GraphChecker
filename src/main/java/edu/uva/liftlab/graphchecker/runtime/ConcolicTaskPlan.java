@@ -22,7 +22,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -242,13 +241,10 @@ final class ConcolicTaskPlan {
             String loopRootHookGroup, String rootMethod,
             Object receiver, Object[] rootArguments,
             long enclosingInvocationEvent) {
-        SourceRef registeredReceiverSource =
-                RuntimeTraceContext.sourceFor(receiver);
         // Where this activation ran, by the function the recorder minted
         // its address with.
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
-        RuntimeTraceContext.View context = RuntimeTraceContext.current();
         Set<String> admitted = new LinkedHashSet<>();
         // Outside the recording window nothing has an ordinal, so nothing is
         // a candidate.
@@ -271,8 +267,7 @@ final class ConcolicTaskPlan {
             // belongs to.
             RefusedCandidate refused = refusal(task, true, rootMethod,
                     task.enclosingRootArgumentSelector, receiver,
-                    rootArguments, registeredReceiverSource, context,
-                    activationSource, observedAddresses);
+                    rootArguments, activationSource, observedAddresses);
             if (refused != null) {
                 task.noteUnaddressedCandidate(refused);
                 continue;
@@ -304,11 +299,8 @@ final class ConcolicTaskPlan {
                                             String rootMethod,
                                             Object receiver,
                                             Object[] rootArguments) {
-        SourceRef registeredReceiverSource =
-                RuntimeTraceContext.sourceFor(receiver);
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
-        RuntimeTraceContext.View context = RuntimeTraceContext.current();
 
         // Outside the recording window there is no candidate.
         if (!RecordingWindow.opened()) return null;
@@ -325,8 +317,8 @@ final class ConcolicTaskPlan {
                     ? unenclosedBody(task, activationSource)
                     : refusal(task, false, rootMethod,
                             task.rootArgumentSelector, receiver,
-                            rootArguments, registeredReceiverSource, context,
-                            activationSource, observedAddresses);
+                            rootArguments, activationSource,
+                            observedAddresses);
             if (refused != null) {
                 if (answering < 0 && !candidateLive[index]
                         && task.answers(refused.observed)) {
@@ -442,15 +434,19 @@ final class ConcolicTaskPlan {
 
     /**
      * Why this root entry is not {@code task}'s occurrence, or null when it
-     * is: the root selector, then the source this run attributed it to,
-     * then the whole address.  {@code enclosing}: asked at the enclosing
-     * invocation of a loop-body task.
+     * is: the root selector, then the whole address, minted at the node the
+     * attribution rule names ({@code activationSource}), as the recording
+     * minted the planned one.  Nothing else stands in for where it ran: a
+     * receiver registered to another node than an explicit scope names (the
+     * workload calling a NameNode's or a DataNode's object on its own
+     * thread) ran at the scope's node in both passes (IDENTITY §5).
+     * {@code enclosing}: asked at the enclosing invocation of a loop-body
+     * task.
      */
     private static RefusedCandidate refusal(
             RuntimeTask task, boolean enclosing, String rootMethod,
             RootArgumentSelector arguments, Object receiver,
-            Object[] rootArguments, SourceRef registeredReceiverSource,
-            RuntimeTraceContext.View context, SourceRef activationSource,
+            Object[] rootArguments, SourceRef activationSource,
             ObservedAddresses observedAddresses) {
         if (!compatibleRoot(task.rootMethod, rootMethod,
                 task.rootContextSelector, arguments, receiver,
@@ -465,15 +461,6 @@ final class ConcolicTaskPlan {
                     : rootArguments.length) + " argument(s)",
                     activationSource);
         }
-        String mismatch = sourceMismatch(task, registeredReceiverSource,
-                context);
-        if (!mismatch.isEmpty()) {
-            return RefusedCandidate.stated((enclosing
-                    ? "an enclosing invocation of " + safe(rootMethod)
-                    + " ran and this run attributed it elsewhere: "
-                    : "a matching root ran and this run attributed it"
-                    + " elsewhere: ") + mismatch, activationSource);
-        }
         OccurrenceAddress observed = observedAddresses.of(task,
                 activationSource);
         return task.acceptsRootInvocation(observed) ? null
@@ -483,62 +470,22 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * Why this run's evidence says the activation is another lifecycle
-     * (epoch) of the planned node, or {@code ""}.
-     *
-     * <p>Needed because {@code sameSourceIdentity} strips {@code #epoch<n>}.
-     * Only evidence naming the same node at a <em>different</em> epoch
-     * refuses; unattributed is not another epoch.  Trap: "the planned epoch
-     * is not registered" is a fact about a moment, not the run, and must not
-     * refuse.</p>
-     */
-    static String lifecycleMismatch(String plannedSourceKey,
-                                    Collection<String> attributed) {
-        String planned = safe(plannedSourceKey);
-        if (!RuntimeTraceContext.declaresEpoch(planned)) return "";
-        if (attributed == null || attributed.contains(planned)) return "";
-        for (String observed : attributed) {
-            if (observed != null && !observed.equals(planned)
-                    && RuntimeTraceContext.sameSourceIdentity(planned,
-                    observed)) {
-                return "matching root ran at " + observed + ", not at "
-                        + planned;
-            }
-        }
-        return "";
-    }
-
-    /**
-     * The node and epoch this activation is counted in: {@link
-     * RuntimeTraceContext#activationSource}, the function the recorder
-     * minted the address with, whose node the planner reads back.  Read at
-     * activation start from the registry {@link #lifecycleMismatch} and the
-     * configured-source mint also read, so the three agree.
-     */
-    static String countedLifecycle(RuntimeTask task,
-                                   SourceRef activationSource) {
-        String planned = safe(task.sourceKey);
-        if (!RuntimeTraceContext.declaresEpoch(planned)) return planned;
-        // Never the planned node: an unattributed activation counts in the
-        // unregistered source, as its recorded address does, or it steals
-        // the planned node's k.
-        return activationSource.key();
-    }
-
-    /**
      * Per-entry memo of {@link RuntimeTask#observedAddress}, keyed by
-     * (lifecycle, region): exactly what the answer depends on within one
-     * entry, so it is a memo, not a narrowing.
+     * (node, region): exactly what the answer depends on within one entry,
+     * so it is a memo, not a narrowing.  The node is {@link
+     * RuntimeTraceContext#activationSource}, the function the recorder
+     * minted the address with; never the planned node, or an activation
+     * attributed elsewhere would take the planned node's k.
      */
     static final class ObservedAddresses {
         private final Map<String, OccurrenceAddress> byTarget =
                 new LinkedHashMap<String, OccurrenceAddress>();
 
         OccurrenceAddress of(RuntimeTask task, SourceRef activationSource) {
-            String lifecycle = countedLifecycle(task, activationSource);
-            String target = lifecycle + "\n" + task.regionId;
+            String node = activationSource.key();
+            String target = node + "\n" + task.regionId;
             if (byTarget.containsKey(target)) return byTarget.get(target);
-            OccurrenceAddress observed = task.observedAddress(lifecycle);
+            OccurrenceAddress observed = task.observedAddress(node);
             byTarget.put(target, observed);
             return observed;
         }
@@ -556,54 +503,6 @@ final class ConcolicTaskPlan {
                     + " counts in the unregistered source)";
         }
         return " (attributed to " + key + ")";
-    }
-
-    /** The source keys this run attributed to one live root entry. */
-    static Set<String> attributedSourceKeys(
-            SourceRef registeredReceiverSource,
-            RuntimeTraceContext.View context) {
-        Set<String> keys = new LinkedHashSet<>();
-        if (registeredReceiverSource != null) {
-            keys.add(registeredReceiverSource.key());
-        }
-        if (context != null && context.source != null) {
-            keys.add(context.source.key());
-        }
-        return keys;
-    }
-
-    /** Empty only when entry-time runtime evidence names this source. */
-    static String sourceMismatch(
-            RuntimeTask task, SourceRef registeredReceiverSource,
-            RuntimeTraceContext.View context) {
-        SourceRef inherited = context.source;
-        // Epoch first: the checks below ignore it.
-        String lifecycle = lifecycleMismatch(task.sourceKey,
-                attributedSourceKeys(registeredReceiverSource, context));
-        if (!lifecycle.isEmpty()) return lifecycle;
-        boolean receiverMatches = registeredReceiverSource != null
-                && RuntimeTraceContext.sameSourceIdentity(task.sourceKey,
-                registeredReceiverSource.key());
-        if (OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
-                task.sourceKey)) {
-            return registeredReceiverSource == null && inherited == null
-                    ? "" : "matching root carried a registered source "
-                    + (registeredReceiverSource == null
-                    ? inherited.key() : registeredReceiverSource.key())
-                    + " instead of the unregistered source";
-        }
-        // One rule for every anchor kind: does this run's evidence name
-        // ANOTHER source?  The receiver's own registration is authoritative.
-        if (registeredReceiverSource != null) {
-            return receiverMatches ? ""
-                    : "matching root receiver belonged to "
-                    + registeredReceiverSource.key() + " instead of "
-                    + task.sourceKey;
-        }
-        // Without one there is no evidence of where it ran.  Trap: an
-        // inherited context is not it -- on an RPC service it names the
-        // CALLER -- so it must not refuse.
-        return "";
     }
 
     static ConcolicTaskPlan load() {
@@ -1167,12 +1066,10 @@ final class ConcolicTaskPlan {
          * -- the function the recorder ran.  Unnamed outside the recording
          * window, and then it matches nothing.
          */
-        OccurrenceAddress observedAddress(String lifecycle) {
+        OccurrenceAddress observedAddress(String node) {
             // open=false: the session publisher opens the region later, and
             // opening twice would move every endpoint's index base.
-            return Identity.occurrence(
-                    safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
-                    regionId, false);
+            return Identity.occurrence(node, regionId, false);
         }
 
         /** The planned address, or null when the id names no occurrence. */
