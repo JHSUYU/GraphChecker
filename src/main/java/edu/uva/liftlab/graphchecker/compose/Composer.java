@@ -2728,10 +2728,12 @@ public final class Composer {
 
     /**
      * One question per declared root; ordinal 0 is the run as it happened,
-     * then single moves by distance, a configuration's after any other
-     * move of that distance ({@link #configurationOnly}), then pairs.  A
-     * declared MARKER flips; an INTEGRAL without a domain is pinned, not
-     * enumerated; CLOCKs are not enumerated.  Every skipped root is named: the claim's polarity gate
+     * then single moves -- a marker's flip and an integral's domain-end
+     * anchors before its other values ({@link #tier}), each by distance, a
+     * configuration's after any other move of that distance
+     * ({@link #configurationOnly}) --, then pairs.  A declared MARKER flips;
+     * an INTEGRAL without a domain is pinned, not enumerated; CLOCKs are not
+     * enumerated.  Every skipped root is named: the claim's polarity gate
      * reads which valuations were asked.
      */
     private List<Valuation> valuations() {
@@ -2783,7 +2785,8 @@ public final class Composer {
                 moves.add(move);
             }
         }
-        moves.sort(Comparator.comparingLong(this::distance)
+        moves.sort(Comparator.comparingInt(this::tier)
+                .thenComparingLong(this::distance)
                 .thenComparing(move -> configurationOnly(move.keySet(),
                         rootId -> corpus.anyRoot(rootId).category())));
         List<Map<String, String>> pairs =
@@ -2828,6 +2831,49 @@ public final class Composer {
             if (categoryOf.apply(key) != RootCategory.CONFIG) return false;
         }
         return true;
+    }
+
+    /**
+     * 0 when every root a move moves sits where a comparison flips -- a
+     * marker's flip, an integral at an end anchor of its domain
+     * ({@link #anchors}) --, else 1: those values are asked first.
+     */
+    private int tier(Map<String, String> move) {
+        for (Map.Entry<String, String> entry : move.entrySet()) {
+            RootDomain domain = roots.get(entry.getKey());
+            if (domain == null || domain.kind() == RootKind.MARKER) continue;
+            String value = entry.getValue().trim();
+            if (integralLiteral(value).isEmpty()
+                    || !anchors(domain).contains(new BigInteger(value))) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * An integral domain's end anchors: each bound and its two inward
+     * neighbours.  The domain is the hull of its anchors' c - 1, c, c + 1
+     * (causynth.ConfigRoots), so its ends are where its outermost
+     * comparisons flip, however far from the recording; an interior anchor
+     * is not stated past SEED.
+     */
+    private static Set<BigInteger> anchors(RootDomain domain) {
+        Set<BigInteger> anchors = new LinkedHashSet<BigInteger>();
+        if (domain.min() == null || domain.max() == null
+                || integralLiteral(domain.min()).isEmpty()
+                || integralLiteral(domain.max()).isEmpty()) {
+            return anchors;
+        }
+        BigInteger low = new BigInteger(domain.min().trim());
+        BigInteger high = new BigInteger(domain.max().trim());
+        for (int step = 0; step <= 2; step++) {
+            BigInteger up = low.add(BigInteger.valueOf(step));
+            BigInteger down = high.subtract(BigInteger.valueOf(step));
+            if (up.compareTo(high) <= 0) anchors.add(up);
+            if (down.compareTo(low) >= 0) anchors.add(down);
+        }
+        return anchors;
     }
 
     /**
@@ -2893,8 +2939,21 @@ public final class Composer {
             centre = centre.compareTo(low) < 0 ? low : high;
             values.add(centre.toString());
         }
-        // Outward from the recording, nearest first, within the domain: a
-        // wide domain's minimum is no nearer move than any other.
+        // The domain's end anchors first, nearest first: a far threshold
+        // (a literal 1000 against a recorded 3) is reached under the cap.
+        List<BigInteger> ends = new ArrayList<BigInteger>(anchors(domain));
+        final BigInteger from = centre;
+        ends.sort(Comparator.comparing((BigInteger end) ->
+                end.subtract(from).abs()).thenComparing(end -> end));
+        for (BigInteger end : ends) {
+            if (!end.toString().equals(recorded)
+                    && !values.contains(end.toString())
+                    && values.size() < maxValuations) {
+                values.add(end.toString());
+            }
+        }
+        // Then outward from the recording, nearest first, within the domain:
+        // a wide domain's minimum is no nearer move than any other.
         for (BigInteger step = BigInteger.ONE;
              values.size() < maxValuations
                      && (centre.subtract(step).compareTo(low) >= 0
@@ -2903,6 +2962,7 @@ public final class Composer {
             for (BigInteger value : new BigInteger[]{
                     centre.subtract(step), centre.add(step)}) {
                 if (value.compareTo(low) >= 0 && value.compareTo(high) <= 0
+                        && !values.contains(value.toString())
                         && values.size() < maxValuations) {
                     values.add(value.toString());
                 }

@@ -1754,17 +1754,20 @@ public class ComposerTest {
     }
 
     /**
-     * An integral's moves are taken outward from the value it ran at,
-     * nearest first, within its domain: a wide domain's minimum is no nearer
-     * move than any other, and a recording outside the domain moves to the
-     * nearest bound first.  {recorded, min, max, the values moved to, in
-     * order, under a cap of four valuations}.
+     * An integral's moves are its domain's end anchors (each bound and its
+     * two inward neighbours: where its outermost comparisons flip) first,
+     * then outward from the value it ran at, each nearest first, within its
+     * domain: a far threshold is reached under the cap, and a recording
+     * outside the domain moves to the nearest bound first.  {recorded, min,
+     * max, the values moved to, in order, under a cap of four valuations}.
      */
     @Test
-    public void anIntegralMovesOutwardFromItsRecording() throws Exception {
+    public void anIntegralMovesToItsDomainsEndsThenOutward()
+            throws Exception {
         String[][] rows = {
-                {"500", "0", "1000", "499 501 498"},
-                {"0", "0", "1000", "1 2 3"},
+                {"500", "0", "1000", "2 998 1"},
+                {"0", "0", "1000", "1 2 998"},
+                {"3", "3", "1001", "4 5 999"},
                 {"7", "5", "8", "6 8 5"},
                 {"20", "5", "8", "8 7 6"},
         };

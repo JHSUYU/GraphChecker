@@ -1256,10 +1256,13 @@ constant span) in that session's terms is lowered that much earlier (`SmtLowerin
 each replay's startup keys, 9 to 11 minutes late on the recording's timeline, with the one dn1 clock.
 
 **Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
-moves by distance, at equal distance a configuration-only move after any other
-(`Composer#configurationOnly`), then pairs of moves, cut at `compose_max_valuations` (a MARKER's move
-is its other polarity; an INTEGRAL's values come from its window, outward from its recorded value,
-nearest first; clocks are not enumerated).
+moves -- a marker's flip and an integral's domain-end anchors (`Composer#anchors`: each bound and its
+two inward neighbours, where the domain's outermost comparisons flip, however far from the
+recording) before its other values, each by distance, and at equal distance a configuration-only
+move after any other (`Composer#configurationOnly`) --, then pairs of moves, cut at
+`compose_max_valuations` (a MARKER's move is its other polarity; an INTEGRAL's values come from its
+window, its end anchors nearest first, then outward from its recorded value, nearest first; clocks
+are not enumerated).
 
 ComposeMain writes three files. `candidate.smt2`: the body, then valuation 0 as named pins
 `(assert (! (= <root symbol> <value>) :named valuation__<symbol>))` (so the file as published asks
