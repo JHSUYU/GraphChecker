@@ -124,10 +124,10 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   ran on its last task's frames and each send nested under the one before (HBA1: 3777 frames). Work
   its starter runs itself (an executor that runs a task on the calling thread) stands on the
   starter's frames already and opens the start frame alone (`Start#ranHere`). A queue item's claim
-  lasts until the consumer takes its next item in the same work (`#claimItem`); an item another
-  node put there is no work of the taker -- the nodes of one JVM share static pools (HBA1: the
-  restarted master's activation took a memstore chunk its predecessor's shutdown put back, and ran
-  as the old master) -- and is refused, a `LINEAGE_LOST` DIAGNOSTIC row (`RowRuntime#claimItem`).
+  lasts until the consumer takes its next item in the same work (`#claimItem`), and carries whoever
+  put the item there, whichever node the consumer serves otherwise: Hadoop IPC's one
+  `RpcRequestSender` per connection sends every in-JVM DataNode's calls (V22: refusing items of
+  another node dropped their CLAIMs, the order stalled, and a daemon heartbeat took the key update).
   A start made where no hop names the starter (its lineage is
   empty) files no frame, captures no scope and writes no event -- its k would count arrivals,
   which nothing schedules -- but an unnamed start: the work that claims it is unnamed (§1), a

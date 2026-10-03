@@ -843,22 +843,13 @@ public final class RowRuntime {
 
     /**
      * Takes the start filed for an item taken off a queue ({@link
-     * Identity#claimItem}).  An item another node put there names no work
-     * of the taker: a DIAGNOSTIC row, once per pair of nodes and item class.
+     * Identity#claimItem}).  The work runs either way; an unclaimable start
+     * is a stated gap.
      */
     public static void claimItem(Object item) {
         if (item == null) return;
         try {
-            String refused = Identity.claimItem(item);
-            if (refused != null && REFUSED_ITEMS.add(refused + "|"
-                    + item.getClass().getName())) {
-                gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
-                        item.getClass().getName(),
-                        "an item " + refused + " put on a queue was taken "
-                                + "by another node's work, so it names no "
-                                + "work of the taker (a pool the nodes of "
-                                + "one JVM share): no claim");
-            }
+            Identity.claimItem(item);
         } catch (Throwable unnamed) {
             gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                     item.getClass().getName(),
@@ -868,10 +859,6 @@ public final class RowRuntime {
                             + unnamed);
         }
     }
-
-    /** Each pair of nodes and item class an item claim was refused for. */
-    private static final Set<String> REFUSED_ITEMS =
-            ConcurrentHashMap.newKeySet();
 
     /** Files one expression and returns the ref rows name it by. */
     public static String expressionRef(JsonElement expression) {

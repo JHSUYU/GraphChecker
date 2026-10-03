@@ -11,8 +11,8 @@ import static org.junit.Assert.assertNull;
  * every work entry ({@code Identity#claimStart}, {@code #endClaim}): tasks
  * run in sequence never nest, a task its starter runs itself stands on the
  * starter's frames once, and an event loop's callbacks run on none of the
- * last task's frames.  An item one node put on a queue is no work of
- * another node that takes it (HBA1).
+ * last task's frames.  A queue item carries its putter's scope to
+ * whichever consumer takes it.
  */
 public class AClaimEndsWithItsMethodTest {
     private static final SourceRef NODE =
@@ -112,29 +112,26 @@ public class AClaimEndsWithItsMethodTest {
     }
 
     @Test
-    public void anItemAnotherNodePutIsNoWorkOfTheTaker() throws Exception {
+    public void aSharedConsumerCarriesEachPuttersScope() throws Exception {
         Object putter = new Object();
-        Object taker = new Object();
+        Object sender = new Object();
         RuntimeTraceContext.registerSource(putter, NODE);
-        RuntimeTraceContext.registerSource(taker, OTHER);
-        Object chunk = new Object();
-        long request = RuntimeTraceContext.beginRequest(putter, "close");
-        Identity.startWork(PUT_BACK, chunk);
+        RuntimeTraceContext.registerSource(sender, OTHER);
+        Object call = new Object();
+        long request = RuntimeTraceContext.beginRequest(putter, "heartbeat");
+        Identity.startWork(PUT_BACK, call);
         RuntimeTraceContext.endRequest(request);
-        final Object[] seen = new Object[3];
-        Thread activation = new Thread(() -> {
-            long work = Identity.enterFrame("<a.Master: void activate()>",
-                    taker);
-            seen[0] = Identity.claimItem(chunk);
-            seen[1] = RuntimeTraceContext.explicitSource();
-            seen[2] = Attribution.resolve(null);
+        final Object[] seen = new Object[1];
+        Thread consumer = new Thread(() -> {
+            long work = Identity.enterFrame("<a.Sender: void run()>", sender);
+            Identity.claimItem(call);
+            seen[0] = RuntimeTraceContext.explicitSource();
             Identity.exitFrame(work);
         });
-        activation.start();
-        activation.join(5000L);
-        assertEquals("refused, naming the putter", NODE.key(), seen[0]);
-        assertNull("the putter's scope is not lent", seen[1]);
-        assertEquals("the work stays its own node's", OTHER, seen[2]);
+        consumer.start();
+        consumer.join(5000L);
+        assertEquals("one sender serves every node's calls, each in its "
+                + "putter's scope", NODE, seen[0]);
     }
 
     @Test

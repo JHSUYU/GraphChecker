@@ -770,32 +770,14 @@ public final class Identity {
     /**
      * Takes the start filed for an item taken off a queue (woven after the
      * take in both passes), which lasts until the consumer takes its next
-     * item or the work it runs in ends.  An item another node put there
-     * names no work of the taker: the nodes of one JVM share static pools,
-     * and a pooled object put back by one node's work and taken by
-     * another's lent the taker the putter's scope (HBA1: the restarted
-     * master's activation took a memstore chunk its predecessor's shutdown
-     * had put back, and ran the rest of its activation, and every thread it
-     * started, as the old master).
-     *
-     * @return the putter's node when the item was refused so, else null
+     * item or the work it runs in ends.  Whoever put the item there, its
+     * scope comes with it: one consumer may serve the work of every node of
+     * the JVM (Hadoop IPC's RpcRequestSender, one per connection, sends each
+     * in-JVM DataNode's calls).
      */
-    static String claimItem(Object item) {
-        if (item == null) return null;
-        State state = state();
-        Start start = STARTS.isEmpty() ? null
-                : STARTS.get(new Carrier(item, null));
-        if (start != null && start.starter != null) {
-            SourceRef putter = start.starter.resolve();
-            SourceRef taker = Attribution.resolve(null);
-            if (putter != null && taker != null
-                    && !putter.key().equals(taker.key())) {
-                STARTS.remove(new Carrier(item, null));
-                return putter.key();
-            }
-        }
-        claim(state, item);
-        return null;
+    static void claimItem(Object item) {
+        if (item == null) return;
+        claim(state(), item);
     }
 
     private static void claim(State state, Object carrier) {
