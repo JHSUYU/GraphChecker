@@ -221,6 +221,12 @@ finding_kind = result.get("findingKind", "MISSING")
 polarity_decides = result.get("polarityDecides", False)
 valuation_ordinal = result.get("valuationOrdinal", "?")
 moved_roots = result.get("movedRoots", {}) or {}
+# The arms the claimed valuation took that are no pairing the selected
+# path's own run had, as COMPOSE states them (Composition#repaired): what a
+# pairing kind moved.
+repaired_arms = next((row.get("repairedArms") or []
+                      for row in result.get("valuations") or []
+                      if row.get("ordinal") == valuation_ordinal), [])
 plain = probes.get("plain", "-")
 buggy = probes.get("buggy", "-")
 other = probes.get("other", "-")
@@ -242,6 +248,11 @@ findings = result.get("witnessFindings") or []
 ACCEPTED_FINDINGS = {"MARKER_FLIPPED", "CLOCK_SKEW",
                      "MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED",
                      "RECORDED_FAILURE_EXPLAINED"}
+# What a pairing kind moves is a pairing, not a root: ClaimPolicy names it
+# only where pinning the path's observed reads (or arrivals) refutes the
+# witness, and the claimed valuation names the arms it re-paired
+# (repairedArms), which CONFIRM held the run to.
+PAIRING_FINDINGS = {"MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED"}
 
 def spell_kinds(kinds):
     return kinds[0] if len(kinds) == 1 else "one of " + "|".join(kinds)
@@ -292,14 +303,21 @@ else:
     # for it to sit at: the witness stands at the recorded valuation and the
     # difference it names is which clock cells the model placed elsewhere,
     # which is exactly movedRoots.  Ordinal 0 is legitimate for CLOCK_SKEW
-    # and for nothing else; movedRoots must still be non-empty, because a
-    # finding that moves nothing at valuation 0 is the recording restated
-    # whatever kind it carries.
-    ordinal_ok = (finding_kind == "CLOCK_SKEW"
+    # and a pairing kind (PAIRING_FINDINGS: it moves a pairing, the arm the
+    # valuation selected) and for nothing else; any other kind's movedRoots
+    # must still be non-empty, because a finding that moves nothing at
+    # valuation 0 is the recording restated whatever kind it carries.
+    pairing = finding_kind in PAIRING_FINDINGS
+    ordinal_ok = (finding_kind == "CLOCK_SKEW" or pairing
                   or (isinstance(valuation_ordinal, int)
                       and not isinstance(valuation_ordinal, bool)
                       and valuation_ordinal >= 1))
-    if not moved_roots:
+    if pairing and not moved_roots:
+        # The pairing alone moved: the valuation must name what it re-paired.
+        if not repaired_arms:
+            reasons.append("valuation %s names no re-paired arm"
+                           % valuation_ordinal)
+    elif not moved_roots:
         # Valuation 0 is the recording.  A finding that moves nothing there
         # explains nothing, so it does not matter which kind it carries.
         reasons.append("valuation %s moved no root" % valuation_ordinal)
@@ -516,6 +534,10 @@ if findings:
                       if moved else "no root moved off its recorded value",
                       "**decides**" if row.get("polarityDecides")
                       else "does not decide"))
+    if repaired_arms:
+        out.append("* re-paired arms of valuation %s: %s"
+                   % (valuation_ordinal, ", ".join(
+                       "`%s`" % arm for arm in repaired_arms)))
     out.append("")
 
 if cone:

@@ -459,6 +459,28 @@ public final class Composer {
         }
 
         /**
+         * The arms {@code taken} under the path {@code selector} names that
+         * are no pairing its own run had ({@link #ownRun}: its own
+         * session's message arms, the writer arm each state read observed):
+         * the re-paired ones, which a pairing kind moved where no root did.
+         */
+        public List<String> repaired(String selector,
+                                     Collection<String> taken) {
+            Set<String> own = new LinkedHashSet<String>();
+            List<String> arms = ownArms.get(selector);
+            if (arms != null) own.addAll(arms);
+            Disjunct disjunct = bySelector(selector);
+            List<String> reads = disjunct == null ? null
+                    : observedReads.get(disjunct.path().pathId);
+            if (reads != null) own.addAll(reads);
+            List<String> repaired = new ArrayList<String>();
+            for (String arm : taken) {
+                if (!own.contains(arm)) repaired.add(arm);
+            }
+            return repaired;
+        }
+
+        /**
          * Path id -> the values that path's ANCHOR's attaches actually
          * received: the wire slots a MESSAGE_PAIRING_FLIPPED witness replaces.
          */

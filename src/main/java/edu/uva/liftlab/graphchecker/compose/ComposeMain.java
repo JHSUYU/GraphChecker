@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -192,11 +193,12 @@ public final class ComposeMain {
                 complete ? "FINAL_READY" : "FINAL_REFUSED");
         row.add("finalStatusRefusals", refusals(decision.claim()));
         row.add("gaps", gaps(composition.gaps()));
-        row.add("solver", solverRows(decision, solver));
+        row.add("solver", solverRows(composition, decision, solver));
         return row;
     }
 
-    private static JsonObject solverRows(ClaimPolicy.Decision decision,
+    private static JsonObject solverRows(Composer.Composition composition,
+                                         ClaimPolicy.Decision decision,
                                          Z3 solver) {
         // Every valuation asked and decided; none sat is then a refutation.
         boolean decided = !decision.outcomes().isEmpty();
@@ -213,7 +215,7 @@ public final class ComposeMain {
         row.addProperty("unsatClosureComplete", decided && !anySat);
         row.addProperty("solverRuns", solver.runs());
         // One question per valuation, so the valuation IS the model.
-        row.add("valuations", valuations(decision));
+        row.add("valuations", valuations(composition, decision));
         row.add("campaignClaim", campaignClaim(decision, decided, anySat));
         return row;
     }
@@ -322,7 +324,8 @@ public final class ComposeMain {
         return states;
     }
 
-    private static JsonArray valuations(ClaimPolicy.Decision decision) {
+    private static JsonArray valuations(Composer.Composition composition,
+                                        ClaimPolicy.Decision decision) {
         JsonArray valuations = new JsonArray();
         for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
             JsonObject answer = new JsonObject();
@@ -373,6 +376,13 @@ public final class ComposeMain {
                 arms.add(row);
             }
             answer.add("selectedArms", arms);
+            // What a pairing kind moved: the arms taken that are no pairing
+            // the selected path's own run had.
+            answer.add("repairedArms", GSON.toJsonTree(
+                    outcome.selected() == null
+                            ? Collections.<String>emptyList()
+                            : composition.repaired(outcome.selected()
+                            .selector(), outcome.selectedArms().keySet())));
             answer.add("unsatCore", GSON.toJsonTree(outcome.answer().core()));
             valuations.add(answer);
         }
@@ -390,7 +400,7 @@ public final class ComposeMain {
         row.addProperty("solverRuns", solver.runs());
         row.addProperty("seedSessionId",
                 JsonFields.nonNull(composition.seedSessionId()));
-        row.add("valuations", valuations(decision));
+        row.add("valuations", valuations(composition, decision));
         row.add("gaps", gaps(decision.claim().gaps()));
         return row;
     }
