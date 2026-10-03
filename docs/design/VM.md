@@ -519,7 +519,10 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   share. The engine hands each page to its publication thread as it is read, once fewer than four
   pages' text wait there undecoded, and decodes it there one location at a time
   (`contract/VmExpressionTable.Store#importRecords`), asking for `READ_OUT_PAGE_BYTES` pages
-  (`runtime/SharedStateCapture`). Each envelope is bounded by its own bytes
+  (`runtime/SharedStateCapture`); a branch's path-condition window (`CONCOLIC_PATH_CONDITION_RANGE`,
+  its conditions then the closure's table) is read the same way (`runtime/PathConditionWindow`). A
+  node the store has expanded is skipped unparsed in every later table, and the store is locked
+  only while a node expands. Each envelope is bounded by its own bytes
   (32 MB, `serializationTruncated` when cut), never by the page's. An envelope states `writerSetComplete` and,
   when false, `incompleteReasons` and `unnamedWriter`; an INITIAL's `initialSnapshot.stated` is
   true only for a stated count.

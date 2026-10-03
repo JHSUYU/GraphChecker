@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -277,10 +278,18 @@ public final class SharedExpressionTable {
      */
     abstract static class Expansion<K> {
         private final String noun;
-        private final Map<K, JsonElement> expanded = new HashMap<>();
+        /** Concurrent: {@link #expanded(Object)} is asked unlocked. */
+        private final Map<K, JsonElement> expanded =
+                new ConcurrentHashMap<>();
 
         Expansion(String noun) {
             this.noun = noun;
+        }
+
+        /** Whether {@code key}'s definition has been expanded, which then
+         *  answers for it; safe without the expanding thread's lock. */
+        final boolean expanded(K key) {
+            return expanded.containsKey(key);
         }
 
         /** The key {@code object} references, or null for a plain object;
