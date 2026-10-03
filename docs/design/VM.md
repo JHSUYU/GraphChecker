@@ -472,7 +472,12 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   serializer); the engine keeps them in each session's `expressions.jsonl` (CONTRACT-SPEC.md).
 - `getTrackedLocationVersions(afterEventId, maxBytes)` pages the version and read logs by each
   location's highest event: `nextAfterEventId` is one past the last emitted location's, so a
-  resume neither repeats nor skips a location (`SFV`). Each envelope is bounded by its own bytes
+  resume neither repeats nor skips a location (`SFV`). A page is cut only between locations, once
+  its text and table reach `maxBytes` (its first location goes whatever its size), and carries the
+  expression table of what its locations name, last: every page repeats the closure its locations
+  share. The engine reads a page one location at a time
+  (`contract/VmExpressionTable.Store#importRecords`) and asks for `READ_OUT_PAGE_BYTES` pages
+  (`runtime/SharedStateCapture`). Each envelope is bounded by its own bytes
   (32 MB, `serializationTruncated` when cut), never by the page's. An envelope states `writerSetComplete` and,
   when false, `incompleteReasons` and `unnamedWriter`; an INITIAL's `initialSnapshot.stated` is
   true only for a stated count.
@@ -480,7 +485,9 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   `concreteValue` (a String past 4 KB
   as `{"_type":"TruncatedValue","length":n}`); a method-return symbol states `concreteValue` and
   `call: {holder, name, descriptor, arguments}`.
-- A region's summary (`finishConcolicRegion`) states its `modelGaps`: `{name, site}` per call a
+- A region's summary (`finishConcolicRegion`) is read only for `aborted`, `abortReason` and
+  `modelGaps`, the rest skipped unbuilt (`runtime/ConcolicRegionRuntime#members`).
+  It states its `modelGaps`: `{name, site}` per call a
   model ran on the run's own values though symbolic content reached it (§4: streams, application code
   a muted call with callbacks ran unhooked), once per name and site; `runtime/ConcolicRegionRuntime#modelGaps` files each as a DIAGNOSTIC `UNSTATED_VALUE`
   gap whose subject is the name.

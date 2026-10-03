@@ -11,6 +11,7 @@ import org.junit.rules.TemporaryFolder;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -264,6 +265,68 @@ public class ContractTest {
             assertTrue(refused.getMessage(),
                     refused.getMessage().contains("conflicting"));
         }
+    }
+
+    /**
+     * A paged read-out is read one record at a time against the page's own
+     * table, which comes after its records: each record is expanded and
+     * handed on in page order, sharing the nodes the table shares (and the
+     * store's earlier pages'), the header states the rest and the count, an
+     * unadmitted page hands on nothing, and a record naming a node the
+     * table lacks is refused.
+     */
+    @Test
+    public void aPagedReadOutIsReadOneRecordAtATime() {
+        VmExpressionTable.Store store = new VmExpressionTable.Store();
+        JsonObject earlier = store.importEnvelope(vmEnvelope(vmReference(1),
+                vmDefinition(1, symbol("M_I_site"))))
+                .getAsJsonObject("expression");
+        JsonObject first = new JsonObject();
+        first.add("value", vmReference(2));
+        JsonObject second = new JsonObject();
+        second.add("value", vmReference(1));
+        JsonObject page = vmPage(new JsonObject[] {first, second},
+                vmDefinition(1, symbol("M_I_site")), vmDefinition(2,
+                        binary("==", vmReference(1), symbol("M_I_site"))));
+        List<JsonObject> read = new ArrayList<>();
+        JsonObject header = store.importRecords(page.toString(), "records",
+                stated -> true, record -> read.add(record.getAsJsonObject()));
+        assertEquals(2, read.size());
+        JsonObject value = read.get(1).getAsJsonObject("value");
+        assertSame(earlier, value);
+        assertSame(value, read.get(0).getAsJsonObject("value").get("_left"));
+        assertEquals("PAGE", header.get("kind").getAsString());
+        assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT).getAsInt());
+        assertFalse(header.has("records")
+                || header.has(VmExpressionTable.FIELD));
+        read.clear();
+        store.importRecords(page.toString(), "records", stated -> false,
+                record -> read.add(record.getAsJsonObject()));
+        assertTrue("an unadmitted page hands on no record", read.isEmpty());
+        JsonObject dangling = new JsonObject();
+        dangling.add("value", vmReference(9));
+        try {
+            store.importRecords(vmPage(new JsonObject[] {dangling},
+                    vmDefinition(1, symbol("M_I_site"))).toString(),
+                    "records", stated -> true, record -> { });
+            fail("node 9 is no definition of the page");
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains("missing"));
+        }
+    }
+
+    /** A read-out page: its records, then its table, as the VM writes it. */
+    private static JsonObject vmPage(JsonObject[] records,
+                                     JsonObject... definitions) {
+        JsonObject page = new JsonObject();
+        page.addProperty("kind", "PAGE");
+        JsonArray held = new JsonArray();
+        for (JsonObject record : records) held.add(record);
+        page.add("records", held);
+        page.add(VmExpressionTable.FIELD, vmEnvelope(new JsonObject(),
+                definitions).get(VmExpressionTable.FIELD));
+        return page;
     }
 
     private static JsonObject vmEnvelope(JsonObject expression,
