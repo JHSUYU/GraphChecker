@@ -14,8 +14,9 @@ Pointers are `path` plus class and method. `gc/` stands for
 
 ## Acceptance
 
-Main after the merges of `perf-slow-replays`, `fix-confirm-flakiness` and `fix-adhoc-crashes` (round `V9`, snapshot `p222`), VM
-`/bigtemp/vnr3ne/vm-w4h/j2sdk-image`, trees `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741`
+Main after the merges of `symbolic-scope` (rounds `V10`, `V11`), `system-zookeeper` + the recorded-address identity rule
+(`V12`, `V13`) and `vm-streams` (round `V14`, snapshot `p227`, 12/12 incl. zk-bugs-quota-init), VM
+`/bigtemp/vnr3ne/vm-streams2/j2sdk-image`, trees `~/hadoop-hdfs-unified` (`gc/hdfs-unified`), `~/hadoop-hdfs-11741`
 (`gc/hdfs-11741`) and `/bigtemp/vnr3ne/wt/lucene-solr-storing` (`gc/solr-unified-storing` `663e0ef`). Runs under
 `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`, each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every
 case is PASS by `experiments/accept/report.py` (SAT_CANDIDATE, no BLOCKING gap, the expected mechanism,

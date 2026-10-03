@@ -77,8 +77,8 @@ checks per system) is superseded by this one; Phase 1's eleven cases stay the re
   moved the other direction of the same IPC door as in V8 (the target DataNode's first in-window heartbeat:
   request vs response lost; either way the DataNode misses the key update): the same chain, valid under the
   mechanism mandate. Moved roots otherwise identical to V8.
-- **VM**: `/bigtemp/vnr3ne/vm-w4h/j2sdk-image` only (w4e/f/g deleted; `vm-w4i`, `vm-nr41` kept for the parked
-  branches of §0.4).
+- **VM**: main's is `/bigtemp/vnr3ne/vm-streams2/j2sdk-image` (round V14); `vm-w4h` serves older rounds; `vm-w4i`,
+  `vm-nr41` kept for the parked branches of §0.4.
 - **Trees** (never rebuild one a run reads; each new tree builds with its own Maven repo `/bigtemp/vnr3ne/m2/<name>`):
 
 | tree (worktree) | branch, head | of | what |
@@ -457,7 +457,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | local scratch | `/localtmp/$USER` on each lift (replay working directories go to `/localtmp/$USER/graphchecker/`). |
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | z3 | `~/.local/bin/z3` (4.14.1) |
-| concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-w4h/j2sdk-image`** (vm-w4e + the `frame::metadata_do` fix for interpreted frames + caches cleared when metadata is freed + demand-driven tracking). Parked, unreviewed: `vm-w4i` (per-activation tracked-location read-out, branch `perf-vm-readout`; a jar from that branch refuses vm-w4h by name), `vm-nr41` (reference-compare identity, branch `vm-ref-compare`). Older images are deleted (2026-10-02). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
+| concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-streams2/j2sdk-image`** (vm-w4h + the java.util.stream model, branch `vm-streams` fe68c3409, merged 770a64c8f after round V14 12/12; a jar before 770a64c8f refuses its STATE_COLLECT versions by name). `vm-w4h` (the previous one: vm-w4e + the `frame::metadata_do` fix + caches cleared when metadata is freed + demand-driven tracking) serves rounds up to V13. Parked, unreviewed: `vm-w4i` (per-activation tracked-location read-out, branch `perf-vm-readout`; a jar from that branch refuses vm-w4h by name), `vm-nr41` (reference-compare identity, branch `vm-ref-compare`). Older images are deleted (2026-10-02). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
 | HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) and the ad-hoc sweep -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
 | Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406, solr-18413 and solr-adhoc name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | ZooKeeper tree | `/bigtemp/vnr3ne/wt/zookeeper-unified` (branch `gc/zk-unified` on `branch-3.9`, a worktree of `~/zookeeper`): the adapter (`CausynthZk`, `CausynthZkCluster`), the `zk-bugs` cases' target markers and the quota workload. Maven build into its own repository `/bigtemp/vnr3ne/m2/zookeeper` (`experiments/zookeeper/build.sh`, which installs the GraphChecker jar there; never `~/.m2`). Build a case's workload before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/zookeeper/zk-bugs <case> build`. Its only remote is apache/zookeeper: never push it. |
@@ -495,7 +495,7 @@ Never overwrite an image a round uses; build a new directory.
 ```bash
 git worktree add --detach ~/gc-run/p<N> <commit>
 (cd ~/gc-run/p<N> && /bigtemp/vnr3ne/bin/onlift.sh -g 10 mvn -q -o package -DskipTests)
-GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-w4h/j2sdk-image \
+GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-streams2/j2sdk-image \
   tools/rounds/launch-round.sh ~/gc-run/p<N> <round>              # all 11 cases, heads chosen by room
 CASES="hdfs-17960 solr-18413" ... tools/rounds/launch-round.sh ... # a subset (or any case id)
 DRY=1 ... tools/rounds/launch-round.sh ...                         # the heads it would choose
@@ -669,7 +669,7 @@ parts are in `experiments/<system>/{system.sh,build.sh,classpath.py}`.
 
 ```bash
 experiments/lib/run.sh experiments/hadoop/hdfs-17960 "" build      # build the tree, run the workload once
-export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-w4h/j2sdk-image
+export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-streams2/j2sdk-image
 CASES=hdfs-17960 bash experiments/accept/accept.sh                  # campaign + probe + report
 ```
 
@@ -725,7 +725,7 @@ below. Cases are `<check>.<workload>` ids (the pick lists of §0.4):
 
 ```bash
 cd ~/gc-run/p<N>        # a built snapshot of main (for HDFS checks on another tree, §3.7)
-GC_OUT=/bigtemp/vnr3ne/gc-out VM_IMAGE=/bigtemp/vnr3ne/vm-w4h/j2sdk-image setsid nohup \
+GC_OUT=/bigtemp/vnr3ne/gc-out VM_IMAGE=/bigtemp/vnr3ne/vm-streams2/j2sdk-image setsid nohup \
   bash tools/adhoc/sweep.sh ~/gc-run/p<N> <round> <cases-file> 1 > /bigtemp/vnr3ne/gc-out/sweep-<round>.log 2>&1 < /dev/null &
 GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
 GC_OUT=/bigtemp/vnr3ne/gc-out python3 tools/adhoc/triage.py <round>     # class, stage, reason per check
