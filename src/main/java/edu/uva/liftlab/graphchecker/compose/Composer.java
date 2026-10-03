@@ -38,6 +38,7 @@ import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -555,6 +556,8 @@ public final class Composer {
          * are no pairing its own run had ({@link #ownRun}: its own
          * session's message arms, the writer arm each state read observed):
          * the re-paired ones, which a pairing kind moved where no root did.
+         * Only that path's: another path's arms are free in the model, as
+         * its selector is.
          */
         public List<String> repaired(String selector,
                                      Collection<String> taken) {
@@ -567,9 +570,18 @@ public final class Composer {
             if (reads != null) own.addAll(reads);
             List<String> repaired = new ArrayList<String>();
             for (String arm : taken) {
-                if (!own.contains(arm)) repaired.add(arm);
+                if (!own.contains(arm) && ordinal(arm).equals(
+                        ordinal(selector))) {
+                    repaired.add(arm);
+                }
             }
             return repaired;
+        }
+
+        /** The path ordinal a selector name carries ({@code kind__N__hash}). */
+        private static String ordinal(String name) {
+            String[] parts = name.split("__", -1);
+            return parts.length == 3 ? parts[1] : "";
         }
 
         /**
@@ -1068,6 +1080,13 @@ public final class Composer {
                 anchorReads(session, repaired, target.seq()), repaired);
         repaired.removeAll(pinned);
         Set<String> moved = anchorReads(session, repaired, target.seq());
+        // ... and every read the session's world planted a pairing on: ONE
+        // re-pairing rule, the same families and the same predicate.
+        Planted planted = planted(session);
+        for (ReadRow read : planted.reads) {
+            moved.add(SmtLowering.readKey(SmtLowering.locationKey(
+                    read.location()), read.seq()));
+        }
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
                 corpus.join(session),
                 (location, event) -> moved.contains(
@@ -1088,7 +1107,8 @@ public final class Composer {
         conditions.addAll(reachedConditions(session, reached));
         Independence relevant = independence(session,
                 Collections.singletonList(target.phiTerm()),
-                familyBound(session, repaired), reached, conditions);
+                familyBound(session, repaired, planted.reads), reached,
+                conditions);
         //       What the fatal itself rests on ({@link #fatalRests}) and
         //       the roots alone: a location a family binds and nothing else
         //       reaches holds the formula's alternatives, not the witness (a
@@ -1222,7 +1242,7 @@ public final class Composer {
         //     A read a family gives alternatives to takes its value there.
         Set<String> chosen = composedFamilies.stateFamilies(path,
                 ordinal, selector, joined, joins, interactionIds,
-                familyTerms, observed);
+                familyTerms, observed, planted.writers);
         // (8) And the state joins this conjunction ASKS ABOUT.
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
@@ -2072,18 +2092,75 @@ public final class Composer {
      * phi and the roots alone left out a condition over them, and the
      * family set them free of it (C1 review M2).
      */
-    private Set<String> familyBound(String session, Set<String> repaired) {
+    private Set<String> familyBound(String session, Set<String> repaired,
+                                    List<ReadRow> planted) {
         Set<String> bound = new LinkedHashSet<String>();
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
             bound.add(attach.symbol());
         }
+        List<ReadRow> moving = new ArrayList<ReadRow>(planted);
         for (ReadRow read : corpus.readsOn(session, anchor)) {
-            String key = SmtLowering.locationKey(read.location());
-            if (!repaired.contains(key)) continue;
-            bound.add(Independence.location(key));
+            if (repaired.contains(SmtLowering.locationKey(read.location()))) {
+                moving.add(read);
+            }
+        }
+        for (ReadRow read : moving) {
+            bound.add(Independence.location(SmtLowering.locationKey(
+                    read.location())));
             if (!read.symbol().isEmpty()) bound.add(read.symbol());
         }
         return bound;
+    }
+
+    /** The pairings a session's world planted ({@link #planted}). */
+    private static final class Planted {
+        /** Every read of each planted (occurrence, location). */
+        final List<ReadRow> reads = new ArrayList<ReadRow>();
+        /** Location key -> the writer planted there
+         *  ({@link ComposedFamilies#writer}). */
+        final Map<String, String> writers =
+                new LinkedHashMap<String, String>();
+    }
+
+    /**
+     * THE PAIRINGS THE SESSION'S WORLD PLANTED ({@code Corpus.World
+     * #pairings}: reader -> writer, as {@code runtime.Confirmation} names
+     * them): the reads its obligations paired off the recording, each with
+     * every read its occurrence made of the location -- one choice per
+     * occurrence's reads, as the replay held them
+     * ({@code ConfirmMain#holding}) -- and the writer planted per location.
+     * They are re-paired as the anchor's reads are ({@link #repaired}): the
+     * same STATE families, whose recorded arm is the recording's pairing,
+     * any arm but the planted one ({@code ComposedFamilies#stateFamilies}).
+     * A pairing whose writer the session states no write of plants nothing
+     * here.
+     */
+    private Planted planted(String session) {
+        Planted planted = new Planted();
+        Map<String, String> pairings = corpus.world(session).pairings;
+        SessionReader reader = corpus.session(session);
+        if (pairings.isEmpty() || reader == null) return planted;
+        Set<String> blocks = new LinkedHashSet<String>();
+        for (ReadRow read : reader.reads()) {
+            String writer = pairings.get(Confirmation.id(read.endpoint()));
+            if (writer == null) continue;
+            String key = SmtLowering.locationKey(read.location());
+            for (WriteRow write : corpus.join(session).writes(key)) {
+                if (Confirmation.INITIAL.equals(writer) ? write.initial()
+                        : writer.equals(Confirmation.id(write.endpoint()))) {
+                    planted.writers.put(key, ComposedFamilies.writer(write));
+                    blocks.add(read.endpoint().occurrence().id() + "|" + key);
+                    break;
+                }
+            }
+        }
+        for (ReadRow read : reader.reads()) {
+            if (blocks.contains(read.endpoint().occurrence().id() + "|"
+                    + SmtLowering.locationKey(read.location()))) {
+                planted.reads.add(read);
+            }
+        }
+        return planted;
     }
 
     /**
@@ -2225,10 +2302,12 @@ public final class Composer {
         for (ReadRow read : statedRows(session, occurrences)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (!relevant.keeps(read)) continue;
-            // Family alternatives are the anchor's only.
-            boolean atAnchor = anchor.id().equals(
-                    read.endpoint().occurrence().id());
+            // Family alternatives are for the reads the stage re-pairs: the
+            // anchor's, and those the session's world planted a pairing on.
             String key = SmtLowering.locationKey(read.location());
+            boolean atAnchor = anchor.id().equals(
+                    read.endpoint().occurrence().id())
+                    || join.repaired(key, read.seq());
             long version = read.observedVersion();
             WriteRow write = corpus.writeOf(session, key, version);
             if (joins.containsKey(read.symbol())) {

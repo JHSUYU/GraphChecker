@@ -1326,7 +1326,10 @@ final class ComposedFamilies {
      * be half a block moved.  {@code recorded} receives each family's arm
      * the run took -- the observed writer's selector, or the pins' when no
      * region wrote a version read: the pairing a witness re-pairs if it
-     * needs another.  A read's value is no such statement, since a joined
+     * needs another.  At a location the session's world {@code planted} a
+     * pairing on (location -> planted writer, {@code Composer#planted}) the
+     * recording's pairing is any arm but the plant: a witness resting on it
+     * names the plant as the arm it re-paired.  A read's value is no such statement, since a joined
      * value moves with the valuation while its pairing stays.  Where no arm
      * is that pairing (the reads saw two writes, or the one they saw has no
      * arm) the run as it happened is no world of the formula, and a BLOCKING
@@ -1342,7 +1345,8 @@ final class ComposedFamilies {
                               Map<String, String> pins,
                               Set<String> reached,
                               List<String> stated,
-                              List<String> recorded) {
+                              List<String> recorded,
+                              Map<String, String> planted) {
         String session = path.sessionId;
         Set<String> chosen = new LinkedHashSet<String>();
         // Reads grouped by location: every read of it takes the same arm.
@@ -1574,8 +1578,14 @@ final class ComposedFamilies {
                                 + "arm is the pairing the run took, so the "
                                 + "run as it happened is no world of the "
                                 + "formula"));
-            } else if (!recorded.contains(taken)) {
-                recorded.add(taken);
+            } else {
+                // Where the session's world planted the pairing, the arm the
+                // run took is the plant; the recording's is any other.
+                String plant = planted.containsKey(location.getKey())
+                        ? selectorOf.get(planted.get(location.getKey()))
+                        : null;
+                String run = plant == null ? taken : "(not " + plant + ")";
+                if (!recorded.contains(run)) recorded.add(run);
             }
             String formula = Arms.exactlyOne(selectors);
             stated.add(formula);

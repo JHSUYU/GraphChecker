@@ -1084,7 +1084,12 @@ are stated as they are made and taken back with a refused path (`ComposedFamilie
 `SmtLowering#retract`), so the next path, composed at the ordinal a refused one left free, names
 nothing twice.
 
-**State families** (`stateFamilies`), for joined reads at the anchor only, of a static field or of a heap
+**State families** (`stateFamilies`), for the joined reads the stage re-pairs (`SessionJoin#repaired`,
+one rule): the anchor's, and every read the selected session's world planted a pairing on
+(`Composer#planted`: `Corpus.World#pairings`, each with every read its occurrence made of the
+location, as the replay held them) -- away from the anchor, its occurrence reached by the closure
+(hdfs-bugs-slowdisk-zero: the detector turn's read of the exclusion bound, whose guard and store
+the anchor's read of the published list rests on); of a static field or of a heap
 location whose owner is an object rid (`Arms.namedOwner`; a class-name owner gets no alternatives):
 one `writer_arm__` selector per writer occurrence of the same session (`Arms.stateArms`: the
 observed writer's arm is the write the read observed, any other writer's its last write of the
@@ -1102,8 +1107,11 @@ of its own). A hot field the reader's own occurrence alone writes, whose earlies
 64-version bound dropped, is none (hdfs-17960 e1c: the checkpoint saver's configuration parse,
 whose `Hashtable` entries' hashes, a `String.hashCode` no lowering models, are pinned). The arm the
 run took (the observed arm, else the one writer every read observed) is part of the path's recorded
-pairing; a location where no arm is that pairing (the reads saw two writes, or the write they saw
-has no arm) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formula.
+pairing -- at a location the world planted, the recording's pairing, any arm but the plant
+(`(not <plant>)`), so a witness that needs the plant names it as the arm it re-paired
+(`repairedArms`) and the recording decides it (STATE_PAIRING_FLIPPED); a location where no arm is
+that pairing (the reads saw two writes, or the write they saw has no arm) is a BLOCKING
+`UNSTATED_VALUE`: the run as it happened is no world of the formula.
 
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
@@ -1466,7 +1474,10 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   composition anchored its cell to (the manifest's `roots`) -- and, on every clock cell the
   composition anchors, the model's jumps alone: the session's own skews there are dropped, since
   the model runs those cells on from the jump before them. A moved root the recording mints
-  nowhere, or a moved clock the composition anchors nowhere, refuses the confirmation by name. The focus row focuses the anchor
+  nowhere, or a moved clock the composition anchors nowhere, refuses the confirmation by name. The
+  world's pairings are held by the rows its replay was held to (`ConfirmMain#holding`, the reader's
+  occurrence a block; a pairing the session states no read or write of refuses, `PAIRING_UNSTATED`).
+  The focus row focuses the anchor
   with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits

@@ -48,6 +48,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.explore.ExploreCodec;
 import edu.uva.liftlab.graphchecker.explore.SlotTable;
 
@@ -640,6 +641,16 @@ public class ComposerTest {
                                    Map<String, String> roots, String site,
                                    List<String> inherited)
             throws IOException {
+        obligation(iteration, sessionId, roots, site, inherited,
+                Collections.<String, String>emptyMap());
+    }
+
+    /** The same, its world planting {@code pairings} (reader -> writer). */
+    private static void obligation(Path iteration, String sessionId,
+                                   Map<String, String> roots, String site,
+                                   List<String> inherited,
+                                   Map<String, String> pairings)
+            throws IOException {
         Path worker = iteration.resolve("obligations-0000")
                 .resolve("ob-" + sessionId);
         Files.createDirectories(worker);
@@ -677,6 +688,11 @@ public class ComposerTest {
         focus.add("rootAssignments", assigned);
         focus.add("clockDeltas", new com.google.gson.JsonObject());
         focus.add("answers", new com.google.gson.JsonObject());
+        com.google.gson.JsonObject paired = new com.google.gson.JsonObject();
+        for (Map.Entry<String, String> pairing : pairings.entrySet()) {
+            paired.addProperty(pairing.getKey(), pairing.getValue());
+        }
+        focus.add("pairings", paired);
         focus.add("rootMints", new com.google.gson.JsonObject());
         focus.add("inheritedFlips", held);
         focus.add("unproducible", new com.google.gson.JsonArray());
@@ -3760,6 +3776,125 @@ public class ComposerTest {
                     solver());
             assertEquals(variant + ": " + decision.claim().gaps(), moves,
                     decision.claim().kind() == ClaimKind.STATE_PAIRING_FLIPPED);
+        }
+    }
+
+    /**
+     * ONE re-pairing rule: a read the selected session's world planted a
+     * pairing on is re-paired as the anchor's reads are, away from the
+     * anchor (hdfs-bugs-slowdisk-zero: the detector turn's read of the
+     * exclusion bound, paired to its INITIAL ahead of the reconfiguration).
+     * Its family offers the plant (1) and the reconfiguration's write (0);
+     * the turn's guard {@code bound > 0} binds to it; the turn's store is
+     * what the anchor's read pairs with; the fatal is SAT under the plant
+     * and UNSAT under the recording's arm, so the recording decides it: a
+     * STATE_PAIRING_FLIPPED whose re-paired arm is the INITIAL.  The same
+     * session in a world that planted nothing names no mechanism.
+     */
+    @Test
+    public void aWorldPlantedPairingIsRePairedAsTheAnchorsReadsAre()
+            throws Exception {
+        LocationId bound = LocationId.of(LocationKind.INSTANCE, "1", "48");
+        LocationId list = LocationId.of(LocationKind.INSTANCE, "1", "88");
+        OccurrenceAddress writer = occurrence("case/dn0", "REGION.write",
+                CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
+                frame("Volumes#choose#4", 0));
+        OccurrenceAddress turn = occurrence("case/dn0", "REGION.turn",
+                CausalContext.of(Role.of("WAKE"), "", 1),
+                frame("Detector#run#2", 0));
+        OccurrenceAddress reconf = occurrence("case/dn0", "REGION.reconf",
+                CausalContext.of(Role.of("CLIENT"), "", 1),
+                frame("Test#reconf#7", 0));
+        Endpoint guard = Endpoint.of(turn, "Detector#bound#3:READ",
+                at("g#1", 0), 0);
+        Endpoint asking = Endpoint.of(writer, "Volumes#excluded#5:READ",
+                at("r#1", 0), 0);
+        // planted?, the claim
+        Object[][] table = {
+                {true, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, ClaimKind.NO_SUPPORTED_WITNESS},
+        };
+        for (Object[] row : table) {
+            boolean planted = (Boolean) row[0];
+            Path iteration = folder.newFolder("planted-" + planted).toPath();
+            for (boolean explored : new boolean[]{false, true}) {
+                String id = explored ? "s1" : "s0";
+                Session session = new Session(iteration, id, explored);
+                session.occurrence = writer;
+                session.activation(writer);
+                session.activation(turn);
+                session.activation(reconf);
+                session.expression("EXPR.0000000000000001", integer("I", 1));
+                session.expression("EXPR.0000000000000000", integer("I", 0));
+                session.expression("EXPR.0000000000000007", integer("I", 7));
+                session.writes.add(WriteRow.initial(id, ++session.seq,
+                        Endpoint.of(turn, "Detector#bound#3:INITIAL",
+                                at("g#0", 0), 0), bound, 1L,
+                        "EXPR.0000000000000001", "I"));
+                session.writes.add(WriteRow.initial(id, ++session.seq,
+                        Endpoint.of(writer, "Volumes#excluded#5:INITIAL",
+                                at("r#0", 0), 0), list, 3L,
+                        "EXPR.0000000000000000", "I"));
+                Endpoint set = Endpoint.of(reconf, "Metrics#set#5:WRITE",
+                        at("w#1", 0), 0);
+                // The recording: the reconfiguration's 0 before the turn
+                // read it.  The world: the turn first, held to the INITIAL.
+                if (!explored) session.write(set, bound, 2L,
+                        "EXPR.0000000000000000");
+                long seen = explored ? 1L : 2L;
+                JsonObject read = read("INSTANCE_FIELD", 1L, 48L, seen, "I");
+                read.getAsJsonObject("observedVersion").add("expression",
+                        integer("I", explored ? 1L : 0L));
+                read.addProperty("readEventId", session.read(guard, bound,
+                        seen, "INSTANCE_FIELD/1#48@v" + seen + "@" + id, "I",
+                        explored ? "1" : "0"));
+                session.expression("EXPR.0000000000000010",
+                        binary(">", read, integer("I", 0L)));
+                session.decision(turn, "Detector#u63", explored,
+                        "EXPR.0000000000000010");
+                long listed = 3L;
+                if (explored) {
+                    session.write(set, bound, 2L, "EXPR.0000000000000000");
+                    session.write(Endpoint.of(turn, "Detector#run#9:WRITE",
+                                    at("w#2", 0), 0), list, 4L,
+                            "EXPR.0000000000000007");
+                    listed = 4L;
+                }
+                JsonObject excluded = read("INSTANCE_FIELD", 1L, 88L, listed,
+                        "I");
+                excluded.getAsJsonObject("observedVersion").add("expression",
+                        integer("I", explored ? 7L : 0L));
+                excluded.addProperty("readEventId", session.read(asking, list,
+                        listed, "INSTANCE_FIELD/1#88@v" + listed + "@" + id,
+                        "I", explored ? "7" : "0"));
+                session.expression("EXPR.0000000000000060",
+                        binary("==", excluded, integer("I", 7L)));
+                session.target("EXPR.0000000000000060", explored, true);
+                session.write();
+            }
+            obligation(iteration, "s1", Collections.<String, String>emptyMap(),
+                    "Detector#u63", Collections.<String>emptyList(), planted
+                            ? Collections.singletonMap(Confirmation.id(guard),
+                            Confirmation.INITIAL)
+                            : Collections.<String, String>emptyMap());
+            Composer.Composition composition = compose(iteration, writer, 4,
+                    StaticScopeMap.empty());
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            String detail = "planted " + planted + ": "
+                    + decision.claim().gaps() + "\n" + composition.body();
+            assertEquals(detail, row[1], decision.claim().kind());
+            if (!planted) continue;
+            assertTrue(detail, decision.claim().polarityDecides());
+            ClaimPolicy.Outcome witness = decision.outcomes().get(
+                    decision.claim().valuationOrdinal());
+            List<String> groups = new ArrayList<String>();
+            for (String arm : composition.repaired(witness.selected()
+                    .selector(), witness.selectedArms().keySet())) {
+                groups.add(composition.arm(arm).groupId());
+            }
+            assertEquals(detail, Collections.singletonList("INITIAL|"
+                    + SmtLowering.locationKey(bound)), groups);
         }
     }
 

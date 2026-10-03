@@ -79,7 +79,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *
  * <p>THE RULE (PIPELINE §10). SAT says the model satisfies our formula;
  * CONFIRM says the program agrees: re-run the world the selected path's own
- * session ran (its planted roots and answers) overlaid with the model's
+ * session ran (its planted roots, answers and pairings, the pairings held by
+ * the rows its replay was held to, {@link #holding}) overlaid with the model's
  * moved roots, its clocks the model's jumps alone ({@link Moved}), with no
  * flip forced, and require
  * (a) every edge the model chose is taken and (b) the fatal at the anchor.
@@ -305,6 +306,10 @@ public final class ConfirmMain {
             }
         }
         edges.addAll(stateEdges(closure, resting, chosen, false).edges);
+        // The pairings the selected session's world planted are its world
+        // as much as its roots: held by the rows its replay was held to.
+        edges.addAll(holding(session, ExploreCodec.map(object(world,
+                "pairings"))).edges);
         edges.addAll(markers);
         JsonObject anchorRow = new JsonObject();
         anchorRow.addProperty("kind", "ANCHOR");

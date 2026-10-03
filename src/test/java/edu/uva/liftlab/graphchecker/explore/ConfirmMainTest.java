@@ -336,7 +336,9 @@ public class ConfirmMainTest {
      * that access's frames, places no hold (hdfs-bugs-slowdisk-zero SD4).
      * CONFIRM holds the write after the read's activation; an obligation,
      * whose choice binds every read the occurrence makes of the location,
-     * after the occurrence (SD5: the turn re-read the bound for its limit).
+     * after the occurrence (SD5: the turn re-read the bound for its limit);
+     * and CONFIRM of a session whose world planted the pairing, by the rows
+     * its replay was held to.
      */
     @Test
     public void aModelThatChoseTheInitialHoldsEveryWriteAfterTheRead()
@@ -375,6 +377,22 @@ public class ConfirmMainTest {
                 .getBytes(StandardCharsets.UTF_8));
         Path out = folder.newFolder("initial-chosen").toPath();
         ConfirmMain.write(iteration, claim, manifest(), out);
+        // The selected session's world planted the pairing, so its read
+        // observed the INITIAL; the model chose no arm for it.
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
+                Collections.singletonList(ReadRow.of("sel", 30L, polled,
+                        CELL, 4L, "INSTANCE_FIELD/1#40@v4", "I", "3")),
+                RowCodec::writeRead);
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        JsonObject pairings = new JsonObject();
+        pairings.addProperty(Confirmation.id(polled), Confirmation.INITIAL);
+        world.add("pairings", pairings);
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+        Path planted = folder.newFolder("initial-planted").toPath();
+        ConfirmMain.write(iteration, claim("FAULT:IPC", "true"), manifest(),
+                planted);
         ConfirmMain.Holding paired = ConfirmMain.holding(
                 SessionReader.read(iteration, "sel"),
                 Collections.singletonMap(Confirmation.id(polled),
@@ -385,6 +403,8 @@ public class ConfirmMainTest {
                 polled.activation());
         after.put(paired.edges, Confirmation.activation(anchor,
                 ExecutionIndex.empty()));
+        after.put(RowCodec.readJsonl(planted.resolve(Confirmation.FILE)),
+                Confirmation.activation(anchor, ExecutionIndex.empty()));
         for (Map.Entry<List<JsonObject>, String> each : after.entrySet()) {
             List<JsonObject> edges = each.getKey();
             List<String> held = new ArrayList<String>();
