@@ -44,9 +44,15 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  *   {@code m} a row from another method brings in other than a callee's
  *   return, a caller's argument, a functional return, a guard by a callee's
  *   fault and a mutated container argument (a wire consumer, a fault
- *   marker's result); and an actual a call inside {@code m} passes to a
- *   formal of its callee that is no return-only formal, or to a
- *   constructor (a constructor stores what it is passed);</li>
+ *   marker's result); the declared throw's exception (its thrown value
+ *   and the guards deciding it); a container or array a row stores into
+ *   ({@code container_mutation_argument}, {@code container_array_store_base})
+ *   when the object is reached from a formal, {@code this} or a field --
+ *   through copies, reads, views and call results, not through what was
+ *   stored into it -- since the store changes an object a caller holds; and
+ *   an actual a call inside {@code m} passes to a formal of its callee that
+ *   is no return-only formal, or to a constructor (a constructor stores
+ *   what it is passed);</li>
  *   <li>through a call inside {@code m} whose callee's summary marks the
  *   formal return-only, the actual is upstream of the call's result: it is
  *   in {@code Ret} or {@code Eff} as that result is.</li>
@@ -62,7 +68,11 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  *
  * <p>Monotone: a formal once found an effect stays one, and a formal that
  * turns from return-only into an effect re-queues its method, whose next
- * pass demands it at every caller.  A summary is kept until a row touching
+ * pass demands it at every caller the call index finds, and re-queues every
+ * caller that met it while it was return-only ({@link #demanded}), whose
+ * own next pass demands it at that call and decides its own formals again
+ * -- a call through a type whose declaration of the method no dispatch
+ * source names included.  A summary is kept until a row touching
  * the method or its relevance grows, or a formal anywhere turns; a method
  * with a return-only formal is re-queued whenever a row touches it, so its
  * callers' demand follows the rows.
@@ -90,6 +100,16 @@ final class ReturnOnlyFormals {
             "dispatch_argument", "dispatch_caller_argument",
             "method_receiver", "dispatch_receiver",
             "dispatch_caller_receiver");
+    /** The declared throw's rows: their exception node is an effect. */
+    private static final Set<String> THROWN = names("exception_throw",
+            "exception_guard");
+    /** Rows storing into a container or an array, into the object. */
+    private static final Set<String> STORES = names(
+            "container_mutation_argument", "container_array_store_base");
+    /** Rows bringing what an object holds, not the object itself. */
+    private static final Set<String> CONTENTS = names(
+            "container_mutation_argument", "container_array_store_base",
+            "container_array_store_value", "constructor_argument_object");
     /** Rows from another method's cell into one of the method's that carry
      *  no demand of their own: what the method reads from it. */
     private static final Set<String> READS = names("call_return",
@@ -107,6 +127,8 @@ final class ReturnOnlyFormals {
     /** Formals once found return-only, and their methods. */
     private final Set<String> returnOnly = new LinkedHashSet<>();
     private final Set<String> withReturnOnly = new LinkedHashSet<>();
+    /** A return-only formal: the callers that met it. */
+    private final Map<String, Set<String>> callers = new LinkedHashMap<>();
     /** How many formals turned from return-only into an effect. */
     private int turns;
 
@@ -118,6 +140,20 @@ final class ReturnOnlyFormals {
      *  formal} (a parameter cell or its {@code this} cell). */
     boolean returnOnly(String method, String formal) {
         return summary(method).contains(formal);
+    }
+
+    /**
+     * The one rule: whether a call in {@code caller} demands the {@code
+     * callee}'s demanded {@code formal} -- always, unless only the callee's
+     * return needs it and the call's result is not demanded.  A return-only
+     * formal remembers the caller either way, to re-queue it if it turns.
+     */
+    boolean demanded(String callee, String formal, boolean resultDemanded,
+                     String caller) {
+        if (!returnOnly(callee, formal)) return true;
+        callers.computeIfAbsent(formal,
+                ignored -> new LinkedHashSet<String>()).add(caller);
+        return resultDemanded;
     }
 
     /** Indexes a new row under the methods of its two cells. */
@@ -176,6 +212,10 @@ final class ReturnOnlyFormals {
             body.read(row, origins);
         }
         Set<String> relevant = new LinkedHashSet<>(slice.relevant(method));
+        String self = slice.thisCell(method);
+        for (String stored : body.stored) {
+            if (body.heldOutside(stored, self)) origins.add(stored);
+        }
         Set<String> ret = body.closure(Collections.singleton(
                 method + ".return"));
         for (String cell : relevant) {
@@ -188,7 +228,7 @@ final class ReturnOnlyFormals {
         }
         Set<String> eff = body.closure(origins);
         Set<String> found = new LinkedHashSet<>();
-        for (String formal : formals(method, relevant)) {
+        for (String formal : formals(method, relevant, self)) {
             if (ret.contains(formal) && !eff.contains(formal)
                     && !effects.contains(formal)) {
                 found.add(formal);
@@ -197,17 +237,21 @@ final class ReturnOnlyFormals {
             } else if (effects.add(formal) && returnOnly.contains(formal)) {
                 turns++;
                 slice.requeue(method);
+                for (String caller : callers.getOrDefault(formal,
+                        Collections.<String>emptySet())) {
+                    slice.requeue(caller);
+                }
             }
         }
         return found;
     }
 
-    private List<String> formals(String method, Set<String> relevant) {
+    private static List<String> formals(String method, Set<String> relevant,
+                                        String self) {
         List<String> formals = new ArrayList<>();
         for (String cell : relevant) {
             if (cell.startsWith(method + ".param")) formals.add(cell);
         }
-        String self = slice.thisCell(method);
         if (self != null && relevant.contains(self)) formals.add(self);
         return formals;
     }
@@ -225,6 +269,12 @@ final class ReturnOnlyFormals {
         /** A call site: the rows passing its actuals and receiver. */
         private final Map<Object, List<Map<String, Object>>> calls =
                 new LinkedHashMap<>();
+        /** A cell of the method: the cells the object it holds comes
+         *  from (upstream without {@link #CONTENTS}). */
+        private final Map<String, List<String>> provenance =
+                new LinkedHashMap<>();
+        /** The containers and arrays rows store into ({@link #STORES}). */
+        private final Set<String> stored = new LinkedHashSet<>();
 
         private Body(String method) {
             this.method = method;
@@ -240,7 +290,12 @@ final class ReturnOnlyFormals {
             String target = owner(to);
             boolean out = method.equals(source);
             boolean in = method.equals(target);
-            if (in) add(upstream, to, from);
+            if (in) {
+                add(upstream, to, from);
+                if (!CONTENTS.contains(kind)) add(provenance, to, from);
+                if (STORES.contains(kind)) stored.add(to);
+            }
+            if (THROWN.contains(kind)) origins.add(to);
             if (out && !in) {
                 if (RETURNS.contains(kind) && from.equals(returned)) return;
                 if (CALLS.contains(kind) && target != null
@@ -257,6 +312,36 @@ final class ReturnOnlyFormals {
                 }
                 origins.add(to);
             }
+        }
+
+        /** Whether the object {@code cell} holds is reached from a formal,
+         *  {@code self} or a field: backward over {@link #provenance}, and
+         *  from a call's result to the call's actuals. */
+        private boolean heldOutside(String cell, String self) {
+            Set<String> seen = new LinkedHashSet<>();
+            Deque<String> work = new ArrayDeque<>();
+            work.add(cell);
+            while (!work.isEmpty()) {
+                String next = work.pop();
+                if (!seen.add(next)) continue;
+                String held = owner(next);
+                if (next.startsWith(method + ".param") || next.equals(self)
+                        || held == null && next.startsWith("<")) {
+                    return true;
+                }
+                if (!method.equals(held)) continue;
+                work.addAll(provenance.getOrDefault(next,
+                        Collections.<String>emptyList()));
+                for (Map<String, Object> result : results.getOrDefault(next,
+                        Collections.<Map<String, Object>>emptyList())) {
+                    for (Map<String, Object> call : calls.getOrDefault(
+                            result.get("unitIndex"),
+                            Collections.<Map<String, Object>>emptyList())) {
+                        work.add(text(call.get("fromCell")));
+                    }
+                }
+            }
+            return false;
         }
 
         /** Whether a call's actual is upstream of the call's result: its
