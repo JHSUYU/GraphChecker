@@ -1193,22 +1193,24 @@ public final class ConcolicRegionRuntime {
         return BranchObservation.prepare(method, unitIndex, expression);
     }
 
-    /** Records a binary decision under the native marker's event id. */
-    public static boolean resolveBranch(long preparedHandle, long vmEventId,
-                                        String method, int unitIndex,
-                                        String expression,
-                                        boolean observedOutcome) {
+    /**
+     * Records a binary decision under the native marker's event id, on the
+     * arm the branch took: an observation, which never steers the run.
+     */
+    public static void resolveBranch(long preparedHandle, long vmEventId,
+                                     String method, int unitIndex,
+                                     String expression,
+                                     boolean observedOutcome) {
         BranchObservation.observe(BranchDecision.binary(observedOutcome),
                 preparedHandle, vmEventId, method, unitIndex, expression);
-        return observedOutcome;
     }
 
     /** Exact multiway counterpart of {@link #resolveBranch}. */
-    public static int resolveSwitchBranch(
+    public static void resolveSwitchBranch(
             long preparedHandle, long vmEventId, String method, int unitIndex,
             String expression, String branchKind, String encodedCaseKeys,
             int observedSuccessorIndex) {
-        return BranchObservation.observeSwitch(preparedHandle, vmEventId,
+        BranchObservation.observeSwitch(preparedHandle, vmEventId,
                 method, unitIndex, expression, branchKind, encodedCaseKeys,
                 observedSuccessorIndex);
     }

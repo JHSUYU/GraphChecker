@@ -51,7 +51,7 @@ final class BranchObservation {
     }
 
     /** Exact multiway counterpart of {@link #resolveBranch}. */
-    static int observeSwitch(
+    static void observeSwitch(
             long preparedHandle, long vmEventId, String method, int unitIndex,
             String expression, String branchKind, String encodedCaseKeys,
             int observedSuccessorIndex) {
@@ -79,11 +79,10 @@ final class BranchObservation {
                 unattested.recordConcreteDecision(method, unitIndex,
                         BranchDecision.binary(false));
             }
-            return observedSuccessorIndex;
+            return;
         }
         observe(BranchDecision.multiway(expected), preparedHandle,
                 vmEventId, method, unitIndex, expression);
-        return observedSuccessorIndex;
     }
 
     /** Observes one decision of either kind at one instrumented site. */

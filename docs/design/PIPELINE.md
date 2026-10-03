@@ -246,6 +246,11 @@ A loop-body root's controls are the branches leaving its loop, as the catalog's 
 throws); its frame opens on the outermost control edge into the body whose target dominates the
 demanded unit, and closes on every backedge and every exit of a control
 (`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`).
+Each conditional of a woven method gets the VM's decision marker just before it and, on every
+arm it can take, one observation of the arm taken (`ConcolicRegionRuntime#resolveBranch`,
+`#resolveSwitchBranch`; a switch gets one entry per case label), which never steers the run: the
+woven body grows with the labels, not their square (ZooKeeper's `FinalRequestProcessor` switches
+on 120, which a dispatch per label and successor took past the JVM's 64 KB method limit).
 
 The union weave also hooks the codecs and exchange brackets the wire declarations state
 (`causynth.CodecWeave`, [IDENTITY.md §7.5](IDENTITY.md)): the file the property
