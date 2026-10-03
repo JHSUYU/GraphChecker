@@ -24,6 +24,14 @@ import java.util.List;
  * {@code Class.forName(name, false, loader)} runs no static initializer; the
  * reflective read after it links the class, which runs the verifier.</p>
  *
+ * <p>The gate judges the weave.  A woven class that fails as the class the
+ * classpath holds fails unwoven -- the same throwable with the same message,
+ * or both a {@code NoClassDefFoundError} for types no entry of the layout
+ * holds (Jetty, for ZooKeeper's admin server under a recipe's workload; which
+ * missing type linking meets first depends on the method order, which the
+ * weave rewrites) -- is a class the workload cannot link either way: it is
+ * listed {@code UNLINKED}, and does not fail the gate.</p>
+ *
  * <p>Usage: {@code VerifyWovenClasses <instrumented-classes-dir>
  * [<classpath>]}.  Exit 0 all verified, 1 one did not, 2 could not ask.</p>
  */
@@ -61,30 +69,41 @@ public final class VerifyWovenClasses {
             refuse("no class file under " + classes);
         }
         ClassLoader loader;
+        ClassLoader built;
         try {
-            loader = replayLoader(classes, args.length > 1 ? args[1] : "");
+            String classpath = args.length > 1 ? args[1] : "";
+            loader = replayLoader(classes, classpath);
+            built = replayLoader(null, classpath);
         } catch (MalformedURLException failure) {
             refuse("could not compose the replay classpath: " + failure);
             return;
         }
         int verified = 0;
         List<String> failures = new ArrayList<>();
+        List<String> unlinked = new ArrayList<>();
         String firstDetail = null;
         for (Path file : files) {
             String name = binaryName(classes, file);
-            try {
-                Class.forName(name, false, loader).getDeclaredMethods();
+            Throwable error = linkError(name, loader);
+            if (error == null) {
                 verified++;
-            } catch (LinkageError | ClassNotFoundException | RuntimeException
-                    error) {
-                String message = String.valueOf(error.getMessage());
-                failures.add(name + ": " + error.getClass().getName()
-                        + " at " + location(message) + ": "
-                        + reason(message));
-                if (firstDetail == null) {
-                    firstDetail = name + "\n" + message;
-                }
+                continue;
             }
+            String message = String.valueOf(error.getMessage());
+            String failure = name + ": " + error.getClass().getName()
+                    + " at " + location(message) + ": " + reason(message);
+            if (failsAlike(error, name, built, loader)) {
+                unlinked.add(failure);
+                continue;
+            }
+            failures.add(failure);
+            if (firstDetail == null) {
+                firstDetail = name + "\n" + message;
+            }
+        }
+        for (String failure : unlinked) {
+            System.out.println("UNLINKED " + failure
+                    + " (the class the classpath holds fails alike)");
         }
         if (!failures.isEmpty()) {
             System.out.println("verified " + verified + " of " + files.size()
@@ -96,7 +115,47 @@ public final class VerifyWovenClasses {
             System.exit(1);
         }
         System.out.println("verified " + verified + " woven class(es) under "
-                + classes + "; the JVM verifier rejected none");
+                + classes + "; the JVM verifier rejected none"
+                + (unlinked.isEmpty() ? "" : "; " + unlinked.size()
+                + " class(es) link on this classpath neither woven nor as built"));
+    }
+
+    /** Why {@code name} does not load and link from {@code loader}, or null. */
+    private static Throwable linkError(String name, ClassLoader loader) {
+        try {
+            Class.forName(name, false, loader).getDeclaredMethods();
+            return null;
+        } catch (LinkageError | ClassNotFoundException | RuntimeException
+                error) {
+            return error;
+        }
+    }
+
+    /**
+     * Whether the class the classpath itself holds under {@code name} fails
+     * to link as its woven copy did: the same throwable class, and the same
+     * message or, both missing a class, types that no entry of the woven
+     * layout ({@code loader}) holds.  A class the classpath does not hold is
+     * the weave's alone.
+     */
+    private static boolean failsAlike(Throwable woven, String name,
+                                      ClassLoader built, ClassLoader loader) {
+        if (built.getResource(resource(name)) == null) return false;
+        Throwable original = linkError(name, built);
+        if (original == null || !original.getClass().equals(woven.getClass())) {
+            return false;
+        }
+        String wovenMessage = String.valueOf(woven.getMessage());
+        String originalMessage = String.valueOf(original.getMessage());
+        return wovenMessage.equals(originalMessage)
+                || woven instanceof NoClassDefFoundError
+                && loader.getResource(resource(wovenMessage)) == null
+                && loader.getResource(resource(originalMessage)) == null;
+    }
+
+    /** The class file of a binary or internal class name. */
+    private static String resource(String name) {
+        return name.replace('.', '/') + ".class";
     }
 
     private static void refuse(String reason) {
@@ -121,11 +180,11 @@ public final class VerifyWovenClasses {
         return files;
     }
 
-    /** The replay's class loading layout, woven tree first. */
+    /** The replay's class loading layout, the woven tree (if any) first. */
     private static ClassLoader replayLoader(Path classes, String classpath)
             throws MalformedURLException {
         List<URL> urls = new ArrayList<>();
-        urls.add(classes.toUri().toURL());
+        if (classes != null) urls.add(classes.toUri().toURL());
         for (String entry : classpath.split(File.pathSeparator)) {
             if (entry.trim().isEmpty()) continue;
             urls.add(new File(entry).toURI().toURL());

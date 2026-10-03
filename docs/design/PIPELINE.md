@@ -235,7 +235,10 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 `campaign_instrument` clears `iteration-0000/instrumented-classes/` and runs `do_analyze` with
 `CAUSYNTH_CONCOLIC_TASK_PLAN`/`_TASK_ID` set to the whole plan: one union weave of every task. The
 tree must hold a class file, and `causynth.VerifyWovenClasses` must verify every woven class against
-the replay's class path, or the stage fails naming the class. GROW re-runs this stage's function.
+the replay's class path, or the stage fails naming the class; a woven class that fails as the class the
+class path holds fails unwoven (the same throwable and message, or both a `NoClassDefFoundError` for types
+no entry holds: Jetty, for ZooKeeper's admin server under a recipe's workload) is listed `UNLINKED` and does
+not fail it, since the workload cannot link it either way. GROW re-runs this stage's function.
 The union weave opens ONE region entry per root hook group (`plan.ExecutionTask#rootHookGroup`: the
 region and its root method, and a loop-body root's loop) and one enclosing entry per loop root
 (`#loopRootHookGroup`), however many planned occurrences share it; a replay's entry offers each
