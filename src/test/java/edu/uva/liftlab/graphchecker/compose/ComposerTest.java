@@ -3925,6 +3925,19 @@ public class ComposerTest {
             }
             assertEquals(detail, Collections.singletonList("INITIAL|"
                     + SmtLowering.locationKey(bound)), groups);
+            // The recording's pairing there is any arm but the plant: the
+            // reconfiguration's arm, taken, re-pairs nothing.
+            List<String> recording = new ArrayList<String>();
+            for (String arm : composition.armSelectors()) {
+                if (reconf.id().equals(composition.arm(arm).groupId())
+                        && arm.contains("__" + ordinal(witness.selected()
+                        .selector()) + "__")) {
+                    recording.add(arm);
+                }
+            }
+            assertEquals(detail, 1, recording.size());
+            assertEquals(detail, Collections.emptyList(), composition.repaired(
+                    witness.selected().selector(), recording));
         }
     }
 

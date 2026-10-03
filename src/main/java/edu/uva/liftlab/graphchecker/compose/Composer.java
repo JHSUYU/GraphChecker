@@ -45,6 +45,7 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -200,6 +201,7 @@ public final class Composer {
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         private final Map<String, List<String>> ownArms;
+        private final Map<String, List<String>> recordedAtPlants;
         private final String seedSessionId;
         /** Where each top-level command of the body ends, and the path
          *  selector it is guarded by (null: every path's); #pathQuery. */
@@ -259,6 +261,8 @@ public final class Composer {
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
             this.ownArms = composed.composedFamilies.ownArms();
+            this.recordedAtPlants =
+                    composed.composedFamilies.recordedAtPlants();
             this.seedSessionId = composed.seed();
             List<Integer> ends = new ArrayList<Integer>();
             List<String> guards = new ArrayList<String>();
@@ -554,16 +558,21 @@ public final class Composer {
         /**
          * The arms {@code taken} under the path {@code selector} names that
          * are no pairing its own run had ({@link #ownRun}: its own
-         * session's message arms, the writer arm each state read observed):
-         * the re-paired ones, which a pairing kind moved where no root did.
-         * Only that path's: another path's arms are free in the model, as
-         * its selector is.
+         * session's message arms, the writer arm each state read observed,
+         * and at a location its world planted a pairing on any arm but the
+         * plant, {@code ComposedFamilies#recordedAtPlants}): the re-paired
+         * ones, which a pairing kind moved where no root did.  Only that
+         * path's: another path's arms are free in the model, as its
+         * selector is.
          */
         public List<String> repaired(String selector,
                                      Collection<String> taken) {
             Set<String> own = new LinkedHashSet<String>();
-            List<String> arms = ownArms.get(selector);
-            if (arms != null) own.addAll(arms);
+            for (Map<String, List<String>> owned
+                    : Arrays.asList(ownArms, recordedAtPlants)) {
+                List<String> arms = owned.get(selector);
+                if (arms != null) own.addAll(arms);
+            }
             Disjunct disjunct = bySelector(selector);
             List<String> reads = disjunct == null ? null
                     : observedReads.get(disjunct.path().pathId);

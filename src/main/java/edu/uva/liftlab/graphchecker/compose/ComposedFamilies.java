@@ -471,7 +471,26 @@ final class ComposedFamilies {
     }
 
     private void own(String arm) {
-        List<String> arms = ownArms.computeIfAbsent(path,
+        own(ownArms, arm);
+    }
+
+    /** Path selector -> the arms at a planted location that may be the
+     *  recording's own pairing ({@link #recordedAtPlants}). */
+    private final Map<String, List<String>> recordedAtPlants =
+            new LinkedHashMap<String, List<String>>();
+
+    /**
+     * Each path's arms at the locations its session's world planted a
+     * pairing on, other than the plant: the recording's pairing is any of
+     * them ({@link #stateFamilies}), so taking one re-pairs nothing.  Never
+     * asserted: the run is "any arm but the plant".
+     */
+    Map<String, List<String>> recordedAtPlants() {
+        return Collections.unmodifiableMap(recordedAtPlants);
+    }
+
+    private void own(Map<String, List<String>> owned, String arm) {
+        List<String> arms = owned.computeIfAbsent(path,
                 key -> new ArrayList<String>());
         arms.add(arm);
         pathUndo.add(() -> arms.remove(arms.size() - 1));
@@ -1586,6 +1605,11 @@ final class ComposedFamilies {
                         : null;
                 String run = plant == null ? taken : "(not " + plant + ")";
                 if (!recorded.contains(run)) recorded.add(run);
+                if (plant != null) {
+                    for (String arm : selectors) {
+                        if (!arm.equals(plant)) own(recordedAtPlants, arm);
+                    }
+                }
             }
             String formula = Arms.exactlyOne(selectors);
             stated.add(formula);
