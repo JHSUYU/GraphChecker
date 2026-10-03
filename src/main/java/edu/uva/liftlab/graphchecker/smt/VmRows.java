@@ -92,6 +92,18 @@ public final class VmRows {
     private static final String TRUNCATION_AUTHORITY =
             "VM_SERIALIZATION_TRUNCATION_V1";
 
+    /**
+     * Whether a symbol is the VM's placeholder of an object it observed
+     * without naming it ({@code P_L'class'_}: {@code PlaceHolderSymbolExp},
+     * a container's stored value or a call's argument no shadow names).
+     * The VM makes one only for a non-null object -- null is {@code N} --
+     * and it names no rid, so it is no particular object.
+     */
+    public static boolean placeholderObject(String symbol) {
+        return symbol != null && symbol.startsWith("P_L'")
+                && symbol.endsWith("'_");
+    }
+
     /** The rid one {@code M_L'class'_rid} reference symbol names, or -1. */
     public static long referencedObjectRid(String symbol) {
         if (symbol == null) return -1L;

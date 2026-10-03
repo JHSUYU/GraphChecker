@@ -2456,7 +2456,11 @@ public final class SmtLowering {
     /**
      * One execution-local identity, opaque but not free: it is non-null and
      * distinct from other rids of its session, both recorded facts.  Left
-     * unsaid, a model can null a reference or merge two keys.
+     * unsaid, a model can null a reference or merge two keys.  A placeholder
+     * the VM named no rid ({@link VmRows#placeholderObject}) is non-null all
+     * the same, and distinct from nothing: left free, a map's stored
+     * DataNode read back as null at the recorded valuation (ZooKeeper's
+     * node map, zk-bugs-election-offer EO4).
      */
     private String opaque(String raw, Sort sort) {
         String name = symbols.mint("identity__",
@@ -2464,8 +2468,11 @@ public final class SmtLowering {
         declare(name, sort);
         boolean minted = opaqueIdentities.put(name, raw) == null;
         long rid = VmRows.referencedObjectRid(raw);
-        if (minted && sort == Sort.REF && rid > 0L) {
+        if (minted && sort == Sort.REF
+                && (rid > 0L || VmRows.placeholderObject(raw))) {
             assertPlain("(not (= " + name + " nullRef))");
+        }
+        if (minted && sort == Sort.REF && rid > 0L) {
             recordedObjects.computeIfAbsent(scope,
                     session -> new LinkedHashMap<Long, String>())
                     .put(rid, name);
