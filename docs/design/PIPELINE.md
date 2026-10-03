@@ -1568,7 +1568,10 @@ not show). The preflight fails by name; a case waits up to `DISK_WAIT_SECONDS` (
 is then skipped as `no disk`.
 
 Ad-hoc sweeps do not use `report.py`: `tools/adhoc/triage.py` classes a case with a `result.json`
-`CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true, `REFUTED` when
+`CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true -- `CONFIG_ONLY`
+when every moved root's `movedRootCategories` entry is `CONFIG`, a finding read after the others
+(`findings.py` ranks its mechanism after every other: a configuration-validation throw fires by
+design) --, `REFUTED` when
 `claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `NO_ROOT` when a
 BLOCKING `NO_ROOT_REACHES_ANCHOR` gap ended EXPLORE (§7.1; the gap's detail is the reason), else
 `NO_WITNESS` (`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row

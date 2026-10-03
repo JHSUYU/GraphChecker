@@ -11,6 +11,10 @@ or, for a check the recording did not activate, its record-summary state.
 Classes:
   CONFIRMED     a SAT witness the program agreed with (confirmation true): a
                 candidate bug, to read by hand
+  CONFIG_ONLY   a CONFIRMED witness every root of which it moved is a
+                configuration (result.json movedRootCategories): a finding,
+                read after the others -- a configuration-validation throw
+                fires by design
   REFUTED       no confirmed witness, and CONFIRM refuted a claim on the way
                 (a refuted model, which the campaign excludes and follows
                 with the next claim or more exploration), or published one
@@ -98,6 +102,15 @@ def stated(root, case_text):
 NO_ROOT = "NO_ROOT_REACHES_ANCHOR"
 
 
+def config_only(result):
+    """Whether every root a witness moved is a configuration, by the
+    category EMIT states for it (movedRootCategories)."""
+    moved = result.get("movedRoots") or {}
+    categories = result.get("movedRootCategories") or {}
+    return bool(moved) and all(categories.get(root) == "CONFIG"
+                               for root in moved)
+
+
 def no_root(result_path):
     """The detail of the BLOCKING NO_ROOT_REACHES_ANCHOR gap EMIT published
     beside a result (final/gaps.json)."""
@@ -121,7 +134,7 @@ def classify(row, result_path, lines, root, text):
         refuted = result.get("refutedClaims") or []
         row["refuted"] = len(refuted)
         if claim == "SAT_CANDIDATE" and confirmation.get("confirmed") is True:
-            row["class"] = "CONFIRMED"
+            row["class"] = "CONFIG_ONLY" if config_only(result) else "CONFIRMED"
         elif claim == "SAT_UNCONFIRMED" or refuted:
             row["class"] = "REFUTED"
             row["reason"] = (confirmation.get("reason", "")

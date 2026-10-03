@@ -11,11 +11,12 @@ mechanism when they share a signature:
   sha256(the check -- its TARGET_SITE, out/<case>/static_scope_map.jsonl --,
          the finding kind,
          per moved root, sorted: its kind (MARKER, INTEGRAL, CLOCK; a marker
-         of a fault door is FAULT), the method of its site, its declared
-         callee, the role of its node (the node name without its digits and
-         epoch: dn, nn, node), the role and api of its causal context, and
-         for a clock how far the model moved it off the recording:
-         <=1s, <=1min, <=1h or >1h)
+         of a fault door is FAULT, a configuration root -- its category in
+         result.json's movedRootCategories -- CONFIG), the method of its
+         site, its declared callee, the role of its node (the node name
+         without its digits and epoch: dn, nn, node), the role and api of
+         its causal context, and for a clock how far the model moved it off
+         the recording: <=1s, <=1min, <=1h or >1h)
 
 A moved root's site and callee are its plan input action's (portId, or
 sourceId for a declared source, = the root; execution_task_plan.jsonl); its
@@ -40,11 +41,13 @@ Weight, per witness (a signature takes its best):
   extra roots      1 per moved root beyond the first
 
 Writes <sweep-dir>/findings.tsv, best weight first, with the best case's native
-reproduction (runs at the anchor / runs).  With --ledger, the
-ledger (one JSON row per signature: sig, firstSeen, lastSeen, cases, status)
-is read and rewritten: a signature it did not hold is new, one it held is
-known, and one dismissed.tsv beside it names (sig, reason, JIRA id; by hand)
-is dismissed.  With --annotated, a witness whose campaign declared its target
+reproduction (runs at the anchor / runs); a mechanism every moved root of which
+is a configuration (CONFIG_ONLY, as triage.py classes it) comes after every
+other, whatever its weight: a finding, but a configuration-validation throw
+fires by design.  With --ledger, the ledger (one JSON row per signature: sig,
+firstSeen, lastSeen, cases, status) is read and rewritten: a signature it did
+not hold is new, one it held is known, and one dismissed.tsv beside it names
+(sig, reason, JIRA id; by hand) is dismissed.  With --annotated, a witness whose campaign declared its target
 at a throw the sweep's tree marks as a known bug's (tools/lib/annotated.py:
 @CausynthExceptionTarget naming the bug's cases) is known whatever the ledger
 says, and its row's `known bug` column names those cases: what a sweep
@@ -153,6 +156,7 @@ def witness(final):
     schedule = os.path.dirname(final)
     case_dir = os.path.dirname(schedule)
     moved = result["movedRoots"]
+    categories = result.get("movedRootCategories") or {}
     manifest = json.load(open(os.path.join(
         final, "candidate_composition_manifest.json")))
     readings = {root["rootId"]: root["recordedValue"]
@@ -185,6 +189,8 @@ def witness(final):
         kind = row["kind"]
         if kind == "MARKER" and action.get("sourceKind") == FAULT_SOURCE:
             kind = "FAULT"
+        if categories.get(key) == "CONFIG":
+            kind = "CONFIG"
         bucket = ""
         if kind == "CLOCK":
             if "clockNanos" not in row:
@@ -210,6 +216,7 @@ def witness(final):
     runs = reproduction.get("runs", 0)
     return {"target": target_site(case_dir), "kind": kind, "parts": parts,
             "weight": weight, "extra": len(parts) - 1,
+            "configOnly": all(part[0] == "CONFIG" for part in parts),
             "native": "%d/%d" % (reproduction.get("atAnchor", 0), runs),
             "rate": reproduction.get("atAnchor", 0) / runs if runs else 0.0}
 
@@ -294,9 +301,10 @@ def main():
                 if not line.startswith("#"):
                     sig, reason = (line.rstrip("\n").split("\t") + [""])[:2]
                     dismissed[sig] = reason
-    table = []
+    table, config_only = [], {}
     for sig, found in witnesses.items():
         best = max(found, key=lambda f: (f["weight"], f["case"]))
+        config_only[sig] = best["configOnly"]
         cases = sorted(f["case"] for f in found)
         known = ",".join(sorted(set().union(*(f["known"] for f in found))))
         status = ("dismissed" if sig in dismissed
@@ -308,7 +316,7 @@ def main():
         table.append((best["weight"], best["native"], sig, status, known,
                       best["kind"], best["target"], roots, best["case"],
                       len(cases), " ".join(cases)))
-    table.sort(key=lambda row: (-row[0], row[2]))
+    table.sort(key=lambda row: (config_only[row[2]], -row[0], row[2]))
     with open(os.path.join(args.sweep, "findings.tsv"), "w") as out:
         out.write("weight\tnative\tsig\tstatus\tknown bug\tkind\ttarget"
                   "\tmoved roots\tbest case\tcases\tall cases\n")
