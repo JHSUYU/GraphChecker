@@ -845,8 +845,8 @@ public class ManualMintStatesItsValueTest {
             assertNotNull("at its own declared site", entry);
             assertEquals("and files nothing to explain itself", 2,
                     gaps().size());
-            String symbol = ConfiguredSourcePhaseContract
-                    .engineLabelForPhase(phaseId(), SOURCE_ID);
+            String symbol =
+                    ConfiguredSourcePhaseContract.engineLabel(SOURCE_ID);
             focused.recordConfiguredSourceMint(entry, SOURCE_ID, FIELD,
                     symbol, symbolExpression(symbol), false, "true");
             RowPlaceholderMint.roots(focused, address(FOCUSED_ADDRESS));
@@ -875,6 +875,56 @@ public class ManualMintStatesItsValueTest {
         } finally {
             CausynthTraceRecorder.endCall(invocation, null, "");
         }
+    }
+
+    /**
+     * A configuration's one symbol per key per JVM holds ONE value: a read
+     * at another (a second default of an unset key, another node's
+     * configuration) would let one perturbation stand for two values, so it
+     * is read concretely and named.  Its domain is stated whole or not at
+     * all.
+     */
+    @Test
+    public void aConfigurationSymbolHoldsOneValue() throws Exception {
+        openSession();
+        Object[][] reads = {
+            {"the first mint fixes the value", "CONFIG:k", "5", true, 0},
+            {"a second read of it shares the symbol", "CONFIG:k", "5", true,
+                0},
+            {"a read at another value is pinned, named", "CONFIG:k", "7",
+                false, 1},
+            {"once", "CONFIG:k", "7", false, 1},
+            {"another key is another symbol", "CONFIG:j", "7", true, 1}};
+        for (Object[] read : reads) {
+            assertEquals((String) read[0], read[3],
+                    RootMint.configurationAgrees((String) read[1],
+                            (String) read[2], "a.B#u1"));
+            assertEquals((String) read[0], read[4], gaps().size());
+        }
+        assertEquals(GapKind.UNSTATED_VALUE, gap().kind());
+        assertFalse(gap().blocking());
+        assertEquals("CONFIG:k", gap().subject());
+        assertTrue(gap().detail(), gap().detail().contains("ran at 7")
+                && gap().detail().contains("stands for 5"));
+
+        Object[][] domains = {
+            {"a boolean or no anchor states none", "", "", "5", "-", 1},
+            {"the static hull", "0", "10", "5", "0..10", 1},
+            {"widened to the value read", "0", "10", "12", "0..12", 1},
+            {"half a domain states none, named", "0", "", "5", "-", 2},
+            {"no integer read states none, named", "0", "10", "", "-", 3}};
+        for (Object[] domain : domains) {
+            JsonObject row = new JsonObject();
+            row.addProperty("sourceId", "CONFIG:k");
+            ActiveRegion.configDomain(row, (String) domain[1],
+                    (String) domain[2], (String) domain[3]);
+            assertEquals((String) domain[0], domain[4],
+                    row.has("domainMin") ? row.get("domainMin").getAsString()
+                            + ".." + row.get("domainMax").getAsString()
+                            : "-");
+            assertEquals((String) domain[0], domain[5], gaps().size());
+        }
+        assertEquals(GapKind.DECLARATION_MISSING, gap().kind());
     }
 
     /** One expression naming one VM symbol, as a mint publishes it. */
@@ -941,8 +991,8 @@ public class ManualMintStatesItsValueTest {
         java.util.Set<String> labels = new java.util.LinkedHashSet<String>();
         for (ConfiguredSourcePhaseContract.Occurrence phase
                 : ConfiguredSourcePhaseContract.occurrencesOf(catalog)) {
-            labels.add(ConfiguredSourcePhaseContract.engineLabelForPhase(
-                    phase.phaseId(), phase.sourceId()));
+            labels.add(ConfiguredSourcePhaseContract.engineLabel(
+                    phase.sourceId()));
         }
         return labels;
     }

@@ -298,6 +298,36 @@ public class ContractTest {
         return definition;
     }
 
+    /**
+     * A root row's bounds are absolute: a configuration whose default is -1
+     * states {@code domainMin "-2"}, minus two.  Only a case's declaration
+     * (root-domains.jsonl) spells {@code +k}/{@code -k} off the reading.
+     */
+    @Test
+    public void aRootRowsBoundsAreAbsoluteAndOnlyADeclarationIsRelative() {
+        OccurrenceAddress at = OccurrenceAddress.of(DN0, REGION,
+                CausalContext.of(PRODUCER_ID, RPC), index(frame(RUN, 0)));
+        Map<String, RootDomain> declared = new LinkedHashMap<>();
+        declared.put("CASE.K", RootDomain.of("CASE.K", RootKind.INTEGRAL, "",
+                "-2", "+3"));
+        Object[][] rows = {
+            {"a row's negative bound is a value", "CONFIG:k", "-2", "5",
+                "[-2, 5]"},
+            {"a declaration's -k is off the reading", "CASE.K", "-2", "5",
+                "[98, 103]"},
+            {"no bound is pinned", "CONFIG:k", null, null, "[null, null]"},
+            {"a bound that is no integer is none", "CONFIG:k", "x", "5",
+                "[null, 5]"}};
+        for (Object[] row : rows) {
+            RootDomain domain = RootDomain.resolved(RootMintRow.of("s", 1L,
+                    at, (String) row[1], "sym", RootKind.INTEGRAL,
+                    RootCategory.CONFIG, "100", (String) row[2],
+                    (String) row[3], true, null, 0L), declared);
+            assertEquals((String) row[0], row[4],
+                    "[" + domain.min() + ", " + domain.max() + "]");
+        }
+    }
+
     @Test
     public void rendersAndParsesEveryCausalContextAndIndex() {
         OccurrenceAddress anchored = OccurrenceAddress.of(DN0, REGION,
@@ -508,8 +538,8 @@ public class ContractTest {
                         site, 0), keys, 7L, "state_allKeys_7", BLOCK_KEY,
                 null);
         RootMintRow minted = RootMintRow.of("s-17897-1", 2L, producer,
-                "SERIAL_NO", "root_serial_no", RootKind.INTEGRAL, "3", "3",
-                "6", true, null, 0L);
+                "SERIAL_NO", "root_serial_no", RootKind.INTEGRAL,
+                RootCategory.HOOK, "3", "3", "6", true, null, 0L);
         TargetRow target = TargetRow.of("s-17897-1", 15L, anchor,
                 "BlockTokenSecretManager#retrieve#61", "(= key nil)", true,
                 true);
@@ -604,8 +634,9 @@ public class ContractTest {
         // that ran off the host's reading, the reading a skew is off; a
         // reading at the host's own instant states no skew.
         RootMintRow ranOn = RootMintRow.of("s-17897-1", 16067L, producer,
-                "CLOCK.nn0", "M_J_clock", RootKind.CLOCK, "1790775789773",
-                null, null, true, Clock.of(1_000_000L, Clock.WALL), 3_600_000L);
+                "CLOCK.nn0", "M_J_clock", RootKind.CLOCK, RootCategory.CLOCK,
+                "1790775789773", null, null, true,
+                Clock.of(1_000_000L, Clock.WALL), 3_600_000L);
         assertEquals(ranOn, RowCodec.readRootMint(
                 reline(RowCodec.writeRootMint(ranOn))));
         assertEquals("1790772189773", ranOn.hostReading());
@@ -837,12 +868,13 @@ public class ContractTest {
         Rows undeclared = clean();
         undeclared.roots.set(0, RootMintRow.of("s-gate", 2L,
                 undeclared.anchor, "CASE.MARKER", "M_Z_marker",
-                RootKind.MARKER, "true", null, null, false, null, 0L));
+                RootKind.MARKER, RootCategory.FAULT, "true", null, null, false,
+                null, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=declared", undeclared);
         Rows unspelled = clean();
         unspelled.roots.set(0, RootMintRow.of("s-gate", 2L, unspelled.anchor,
-                "CASE.MARKER", "M_Z_marker", RootKind.MARKER, "1", null,
-                null, true, null, 0L));
+                "CASE.MARKER", "M_Z_marker", RootKind.MARKER, RootCategory.FAULT,
+                "1", null, null, true, null, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=recordedValue",
                 unspelled);
         // 9: a reached anchor states phi in the FATAL polarity -- a term, or
@@ -1196,8 +1228,8 @@ public class ContractTest {
                 true, "DataXceiver-7#41"));
         // A marker the session minted true, and a term that is true at it.
         rows.roots.add(RootMintRow.of("s-gate", 2L, rows.anchor,
-                "CASE.MARKER", "M_Z_marker", RootKind.MARKER, "true", null,
-                null, true, null, 0L));
+                "CASE.MARKER", "M_Z_marker", RootKind.MARKER, RootCategory.FAULT,
+                "true", null, null, true, null, 0L));
         rows.expressions.put("EXPR.0000000000000001",
                 binary("!=", symbol("M_Z_marker"), literal("Y_Z_0")));
         rows.expressions.put("EXPR.0000000000000002",

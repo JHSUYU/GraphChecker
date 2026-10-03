@@ -30,7 +30,8 @@ final class CausynthArtifactWriter {
     static void writeDiscoveryArtifacts(Path outputDir,
                                         StaticProgram program,
                                         List<JsonObject> staticScopeMap,
-                                        List<JsonObject> scopeFrontier)
+                                        List<JsonObject> scopeFrontier,
+                                        List<JsonObject> rootDemand)
             throws IOException {
         Files.createDirectories(outputDir);
         writeGzipJsonl(outputDir.resolve(
@@ -46,6 +47,8 @@ final class CausynthArtifactWriter {
                 staticScopeMap);
         ArtifactIO.replaceJsonl(outputDir.resolve(ScopeFrontier.FILE),
                 scopeFrontier);
+        ArtifactIO.replaceJsonl(outputDir.resolve(RootDemand.FILE),
+                rootDemand);
     }
 
     private static void writeGzipJsonl(Path output, List<?> values)

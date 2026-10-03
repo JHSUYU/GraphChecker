@@ -54,7 +54,9 @@ import glob, json, os, re, sys
 #
 #   kinds  -- the witness kinds this case may conclude with.
 #   root   -- a root that must appear in movedRoots with that value, declared
-#             where its spelling is stable (17960's configured Boolean).
+#             where its spelling is stable (17960's configured Boolean, its
+#             tree hook's source; CONFIG:<key>, causynth.ConfigRoots, once
+#             the tree drops the hook).
 #   fault  -- the moved roots must include a fault marker flipped to true
 #             whose declared site is a door of this transport's client
 #             class (the plan's input action states the site of every

@@ -68,8 +68,10 @@ public final class RootDomain extends Value {
     }
 
     /**
-     * One minted root's absolute domain: the case's declaration if any, else
-     * the mint's bounds, never both.  Kind and recorded value are the mint's.
+     * One minted root's absolute domain: the case's declaration if any, its
+     * {@code +k}/{@code -k} read off the reading, else the mint's bounds,
+     * which are absolute ({@code -2} is minus two), never both.  Kind and
+     * recorded value are the mint's.
      */
     public static RootDomain resolved(RootMintRow row,
                                       Map<String, RootDomain> declared) {
@@ -85,27 +87,36 @@ public final class RootDomain extends Value {
                                       Map<String, RootDomain> declared) {
         RootDomain stated = declared == null ? null
                 : declared.get(row.rootId());
-        String min = stated == null ? row.domainMin() : stated.min();
-        String max = stated == null ? row.domainMax() : stated.max();
-        return of(row.rootId(), row.kind(), reading, resolve(min, reading),
-                resolve(max, reading));
+        if (stated == null) {
+            return of(row.rootId(), row.kind(), reading,
+                    absolute(row.domainMin()), absolute(row.domainMax()));
+        }
+        return of(row.rootId(), row.kind(), reading,
+                declaredBound(stated.min(), reading),
+                declaredBound(stated.max(), reading));
     }
 
     /**
-     * One bound as an absolute value: itself, or {@code +k}/{@code -k} from
-     * the recorded reading.  {@code null} when either is not integral.
+     * One declared bound as an absolute value: itself, or {@code +k}/{@code
+     * -k} from the recorded reading -- the case file's syntax, read only
+     * here.  {@code null} when either is not integral.
      */
-    private static String resolve(String bound, String recorded) {
+    private static String declaredBound(String bound, String recorded) {
         String stated = bound == null ? "" : bound.trim();
-        if (stated.isEmpty()) return null;
         if (!stated.startsWith("+") && !stated.startsWith("-")) {
-            return integral(stated) ? stated : null;
+            return absolute(stated);
         }
         String offset = stated.startsWith("+")
                 ? stated.substring(1) : stated;
         if (!integral(offset) || !integral(recorded)) return null;
         return new BigInteger(recorded.trim())
                 .add(new BigInteger(offset.trim())).toString();
+    }
+
+    /** One absolute bound, or {@code null} when absent or not integral. */
+    private static String absolute(String bound) {
+        String stated = bound == null ? "" : bound.trim();
+        return integral(stated) ? stated : null;
     }
 
     /** Whether one text is an integral literal: the one such test. */

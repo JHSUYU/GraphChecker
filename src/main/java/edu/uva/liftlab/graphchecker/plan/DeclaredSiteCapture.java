@@ -285,9 +285,21 @@ public final class DeclaredSiteCapture {
 
     /** An external call's return: the local it lands in is the port. The fault
      *  marker ({@code Debug.makeSymbolicBoolean}) is stamped as the MARKER
-     *  root. */
+     *  root; a configuration getter's return as the root of its key, with
+     *  its domain. */
     private static void callReturnPort(JsonObject port,
                                        StaticScopeMap.Site site) {
+        StaticScopeMap.ConfigCall config = site.declared.config;
+        if (config != null) {
+            port.addProperty(InputActionCatalog.DECLARED_CONFIG_SOURCE,
+                    config.sourceId);
+            if (!config.domainMin.isEmpty()) {
+                port.addProperty(InputActionCatalog.DECLARED_DOMAIN_MIN,
+                        config.domainMin);
+                port.addProperty(InputActionCatalog.DECLARED_DOMAIN_MAX,
+                        config.domainMax);
+            }
+        }
         String caller = SiteId.methodOf(site.siteId);
         port.addProperty("sourceKind",
                 Debug.isBooleanMarkerSignature(site.declaredCallee)

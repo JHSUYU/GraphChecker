@@ -115,8 +115,8 @@ none.
    over `project_classes_dir`, target from `causynth_target_spec`, per-loop bounds from
    `causynth_loop_bounds`, wire flows from `causynth_communication_mappings`) writes under
    `causynth_output_dir`: `candidate_dataflow_edges.jsonl.gz`, `region_skeletons.jsonl.gz`,
-   `communication_gaps.jsonl.gz`, `static_scope_map.jsonl`, `scope_frontier.jsonl`
-   (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
+   `communication_gaps.jsonl.gz`, `static_scope_map.jsonl`, `scope_frontier.jsonl`,
+   `root_demand.jsonl` (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
    `causynth_lineage_roots` is set, `plan.ScopeGrowth` adds classes where the slice stops at the scope
    into `scope-classes/` and the pass runs again, until it adds nothing ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md)).
    The target spec holds one line, `exception_target: <name> <binary class name> <source line>
@@ -418,8 +418,8 @@ schedule) and:
    proposed, exposed or in flight, and no witness. So is a concrete anchor (§7.2): every round on it
    states `NO_ROOT_REACHES_ANCHOR` (`ExploreMain#noRoot`), DIAGNOSTIC while the exploration has
    work, BLOCKING at the fixed point, its detail one of three ends: none of its admitted paths
-   decided a site on its way to the throw, it read no shared state before it decided, or the reads
-   (and their locations) its closure demands.
+   decided a site on its way to the throw, it read no shared state its path guards depend on before
+   it decided, or the reads (and their locations) its closure demands.
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -447,13 +447,17 @@ its healthy arm" or never reached) and nothing above names a value. An unreached
 symbolic decision on the way is not concrete, since flipping it is how a replay reaches the throw
 (SOLR-18413's leader leaves at a concrete test of the boolean its clock-decided `isExpired`
 returned). Its predicate reads are then the read rows the anchor made, in each admitted path,
-before that path's deciding event (a later read cannot reach a decision already taken; an earlier
-one may, through a value the VM kept no expression under, or through a branch). Their symbols are
-demanded like those a symbolic phi names, so their writers become tasks flipped at their own
-guards and fault sites. The reads are what the rows state: a cell the static slice does not track
-has no read row (the anchor then "read no shared state"); R1-ROOTS WP-F1's predicate cone, which
-tracks more of the cells the target's guards depend on, reaches here as rows. A non-concrete
-anchor plans as before. Each demanded boundary input grows the closure:
+before that path's deciding event, of the reads the root demand found on the throw's path guards
+(SYMBOL-SCOPE §4.6; `StaticScopeMap#demandedAt`: a READ_SITE or READ placeholder stating its
+`demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins).
+A later read cannot reach a decision already taken; an earlier one off the guards' cone reaches it
+only through a read on it, whose writers the closure then asks. Their symbols are demanded like
+those a symbolic phi names, so their writers become tasks flipped at their own guards and fault
+sites. The demand tracks the cone's nearest reads however many flows from a branch (a String, a
+reference, a container too), so they have read rows; a cell no region stores has no writer to ask
+(the anchor then "read no shared state its path guards depend on"). The earlier reads off the cone
+are counted, never dropped silently: the `NO_ROOT_REACHES_ANCHOR` detail states how many
+(`ClosurePlanner.Concrete#offCone`). A non-concrete anchor plans as before. Each demanded boundary input grows the closure:
 
 - an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
   sites = the guards of the port's static export sites, contributed = its exports), and every activated
@@ -497,8 +501,9 @@ same demand, and folding it changes nothing (`ClosurePlanner#candidates`); the w
 once. Each demanded occurrence becomes a `Task` (id =
 `digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
 the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
-plus every fault site (`Corpus.faultSites`: a decision whose term reaches a MARKER root, by the same
-walk). A
+plus every fault site (`Corpus.faultSites`: a decision whose term reaches a root of the `FAULT`
+category, by the same walk; a boolean configuration, hook source or READ placeholder is a MARKER
+and no fault). A
 demanded occurrence no session captured (ran, but no planned task admitted it) is: skipped if it is a
 role (`ROLE.*`, `LINEAGE_LOST` when lost); skipped when its chain began at a daemon tick later than the
 recording's last tick of that role on that node (`Corpus.tickPastRecording`, DIAGNOSTIC); *exposed*
@@ -1262,9 +1267,13 @@ constant span) in that session's terms is lowered that much earlier (`SmtLowerin
 each replay's startup keys, 9 to 11 minutes late on the recording's timeline, with the one dn1 clock.
 
 **Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
-moves sorted by distance, then pairs of moves, cut at
+moves -- a marker's flip and an integral's domain-end anchors (`Composer#anchors`: each bound and its
+two inward neighbours, where the domain's outermost comparisons flip, however far from the
+recording) before its other values, each by distance, and at equal distance a configuration-only
+move after any other (`Composer#configurationOnly`) --, then pairs of moves, cut at
 `compose_max_valuations` (a MARKER's move is its other polarity; an INTEGRAL's values come from its
-window; clocks are not enumerated).
+window, its end anchors nearest first, then outward from its recorded value, nearest first; clocks
+are not enumerated).
 
 ComposeMain writes three files. `candidate.smt2`: the body, then valuation 0 as named pins
 `(assert (! (= <root symbol> <value>) :named valuation__<symbol>))` (so the file as published asks
@@ -1344,7 +1353,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
-4. The claim, first match:
+4. The claim, first match. A witness moving configuration only (`Composition#configurationOnly`:
+   every moved root `CONFIG`) ranks after every other, so the first rule takes the others, then the
+   second, and only then the first rule takes a configuration-only one. A witness moving a
+   configuration whose plant leaves reads of its key at the recording's value (the scope map's
+   `CONFIG_KEY` row, SYMBOL-SCOPE §4.3) is not claimed: no cluster holds that world, so no replay can
+   confirm it as one; `UNPRODUCIBLE_ANSWER` DIAGNOSTIC names the root and the reads, once.
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
      whose moved roots are in no unattested arm (else BLOCKING `UNATTESTED_ARM`): its `mechanism`;
      without `recordingDecides` it also needs `polarityDecides`, checked before the witness is
@@ -1388,8 +1402,9 @@ than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else every valuation decided un
 `INCONCLUSIVE_PARTIAL`. The manifest's `solver` block carries `state` (sat/unsat/unknown),
 `reachability`, `unsatClosureComplete`, `valuations` (status, assignment, moved, selected path and
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
-`findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `blockers`, `whyNotAccepted`,
-`witnessFindings`).
+`findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved
+root's category, `contract.RootCategory`), `configurationOnly` (the claim moves configuration only:
+the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witnessFindings`).
 
 ## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
 
@@ -1539,8 +1554,9 @@ refutes it. Then the campaign exits by its verdict (`campaign_exit_verdict`).
 3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a
    `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in);
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `findingKind`,
-   `polarityDecides`, `valuationOrdinal`, `movedRoots`, `blockers`, `reachability`, `finalStatus`,
-   `gapCount`, `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
+   `polarityDecides`, `valuationOrdinal`, `movedRoots`, `movedRootCategories` (each moved root's
+   category, `contract.RootCategory`), `configurationOnly`, `blockers`, `reachability`, `finalStatus`, `gapCount`,
+   `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
    `targetOccurrence`, `valuations`, `witnessFindings`.
 4. `final/run-manifest.json`: provenance, iteration manifests, the path, size and sha256 of each
    required final artifact (`candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json`,
@@ -1581,7 +1597,10 @@ not show). The preflight fails by name; a case waits up to `DISK_WAIT_SECONDS` (
 is then skipped as `no disk`.
 
 Ad-hoc sweeps do not use `report.py`: `tools/adhoc/triage.py` classes a case with a `result.json`
-`CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true, `REFUTED` when
+`CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true -- `CONFIG_ONLY`
+when `configurationOnly` is true (COMPOSE's rule, read, never re-derived), a finding read after the
+others (`findings.py` ranks its mechanism after every other: a configuration-validation throw fires
+by design) --, `REFUTED` when
 `claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `NO_ROOT` when a
 BLOCKING `NO_ROOT_REACHES_ANCHOR` gap ended EXPLORE (§7.1; the gap's detail is the reason), else
 `NO_WITNESS` (`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row

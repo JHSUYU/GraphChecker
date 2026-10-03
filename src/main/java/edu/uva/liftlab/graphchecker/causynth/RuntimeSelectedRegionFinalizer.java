@@ -881,9 +881,11 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The roots one activation read: its captures of a clock or a fault
-     * marker.  A READ placeholder is no root: it stands for its writers'
-     * value.
+     * The roots one activation read: its captures of a clock, a fault
+     * marker or a configuration getter's return.  A READ placeholder is no
+     * root: it stands for its writers' value.  A configuration field's read
+     * is a configured-source phase, no capture: the plan states it of
+     * whichever occurrence another rule admits.
      */
     private static List<RootRead> rootReads(Map<String, Object> activation,
                                             StaticScopeMap scopeMap) {
@@ -895,7 +897,8 @@ public final class RuntimeSelectedRegionFinalizer {
                     text(capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
                 String kind = site.declared.inputKind;
                 if (StaticScopeMap.CLOCK_INPUT.equals(kind)
-                        || StaticScopeMap.FAULT_INPUT.equals(kind)) {
+                        || StaticScopeMap.FAULT_INPUT.equals(kind)
+                        || StaticScopeMap.CONFIG_INPUT.equals(kind)) {
                     reads.add(new RootRead(site));
                 }
             }

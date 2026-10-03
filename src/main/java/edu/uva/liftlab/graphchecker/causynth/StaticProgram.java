@@ -60,6 +60,10 @@ public final class StaticProgram {
     final List<Map<String, Object>> planGaps = new ArrayList<>();
     /** Callees that are communication boundaries in the selected slice. */
     final Set<String> communicationCallSiteCallees = new LinkedHashSet<>();
+    /** Each application field's store sites ({@code <method>#u<unit>}) over
+     *  the whole analysed scope, not only the slice: the analyzer's writer
+     *  index, read by {@link ConfigRoots}. */
+    final Map<String, List<String>> fieldWriters = new LinkedHashMap<>();
     // Frozen runtime inputs of one finalization
 
     /** The runtime-refined dataflow rows this finalization reads. */

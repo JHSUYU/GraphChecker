@@ -120,7 +120,9 @@ class Slice:
                     self.calls[caller].add(callee)
         self.sites = collections.defaultdict(list)  # role -> rows
         for row in rows(os.path.join(directory, "static_scope_map.jsonl")):
-            self.sites[row["role"]].append(row)
+            # A CONFIG_KEY row (a configuration root's reads) is no site.
+            if row["kind"] == "STATIC_SCOPE_SITE":
+                self.sites[row["role"]].append(row)
         targets = self.sites["TARGET_SITE"]
         if len(targets) != 1:
             sys.exit("%s: %d TARGET_SITE rows" % (directory, len(targets)))

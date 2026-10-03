@@ -797,12 +797,13 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
     (`stream_max_in_flight`, §3.4). A batch records once, plans each check, and seed-replays each group of checks
     whose plans agree once (`out/<batch>/schedule/groups/`); each check explores on its own.
 13. `triage.py <round> [gc-out]`: outcome class per case, and per check of a batch case
-    (`<case>/<check>`): CONFIRMED, REFUTED, NO_ROOT, NO_WITNESS, STOPPED, DEAD, RUNNING,
-    PENDING; `gc-out` defaults to `gc-env.sh`'s `GC_OUT`.
+    (`<case>/<check>`): CONFIRMED, CONFIG_ONLY (confirmed, every moved root a configuration),
+    REFUTED, NO_ROOT, NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING; `gc-out` defaults to
+    `gc-env.sh`'s `GC_OUT`.
 14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
     one row per mechanism among the confirmed witnesses (`findings.tsv`), weighted by kind,
-    mediation and (1 + the rate at which REPRODUCE reproduced it natively at its anchor); the
-    ledger marks each new, known or dismissed.
+    mediation and (1 + the rate at which REPRODUCE reproduced it natively at its anchor), the
+    configuration-only ones last; the ledger marks each new, known or dismissed.
 
 ## Outputs
 

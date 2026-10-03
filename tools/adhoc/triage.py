@@ -11,6 +11,10 @@ or, for a check the recording did not activate, its record-summary state.
 Classes:
   CONFIRMED     a SAT witness the program agreed with (confirmation true): a
                 candidate bug, to read by hand
+  CONFIG_ONLY   a CONFIRMED witness that moves configuration only
+                (result.json configurationOnly, COMPOSE's rule): a finding,
+                read after the others -- a configuration-validation throw
+                fires by design
   REFUTED       no confirmed witness, and CONFIRM refuted a claim on the way
                 (a refuted model, which the campaign excludes and follows
                 with the next claim or more exploration), or published one
@@ -121,7 +125,10 @@ def classify(row, result_path, lines, root, text):
         refuted = result.get("refutedClaims") or []
         row["refuted"] = len(refuted)
         if claim == "SAT_CANDIDATE" and confirmation.get("confirmed") is True:
-            row["class"] = "CONFIRMED"
+            # A result written before COMPOSE stated the rank states none.
+            row["class"] = ("CONFIG_ONLY"
+                            if result.get("configurationOnly") is True
+                            else "CONFIRMED")
         elif claim == "SAT_UNCONFIRMED" or refuted:
             row["class"] = "REFUTED"
             row["reason"] = (confirmation.get("reason", "")

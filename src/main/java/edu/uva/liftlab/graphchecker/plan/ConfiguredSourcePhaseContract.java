@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonArray;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -19,10 +20,16 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.required;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.text;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/** Static hook sites of configured sources and the executions a recording
- *  observed. A declared source is ONE symbol ({@link #phaseId} is the site's
- *  alone), so the number of executions bounds nothing a replay may read. One
- *  codec: rows are the plan wire's {@link JsonObject}s. */
+/**
+ * The static mint sites of configured sources and the executions a recording
+ * observed (SYMBOL-SCOPE §4.3).  A site is one of two, named by its row's
+ * authority: a tree's {@code CausynthSymbolicSource.symbolize} call (a HOOK)
+ * or the engine's read of a configuration field ({@code
+ * causynth.ConfigRoots}, a CONFIG), whose integral domain the row states.  A
+ * declared source is ONE symbol ({@link #engineLabel} is the source's alone),
+ * so the number of executions bounds nothing a replay may read.  One codec:
+ * rows are the plan wire's {@link JsonObject}s.
+ */
 public final class ConfiguredSourcePhaseContract {
     public static final int SCHEMA_VERSION = 1;
     public static final String DECLARATION_FIELD =
@@ -32,21 +39,30 @@ public final class ConfiguredSourcePhaseContract {
     public static final String PLAN_FIELD = "configuredSourcePhases";
     public static final String DECLARATION_KIND =
             "CONFIGURED_SOURCE_PHASE_DECLARATION";
+    /** A tree's hook call. */
     public static final String DECLARATION_AUTHORITY =
             "EXACT_STATIC_SOURCE_HOOK_SITE_V1";
+    /** The engine's read of a configuration field. */
+    public static final String CONFIG_DECLARATION_AUTHORITY =
+            "EXACT_STATIC_CONFIG_READ_SITE_V1";
     public static final String PLAN_KIND = "CONFIGURED_SOURCE_PHASE";
     public static final String PLAN_AUTHORITY =
             "EXACT_RUNTIME_SOURCE_HOOK_EXECUTION_V1";
+    public static final String CONFIG_PLAN_AUTHORITY =
+            "EXACT_RUNTIME_CONFIG_READ_EXECUTION_V1";
     private static final Set<String> DECLARATION_FIELDS = names(
             "schemaVersion", "kind", "authority", "phase", "sourceId",
             "fieldSignature", "declarationMethod", "declarationUnitIndex",
             "siteId");
-    private static final Set<String> OCCURRENCE_FIELDS = names(
-            "schemaVersion", "kind", "authority", "phase", "sourceId",
-            "fieldSignature", "declarationMethod", "declarationUnitIndex",
-            "siteId", "phaseId", "sourceOccurrenceId",
-            "eventSeq", "invocationId",
+    /** A read's evidence is the read: no invocation. */
+    private static final Set<String> CONFIG_OCCURRENCE_FIELDS = union(
+            DECLARATION_FIELDS, "phaseId", "sourceOccurrenceId", "eventSeq",
             "runtimeDeclaredCallee", "enclosingCallIds");
+    private static final Set<String> OCCURRENCE_FIELDS = union(
+            CONFIG_OCCURRENCE_FIELDS, "invocationId");
+    /** A CONFIG row's integral domain, from its static anchors. */
+    private static final Set<String> DOMAIN_FIELDS = names(
+            "domainMin", "domainMax");
 
     private ConfiguredSourcePhaseContract() {
     }
@@ -54,22 +70,51 @@ public final class ConfiguredSourcePhaseContract {
     /** The one phase: a mint site, one fresh symbol for one declared field. */
     public static final String PUBLISH = "PUBLISH";
 
+    /** A tree's hook call of {@code sourceId} at {@code method#uunitIndex}. */
     public static JsonObject declaration(
             String sourceId, String fieldSignature,
             String method, int unitIndex) {
+        JsonObject row = site(DECLARATION_AUTHORITY, sourceId,
+                fieldSignature, method, unitIndex);
+        validateDeclaration(row);
+        return row;
+    }
+
+    /**
+     * The engine's read of a configuration field at {@code
+     * method#uunitIndex}, with the integral domain its static anchors span
+     * ({@code ""}: none, a boolean).
+     */
+    public static JsonObject configDeclaration(
+            String sourceId, String fieldSignature, String method,
+            int unitIndex, String domainMin, String domainMax) {
+        JsonObject row = site(CONFIG_DECLARATION_AUTHORITY, sourceId,
+                fieldSignature, method, unitIndex);
+        domain(row, domainMin, domainMax);
+        validateDeclaration(row);
+        return row;
+    }
+
+    private static JsonObject site(String authority, String sourceId,
+                                   String fieldSignature, String method,
+                                   int unitIndex) {
         String exactMethod = required(method, "declarationMethod");
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", SCHEMA_VERSION);
         row.addProperty("kind", DECLARATION_KIND);
-        row.addProperty("authority", DECLARATION_AUTHORITY);
+        row.addProperty("authority", authority);
         row.addProperty("phase", PUBLISH);
         row.addProperty("sourceId", required(sourceId, "sourceId"));
         row.addProperty("fieldSignature", trimmed(fieldSignature));
         row.addProperty("declarationMethod", exactMethod);
         row.addProperty("declarationUnitIndex", unitIndex);
         row.addProperty("siteId", SiteId.of(exactMethod, unitIndex));
-        validateDeclaration(row);
         return row;
+    }
+
+    private static void domain(JsonObject row, String min, String max) {
+        if (!trimmed(min).isEmpty()) row.addProperty("domainMin", min);
+        if (!trimmed(max).isEmpty()) row.addProperty("domainMax", max);
     }
 
     public static List<Declaration> declarationsOf(JsonElement encoded) {
@@ -121,7 +166,8 @@ public final class ConfiguredSourcePhaseContract {
             // The phase id repeats across executions; the execution (event seq)
             // is unique.
             if (!eventSeqs.add(phase.runtimeEventSeq())
-                    || !invocationIds.add(phase.runtimeInvocationId())
+                    || phase.invocationId > 0L
+                    && !invocationIds.add(phase.invocationId)
                     || phase.runtimeEventSeq() <= previousSeq) {
                 throw new IllegalArgumentException(PLAN_FIELD
                         + " must have unique identities in event order");
@@ -130,18 +176,49 @@ public final class ConfiguredSourcePhaseContract {
         }
     }
 
+    /** One recorded execution of a hook site: its call. */
     public static JsonObject occurrence(
             Declaration declaration, String occurrenceId,
             long runtimeEventSeq, long runtimeInvocationId,
             String declaredCallee, Collection<Long> enclosingCallIds) {
-        if (declaration == null) {
-            throw new IllegalArgumentException("phase declaration is required");
+        if (declaration == null
+                || declaration.category != RootCategory.HOOK) {
+            throw new IllegalArgumentException(
+                    "a hook site's declaration is required");
         }
+        JsonObject row = occurrenceRow(declaration, PLAN_AUTHORITY,
+                occurrenceId, runtimeEventSeq, declaredCallee,
+                enclosingCallIds);
+        row.addProperty("invocationId", runtimeInvocationId);
+        return row;
+    }
+
+    /** One recorded execution of a configuration read site: the read of
+     *  {@code field}, its declared field. */
+    public static JsonObject configOccurrence(
+            Declaration declaration, String occurrenceId,
+            long runtimeEventSeq, String field,
+            Collection<Long> enclosingCallIds) {
+        if (declaration == null
+                || declaration.category != RootCategory.CONFIG) {
+            throw new IllegalArgumentException(
+                    "a configuration read site's declaration is required");
+        }
+        JsonObject row = occurrenceRow(declaration, CONFIG_PLAN_AUTHORITY,
+                occurrenceId, runtimeEventSeq, field, enclosingCallIds);
+        domain(row, declaration.domainMin, declaration.domainMax);
+        return row;
+    }
+
+    private static JsonObject occurrenceRow(
+            Declaration declaration, String authority, String occurrenceId,
+            long runtimeEventSeq, String declaredCallee,
+            Collection<Long> enclosingCallIds) {
         String occurrence = required(occurrenceId, "occurrenceId");
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", SCHEMA_VERSION);
         row.addProperty("kind", PLAN_KIND);
-        row.addProperty("authority", PLAN_AUTHORITY);
+        row.addProperty("authority", authority);
         row.addProperty("phase", PUBLISH);
         row.addProperty("sourceId", declaration.sourceId());
         row.addProperty("fieldSignature", declaration.fieldSignature());
@@ -153,7 +230,6 @@ public final class ConfiguredSourcePhaseContract {
                 declaration.siteId()));
         row.addProperty("sourceOccurrenceId", occurrence);
         row.addProperty("eventSeq", runtimeEventSeq);
-        row.addProperty("invocationId", runtimeInvocationId);
         row.addProperty("runtimeDeclaredCallee", required(
                 declaredCallee, "runtimeDeclaredCallee"));
         JsonArray ancestry = new JsonArray();
@@ -167,12 +243,11 @@ public final class ConfiguredSourcePhaseContract {
     }
 
     /**
-     * The identity of one configured source: its site, nothing else.
+     * The identity of one mint site: its source and site, nothing else.
      *
-     * <p>One variable per replay: every execution of the site answers the same
-     * valuation, so a flip moves them all. Trap: putting the reaching
-     * occurrence or execution into the identity splits one site into many
-     * variables, and a flip moves only one of them (hdfs-17960 lost its bug
+     * <p>Every execution of the site is the same phase.  Trap: putting the
+     * reaching occurrence or execution into the identity splits one site
+     * into many, and a flip moves only one of them (hdfs-17960 lost its bug
      * this way).</p>
      */
     public static String phaseId(String sourceId, String siteId) {
@@ -182,29 +257,43 @@ public final class ConfiguredSourcePhaseContract {
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** The VM label one configured source asks the engine for, derived from its
-     *  phase. */
-    public static String engineLabelForPhase(String sourcePhaseId,
-                                             String sourceId) {
-        return "SRC." + ArtifactIO.sha256(
-                required(sourcePhaseId, "sourcePhaseId") + "\n"
-                        + required(sourceId, "sourceId"));
+    /**
+     * The VM label every mint of one source asks the engine for: the
+     * source's alone, so every read of it, at any site, in any occurrence or
+     * session, is one symbol, and a flip moves them all.
+     */
+    public static String engineLabel(String sourceId) {
+        return "SRC." + ArtifactIO.sha256(required(sourceId, "sourceId"));
     }
 
     private static Declaration validateDeclaration(JsonObject row) {
-        if (!DECLARATION_FIELDS.equals(row.keySet())
-                || !constants(row, DECLARATION_KIND, DECLARATION_AUTHORITY)) {
+        RootCategory category = categoryOf(row, DECLARATION_AUTHORITY,
+                CONFIG_DECLARATION_AUTHORITY);
+        if (!DECLARATION_KIND.equals(text(row, "kind"))
+                || !exactSchemaVersion(row) || category == null
+                || !members(row, DECLARATION_FIELDS, category)) {
             throw new IllegalArgumentException(
                     DECLARATION_FIELD + " has an unsupported schema");
         }
-        return validateHookSite(row, DECLARATION_FIELD);
+        return validateSite(row, DECLARATION_FIELD, category);
     }
 
-    private static boolean constants(JsonObject row, String kind,
-                                     String authority) {
-        return exactSchemaVersion(row)
-                && kind.equals(text(row, "kind"))
-                && authority.equals(text(row, "authority"));
+    /** HOOK or CONFIG by the row's authority, or null for any other. */
+    private static RootCategory categoryOf(JsonObject row, String hook,
+                                           String config) {
+        String authority = text(row, "authority");
+        if (hook.equals(authority)) return RootCategory.HOOK;
+        if (config.equals(authority)) return RootCategory.CONFIG;
+        return null;
+    }
+
+    /** Exactly the members a row of its category states; a CONFIG row may
+     *  state its domain. */
+    private static boolean members(JsonObject row, Set<String> required,
+                                   RootCategory category) {
+        Set<String> stated = new LinkedHashSet<>(row.keySet());
+        if (category == RootCategory.CONFIG) stated.removeAll(DOMAIN_FIELDS);
+        return required.equals(stated);
     }
 
     private static boolean exactSchemaVersion(JsonObject row) {
@@ -214,8 +303,9 @@ public final class ConfiguredSourcePhaseContract {
                 && Integer.toString(SCHEMA_VERSION).equals(value.getAsString());
     }
 
-    /** The hook-site half shared by declaration and occurrence rows. */
-    private static Declaration validateHookSite(JsonObject row, String field) {
+    /** The site half shared by declaration and occurrence rows. */
+    private static Declaration validateSite(JsonObject row, String field,
+                                            RootCategory category) {
         if (!PUBLISH.equals(text(row, "phase"))) {
             throw new IllegalArgumentException(field + " has an invalid phase");
         }
@@ -227,26 +317,41 @@ public final class ConfiguredSourcePhaseContract {
         if (unit < 0 || FieldPathSpec.declaredField(signature) == null
                 || !SiteId.of(method, unit).equals(text(row, "siteId"))) {
             throw new IllegalArgumentException(
-                    field + " has an invalid exact hook site");
+                    field + " has an invalid exact mint site");
         }
-        return new Declaration(sourceId, signature, method, unit);
+        String min = text(row, "domainMin");
+        String max = text(row, "domainMax");
+        if (min.isEmpty() != max.isEmpty() || !min.isEmpty()
+                && (!min.matches("-?[0-9]+") || !max.matches("-?[0-9]+"))) {
+            throw new IllegalArgumentException(
+                    field + " states half a domain or a non-integral one");
+        }
+        return new Declaration(sourceId, signature, method, unit, category,
+                min, max);
     }
 
     private static Occurrence validateOccurrence(JsonObject row) {
-        if (!OCCURRENCE_FIELDS.equals(row.keySet())
-                || !constants(row, PLAN_KIND, PLAN_AUTHORITY)) {
+        RootCategory category = categoryOf(row, PLAN_AUTHORITY,
+                CONFIG_PLAN_AUTHORITY);
+        if (!PLAN_KIND.equals(text(row, "kind")) || !exactSchemaVersion(row)
+                || category == null
+                || !members(row, category == RootCategory.HOOK
+                        ? OCCURRENCE_FIELDS : CONFIG_OCCURRENCE_FIELDS,
+                        category)) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " has an unsupported schema");
         }
-        Declaration declared = validateHookSite(row, PLAN_FIELD);
+        Declaration declared = validateSite(row, PLAN_FIELD, category);
         String sourceOccurrenceId = required(
                 text(row, "sourceOccurrenceId"), "sourceOccurrenceId");
         long eventSeq = exactLong(row, "eventSeq");
-        long invocationId = exactLong(row, "invocationId");
+        long invocationId = category == RootCategory.HOOK
+                ? exactLong(row, "invocationId") : 0L;
         String declaredCallee = required(
                 text(row, "runtimeDeclaredCallee"), "runtimeDeclaredCallee");
         String phaseId = required(text(row, "phaseId"), "phaseId");
-        if (eventSeq <= 0L || invocationId <= 0L
+        if (eventSeq <= 0L || category == RootCategory.HOOK
+                && invocationId <= 0L
                 || !phaseId.equals(phaseId(declared.sourceId(),
                 declared.siteId()))) {
             throw new IllegalArgumentException(
@@ -295,20 +400,34 @@ public final class ConfiguredSourcePhaseContract {
                 new LinkedHashSet<>(Arrays.asList(values)));
     }
 
+    private static Set<String> union(Set<String> base, String... more) {
+        Set<String> all = new LinkedHashSet<>(base);
+        all.addAll(Arrays.asList(more));
+        return Collections.unmodifiableSet(all);
+    }
+
     public static final class Declaration {
         private final String sourceId;
         private final String fieldSignature;
         private final String method;
         private final int unitIndex;
         private final String siteId;
+        private final RootCategory category;
+        private final String domainMin;
+        private final String domainMax;
 
         private Declaration(String sourceId, String fieldSignature,
-                            String method, int unitIndex) {
+                            String method, int unitIndex,
+                            RootCategory category, String domainMin,
+                            String domainMax) {
             this.sourceId = sourceId;
             this.fieldSignature = fieldSignature;
             this.method = method;
             this.unitIndex = unitIndex;
             this.siteId = SiteId.of(method, unitIndex);
+            this.category = category;
+            this.domainMin = domainMin;
+            this.domainMax = domainMax;
         }
 
         public String sourceId() { return sourceId; }
@@ -320,6 +439,10 @@ public final class ConfiguredSourcePhaseContract {
         public int declarationUnitIndex() { return unitIndex; }
 
         public String siteId() { return siteId; }
+
+        /** HOOK: the site calls the tree's hook; CONFIG: it reads the
+         *  configuration field. */
+        public RootCategory category() { return category; }
     }
 
     public static final class Occurrence {
@@ -327,18 +450,19 @@ public final class ConfiguredSourcePhaseContract {
         private final String phaseId;
         private final String sourceOccurrenceId;
         private final long runtimeEventSeq;
-        private final long runtimeInvocationId;
+        /** A hook execution's call; 0 for a read, which is none. */
+        private final long invocationId;
         private final String runtimeDeclaredCallee;
 
         private Occurrence(Declaration declared, String phaseId,
                            String sourceOccurrenceId,
-                           long runtimeEventSeq, long runtimeInvocationId,
+                           long runtimeEventSeq, long invocationId,
                            String runtimeDeclaredCallee) {
             this.declared = declared;
             this.phaseId = phaseId;
             this.sourceOccurrenceId = sourceOccurrenceId;
             this.runtimeEventSeq = runtimeEventSeq;
-            this.runtimeInvocationId = runtimeInvocationId;
+            this.invocationId = invocationId;
             this.runtimeDeclaredCallee = runtimeDeclaredCallee;
         }
 
@@ -360,9 +484,16 @@ public final class ConfiguredSourcePhaseContract {
 
         public long runtimeEventSeq() { return runtimeEventSeq; }
 
-        public long runtimeInvocationId() { return runtimeInvocationId; }
-
+        /** What runs at the site: the hook a HOOK site calls, the field a
+         *  CONFIG site reads. */
         public String runtimeDeclaredCallee() { return runtimeDeclaredCallee; }
 
+        public RootCategory category() { return declared.category(); }
+
+        /** A CONFIG site's static domain bound, or {@code ""}. */
+        public String domainMin() { return declared.domainMin; }
+
+        /** A CONFIG site's static domain bound, or {@code ""}. */
+        public String domainMax() { return declared.domainMax; }
     }
 }

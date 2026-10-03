@@ -6,7 +6,9 @@ import com.google.gson.JsonElement;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.Clock;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
@@ -65,6 +67,11 @@ final class SymbolizeAction {
     /** A clock input's clock (the plan's: the JVM clock it wraps, its
      *  tick), null for any other input. */
     final Clock clock;
+    /** A configuration getter's return: the root it is ({@code
+     *  CONFIG:<key>}) and its static domain; "" for any other input. */
+    final String configSource;
+    final String configDomainMin;
+    final String configDomainMax;
     /** The static site the plan observed this read at, or "". */
     final String siteId;
     /** The recorded event this read was observed at, or -1. */
@@ -128,6 +135,12 @@ final class SymbolizeAction {
                 InputActionCatalog.DECLARED_WALL_CLOCK, 0L);
         this.clock = clockNanos > 0L ? Clock.of(clockNanos, optionalString(
                 json, InputActionCatalog.DECLARED_CLOCK_SOURCE)) : null;
+        this.configSource = optionalString(json,
+                InputActionCatalog.DECLARED_CONFIG_SOURCE);
+        this.configDomainMin = optionalString(json,
+                InputActionCatalog.DECLARED_DOMAIN_MIN);
+        this.configDomainMax = optionalString(json,
+                InputActionCatalog.DECLARED_DOMAIN_MAX);
         this.siteId = optionalString(json, "siteId");
         this.eventSeq = optionalLongInteger(json, "eventSeq", -1L);
         this.recordedPrimitiveValue = optionalBool(json, "observed", false)
@@ -238,6 +251,15 @@ final class SymbolizeAction {
     /** A declared wall-clock read with a recorded answer (moved by offset). */
     boolean declaresWallClockRead() {
         return clock != null && !recordedPrimitiveValue.isEmpty();
+    }
+
+    /** Where this input's value enters the world, as its mint states it:
+     *  a clock's reading, a configuration, a fault marker, else a read. */
+    RootCategory category() {
+        if (declaresWallClockRead()) return RootCategory.CLOCK;
+        if (!configSource.isEmpty()) return RootCategory.CONFIG;
+        return RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
+                sourceKind) ? RootCategory.FAULT : RootCategory.READ;
     }
 
     boolean matchesStaticField(String actualMethod,
