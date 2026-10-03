@@ -42,7 +42,10 @@ system_node_class=org/apache/zookeeper/server/ZooKeeperServer
 
 # The modules whose classes are the lineage scope: the whole tree's, whatever
 # the case analyses (plan.LineageScan); scope growth and the library doors
-# grow from it, so the build installs every one of them.
+# grow from it, so the build installs every one of them.  The workload's own
+# test classes join it (system_paths): a ZooKeeper workload's clients are
+# threads its test starts (an election's contenders), which stand on their
+# creator's frames and share one address unless the start is a start site.
 zk_lineage_modules=(zookeeper-jute zookeeper-server
   zookeeper-recipes/zookeeper-recipes-election
   zookeeper-recipes/zookeeper-recipes-lock
@@ -57,6 +60,7 @@ system_paths() {
   for each in "${zk_lineage_modules[@]}"; do
     lineage_roots+=${lineage_roots:+:}${repo}/${each}/target/classes
   done
+  lineage_roots+=:${test_classes}
 }
 
 system_root() {
