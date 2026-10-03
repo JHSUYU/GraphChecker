@@ -1966,6 +1966,41 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * A container's state read rests on the reference read that returned
+     * the container, whether or not the VM states it as the relation's
+     * owner: the reference's writer is in the closure (hdfs-bugs
+     * slowdisk-zero: chooseVolume's filter asks {@code contains} of the list
+     * getSlowDisksToExclude() returned, inside the lambda that captured it).
+     */
+    @Test
+    public void aContainerReadRestsOnTheReadThatReturnedItsObject()
+            throws Exception {
+        Path iteration = tree.newFolder("holder").toPath();
+        LocationId reference = LocationId.of(LocationKind.INSTANCE, "8",
+                "88");
+        LocationId list = LocationId.of(LocationKind.MAP, "20", "-3");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(WRITER, false);
+        seed.symbolic("e.list", "M_LIST");
+        seed.write(at(WRITER, "Metrics#run#2:WRITE", "Metrics#run#2"),
+                reference, 2L, "e.list");
+        seed.read(at(TARGET, "Metrics#getList#15:READ", "Metrics#getList#15"),
+                reference, 2L, "M_REF", "M_L'java/util/ArrayList'_20");
+        seed.read(at(TARGET, "Chooser#test#40:READ", "Chooser#test#40"),
+                list, 1L, "M_HAS", "0");
+        seed.target(TARGET, "Chooser#choose#5", "(= M_HAS 0)");
+        seed.flush();
+
+        ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
+                TARGET, StaticScopeMap.empty());
+        List<String> focused = new ArrayList<String>();
+        for (Task task : plan.tasks) focused.add(task.focused().render());
+        assertTrue("the writer of the reference that returned the list: "
+                + focused, focused.contains(WRITER.render()));
+    }
+
     @Test
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {

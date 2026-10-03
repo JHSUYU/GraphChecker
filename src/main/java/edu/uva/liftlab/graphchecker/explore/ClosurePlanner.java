@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -744,6 +745,7 @@ public final class ClosurePlanner {
             for (String symbol : new ArrayList<String>(named)) {
                 if (!settled.add(symbol)) continue;
                 for (ReadRow row : reads.of(symbol)) {
+                    grew |= named.addAll(reads.holding(row));
                     for (WriteRow write : corpus.eligibleWrites(
                             row.sessionId(),
                             SmtLowering.locationKey(row.location()),
@@ -771,6 +773,10 @@ public final class ClosurePlanner {
         /** session|location key -> the symbols its reads stated. */
         private final Map<String, Set<String>> symbolsAt =
                 new HashMap<String, Set<String>>();
+        /** session|object -> the symbols of the reference reads that
+         *  returned that object. */
+        private final Map<String, Set<String>> returning =
+                new HashMap<String, Set<String>>();
 
         private GroupReads(Corpus corpus, List<OccurrenceAddress> group) {
             for (OccurrenceAddress member : group) {
@@ -782,8 +788,36 @@ public final class ClosurePlanner {
                                     + SmtLowering.locationKey(row.location()),
                             key -> new LinkedHashSet<String>())
                             .add(row.symbol());
+                    long object = VmRows.referencedObjectRid(
+                            row.concreteValue());
+                    if (object > 0L) {
+                        returning.computeIfAbsent(row.sessionId() + "|"
+                                        + object,
+                                key -> new LinkedHashSet<String>())
+                                .add(row.symbol());
+                    }
                 }
             }
+        }
+
+        /**
+         * The reference reads a container's state read rests on: those of
+         * its session that returned the container, the read the VM states as
+         * a relation's owner when the reference rides the query's receiver
+         * slot (VM.md, the owner of a relation).  Through a capture the
+         * owner is not stated (hdfs-bugs slowdisk-zero: chooseVolume's
+         * filter asks {@code contains} of the list
+         * getSlowDisksToExclude() returned, inside the lambda that captured
+         * it), and the store of another list would then be no writer of
+         * the state the anchor read.
+         */
+        private Set<String> holding(ReadRow row) {
+            if (row.location().kind() != LocationKind.MAP) {
+                return Collections.<String>emptySet();
+            }
+            Set<String> found = returning.get(row.sessionId() + "|"
+                    + row.location().owner());
+            return found == null ? Collections.<String>emptySet() : found;
         }
 
         /** The rows that stated one symbol, in recorded order. */
