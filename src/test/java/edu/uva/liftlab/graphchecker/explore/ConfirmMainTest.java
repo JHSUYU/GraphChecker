@@ -176,6 +176,18 @@ public class ConfirmMainTest {
         return iteration;
     }
 
+    /** The selected session's world, planting nothing: the recording's. */
+    private static void plantNothing(Path iteration) throws Exception {
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        for (String member : new String[]{"rootAssignments", "clockDeltas",
+                "answers", "pairings"}) {
+            world.add(member, new JsonObject());
+        }
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+    }
+
     private static void manifest(SessionDir dir, SessionManifest.Role role)
             throws Exception {
         RowCodec.writeExpressions(dir.expressions(), ExpressionTable.empty());
@@ -435,9 +447,10 @@ public class ConfirmMainTest {
      * read to the store, the query's read to the write of that state, each
      * with every other writer of its location outside the two -- and the
      * session, which read neither, is no realization of it; the observed
-     * store with nothing else is the session itself, its arm being the write
-     * the read observed though its endpoint stored again later; a state
-     * asked outside every read, or one no write states, is refused by name.
+     * store with nothing else is the session itself (its world planting
+     * nothing), its arm being the write the read observed though its
+     * endpoint stored again later; a state asked outside every read, or one
+     * no write states, is refused by name.
      */
     @Test
     public void aQueryThroughAReplacedReferenceIsHeldToTheStateTheModelChose()
@@ -461,6 +474,7 @@ public class ConfirmMainTest {
                 {"outside", store, "", 1L},
                 {"unwritten", store, query.id(), 9L}};
         Path iteration = iteration();
+        plantNothing(iteration);
         SessionDir sel = SessionDir.of(iteration, "sel");
         RowCodec.writeAll(sel.roots(), Collections.singletonList(
                 root("sel", "FAULT:IPC", "M_Z_fault.sel",
@@ -559,12 +573,17 @@ public class ConfirmMainTest {
     }
 
     /**
-     * A selected session that already took every edge the model chose, ran
-     * the moved root at the model's value and observed the fatal IS the run
-     * that confirms the claim: nothing is handed to a replay.
+     * A selected session that took every edge the model chose, ran the
+     * moved root at the model's value and observed the fatal IS the run that
+     * confirms the claim -- only where its world planted nothing: a root it
+     * was assigned, a clock it was skewed, a handoff it was answered or a
+     * pairing it was held to is a choice CONFIRM makes again in a replay of
+     * its own, strict (Corpus.World#plantsNothing).  A replay drops the
+     * session's own skew on a clock cell the composition anchors (the
+     * model's clocks alone) and keeps one outside it.
      */
     @Test
-    public void aSessionThatRealizedTheClaimIsItsConfirmation()
+    public void aSessionIsItsConfirmationOnlyWhereItsWorldPlantedNothing()
             throws Exception {
         Path iteration = iteration();
         SessionDir sel = SessionDir.of(iteration, "sel");
@@ -573,52 +592,75 @@ public class ConfirmMainTest {
                         RootKind.INTEGRAL, "119978"),
                 root("sel", "FAULT:IPC", "M_Z_fault.sel", RootKind.MARKER,
                         "true")), RowCodec::writeRootMint);
-        // Had its world planted a skew on a clock cell the composition
-        // anchors and the model does not move, the model's clock runs on
-        // there: that session ran another world, and the replay plants the
-        // model's clocks alone.
-        Path worker = iteration.resolve("obligations-0000").resolve("w1");
-        JsonObject world = RowCodec.readJsonl(worker.resolve(
-                ObligationDir.FOCUSED_TASK)).get(0);
-        JsonObject skewed = world.deepCopy();
-        skewed.getAsJsonObject("clockDeltas").addProperty("CLOCK.a",
-                "43000");
-        RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
-                Collections.singletonList(skewed));
-        Path replayed = folder.newFolder("replayed").toPath();
-        JsonObject planned = ConfirmMain.write(iteration,
-                claim("FAULT:IPC", "true"), manifest(), replayed);
-        assertTrue("not realized: " + planned, !planned.has("realizedBy"));
-        JsonObject focus = RowCodec.readJsonl(replayed.resolve(
-                "focused_task.jsonl")).get(0);
-        assertTrue("the session's own skew is not the model's: " + focus,
-                !focus.getAsJsonObject("clockDeltas").has("CLOCK.a"));
-        assertEquals("one outside the composition is kept", "7000",
-                focus.getAsJsonObject("clockDeltas").get("CLOCK.gone")
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        plantNothing(iteration);
+        JsonObject planted = RowCodec.readJsonl(focus).get(0);
+        // what the world planted (member -> key -> value), realized?
+        Object[][] table = {
+                {null, null, null, true},
+                {"rootAssignments", "FAULT:IPC", "true", false},
+                {"clockDeltas", "CLOCK.gone", "7000", false},
+                {"answers", consumer.id(), "119979", false},
+                {"pairings", Confirmation.id(reader), Confirmation.id(writer),
+                        false},
+        };
+        for (Object[] row : table) {
+            JsonObject world = planted.deepCopy();
+            if (row[0] != null) {
+                world.getAsJsonObject((String) row[0]).addProperty(
+                        (String) row[1], (String) row[2]);
+            }
+            if ("clockDeltas".equals(row[0])) {
+                world.getAsJsonObject("clockDeltas").addProperty("CLOCK.a",
+                        "43000");
+            }
+            RowCodec.writeJsonl(focus, Collections.singletonList(world));
+            Path out = folder.newFolder("world-" + row[0]).toPath();
+            JsonObject summary = ConfirmMain.write(iteration,
+                    claim("FAULT:IPC", "true"), manifest(), out);
+            boolean realized = (Boolean) row[3];
+            assertEquals(row[0] + ": " + summary, realized,
+                    summary.has("realizedBy"));
+            assertEquals(row[0] + ": a realized claim hands no replay "
+                    + "anything", !realized, Files.exists(out.resolve(
+                    ObligationDir.FOCUSED_TASK)));
+            if (realized) {
+                List<JsonObject> rows = RowCodec.readJsonl(
+                        out.resolve(ConfirmMain.REALIZED));
+                assertTrue(rows.get(0).get("confirmed").getAsBoolean());
+                assertEquals("sel", rows.get(0).get("sessionId")
                         .getAsString());
-        RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
-                Collections.singletonList(world));
-        Path out = folder.newFolder("realized").toPath();
-
-        JsonObject summary = ConfirmMain.write(iteration,
-                claim("FAULT:IPC", "true"), manifest(), out);
-
-        assertEquals("sel", summary.get("realizedBy").getAsString());
-        List<JsonObject> rows = RowCodec.readJsonl(
-                out.resolve(ConfirmMain.REALIZED));
-        assertEquals(1, rows.size());
-        assertTrue(rows.get(0).get("confirmed").getAsBoolean());
-        assertEquals("sel", rows.get(0).get("sessionId").getAsString());
-        assertTrue("and no replay is handed anything",
-                !Files.exists(out.resolve("focused_task.jsonl")));
-
+            }
+            if ("clockDeltas".equals(row[0])) {
+                JsonObject deltas = RowCodec.readJsonl(out.resolve(
+                        ObligationDir.FOCUSED_TASK)).get(0)
+                        .getAsJsonObject("clockDeltas");
+                assertTrue("the session's own skew is not the model's: "
+                        + deltas, !deltas.has("CLOCK.a"));
+                assertEquals("one outside the composition is kept", "7000",
+                        deltas.get("CLOCK.gone").getAsString());
+            }
+            if ("pairings".equals(row[0])) {
+                int held = 0;
+                for (JsonObject edge : RowCodec.readJsonl(
+                        out.resolve(Confirmation.FILE))) {
+                    if ("STATE".equals(edge.get("kind").getAsString())
+                            && edge.get("reader").getAsString().equals(
+                            Confirmation.id(reader))) {
+                        held++;
+                    }
+                }
+                assertTrue("the world's pairing is held", held > 0);
+            }
+        }
+        // And with a world that planted nothing, a moved root the session
+        // ran at another value is a run a replay has to make.
         Path other = folder.newFolder("not-realized").toPath();
         ConfirmMain.write(iteration, claim("FAULT:IPC", "false"),
                 manifest(), other);
-        assertTrue("a moved root the session ran at another value is a run "
-                        + "a replay has to make",
-                !Files.exists(other.resolve(ConfirmMain.REALIZED))
-                        && Files.exists(other.resolve("focused_task.jsonl")));
+        assertTrue(!Files.exists(other.resolve(ConfirmMain.REALIZED))
+                && Files.exists(other.resolve(ObligationDir.FOCUSED_TASK)));
     }
 
     /**

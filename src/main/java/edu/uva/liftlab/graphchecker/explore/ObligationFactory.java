@@ -725,8 +725,9 @@ public final class ObligationFactory {
     }
 
     /** Whether any clock skew is non-zero; a non-integer delta counts as no
-     *  movement. */
-    private static boolean movesAClock(Map<String, String> clockDeltas) {
+     *  movement.  One notion of a moved clock: a model's ({@link
+     *  #plantsNothing}) and a world's ({@code Corpus.World#plantsNothing}). */
+    static boolean movesAClock(Map<String, String> clockDeltas) {
         if (clockDeltas == null) return false;
         for (String delta : clockDeltas.values()) {
             if (delta == null || delta.trim().isEmpty()) continue;
