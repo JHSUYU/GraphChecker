@@ -60,13 +60,45 @@ final class RootMint {
      */
     private static final Set<String> CLOCK_READINGS =
             ConcurrentHashMap.newKeySet();
+    /**
+     * The value each configuration root's symbol stands for in this JVM:
+     * its first mint's.  The symbol is the key's, one per JVM (SYMBOL-SCOPE
+     * §4.3), so it holds ONE value ({@link #configurationAgrees}).
+     */
+    private static final Map<String, String> CONFIGURATIONS =
+            new ConcurrentHashMap<>();
 
     private RootMint() {
     }
 
     static void resetForTests() {
         CLOCK_READINGS.clear();
+        CONFIGURATIONS.clear();
         NodeClocks.reset();
+    }
+
+    /**
+     * Whether a mint of configuration {@code rootId} that runs at {@code
+     * value} may carry the root's symbol: the first mint of the root in this
+     * JVM fixes the value its symbol stands for, and a later mint at another
+     * value -- another default of an unset key, another node's
+     * configuration -- would state two values for one symbol, which a
+     * witness could plant one perturbation for.  That read is read
+     * concretely, named.
+     */
+    static boolean configurationAgrees(String rootId, String value,
+                                       String where) {
+        String standing = CONFIGURATIONS.putIfAbsent(safe(rootId),
+                safe(value));
+        if (standing == null || standing.equals(safe(value))) return true;
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                safe(rootId), "the configuration read at " + safe(where)
+                        + " ran at " + safe(value) + " where the root's"
+                        + " symbol stands for " + standing + " in this JVM"
+                        + " (another default, view or node's"
+                        + " configuration), so it is read concretely and no"
+                        + " row states a mint of it");
+        return false;
     }
 
     /** Called once per Java argument right after region entry. */
@@ -486,6 +518,11 @@ final class RootMint {
             // a configuration's world value is already there (#configuration).
             String observed = ConcolicRegionRuntime.recordedScalar(
                     field.get(owner));
+            if (!reused && entry.category() == RootCategory.CONFIG
+                    && !configurationAgrees(safe(sourceId), observed,
+                    entry.siteId)) {
+                return false;
+            }
             // The wave's value is written first: the app's Map re-key reads
             // it back through this same path.
             String planted = "";
@@ -523,6 +560,14 @@ final class RootMint {
                     stated);
             return true;
         } catch (Throwable failure) {
+            // Never into the workload's own read; never silent.
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, assignedByTheWave(
+                    safe(sourceId)) ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+                    safe(sourceId), "the configured source at "
+                            + entry.siteId + " was not minted, so the region"
+                            + " reads " + safe(fieldSignature) + " as it was"
+                            + " and no row states a mint of it: "
+                            + ConcolicRegionRuntime.rootCause(failure));
             return false;
         } finally {
             ConcolicRegionRuntime.resumeObservation();
@@ -552,17 +597,28 @@ final class RootMint {
      * to the world, not to an occurrence: the value an obligation assigns
      * it is written at every read of it, on every node, whatever occurrence
      * runs it; then the read mints as a configured source does, stating
-     * what it read.
+     * what it read.  It never throws into the workload's read: a failure
+     * is named, BLOCKING where the wave assigns the root.
      */
     static void configuration(String sourceId, Object owner,
                               String fieldSignature) {
         if (owner == null) return;
-        String assigned = FocusedReplay.rootAssignment(safe(sourceId));
-        if (!assigned.isEmpty()) {
-            plantConfiguration(safe(sourceId), owner, safe(fieldSignature),
-                    assigned);
+        try {
+            String assigned = FocusedReplay.rootAssignment(safe(sourceId));
+            if (!assigned.isEmpty()) {
+                plantConfiguration(safe(sourceId), owner,
+                        safe(fieldSignature), assigned);
+            }
+            configuredSource(sourceId, owner, fieldSignature);
+        } catch (Throwable failure) {
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, assignedByTheWave(
+                    safe(sourceId)) ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+                    safe(sourceId), "the configuration read of "
+                            + safe(fieldSignature) + " failed, so the region"
+                            + " reads the field as it was and no row states a"
+                            + " mint of it: "
+                            + ConcolicRegionRuntime.rootCause(failure));
         }
-        configuredSource(sourceId, owner, fieldSignature);
     }
 
     /** Writes a configuration's assigned value into the field one read of
@@ -598,7 +654,12 @@ final class RootMint {
                             + " could not be written into "
                             + fieldSignature);
         } catch (Throwable failure) {
-            // A read of the workload's own field: never perturb it.
+            // A read of the workload's own field: never perturb it, and
+            // never lose the plant silently.
+            RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.BLOCKING,
+                    sourceId, "the wave's assignment for this configuration"
+                            + " could not be written into " + fieldSignature
+                            + ": " + ConcolicRegionRuntime.rootCause(failure));
         } finally {
             ConcolicRegionRuntime.resumeObservation();
         }
@@ -857,10 +918,6 @@ final class RootMint {
                         + firstNonBlank(fieldSignature, action.cell))) {
             return concrete;
         }
-        // One configuration read twice in one occurrence is one value: the
-        // box its first read minted, no second root row (invariant 8).
-        Object read = config ? active.configurationRead(root) : null;
-        if (read != null) return read;
         // A clock reads its node's clock (NodeClocks): the host's reading
         // moved by the jump before it.
         ActiveRegion owner = active.rootOwner(action.symbol);
@@ -887,6 +944,19 @@ final class RootMint {
             } else {
                 planted = modeled;
             }
+        }
+        if (config) {
+            // The key's one symbol holds one value in this JVM: a read at
+            // another is read concretely (#configurationAgrees).  One read
+            // twice in one occurrence is the box its first read minted, no
+            // second root row (invariant 8).
+            if (!configurationAgrees(root, ConcolicRegionRuntime
+                    .recordedScalar(planted), firstNonBlank(action.siteId,
+                    action.cell))) {
+                return concrete;
+            }
+            Object read = active.configurationRead(root);
+            if (read != null) return read;
         }
         // A clock site read again in the occurrence that read it (a loop's
         // bodies share one address) is a later instant of the same root at
@@ -918,6 +988,13 @@ final class RootMint {
             if (config) active.configurationMinted(root, fresh);
             return fresh;
         } catch (Throwable throwable) {
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, assignedByTheWave(root)
+                            ? GapClass.BLOCKING : GapClass.DIAGNOSTIC, root,
+                    "the declared input at " + firstNonBlank(fieldSignature,
+                            action.cell) + " was not minted, so the region"
+                            + " reads it concretely and no row states a"
+                            + " value for it: "
+                            + ConcolicRegionRuntime.rootCause(throwable));
             return ran;
         }
     }

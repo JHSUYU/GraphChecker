@@ -383,20 +383,36 @@ final class ActiveRegion {
     /**
      * A configuration root's domain (SYMBOL-SCOPE §4.3): the hull of its
      * static anchors ({@code causynth.ConfigRoots}) and the value this mint
-     * read.  None stated: a boolean, or no anchor, and the value alone.
+     * read.  None stated: a boolean, or no anchor, and the root is pinned.
+     * A declaration stating half a domain, or a bound that is no integer,
+     * states none either, named.
      */
     static void configDomain(JsonObject row, String staticMin,
                              String staticMax, String recordedValue) {
-        if (safe(staticMin).isEmpty() || !safe(recordedValue).trim()
-                .matches("-?[0-9]+")) {
+        String min = safe(staticMin).trim();
+        String max = safe(staticMax).trim();
+        String value = safe(recordedValue).trim();
+        if (min.isEmpty() && max.isEmpty()) return;
+        if (!INTEGER.matcher(min).matches()
+                || !INTEGER.matcher(max).matches()
+                || !INTEGER.matcher(value).matches()) {
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    optionalString(row, "sourceId"), "this configuration's"
+                            + " declared domain [" + min + ", " + max
+                            + "] or the value its mint read (" + value
+                            + ") is no integer, so the root states no domain"
+                            + " and is pinned");
             return;
         }
-        BigInteger value = new BigInteger(recordedValue.trim());
+        BigInteger read = new BigInteger(value);
         row.addProperty("domainMin",
-                value.min(new BigInteger(staticMin)).toString());
+                read.min(new BigInteger(min)).toString());
         row.addProperty("domainMax",
-                value.max(new BigInteger(staticMax)).toString());
+                read.max(new BigInteger(max)).toString());
     }
+
+    private static final java.util.regex.Pattern INTEGER =
+            java.util.regex.Pattern.compile("-?[0-9]+");
 
     /**
      * The occurrence a mint of this root is addressed at: the region whose

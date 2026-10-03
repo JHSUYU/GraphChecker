@@ -352,7 +352,9 @@ getter call of the shape of its first call (by site), a `DECLARED_SITE` `CALL_RE
   occurrence (`runtime/RuntimeRegionPlanner#configuredSourcePhases`). Before the `getfield`,
   INSTRUMENT weaves `ConcolicRegionRuntime.readConfiguration(sourceId, owner, field)` under the
   site's context (`CausynthPipeline#instrumentConfigurationRead`), the hook a tree would have
-  carried. A field a tree's hook mints is the hook's: none of its reads is declared.
+  carried; it never throws into the read, and a failure is named (`UNSTATED_VALUE`, BLOCKING
+  where the obligation assigns the root). A field a tree's hook mints is the hook's: none of its
+  reads is declared.
 - **Named, not minted.** What these rules leave concrete is a `DECLARATION_MISSING` DIAGNOSTIC row
   of `communication_gaps.jsonl.gz` (`ConfigRoots#gaps`, published with the declarations), its
   reason first in its detail: `CONFIG_KEY_UNRESOLVED`, a read whose key no literal names (`for (k :
@@ -364,15 +366,19 @@ getter call of the shape of its first call (by site), a `DECLARED_SITE` `CALL_RE
 - **The world.** A configuration belongs to the world, not to an occurrence: the value an
   obligation assigns it is written at every read of its field, on every node, whatever occurrence
   runs it (`runtime/RootMint#configuration`), and planted at every getter return a symbolic
-  occurrence reads; a second getter read of one key in an occurrence is the first one's value.
-  The VM label is the source's alone (`ConfiguredSourcePhaseContract#engineLabel`), so the reads of
-  one key in one JVM are one symbol: a homogeneous cluster.
+  occurrence reads. The VM label is the source's alone (`ConfiguredSourcePhaseContract#engineLabel`),
+  so the reads of one key in one JVM are one symbol: a homogeneous cluster. That symbol holds ONE
+  value: the first mint of the root in a JVM fixes it, and a later mint at another value -- an
+  unset key's other default, another node's configuration -- is read concretely, an
+  `UNSTATED_VALUE` DIAGNOSTIC row (`RootMint#configurationAgrees`); a second getter read of one key
+  in an occurrence is the box its first read minted.
 - **Domain.** A boolean is a MARKER, free over both values. An integral's domain is the hull of
   its anchors -- each getter call's literal default and `c - 1, c, c + 1` for each integral literal
   `c` a branch compares the value with within eight flows of the slice, never through a field, at 0
   or above where every anchor is -- mapped through its clamps (a planted value lies in their image:
   `Math.max(v, 1)` is never 0), and of the value the mint read: the declaration states the static
-  hull, the mint row the whole (`runtime/ActiveRegion#configDomain`).
+  hull, the mint row the whole (`runtime/ActiveRegion#configDomain`). A declaration stating half a
+  domain or a bound that is no integer states none, named, and the root is pinned.
 
 A tree may still call `CausynthSymbolicSource.symbolize(String sourceId, Object owner, String
 fieldSignature)` (the Hadoop copy is `src/shim/java/org/apache/hadoop/ipc/CausynthSymbolicSource`):
@@ -709,10 +715,11 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   on a read, §4.2), configuration (§4.3) and tree hooks. A clock read through a field, a parameter,
   `java.time`, or an interface whose implementation is outside the scope is not recognized;
   pre-window state is a root only where a tree hook says so.
-- Configuration (§4.3): one symbol per key per JVM, a homogeneous cluster, by design. The VM names
-  a field mint by its owner's class, so one key is minted in one shape, at one field (the first by
-  signature) or, with none, at its getter returns, and every other read of the key -- a second
-  field caching it, a getter beside its field, another view, clamp or type -- is read concretely
+- Configuration (§4.3): one symbol per key per JVM, a homogeneous cluster, by design; a node read
+  at another value than the JVM's first is read concretely. The VM names a field mint by its
+  owner's class, so one key is minted in one shape, at one field (the first by signature) or, with
+  none, at its getter returns, and every other read of the key -- a second field caching it, a
+  getter beside its field, another view, clamp or type -- is read concretely
   (`CONFIG_READ_CONCRETE`): a world that flips the key leaves those reads at the recording's
   value. A field declared in a class two runtime classes extend mints one symbol per class. A
   static field, a `float` or `double`, a box, a `String` or an enum is no root (an enum or `String`

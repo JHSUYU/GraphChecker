@@ -851,14 +851,11 @@ public final class ConcolicRegionRuntime {
     }
 
     /** The engine's configuration read, woven before a configuration
-     *  field's {@code getfield} (SYMBOL-SCOPE §4.3). */
+     *  field's {@code getfield} (SYMBOL-SCOPE §4.3); it names a failure
+     *  and never throws into the workload's own read. */
     public static void readConfiguration(
             String sourceId, Object owner, String fieldSignature) {
-        try {
-            RootMint.configuration(sourceId, owner, fieldSignature);
-        } catch (Throwable ignored) {
-            // Never perturb the workload's own read.
-        }
+        RootMint.configuration(sourceId, owner, fieldSignature);
     }
 
     /** Records a stable logical source a live occurrence just entered. */
