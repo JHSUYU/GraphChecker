@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.contract.Clock;
@@ -36,6 +37,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -103,6 +105,9 @@ public class ComposerTest {
     private static final String ANCHOR_SITE = "BlockManager#get#8:READ";
     private static final String MARKER = "marker_m";
     private static final String MARKER_ROOT = "ROOT.MARKER";
+    /** A configuration flag's root and the symbol its mint names. */
+    private static final String CONFIG_ROOT = "CONFIG:k.flag";
+    private static final String CONFIG = "config_k";
     private static final String SERIAL = "serial_s";
     private static final String SERIAL_ROOT = "ROOT.SERIAL";
     private static final String CLOCK = "clock_now";
@@ -1224,6 +1229,43 @@ public class ComposerTest {
     }
 
     /**
+     * Every path unsat with every root free is a contradiction the
+     * composition built only when it is unsat without its fatal arm too, or
+     * observed the fatal arm: refuted by phi alone, no root turns it to the
+     * fatal arm, which is the claim's answer and no gap (b20h
+     * BlockTokenSecretManager-511).  {the decision before the anchor, or
+     * null; phi; observed fatal; BLOCKING PATH_SELF_CONTRADICTORY}.
+     */
+    @Test
+    public void aPathRefutedByItsFatalArmAloneContradictsNothing()
+            throws Exception {
+        String never = "(and " + MARKER + " (not " + MARKER + "))";
+        Object[][] rows = {
+                {null, never, false, false},
+                {never, MARKER, false, true},
+                {null, never, true, true},
+        };
+        for (Object[] row : rows) {
+            Path iteration = folder.newFolder().toPath();
+            Session seed = new Session(iteration, "s0", false);
+            seed.marker("false");
+            if (row[0] != null) seed.decision(ANCHOR, "a#u1", (String) row[0]);
+            seed.target((String) row[1], (Boolean) row[2], true);
+            seed.write();
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                    compose(iteration, 4), solver());
+            boolean blocked = false;
+            for (GapRow gap : decision.claim().gaps()) {
+                blocked |= gap.kind() == GapKind.PATH_SELF_CONTRADICTORY
+                        && gap.cls() == GapClass.BLOCKING;
+            }
+            assertEquals(Arrays.toString(row), row[3], blocked);
+            assertEquals(Arrays.toString(row), ClaimKind.NO_SUPPORTED_WITNESS,
+                    decision.claim().kind());
+        }
+    }
+
+    /**
      * A DISJUNCTION is asked whole while that decides, else path by path,
      * and the answer is the first sat path in order.  A path refuted under
      * some assertions is not asked again under more of them; a refutation
@@ -1650,7 +1692,7 @@ public class ComposerTest {
                 session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
                         !"s0".equals(id), true);
                 if (!"s2".equals(id)) {
-                    session.serial("119994", "+0", "+3");
+                    session.serial("119994", "119994", "119997");
                 } else if (!variant.equals("never read")) {
                     session.serialReadConcretely("119994");
                 }
@@ -1705,9 +1747,106 @@ public class ComposerTest {
                 {"s1", "119997", "true"}}) {
             Session session = new Session(iteration, each[0],
                     "true".equals(each[2]));
-            session.serial(each[1], "+0", "+3");
+            session.serial(each[1], each[1],
+                    String.valueOf(Long.parseLong(each[1]) + 3L));
             session.target("true", false, true);
             session.write();
+        }
+    }
+
+    /**
+     * An integral's moves are its domain's end anchors (each bound and its
+     * two inward neighbours: where its outermost comparisons flip) first,
+     * then outward from the value it ran at, each nearest first, within its
+     * domain: a far threshold is reached under the cap, and a recording
+     * outside the domain moves to the nearest bound first.  {recorded, min,
+     * max, the values moved to, in order, under a cap of four valuations}.
+     */
+    @Test
+    public void anIntegralMovesToItsDomainsEndsThenOutward()
+            throws Exception {
+        String[][] rows = {
+                {"500", "0", "1000", "2 998 1"},
+                {"0", "0", "1000", "1 2 998"},
+                {"3", "3", "1001", "4 5 999"},
+                {"7", "5", "8", "6 8 5"},
+                {"20", "5", "8", "8 7 6"},
+        };
+        for (String[] row : rows) {
+            Path iteration = folder.newFolder("outward-" + row[0] + "-"
+                    + row[1]).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.serial(row[0], row[1], row[2]);
+            // The fatal rests on the counter, so the valuations move it.
+            session.expression("EXPR.0000000000000e01", binary(">",
+                    symbol(SERIAL, "I"), integer("I", 2_000L)));
+            session.target("EXPR.0000000000000e01", false, true);
+            session.write();
+            List<String> moved = new ArrayList<String>();
+            for (Composer.Valuation valuation
+                    : compose(iteration, 4).valuations()) {
+                if (!valuation.moved().isEmpty()) {
+                    moved.add(valuation.moved().get(SERIAL_ROOT));
+                }
+            }
+            assertEquals(Arrays.toString(row),
+                    Arrays.asList(row[3].split(" ")), moved);
+        }
+    }
+
+    /**
+     * A WITNESS MOVING CONFIGURATION ONLY RANKS LAST, AND ONE WHOSE WORLD
+     * NO CLUSTER COULD HOLD IS NO CLAIM.  {what reaches the fatal arm, the
+     * configuration's reads its plant leaves (the scope map's CONFIG_KEY
+     * row), the claim's kind, its moves, whether it states configuration
+     * only, whether a gap names the partial world}: the fault and the
+     * configuration each alone, the configuration declared first; the
+     * configuration alone, whole; the same, a read of its key left.
+     */
+    @Test
+    public void aConfigurationWitnessRanksLastAndAPartialOneIsNoClaim()
+            throws Exception {
+        Object[][] rows = {
+            {"(or (not " + MARKER + ") (not " + CONFIG + "))", "",
+                ClaimKind.MARKER_FLIPPED, MARKER_ROOT, false, false},
+            {"(not " + CONFIG + ")", "", ClaimKind.MARKER_FLIPPED,
+                CONFIG_ROOT, true, false},
+            {"(not " + CONFIG + ")", "<t.A: void a()>#u3",
+                ClaimKind.NO_SUPPORTED_WITNESS, "", false, true}};
+        int variant = 0;
+        for (Object[] row : rows) {
+            Path iteration = folder.newFolder("config-rank-" + variant++)
+                    .toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.configuration("true");
+            session.marker("true");
+            session.target((String) row[0], false, true);
+            session.write();
+            Path map = iteration.resolve(StaticScopeMap.FILE);
+            Files.write(map, Collections.singletonList(
+                    StaticScopeMap.configKeyRow(CONFIG_ROOT, "<t.A: int f>",
+                            ((String) row[1]).isEmpty()
+                                    ? Collections.<String>emptyList()
+                                    : Collections.singletonList(
+                                    (String) row[1])).toString()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            Composer.Composition composition = compose(iteration, ANCHOR, 8,
+                    StaticScopeMap.read(map));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            String moved = String.join(",",
+                    decision.claim().movedRoots().keySet());
+            boolean named = false;
+            for (GapRow gap : decision.claim().gaps()) {
+                named |= gap.kind() == GapKind.UNPRODUCIBLE_ANSWER
+                        && CONFIG_ROOT.equals(gap.subject());
+            }
+            assertEquals((String) row[0] + " " + row[1],
+                    row[2] + " " + row[3] + " " + row[4] + " " + row[5],
+                    decision.claim().kind() + " " + moved + " "
+                            + composition.configurationOnly(
+                            decision.claim().movedRoots().keySet())
+                            + " " + named);
         }
     }
 
@@ -1791,7 +1930,8 @@ public class ComposerTest {
             String id = "s" + row[0];
             Session session = new Session(iteration, id, row[0] == 1L);
             session.roots.add(RootMintRow.of(id, 1L, ANCHOR, "ROOT.NOW",
-                    "clk_now", RootKind.CLOCK, Long.toString(row[1]), null,
+                    "clk_now", RootKind.CLOCK, RootCategory.CLOCK,
+                    Long.toString(row[1]), null,
                     null, true, Clock.of(1_000_000L, Clock.WALL), row[2]));
             session.expression("EXPR.00000000000003e1", binary("<",
                     integer("J", row[3]), symbol("clk_now", "J")));
@@ -1818,7 +1958,7 @@ public class ComposerTest {
                                          String rootId, String symbol,
                                          String reading) {
         return RootMintRow.of(session, seq, ANCHOR, rootId, symbol,
-                RootKind.CLOCK, reading, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L);
+                RootKind.CLOCK, RootCategory.CLOCK, reading, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L);
     }
 
     // ------------------------------------------------------------------
@@ -1897,7 +2037,7 @@ public class ComposerTest {
         Session twice = new Session(runs, "s0", false);
         twice.clock("700");
         twice.roots.add(RootMintRow.of("s0", ++twice.seq, ANCHOR, "ROOT.THEN",
-                "clock_then", RootKind.CLOCK, "705", null, null, true,
+                "clock_then", RootKind.CLOCK, RootCategory.CLOCK, "705", null, null, true,
                 Clock.of(1_000_000L, Clock.WALL), 0L));
         twice.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
                 + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
@@ -1925,7 +2065,7 @@ public class ComposerTest {
         Path driven = folder.newFolder("clock-driven").toPath();
         Session both = new Session(driven, "s0", false);
         both.clock("700");
-        both.serial("119994", "+0", "+3");
+        both.serial("119994", "119994", "119997");
         both.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
                 + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
         both.target("(and (> " + CLOCK + " 1000) (>= " + SERIAL
@@ -3013,6 +3153,28 @@ public class ComposerTest {
     }
 
     /**
+     * An object the VM placed unnamed ({@code P_L'class'_}) is non-null, as
+     * a named one is: a lookup that returned it is no null in any model.
+     */
+    @Test
+    public void aPlacedObjectIsNonNull() {
+        SmtLowering lowering = new SmtLowering(
+                new LinkedHashMap<String, VmTermLowering.Sort>());
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        String test = lowering.dispatch(binary("==",
+                symbol("P_L'org/apache/zookeeper/server/DataNode'_",
+                        "org/apache/zookeeper/server/DataNode"), vmNull()),
+                VmTermLowering.Sort.BOOL, "test").text;
+        lowering.end();
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        List<String> facts = lowering.facts(Collections.singletonList(test));
+        assertTrue(test + " " + facts, facts.size() == 1
+                && facts.get(0).matches("\\(not \\(= identity__\\w+ nullRef\\)\\)")
+                && test.contains(facts.get(0).substring(8, 8 + 20)));
+    }
+
+    /**
      * What another writer of the reference may have handed the reader, by
      * variant: a map mutated after its store by a writer concurrent with the
      * reader is each state the reader could have seen, chosen by nested
@@ -3129,7 +3291,7 @@ public class ComposerTest {
             if (guarded) {
                 session.roots.add(RootMintRow.of("s0", ++session.seq,
                         writers[2], "ROOT.CLEAN", "M_J_clean",
-                        RootKind.CLOCK, "1000", null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
+                        RootKind.CLOCK, RootCategory.CLOCK, "1000", null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
                 session.expression("EXPR.0000000000000090", binary("<",
                         symbol("M_J_clean", "J"), integer("J", 2_000L)));
                 session.decision(writers[2], "Cleaner#clean#u3", true,
@@ -3302,7 +3464,7 @@ public class ComposerTest {
         // The reservation of 5: the reserver's clock plus 6000.
         LocationId reserves = LocationId.of(LocationKind.MAP, "50", "-3");
         session.roots.add(RootMintRow.of(id, ++session.seq, reserver,
-                "ROOT.RESERVED", RESERVED, RootKind.CLOCK,
+                "ROOT.RESERVED", RESERVED, RootKind.CLOCK, RootCategory.CLOCK,
                 Long.toString(seed - 1_000L), null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
         // As the VM publishes it: an arithmetic node states no Java type,
         // and the deadline is a Long cell by its width alone.
@@ -3317,7 +3479,7 @@ public class ComposerTest {
                 at("reserve#1", 0), 0), reserves, 70L,
                 "EXPR.00000000000000e1");
         session.roots.add(RootMintRow.of(id, ++session.seq, newer,
-                "ROOT.RESERVE", NANO, RootKind.CLOCK, Long.toString(
+                "ROOT.RESERVE", NANO, RootKind.CLOCK, RootCategory.CLOCK, Long.toString(
                         expired ? seed + 10_000L : seed), null, null, true,
                 Clock.of(1L, Clock.MONOTONIC), 0L));
         // The older commit's map, then its store.
@@ -4710,7 +4872,7 @@ public class ComposerTest {
         StringBuilder phi = new StringBuilder("(and");
         for (String[] cell : cells) {
             session.roots.add(RootMintRow.of("s0", ++session.seq, ANCHOR,
-                    cell[0], cell[1], RootKind.CLOCK, cell[2], null, null,
+                    cell[0], cell[1], RootKind.CLOCK, RootCategory.CLOCK, cell[2], null, null,
                     true, Clock.of(1_000_000L, cell[3]), 0L));
             phi.append(" (> ").append(cell[1]).append(" 0)");
         }
@@ -4865,7 +5027,7 @@ public class ComposerTest {
     /** One session whose decision carries the size model over {@code body}. */
     private void letCorpus(Path iteration, String body) throws IOException {
         Session session = new Session(iteration, "s0", false);
-        session.serial("5", "+0", "+3");
+        session.serial("5", "5", "8");
         session.decision(ANCHOR, "removeExpiredKeys#u7",
                 "(= " + SERIAL + " " + sizeModel(SERIAL, body) + ")");
         session.target("true", false, true);
@@ -5651,10 +5813,129 @@ public class ComposerTest {
     }
 
     /**
+     * A stream's stated result (VM SymStream) lowers as its chain: a guarded
+     * append or put is there exactly where its guard holds, a PIN's guard is
+     * required wherever its state is lowered, and a list's contains is a
+     * disjunction over the positions its chain can fill -- refused by name
+     * over a chain with no exact base.  {asked, sat?}.
+     */
+    @Test
+    public void aStreamsStatedResultLowersAsItsChain() {
+        Z3 solver = solver();
+        JsonObject n = vmLeaf("SymbolExpression", "n", "I");
+        JsonObject root = relation("INDEXED", "STATE", symbol(
+                "M_L'java/util/ArrayList'_3", "java/util/ArrayList"));
+        // [7 where n < 5, 8 where n >= 2].
+        JsonObject list = guarded(relation("INDEXED", "APPEND_IF",
+                guarded(relation("INDEXED", "APPEND_IF",
+                        relation("INDEXED", "SNAPSHOT_BASE", root),
+                        integer("I", 7L)),
+                        binary("<", n, integer("I", 5L))),
+                integer("I", 8L)), binary(">=", n, integer("I", 2L)));
+        JsonObject set = guarded(relation("ASSOCIATIVE", "PUT_IF",
+                relation("ASSOCIATIVE", "SNAPSHOT_BASE", null),
+                integer("I", 5L), integer("Z", 1L)),
+                binary("<", n, integer("I", 5L)));
+        String chains = streamQuery(
+                new String[] {"list_size", "read0", "contains8", "set5"},
+                relation("INDEXED", "SIZE", "I", list),
+                relation("INDEXED", "READ", "I", list, integer("I", 0L)),
+                relation("INDEXED", "CONTAINS", "Z", list, integer("I", 8L)),
+                relation("ASSOCIATIVE", "CONTAINS", "Z", set,
+                        integer("I", 5L)));
+        // The same list where the run held n < 4.
+        String pinned = streamQuery(new String[] {"pinned_size"},
+                relation("INDEXED", "SIZE", "I", guarded(relation("INDEXED",
+                        "PIN", list), binary("<", n, integer("I", 4L)))));
+        String[][] cases = {
+            {chains, "(and (= n 3) (= list_size 2))", "sat"},
+            {chains, "(and (= n 7) (= list_size 2))", "unsat"},
+            {chains, "(and (= n 1) (= list_size 1))", "sat"},
+            {chains, "(and (= n 7) (= read0 8))", "sat"},
+            {chains, "(and (= n 3) (= read0 8))", "unsat"},
+            {chains, "(and (= n 1) contains8)", "unsat"},
+            {chains, "(and (= n 3) contains8)", "sat"},
+            {chains, "(and (= n 7) set5)", "unsat"},
+            {chains, "(and (= n 1) set5)", "sat"},
+            {pinned, "(and (= n 4) (= pinned_size 2))", "unsat"},
+            {pinned, "(and (= n 3) (= pinned_size 2))", "sat"},
+        };
+        for (String[] asked : cases) {
+            Z3.Answer answer = solver.ask(asked[0] + "\n(assert " + asked[1]
+                    + ")", Collections.<String>emptyList(), false);
+            assertTrue(asked[1] + " " + answer.status(), answer.decided()
+                    && answer.sat() == "sat".equals(asked[2]));
+        }
+        // A list whose chain stands on no exact base bounds no position.
+        String refusal = "";
+        try {
+            streamQuery(new String[] {"unbounded"}, relation("INDEXED",
+                    "CONTAINS", "Z", root, integer("I", 8L)));
+        } catch (AssertionError refused) {
+            refusal = refused.getMessage();
+        }
+        assertTrue("a contains over an unbounded chain: " + refusal,
+                refusal.contains(
+                        "ContainerRelation:INDEXED:CONTAINS:unbounded-chain"));
+    }
+
+    /**
+     * One query defining each of {@code names} as what its expression
+     * lowers to over an Int symbol {@code n}, with every condition the
+     * lowering requires asserted.
+     */
+    private static String streamQuery(String[] names,
+                                      JsonObject... expressions) {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("n", VmTermLowering.Sort.INT);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        List<String> texts = new ArrayList<String>();
+        StringBuilder defined = new StringBuilder();
+        for (int index = 0; index < names.length; index++) {
+            boolean truth = "Z".equals(JsonFields.optionalString(
+                    expressions[index], "_java_type"));
+            VmTermLowering.Term term = lowering.dispatch(expressions[index],
+                    truth ? VmTermLowering.Sort.BOOL
+                            : VmTermLowering.Sort.INT, "test");
+            texts.add(term.text);
+            defined.append("\n(define-fun ").append(names[index])
+                    .append(truth ? " () Bool " : " () Int ")
+                    .append(term.text).append(')');
+        }
+        // Read before end(), which closes the conjunction they belong to.
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        List<String> conditions = lowering.end();
+        texts.addAll(conditions);
+        StringBuilder query = new StringBuilder(
+                String.join("\n", lowering.preambleLines()));
+        for (SmtLowering.Declaration declaration : lowering.reachedBy(texts)) {
+            query.append('\n').append(declaration.render());
+        }
+        for (String fact : lowering.facts(texts)) {
+            query.append("\n(assert ").append(fact).append(')');
+        }
+        for (String condition : conditions) {
+            query.append("\n(assert ").append(condition).append(')');
+        }
+        return query.append(defined).toString();
+    }
+
+    /** A relation with its {@code guard}. */
+    private static JsonObject guarded(JsonObject relation, JsonObject guard) {
+        relation.add("guard", guard);
+        return relation;
+    }
+
+    /**
      * The Strings a file name carries lower as Java computes them: a path's
      * parent is its prefix up to the last separator (File.getParent) and is
      * undefined -- Java throws -- without one; a long names itself in decimal
-     * (blk_<id>_<gs>.meta).  finalize-gs a8 lost every path to these.
+     * (blk_<id>_<gs>.meta).  finalize-gs a8 lost every path to these.  An
+     * address is trimmed as String.trim cuts it, every character up to
+     * U+0020 off both ends (b20h BlockRecoveryWorker-222's proxy URI).
      */
     @Test
     public void aPathsParentAndALongsNameLowerAsJavaComputesThem() {
@@ -5672,12 +5953,14 @@ public class ComposerTest {
                                 "I"))), VmTermLowering.Sort.STRING, "test");
         VmTermLowering.Term name = lowering.dispatch(vmString("toString",
                 vmLeaf("SymbolExpression", "n", "J")), VmTermLowering.Sort.STRING, "test");
+        VmTermLowering.Term trimmed = lowering.dispatch(vmString("trim",
+                path), VmTermLowering.Sort.STRING, "test");
         List<String> conditions = lowering.end();
         assertTrue(lowering.openRefusals().toString(),
                 lowering.openRefusals().isEmpty());
         List<String> texts = new ArrayList<String>(conditions);
         texts.addAll(Arrays.asList(parent.text, parent.precondition,
-                name.text));
+                name.text, trimmed.text));
         StringBuilder query = new StringBuilder(
                 String.join("\n", lowering.preambleLines()));
         for (SmtLowering.Declaration declaration : lowering.reachedBy(texts)) {
@@ -5691,17 +5974,27 @@ public class ComposerTest {
         }
         query.append("\n(define-fun parent () String ").append(parent.text)
                 .append(")\n(define-fun name () String ").append(name.text)
-                .append(")\n(assert ").append(parent.precondition).append(')');
+                .append(")\n(define-fun trimmed () String ")
+                .append(trimmed.text).append(')');
+        String parentDefined = "(assert " + parent.precondition + ")";
         String[][] cases = {
             {"(and (= s \"a/b/c\") (= parent \"a/b\"))", "sat"},
             {"(and (= s \"a/b/c\") (= parent \"a\"))", "unsat"},
             {"(= s \"abc\")", "unsat"},
             {"(and (= n (- 12)) (= name \"-12\"))", "sat"},
             {"(and (= n (- 12)) (= name \"12\"))", "unsat"},
+            {"(and (= s \" \\u{9}a b\\u{a}\") (= trimmed \"a b\"))", "sat", ""},
+            {"(and (= s \" \\u{9}a b\\u{a}\") (= trimmed \"\\u{9}a b\"))",
+                    "unsat", ""},
+            {"(and (= s \" \\u{0} \") (= trimmed \"\"))", "sat", ""},
+            {"(and (= s \"ab\") (not (= trimmed s)))", "unsat", ""},
         };
         for (String[] asked : cases) {
-            Z3.Answer answer = solver.ask(query + "\n(assert " + asked[0]
-                    + ")", Collections.<String>emptyList(), false);
+            // A trim is defined wherever its receiver is, a parent only
+            // where the path has a separator.
+            Z3.Answer answer = solver.ask(query + "\n"
+                    + (asked.length > 2 ? "" : parentDefined) + "\n(assert "
+                    + asked[0] + ")", Collections.<String>emptyList(), false);
             assertTrue(asked[0] + " " + answer.status(), answer.decided()
                     && answer.sat() == "sat".equals(asked[1]));
         }
@@ -6343,7 +6636,14 @@ public class ComposerTest {
 
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
-                    RootKind.MARKER, recorded, null, null, true, null, 0L));
+                    RootKind.MARKER, RootCategory.FAULT, recorded, null, null, true, null, 0L));
+        }
+
+        /** A boolean configuration, as the engine mints one. */
+        void configuration(String recorded) {
+            roots.add(RootMintRow.of(id, ++seq, PRODUCER, CONFIG_ROOT, CONFIG,
+                    RootKind.MARKER, RootCategory.CONFIG, recorded, null,
+                    null, true, null, 0L));
         }
 
         /**
@@ -6356,7 +6656,7 @@ public class ComposerTest {
          */
         void clock(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,
-                    RootKind.CLOCK, recorded, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
+                    RootKind.CLOCK, RootCategory.CLOCK, recorded, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
         }
 
         /** One decision, and the clock cells its predicate read. */
@@ -6367,10 +6667,12 @@ public class ComposerTest {
                     Collections.singletonMap(clockRoot, reading)));
         }
 
-        /** A declared counter, with the window the CASE states around it. */
+        /** A declared counter, with its absolute window (a row's bounds
+         *  are absolute; only a case's declaration is relative). */
         void serial(String recorded, String min, String max) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
-                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true, null, 0L));
+                    SERIAL, RootKind.INTEGRAL, RootCategory.HOOK, recorded,
+                    min, max, true, null, 0L));
         }
 
         /** Root id -> occurrence -> what this replay read the root at
@@ -6457,6 +6759,9 @@ public class ComposerTest {
         void root(OccurrenceAddress at, String rootId, String symbol,
                   RootKind kind, String recorded) {
             roots.add(RootMintRow.of(id, ++seq, at, rootId, symbol, kind,
+                    kind == RootKind.CLOCK ? RootCategory.CLOCK
+                            : kind == RootKind.MARKER ? RootCategory.FAULT
+                            : RootCategory.HOOK,
                     recorded, null, null, true,
                     kind == RootKind.CLOCK
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));

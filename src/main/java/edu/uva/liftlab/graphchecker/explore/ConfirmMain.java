@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -393,9 +394,10 @@ public final class ConfirmMain {
                     + world.clockDeltas.keySet() + " and answers attaches "
                     + world.answers.keySet());
         }
-        Map<String, RootKind> kinds = new LinkedHashMap<String, RootKind>();
+        Map<String, RootCategory> categories =
+                new LinkedHashMap<String, RootCategory>();
         for (RootMintRow row : session.roots()) {
-            kinds.put(row.rootId(), row.kind());
+            categories.put(row.rootId(), row.category());
         }
         Map<String, Set<String>> sites = inputSites(
                 iteration.resolve("execution_task_plan.jsonl"));
@@ -406,10 +408,11 @@ public final class ConfirmMain {
             Set<String> site = sites.getOrDefault(rootId,
                     Collections.<String>emptySet());
             String mint = world.mints.getOrDefault(rootId, "");
-            if (kinds.get(rootId) != RootKind.MARKER || site.size() != 1
-                    || mint.isEmpty()) {
+            if (categories.get(rootId) != RootCategory.FAULT
+                    || site.size() != 1 || mint.isEmpty()) {
                 throw new Refused("NATIVE_PLANT_UNSUPPORTED: root " + rootId
-                        + " is " + kinds.get(rootId) + ", called at " + site
+                        + " is " + categories.get(rootId) + ", called at "
+                        + site
                         + ", minted at '" + mint + "'; a native run plants "
                         + "a fault marker of one call site at the occurrence "
                         + "it is minted at");

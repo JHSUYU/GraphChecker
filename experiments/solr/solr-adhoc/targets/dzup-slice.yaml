@@ -1,1 +1,0 @@
-exception_target: adhoc-dzup-slice org.apache.solr.update.processor.DistributedZkUpdateProcessor 620

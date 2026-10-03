@@ -1,1 +1,0 @@
-exception_target: adhoc-move-livenode org.apache.solr.cloud.api.collections.MoveReplicaCmd 99

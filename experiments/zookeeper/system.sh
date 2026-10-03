@@ -21,44 +21,32 @@ zk_maven_repo=/bigtemp/vnr3ne/m2/zookeeper
 # GraphChecker's jar follows the tree's classpath: the tree's own libraries
 # (slf4j and its binding, Netty) are not the engine's versions.
 system_jar_first=false
-# The class a cluster test names: tools/adhoc/workloads.py lists the tests
-# of the classes that do.
-system_cluster_class=org/apache/zookeeper/test/ClientBase
-# The tree's own code, for coverage and for the ad-hoc checks' scan: its class
-# roots (system_root names), the package JaCoCo counts, and each root's
-# sources, as "<root>:<tree-relative source dir>".
-system_roots=(server election lock queue)
-system_package=org.apache.zookeeper
+# The tree's own sources, as "<root>:<tree-relative source dir>": where
+# tools/lib/annotated.py finds the throws a known bug's case is marked at.
 system_sources=(
   server:zookeeper-server/src/main/java
   election:zookeeper-recipes/zookeeper-recipes-election/src/main/java
   lock:zookeeper-recipes/zookeeper-recipes-lock/src/main/java
   queue:zookeeper-recipes/zookeeper-recipes-queue/src/main/java
 )
-# A class a workload runs only if it starts a node of the system: a test
-# that starts none opens no recording window, so an ad-hoc sweep does not
-# choose it (tools/adhoc/select.py).
-system_node_class=org/apache/zookeeper/server/ZooKeeperServer
-
-# The modules whose classes are the lineage scope: the whole tree's, whatever
-# the case analyses (plan.LineageScan); scope growth and the library doors
-# grow from it, so the build installs every one of them.  The workload's own
-# test classes join it (system_paths): a ZooKeeper workload's clients are
-# threads its test starts (an election's contenders), which stand on their
-# creator's frames and share one address unless the start is a start site.
-zk_lineage_modules=(zookeeper-jute zookeeper-server
-  zookeeper-recipes/zookeeper-recipes-election
-  zookeeper-recipes/zookeeper-recipes-lock
-  zookeeper-recipes/zookeeper-recipes-queue)
 
 system_paths() {
   module=${repo}/${zk_module}
-  report=${module}/target/surefire-reports/TEST-${classpath_test:-${test_class}}.xml
+  report=${module}/target/surefire-reports/TEST-${test_class}.xml
   test_classes=${module}/target/test-classes
+  # The lineage scope (plan.LineageScan): the tree's class roots the
+  # workload's classpath holds -- its module's, the server's and jute's, the
+  # ones classpath.py puts first and the build makes (-am).  A recipe another
+  # module holds is no class the workload can load: woven, it does not verify
+  # against the workload's classpath (ZK5: the lock recipe's ProtocolSupport).
+  # And the workload's own test classes: a ZooKeeper workload's clients are
+  # threads its test starts (an election's contenders), which stand on their
+  # creator's frames and share one address unless the start is a start site.
   local each
   lineage_roots=
-  for each in "${zk_lineage_modules[@]}"; do
-    lineage_roots+=${lineage_roots:+:}${repo}/${each}/target/classes
+  for each in "${zk_module}" zookeeper-server zookeeper-jute; do
+    [[ ":${lineage_roots}:" == *":${repo}/${each}/target/classes:"* ]] \
+      || lineage_roots+=${lineage_roots:+:}${repo}/${each}/target/classes
   done
   lineage_roots+=:${test_classes}
 }
@@ -84,7 +72,7 @@ system_classpath() {
 system_build() {
   MAVEN_REPO_LOCAL=${MAVEN_REPO_LOCAL:-${zk_maven_repo}} \
     bash "${system_dir}/build.sh" "${repo}" "${zk_module}" "${test_class}" \
-    "${test_method}" "$(IFS=,; echo "${zk_lineage_modules[*]}")"
+    "${test_method}"
 }
 
 # What surefire hands every test JVM of the tree, for a workload JVM the

@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBackedgeBudget;
 import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.ReplayLoopResourceCut;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -82,6 +83,12 @@ final class ActiveRegion {
     final Map<String, String> sharedStateRefusals = new LinkedHashMap<>();
     /** Symbols this activation already minted at a one-shot hook. */
     final Set<String> materialized = new LinkedHashSet<>();
+    /** The box each configuration key's first getter read here minted. */
+    private final Map<String, Object> configurationReads =
+            new LinkedHashMap<>();
+    /** The declared inputs that took such a box: symbolic, and stated by
+     *  the first read's row. */
+    private final Set<String> configurationReuses = new LinkedHashSet<>();
     final ConcolicRegionRuntime.OccurrenceCounter
             materializationOccurrences =
             new ConcolicRegionRuntime.OccurrenceCounter();
@@ -334,6 +341,25 @@ final class ActiveRegion {
         return new RootMint.SourceSiteEntry(matched, site);
     }
 
+    /** The box a getter read of this configuration minted here, or null
+     *  ({@code RootMint#materializePrimitiveValue}); a non-null answer is
+     *  the box the asking input {@code symbol} takes. */
+    synchronized Object configurationRead(String sourceId, String symbol) {
+        Object box = configurationReads.get(sourceId);
+        if (box != null) configurationReuses.add(symbol);
+        return box;
+    }
+
+    /** Whether this declared input took the box of its key's first read
+     *  here: no input left unsymbolized. */
+    synchronized boolean configurationReused(String symbol) {
+        return configurationReuses.contains(symbol);
+    }
+
+    synchronized void configurationMinted(String sourceId, Object box) {
+        configurationReads.putIfAbsent(sourceId, box);
+    }
+
     /** Publishes one mint row for one entry of a declared site. */
     synchronized void recordConfiguredSourceMint(
             RootMint.SourceSiteEntry entry, String sourceId,
@@ -341,9 +367,11 @@ final class ActiveRegion {
             JsonElement expression, boolean reused,
             String recordedValue) {
         JsonObject row = new JsonObject();
-        // The live read, taken before any plant (RootMint#configuredSource),
-        // so never the wave's value.  Without it a relative domain has no
-        // centre; RowPlaceholderMint#roots names that case.
+        // The live read, taken before any focused plant
+        // (RootMint#configuredSource); a configuration's world plant comes
+        // first (RootMint#configuration), so it states the world it read.
+        // Without it a relative domain has no centre;
+        // RowPlaceholderMint#roots names that case.
         if (recordedValue != null && !recordedValue.isEmpty()) {
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
@@ -356,10 +384,47 @@ final class ActiveRegion {
         row.add("expression", expression == null
                 ? JsonNull.INSTANCE : expression);
         row.addProperty("reused", reused);
+        row.addProperty("category", entry.category().name());
+        configDomain(row, entry.domainMin(), entry.domainMax(),
+                recordedValue);
         row.addProperty("mintOccurrence",
                 mintOccurrence(safe(sourceId)));
         symbolizedRows.add(row);
     }
+
+    /**
+     * A configuration root's domain (SYMBOL-SCOPE §4.3): the hull of its
+     * static anchors ({@code causynth.ConfigRoots}) and the value this mint
+     * read.  None stated: a boolean, or no anchor, and the root is pinned.
+     * A declaration stating half a domain, or a bound that is no integer,
+     * states none either, named.
+     */
+    static void configDomain(JsonObject row, String staticMin,
+                             String staticMax, String recordedValue) {
+        String min = safe(staticMin).trim();
+        String max = safe(staticMax).trim();
+        String value = safe(recordedValue).trim();
+        if (min.isEmpty() && max.isEmpty()) return;
+        if (!INTEGER.matcher(min).matches()
+                || !INTEGER.matcher(max).matches()
+                || !INTEGER.matcher(value).matches()) {
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    optionalString(row, "sourceId"), "this configuration's"
+                            + " declared domain [" + min + ", " + max
+                            + "] or the value its mint read (" + value
+                            + ") is no integer, so the root states no domain"
+                            + " and is pinned");
+            return;
+        }
+        BigInteger read = new BigInteger(value);
+        row.addProperty("domainMin",
+                read.min(new BigInteger(min)).toString());
+        row.addProperty("domainMax",
+                read.max(new BigInteger(max)).toString());
+    }
+
+    private static final java.util.regex.Pattern INTEGER =
+            java.util.regex.Pattern.compile("-?[0-9]+");
 
     /**
      * The occurrence a mint of this root is addressed at: the region whose
@@ -436,6 +501,13 @@ final class ActiveRegion {
             // seed replay's readings are the composer's timeline).
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
+        }
+        row.addProperty("category", action.category().name());
+        if (!action.configSource.isEmpty()) {
+            // A configuration getter's return is the root of its key.
+            row.addProperty("sourceId", action.configSource);
+            configDomain(row, action.configDomainMin,
+                    action.configDomainMax, recordedValue);
         }
         // A declared wall-clock read says so, so no reader guesses a clock
         // from a name.  Trap: never publish the PLAN's instant as its value.

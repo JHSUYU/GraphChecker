@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -529,9 +530,11 @@ public final class RowRuntime {
     private static final Map<String, String> ENDPOINTS =
             new ConcurrentHashMap<String, String>();
 
-    /** One root minted, with its kind and the domain it resolved to. */
+    /** One root minted, with its kind, its category and the domain it
+     *  resolved to. */
     public static void rootMint(OccurrenceAddress occurrence, long seq,
                                 String rootId, String symbol, RootKind kind,
+                                RootCategory category,
                                 String recordedValue, String domainMin,
                                 String domainMax, boolean declared,
                                 Clock clock, long clockSkew) {
@@ -545,7 +548,7 @@ public final class RowRuntime {
         session.rootMint(RootMintRow.of(sessionId(), sequence(seq),
                 occurrence,
                 Text.safe(rootId), Text.safe(symbol),
-                kind == null ? RootKind.INTEGRAL : kind,
+                kind == null ? RootKind.INTEGRAL : kind, category,
                 Text.safe(recordedValue),
                 Text.safe(domainMin).isEmpty() ? null : Text.safe(domainMin),
                 Text.safe(domainMax).isEmpty() ? null : Text.safe(domainMax),

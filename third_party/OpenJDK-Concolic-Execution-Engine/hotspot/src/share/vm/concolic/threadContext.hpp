@@ -18,6 +18,7 @@
 #include <vector>
 
 class SessionSymbolicHeap;
+class StreamTable;
 
 /**
  * One Java thread's symbolic execution state: its shadow frames, operand
@@ -67,6 +68,11 @@ private:
     // How many of branch_events a read has returned: the runtime reads after
     // every decision, and a whole-frame read each time is quadratic in them.
     size_t branch_events_read;
+    // What a model ran on the run's own values though symbolic content
+    // reached it, by name and the site of the call (note_model_gap); the
+    // region's summary states them and the runtime files each as a
+    // DIAGNOSTIC gap.
+    std::vector<std::pair<std::string, std::string> > model_gaps;
 
     RegionFrame() : enter_event_id(0), branch_events_read(0) {}
     ~RegionFrame() {
@@ -146,6 +152,9 @@ private:
   // publishes the mutation the element is already gone.  It is therefore read
   // before the body runs and consumed once by the publisher.
   Expression *_pending_view_removal_argument;
+  // The stream pipelines this thread recorded (SymStream), made on first
+  // use.
+  StreamTable *_streams;
 
 public:
   ThreadContext(JavaThread *jt, jlong context_id);
@@ -267,6 +276,20 @@ public:
   inline MethodSymbolizer &get_method_symbolizer() {
     return _method_symbolizer;
   }
+
+  // This thread's stream pipelines (SymStream); NULL until one is made,
+  // unless `create`.
+  StreamTable *streams(bool create);
+
+  /**
+   * Names a model's statement the region could not have -- a library call
+   * run on the run's own values though symbolic content reached it -- at
+   * the current call site, once per name and site.  Nothing outside a
+   * region.
+   */
+  void note_model_gap(const std::string &name);
+  /** The innermost region's named model gaps, as a JSON array. */
+  std::string serialize_model_gaps() const;
 
   inline bool is_symbolizing_method() {
     return _method_symbolizer.is_symbolizing_method();

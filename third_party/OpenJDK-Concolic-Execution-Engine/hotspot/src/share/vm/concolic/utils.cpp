@@ -295,7 +295,14 @@ oop OopUtils::key_of_map_node(oop node_obj) {
   }
   // Same layout caveat as value_of_map_node: resolve the declared `key` field
   // (inherited by LinkedHashMap$Entry from HashMap$Node) by name.
-  return obj_field_by_name(node_obj, "key", "Ljava/lang/Object;");
+  fieldDescriptor fd;
+  if (get_fd_by_name(node_obj, "key", "Ljava/lang/Object;", fd) != NULL) {
+    return node_obj->obj_field(fd.offset());
+  }
+  // A Collections.unmodifiableMap entry wraps its map's entry as `e`.
+  oop wrapped = obj_field_by_name(node_obj, "e", "Ljava/util/Map$Entry;");
+  return wrapped == NULL || wrapped == node_obj ? NULL
+      : obj_field_by_name(wrapped, "key", "Ljava/lang/Object;");
 }
 
 void StringUtils::replaceAll(std::string &str, const std::string &from, const std::string &to) {

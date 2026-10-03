@@ -3,7 +3,7 @@
 #
 # Starts the acceptance campaigns of one round from one snapshot worktree --
 # the eleven cases (nine HDFS, two Solr), or the cases CASES names (any case
-# id a case directory declares, an ad-hoc one too) -- each detached on its
+# id a case directory declares) -- each detached on its
 # head host, every one with its obligations spread over every host in LIFTS:
 #
 #   CAUSYNTH_CUSTOM_JDK_HOME=<image> tools/rounds/launch-round.sh /u/vnr3ne/gc-run/p25 v22

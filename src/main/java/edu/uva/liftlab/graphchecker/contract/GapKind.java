@@ -104,11 +104,11 @@ public enum GapKind {
      */
     ASSIGNMENT_UNMINTABLE,
     /**
-     * One composed path unsatisfiable with every root free: a contradiction
-     * the composition built, not a fact about roots.  BLOCKING at DECIDE, and
-     * {@code polarityDecides} is withheld beside it.  Typical trap: pi_p
-     * carrying the anchor's recorded polarity while phi_p asserts its
-     * complement.
+     * Every composed path unsatisfiable with every root free, and this one
+     * so even without its fatal arm, or after observing it: a contradiction
+     * the composition built, not a fact about roots (DIAGNOSTIC per path,
+     * BLOCKING for the composition at DECIDE).  A path its fatal arm alone
+     * refutes is one no root turns, the claim's own answer and no gap.
      */
     PATH_SELF_CONTRADICTORY,
     /**

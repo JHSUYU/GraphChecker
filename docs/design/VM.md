@@ -122,11 +122,24 @@ condition; a capture is cleared by the write it was taken for.
 typed `java/util/function/*` or `java/util/Comparator`) are named at its invoke. While its body runs
 muted, a frame whose receiver is one of them is a callback: it runs with propagation in a shadow
 frame of its own (`ShadowStack::push_callback`), its parameters seeded by the model's contract
-(`CallbackSeeder`), and the muted call's handle is suspended on a stack (at most 4 deep), so a
+(`CallbackSeeder`, told which functional object is called back), and the muted call's handle is
+suspended on a stack (at most 4 deep), so a
 model call inside the callback nests. When its frame pops, what it returned (its expression, else
 its concrete value) and the conditions its path recorded (`path`, `path_negation`: a predicate
-compiled to branches returns a constant) are logged on the call (`CallbackResult`), and the
-model's finish builds the mutation from the log. Its side effects are hooked like any interpreted
+compiled to branches returns a constant) are logged on the call (`CallbackResult`; a predicate's
+answer as a condition is `CallbackResult::truth`), and the model's finish builds the mutation from
+the log. A model may instead read each callback as it returns (`CallbackListener`: its result, the
+object it returned, its arguments as its frame then holds them); a concrete result is then not built
+into an expression, so a call whose callbacks stay concrete allocates nothing per callback (the stream
+model). A model may name the container its call reads as its callbacks run (`MethodSymbolizerHandle::
+set_source`, a stream's source): a mutation of it by a callback marks the call reentered without
+refusing the mutation (`MethodSymbolizer::reenters`, asked by all three container models before a
+mutation, `ContainerSupport::reenters_from_callback`), and the call's model states the rest. Any
+application method -- a class no boot loader defined -- that a muted call with callbacks enters other
+than as a callback (an element's `compareTo`, `equals` or `hashCode`, a custom list's `get`) ran
+unhooked: the first one is named in the region's model gaps as `MUTED_APPLICATION_CODE:<class.method>`
+unless the call's model states it itself. A call that unwinds with an exception tells its model
+(`CallUnwound`). Its side effects are hooked like any interpreted
 code. A callback the stack declines (a fifth window) runs muted and unlogged, and its call refuses
 its map (`CALLBACK_DEPTH_EXCEEDED`). A callback that calls back into its call's map is refused
 (`CALLBACK_REENTERS_CONTAINER`). A call that mutates as its callbacks answer (`removeIf`,
@@ -153,6 +166,7 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | maps by the Map contract: `HashMap`, `LinkedHashMap` (insertion order), `ConcurrentHashMap`, `Hashtable` (views, iterators, entries, a map view's `Collection.removeIf`) | `put get getOrDefault remove containsKey isEmpty clear size mappingCount entrySet keySet values iterator hasNext next getKey getValue`, conditional removal; `putAll` (a tracked source as `PUT_ALL` of its state read, else one `PUT` per entry); `putIfAbsent`, `replace`, `remove(k, v)`: the presence or match the body decided as a path condition, then `PUT`/`REMOVE`; `computeIfAbsent computeIfPresent compute merge`: presence, then the callback's result stored (`PUT`, or `REMOVE` for null); `replaceAll`, `forEach`; key and entry views' `removeIf` (`REMOVE_IF` under the predicate) | `Entry.setValue` abandons the entry; `values().removeIf` (`ASSOCIATIVE_VALUES_REMOVE_IF_UNMODELED`); a HashMap `replace(k, v)` that answered null (`ASSOCIATIVE_REPLACE_UNDECIDED`); `ConcurrentHashMap`'s bulk parallel operations |
 | `ArrayList`, `ArrayDeque`, `AbstractList` iterators | list and deque operations | `removeIf` abandons |
 | `HashSet`, `LinkedHashSet`, `ConcurrentHashMap`'s `KeySetView` (its map's location) | set operations | a hash set's reads are not bound to versions |
+| `java.util.stream` sequential pipelines from `Collection.stream()` of a modeled container (a list, a deque, a hash set, a key/entry/values view, an unmodifiable map's entry set) | `filter map limit sorted distinct unordered`; `collect(Collectors.toList()/toSet())`, `toArray`, `count`, `anyMatch allMatch noneMatch` stated as relations; `findFirst findAny forEach forEachOrdered` run on the run's values (below) | `skip peek flatMap* mapTo* reduce min max iterator spliterator parallel`, `collect` with any other collector, `parallelStream()`, and every pipeline over another source (`Arrays.stream`, `Stream.of`, `IntStream`) run as bytecode |
 | commons-lang 2 and Spring `StringUtils` | `isNotBlank`, `isEmpty` | commons-lang3 |
 
 Every other collection (`TreeMap`, `TreeSet`, `ConcurrentSkipList*`, `LinkedList`, `CopyOnWrite*`,
@@ -164,6 +178,53 @@ the map's state is tracked; otherwise it runs as bytecode. A visiting callback (
 one path condition per element per call; past the snapshot bound (64,
 `-Dcausynth.concolic.initial.snapshot.max`) a call's visits are not seeded and it refuses its map
 (`CALLBACK_VISITS_OVER_BOUND`).
+
+**Streams** (`VM/concolic/reference/symbolicStream.cpp`, `SymStream`). `Collection.stream()` of a
+modeled container (`ContainerSupport::backing_container`; SymMap holds `java/util/Collection` and
+routes it) records the pipeline on the stream object it returns -- bookkeeping in the thread's
+`StreamTable`, never an expression: the source (a weak global handle) and its view
+(`SymMap::view_kind`). Each modeled intermediate call keeps one stage on the stream it returns; every
+body runs muted. Streams bind late: the terminal reads the source's state
+(`ContainerSupport::observed_state`), member count (`ContainerSupport::member_count`) and, for a
+values view of a stateful map, the keys its iteration holds the values under, and names the source
+as the call's (a callback mutating it unstates the result, `CALLBACK_MUTATES_SOURCE`). The terminal
+call runs muted with every stage's functional object a callback: an element's first callback is
+seeded with the source's member (a `READ` of the list's state at its position, a map view's
+`ENTRY`/key by `SymMap::visited_member`, a value's `READ` at its key, the keyed ones where the state
+`CONTAINS` the key), each later one with the previous map's result, and the elements'
+progress is reconstructed from the answers as each callback returns (a sequential pipeline calls
+the stages per element in order and stops an element at the first filter that answers false; a
+`LIMIT` lets an element through while fewer than maxSize passed before it in that world, `SIZE` of
+the earlier arrivals' guarded chain). An element of the run's own value is named only where a
+statement needs it: a collected list's members are read back from the list, a set's members and an
+element a symbolic filter dropped are named by the object their callback returned or still holds
+when it returns (else that drop is pinned) -- so a pipeline that stays concrete allocates no
+expression. The terminal states its result: a collected list is an `INDEXED` chain from its stated empty
+base, one `APPEND_IF` per element under its filters' answers and limit positions, published as its
+first version (`ContainerSupport::publish_filled`, `STATE_COLLECT`); a set the same with `PUT_IF`;
+`toArray` the chain as the array's state; `count` the chain's `SIZE`; a match the `IS_EMPTY` of the
+chain of its matches (misses for `allMatch`). What the run decided and nothing states is a `PIN` on
+the chain, in the run's polarity: an element a symbolic filter dropped before a stage that calls back
+(`DROPPED`), the members an exhausted limit or a short-circuiting match never pulled
+(`LIMIT_EXHAUSTED`, `SHORT_CIRCUIT`), a stateful source holding exactly what the stream pulled
+(`SOURCE_END`: its `SIZE` equals the positions pulled, or the `SIZE` of the chain of the pulled keys
+it `CONTAINS`), a symbolic maxSize's sign. A result no relation states -- a symbolic element entering
+`sorted` or `distinct` (members of a stateful source, or past a symbolic bound, entering one ahead
+of every callback count), a symbolic comparator, a natural order an application `compareTo`
+decided, more members than the snapshot bound, callbacks the reconstruction contradicts (an element
+left waiting for a callback included), a collected list whose members are not the run's, a callback
+mutating the source, `findFirst`/`findAny` -- is the run's own concrete value; `forEach`'s action
+runs seeded, its effects hooked, and each pin, which no chain holds, is only named. Each is named in
+the region's model gaps (`ThreadContext::note_model_gap`, §8) as `STREAM_PINNED:<reason>`, as are a
+mapped value or an answer a callback's path decided (`MAP_PATH`, `CALLBACK_PATH`, not pinned: the
+path holds models' concrete-answer conditions too), application code the body ran unhooked
+(`MUTED_APPLICATION:<class.method>`) and a terminal that unwound (`UNWOUND`); an unmodeled call ends
+the recording and the rest runs as bytecode, named `STREAM_OPERATION_UNMODELED:<operation>` when the
+source's state or a symbolic bound was in it; and a terminal past the callback window stack runs as
+bytecode, `STREAM_PINNED:CALLBACK_DEPTH`. A pipeline nothing symbolic reached returns the run's
+result and names nothing. `Collectors.toList`/`toSet` are muted to name the kind of collector by its
+accumulator, the one non-capturing method reference every such collector holds, so a collector kept
+in a field is known at every use.
 
 ## 5. Shared-state versioning
 
@@ -312,6 +373,12 @@ answer `k` and `READ(state, k)`. The presence or match a conditional mutator dec
 condition over the pre-state (`READ(s, k) == null` / `!= null`, `READ(s, k) == expected` / `!=`) in
 the polarity the run took, followed by an ordinary `PUT`/`REMOVE` version or none.
 
+**Stream results** (§4). `APPEND_IF [v]` and `PUT_IF [k, v]` carry the `guard` they hold under;
+`PIN` (no arguments, either shape) is its receiver's state where its `guard` holds. A version a
+stream published is `STATE_COLLECT`. The VM's own chain readers (`ContainerSupport::position_answer`,
+`entry_answer`, `undo_indexed_history`, `snapshot_entry_count`) decide nothing across them: the
+member is a `READ`.
+
 **Array reads over recorded writes.** The writes at concrete positions of one array chain share
 one index of what was stored where, and what each left in the heap (`ElementWrites`,
 `ContainerExpression::stored_at`: one lookup, no walk of the chain). An array load at a concrete
@@ -413,6 +480,10 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   `concreteValue` (a String past 4 KB
   as `{"_type":"TruncatedValue","length":n}`); a method-return symbol states `concreteValue` and
   `call: {holder, name, descriptor, arguments}`.
+- A region's summary (`finishConcolicRegion`) states its `modelGaps`: `{name, site}` per call a
+  model ran on the run's own values though symbolic content reached it (§4: streams, application code
+  a muted call with callbacks ran unhooked), once per name and site; `runtime/ConcolicRegionRuntime#modelGaps` files each as a DIAGNOSTIC `UNSTATED_VALUE`
+  gap whose subject is the name.
 - Natives no engine code calls: `getPathCondition`, `trackContainerExpression`,
   `getSharedFieldVersions`, `getSharedElementVersions`, `getSharedMapVersions`,
   `getConcolicRegionSummary` (only the smoke tests use them). `armSharedPrimitiveFieldRead` and
@@ -444,6 +515,8 @@ that does not hold.
 | a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
 | an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
 | map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6); a callback's result and its side effects hooked |
+| a `java.util.stream` pipeline over a modeled container | modeled (§4): its result a guarded chain, its stages' callbacks seeded; what no relation states detected and pinned (a `PIN`, or the run's result named `STREAM_PINNED:`); an unmodeled operation named and hooked as bytecode |
+| a stream over any other source, a parallel stream | hooked (bytecode); a predicate's decision inside the JDK's sink is an unmarked branch, silently lost |
 | list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
 | stream `write(byte[])`/`readFully`, `ByteArrayOutputStream` | through arraycopy: hooked |
 | a cached box, `Boolean.TRUE/FALSE`, an interned String returned by `valueOf` or a container | hooked: the value rides the result slot; the shared object stays clean |
@@ -487,7 +560,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 65
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 66
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -501,7 +574,9 @@ and element); the engine's paused bookkeeping in `Thread.init` has `RegionInheri
 (§2); the
 collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, callbacks, a
 tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
-`RegionWrapperViewSmoke` (a view or wrapper is its container) and
+`RegionWrapperViewSmoke` (a view or wrapper is its container), `RegionStreamSmoke` (stream
+pipelines: filter, limit, map, an unmodifiable map's entries, count, anyMatch, a set, the pins and
+the model gaps) and
 `RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers); the leaf natives have
 `RegionLeafBrokerSmoke` (every slot kind with and without a region, peeks that record nothing,
 templates, `SHARED`, a region-less mint reaching a later region's path through `parseLong`, and

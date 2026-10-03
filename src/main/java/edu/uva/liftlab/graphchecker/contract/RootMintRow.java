@@ -18,6 +18,7 @@ public final class RootMintRow extends Value {
     private final String rootId;
     private final String symbol;
     private final RootKind kind;
+    private final RootCategory category;
     private final String recordedValue;
     private final String domainMin;
     private final String domainMax;
@@ -27,15 +28,17 @@ public final class RootMintRow extends Value {
 
     private RootMintRow(String sessionId, long seq,
                         OccurrenceAddress occurrence, String rootId,
-                        String symbol, RootKind kind, String recordedValue,
-                        String domainMin, String domainMax, boolean declared,
-                        Clock clock, long clockSkew) {
+                        String symbol, RootKind kind, RootCategory category,
+                        String recordedValue, String domainMin,
+                        String domainMax, boolean declared, Clock clock,
+                        long clockSkew) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.occurrence = occurrence;
         this.rootId = rootId;
         this.symbol = symbol;
         this.kind = kind;
+        this.category = category;
         this.recordedValue = recordedValue;
         this.domainMin = domainMin;
         this.domainMax = domainMax;
@@ -45,6 +48,8 @@ public final class RootMintRow extends Value {
     }
 
     /**
+     * @param category  where the root's value enters the world; the CLOCK
+     *                  category is exactly the CLOCK kind
      * @param clock     a CLOCK's clock, null for any other root
      * @param clockSkew how far a CLOCK's node clock ran off the host's
      *                  reading here ({@link #clockSkew}); 0 for any other
@@ -52,6 +57,7 @@ public final class RootMintRow extends Value {
     public static RootMintRow of(String sessionId, long seq,
                                  OccurrenceAddress occurrence, String rootId,
                                  String symbol, RootKind kind,
+                                 RootCategory category,
                                  String recordedValue, String domainMin,
                                  String domainMax, boolean declared,
                                  Clock clock, long clockSkew) {
@@ -60,6 +66,12 @@ public final class RootMintRow extends Value {
             throw new IllegalArgumentException("clock: a CLOCK root states "
                     + "its clock and no other root does: " + stated + " "
                     + clock);
+        }
+        RootCategory from = Fields.required(category, "category");
+        if ((stated == RootKind.CLOCK) != (from == RootCategory.CLOCK)) {
+            throw new IllegalArgumentException("category: a CLOCK root is "
+                    + "of the CLOCK category and no other root is: " + stated
+                    + " " + from);
         }
         if (clockSkew != 0L && (stated != RootKind.CLOCK
                 || !Fields.required(recordedValue, "recordedValue").trim()
@@ -73,7 +85,7 @@ public final class RootMintRow extends Value {
                 Fields.nonNegative(seq, "seq"),
                 Fields.required(occurrence, "occurrence"),
                 Fields.text(rootId, "rootId"), Fields.text(symbol, "symbol"),
-                stated,
+                stated, from,
                 Fields.required(recordedValue, "recordedValue"),
                 Fields.optional(domainMin), Fields.optional(domainMax),
                 declared, clock, clockSkew);
@@ -102,6 +114,12 @@ public final class RootMintRow extends Value {
 
     public RootKind kind() {
         return kind;
+    }
+
+    /** Where the root's value enters the world: a decision reaching a FAULT
+     *  marker is a fault flip site, one reaching a CONFIG flag is not. */
+    public RootCategory category() {
+        return category;
     }
 
     /**
@@ -174,13 +192,14 @@ public final class RootMintRow extends Value {
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, occurrence, rootId, symbol, kind,
-                recordedValue, domainMin, domainMax, declared, clock,
-                clockSkew};
+                category, recordedValue, domainMin, domainMax, declared,
+                clock, clockSkew};
     }
 
     @Override
     public String toString() {
         return "RootMintRow{" + sessionId + "#" + seq + " " + rootId + " "
-                + kind + " " + symbol + "=" + recordedValue + "}";
+                + kind + "/" + category + " " + symbol + "=" + recordedValue
+                + "}";
     }
 }

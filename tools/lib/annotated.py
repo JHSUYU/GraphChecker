@@ -27,9 +27,7 @@ The thrown type is stated only when another `throw new` starts on that line.
 A marker on anything but a `throw new` is refused: nothing then says where its
 case fails.
 
-Also a module: THROW and throws_at are the one reading of "a throw starts on
-this line" that tools/adhoc's sites.py and targets.py share, and sites() is
-what tools/adhoc/findings.py marks known bugs by."""
+Also a module: sites() is what tools/adhoc/findings.py marks known bugs by."""
 import os
 import re
 import subprocess

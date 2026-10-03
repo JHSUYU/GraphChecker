@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -67,9 +68,10 @@ public final class RuntimeRegionPlanner {
     /**
      * Binds static region skeletons to the activations a run performed.
      *
-     * @param fieldReads call site -> the field a call there returns
-     *     ({@link RuntimeSelectedRegionFinalizer#fieldReadingCalls}): its
-     *     receiver owns that field ({@link #stampFieldOwners})
+     * @param fieldCalls call site -> the field a call there accesses on its
+     *     receiver ({@link RuntimeSelectedRegionFinalizer
+     *     #fieldAccessingCalls}): the receiver owns that field ({@link
+     *     #stampFieldOwners})
      */
     static Result planSkeletonGraph(List<StaticProgram.RegionRow> skeletons,
                                     List<MethodEvent> methods,
@@ -77,7 +79,7 @@ public final class RuntimeRegionPlanner {
                                     List<FieldAccessEvent> fieldEvents,
                                     List<ProtocolEvent> protocolEvents,
                                     Set<String> declaredSites,
-                                    Map<String, String> fieldReads) {
+                                    Map<String, String> fieldCalls) {
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 fieldEvents, protocolEvents);
         Result result = new Result();
@@ -161,7 +163,7 @@ public final class RuntimeRegionPlanner {
         stampActivationContainment(activationByCall, trace);
         stampFoldedRegionEntries(foldedRoots, foldOwners, activationByCall,
                 trace);
-        stampFieldOwners(activationByCall.values(), trace, fieldReads);
+        stampFieldOwners(activationByCall.values(), trace, fieldCalls);
         result.runtimeInstances.addAll(activationByCall.values());
         stampRecordedExchanges(result, trace, protocolEvents);
         return result;
@@ -171,29 +173,34 @@ public final class RuntimeRegionPlanner {
      * States on each activation, per field its calls read or wrote, the
      * objects they did so on ({@link RuntimeSelectedRegionFinalizer
      * #FIELD_OWNERS}): each field access's receiver (a static field's
-     * names none, {@code 0}) and the object a reference field held, so two
-     * holders sharing one referent share it; and the receiver of each call
-     * at a site that returns a field (an unwoven accessor).
+     * names none, {@code 0}) and the receiver of each call at a site that
+     * returns a field (an unwoven accessor) or mutates one (an atomic's
+     * value); and apart, the objects a reference field held ({@link
+     * RuntimeSelectedRegionFinalizer#FIELD_REFERENTS}), whose state a
+     * mutation through the field writes.
      */
     private static void stampFieldOwners(
             Collection<Map<String, Object>> activations, TraceIndex trace,
-            Map<String, String> fieldReads) {
+            Map<String, String> fieldCalls) {
         for (Map<String, Object> activation : activations) {
             Map<String, Set<Integer>> owners = new HashMap<>();
+            Map<String, Set<Integer>> referents = new HashMap<>();
             for (Long call : MapFields.longValues(
                     activation.get("callIds"))) {
                 for (FieldAccessEvent event : trace.fieldsByCall.getOrDefault(
                         call, Collections.<FieldAccessEvent>emptyList())) {
-                    Set<Integer> held = owners.computeIfAbsent(event.field,
-                            ignored -> new HashSet<>());
-                    held.add(event.receiverObjectId);
+                    owners.computeIfAbsent(event.field,
+                            ignored -> new HashSet<>())
+                            .add(event.receiverObjectId);
                     if (event.valueObjectId != 0) {
-                        held.add(event.valueObjectId);
+                        referents.computeIfAbsent(event.field,
+                                ignored -> new HashSet<>())
+                                .add(event.valueObjectId);
                     }
                 }
                 for (RuntimeEvent event : trace.runtimeByCall.getOrDefault(
                         call, Collections.<RuntimeEvent>emptyList())) {
-                    String field = fieldReads.get(event.siteId);
+                    String field = fieldCalls.get(event.siteId);
                     if (field != null && event.objectId != 0
                             && "CALL_SITE_ENTER".equals(event.kind)) {
                         owners.computeIfAbsent(field,
@@ -205,6 +212,11 @@ public final class RuntimeRegionPlanner {
             if (!owners.isEmpty()) {
                 activation.put(RuntimeSelectedRegionFinalizer.FIELD_OWNERS,
                         owners);
+            }
+            if (!referents.isEmpty()) {
+                activation.put(
+                        RuntimeSelectedRegionFinalizer.FIELD_REFERENTS,
+                        referents);
             }
         }
     }
@@ -307,7 +319,8 @@ public final class RuntimeRegionPlanner {
         return retained;
     }
 
-    /** Configured-source hook executions in one occurrence; evidence only (a
+    /** Configured-source executions in one occurrence, in event order: a
+     * hook site's call, a configuration read site's read.  Evidence only (a
      * declared source is ONE symbol, however often it is reached). */
     private static List<JsonObject> configuredSourcePhases(
             StaticProgram.RegionRow region, String occurrenceId,
@@ -315,13 +328,16 @@ public final class RuntimeRegionPlanner {
         Map<String, ConfiguredSourcePhaseContract.Declaration> bySite =
                 region.sourcePhasesBySite();
         if (bySite.isEmpty()) return Collections.emptyList();
-        List<JsonObject> result = new ArrayList<>();
-        for (RuntimeEvent event
-                : trace.runtime(trace.subtree(activationRootCallId))) {
+        Set<Long> subtree = trace.subtree(activationRootCallId);
+        Map<Long, JsonObject> bySeq = new TreeMap<>();
+        for (RuntimeEvent event : trace.runtime(subtree)) {
             if (!"CALL_SITE_ENTER".equals(event.kind)) continue;
             ConfiguredSourcePhaseContract.Declaration declaration =
                     bySite.get(event.siteId);
-            if (declaration == null) continue;
+            if (declaration == null
+                    || declaration.category() != RootCategory.HOOK) {
+                continue;
+            }
             if (!declaration.method().equals(event.method)
                     || event.seq <= 0L || event.callId <= 0L
                     || event.invocationId <= 0L) {
@@ -329,28 +345,55 @@ public final class RuntimeRegionPlanner {
                         "configured-source phase event differs "
                         + "from exact static site " + declaration.siteId());
             }
-            List<Long> enclosingCallIds = new ArrayList<>();
-            MethodEvent owner = trace.methodByCall.get(event.callId);
-            Set<Long> seen = new LinkedHashSet<>();
-            while (owner != null && seen.add(owner.callId)) {
-                enclosingCallIds.add(owner.callId);
-                if (owner.callId == activationRootCallId) break;
-                owner = trace.methodByCall.get(owner.parentCallId);
-            }
-            if (enclosingCallIds.isEmpty()
-                    || enclosingCallIds.get(enclosingCallIds.size() - 1)
-                    != activationRootCallId) {
-                throw new IllegalArgumentException(
-                        "configured-source phase event "
-                        + event.seq + " is not enclosed by activation root "
-                        + activationRootCallId);
-            }
-            result.add(ConfiguredSourcePhaseContract.occurrence(
+            bySeq.put(event.seq, ConfiguredSourcePhaseContract.occurrence(
                     declaration, occurrenceId, event.seq,
-                    event.invocationId,
-                    event.declaredCallee, enclosingCallIds));
+                    event.invocationId, event.declaredCallee,
+                    enclosingCalls(trace, event.seq, event.callId,
+                            activationRootCallId)));
         }
-        return result;
+        for (FieldAccessEvent read : trace.reads(subtree)) {
+            ConfiguredSourcePhaseContract.Declaration declaration =
+                    bySite.get(read.siteId);
+            if (declaration == null
+                    || declaration.category() != RootCategory.CONFIG
+                    || !declaration.fieldSignature().equals(read.field)) {
+                continue;
+            }
+            if (read.seq <= 0L || read.callId <= 0L) {
+                throw new IllegalArgumentException(
+                        "configuration read event differs from exact static"
+                        + " site " + declaration.siteId());
+            }
+            bySeq.put(read.seq, ConfiguredSourcePhaseContract
+                    .configOccurrence(declaration, occurrenceId, read.seq,
+                            read.field, enclosingCalls(trace, read.seq,
+                                    read.callId, activationRootCallId)));
+        }
+        return new ArrayList<>(bySeq.values());
+    }
+
+    /** The frames from one event's up to the activation root, innermost
+     *  first; refused when the root does not enclose it. */
+    private static List<Long> enclosingCalls(TraceIndex trace, long seq,
+                                             long callId,
+                                             long activationRootCallId) {
+        List<Long> enclosingCallIds = new ArrayList<>();
+        MethodEvent owner = trace.methodByCall.get(callId);
+        Set<Long> seen = new LinkedHashSet<>();
+        while (owner != null && seen.add(owner.callId)) {
+            enclosingCallIds.add(owner.callId);
+            if (owner.callId == activationRootCallId) break;
+            owner = trace.methodByCall.get(owner.parentCallId);
+        }
+        if (enclosingCallIds.isEmpty()
+                || enclosingCallIds.get(enclosingCallIds.size() - 1)
+                != activationRootCallId) {
+            throw new IllegalArgumentException(
+                    "configured-source phase event " + seq
+                    + " is not enclosed by activation root "
+                    + activationRootCallId);
+        }
+        return enclosingCallIds;
     }
 
 
@@ -1142,11 +1185,13 @@ public final class RuntimeRegionPlanner {
                     plan.put(depth, seed.get(depth));
                 }
             }
-            // The declaration, resolved once by the finalizer, and its
-            // question's shape; PLAN and the replay read them.
+            // The declaration, resolved once by the finalizer, its
+            // question's shape and the occurrences the recording opened
+            // beside it; PLAN and the replay read them.
             for (String declared : new String[] {
                     RuntimeSelectedRegionFinalizer.DECLARED_OCCURRENCE,
-                    RuntimeSelectedRegionFinalizer.QUESTION_SHAPE}) {
+                    RuntimeSelectedRegionFinalizer.QUESTION_SHAPE,
+                    RuntimeSelectedRegionFinalizer.QUESTION_RECORDED}) {
                 if (seed.containsKey(declared)) {
                     plan.put(declared, seed.get(declared));
                 }
@@ -1908,7 +1953,7 @@ public final class RuntimeRegionPlanner {
         }
 
         /** This entry with the fold cleared ({@code
-         * CausynthTraceRecorder#aggregateTargets} counts entries). */
+         * CausynthTraceRecorder#aggregateTarget} counts entries). */
         MethodEvent unfolded() {
             return new MethodEvent(seq, test, threadName, tid, method,
                     objectId, receiverType, callId, parentCallId,
@@ -2135,6 +2180,7 @@ public final class RuntimeRegionPlanner {
         private final Map<Long, List<Long>> children = new LinkedHashMap<>();
         private final Map<Long, List<RuntimeEvent>> runtimeByCall =
                 new LinkedHashMap<>();
+        /** Each frame's recorded field accesses, in seq order. */
         private final Map<Long, List<FieldAccessEvent>> fieldsByCall =
                 new HashMap<>();
         /** seq -> unique owning callId, or the ambiguity sentinel. */
@@ -2218,6 +2264,19 @@ public final class RuntimeRegionPlanner {
             for (Long call : calls) {
                 result.addAll(runtimeByCall.getOrDefault(call,
                         Collections.emptyList()));
+            }
+            result.sort(Comparator.comparingLong(value -> value.seq));
+            return result;
+        }
+
+        /** The field reads recorded inside these frames, in seq order. */
+        private List<FieldAccessEvent> reads(Set<Long> calls) {
+            List<FieldAccessEvent> result = new ArrayList<>();
+            for (Long call : calls) {
+                for (FieldAccessEvent event : fieldsByCall.getOrDefault(call,
+                        Collections.<FieldAccessEvent>emptyList())) {
+                    if ("FIELD_READ".equals(event.kind)) result.add(event);
+                }
             }
             result.sort(Comparator.comparingLong(value -> value.seq));
             return result;

@@ -3,14 +3,15 @@
 its summary and its final result: the case, the class of its outcome, the
 finding and moved roots, the confirmation, how many claims CONFIRM refuted on
 the way (result.json refutedClaims), the elapsed seconds, and where a campaign
-failed, the stage and reason.  A batch case (one recording for
-several checks, run_engine.sh causynth_static_root) is one row per check,
-"<case>/<check>", from that check's own campaign (out/<case>/targets/<check>/)
-or, for a check the recording did not activate, its record-summary state.
+failed, the stage and reason.
 
 Classes:
   CONFIRMED     a SAT witness the program agreed with (confirmation true): a
                 candidate bug, to read by hand
+  CONFIG_ONLY   a CONFIRMED witness that moves configuration only
+                (result.json configurationOnly, COMPOSE's rule): a finding,
+                read after the others -- a configuration-validation throw
+                fires by design
   REFUTED       no confirmed witness, and CONFIRM refuted a claim on the way
                 (a refuted model, which the campaign excludes and follows
                 with the next claim or more exploration), or published one
@@ -121,7 +122,10 @@ def classify(row, result_path, lines, root, text):
         refuted = result.get("refutedClaims") or []
         row["refuted"] = len(refuted)
         if claim == "SAT_CANDIDATE" and confirmation.get("confirmed") is True:
-            row["class"] = "CONFIRMED"
+            # A result written before COMPOSE stated the rank states none.
+            row["class"] = ("CONFIG_ONLY"
+                            if result.get("configurationOnly") is True
+                            else "CONFIRMED")
         elif claim == "SAT_UNCONFIRMED" or refuted:
             row["class"] = "REFUTED"
             row["reason"] = (confirmation.get("reason", "")
@@ -153,43 +157,21 @@ rows = []
 for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
     root = os.path.join(out, "accept-%s-%s" % (round_name, n))
     summary = os.path.join(root, "summary.tsv")
-    base = {"n": n, "case": case,
-            "class": "RUNNING" if os.path.isdir(root) else "PENDING",
-            "elapsed": "", "finding": "", "confirmed": "", "refuted": "",
-            "stage": "", "reason": ""}
+    row = {"n": n, "case": case,
+           "class": "RUNNING" if os.path.isdir(root) else "PENDING",
+           "elapsed": "", "finding": "", "confirmed": "", "refuted": "",
+           "stage": "", "reason": ""}
     lines = (list(csv.DictReader(open(summary), delimiter="\t"))
              if os.path.exists(summary) else [])
     if lines:
-        base["elapsed"] = lines[-1].get("elapsed", "")
-        base["finding"] = lines[-1].get("finding", "")[:160]
+        row["elapsed"] = lines[-1].get("elapsed", "")
+        row["finding"] = lines[-1].get("finding", "")[:160]
     logs = sorted(glob.glob(os.path.join(root, "logs", "*.log")))
     text = "\n".join(open(path, errors="replace").read() for path in logs)
-    targets = sorted(glob.glob(os.path.join(root, "out", "*", "targets", "*", "")))
-    if not targets:
-        row = dict(base)
-        results = glob.glob(os.path.join(root, "out", "*", "schedule", "final",
-                                         "result.json"))
-        classify(row, results[0] if results else None, lines, root, text)
-        rows.append(row)
-        continue
-    states = {}
-    for path in glob.glob(os.path.join(root, "out", "*", "runtime",
-                                       "record-summary.json")):
-        states.update(json.load(open(path))["targets"])
-    for target in targets:
-        name = os.path.basename(os.path.dirname(target))
-        row = dict(base, case="%s/%s" % (case, name))
-        state = states.get(name, {}).get("state", "ACTIVATED")
-        if state != "ACTIVATED":
-            row.update({"class": "STOPPED", "stage": "SEED", "reason": (
-                state + ": " + states[name].get("detail", ""))[:200]})
-        else:
-            log = os.path.join(target, "campaign.log")
-            result = os.path.join(target, "schedule", "final", "result.json")
-            classify(row, result if os.path.exists(result) else None, lines,
-                     root, text + "\n" + (open(log, errors="replace").read()
-                                          if os.path.exists(log) else ""))
-        rows.append(row)
+    results = glob.glob(os.path.join(root, "out", "*", "schedule", "final",
+                                     "result.json"))
+    classify(row, results[0] if results else None, lines, root, text)
+    rows.append(row)
 
 started = [os.path.join(out, "accept-%s-%s" % (round_name, row["n"]))
            for row in rows if row["class"] == "RUNNING"]

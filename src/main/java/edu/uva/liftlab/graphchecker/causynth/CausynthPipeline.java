@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.Clock;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ObservedSite;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
@@ -91,6 +92,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 
 /** Target-directed static backward data-flow analysis. */
@@ -162,26 +164,45 @@ public final class CausynthPipeline {
         long skeletonPlanningStart = System.nanoTime();
         SymbolicRegionPlanner.planSelectedSkeleton(result,
                 result.traceMethods);
-        StaticSymbolicSourceDiscovery.discover(result);
-        long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
         // SYMBOL-SCOPE §2.3: over the door-woven bodies, before any hook is
         // woven, so site and guard ids are the unit indices a replay decides
         // at.
         Map<String, Clock> clocks = RootCatalog.clocks(result.edges);
+        ConfigRoots recognized = ConfigRoots.of(result.edges,
+                result.fieldWriters);
+        RootDemand demand = RootDemand.of(result.edges, result.regions,
+                clocks, recognized, targetPathSites(result.edges),
+                CausynthStaticFacts::trackedKind, systemClass());
+        ConfigRoots config = recognized.limitedTo(demand.configSources());
+        Set<String> plantedConfigReads =
+                StaticSymbolicSourceDiscovery.discover(result, config);
+        long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
                 result.edges, result.regions, clocks,
+                (method, unitIndex, callee) -> {
+                    ConfigRoots.Source source = config.call(method,
+                            unitIndex, callee);
+                    return source == null ? null
+                            : new StaticScopeMap.ConfigCall(source.sourceId,
+                                    source.domainMin, source.domainMax);
+                },
+                demand.marks(),
                 method -> !CausynthStaticFacts.applicationMethod(method),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField);
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
                         StaticScopeMap.siteIds(scopeSites)));
+        scopeMap.addAll(recognized.keyRows(demand.configSources(),
+                plantedConfigReads));
+        Set<String> rootCallees = new LinkedHashSet<>(clocks.keySet());
+        rootCallees.addAll(recognized.callees());
         List<JsonObject> frontier = ScopeFrontier.rows(result.edges,
-                CausynthStaticFacts::analysedMethod,
-                clocks.keySet());
+                CausynthStaticFacts::analysedMethod, rootCallees,
+                demand.frontier());
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
-                target.outputDir, result, scopeMap, frontier);
+                target.outputDir, result, scopeMap, frontier, demand.rows());
         long artifactWriteMillis = elapsedMillis(artifactWriteStart);
         LOG.info("Discovery phase timing: seedAnalysis={} ms, "
                         + "skeletonPlanning={} ms, artifactWrite={} ms",
@@ -194,6 +215,52 @@ public final class CausynthPipeline {
 
     private static long elapsedMillis(long startNanos) {
         return (System.nanoTime() - startNanos) / 1_000_000L;
+    }
+
+    /**
+     * The decisions an occurrence the declared throw is about takes on its
+     * way there ({@code StaticScopeMap.Site#pathSites}): the throw's guards,
+     * their chain and the chain's deciders.
+     */
+    private static Set<String> targetPathSites(
+            List<Map<String, Object>> edges) {
+        Set<String> sites = new LinkedHashSet<>();
+        for (Map<String, Object> edge : edges) {
+            if (!"exception_throw".equals(MapFields.text(edge.get("kind")))) {
+                continue;
+            }
+            String target = SiteId.of(MapFields.text(edge.get("method")),
+                    MapFields.number(edge.get("unitIndex"), -1));
+            StaticScopeMap.Guards control = SiteControlDependence.over(
+                    Collections.singleton(target));
+            for (StaticScopeMap.Guard guard : control.of(target)) {
+                sites.add(guard.siteId());
+            }
+            for (StaticScopeMap.Guard guard : control.chainOf(target)) {
+                sites.add(guard.siteId());
+                if (guard.decider() != null) {
+                    sites.add(guard.decider().siteId());
+                }
+            }
+        }
+        return sites;
+    }
+
+    /** Whether a class is the system's own (LibraryReceivers), asked of the
+     *  campaign's lineage roots at the first class it is asked of. */
+    private static Predicate<String> systemClass() {
+        return new Predicate<String>() {
+            private Predicate<String> roots;
+
+            @Override
+            public boolean test(String owner) {
+                if (roots == null) {
+                    roots = LibraryReceivers.systemClasses(
+                            System.getProperty(LibraryReceivers.ROOTS));
+                }
+                return roots.test(owner);
+            }
+        };
     }
 
     /**
@@ -1450,13 +1517,22 @@ public final class CausynthPipeline {
                 Jimple.v().newCastExpr(attached, valueType)));
     }
 
-    /** Restores the recording's exact call-site identity around sources. */
+    /**
+     * Restores the recording's exact site identity around configured
+     * sources (SYMBOL-SCOPE §4.3): a tree's hook call is bracketed as the
+     * recording saw it; before the engine's configuration read the weave
+     * puts the hook call a tree would have carried, under the same context.
+     */
     private void instrumentConcolicConfiguredSourceCallContexts(
             Collection<ConfiguredSourcePhaseContract.Occurrence> phases,
             HookCatalog refs) {
         for (ConfiguredSourcePhaseContract.Occurrence phase : phases) {
             Body body = selectedBody(phase.declarationMethod(),
                     "CONFIGURED_SOURCE_PHASE_METHOD", phase.siteId());
+            if (phase.category() == RootCategory.CONFIG) {
+                instrumentConfigurationRead(body, phase, refs);
+                continue;
+            }
             Stmt selected = originalCall(body, phase.declarationUnitIndex(),
                     phase.siteId(), "CONFIGURED_SOURCE_PHASE_SITE_NOT_UNIQUE",
                     "CONFIGURED_SOURCE_PHASE_CALL_NOT_FOUND");
@@ -1495,6 +1571,68 @@ public final class CausynthPipeline {
             guardCall(body, selected, after, normalExit, thrown,
                     "$causynthSourcePhaseThrown");
         }
+    }
+
+    /**
+     * Before one configuration read ({@code x = owner.field}): the site's
+     * context opened, the configuration read on its owner ({@code
+     * ConcolicRegionRuntime.readConfiguration}, which plants the world's
+     * value and mints), the context closed.  The read then loads what the
+     * mint left.  The hooks never throw.
+     */
+    private static void instrumentConfigurationRead(
+            Body body, ConfiguredSourcePhaseContract.Occurrence phase,
+            HookCatalog refs) {
+        Stmt read = originalRead(body, phase);
+        Value owner = ((InstanceFieldRef) ((AssignStmt) read).getRightOp())
+                .getBase();
+        Local invocationId = newTraceLocal(body, LongType.v(),
+                "$causynthSourcePhaseInvocation");
+        List<Unit> before = new ArrayList<>();
+        before.add(Jimple.v().newAssignStmt(invocationId, LongConstant.v(0L)));
+        emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
+        emit(before, invocationId,
+                refs.ref(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE),
+                StringConstant.v(phase.declarationMethod()),
+                IntConstant.v(phase.declarationUnitIndex()),
+                StringConstant.v(phase.runtimeDeclaredCallee()));
+        emit(before, refs.ref(Hook.READ_CONFIGURATION),
+                StringConstant.v(phase.sourceId()), owner,
+                StringConstant.v(phase.fieldSignature()));
+        emit(before, refs.ref(Hook.EXIT_CONFIGURED_SOURCE_PHASE_SITE),
+                invocationId, NullConstant.v(), StringConstant.v(""));
+        emit(before, refs.ref(Hook.RESUME_OBSERVATION));
+        insertBeforeSequence(body, read, before);
+    }
+
+    /** The one original {@code getfield} of a configuration read site;
+     *  refused by name when the unit is no read of the declared field. */
+    private static Stmt originalRead(
+            Body body, ConfiguredSourcePhaseContract.Occurrence phase) {
+        tagOriginalUnits(snapshotUnits(body));
+        Stmt selected = null;
+        for (Unit unit : snapshotUnits(body)) {
+            if (originalUnitIndex(unit) != phase.declarationUnitIndex()) {
+                continue;
+            }
+            if (selected != null) {
+                throw new IllegalStateException(
+                        "CONFIGURED_SOURCE_PHASE_SITE_NOT_UNIQUE: "
+                                + phase.siteId());
+            }
+            selected = (Stmt) unit;
+        }
+        if (!(selected instanceof AssignStmt) || !(((AssignStmt) selected)
+                .getRightOp() instanceof InstanceFieldRef)
+                || !phase.fieldSignature().equals(CausynthStaticFacts
+                .declaredFieldSignature(((InstanceFieldRef) ((AssignStmt)
+                        selected).getRightOp()).getFieldRef()))) {
+            throw new IllegalStateException(
+                    "CONFIGURED_SOURCE_PHASE_READ_NOT_FOUND: "
+                            + phase.siteId() + " reads no "
+                            + phase.fieldSignature());
+        }
+        return selected;
     }
 
     /**
@@ -2622,8 +2760,6 @@ public final class CausynthPipeline {
             return;
         }
 
-        Local decision = newTraceLocal(body, BooleanType.v(),
-                "$causynthBranchDecision");
         Local prepared = newTraceLocal(body, LongType.v(),
                 "$causynthPreparedBranch");
         Local vmEvent = newTraceLocal(body, LongType.v(),
@@ -2634,21 +2770,19 @@ public final class CausynthPipeline {
         insertExactBranchMarkerPrefix(body, method, branch, unitIndex,
                 expression, prepared, vmEvent, vmOccurrence, refs);
 
-        // Each arm asks which way to go given the observed one (0 fell
-        // through, 1 jumped) and jumps when the answer is true.
+        // Each arm states the decision it observed (0 fell through, 1
+        // jumped) and goes on where the branch sent it: the observation
+        // never steers the run.
         List<List<Unit>> arms = new ArrayList<>();
         for (int observed = 0; observed <= 1; observed++) {
             List<Unit> arm = new ArrayList<>();
-            refs.bracket(arm, decision, Hook.RESOLVE_BRANCH, prepared,
+            refs.bracket(arm, Hook.RESOLVE_BRANCH, prepared,
                     vmEvent, StringConstant.v(method.getSignature()),
                     IntConstant.v(unitIndex), StringConstant.v(expression),
                     IntConstant.v(observed));
-            arm.add(Jimple.v().newIfStmt(
-                    Jimple.v().newNeExpr(decision, IntConstant.v(0)),
-                    previousTarget));
             arms.add(arm);
         }
-        arms.get(1).add(Jimple.v().newGotoStmt(falseSuccessor));
+        arms.get(1).add(Jimple.v().newGotoStmt(previousTarget));
         splitIfArms(body, branch, arms.get(0), arms.get(1));
     }
 
@@ -2682,45 +2816,28 @@ public final class CausynthPipeline {
                 "$causynthVmSwitchEvent");
         Local vmOccurrence = newTraceLocal(body, IntType.v(),
                 "$causynthVmSwitchOccurrence");
-        Local effectiveSuccessor = newTraceLocal(body, IntType.v(),
-                "$causynthSwitchSuccessor");
-        Local observedSuccessor = newTraceLocal(body, IntType.v(),
-                "$causynthSwitchObserved");
 
         insertExactBranchMarkerPrefix(body, method, branch, unitIndex,
                 expression, prepared, vmEvent, vmOccurrence, refs);
 
-        // Each arm asks which way to go given the observed one, then every
-        // arm goes through ONE dispatch on the answer: linear in the arms (a
-        // dispatch per arm was quadratic, and ZooKeeper's 120-entry opcode
-        // switch in FinalRequestProcessor outgrew a method's 64 KB).
-        int last = shape.successorCount() - 1;
-        Unit dispatch = Jimple.v().newNopStmt();
+        // One entry per case label: it states the successor it observed and
+        // goes on to it, so the weave grows with the labels, not their
+        // square (ZooKeeper's FinalRequestProcessor switches on 120).
         List<Unit> entries = new ArrayList<>();
-        for (int observed = 0; observed <= last; observed++) {
+        for (int observed = 0; observed < shape.successorCount(); observed++) {
             Unit entry = Jimple.v().newNopStmt();
             entries.add(entry);
             body.getUnits().add(entry);
-            refs.bracket(body.getUnits(), effectiveSuccessor,
+            refs.bracket(body.getUnits(),
                     Hook.RESOLVE_SWITCH_BRANCH, prepared, vmEvent,
                     StringConstant.v(method.getSignature()),
                     IntConstant.v(unitIndex), StringConstant.v(expression),
                     StringConstant.v(shape.kind),
                     StringConstant.v(encodedKeys), IntConstant.v(observed));
-            body.getUnits().add(Jimple.v().newAssignStmt(observedSuccessor,
-                    IntConstant.v(observed)));
-            body.getUnits().add(Jimple.v().newGotoStmt(dispatch));
+            body.getUnits().add(Jimple.v().newGotoStmt(
+                    shape.successors.get(observed)));
         }
-        // A malformed answer keeps the concrete arm.
-        Unit malformed = Jimple.v().newNopStmt();
-        body.getUnits().add(dispatch);
-        body.getUnits().add(Jimple.v().newTableSwitchStmt(effectiveSuccessor,
-                0, last, shape.successors, malformed));
-        body.getUnits().add(malformed);
-        body.getUnits().add(Jimple.v().newTableSwitchStmt(observedSuccessor,
-                0, last, shape.successors,
-                shape.successors.get(shape.defaultSuccessorIndex)));
-        for (int index = 0; index <= last; index++) {
+        for (int index = 0; index < shape.successorCount(); index++) {
             retargetSwitch(branch, shape, index, entries.get(index));
         }
     }
@@ -3402,6 +3519,7 @@ public final class CausynthPipeline {
         ENTER_CONFIGURED_SOURCE_PHASE_SITE,
         EXIT_CONFIGURED_SOURCE_PHASE_SITE,
         THROW_CONFIGURED_SOURCE_PHASE_SITE,
+        READ_CONFIGURATION,
         ENTER_ACCESSOR_CALL_CONTEXT,
         EXIT_ACCESSOR_CALL_CONTEXT,
         OBSERVE_TRACKED_SITE,
@@ -3567,6 +3685,9 @@ public final class CausynthPipeline {
                     .add(Hook.THROW_CONFIGURED_SOURCE_PHASE_SITE, runtime,
                             "throwConfiguredSourcePhaseCallSite", VoidType.v(),
                             LongType.v())
+                    .add(Hook.READ_CONFIGURATION, runtime,
+                            "readConfiguration", VoidType.v(), string,
+                            object, string)
                     .add(Hook.ENTER_ACCESSOR_CALL_CONTEXT, runtime,
                             "enterAccessorCallContext", LongType.v(), string,
                             IntType.v(), string, string, object)
@@ -3640,10 +3761,10 @@ public final class CausynthPipeline {
                             "markConcolicBranch", LongType.v(), string,
                             IntType.v())
                     .add(Hook.RESOLVE_BRANCH, runtime, "resolveBranch",
-                            BooleanType.v(), LongType.v(), LongType.v(), string,
+                            VoidType.v(), LongType.v(), LongType.v(), string,
                             IntType.v(), string, BooleanType.v())
                     .add(Hook.RESOLVE_SWITCH_BRANCH, runtime,
-                            "resolveSwitchBranch", IntType.v(), LongType.v(),
+                            "resolveSwitchBranch", VoidType.v(), LongType.v(),
                             LongType.v(), string, IntType.v(), string, string,
                             string, IntType.v())
                     .add(Hook.CHECK_LOOP_BACKEDGE, runtime,

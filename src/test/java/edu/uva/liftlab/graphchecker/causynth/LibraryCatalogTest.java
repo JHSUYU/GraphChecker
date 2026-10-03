@@ -120,10 +120,12 @@ public class LibraryCatalogTest {
             {CONFIG + ", \"keyArg\": 0, \"defaultArg\": 0}", "defaultArg"},
             {CONFIG + ", \"keyArg\": 0}\n" + CONFIG + ", \"keyArg\": 0}",
                     "is stated again; first at t.jsonl:1"},
+            {"{\"schemaVersion\": 1, \"kind\": \"CONFIG_FIELD_OWNER\", "
+                    + "\"class\": \"Settings\"}", "class is no"},
         };
         for (String[] row : refused) {
             try {
-                LibraryCatalog.doors(rows(row[0]));
+                LibraryCatalog.read(rows(row[0]));
                 fail("accepted " + row[0]);
             } catch (IllegalArgumentException expected) {
                 assertTrue(expected.getMessage(), expected.getMessage()
@@ -131,8 +133,16 @@ public class LibraryCatalogTest {
                         && expected.getMessage().contains(row[1]));
             }
         }
-        assertEquals(1, LibraryCatalog.doors(rows(DOOR + "}\n" + CONFIG
-                + ", \"keyArg\": 0, \"defaultArg\": 1}")).size());
+        LibraryCatalog.Contents read = LibraryCatalog.read(rows(DOOR
+                + "}\n" + CONFIG + ", \"keyArg\": 0, \"defaultArg\": 1}\n"
+                + "{\"schemaVersion\": 1, \"kind\": \"CONFIG_FIELD_OWNER\", "
+                + "\"class\": \"a.Settings\"}"));
+        assertEquals(1, read.doors.size());
+        assertEquals("<a.Conf: int getInt(java.lang.String,int)> 0 1",
+                read.configSources.get(0).method + " "
+                        + read.configSources.get(0).keyArg + " "
+                        + read.configSources.get(0).defaultArg);
+        assertEquals("[a.Settings]", read.configFieldOwners.toString());
     }
 
     private static Map<String, JsonObject> rows(String text) {

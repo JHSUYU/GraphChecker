@@ -12,10 +12,9 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | FREEZE_TOOL | `campaign_freeze_graphchecker_jar` | `frozen-inputs/GraphChecker.jar` | the jar changed while copied |
 | SETUP (optional) | `campaign_setup` | whatever `campaign_setup_command` does | the command fails |
 | FREEZE | `campaign_freeze` | the provenance (published by EMIT) | an input cannot be digested |
-| SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` (a batch: `campaign_batch_seed`, §2b) | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
-| PLAN | `campaign_plan`; `plan.ConcolicScheduler` (a batch: per target, `campaign_batch_plan`) | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | not even the target's demand depth fits `schedule_max_jobs`; the index does not commit the frozen plan; no target |
-| UNION (a batch) | `campaign_batch_union`; `plan.PlanUnion` | `groups/groups.json`, `groups/group-<n>/execution_task_plan.jsonl` | `PlanUnion` exits nonzero |
-| INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/`, `instrument.log` | the weave refuses (its deepest throwable is the reason); no class woven; a woven class does not verify (one naming a class that is on no classpath and none of the engine's cannot load in the workload either: counted `UNLOADABLE`, not refused) |
+| SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
+| PLAN | `campaign_plan`; `plan.ConcolicScheduler` | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json`, `plan.log` | the scheduler refuses (its deepest throwable is the reason: not even the target's demand depth fits `schedule_max_jobs`, no declared occurrence, no target); the index does not commit the frozen plan |
+| INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/`, `instrument.log` | the weave refuses (its deepest throwable is the reason); no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `import_gated.txt`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
 | EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
@@ -84,7 +83,7 @@ marked * below.
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb`, `stream_max_in_flight` (0) | the pool's hosts, one replay's memory at the host gate (§7.7), the most heap a head JVM is given and a solver asked again, the obligations the capped explorations running at once keep in flight together (§7.7; 0 is no cap) |
 | `campaign_stop_after` | empty, or `IMPORT` |
-| `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10), `reproduce_time_factor`* (3) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording; how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload (§10b) |
+| `reproduce_runs`* (10), `reproduce_time_factor`* (3) | how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload (§10b) |
 
 Defaults in parentheses; `solver_timeout_ms`, `schedule_max_jobs` and `obligation_memory_mb` have
 none.
@@ -115,8 +114,8 @@ none.
    over `project_classes_dir`, target from `causynth_target_spec`, per-loop bounds from
    `causynth_loop_bounds`, wire flows from `causynth_communication_mappings`) writes under
    `causynth_output_dir`: `candidate_dataflow_edges.jsonl.gz`, `region_skeletons.jsonl.gz`,
-   `communication_gaps.jsonl.gz`, `static_scope_map.jsonl`, `scope_frontier.jsonl`
-   (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
+   `communication_gaps.jsonl.gz`, `static_scope_map.jsonl`, `scope_frontier.jsonl`,
+   `root_demand.jsonl` (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
    `causynth_lineage_roots` is set, `plan.ScopeGrowth` adds classes where the slice stops at the scope
    into `scope-classes/` and the pass runs again, until it adds nothing ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md)).
    The target spec holds one line, `exception_target: <name> <binary class name> <source line>
@@ -147,65 +146,6 @@ weave, GROW's) runs through `campaign_analyze`: its output is shown and kept (`s
 `runtime/weave.log`, `instrument.log`), and a pass that throws fails its stage with the deepest
 throwable it printed as the reason (`campaign_thrown`), never as a bare stack trace.
 
-### 2b. A batch campaign: one recording for several targets
-
-A campaign given `causynth_static_root` (an ad-hoc sweep's batch case, `tools/adhoc/cover.py
-cases`; ADHOC-INFRA WP3) runs no static pass of its own. Its spec names k ≥ 1 targets, each sliced
-by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FREEZE,
-`campaign_batch`:
-
-1. SEED (`campaign_batch_seed` → `campaign_record_batch`, the same code as the pre-screen's `record`):
-   each target's slice is frozen into `targets/<name>/` (candidate graph, scope map, frontier,
-   communication gaps, its spec line as `target.yaml`); ONE recording is woven with every target's
-   skeletons merged by root (the weave opens one region per root, the first the merged file names
-   there; two targets may root one method under two authorities, hence two region ids) and every
-   target's grown scope united (`campaign_union_static`), its workload run as SEED's (a nonzero exit
-   fails SEED), and each target aggregated on its own slice into `targets/<name>/runtime/`, over
-   its view of the merged skeletons (`campaign_region_view`, `view_region_skeletons.jsonl.gz`):
-   every region the recording opened, so that a region of this target entered inside another
-   target's -- folded into that occurrence -- is found there, with this target's selection at the
-   roots it plans and another target's exception context as state, so that no other target's
-   failure context is taken for its own.
-   `runtime/record-summary.json` states each target's state (`ACTIVATED` or the refusal). Each
-   target directory links the batch's merged skeletons, grown scope, lineage classes, recording
-   weave and recorded schedule, so every weave and replay of every target stands on the recording's
-   frames.
-2. PLAN, per `ACTIVATED` target (`campaign_batch_plan`, a subshell logging to
-   `targets/<name>/campaign.log`): its `causynth_output_dir` is `targets/<name>/` (so it, and every
-   peer of its pool, derives its slice, scope map and region plan there), its campaign root
-   `targets/<name>/schedule/`, its spec its one line, `first` resolved per target; PLAN is the
-   ordinary stage (`campaign_plan`).
-3. UNION (`campaign_batch_union`, `plan.PlanUnion`): the planned targets' plans grouped, each
-   target joining the first group it agrees with -- every occurrence both plan is the same task
-   there (one task id: occurrence, region content, ports and, for a target's own reach, its
-   target branch), every tracked site both observe the same observation. The plans stand on one
-   recording and one weave, so the tasks they share are one task; two targets' different tasks at
-   one occurrence (both reaching their own target there) would need one task carrying several
-   target branches, which the runtime does not have, so such targets replay apart. A group's union
-   plan is every task once, every task observing every site any target observes, under the union's
-   own replay group: `groups/group-<n>/execution_task_plan.jsonl`, `groups/groups.json`.
-4. Per group, all groups at once (`campaign_batch_group`, logging to `groups/group-<n>.log`; each
-   engine JVM and replay placed and charged as any head step, §7.7): INSTRUMENT, REPLAY and
-   IMPORT once, in `groups/group-<n>/`, under the union of its targets' scope maps (the replay's
-   guarded stores, and its target coverage: any target). A target the seed replay published no
-   target row of fails as a solo REPLAY does, in its own log (`campaign_target_reached`); a seed
-   that ended before IMPORT ends every target of its group, its failure copied into each one's log.
-5. Every target its group's seed reached runs its own campaign from EXPLORE on, all at once, each in
-   a subshell (`campaign_batch_target`): its iteration takes the group's union plan (a copy: GROW
-   appends to it), woven classes and seed session (hard links: GROW re-weaves its own), census and
-   import gate, and reads its own PLAN again (`campaign_plan_read`); EXPLORE .. EMIT are the
-   ordinary stages (`campaign_iteration_explore`). `campaign_stop_after=IMPORT` stops the batch after
-   the groups' IMPORT.
-6. The batch fails when SEED does, when the recording activated no target, or when a target that
-   was planned ends before EMIT -- its PLAN, its group's seed, or its own stages (EMIT's exits 2 and
-   3 are verdicts); each target's claim is its own `targets/<name>/schedule/final/result.json`.
-
-What is shared is the static pass (the build's), the recording weave, the recording and its
-aggregation, and per group the seed's weave, replay and import; each target plans and explores on
-its own. A target's EXPLORE reads the union's seed session, whose tasks include the other targets':
-its closure is rooted at its own declared anchor (§7.1), so another target's task is taken up only
-where it writes what that anchor depends on.
-
 ## 3. PLAN
 
 `campaign_plan` freezes the region plan as `iteration-0000/concolic_region_plan.jsonl`, copies the
@@ -213,12 +153,12 @@ recording's schedule to `recorded_schedule.jsonl`, and runs `plan.ConcolicSchedu
 (`scheduleTargetFirst`). `RuntimeWorkflowDiscovery.workflow` schedules the declared target first, then
 every other occurrence the plan states is replayable, in recorded order; no slice is applied here
 (the closure is EXPLORE's). The declaration is `declared_target_occurrence`: a resolved address, a
-selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first` (also
-when none is stated). SEED's aggregation resolves it once against the recording's target occurrences
+selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first` (none stated:
+SEED resolves `first` and PLAN refuses, `DECLARED_TARGET_OCCURRENCE_MISSING`). SEED's aggregation resolves it once against the recording's target occurrences
 (`RuntimeWorkflowDiscovery#declaredOccurrence`) and marks that row `declaredOccurrence`; PLAN takes
 the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNED`), and the shell
 uses the address PLAN's index states for every later stage, whatever form the declaration had
-(`campaign_plan_read`). When the closure holds more occurrences than
+(`campaign_plan`). When the closure holds more occurrences than
 `schedule_max_jobs`, PLAN keeps the target and the nearest demand depths that fit whole (the
 seed's `demandDepth`, SYMBOL-SCOPE.md §4.4; never part of a depth, whose occurrences are equally
 near) and states the rest in the index (`closureCut`: `keptDepth`, `occurrences`, `byDepth`;
@@ -235,7 +175,10 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 `campaign_instrument` clears `iteration-0000/instrumented-classes/` and runs `do_analyze` with
 `CAUSYNTH_CONCOLIC_TASK_PLAN`/`_TASK_ID` set to the whole plan: one union weave of every task. The
 tree must hold a class file, and `causynth.VerifyWovenClasses` must verify every woven class against
-the replay's class path, or the stage fails naming the class. GROW re-runs this stage's function.
+the replay's class path, or the stage fails naming the class; a woven class that fails as the class the
+class path holds fails unwoven (the same throwable and message, or both a `NoClassDefFoundError` for types
+no entry holds: Jetty, for ZooKeeper's admin server under a recipe's workload) is listed `UNLINKED` and does
+not fail it, since the workload cannot link it either way. GROW re-runs this stage's function.
 The union weave opens ONE region entry per root hook group (`plan.ExecutionTask#rootHookGroup`: the
 region and its root method, and a loop-body root's loop) and one enclosing entry per loop root
 (`#loopRootHookGroup`), however many planned occurrences share it; a replay's entry offers each
@@ -246,6 +189,11 @@ A loop-body root's controls are the branches leaving its loop, as the catalog's 
 throws); its frame opens on the outermost control edge into the body whose target dominates the
 demanded unit, and closes on every backedge and every exit of a control
 (`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`).
+Each conditional of a woven method gets the VM's decision marker just before it and, on every
+arm it can take, one observation of the arm taken (`ConcolicRegionRuntime#resolveBranch`,
+`#resolveSwitchBranch`; a switch gets one entry per case label), which never steers the run: the
+woven body grows with the labels, not their square (ZooKeeper's `FinalRequestProcessor` switches
+on 120, which a dispatch per label and successor took past the JVM's 64 KB method limit).
 
 The union weave also hooks the codecs and exchange brackets the wire declarations state
 (`causynth.CodecWeave`, [IDENTITY.md §7.5](IDENTITY.md)): the file the property
@@ -418,8 +366,8 @@ schedule) and:
    proposed, exposed or in flight, and no witness. So is a concrete anchor (§7.2): every round on it
    states `NO_ROOT_REACHES_ANCHOR` (`ExploreMain#noRoot`), DIAGNOSTIC while the exploration has
    work, BLOCKING at the fixed point, its detail one of three ends: none of its admitted paths
-   decided a site on its way to the throw, it read no shared state before it decided, or the reads
-   (and their locations) its closure demands.
+   decided a site on its way to the throw, it read no shared state its path guards depend on before
+   it decided, or the reads (and their locations) its closure demands.
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -447,13 +395,17 @@ its healthy arm" or never reached) and nothing above names a value. An unreached
 symbolic decision on the way is not concrete, since flipping it is how a replay reaches the throw
 (SOLR-18413's leader leaves at a concrete test of the boolean its clock-decided `isExpired`
 returned). Its predicate reads are then the read rows the anchor made, in each admitted path,
-before that path's deciding event (a later read cannot reach a decision already taken; an earlier
-one may, through a value the VM kept no expression under, or through a branch). Their symbols are
-demanded like those a symbolic phi names, so their writers become tasks flipped at their own
-guards and fault sites. The reads are what the rows state: a cell the static slice does not track
-has no read row (the anchor then "read no shared state"); R1-ROOTS WP-F1's predicate cone, which
-tracks more of the cells the target's guards depend on, reaches here as rows. A non-concrete
-anchor plans as before. Each demanded boundary input grows the closure:
+before that path's deciding event, of the reads the root demand found on the throw's path guards
+(SYMBOL-SCOPE §4.6; `StaticScopeMap#demandedAt`: a READ_SITE or READ placeholder stating its
+`demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins).
+A later read cannot reach a decision already taken; an earlier one off the guards' cone reaches it
+only through a read on it, whose writers the closure then asks. Their symbols are demanded like
+those a symbolic phi names, so their writers become tasks flipped at their own guards and fault
+sites. The demand tracks the cone's nearest reads however many flows from a branch (a String, a
+reference, a container too), so they have read rows; a cell no region stores has no writer to ask
+(the anchor then "read no shared state its path guards depend on"). The earlier reads off the cone
+are counted, never dropped silently: the `NO_ROOT_REACHES_ANCHOR` detail states how many
+(`ClosurePlanner.Concrete#offCone`). A non-concrete anchor plans as before. Each demanded boundary input grows the closure:
 
 - an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
   sites = the guards of the port's static export sites, contributed = its exports), and every activated
@@ -497,8 +449,9 @@ same demand, and folding it changes nothing (`ClosurePlanner#candidates`); the w
 once. Each demanded occurrence becomes a `Task` (id =
 `digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
 the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
-plus every fault site (`Corpus.faultSites`: a decision whose term reaches a MARKER root, by the same
-walk). A
+plus every fault site (`Corpus.faultSites`: a decision whose term reaches a root of the `FAULT`
+category, by the same walk; a boolean configuration, hook source or READ placeholder is a MARKER
+and no fault). A
 demanded occurrence no session captured (ran, but no planned task admitted it) is: skipped if it is a
 role (`ROLE.*`, `LINEAGE_LOST` when lost); skipped when its chain began at a daemon tick later than the
 recording's last tick of that role on that node (`Corpus.tickPastRecording`, DIAGNOSTIC); *exposed*
@@ -550,7 +503,8 @@ not stop. The question is one declared occurrence `(r,c,i)`, and a focused repla
 no activation of the declared region `r` under the declared context `c` -- at any index `i`, which a
 flip may shift (a fault's retry, a loop that runs once more) -- ran it under another chain or not at
 all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`; a chain of the question's shape whose counts
-alone differ answers the declared occurrence at its address, IDENTITY.md §9): its BRANCH STOPS. Its world is never
+alone differ, at an address the recording did not open, answers the declared occurrence at its address,
+IDENTITY.md §9): its BRANCH STOPS. Its world is never
 inherited, its paths are never flipped, and nothing it exposes is grown (§7.2's `uncaptured`: one
 named only by stopped branches is DIAGNOSTIC); it stays in the corpus as evidence (its rows still
 attest arms, §7.3). Contexts compare by `contract/ContextShape` (`Corpus#contextShape`, the rule
@@ -637,7 +591,8 @@ conjunct it drops the conjunct (DIAGNOSTIC); a malformed lowered term likewise. 
 when the query declares it, a `let` binds it, the fixed preamble states it, or it is a theory
 operator of `compose.SmtNames.BUILTIN`, the one vocabulary every stage reads with, which lists every
 operator the lowering writes (the string operators `str.substr`, `str.indexof`, `str.at`,
-`str.from_code`, `str.to_code` among them, the floating-point operators, `to_fp`, `int2bv`, `bv2int`
+`str.from_code`, `str.to_code`, and `str.in_re`, `re.*`, `re.range` of `String.trim` among them,
+the floating-point operators, `to_fp`, `int2bv`, `bv2int`
 and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query with no variable of its own is not asked. A construct the
 lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays
@@ -779,10 +734,10 @@ one more only while it runs fewer than its share, N over the capped explorations
 `$CAUSYNTH_HOST_LEDGER/explorations/` is fresh (written when the loop starts, kept fresh by the
 head's heartbeat like its room, `campaign_head_reservation_stale_s`, removed when it ends), at
 least one, read again at every start; it says once for each share it waits at. So the share
-grows as others end and shrinks as others begin (what already runs past it runs out), one
-exploration alone keeps all N, and a batch's targets (§2b) each count as one. N = 0, the default
-and a named acceptance run's, is no cap. An ad-hoc sweep (`tools/adhoc/sweep.sh`) gives every case
-N = the lifts' obligation slots for its `obligation_memory_mb` (`campaign_pool_slots`: on each
+grows as others end and shrinks as others begin (what already runs past it runs out), and one
+exploration alone keeps all N. N = 0, the default and a named acceptance run's, is no cap. A
+sweep (`tools/adhoc/sweep.sh`) gives every case N = the lifts' obligation slots for its
+`obligation_memory_mb` (`campaign_pool_slots`: on each
 host as many starts as fit under the ceiling above at their charge, at most its cores; ten 31.5 GB
 lifts at 70 % hold 30 of 6000 MB), and admits its head for the room it reserves on its host
 (HEAD ROOM below; `tools/lib/heads.sh` `case_head_reserve_mb`). Round a40 without it: one Solr
@@ -799,12 +754,11 @@ head's exported `CAUSYNTH_`/`GRAPH_CHECKER_` variables, its output passed back a
 program, or a `run_engine.sh` function whose arguments are all it reads of the head. The steps are
 every engine JVM of every stage -- SEED's static passes, scope growth and trace aggregation, PLAN,
 INSTRUMENT and its verifier, the import gate, the planner, COMPOSE, CONFIRM's and REPRODUCE's
-`ConfirmMain`, GROW's planner and weave, a batch's `PlanUnion` -- each charged for 120 s at the heap
+`ConfirmMain`, GROW's planner and weave -- each charged for 120 s at the heap
 it starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured need
 (`campaign_engine_need_mb`: the static pass 4 GB, the planner and the composer 8 GB, the trace
 aggregation, scheduler, lineage scan, scope growth, woven-class verifier, CONFIRM, GROW's
-`ExposedRegionPlanMain` (0.13 GB measured) and a batch's `PlanUnion` (the scheduler's, unmeasured)
-2 GB; the import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none; a JVM
+`ExposedRegionPlanMain` (0.13 GB measured) 2 GB; the import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none; a JVM
 that runs out of its heap (exit 3 under
 `-XX:+ExitOnOutOfMemoryError`) runs again at twice it, up to `engine_memory_mb`, charged so, saying
 so each time, and later starts of that main begin at the larger heap (`campaign_engine_outgrown`;
@@ -937,9 +891,10 @@ cancelled or reaped, by id):
   still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
 
 A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
-proposed twice; the wave budget is what bounds the derivation. The ad-hoc HDFS experiment gives its
-planner and composer 16 GB past their 8 GB start (`engine_memory_mb`): a40h2 DataStreamer-638's 70
-sessions (5.7 GB on disk) ran its round-4 planner out of 8 GB. An end other than WITNESSED on a
+proposed twice; the wave budget is what bounds the derivation. A case whose corpus outgrows the
+8 GB start gives its planner and composer more (`engine_memory_mb`, hdfs-11741's 16 GB): the 70
+sessions (5.7 GB on disk) of round a40h2's check DataStreamer-638 ran its round-4 planner out of
+8 GB. An end other than WITNESSED on a
 last round whose closure was truncated (its `truncated`) is one BLOCKING
 `REGION_PATH_CLOSURE_TRUNCATED` row naming that round (`campaign_stream_truncation`): a claim over
 that closure misses arms. An accepted witness asks nothing past it, so its rounds' truncations stay
@@ -1190,7 +1145,10 @@ each component as `assoc_remove_if`'s); a source whose chain bounds no keys is r
 the source's keys. The presence and match conditions of `putIfAbsent`, `replace` and `remove(k, v)`
 are comparisons of a `READ` with null or the argument, lowered as any comparison. A String a map
 answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
-(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A view's positions are
+(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). An object reference is an
+opaque identity: one the VM named (`M_L'c'_rid`) is non-null and distinct from its session's other
+named objects, one it placed unnamed (`P_L'c'_`, made only for a non-null object) is non-null
+(`SmtLowering#opaque`). A view's positions are
 stated linearly in its chain's puts: each position below the size names a present key held at that
 position, and each put key present is held at a position below the size. A position is the run's
 iteration count, so the chain's order is the positions' only where it is the order the map's class
@@ -1213,6 +1171,16 @@ over arrays, and z3 answered such queries "incomplete (theory array)" or not at 
 valuation 0 undecided on two fatal-observing paths, each sat in seconds without it). Every
 array-valued choice of a put is a `store` of a chosen element, never an `ite` over arrays.
 
+**Stream results** (VM.md §4, `SymStream`). A collected list is an `INDEXED` chain from an exact empty
+`SNAPSHOT_BASE`: `APPEND_IF [v]` with a `guard` is `indexed_append_if`, the guard inside the store
+(with it false the state is the receiver's); a collected set's `PUT_IF [k, v]` is `assoc_put_if`. A
+`PIN` (no arguments, a `guard`, either shape) is its receiver's state with the guard required
+wherever it is lowered (`ContainerSmtCodec#pinned`): what the run decided that no relation states. A
+count is the `SIZE` and a match the `IS_EMPTY` of such a chain on a base no object holds.
+`CONTAINS [x]` on a list is a disjunction over the positions its chain can fill -- the appends and
+insertions above an exact base within `VIEW_CHAIN_LIMIT` (`ContainerSmtCodec#indexedBound`), each
+below the size -- and is refused by name otherwise (`ContainerRelation:INDEXED:CONTAINS:unbounded-chain`).
+
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
 before it at the guard sites of the mutations its method made on a container it then published
@@ -1220,8 +1188,9 @@ before it at the guard sites of the mutations its method made on a container it 
 store's recorded type may be held by, `StaticScopeMap#carriersAt`), those that skipped a mutation included. `Independence` keeps them: a kept
 read brings the guards of the write it observed, and an arm (`ComposedFamilies#producerBody`) seeds
 the guards of the writes it delivers (`Arms.Arm#write`); the closure then conjoins them in the
-polarity they took, and the reads they name are joined in turn. A decision whose condition is a
-REMOVE_IF guard of the referent's chain, or that guard's complement, stays free. `ComposeMain`
+polarity they took, and the reads they name are joined in turn. A decision whose condition guards a
+conditional mutation of the referent's chain (`REMOVE_IF`, `PUT_IF`, `APPEND_IF`), or that guard's
+complement, stays free. `ComposeMain`
 reads the epoch's scope map (`--static-scope-map`, required; `run_engine.sh do_compose` passes it).
 
 **An owner kept to the run's pairing** (`Composer#pinnedOwners`): a location a STATE family may
@@ -1264,9 +1233,13 @@ constant span) in that session's terms is lowered that much earlier (`SmtLowerin
 each replay's startup keys, 9 to 11 minutes late on the recording's timeline, with the one dn1 clock.
 
 **Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
-moves sorted by distance, then pairs of moves, cut at
+moves -- a marker's flip and an integral's domain-end anchors (`Composer#anchors`: each bound and its
+two inward neighbours, where the domain's outermost comparisons flip, however far from the
+recording) before its other values, each by distance, and at equal distance a configuration-only
+move after any other (`Composer#configurationOnly`) --, then pairs of moves, cut at
 `compose_max_valuations` (a MARKER's move is its other polarity; an INTEGRAL's values come from its
-window; clocks are not enumerated).
+window, its end anchors nearest first, then outward from its recorded value, nearest first; clocks
+are not enumerated).
 
 ComposeMain writes three files. `candidate.smt2`: the body, then valuation 0 as named pins
 `(assert (! (= <root symbol> <value>) :named valuation__<symbol>))` (so the file as published asks
@@ -1287,8 +1260,14 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ClaimPolicy`:
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
-2. Each path is first asked alone with every root free (60 s, `Disjunction#selfCheck`): unsat →
-   `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. Then every valuation is asked (4 at
+2. Each path is first asked alone with every root free (60 s, `Disjunction#selfCheck`): an unsat
+   path is refuted for every question. When every path is, each is asked once more with its fatal
+   arm left out (`Disjunction#withoutFatalArms`, `Composition#withoutFatalArm`: its `path_fatal__`
+   implication without phi), what its own run satisfied: a path unsat there (or undecided), or one
+   that observed the fatal arm, contradicts its run -- `PATH_SELF_CONTRADICTORY` DIAGNOSTIC, and
+   BLOCKING for the composition; refuted by phi alone everywhere, no root of the corpus turns any
+   path to the fatal arm, which is the claim's own answer (b20h BlockTokenSecretManager-511, a40s
+   BackupCmd-343: the null-checked read is pinned to the object the run read). Then every valuation is asked (4 at
    once; each question is written to its z3s from the one body the composition holds, never copied
    per ask or per arithmetic engine, `Composition#query`/`#pathQuery`, `Z3#ask`) for the path
    selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
@@ -1340,7 +1319,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
-4. The claim, first match:
+4. The claim, first match. A witness moving configuration only (`Composition#configurationOnly`:
+   every moved root `CONFIG`) ranks after every other, so the first rule takes the others, then the
+   second, and only then the first rule takes a configuration-only one. A witness moving a
+   configuration whose plant leaves reads of its key at the recording's value (the scope map's
+   `CONFIG_KEY` row, SYMBOL-SCOPE §4.3) is not claimed: no cluster holds that world, so no replay can
+   confirm it as one; `UNPRODUCIBLE_ANSWER` DIAGNOSTIC names the root and the reads, once.
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
      whose moved roots are in no unattested arm (else BLOCKING `UNATTESTED_ARM`): its `mechanism`;
      without `recordingDecides` it also needs `polarityDecides`, checked before the witness is
@@ -1384,8 +1368,9 @@ than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else every valuation decided un
 `INCONCLUSIVE_PARTIAL`. The manifest's `solver` block carries `state` (sat/unsat/unknown),
 `reachability`, `unsatClosureComplete`, `valuations` (status, assignment, moved, selected path and
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
-`findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `blockers`, `whyNotAccepted`,
-`witnessFindings`).
+`findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved
+root's category, `contract.RootCategory`), `configurationOnly` (the claim moves configuration only:
+the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witnessFindings`).
 
 ## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
 
@@ -1492,7 +1477,7 @@ REFUTED, `report.py` lists them, `tools/analysis/timeline.py` times every CONFIR
 
 After EMIT -- the verdict is published first, and nothing REPRODUCE does moves it -- a confirmed
 `SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the concolic
-VM (`campaign_reproduce`; ADHOC-INFRA WP5.D). `ConfirmMain --iteration --claim --static-scope-map
+VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --static-scope-map
 --plant <file>` writes the plant from CONFIRM's own world (`ConfirmMain#world`: the selected
 session's focus row overlaid by `plantModel`): one row per root, `{kind MARKER, occurrence: <mint
 occurrence id>, siteId: <the call site its plan input action names>, value}`, and one per guard of
@@ -1539,8 +1524,9 @@ refutes it. Then the campaign exits by its verdict (`campaign_exit_verdict`).
 3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a
    `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in);
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `findingKind`,
-   `polarityDecides`, `valuationOrdinal`, `movedRoots`, `blockers`, `reachability`, `finalStatus`,
-   `gapCount`, `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
+   `polarityDecides`, `valuationOrdinal`, `movedRoots`, `movedRootCategories` (each moved root's
+   category, `contract.RootCategory`), `configurationOnly`, `blockers`, `reachability`, `finalStatus`, `gapCount`,
+   `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
    `targetOccurrence`, `valuations`, `witnessFindings`.
 4. `final/run-manifest.json`: provenance, iteration manifests, the path, size and sha256 of each
    required final artifact (`candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json`,
@@ -1580,8 +1566,11 @@ a 1 MB probe write there that is refused reads as 0 G (a full disk or a per-user
 not show). The preflight fails by name; a case waits up to `DISK_WAIT_SECONDS` (1800) for room and
 is then skipped as `no disk`.
 
-Ad-hoc sweeps do not use `report.py`: `tools/adhoc/triage.py` classes a case with a `result.json`
-`CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true, `REFUTED` when
+A sweep (`tools/adhoc/sweep.sh`) does not use `report.py`: `tools/adhoc/triage.py` classes a case
+with a `result.json` `CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true --
+`CONFIG_ONLY` when `configurationOnly` is true (COMPOSE's rule, read, never re-derived), a finding read
+after the others (`findings.py` ranks its mechanism after every other: a configuration-validation throw
+fires by design) --, `REFUTED` when
 `claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `NO_ROOT` when a
 BLOCKING `NO_ROOT_REACHES_ANCHOR` gap ended EXPLORE (§7.1; the gap's detail is the reason), else
 `NO_WITNESS` (`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row

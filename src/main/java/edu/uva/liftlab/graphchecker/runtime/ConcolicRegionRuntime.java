@@ -850,6 +850,14 @@ public final class ConcolicRegionRuntime {
         return RootMint.configuredSource(sourceId, owner, fieldSignature);
     }
 
+    /** The engine's configuration read, woven before a configuration
+     *  field's {@code getfield} (SYMBOL-SCOPE §4.3); it names a failure
+     *  and never throws into the workload's own read. */
+    public static void readConfiguration(
+            String sourceId, Object owner, String fieldSignature) {
+        RootMint.configuration(sourceId, owner, fieldSignature);
+    }
+
     /** Records a stable logical source a live occurrence just entered. */
     static void observeCausalSource(String sourceKey) {
         ActiveRegion active = activeRegion();
@@ -1193,22 +1201,24 @@ public final class ConcolicRegionRuntime {
         return BranchObservation.prepare(method, unitIndex, expression);
     }
 
-    /** Records a binary decision under the native marker's event id. */
-    public static boolean resolveBranch(long preparedHandle, long vmEventId,
-                                        String method, int unitIndex,
-                                        String expression,
-                                        boolean observedOutcome) {
+    /**
+     * Records a binary decision under the native marker's event id, on the
+     * arm the branch took: an observation, which never steers the run.
+     */
+    public static void resolveBranch(long preparedHandle, long vmEventId,
+                                     String method, int unitIndex,
+                                     String expression,
+                                     boolean observedOutcome) {
         BranchObservation.observe(BranchDecision.binary(observedOutcome),
                 preparedHandle, vmEventId, method, unitIndex, expression);
-        return observedOutcome;
     }
 
     /** Exact multiway counterpart of {@link #resolveBranch}. */
-    public static int resolveSwitchBranch(
+    public static void resolveSwitchBranch(
             long preparedHandle, long vmEventId, String method, int unitIndex,
             String expression, String branchKind, String encodedCaseKeys,
             int observedSuccessorIndex) {
-        return BranchObservation.observeSwitch(preparedHandle, vmEventId,
+        BranchObservation.observeSwitch(preparedHandle, vmEventId,
                 method, unitIndex, expression, branchKind, encodedCaseKeys,
                 observedSuccessorIndex);
     }
@@ -1358,6 +1368,30 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * What a VM model ran on the run's own values though symbolic content
+     * reached it (VM.md §4: a stream pipeline it could not state), each a
+     * DIAGNOSTIC gap named by the model's reason and the call's site, so a
+     * chain missing there is diagnosable.  Its subject is no occurrence
+     * address, so it refuses nothing (Corpus#refusedIn).
+     */
+    private static void modelGaps(ActiveRegion active, JsonElement summary) {
+        if (!summary.isJsonObject()) return;
+        for (JsonElement gap : JsonFields.array(summary.getAsJsonObject(),
+                "modelGaps")) {
+            if (!gap.isJsonObject()) continue;
+            JsonObject named = gap.getAsJsonObject();
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    JsonFields.optionalString(named, "name"),
+                    "at " + JsonFields.optionalString(named, "site")
+                            + " in " + firstNonBlank(active.address(),
+                            Long.toString(active.token)) + ": the VM ran"
+                            + " this call on the run's own values though"
+                            + " symbolic content reached it, so what it"
+                            + " computed is stated only in part");
+        }
+    }
+
+    /**
      * Reads one occurrence and closes its VM region on the owner thread;
      * decoding and publication go to the daemon pool.
      *
@@ -1399,7 +1433,10 @@ public final class ConcolicRegionRuntime {
             }
             JsonElement summary = parseJson(api.finish());
             engineFinished = true;
-            if (publishRows) aborted(active, summary);
+            if (publishRows) {
+                aborted(active, summary);
+                modelGaps(active, summary);
+            }
             // Symbolic values flow back to the caller, so open its gate too.
             if (enclosingRegion != null && active.pathRecordingStarted) {
                 enclosingRegion.pathRecordingStarted = true;

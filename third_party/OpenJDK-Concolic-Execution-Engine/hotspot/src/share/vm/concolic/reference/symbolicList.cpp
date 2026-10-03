@@ -83,6 +83,11 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
     // ContainerSupport::guarded_mutation.
     bool recording = handle.general_check_param_symbolized()
         || ContainerSupport::guarded_mutation(callee_name);
+    if (recording && ContainerSupport::reenters_from_callback(
+            ContainerSupport::backing_container(handle.get_param<oop>(0)),
+            callee_name)) {
+      return false;
+    }
     if (recording) {
       handle.general_prepare_param();
       // Before the body runs: state what the container already holds, while

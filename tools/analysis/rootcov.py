@@ -27,11 +27,10 @@ and prints the metrics of R1-ROOTS-proposal.md section 8:
        none reached the anchor.
   M-b  obligations wave 0 asked; waves that asked any.
   M-c  roots (distinct rootId) / mints (rows) per category over admitted
-       sessions: CLOCK (kind CLOCK); HOOK (a configured source: the rootId is a
-       source id, not a port); FAULT (a MARKER minted at a fault marker's port,
-       whose name starts with FAULT: where the edges still state the name);
-       READ (a placeholder read, mintVersion, with no root row: an unattributed
-       region input); OTHER.
+       sessions: each root row's own category (CLOCK, FAULT, CONFIG, READ,
+       HOOK; a round recorded before the category contract states none and is
+       refused by name), and READ also for a placeholder read, mintVersion,
+       with no root row (an unattributed region input).
   M-d  PLAN admissions by admissionBasis (none = TARGET_REACHABLE, as
        ConcolicScheduler counts) and closure size / schedule_max_jobs; when PLAN
        refused the closure over the cap, both come from the log's refusal.
@@ -108,7 +107,7 @@ MAX_DISTANCE = 16
 MINTABLE = ('CLOCK', 'FAULT', 'CONFIG_CALL', 'CONFIG_FIELD', 'READ', 'TRACK')
 NAMED = ('TRACK_IDENTITY', 'TRACK_CONTAINER', 'PRE_WINDOW', 'WIRE', 'SCOPE',
          'IO', 'LIBRARY')
-CATEGORIES = ('CLOCK', 'FAULT', 'READ', 'HOOK', 'OTHER')
+CATEGORIES = ('CLOCK', 'FAULT', 'CONFIG', 'READ', 'HOOK')
 JVM_CLOCKS = {'<java.lang.System: long currentTimeMillis()>',
               '<java.lang.System: long nanoTime()>'}
 JVM_CONFIG = (
@@ -239,9 +238,9 @@ def scope_map(path):
 
 
 def static_walk(edges_path, smap):
-    """M-f boundaries, the declared roots' cones, and each fault marker's name."""
+    """M-f boundaries and the declared roots' cones."""
     into = collections.defaultdict(list)
-    operands, throws, markers, names, analysed, carried = set(), set(), set(), {}, set(), set()
+    operands, throws, markers, analysed, carried = set(), set(), set(), set(), set()
     for e in rows(edges_path):
         kind, to, invoke = e.get('kind'), e.get('toCell', ''), e.get('invoke', '')
         value = kind not in IDENTITY_EDGES or bool(VALUE_LIKE.match(invoke[1:invoke.find(':')]))
@@ -255,7 +254,6 @@ def static_walk(edges_path, smap):
             operands.add(e.get('fromCell', ''))
         elif kind == 'explicit_symbolic_fault':
             markers.add(invoke)
-            names[e.get('siteId', '')] = e.get('symbolicName', '')
 
     def stores_config(cell, method):
         """Whether a field store's value is a config getter's return, within
@@ -340,7 +338,7 @@ def static_walk(edges_path, smap):
         declared[kind]['all'] += 1
         declared[kind]['fatalCone'] += cell in fatal
         declared[kind]['predCone'] += cell in predicate
-    return boundaries, dict(declared), names, len(operands)
+    return boundaries, dict(declared), len(operands)
 
 
 def reach(into, starts):
@@ -351,18 +349,6 @@ def reach(into, starts):
                 seen.add(f)
                 stack.append(f)
     return seen
-
-
-def plan_ports(camp):
-    """portId -> (sourceKind, siteId) over every task plan the campaign kept."""
-    ports = {}
-    for pattern in ('execution_task_plan.jsonl', 'seed-replay/execution_task_plan.jsonl',
-                    'obligations-*/*/execution_task_plan.jsonl'):
-        for path in glob.glob(os.path.join(camp, 'schedule', 'iteration-*', pattern)):
-            for r in rows(path):
-                for a in r.get('inputActions') or ():
-                    ports[a.get('portId')] = (a.get('sourceKind', ''), a.get('siteId', ''))
-    return ports
 
 
 def sessions(camp):
@@ -451,11 +437,10 @@ def verdict(anchor):
     return 'FATAL' if anchor['fatal'] else 'CONCRETE'
 
 
-def root_categories(camp, found, names):
+def root_categories(found):
     """M-c over admitted sessions: category -> [distinct roots, mints]."""
     roots = collections.defaultdict(set)
     mints = collections.Counter()
-    ports = None
     for d, _, admitted in found:
         if not admitted:
             continue
@@ -463,19 +448,11 @@ def root_categories(camp, found, names):
         path = os.path.join(d, 'roots.jsonl')
         for r in rows(path) if os.path.exists(path) else ():
             symbols.add(r.get('symbol'))
-            root = r.get('rootId', '')
-            if r.get('kind') == 'CLOCK':
-                cat = 'CLOCK'
-            elif not PORT.fullmatch(root):
-                cat = 'HOOK'
-            else:
-                ports = plan_ports(camp) if ports is None else ports
-                source, site = ports.get(root, ('', ''))
-                cat = ('FAULT' if r.get('kind') == 'MARKER'
-                       and source == 'EXPLICIT_SYMBOLIC_FAULT'
-                       and names.get(site, 'FAULT:').startswith('FAULT:') else 'OTHER')
-            roots[cat].add(root)
-            mints[cat] += 1
+            if 'category' not in r:
+                sys.exit('%s: a root row states no category: recorded before '
+                         'the root-category contract' % path)
+            roots[r['category']].add(r.get('rootId', ''))
+            mints[r['category']] += 1
         path = os.path.join(d, 'reads.jsonl')
         if not os.path.exists(path):
             continue
@@ -537,12 +514,11 @@ def analyze(camp):
     log = campaign_log(log_path)
     out['stage'] = (log['stage'] or '-') + ('!' if log['error'] else '')
 
-    names = {}
     smap_path = os.path.join(camp, 'static_scope_map.jsonl')
     edges_path = os.path.join(camp, 'candidate_dataflow_edges.jsonl.gz')
     smap = scope_map(smap_path) if present('scope_map', smap_path) else None
     if present('edges', edges_path) and smap:
-        out['boundaries'], out['declared'], names, out['operands'] = static_walk(edges_path, smap)
+        out['boundaries'], out['declared'], out['operands'] = static_walk(edges_path, smap)
     elif smap:
         out['declared'] = {k: {'all': n} for k, n in collections.Counter(
             kind for kind, _ in smap['declared']).items()}
@@ -553,7 +529,7 @@ def analyze(camp):
     if found:
         out['anchor'] = anchor_rows(found)
         out['concrete'] = verdict(out['anchor']['admitted'])
-        out['roots'] = root_categories(camp, found, names)
+        out['roots'] = root_categories(found)
     else:
         out['missing'].append('sessions')
 

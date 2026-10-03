@@ -94,6 +94,16 @@ public final class RuntimeSelectedRegionFinalizer {
      * demanded on ({@link DemandWalk#holdsOthersOnly}, {@link Demanded}).
      */
     public static final String FIELD_OWNERS = "fieldOwners";
+    /**
+     * Activation member, in memory only: per reference field, the objects
+     * the recording saw it hold.  A mutation through the field writes its
+     * referent's state, so there a shared referent is a shared location; a
+     * store writes the holder's field, whatever it held (a40s
+     * ReindexCollectionCmd-369: 189 lambdas capturing one ZooKeeper client
+     * and 146 DocCollections holding one cached Integer box were one
+     * location each, all writers of the field the target read).
+     */
+    public static final String FIELD_REFERENTS = "fieldReferents";
     /** Communication ports whose exact export/attach sites need hooks. */
     public static final String COMMUNICATION_PORTS = "communicationPorts";
 
@@ -147,6 +157,13 @@ public final class RuntimeSelectedRegionFinalizer {
      * §9).
      */
     public static final String QUESTION_SHAPE = "questionShape";
+    /**
+     * Plan-row member of the declared occurrence: the ids of every other
+     * occurrence the recording opened in its region on its node.  A
+     * replay's activation at one of them is that occurrence, and answers no
+     * question ({@code runtime.ConcolicTaskPlan#select}, IDENTITY §9).
+     */
+    public static final String QUESTION_RECORDED = "questionRecorded";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -433,17 +450,33 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The call sites whose call returns a field (an accessor the slice does
-     * not expand, {@code accessor_field_return}), each with that field: the
-     * call's receiver owns the field ({@link #FIELD_OWNERS}).
+     * The call sites whose call accesses a field of the object it is called
+     * on, each with that field, whose owner the call's receiver is ({@link
+     * #FIELD_OWNERS}): a call that returns one (an accessor the slice does
+     * not expand, {@code accessor_field_return}), and a mutation of one the
+     * store was reached through a holder of (a WRITE_SITE's {@code
+     * declaredCallee} whose cell is not its carrier: an atomic's {@code
+     * value}, one cell for every AtomicInteger of the slice -- a40s
+     * UpdateLog-928's 534 incrementAndGet/decrementAndGet occurrences were
+     * writers of whichever atomic a reader read, until their receivers
+     * named the one they wrote).
      */
-    public static Map<String, String> fieldReadingCalls(
-            Collection<Map<String, Object>> graph) {
+    public static Map<String, String> fieldAccessingCalls(
+            Collection<Map<String, Object>> graph, StaticScopeMap scopeMap) {
         Map<String, String> sites = new HashMap<>();
         for (Map<String, Object> edge : graph) {
             if ("accessor_field_return".equals(text(edge.get("kind")))) {
                 sites.put(text(edge.get("siteId")),
                         text(edge.get("fromCell")));
+            }
+        }
+        for (List<StaticScopeMap.Site> stores
+                : scopeMap.writeSitesByCell().values()) {
+            for (StaticScopeMap.Site store : stores) {
+                if (!store.declaredCallee.isEmpty()
+                        && !store.cell.equals(store.carrier)) {
+                    sites.put(store.siteId, store.cell);
+                }
             }
         }
         return sites;
@@ -462,15 +495,6 @@ public final class RuntimeSelectedRegionFinalizer {
             captures.add(CommunicationCatalogContract.captureKey(side, port));
         }
         return captures;
-    }
-
-    /**
-     * The node this activation ran on, read from its occurrence address (not
-     * the trace rows).  Every activation has one, so a non-address throws.
-     */
-    private static String activationSourceKey(Map<String, Object> instance) {
-        return OccurrenceAddress.parse(text(instance.get("occurrenceId")))
-                .node().render();
     }
 
     /**
@@ -812,6 +836,8 @@ public final class RuntimeSelectedRegionFinalizer {
         instances.get(declared).put(DECLARED_OCCURRENCE, true);
         instances.get(declared).put(QUESTION_SHAPE,
                 messages.shape(question.context()));
+        instances.get(declared).put(QUESTION_RECORDED,
+                recordedBeside(instances.keySet(), question));
         DemandWalk walk = new DemandWalk(program, demands, scopeMap,
                 cutPorts, otherTargets);
         List<String> seeds = new ArrayList<>();
@@ -836,6 +862,24 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         return walk.reached;
+    }
+
+    /**
+     * The ids of the occurrences the recording opened in {@code question}'s
+     * region on its node, {@code question} itself aside: its activations.
+     */
+    static List<String> recordedBeside(Collection<String> activations,
+                                       OccurrenceAddress question) {
+        List<String> ids = new ArrayList<>();
+        for (String activation : activations) {
+            OccurrenceAddress recorded = OccurrenceAddress.parse(activation);
+            if (recorded.regionId().equals(question.regionId())
+                    && recorded.node().equals(question.node())
+                    && !recorded.id().equals(question.id())) {
+                ids.add(recorded.id());
+            }
+        }
+        return ids;
     }
 
     /** One root an occurrence read: a captured DECLARED_SITE of a root's
@@ -864,9 +908,11 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The roots one activation read: its captures of a clock or a fault
-     * marker.  A READ placeholder is no root: it stands for its writers'
-     * value.
+     * The roots one activation read: its captures of a clock, a fault
+     * marker or a configuration getter's return.  A READ placeholder is no
+     * root: it stands for its writers' value.  A configuration field's read
+     * is a configured-source phase, no capture: the plan states it of
+     * whichever occurrence another rule admits.
      */
     private static List<RootRead> rootReads(Map<String, Object> activation,
                                             StaticScopeMap scopeMap) {
@@ -878,7 +924,8 @@ public final class RuntimeSelectedRegionFinalizer {
                     text(capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
                 String kind = site.declared.inputKind;
                 if (StaticScopeMap.CLOCK_INPUT.equals(kind)
-                        || StaticScopeMap.FAULT_INPUT.equals(kind)) {
+                        || StaticScopeMap.FAULT_INPUT.equals(kind)
+                        || StaticScopeMap.CONFIG_INPUT.equals(kind)) {
                     reads.add(new RootRead(site));
                 }
             }
@@ -1020,19 +1067,33 @@ public final class RuntimeSelectedRegionFinalizer {
         return false;
     }
 
-    /** One activation's objects of one field ({@link #FIELD_OWNERS}); none
-     *  when the recording saw it access the field on none. */
+    /** One activation's objects of one field ({@link #FIELD_OWNERS}), and
+     *  the objects it held when {@code referents} ({@link
+     *  #FIELD_REFERENTS}); none when the recording saw it access the field
+     *  on none. */
+    private static Set<Integer> objectsOf(Map<String, Object> activation,
+                                          String cell, boolean referents) {
+        Set<Integer> objects = new HashSet<>(field(activation, FIELD_OWNERS,
+                cell));
+        if (referents) {
+            objects.addAll(field(activation, FIELD_REFERENTS, cell));
+        }
+        return objects;
+    }
+
     @SuppressWarnings("unchecked")
-    private static Set<Integer> ownersOf(Map<String, Object> activation,
-                                         String cell) {
-        Object owners = activation.get(FIELD_OWNERS);
-        if (!(owners instanceof Map)) return Collections.emptySet();
-        Object held = ((Map<String, Object>) owners).get(cell);
+    private static Set<Integer> field(Map<String, Object> activation,
+                                      String member, String cell) {
+        Object byField = activation.get(member);
+        if (!(byField instanceof Map)) return Collections.emptySet();
+        Object held = ((Map<String, Object>) byField).get(cell);
         return held instanceof Set ? (Set<Integer>) held
                 : Collections.<Integer>emptySet();
     }
 
-    /** The objects one stored location was demanded on, on one node. */
+    /** The objects one stored location was demanded on, on one node: the
+     *  holders and what they held, since a root's influence may reach it by
+     *  a store or a mutation. */
     private static final class Demanded {
         private final Set<Integer> objects = new HashSet<>();
         /** A demand of it whose reader the recording saw access it on no
@@ -1050,7 +1111,7 @@ public final class RuntimeSelectedRegionFinalizer {
         /** Whether an activation may hold a demanded object of this field:
          *  unless the recording saw it access the field on others only. */
         private boolean heldBy(Map<String, Object> activation, String cell) {
-            Set<Integer> held = ownersOf(activation, cell);
+            Set<Integer> held = objectsOf(activation, cell, true);
             return any || held.isEmpty()
                     || !Collections.disjoint(held, objects);
         }
@@ -1084,6 +1145,9 @@ public final class RuntimeSelectedRegionFinalizer {
          *  it folded into, whose occurrence ran its text. */
         private final Map<String, List<Map<String, Object>>> performers =
                 new HashMap<>();
+        /** Occurrence -> the node it ran on, read once off its address,
+         *  never off the trace rows (a non-address throws). */
+        private final Map<String, String> nodes = new HashMap<>();
         /** The occurrences admitted, in admission order. */
         private final Set<String> reached = new LinkedHashSet<>();
         /** The occurrences no rule may plan: targets not the question's. */
@@ -1139,6 +1203,8 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             for (Map.Entry<String, Map<String, Object>> entry
                     : program.activations.entrySet()) {
+                nodes.put(entry.getKey(), OccurrenceAddress.parse(
+                        entry.getKey()).node().render());
                 for (String regionId : performedRegionIds(entry.getValue())) {
                     performers.computeIfAbsent(regionId,
                             ignored -> new ArrayList<>()).add(
@@ -1211,7 +1277,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Object> activation = program.activations.get(
                     occurrence);
             Map<String, Demanded> onNode = carriers.getOrDefault(
-                    activationSourceKey(activation),
+                    nodes.get(occurrence),
                     Collections.<String, Demanded>emptyMap());
             Set<String> ends = new LinkedHashSet<>();
             for (String carrier : influence.carriers) {
@@ -1245,10 +1311,11 @@ public final class RuntimeSelectedRegionFinalizer {
                     }
                     continue;
                 }
-                String node = activationSourceKey(instances.get(occurrenceId));
+                String node = nodes.get(occurrenceId);
                 carriers.computeIfAbsent(node, ignored -> new HashMap<>())
                         .computeIfAbsent(cell, ignored -> new Demanded())
-                        .add(ownersOf(instances.get(occurrenceId), cell));
+                        .add(objectsOf(instances.get(occurrenceId), cell,
+                                true));
                 for (StaticScopeMap.Site site : writers) {
                     String storingMethod = SiteId.methodOf(site.siteId);
                     for (Map<String, Object> writer : performers.getOrDefault(
@@ -1259,11 +1326,11 @@ public final class RuntimeSelectedRegionFinalizer {
                         if (writerOccurrence.isEmpty()
                                 || writerOccurrence.equals(occurrenceId)
                                 || excluded.contains(writerOccurrence)
-                                || !node.equals(activationSourceKey(writer))
-                                || !strings(writer.get("observedMethods"))
-                                .contains(storingMethod)
+                                || !node.equals(nodes.get(writerOccurrence))
+                                || !demands.ran(writerOccurrence,
+                                        storingMethod)
                                 || holdsOthersOnly(writer, instances.get(
-                                        occurrenceId), cell)) {
+                                        occurrenceId), cell, site)) {
                             continue;
                         }
                         reach(writerOccurrence, depth(occurrenceId) + 1,
@@ -1290,16 +1357,21 @@ public final class RuntimeSelectedRegionFinalizer {
          * Whether the recording saw {@code writer} access the field {@code
          * cell} only on objects {@code reader} never accessed it on: a
          * store reaches only an object its occurrence holds, so it cannot
-         * have written, nor on another arm write, what the reader read.  A
-         * side the recording saw no access of the field on says nothing
-         * either way (an unwoven accessor, an atomic's or a container's
-         * state, a store on an arm it did not take).
+         * have written, nor on another arm write, what the reader read.  The
+         * objects are the field's holders, and for a mutation through the
+         * field ({@code declaredCallee}) what they held too, whose state it
+         * writes ({@link #FIELD_REFERENTS}).  A side the recording saw no
+         * access of the field on says nothing either way (an unwoven
+         * accessor, an atomic's or a container's state, a store on an arm it
+         * did not take).
          */
         private static boolean holdsOthersOnly(Map<String, Object> writer,
                                                Map<String, Object> reader,
-                                               String cell) {
-            Set<Integer> wrote = ownersOf(writer, cell);
-            Set<Integer> read = ownersOf(reader, cell);
+                                               String cell,
+                                               StaticScopeMap.Site site) {
+            boolean mutation = !site.declaredCallee.isEmpty();
+            Set<Integer> wrote = objectsOf(writer, cell, mutation);
+            Set<Integer> read = objectsOf(reader, cell, mutation);
             return !wrote.isEmpty() && !read.isEmpty()
                     && Collections.disjoint(wrote, read);
         }
@@ -1605,17 +1677,22 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * The one index the demand walk reads: each region's failure-target
      * cells, the branches each activation was observed to take, and the
-     * candidate graph's backward adjacency inside a region.  No ports: which
-     * declared port mints is SymbolicInputSelection's decision at PLAN.
+     * candidate graph's backward adjacency inside a region, each edge with
+     * the methods it lies in.  No ports: which declared port mints is
+     * SymbolicInputSelection's decision at PLAN.
      */
     private static final class RegionDemandIndex {
         /** Every observed occurrence's performed regions, own first. */
         private final Map<String, List<String>> regionsByOccurrence =
                 new LinkedHashMap<>();
-        private final Map<String, List<String>> localIncoming =
+        /** Every observed occurrence's methods that ran in it. */
+        private final Map<String, Set<String>> methodsByOccurrence =
+                new HashMap<>();
+        /** (region, cell) -> incoming cell -> the methods of its edges. */
+        private final Map<String, Map<String, Set<String>>> localIncoming =
                 new LinkedHashMap<>();
         /** Control predecessors remain live when value flow hits a store. */
-        private final Map<String, List<String>> guardIncoming =
+        private final Map<String, Map<String, Set<String>>> guardIncoming =
                 new LinkedHashMap<>();
         private final Map<String, Map<String, List<String>>>
                 explicitFatalSeedsBySite = new LinkedHashMap<>();
@@ -1637,6 +1714,8 @@ public final class RuntimeSelectedRegionFinalizer {
                     : program.activations.entrySet()) {
                 regionsByOccurrence.put(entry.getKey(),
                         performedRegionIds(entry.getValue()));
+                methodsByOccurrence.put(entry.getKey(), new HashSet<>(
+                        strings(entry.getValue().get("observedMethods"))));
             }
             Set<String> selectedRegions = new LinkedHashSet<>();
             for (Map<String, Object> region : program.regions) {
@@ -1663,15 +1742,16 @@ public final class RuntimeSelectedRegionFinalizer {
             for (Map<String, Object> edge : program.graph) {
                 String from = text(edge.get("fromCell"));
                 String to = text(edge.get("toCell"));
+                String method = text(edge.get("method"));
                 if (from.isEmpty() || to.isEmpty()) continue;
-                for (String regionId : program.skeletonRegionsHolding(
-                        text(edge.get("method")))) {
+                for (String regionId
+                        : program.skeletonRegionsHolding(method)) {
                     if (!selectedRegions.contains(regionId)) continue;
-                    addUnique(localIncoming, contextKey(regionId, to),
-                            from);
+                    add(localIncoming, contextKey(regionId, to), from,
+                            method);
                     if ("GUARD".equals(text(edge.get("transferKind")))) {
-                        addUnique(guardIncoming, contextKey(regionId, to),
-                                from);
+                        add(guardIncoming, contextKey(regionId, to), from,
+                                method);
                     }
                 }
             }
@@ -1771,6 +1851,12 @@ public final class RuntimeSelectedRegionFinalizer {
             return cells;
         }
 
+        /** Whether {@code method} ran in this occurrence. */
+        private boolean ran(String occurrenceId, String method) {
+            return methodsByOccurrence.getOrDefault(occurrenceId,
+                    Collections.<String>emptySet()).contains(method);
+        }
+
         /** The candidate graph's incoming cells of one cell in one region. */
         private List<String> incomingCells(String occurrenceId, String cell) {
             return edgesInto(localIncoming, occurrenceId, cell);
@@ -1782,29 +1868,40 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         /**
-         * One occurrence's incoming cells over every region it performed:
-         * folded text ran here, so the walk crosses it here or nowhere.
+         * One occurrence's incoming cells over every region it performed --
+         * folded text ran here, so the walk crosses it here or nowhere --
+         * along the edges of the methods that ran in it: an edge of a method
+         * this occurrence never entered carried nothing in it (a40s
+         * ReindexCollectionCmd-369: walked along every method of their
+         * regions, its target's 923 writers demanded 5134 more; along the
+         * methods that ran in them, 244).
          */
-        private List<String> edgesInto(Map<String, List<String>> edges,
-                                       String occurrenceId, String cell) {
+        private List<String> edgesInto(
+                Map<String, Map<String, Set<String>>> edges,
+                String occurrenceId, String cell) {
+            Set<String> ran = methodsByOccurrence.getOrDefault(occurrenceId,
+                    Collections.<String>emptySet());
             List<String> incoming = new ArrayList<>();
             for (String regionId : regionsByOccurrence.getOrDefault(
                     occurrenceId, Collections.<String>emptyList())) {
-                for (String from : edges.getOrDefault(
+                for (Map.Entry<String, Set<String>> from : edges.getOrDefault(
                         contextKey(regionId, cell),
-                        Collections.<String>emptyList())) {
-                    if (!incoming.contains(from)) incoming.add(from);
+                        Collections.<String, Set<String>>emptyMap())
+                        .entrySet()) {
+                    if (!incoming.contains(from.getKey())
+                            && !Collections.disjoint(from.getValue(), ran)) {
+                        incoming.add(from.getKey());
+                    }
                 }
             }
             return incoming;
         }
 
-        private static void addUnique(Map<String, List<String>> target,
-                                      String key, String value) {
-            if (value.isEmpty()) return;
-            List<String> values = target.computeIfAbsent(key,
-                    ignored -> new ArrayList<>());
-            if (!values.contains(value)) values.add(value);
+        private static void add(Map<String, Map<String, Set<String>>> target,
+                                String key, String from, String method) {
+            target.computeIfAbsent(key, ignored -> new LinkedHashMap<>())
+                    .computeIfAbsent(from, ignored -> new HashSet<>())
+                    .add(method);
         }
     }
 

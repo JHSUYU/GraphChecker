@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.CompositionManifest;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -216,7 +217,8 @@ public final class ComposeMain {
         row.addProperty("solverRuns", solver.runs());
         // One question per valuation, so the valuation IS the model.
         row.add("valuations", valuations(composition, decision));
-        row.add("campaignClaim", campaignClaim(decision, decided, anySat));
+        row.add("campaignClaim",
+                campaignClaim(composition, decision, decided, anySat));
         return row;
     }
 
@@ -224,9 +226,9 @@ public final class ComposeMain {
      * WHETHER the run produced an accepted candidate (the {@link ClaimKind}
      * says which mechanism); a blocking gap withholds it regardless.
      */
-    private static JsonObject campaignClaim(ClaimPolicy.Decision decision,
-                                            boolean decided,
-                                            boolean anySat) {
+    private static JsonObject campaignClaim(
+            Composer.Composition composition, ClaimPolicy.Decision decision,
+            boolean decided, boolean anySat) {
         Claim claim = decision.claim();
         JsonArray refusals = refusals(claim);
         int blockers = refusals.size();
@@ -273,6 +275,11 @@ public final class ComposeMain {
         row.addProperty("valuationOrdinal", claim.valuationOrdinal());
         row.addProperty("polarityDecides", claim.polarityDecides());
         row.add("movedRoots", GSON.toJsonTree(claim.movedRoots()));
+        row.add("movedRootCategories", categories(composition, claim));
+        // The one rule a configuration-only witness ranks by
+        // (Composer#configurationOnly); triage and findings read it here.
+        row.addProperty("configurationOnly",
+                composition.configurationOnly(claim.movedRoots().keySet()));
         row.add("blockers", refusals);
         row.addProperty("blockerCount", blockers);
         row.addProperty("whyNotAccepted",
@@ -292,6 +299,23 @@ public final class ComposeMain {
         return row;
     }
 
+
+    /**
+     * Each moved root's category ({@link RootCategory}): what moving it means,
+     * where its kind says only how.  A sweep ranks a witness whose moved
+     * roots are all CONFIG after pairings and faults.
+     */
+    private static JsonObject categories(Composer.Composition composition,
+                                         Claim claim) {
+        JsonObject categories = new JsonObject();
+        for (String moved : claim.movedRoots().keySet()) {
+            RootCategory category = composition.categoryOf(moved);
+            if (category != null) {
+                categories.addProperty(moved, category.name());
+            }
+        }
+        return categories;
+    }
 
     /**
      * The states a model's queries through a re-pointable read saw of the

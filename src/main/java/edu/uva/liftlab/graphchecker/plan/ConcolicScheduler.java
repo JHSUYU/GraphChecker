@@ -396,8 +396,8 @@ public final class ConcolicScheduler {
 
     /** Stamps the replay ledger id: a hash of the plan, so the same tasks are
      *  the same ledger across iterations; flip replays link the same plan and
-     *  group.  A batch's union of plans is one plan ({@link PlanUnion}). */
-    static List<JsonObject> withSeedReplayGroup(
+     *  group. */
+    private static List<JsonObject> withSeedReplayGroup(
             List<JsonObject> taskRows) {
         StringBuilder seed = new StringBuilder();
         for (JsonObject row : taskRows) {
@@ -1128,9 +1128,13 @@ public final class ConcolicScheduler {
      *   <li>a clock's return, or a READ placeholder's own site ({@link
      * StaticScopeMap#clocks}, {@link StaticScopeMap#readSites}):
      * mints;</li>
+     *   <li>a configuration getter's return (its {@link
+     * InputActionCatalog#DECLARED_CONFIG_SOURCE}, from a {@code CONFIG}
+     * DECLARED_SITE): mints, one symbol per key;</li>
      *   <li>an {@code EXPLICIT_SYMBOLIC_FAULT} marker: mints;</li>
-     *   <li>a field a {@code CausynthSymbolicSource} hook owns: the hook mints,
-     * the action stays concrete;</li>
+     *   <li>a field a configured source of the region mints (a {@code
+     * CausynthSymbolicSource} hook, or the engine's configuration read): the
+     * source mints, the action stays concrete;</li>
      *   <li>a declared {@code COMMUNICATION_SITE_PORT}: tracked, never minted
      * (the value is installed from the other side).</li>
      * </ul>
@@ -1201,7 +1205,8 @@ public final class ConcolicScheduler {
                     minted, scopeMap.trackedRegions());
         }
 
-        /** An explicit source hook is itself the allowlist authority. */
+        /** A configured source's mint site is itself the allowlist
+         *  authority. */
         private static void declareMintSite(
                 Map<String, String> sites, JsonObject row) throws IOException {
             String sourceId = firstNonBlank(optionalString(row, "sourceId"));
@@ -1210,7 +1215,7 @@ public final class ConcolicScheduler {
                     != StaticSymbolicSourceDeclaration.SCHEMA_VERSION
                     || !StaticSymbolicSourceDeclaration.KIND.equals(
                     optionalString(row, "kind"))
-                    || !StaticSymbolicSourceDeclaration.AUTHORITY.equals(
+                    || !StaticSymbolicSourceDeclaration.authority(
                     optionalString(row, "authority"))
                     || sourceId.isEmpty() || field.isEmpty()) {
                 throw new IOException("malformed static symbolic source "
@@ -1290,6 +1295,8 @@ public final class ConcolicScheduler {
         /** A root the scope map states, or a fault marker. */
         private boolean declares(JsonObject action) {
             return clockOf(action) != null || readsAPlaceholder(action)
+                    || !optionalString(action,
+                    InputActionCatalog.DECLARED_CONFIG_SOURCE).isEmpty()
                     || workloadOwnedSymbol(action);
         }
 

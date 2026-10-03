@@ -22,10 +22,6 @@
 #   target_spec         default: <case-dir>/target.yaml; when there is none,
 #                       run.sh derives it from the tree's marker of the case
 #                       (tools/lib/annotated.py)
-#   classpath_test      the test class whose report states the module's test
-#                       classpath (default: test_class)
-#   workload_properties system properties every workload JVM of the case
-#                       gets (default: none)
 # system.sh defines, after the case is read,
 #   system_paths        sets module, report, test_classes, lineage_roots
 #   system_root <name>  a compiled class root the scope names
@@ -44,8 +40,6 @@ here=${case_dir}
 loop_bounds=${case_dir}/loop-bounds.jsonl
 target_spec=${case_dir}/target.yaml
 target_occurrence=
-classpath_test=
-workload_properties=()
 scope=()
 # shellcheck source=/dev/null
 source "${system_dir}/system.sh"

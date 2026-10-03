@@ -37,3 +37,5 @@
 {"schemaVersion": 1, "kind": "CONFIG_SOURCE", "method": "<org.apache.solr.core.XmlConfigFile: int getInt(java.lang.String,int)>", "keyArg": 0, "defaultArg": 1}
 {"schemaVersion": 1, "kind": "CONFIG_SOURCE", "method": "<org.apache.solr.core.XmlConfigFile: boolean getBool(java.lang.String)>", "keyArg": 0}
 {"schemaVersion": 1, "kind": "CONFIG_SOURCE", "method": "<org.apache.solr.core.XmlConfigFile: boolean getBool(java.lang.String,boolean)>", "keyArg": 0, "defaultArg": 1}
+{"schemaVersion": 1, "kind": "CONFIG_FIELD_OWNER", "class": "org.apache.solr.core.NodeConfig"}
+{"schemaVersion": 1, "kind": "CONFIG_FIELD_OWNER", "class": "org.apache.solr.core.CloudConfig"}

@@ -47,9 +47,9 @@ import java.util.TreeSet;
  *
  * <p>Demand starts at the ANNOTATED TARGET: the fatal predicate's operands and
  * the target's guard set ({@link StaticScopeMap}), or, where every admitted
- * path decided it on no symbol, the shared state it read before it decided
- * ({@link #concrete}). Deliveries no demanded value rests on are not
- * followed. Each boundary variable grows it:</p>
+ * path decided it on no symbol, the shared state on its guards' cone it read
+ * before it decided ({@link #concrete}). Deliveries no demanded value rests
+ * on are not followed. Each boundary variable grows it:</p>
  * <ul>
  *   <li>by ROWS: the paired producer, the writers a read could have
  * observed;</li>
@@ -126,8 +126,8 @@ public final class ClosurePlanner {
     }
 
     /** A concrete anchor ({@link ClosurePlanner#concrete}): its admitted
-     *  paths, how many of them decided it, and what it read before they
-     *  did. */
+     *  paths, how many of them decided it, and what it read on its path
+     *  guards' cone before they did. */
     public static final class Concrete {
         /** The admitted paths at the anchor. */
         public final int paths;
@@ -136,11 +136,16 @@ public final class ClosurePlanner {
         public final int decided;
         /** Its predicate reads, in corpus order: the closure demands them. */
         public final List<ReadRow> reads;
+        /** The reads it made before it decided off its path guards' cone:
+         *  not demanded, counted ({@code ExploreMain#noRoot} names them). */
+        public final int offCone;
 
-        private Concrete(int paths, int decided, List<ReadRow> reads) {
+        private Concrete(int paths, int decided, List<ReadRow> reads,
+                         int offCone) {
             this.paths = paths;
             this.decided = decided;
             this.reads = Collections.unmodifiableList(reads);
+            this.offCone = offCone;
         }
     }
 
@@ -166,7 +171,7 @@ public final class ClosurePlanner {
             start.flipSites.addAll(reached ? target.guards
                     : target.pathSites());
         }
-        Concrete concrete = concrete(corpus, anchor, start.flipSites);
+        Concrete concrete = concrete(corpus, anchor, start.flipSites, scope);
         if (concrete != null) {
             for (ReadRow read : concrete.reads) {
                 if (!read.symbol().isEmpty()) {
@@ -247,27 +252,30 @@ public final class ClosurePlanner {
      * isExpired} returned).</p>
      *
      * <p>Its PREDICATE READS are then the shared-state reads the anchor made
-     * before it decided, in each admitted path: a read the occurrence made
-     * later cannot reach the decision it had already taken, and every
-     * earlier one may, through a value the VM kept no expression under (a
-     * String, a container, a native) or through a branch it decided.  The
+     * before it decided, in each admitted path, that the root demand found
+     * on the throw's path guards ({@link StaticScopeMap#demandedAt},
+     * SYMBOL-SCOPE §4.6: the nearest read of each path back from the guards'
+     * operands, tracked however many flows away, a value the VM keeps no
+     * expression under -- a String, a reference, a container -- as well).
+     * A read the occurrence made later cannot reach the decision it had
+     * already taken; an earlier one off the guards' cone reaches it only
+     * through a read on it, whose writers the closure then asks.  The
      * closure demands them as it demands the reads a symbolic predicate
      * names: their writers become tasks, flipped at their own guards and
      * fault sites, so a clock or a fault that chose what the anchor read is
      * asked; a replay that moves it runs the anchor again, and its own rows
      * say whether the predicate turned symbolic or the fatal was observed.
-     * These are what the rows state: the static predicate cone (R1-ROOTS
-     * WP-F1) tracks more of the cells the deciding guards depend on, which
-     * then arrive here as rows, and may narrow the reads to its marked
-     * sites.</p>
+     * </p>
      *
      * @return null when the anchor is not concrete
      */
     private static Concrete concrete(Corpus corpus, OccurrenceAddress anchor,
-                                     Set<String> flipSites) {
+                                     Set<String> flipSites,
+                                     StaticScopeMap scope) {
         List<ReadRow> reads = new ArrayList<ReadRow>();
         int paths = 0;
         int decided = 0;
+        int offCone = 0;
         for (TargetRow row : corpus.targetsOn(anchor)) {
             String sessionId = row.sessionId();
             SessionReader session = corpus.session(sessionId);
@@ -293,10 +301,17 @@ public final class ClosurePlanner {
             paths++;
             if (at > 0L) decided++;
             for (ReadRow read : corpus.readsOn(sessionId, anchor)) {
-                if (read.seq() < at) reads.add(read);
+                if (read.seq() >= at) continue;
+                if (scope.demandedAt(read.endpoint().site(), read.javaType(),
+                        read.location().kind())) {
+                    reads.add(read);
+                } else {
+                    offCone++;
+                }
             }
         }
-        return paths == 0 ? null : new Concrete(paths, decided, reads);
+        return paths == 0 ? null
+                : new Concrete(paths, decided, reads, offCone);
     }
 
     /**

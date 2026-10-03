@@ -70,11 +70,18 @@ public:
   bool exit_callback(ZeroFrame *callee_frame);
   /**
    * Whether a call suspended in a callback window is on `container` (its
-   * receiver's backing container); such a call is marked reentered.
+   * receiver's backing container, or the source it reads): such a call is
+   * marked reentered.  A call that only reads its source (a stream) is
+   * marked by a `mutation` alone, and is not answered: its model states it,
+   * the mutation itself stays the caller's to model.
    */
-  bool reenters(oop container);
+  bool reenters(oop container, bool mutation);
   /** Whether a callback window is open on this thread. */
   inline bool in_callback() const { return !_windows.empty(); }
+  /** Whether a call made now could still open callback windows. */
+  inline bool callbacks_available() const {
+    return _windows.size() < MAX_CALLBACK_DEPTH;
+  }
 
 private:
   void init_helper_methods();

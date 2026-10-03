@@ -1,1 +1,0 @@
-exception_target: adhoc-create-exists org.apache.solr.cloud.api.collections.CreateCollectionCmd 127

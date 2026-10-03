@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""findings.py <sweep-dir> [--ledger FILE] [--static DIR] [--annotated SYSTEM-DIR TREE]
+"""findings.py <sweep-dir> [--ledger FILE] [--annotated SYSTEM-DIR TREE]
 
 One row per mechanism among a sweep's confirmed witnesses: every
-<sweep-dir>/accept-*/out/<case>/schedule/final/result.json (a batch case's:
-out/<case>/targets/<check>/schedule/final/result.json) whose claim is
+<sweep-dir>/accept-*/out/<case>/schedule/final/result.json whose claim is
 SAT_CANDIDATE and whose confirmation is true.  Two witnesses are one
 mechanism when they share a signature:
 
   sig = the first 16 hex digits of
   sha256(the check -- its TARGET_SITE, out/<case>/static_scope_map.jsonl --,
          the finding kind,
-         per moved root, sorted: its kind (MARKER, INTEGRAL, CLOCK; a marker
-         of a fault door is FAULT), the method of its site, its declared
-         callee, the role of its node (the node name without its digits and
-         epoch: dn, nn, node), the role and api of its causal context, and
-         for a clock how far the model moved it off the recording:
-         <=1s, <=1min, <=1h or >1h)
+         per moved root, sorted: its category (CLOCK, FAULT, CONFIG, READ,
+         HOOK: its root row's, as COMPOSE states it in movedRootCategories),
+         the method of its site, its declared callee, the role of its node
+         (the node name without its digits and epoch: dn, nn, node), the
+         role and api of its causal context, and for a clock how far the
+         model moved it off the recording: <=1s, <=1min, <=1h or >1h)
 
 A moved root's site and callee are its plan input action's (portId, or
 sourceId for a declared source, = the root; execution_task_plan.jsonl); its
@@ -23,16 +22,12 @@ kind, recorded value, node and context are its roots.jsonl row in the
 witness's selected session.  Everything read is kept by PRUNE.
 
 Weight, per witness (a signature takes its best):
-    (finding kind + mediated) x (1 + native reproduction rate) - extra roots
+    finding kind x (1 + native reproduction rate) - extra roots
   finding kind     STATE_/MESSAGE_PAIRING_FLIPPED 5, MARKER_FLIPPED with a
                    fault door root 4, other MARKER_FLIPPED 3,
                    RECORDED_FAILURE_EXPLAINED 3, CLOCK_SKEW 2 when every
                    clock moved at most a minute (else 1: a clock-sync
                    assumption)
-  mediated         2 when every moved root the check's static slice holds
-                   (--static DIR: slice.sh's $GC_OUT/static/<key>, whose
-                   score.json names the check's TARGET_SITE) it reaches only
-                   through a field or a wire, else 0
   reproduction     reproduce.json beside result.json (run_engine.sh
                    REPRODUCE, after EMIT): the share of its native runs that
                    took the fatal arm at the claim's anchor; 0 when it ran
@@ -40,18 +35,19 @@ Weight, per witness (a signature takes its best):
   extra roots      1 per moved root beyond the first
 
 Writes <sweep-dir>/findings.tsv, best weight first, with the best case's native
-reproduction (runs at the anchor / runs).  With --ledger, the
-ledger (one JSON row per signature: sig, firstSeen, lastSeen, cases, status)
-is read and rewritten: a signature it did not hold is new, one it held is
-known, and one dismissed.tsv beside it names (sig, reason, JIRA id; by hand)
-is dismissed.  With --annotated, a witness whose campaign declared its target
+reproduction (runs at the anchor / runs); a configuration-only witness
+(result.json configurationOnly, COMPOSE's rule; CONFIG_ONLY in triage.py) comes
+after every other, whatever its weight: a finding, but a throw validating a
+configuration fires by design.  With --ledger, the ledger (one JSON row per signature: sig,
+firstSeen, lastSeen, cases, status) is read and rewritten: a signature it did
+not hold is new, one it held is known, and one dismissed.tsv beside it names
+(sig, reason, JIRA id; by hand) is dismissed.  With --annotated, a witness whose campaign declared its target
 at a throw the sweep's tree marks as a known bug's (tools/lib/annotated.py:
 @CausynthExceptionTarget naming the bug's cases) is known whatever the ledger
 says, and its row's `known bug` column names those cases: what a sweep
-re-found of the bugs it already knows.  The declared target is the check's
-own spec (a batch case's targets/<check>/target.yaml) or the campaign's (its
-run manifest's targetSpec).  What cannot be read of a witness is named on
-stderr."""
+re-found of the bugs it already knows.  The declared target is the
+campaign's spec (its run manifest's targetSpec).  What cannot be read of a
+witness is named on stderr."""
 import argparse
 import collections
 import datetime
@@ -68,7 +64,6 @@ import annotated  # noqa: E402
 
 KIND_WEIGHT = {"STATE_PAIRING_FLIPPED": 5, "MESSAGE_PAIRING_FLIPPED": 5,
                "RECORDED_FAILURE_EXPLAINED": 3}
-FAULT_SOURCE = "EXPLICIT_SYMBOLIC_FAULT"
 BUCKETS = ((1e9, "<=1s"), (60e9, "<=1min"), (3600e9, "<=1h"))
 
 
@@ -88,20 +83,13 @@ def target_site(case_dir):
 
 def declared_target(final):
     """(top-level class, line) of the target the witness's campaign
-    declared: its check's own spec, else the campaign's."""
-    case_dir = os.path.dirname(os.path.dirname(final))
-    path = os.path.join(case_dir, "target.yaml")
-    if not os.path.exists(path):
-        manifest = json.load(open(os.path.join(final, "run-manifest.json")))
-        path = manifest["provenance"]["targetSpec"]["path"]
+    declared."""
+    manifest = json.load(open(os.path.join(final, "run-manifest.json")))
+    path = manifest["provenance"]["targetSpec"]["path"]
     specs = [line.split() for line in lines(path)
              if line.split()[0] == "exception_target:"]
-    if len(specs) > 1:
-        specs = [spec for spec in specs
-                 if spec[1] == os.path.basename(case_dir)]
     if len(specs) != 1:
-        raise ValueError("no one exception_target for %s in %s"
-                         % (case_dir, path))
+        raise ValueError("no one exception_target in %s" % path)
     return specs[0][2].split("$", 1)[0], int(specs[0][3])
 
 
@@ -182,9 +170,7 @@ def witness(final):
         action = plans.get(row["rootId"])
         if action is None:
             raise ValueError("no plan action defines %s" % row["rootId"])
-        kind = row["kind"]
-        if kind == "MARKER" and action.get("sourceKind") == FAULT_SOURCE:
-            kind = "FAULT"
+        kind = row["category"]
         bucket = ""
         if kind == "CLOCK":
             if "clockNanos" not in row:
@@ -197,7 +183,7 @@ def witness(final):
                       or action.get("runtimeDeclaredCallee", ""),
                       node_role(row["occurrence"]["node"]),
                       "%s/%s" % (context.get("role", ""), context.get("api", "")),
-                      bucket, action["siteId"]))
+                      bucket))
     kind = result["findingKind"]
     if kind == "MARKER_FLIPPED":
         weight = 4 if any(part[0] == "FAULT" for part in parts) else 3
@@ -210,40 +196,30 @@ def witness(final):
     runs = reproduction.get("runs", 0)
     return {"target": target_site(case_dir), "kind": kind, "parts": parts,
             "weight": weight, "extra": len(parts) - 1,
+            "configOnly": result.get("configurationOnly") is True,
             "native": "%d/%d" % (reproduction.get("atAnchor", 0), runs),
             "rate": reproduction.get("atAnchor", 0) / runs if runs else 0.0}
 
 
 def signature(found):
     body = [found["target"], found["kind"]] + sorted(
-        "|".join(part[:6]) for part in found["parts"])
+        "|".join(part) for part in found["parts"])
     return hashlib.sha256("\n".join(body).encode()).hexdigest()[:16]
 
 
 def describe(part):
     """FAULT Client$Connection.sendRpcRequest @dn CLIENT/heartbeat."""
-    kind, method, _, role, context, bucket, _ = part
+    kind, method, _, role, context, bucket = part
     owner, _, name = method.strip("<>").partition(": ")
     name = name.split(" ", 1)[-1].split("(", 1)[0]
     return " ".join(filter(None, (kind, "%s.%s" % (owner.rsplit(".", 1)[-1], name),
                                   bucket, "@" + role, context)))
 
 
-def mediated(found, scores):
-    """Whether the check's slice reaches every moved root it holds only
-    through a field or a wire, and holds at least one."""
-    rows = scores.get(found["target"], [])
-    held = [[row for row in rows if row["site"] == part[6]]
-            for part in found["parts"]]
-    held = [found_rows for found_rows in held if found_rows]
-    return bool(held) and all(row["mediated"] for rows_ in held for row in rows_)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("sweep")
     parser.add_argument("--ledger")
-    parser.add_argument("--static")
     parser.add_argument("--annotated", nargs=2,
                         metavar=("SYSTEM_DIR", "TREE"))
     args = parser.parse_args()
@@ -251,17 +227,9 @@ def main():
     if args.annotated:
         for row in annotated.sites(*args.annotated):
             marked[(row["cls"], row["line"])].add(row["case"])
-    scores = {}
-    if args.static:
-        for path in glob.glob(os.path.join(args.static, "*", "score.json")):
-            score = json.load(open(path))
-            scores[score["target"]] = score["roots"]
     witnesses = collections.defaultdict(list)
-    # A batch case's checks each have their own campaign, targets/<check>/.
     for final in sorted(glob.glob(os.path.join(
-            args.sweep, "accept-*", "out", "*", "schedule", "final"))
-            + glob.glob(os.path.join(args.sweep, "accept-*", "out", "*",
-                                     "targets", "*", "schedule", "final"))):
+            args.sweep, "accept-*", "out", "*", "schedule", "final"))):
         if not os.path.exists(os.path.join(final, "result.json")):
             continue
         case = os.path.relpath(os.path.dirname(os.path.dirname(final)), args.sweep)
@@ -280,8 +248,8 @@ def main():
             except (ValueError, KeyError, OSError) as error:
                 print("no declared target for %s: %s" % (case, error),
                       file=sys.stderr)
-        base = found["weight"] + (2 if mediated(found, scores) else 0)
-        found["weight"] = round(base * (1 + found["rate"]) - found["extra"], 2)
+        found["weight"] = round(found["weight"] * (1 + found["rate"])
+                                - found["extra"], 2)
         witnesses[signature(found)].append(found)
     now = datetime.datetime.now().isoformat(timespec="seconds")
     ledger, dismissed = {}, {}
@@ -294,9 +262,10 @@ def main():
                 if not line.startswith("#"):
                     sig, reason = (line.rstrip("\n").split("\t") + [""])[:2]
                     dismissed[sig] = reason
-    table = []
+    table, config_only = [], {}
     for sig, found in witnesses.items():
         best = max(found, key=lambda f: (f["weight"], f["case"]))
+        config_only[sig] = best["configOnly"]
         cases = sorted(f["case"] for f in found)
         known = ",".join(sorted(set().union(*(f["known"] for f in found))))
         status = ("dismissed" if sig in dismissed
@@ -308,7 +277,7 @@ def main():
         table.append((best["weight"], best["native"], sig, status, known,
                       best["kind"], best["target"], roots, best["case"],
                       len(cases), " ".join(cases)))
-    table.sort(key=lambda row: (-row[0], row[2]))
+    table.sort(key=lambda row: (config_only[row[2]], -row[0], row[2]))
     with open(os.path.join(args.sweep, "findings.tsv"), "w") as out:
         out.write("weight\tnative\tsig\tstatus\tknown bug\tkind\ttarget"
                   "\tmoved roots\tbest case\tcases\tall cases\n")

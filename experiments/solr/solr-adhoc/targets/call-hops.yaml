@@ -1,1 +1,0 @@
-exception_target: adhoc-call-hops org.apache.solr.servlet.HttpSolrCall 1031

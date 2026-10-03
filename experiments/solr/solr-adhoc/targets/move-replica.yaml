@@ -1,1 +1,0 @@
-exception_target: adhoc-move-replica org.apache.solr.cloud.api.collections.MoveReplicaCmd 106

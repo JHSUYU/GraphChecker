@@ -449,8 +449,8 @@ order:
 
 A case names its target occurrence (`declared_target_occurrence`) as a selector
 (`contract/Selector`), `<node>#epoch<N>/region/REGION.x[@<src>#epoch<N>/<api>]#k`, or as `first`,
-the first observed occurrence of the declared target site in the recording (an ad-hoc sweep's default,
-`plan/RuntimeWorkflowDiscovery.FIRST`, also for a case stating none). The recording's aggregation
+the first observed occurrence of the declared target site in the recording
+(`plan/RuntimeWorkflowDiscovery.FIRST`; a case stating none is refused at PLAN). The recording's aggregation
 resolves it once, against the target occurrences it observed in recorded order
 (`RuntimeWorkflowDiscovery#declaredOccurrence`: the k-th a selector matches, by `SelectorResolution`'s
 rule), marks that occurrence's plan row, and plans only the question `(r,c)` around it: the target
@@ -470,7 +470,11 @@ activation of its region on its node, in a context no task of that root plans an
 region in (`ConcolicTaskPlan#occupies`: not its address, and not another invocation under the same
 anchor, which is the planned occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer
 handshake, under the anchor of that handshake's planned first call, answered the declared second
-handshake, which then ran unplanned), in an entry that
+handshake, which then ran unplanned), at an address the recording did not open itself (PLAN states
+the ids of every other occurrence the recording opened in the region on the node, `questionRecorded`,
+`RuntimeTask#recorded`: an activation at one of them is that occurrence, whatever it serves this run;
+accept-SB2: the Solr Overseer's first task, the collection's CREATE, took the address of the declared
+second, the REINDEX, whose own entry then ran unplanned), in an entry that
 opened its own occurrence, answers it when its own context, shaped over this run's senders
 (`runtime/ScheduleLog#shape`: each producer endpoint's SEND stance), has that shape hop for hop and
 reaches a root (`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then
@@ -478,7 +482,7 @@ takes the declared address (`Identity#answer`): its rows, endpoints, decision or
 mark and close state it, so every later stage reads the declared address as before, and a
 DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). Which
 turn of a daemon carries another node's asynchronous work is that node's timing, which no schedule
-holds: in sweep `a40h` a NameNode command (block recovery queued by the lease monitor, replication
+holds: in round `a40h` a NameNode command (block recovery queued by the lease monitor, replication
 after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
 so every anchor below it differed in the root's k alone and the target was never admitted; two
 recordings of one workload differ the same way.

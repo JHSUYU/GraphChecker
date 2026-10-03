@@ -1,1 +1,0 @@
-exception_target: adhoc-SegmentRecoveryComparator-76 org.apache.hadoop.hdfs.qjournal.client.SegmentRecoveryComparator 76

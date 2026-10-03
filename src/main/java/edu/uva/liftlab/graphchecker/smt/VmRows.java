@@ -106,13 +106,12 @@ public final class VmRows {
             "VM_SERIALIZATION_TRUNCATION_V1";
 
     /**
-     * Whether a symbol is the VM's placeholder of an object it observed
-     * without naming it ({@code P_L'class'_}: {@code PlaceHolderSymbolExp},
-     * a container's stored value or a call's argument no shadow names).
-     * The VM makes one only for a non-null object -- null is {@code N} --
-     * and it names no rid, so it is no particular object.
+     * Whether {@code symbol} is an object the VM placed without naming it,
+     * {@code P_L'class'_} ({@code PlaceHolderSymbolExp}, made only for a
+     * non-null object the session holds no id for): an identity that is
+     * non-null, and may be any of the session's unnamed objects of its class.
      */
-    public static boolean placeholderObject(String symbol) {
+    public static boolean placedObject(String symbol) {
         return symbol != null && symbol.startsWith("P_L'")
                 && symbol.endsWith("'_");
     }

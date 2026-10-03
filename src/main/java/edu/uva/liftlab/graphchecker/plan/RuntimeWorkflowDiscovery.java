@@ -112,12 +112,12 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     /**
-     * What a sweep declares: the first observed occurrence of the declared
-     * target site in THIS recording, fixed at the seed like any declaration and
-     * handed to every later stage as the address PLAN resolved it to.  A
-     * case about one failure names its occurrence; a sweep over checks has
-     * no failure to name one by, and an address read off one recording
-     * need not name anything in the next.
+     * The first observed occurrence of the declared target site in THIS
+     * recording, fixed at the seed like any declaration and handed to every
+     * later stage as the address PLAN resolved it to: what a case declares
+     * whose failure is the target's first occurrence (solr-18406), and what
+     * a case declaring none gets.  An address read off one recording need
+     * not name anything in the next.
      */
     public static final String FIRST = "first";
 
@@ -146,7 +146,7 @@ public final class RuntimeWorkflowDiscovery {
             if (declares(declared, candidate)) matched++;
         }
         // A selector a region change renamed is re-derived from the listing
-        // (tools/analysis/occurrences.py).
+        // this refusal states.
         throw new IOException("DECLARED_TARGET_OCCURRENCE_UNOBSERVED: "
                 + declared + " names " + matched + " of the "
                 + observed.size() + " observed target occurrence(s), and k="

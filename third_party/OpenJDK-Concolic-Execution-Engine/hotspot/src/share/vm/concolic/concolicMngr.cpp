@@ -774,6 +774,16 @@ std::string ConcolicMngr::getRegionSummary() {
     writer.RawValue(branch_events.c_str(), branch_events.length(),
                     kObjectType);
   }
+  // What a model ran on the run's own values though symbolic content
+  // reached it (ThreadContext::note_model_gap), each named with its site.
+  writer.Key("modelGaps");
+  if (ctx != NULL) {
+    std::string gaps = ctx->serialize_model_gaps();
+    writer.RawValue(gaps.c_str(), gaps.length(), kArrayType);
+  } else {
+    writer.StartArray();
+    writer.EndArray();
+  }
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
 }

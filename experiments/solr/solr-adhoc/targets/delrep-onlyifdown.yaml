@@ -1,1 +1,0 @@
-exception_target: adhoc-delrep-onlyifdown org.apache.solr.cloud.api.collections.DeleteReplicaCmd 230

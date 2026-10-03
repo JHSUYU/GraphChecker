@@ -171,6 +171,15 @@ public final class ContainerStateModel {
                         + " (+ (indexed_size s) 1)"
                         + " (store (indexed_elements s)"
                         + " (indexed_size s) v)))",
+                // An append under a guard (a stream's filtered member), the
+                // guard inside the store as assoc_put_if's: with g false
+                // the state is s's.
+                "(define-fun indexed_append_if ((s IndexedState) (v Value)"
+                        + " (g Bool)) IndexedState"
+                        + " (let ((n (indexed_size s)))"
+                        + " (mkIndexedState (ite g (+ n 1) n)"
+                        + " (store (indexed_elements s) n"
+                        + " (ite g v (select (indexed_elements s) n))))))",
                 "(define-fun assoc_has ((s AssocState) (k Value)) Bool"
                         + " (select (assoc_present s) k))",
                 "(define-fun assoc_read ((s AssocState) (k Value)) Value"

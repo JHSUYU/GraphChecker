@@ -133,19 +133,33 @@ public class RegionGraphOccurrenceKeyTest {
      * one exchange leg: an attach whose value reaches what is demanded plans
      * the occurrence that exported it on that leg, never an export of the
      * same port on another leg -- the unconditional admission of every
-     * capture planned 2673 occurrences for one ad-hoc check (a40h-5).
+     * capture planned 2673 occurrences for one ad-hoc check (a40h-5).  A
+     * store writes its holder's field, so a writer holding what the reader
+     * held through another holder is none (a40s ReindexCollectionCmd-369:
+     * every lambda capturing one ZooKeeper client), where a mutation through
+     * the field writes what it held; and an edge of a method
+     * the occurrence never ran demands nothing (the target never ran ALT,
+     * which reads OTHER).
      */
     @Test
     public void theWalkCrossesWhatTheRecordingHeld() throws Exception {
         Object[][] activations = {
-                // name, node, region, owners of EPOCH, attach leg, export leg
-                {"target", "wl/nn0#epoch0", "REGION.check", 7, "", ""},
-                {"same-object", "wl/nn0#epoch0", "REGION.bump", 7, "L1", ""},
-                {"other-object", "wl/nn0#epoch0", "REGION.bump", 8, "L2", ""},
-                {"no-access", "wl/nn0#epoch0", "REGION.bump", 0, "", ""},
-                {"other-node", "wl/dn0#epoch0", "REGION.bump", 7, "", ""},
-                {"paired-export", "wl/dn0#epoch0", "REGION.send", 0, "", "L1"},
-                {"other-leg", "wl/dn0#epoch0", "REGION.send", 0, "", "L2"},
+                // name, node, region, owners of EPOCH, its referents, attach
+                // leg, export leg
+                {"target", "wl/nn0#epoch0", "REGION.check", 7, 9, "", ""},
+                {"same-object", "wl/nn0#epoch0", "REGION.bump", 7, 0, "L1",
+                        ""},
+                {"other-object", "wl/nn0#epoch0", "REGION.bump", 8, 0, "L2",
+                        ""},
+                {"same-referent", "wl/nn0#epoch0", "REGION.bump", 8, 9, "",
+                        ""},
+                {"mutation", "wl/nn0#epoch0", "REGION.grow", 8, 9, "", ""},
+                {"no-access", "wl/nn0#epoch0", "REGION.bump", 0, 0, "", ""},
+                {"other-node", "wl/dn0#epoch0", "REGION.bump", 7, 0, "", ""},
+                {"paired-export", "wl/dn0#epoch0", "REGION.send", 0, 0, "",
+                        "L1"},
+                {"other-leg", "wl/dn0#epoch0", "REGION.send", 0, 0, "", "L2"},
+                {"unran-edge", "wl/nn0#epoch0", "REGION.side", 0, 0, "", ""},
         };
         List<Map<String, Object>> instances = new ArrayList<>();
         Map<String, String> addresses = new LinkedHashMap<>();
@@ -157,7 +171,9 @@ public class RegionGraphOccurrenceKeyTest {
                     ExecutionIndex.empty()).render();
             addresses.put((String) row[0], address);
             String method = "REGION.check".equals(row[2]) ? CHECK
-                    : "REGION.bump".equals(row[2]) ? BUMP : SEND;
+                    : "REGION.bump".equals(row[2]) ? BUMP
+                    : "REGION.side".equals(row[2]) ? SIDE
+                    : "REGION.grow".equals(row[2]) ? GROW : SEND;
             Map<String, Object> activation = row(
                     "kind", "RUNTIME_REGION_ACTIVATION",
                     "regionId", row[2],
@@ -172,14 +188,19 @@ public class RegionGraphOccurrenceKeyTest {
                         Collections.singletonMap(EPOCH,
                                 Collections.singleton(row[3])));
             }
-            List<Map<String, Object>> captures = new ArrayList<>();
-            if (!((String) row[4]).isEmpty()) {
-                captures.add(row("side", "IN", "portId", PORT,
-                        "exchangeLeg", row[4]));
+            if ((Integer) row[4] != 0) {
+                activation.put(RuntimeSelectedRegionFinalizer.FIELD_REFERENTS,
+                        Collections.singletonMap(EPOCH,
+                                Collections.singleton(row[4])));
             }
+            List<Map<String, Object>> captures = new ArrayList<>();
             if (!((String) row[5]).isEmpty()) {
-                captures.add(row("side", "OUT", "portId", PORT,
+                captures.add(row("side", "IN", "portId", PORT,
                         "exchangeLeg", row[5]));
+            }
+            if (!((String) row[6]).isEmpty()) {
+                captures.add(row("side", "OUT", "portId", PORT,
+                        "exchangeLeg", row[6]));
             }
             activation.put(RuntimeSelectedRegionFinalizer
                     .OBSERVED_COMMUNICATION_CAPTURES, captures);
@@ -188,7 +209,7 @@ public class RegionGraphOccurrenceKeyTest {
         RuntimeSelectedRegionFinalizer.Result closure =
                 RuntimeSelectedRegionFinalizer.finalizeRegions(walkGraph(),
                         walkSkeletons(), "test", Arrays.asList(CHECK, BUMP,
-                                SEND), instances,
+                                SEND, SIDE, GROW), instances,
                         Collections.singletonList(row("kind", "BRANCH",
                                 "eventSeq", 5L, "method", CHECK,
                                 "callId", 1L, "siteId", CHECK + "#u5",
@@ -207,21 +228,26 @@ public class RegionGraphOccurrenceKeyTest {
             }
         }
         Collections.sort(planned);
-        assertEquals(Arrays.asList("no-access", "paired-export",
-                "same-object", "target"), planned);
+        assertEquals(Arrays.asList("mutation", "no-access",
+                "paired-export", "same-object", "target"), planned);
     }
 
     private static final String CHECK = "<ex.Server: void check()>";
     private static final String BUMP = "<ex.State: void bump(ex.Proto)>";
     private static final String SEND = "<ex.Client: ex.Proto send()>";
     private static final String EPOCH = "<ex.State: int epoch>";
+    private static final String ALT = "<ex.Server: void alt()>";
+    private static final String SIDE = "<ex.Side: void set(int)>";
+    private static final String OTHER = "<ex.Side: int other>";
+    private static final String GROW = "<ex.Grower: void grow()>";
     private static final String GET = "<ex.Proto: int getEpoch()>";
     private static final String SET =
             "<ex.Proto$Builder: ex.Proto$Builder setEpoch(int)>";
     private static final String PORT = "XCH.ex.wire.epoch";
 
-    /** The target reads EPOCH into its fatal guard; bump stores what it
-     *  attached into EPOCH; send exports it. */
+    /** The target reads EPOCH into its fatal guard, and so would its
+     *  region's alt, OTHER; bump stores what it attached into EPOCH; send
+     *  exports it; side stores OTHER. */
     private static List<Map<String, Object>> walkGraph() {
         return Arrays.asList(
                 row("kind", "exception_guard", "transferKind", "GUARD",
@@ -232,6 +258,12 @@ public class RegionGraphOccurrenceKeyTest {
                 row("kind", "field_read", "fromCell", EPOCH,
                         "toCell", CHECK + "::$i0", "method", CHECK,
                         "siteId", CHECK + "#u3", "unitIndex", 3),
+                row("kind", "field_read", "fromCell", OTHER,
+                        "toCell", CHECK + "::$i0", "method", ALT,
+                        "siteId", ALT + "#u1", "unitIndex", 1),
+                row("kind", "field_write", "fromCell", SIDE + "::$i0",
+                        "toCell", OTHER, "method", SIDE,
+                        "siteId", SIDE + "#u2", "unitIndex", 2),
                 row("kind", "call_return", "fromCell", GET + ".return",
                         "toCell", BUMP + "::$i1", "method", BUMP,
                         "siteId", BUMP + "#u1", "unitIndex", 1),
@@ -262,19 +294,24 @@ public class RegionGraphOccurrenceKeyTest {
                 CommunicationCatalogContract.DECLARED_CALLEE, SET,
                 CommunicationCatalogContract.PORT_ARGUMENT_INDEX, 0,
                 "javaType", "int");
+        List<Map<String, Object>> none = Collections.emptyList();
         return StaticProgram.regionRows(Arrays.asList(
                 walkSkeleton("REGION.check", CHECK, "EXCEPTION_CONTEXT",
-                        Collections.<Map<String, Object>>emptyList()),
+                        none, ALT),
                 walkSkeleton("REGION.bump", BUMP, "STATE_CONTEXT",
                         Collections.singletonList(attach)),
                 walkSkeleton("REGION.send", SEND, "COMMUNICATION_CONTEXT",
-                        Collections.singletonList(export))),
+                        Collections.singletonList(export)),
+                walkSkeleton("REGION.side", SIDE, "STATE_CONTEXT", none),
+                walkSkeleton("REGION.grow", GROW, "STATE_CONTEXT", none)),
                 RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test");
     }
 
     private static Map<String, Object> walkSkeleton(
             String regionId, String method, String selection,
-            List<Map<String, Object>> ports) {
+            List<Map<String, Object>> ports, String... more) {
+        List<String> methods = new ArrayList<>(Arrays.asList(more));
+        methods.add(0, method);
         return row("schemaVersion",
                 RuntimeSelectedRegionFinalizer.REGION_SCHEMA_VERSION,
                 "kind", RuntimeSelectedRegionFinalizer.SKELETON_KIND,
@@ -283,7 +320,7 @@ public class RegionGraphOccurrenceKeyTest {
                 "anchorMethod", method,
                 "anchorMethods", Collections.singletonList(method),
                 "selection", selection,
-                "methods", Collections.singletonList(method),
+                "methods", methods,
                 RuntimeSelectedRegionFinalizer.COMMUNICATION_PORTS, ports);
     }
 
@@ -307,9 +344,20 @@ public class RegionGraphOccurrenceKeyTest {
         write.addProperty("siteId", BUMP + "#u2");
         write.addProperty("cell", EPOCH);
         write.addProperty("carrier", EPOCH);
+        JsonObject side = write.deepCopy();
+        side.addProperty("regionId", "REGION.side");
+        side.addProperty("siteId", SIDE + "#u2");
+        side.addProperty("cell", OTHER);
+        side.addProperty("carrier", OTHER);
+        JsonObject grow = write.deepCopy();
+        grow.addProperty("regionId", "REGION.grow");
+        grow.addProperty("siteId", GROW + "#u4");
+        grow.addProperty("declaredCallee",
+                "<java.util.Map: java.lang.Object put(java.lang.Object,"
+                        + "java.lang.Object)>");
         Path file = tree.newFolder().toPath().resolve(StaticScopeMap.FILE);
-        Files.write(file, (target + "\n" + write + "\n")
-                .getBytes(StandardCharsets.UTF_8));
+        Files.write(file, (target + "\n" + write + "\n" + side + "\n" + grow
+                + "\n").getBytes(StandardCharsets.UTF_8));
         return StaticScopeMap.read(file);
     }
 
@@ -393,7 +441,7 @@ public class RegionGraphOccurrenceKeyTest {
                         Collections.singletonList(port)));
 
         List<StaticScopeMap.Site> sites = StaticScopeMap.sites(edges, regions,
-                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), method -> false,
+                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, (demandSite, demandCell) -> null, method -> false,
                 cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false);
         Path file = tree.newFolder("scope-map").toPath()
                 .resolve(StaticScopeMap.FILE);
@@ -635,7 +683,7 @@ public class RegionGraphOccurrenceKeyTest {
                         Collections.singletonList(init)));
         StringBuilder text = new StringBuilder();
         for (JsonObject written : StaticScopeMap.rows(StaticScopeMap.sites(
-                edges, regions, Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(),
+                edges, regions, Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, (demandSite, demandCell) -> null,
                 method -> !method.startsWith("<example."),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField), null)) {

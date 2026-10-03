@@ -17,42 +17,16 @@ solr_seed=F0993D5343E20BA4
 # GraphChecker's jar follows the tree's classpath: the tree's own libraries
 # (Guava, protobuf, commons-io) are not the engine's versions.
 system_jar_first=false
-# The class a cluster test names: tools/adhoc/workloads.py lists the tests
-# of the classes that do.
-system_cluster_class=org/apache/solr/cloud/MiniSolrCloudCluster
-# The cluster state's family: the classes that hold it (every node parses
-# ClusterState and its collections, slices and replicas out of ZooKeeper) and
-# the Overseer's writers of it.  A guard over the state then reads a tracked
-# container another region wrote, whose writer the exploration may choose;
-# without them it reads concrete objects no root reaches (123 of sweep q5's
-# checks).  SOLR-18413's case scope holds the same classes.
-solr_state_scope=(
-  solrj:org/apache/solr/common/cloud/ClusterState
-  solrj:org/apache/solr/common/cloud/DocCollection
-  solrj:org/apache/solr/common/cloud/Slice
-  solrj:org/apache/solr/common/cloud/Replica
-  core:org/apache/solr/cloud/overseer/ZkStateWriter
-  core:org/apache/solr/cloud/overseer/SliceMutator
-  core:org/apache/solr/cloud/overseer/ReplicaMutator
-  core:org/apache/solr/cloud/overseer/CollectionMutator
-)
-# The tree's own code, for coverage and for the ad-hoc checks' scan: its class
-# roots (system_root names), the package JaCoCo counts, and each root's
-# sources, as "<root>:<tree-relative source dir>".
-system_roots=(solrj core)
-system_package=org.apache.solr
+# The tree's own sources, as "<root>:<tree-relative source dir>": where
+# tools/lib/annotated.py finds the throws a known bug's case is marked at.
 system_sources=(
   solrj:solr/solrj/src/java
   core:solr/core/src/java
 )
-# A class a workload runs only if it starts a node of the system: a test
-# that starts none opens no recording window, so an ad-hoc sweep does not
-# choose it (tools/adhoc/select.py).
-system_node_class=org/apache/solr/client/solrj/embedded/JettySolrRunner
 
 system_paths() {
   module=${repo}/solr/core
-  report=${repo}/solr/build/solr-core/test/TEST-${classpath_test:-${test_class}}.xml
+  report=${repo}/solr/build/solr-core/test/TEST-${test_class}.xml
   test_classes=${repo}/solr/build/solr-core/classes/test
   lineage_roots="${repo}/solr/build/solr-solrj/classes/java:${repo}/solr/build/solr-core/classes/java:${repo}/solr/build/solr-test-framework/classes/java"
 }
