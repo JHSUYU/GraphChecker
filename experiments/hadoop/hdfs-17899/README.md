@@ -20,7 +20,7 @@ the application.
 | `bug2` | NameNode -> SPS -> DataNode |
 | `bug3` | NameNode -> source DataNode -> target DataNode |
 
-All three run on the unified HDFS tree `/u/vnr3ne/hadoop-hdfs-unified`, branch `gc/hdfs-unified` (trunk 734dd8a67cd; inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`); HDFS-17899's fix (62729b06d70) landed after that base.
+All three run on the HDFS tree `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`, branch `gc/hdfs-unified-dtx` (the unified tree `gc/hdfs-unified`, trunk 734dd8a67cd, inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`, plus the DataTransfer op's envelope); HDFS-17899's fix (62729b06d70) landed after that base.
 
 ## The workloads
 

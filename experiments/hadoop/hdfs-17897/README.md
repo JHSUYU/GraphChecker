@@ -36,7 +36,7 @@ node's own readings came in, and the value each path read.
 
 ## Build and run
 
-Hadoop checkout: the unified HDFS tree `/u/vnr3ne/hadoop-hdfs-unified`, branch `gc/hdfs-unified` (trunk 734dd8a67cd; inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`), where HDFS-17897's fix (e23df4c4b84, which trunk carried) is reverted. Replay
+Hadoop checkout: the HDFS tree `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`, branch `gc/hdfs-unified-dtx` (the unified tree `gc/hdfs-unified`, trunk 734dd8a67cd, inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`, plus the DataTransfer op's envelope), where HDFS-17897's fix (e23df4c4b84, which trunk carried) is reverted. Replay
 concurrency is each host's memory (`obligation_memory_mb` in `workflow.properties`) up to its
 cores. From this directory:
 
