@@ -949,10 +949,12 @@ public final class Composer {
         // independence leaves out.  A location a reader mutated a container
         // through is held to the run's pairing.
         Set<String> repaired = repaired(session);
-        Set<String> pinned = pinnedOwners(session, reached, repaired);
+        Set<String> pinned = pinnedOwners(session, reached,
+                anchorReads(session, repaired, target.seq()), repaired);
         repaired.removeAll(pinned);
+        Set<String> moved = anchorReads(session, repaired, target.seq());
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
-                corpus.join(session), repaired,
+                corpus.join(session), moved,
                 (reader, writer) -> arms.concurrent(reader, writer, session));
         lowering.begin(session, rows, corpus.expressions(session));
 
@@ -1013,8 +1015,9 @@ public final class Composer {
         //     family may re-point is the object's it is
         //     ({@link SmtLowering#movable}); through any other, the run's.
         for (ReadRow read : joined) {
-            if (repaired.contains(SmtLowering.locationKey(read.location()))) {
-                lowering.movable(read.symbol());
+            if (moved.contains(SmtLowering.readKey(SmtLowering.locationKey(
+                    read.location()), read.seq()))) {
+                lowering.movable(read);
             }
         }
 
@@ -1752,23 +1755,47 @@ public final class Composer {
     }
 
     /**
+     * The anchor's reads of these locations up to its cutoff, each by
+     * {@link SmtLowering#readKey}: the reads a STATE family re-pairs.  Any
+     * other read of such a location -- a reached writer's own lookup of the
+     * container it then mutates -- keeps the run's pairing, so what is
+     * asked through it names the run's object.
+     */
+    private Set<String> anchorReads(String session, Set<String> locations,
+                                    long cutoff) {
+        Set<String> reads = new LinkedHashSet<String>();
+        for (ReadRow read : corpus.readsOn(session, anchor)) {
+            String key = SmtLowering.locationKey(read.location());
+            if (read.seq() <= cutoff && locations.contains(key)) {
+                reads.add(SmtLowering.readKey(key, read.seq()));
+            }
+        }
+        return reads;
+    }
+
+    /**
      * The anchor locations a family may re-pair that keep the run's own
-     * pairing, named.  A reader of this path mutated a container through
-     * one (R3-REFCONT C-4): a reached occurrence's container version whose
-     * mutation names, as its owner, a read of it; another pairing would
-     * mutate an object no row records the mutation of.  Or a store of one
-     * holds a container through an object that is not it (a
-     * {@code Collections} wrapper, a view): a query through that object
-     * names no owner, so it is the run's container's answer whichever
-     * object the family delivers.  Or a field or a query is asked through a
-     * container query's read of it: that read names no object (a query
-     * states no answer's identity), so no case per writer is the run's.
+     * pairing, named: only where a read the family MOVES ({@code moved},
+     * {@link #anchorReads}) would leave something unnamed.  A reader of this
+     * path mutated a container through one (R3-REFCONT C-4): a reached
+     * occurrence's container version whose mutation names, as its owner, a
+     * moved read; another pairing would mutate an object no row records the
+     * mutation of.  Or a store of one holds a container through an object
+     * that is not it (a {@code Collections} wrapper, a view): a query
+     * through that object names no owner, so it is the run's container's
+     * answer whichever object the family delivers.  Or a field or a query
+     * is asked through a moved container query read: that read names no
+     * object (a query states no answer's identity), so no case per writer
+     * is the run's.  A reached writer's own read of the location is no
+     * moved read (zk-bugs-election-offer: each create and delete looks up
+     * its parent in ZooKeeper's node map, the anchor's getData the offer).
      */
     private Set<String> pinnedOwners(String session,
                                      Map<String, Long> reached,
+                                     Set<String> moved,
                                      Set<String> repaired) {
         Set<String> pinned = new LinkedHashSet<String>();
-        for (String key : containerOwners(session, reached)) {
+        for (String key : containerOwners(session, reached, moved)) {
             if (repaired.contains(key) && pinned.add(key)) {
                 gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                         "OWNER_PINNED_BY_CONTAINER_READ:" + key + "@"
@@ -1788,15 +1815,9 @@ public final class Composer {
                 }
                 JsonObject mutation = corpus.expression(session,
                         write.expressionRef());
-                JsonElement owner = unwrapped(mutation == null ? null
-                        : mutation.get("owner"));
-                if (!VmRows.GUARDED_READ_TYPE.equals(
-                        VmExpressionIr.typeOf(owner))) {
-                    continue;
-                }
-                String key = SmtLowering.locationKey(JsonFields.object(
-                        owner.getAsJsonObject(), "location"));
-                if (repaired.contains(key) && pinned.add(key)) {
+                String key = movedOwner(mutation, moved);
+                if (key != null && repaired.contains(key)
+                        && pinned.add(key)) {
                     gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                             "OWNER_PINNED_BY_MUTATION:" + key + "@"
                                     + session, "a reader of this path "
@@ -1832,12 +1853,13 @@ public final class Composer {
     }
 
     /**
-     * The container locations whose query reads the anchor or a reached
-     * occurrence asks a field or a query through ({@code owner}), up to its
-     * cutoff.
+     * The container locations whose moved query reads ({@link #anchorReads})
+     * the anchor or a reached occurrence asks a field or a query through
+     * ({@code owner}), up to its cutoff.
      */
     private Set<String> containerOwners(String session,
-                                        Map<String, Long> reached) {
+                                        Map<String, Long> reached,
+                                        Set<String> moved) {
         Set<String> owners = new LinkedHashSet<String>();
         Set<JsonElement> walked = ExpressionWalk.identitySet();
         Map<String, Long> asked = new LinkedHashMap<String, Long>(reached);
@@ -1866,14 +1888,9 @@ public final class Composer {
             while (refs.find()) {
                 for (ExpressionWalk walk = ExpressionWalk.of(corpus.expression(
                         session, refs.group()), walked); walk.hasNext(); ) {
-                    JsonElement owner = unwrapped(walk.next().get("owner"));
-                    if (!VmRows.GUARDED_READ_TYPE.equals(
-                            VmExpressionIr.typeOf(owner))) {
-                        continue;
-                    }
-                    String key = SmtLowering.locationKey(JsonFields.object(
-                            owner.getAsJsonObject(), "location"));
-                    if (key.startsWith(LocationKind.MAP + "/")) {
+                    String key = movedOwner(walk.next(), moved);
+                    if (key != null
+                            && key.startsWith(LocationKind.MAP + "/")) {
                         owners.add(key);
                     }
                 }
@@ -1884,6 +1901,22 @@ public final class Composer {
 
     private static final Pattern EXPRESSION_REF =
             Pattern.compile("EXPR\\.[0-9a-f]+");
+
+    /**
+     * The location of the read a node's {@code owner} is, when that read is
+     * a moved one ({@link #anchorReads}), else null.
+     */
+    private static String movedOwner(JsonObject node, Set<String> moved) {
+        JsonElement owner = unwrapped(node == null ? null : node.get("owner"));
+        if (!VmRows.GUARDED_READ_TYPE.equals(VmExpressionIr.typeOf(owner))) {
+            return null;
+        }
+        JsonObject read = owner.getAsJsonObject();
+        String key = SmtLowering.locationKey(JsonFields.object(read,
+                "location"));
+        return moved.contains(SmtLowering.readKey(key,
+                VmRows.readEvent(read))) ? key : null;
+    }
 
     /**
      * Whether a reference store stored a container itself, which a wrapper
@@ -2139,7 +2172,8 @@ public final class Composer {
             // What binding the read required rides with the join that binds
             // it: stated where the conjunction asks about it (#statedJoins).
             List<String> own = lowering.ownConditions(
-                    () -> lowering.bind(key, version, null, binder)
+                    () -> lowering.bind(key, version, read.seq(), null,
+                            binder)
                             && joins.containsKey(read.symbol()));
             if (!own.isEmpty()) {
                 own.add(0, joins.get(read.symbol()));

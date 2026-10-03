@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.smt;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
@@ -42,6 +43,18 @@ public final class VmRows {
      */
     public static boolean joinable(JsonObject read) {
         return writerSetComplete(read) || flag(read, OBSERVED_EXACT, false);
+    }
+
+    /**
+     * The VM event a read node names -- its {@code readEventId}, else its
+     * {@code eventId} -- or -1: the {@code seq} of the row it published
+     * ({@code runtime.RowPublication}), so a node and its row are one read.
+     */
+    public static long readEvent(JsonObject read) {
+        if (read == null) return -1L;
+        long event = optionalLongInteger(read, "readEventId", -1L);
+        return event >= 0L ? event
+                : optionalLongInteger(read, "eventId", -1L);
     }
 
     /** The version a read node states it observed, joinable or not, or

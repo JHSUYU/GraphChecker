@@ -137,11 +137,12 @@ public final class SmtLowering {
         boolean moves(String symbol);
 
         /**
-         * Whether a STATE family may re-pair the reads of this location with
-         * another writer ({@link #repairing}); none may in a join no
-         * composition opened.
+         * Whether a STATE family may re-pair this read -- the read event
+         * {@code readEvent} ({@link VmRows#readEvent}, its row's seq) of this
+         * location -- with another writer ({@link #repairing}); none may in a
+         * join no composition opened.
          */
-        boolean repaired(String locationKey);
+        boolean repaired(String locationKey, long readEvent);
 
         /**
          * Whether a writer occurrence of this session may have run before a
@@ -185,7 +186,7 @@ public final class SmtLowering {
         }
 
         @Override
-        public boolean repaired(String locationKey) {
+        public boolean repaired(String locationKey, long readEvent) {
             return false;
         }
 
@@ -197,12 +198,14 @@ public final class SmtLowering {
     };
 
     /**
-     * The same join, where a STATE family may re-pair the reads of these
-     * locations (the anchor's, {@code Composer}), and where this session's
-     * occurrences are ordered as {@code concurrent} says.
+     * The same join, where a STATE family may re-pair these reads (the
+     * anchor's, {@code Composer}, each {@link #readKey}) and no other --
+     * another occurrence's read of the same location keeps the run's
+     * pairing -- and where this session's occurrences are ordered as
+     * {@code concurrent} says.
      */
     public static SessionJoin repairing(final SessionJoin join,
-                                        final Set<String> locations,
+                                        final Set<String> reads,
                                         final BiPredicate<OccurrenceAddress,
                                                 OccurrenceAddress> concurrent) {
         return new SessionJoin() {
@@ -238,9 +241,9 @@ public final class SmtLowering {
             }
 
             @Override
-            public boolean repaired(String locationKey) {
-                return locations.contains(locationKey)
-                        || join.repaired(locationKey);
+            public boolean repaired(String locationKey, long readEvent) {
+                return reads.contains(readKey(locationKey, readEvent))
+                        || join.repaired(locationKey, readEvent);
             }
 
             @Override
@@ -249,6 +252,12 @@ public final class SmtLowering {
                 return concurrent.test(reader, writer);
             }
         };
+    }
+
+    /** One read of one location, as {@link #repairing} and {@link #movable}
+     *  name it: its location and its event ({@link VmRows#readEvent}). */
+    public static String readKey(String locationKey, long readEvent) {
+        return locationKey + "#e" + readEvent;
     }
 
     /**
@@ -305,9 +314,9 @@ public final class SmtLowering {
     private final Set<String> pins = new LinkedHashSet<String>();
     /**
      * The reads a STATE family of the path being composed may bind to
-     * another writer's value, as {@code session|symbol} ({@link #movable},
-     * {@link #path}): what is asked through one is asked of the object it
-     * is ({@link #perCandidate}).
+     * another writer's value, as {@code session|}{@link #readKey}
+     * ({@link #movable}, {@link #path}): what is asked through one is asked
+     * of the object it is ({@link #perCandidate}).
      */
     private final Set<String> movable = new LinkedHashSet<String>();
     /** {@code session|location|class} -> {@link #candidates}. */
@@ -536,7 +545,7 @@ public final class SmtLowering {
             }
 
             @Override
-            public boolean repaired(String locationKey) {
+            public boolean repaired(String locationKey, long readEvent) {
                 return false;
             }
 
@@ -1407,7 +1416,7 @@ public final class SmtLowering {
      * version.  Consulted without one, it binds the read to a value no row
      * stands behind.</p>
      */
-    <T> T bind(String key, long version, JsonElement projected,
+    <T> T bind(String key, long version, long event, JsonElement projected,
                Binder<T> binder) {
         Attempt<Term> joined = null;
         if (!key.isEmpty() && version >= 0L) {
@@ -1417,7 +1426,8 @@ public final class SmtLowering {
                         && !projected.isJsonNull() ? projected : written;
                 joined = attempting(() -> binder.join(value));
                 if (joined.lowered()) return binder.joined(commit(joined));
-                if (join.repaired(key) || moves(value) || moves(written)) {
+                if (join.repaired(key, event) || moves(value)
+                        || moves(written)) {
                     return binder.refused(commit(joined),
                             "JoinOverMovingValue:" + key + "@" + version,
                             "the write of this version did not lower, and "
@@ -1485,7 +1495,7 @@ public final class SmtLowering {
     /**
      * Whether anything this expression rests on can move in a witness
      * (criterion 1 of {@link #bind}): a leaf naming a symbol the open join
-     * says {@link SessionJoin#moves}, or a read of a location a family
+     * says {@link SessionJoin#moves}, or a read a family
      * {@link SessionJoin#repaired re-pairs}, of a version a moving mint
      * made, or of a write that rests on one.  Each node once per
      * conjunction; the nodes of a walk that found nothing are not walked
@@ -1525,7 +1535,7 @@ public final class SmtLowering {
                 String key = locationKey(JsonFields.object(object,
                         "location"));
                 long version = observedVersion(object);
-                if (join.repaired(key)) return true;
+                if (join.repaired(key, VmRows.readEvent(object))) return true;
                 for (String minted : join.mintedReadSymbols(version)) {
                     if (join.moves(minted)) return true;
                 }
@@ -1550,13 +1560,16 @@ public final class SmtLowering {
         String key = locationKey(location);
         long version = observedVersion(expression);
         String javaType = primitiveString(expression, "_java_type");
-        return bind(key, version, observedVersionExpression(expression),
-                new Binder<Term>() {
+        long event = VmRows.readEvent(expression);
+        return bind(key, version, event,
+                observedVersionExpression(expression), new Binder<Term>() {
             @Override
             public Term join(JsonElement value) {
                 answering.push(new ReadAt(key, version));
                 try {
-                    return element(dispatch(value, whole(value, expected),
+                    JsonElement asked = movedQuery(value, key, version,
+                            event);
+                    return element(dispatch(asked, whole(asked, expected),
                             origin + ":join"), expression, location, key,
                             version, expected);
                 } finally {
@@ -1594,6 +1607,49 @@ public final class SmtLowering {
             }
         });
     }
+
+    /**
+     * A container query a STATE family may re-pair ({@link
+     * SessionJoin#repaired}: the anchor's read of the container), asked of
+     * the state the family chooses -- the read's own symbol, stated at the
+     * container's sort by its join and bound by each writer arm
+     * ({@code ComposedFamilies#stateFamilies}) -- not of the run's chain:
+     * inlined, the chain is what the run read, which no family moves
+     * (zk-bugs-election-offer: the getData's lookup of an offer in
+     * ZooKeeper's node map, folded to the run's DataNode).  Its chain, for
+     * what a query requires of one (a base the VM walked), is the observed
+     * version's ({@link #MOVED_CHAIN}): every version of one location
+     * descends from that base.  A view's positions are its chain's, so a
+     * query through a view, like any other read's, is the run's.
+     */
+    private JsonElement movedQuery(JsonElement projected, String key,
+                                   long version, long event) {
+        if (!join.repaired(key, event) || !ContainerSmtCodec.handles(
+                projected)) {
+            return projected;
+        }
+        JsonObject relation = projected.getAsJsonObject();
+        JsonElement receiver = relation.get("receiver");
+        if (VIEWS.contains(optionalString(relation, "operation"))
+                || ContainerSmtCodec.handles(receiver) && VIEWS.contains(
+                optionalString(receiver.getAsJsonObject(), "operation"))) {
+            return projected;
+        }
+        Set<String> named = join.readSymbols(key, version);
+        if (named.size() != 1) return projected;
+        String symbol = named.iterator().next();
+        Declared held = declarations.get(symbol);
+        if (held == null || !held.stated || !held.sort.containerState()) {
+            return projected;
+        }
+        JsonObject state = symbolNode(symbol, "");
+        state.add(MOVED_CHAIN, join.writeExpression(key, version));
+        return asOf(relation, state);
+    }
+
+    /** The member a moved read's state symbol carries its observed chain
+     *  in ({@link #movedQuery}, the host's {@code chain}). */
+    private static final String MOVED_CHAIN = "inSessionObservedChain";
 
     /**
      * The one symbol this session's rows JOINED a scalar read of this
@@ -1655,10 +1711,12 @@ public final class SmtLowering {
      * Declares one read of the path being composed a STATE family may bind
      * to another writer's value ({@code ComposedFamilies#stateFamilies}): a
      * field projected through it is then the field of the object it is
-     * ({@link #projection}).
+     * ({@link #projection}).  That read alone: another read of its location
+     * and version (a writer's own lookup) keeps the run's object.
      */
-    public void movable(String symbol) {
-        if (movable.add(scope + SEPARATOR + symbol)) {
+    public void movable(ReadRow read) {
+        if (movable.add(scope + SEPARATOR + readKey(
+                locationKey(read.location()), read.seq()))) {
             memo = new HashMap<MemoKey, Attempt<?>>();
         }
     }
@@ -1853,12 +1911,12 @@ public final class SmtLowering {
         }
         JsonObject read = found.getAsJsonObject();
         String key = locationKey(JsonFields.object(read, "location"));
-        Set<String> named = join.readSymbols(key,
-                VmRows.recordedVersion(read));
-        String symbol = named.size() == 1 ? named.iterator().next() : "";
-        if (!movable.contains(scope + SEPARATOR + symbol)) return null;
+        long event = VmRows.readEvent(read);
+        if (!movable.contains(scope + SEPARATOR + readKey(key, event))) {
+            return null;
+        }
         for (ReadRow row : join.reads(key)) {
-            if (symbol.equals(row.symbol())) return row;
+            if (row.seq() == event) return row;
         }
         return null;
     }
@@ -2616,6 +2674,10 @@ public final class SmtLowering {
                 while (VmExpressionIr.consumerBoundary(found)) {
                     found = found.getAsJsonObject().get(
                             VmExpressionIr.EXPRESSION);
+                }
+                if (found != null && found.isJsonObject()
+                        && found.getAsJsonObject().has(MOVED_CHAIN)) {
+                    return found.getAsJsonObject().get(MOVED_CHAIN);
                 }
                 if (!VmRows.GUARDED_READ_TYPE.equals(
                         VmExpressionIr.typeOf(found))) {

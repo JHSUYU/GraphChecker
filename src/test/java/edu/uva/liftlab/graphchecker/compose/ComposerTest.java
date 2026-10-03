@@ -2804,16 +2804,17 @@ public class ComposerTest {
             long flagged = ++version;
             session.write(Endpoint.of(mine, "Policy#update#5:WRITE",
                     at("flag#2", 0), 0), flag, flagged, "EXPR.v1.false");
-            session.read(Endpoint.of(reader, "Stream#latest#6:READ",
-                    at("read#1", 0), 0), latest, stored,
-                    SmtLowering.locationKey(latest) + "@v" + stored + "@s0",
-                    "L", null);
+            long latestRead = session.read(Endpoint.of(reader,
+                    "Stream#latest#6:READ", at("read#1", 0), 0), latest,
+                    stored, SmtLowering.locationKey(latest) + "@v" + stored
+                            + "@s0", "L", null);
             session.read(Endpoint.of(reader, "Stream#flag#7:READ",
                     at("read#2", 0), 0), flag, flagged,
                     SmtLowering.locationKey(flag) + "@v" + flagged + "@s0",
                     "Z", null);
             // The VM's pair: concreteValue is the run's cell, 11#24.
             JsonObject owner = read("INSTANCE_FIELD", 8L, 48L, stored, "L");
+            owner.addProperty("readEventId", latestRead);
             JsonObject generationThroughOwner = fieldRead(commit, 24L, "I",
                     owner, read("INSTANCE_FIELD", 11L, 24L, constructed, "I"));
             session.expression("EXPR.v1.copied", generationThroughOwner);
@@ -2947,7 +2948,7 @@ public class ComposerTest {
             lowering.path();
             lowering.begin("s0", corpus.join("s0"),
                     corpus.expressions("s0"));
-            if ((Boolean) path[1]) lowering.movable("kc@s0");
+            if ((Boolean) path[1]) lowering.movable(corpus.read("s0", "kc@s0"));
             String asked = lowering.term("EXPR.00000000000000d1", "test")
                     .text + " " + lowering.end();
             assertEquals((String) path[0] + ": " + asked, path[1],
@@ -3110,9 +3111,9 @@ public class ComposerTest {
                         at("m#9", 0), 0), own, version = 7L,
                         "EXPR.0000000000000040");
             }
-            session.read(Endpoint.of(reader, "Wrapper#getAndSave#3:READ",
-                    at("kc#3", 0), 0), known, 6L, "kc", "Ljava/util/Map;",
-                    null);
+            owner.addProperty("readEventId", session.read(Endpoint.of(reader,
+                    "Wrapper#getAndSave#3:READ", at("kc#3", 0), 0), known,
+                    6L, "kc", "Ljava/util/Map;", null));
             JsonObject get = relation("ASSOCIATIVE", "READ", "L", query,
                     integer("J", 5L));
             get.add("owner", owner);
@@ -3390,13 +3391,15 @@ public class ComposerTest {
                 "EXPR.00000000000000c4", "L", WriteRow.Referent.of(newerMap,
                         built), null));
         // The reader: the reference, then the query through it.
-        session.read(Endpoint.of(reader, "Wrapper#getAndSave#3:READ",
-                at("kc#3", 0), 0), known, stored, "kc@" + id,
-                "Ljava/util/Map;", "M_L'" + map + "'_30");
+        long reference = session.read(Endpoint.of(reader,
+                "Wrapper#getAndSave#3:READ", at("kc#3", 0), 0), known,
+                stored, "kc@" + id, "Ljava/util/Map;", "M_L'" + map + "'_30");
         JsonObject query = relation("ASSOCIATIVE", "READ", "L", six,
                 integer("J", 5L));
-        query.add("owner", read("INSTANCE_FIELD", 8L, 16L, stored,
-                "Ljava/util/Map;"));
+        JsonObject owner = read("INSTANCE_FIELD", 8L, 16L, stored,
+                "Ljava/util/Map;");
+        owner.addProperty("readEventId", reference);
+        query.add("owner", owner);
         JsonObject answered = read("MAP_STATE", 30L, -3L, built, "L");
         answered.getAsJsonObject("observedVersion").add("expression", query);
         session.read(Endpoint.of(reader, "Wrapper#getAndSave#9:READ",
@@ -5374,13 +5377,15 @@ public class ComposerTest {
                 session.write(Endpoint.of(second, "TickB#set#4:WRITE",
                         at("w#2", 0), 0), stamp, 1L, "EXPR.00000000000000b2");
             }
-            session.read(Endpoint.of(reader, "Block#getStamp#29:READ",
-                            at("r#1", 0), 0), stamp, 2L, symbol, "I",
+            long stamped = session.read(Endpoint.of(reader,
+                            "Block#getStamp#29:READ", at("r#1", 0), 0),
+                    stamp, 2L, symbol, "I",
                     "unstated".equals(name) ? null : "H1".equals(name) ? "3"
                             : "H2b".equals(name) || "own".equals(name) ? "2"
                             : "1001");
             JsonObject node = read("INSTANCE_FIELD", stamp.owner(), "value",
                     2L, "I");
+            node.addProperty("readEventId", stamped);
             // own: then a version no row wrote, which phi compares with it.
             JsonObject later = read("INSTANCE_FIELD", stamp.owner(), "value",
                     9L, "I");
@@ -6470,10 +6475,13 @@ public class ComposerTest {
             read(endpoint, location, version, symbol, "Z", concrete);
         }
 
-        void read(Endpoint endpoint, LocationId location, long version,
+        /** @return the read's seq: the VM event its ReadFrom names
+         *  ({@code readEventId}). */
+        long read(Endpoint endpoint, LocationId location, long version,
                   String symbol, String javaType, String concrete) {
             reads.add(ReadRow.of(id, ++seq, endpoint, location, version,
                     symbol, javaType, concrete));
+            return seq;
         }
 
         /**
