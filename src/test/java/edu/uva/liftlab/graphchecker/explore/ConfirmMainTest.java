@@ -334,6 +334,9 @@ public class ConfirmMainTest {
      * the writer the recording ran first is where its prefix ends.  The
      * INITIAL's row, which stands at the access that started the log with
      * that access's frames, places no hold (hdfs-bugs-slowdisk-zero SD4).
+     * CONFIRM holds the write after the read's activation; an obligation,
+     * whose choice binds every read the occurrence makes of the location,
+     * after the occurrence (SD5: the turn re-read the bound for its limit).
      */
     @Test
     public void aModelThatChoseTheInitialHoldsEveryWriteAfterTheRead()
@@ -346,6 +349,15 @@ public class ConfirmMainTest {
                 Arrays.asList(WriteRow.initial("sel", 9L, observedAt, CELL,
                         4L, "EXPR.w", "I"), WriteRow.of("sel", 10L, writer,
                         CELL, 5L, "EXPR.w", "I")), RowCodec::writeWrite);
+        // The read in a call of its own, as an accessor's is.
+        Endpoint polled = Endpoint.of(anchor, "a.Handler#h()#12:READ",
+                ExecutionIndex.of(Arrays.asList(Frame.of(
+                        "<a.Handler: int bound()>", 0), Frame.of(
+                        "a.Handler#h()#12:READ", 0))), 0);
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
+                Collections.singletonList(ReadRow.of("sel", 30L, polled,
+                        CELL, 5L, "INSTANCE_FIELD/1#40@v5", "I", "3")),
+                RowCodec::writeRead);
         Path claim = claim("FAULT:IPC", "true");
         JsonObject document = JsonParser.parseString(new String(
                 Files.readAllBytes(claim), StandardCharsets.UTF_8))
@@ -354,7 +366,7 @@ public class ConfirmMainTest {
         arm.addProperty("selector", "writer_arm__1__i");
         arm.addProperty("groupId", "INITIAL|" + SmtLowering.locationKey(CELL));
         JsonArray fills = new JsonArray();
-        fills.add(Interaction.of(InteractionKind.STATE, observedAt, reader)
+        fills.add(Interaction.of(InteractionKind.STATE, observedAt, polled)
                 .id());
         arm.add("interactionIds", fills);
         document.getAsJsonArray("valuations").get(1).getAsJsonObject()
@@ -365,10 +377,16 @@ public class ConfirmMainTest {
         ConfirmMain.write(iteration, claim, manifest(), out);
         ConfirmMain.Holding paired = ConfirmMain.holding(
                 SessionReader.read(iteration, "sel"),
-                Collections.singletonMap(Confirmation.id(reader),
+                Collections.singletonMap(Confirmation.id(polled),
                         Confirmation.INITIAL));
-        for (List<JsonObject> edges : Arrays.asList(RowCodec.readJsonl(
-                out.resolve(Confirmation.FILE)), paired.edges)) {
+        Map<List<JsonObject>, String> after =
+                new LinkedHashMap<List<JsonObject>, String>();
+        after.put(RowCodec.readJsonl(out.resolve(Confirmation.FILE)),
+                polled.activation());
+        after.put(paired.edges, Confirmation.activation(anchor,
+                ExecutionIndex.empty()));
+        for (Map.Entry<List<JsonObject>, String> each : after.entrySet()) {
+            List<JsonObject> edges = each.getKey();
             List<String> held = new ArrayList<String>();
             for (JsonObject edge : edges) {
                 String kind = edge.get("kind").getAsString();
@@ -376,15 +394,15 @@ public class ConfirmMainTest {
                     held.add(edge.get("before").getAsString() + " < "
                             + edge.get("after").getAsString());
                 } else if ("STATE".equals(kind) && edge.get("reader")
-                        .getAsString().equals(Confirmation.id(reader))) {
+                        .getAsString().equals(Confirmation.id(polled))) {
                     held.add(edge.get("writer").getAsString() + "@"
                             + edge.get("version").getAsString());
                 }
             }
             assertEquals("the INITIAL's version, the write after the read",
                     Arrays.asList(Confirmation.INITIAL + "@4",
-                            reader.activation() + " < "
-                                    + writer.activation()), held);
+                            each.getValue() + " < " + writer.activation()),
+                    held);
         }
         assertEquals("the write the session ran before the read",
                 Collections.singleton(mint.id()), paired.reordered);

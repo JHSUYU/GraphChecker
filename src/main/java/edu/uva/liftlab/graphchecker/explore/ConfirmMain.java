@@ -304,7 +304,7 @@ public final class ConfirmMain {
                 resting.add(read);
             }
         }
-        edges.addAll(stateEdges(closure, resting, chosen).edges);
+        edges.addAll(stateEdges(closure, resting, chosen, false).edges);
         edges.addAll(markers);
         JsonObject anchorRow = new JsonObject();
         anchorRow.addProperty("kind", "ANCHOR");
@@ -966,23 +966,50 @@ public final class ConfirmMain {
         }
 
         /**
-         * {@code first}'s activation exits before {@code then}'s event,
-         * unless one occurrence holds both: it runs on one thread, whose
-         * program order already orders them.  The hold is the last
+         * The activation {@code first} names exits before {@code then}'s
+         * event, unless one occurrence holds both: it runs on one thread,
+         * whose program order already orders them.  The hold is the last
          * activation entry before the event on its thread
          * ({@link #holdBefore}), or the send that started claimed work
          * ({@link #held}).  Where the session ran {@code then} first, the
          * order moves the held occurrence's events after {@code first}'s:
          * it is {@code reordered}.
          */
-        private void order(Holding holding, Endpoint first, long firstSeq,
-                           Endpoint then, long thenSeq) {
-            if (first.occurrence().id().equals(then.occurrence().id())) return;
+        private void order(Holding holding, Exit first, Endpoint then,
+                           long thenSeq) {
+            if (first.occurrence.equals(then.occurrence().id())) return;
             Hold hold = held(then, thenSeq);
-            holding.orders.add(Confirmation.activation(first.occurrence(),
-                    ExecutionIndex.of(first.activationFrames())) + "\n"
-                    + hold.activation);
-            if (thenSeq < firstSeq) holding.reordered.add(hold.occurrence);
+            holding.orders.add(first.activation + "\n" + hold.activation);
+            if (thenSeq < first.seq) holding.reordered.add(hold.occurrence);
+        }
+
+        /** What an ORDER waits for to exit, the occurrence it is of, and
+         *  where the session ran it. */
+        private static final class Exit {
+            private final String activation;
+            private final String occurrence;
+            private final long seq;
+
+            private Exit(OccurrenceAddress occurrence, List<Frame> frames,
+                         long seq) {
+                this.activation = Confirmation.activation(occurrence,
+                        ExecutionIndex.of(frames));
+                this.occurrence = occurrence.id();
+                this.seq = seq;
+            }
+
+            /** The activation an event stood in. */
+            private static Exit of(Endpoint event, long seq) {
+                return new Exit(event.occurrence(), event.activationFrames(),
+                        seq);
+            }
+
+            /** Its occurrence as a whole: entered at its opening, exited
+             *  at its close ({@code runtime.Identity}). */
+            private static Exit occurrenceOf(Endpoint event, long seq) {
+                return new Exit(event.occurrence(),
+                        Collections.<Frame>emptyList(), seq);
+            }
         }
 
         /** Where an event is held: the activation entry, and the
@@ -1245,15 +1272,30 @@ public final class ConfirmMain {
      * its outside store is the run's own -- and so is an INITIAL the run
      * joined ({@link WriteRow#initial}).  A chosen INITIAL is the version
      * the read must observe ({@link Confirmation#INITIAL}), and every write
-     * of its location goes after the read.  Endpoints and activations are
-     * named as every delivery of their stored message is
+     * of its location goes after the read -- after its activation, or, a
+     * {@code block}, after its occurrence closes: a flip query binds the
+     * reads one occurrence made of a location as one choice (IDENTITY §4),
+     * and the flipped world may read it again after the recorded read
+     * (hdfs-bugs-slowdisk-zero SD5: the detector turn's {@code limit(max)}
+     * re-read the bound after the reconfiguration had landed, so the turn
+     * read 1 at its guard and 0 at its limit).  Endpoints and activations
+     * are named as every delivery of their stored message is
      * ({@link Confirmation#id}).
      */
     private static Holding stateEdges(StateClosure closure,
                                       List<ReadRow> reads,
-                                      Map<String, WriteRow> chosen) {
+                                      Map<String, WriteRow> chosen,
+                                      boolean block) {
         Holding holding = new Holding();
         for (ReadRow read : reads) {
+            // What a writer the read must precede waits for: the read's
+            // activation, or, where the reads of the location are a block,
+            // its whole occurrence -- a read the flip adds after the one
+            // recorded is the block's too.
+            StateClosure.Exit reading = block
+                    ? StateClosure.Exit.occurrenceOf(read.endpoint(),
+                    read.seq())
+                    : StateClosure.Exit.of(read.endpoint(), read.seq());
             String reader = read.endpoint().id();
             WriteRow held = chosen.containsKey(reader) ? chosen.get(reader)
                     : closure.joined.get(reader);
@@ -1282,8 +1324,8 @@ public final class ConfirmMain {
             holding.edges.add(edge);
             if (mint) continue;
             if (!held.initial()) {
-                closure.order(holding, held.endpoint(), held.seq(),
-                        read.endpoint(), read.seq());
+                closure.order(holding, StateClosure.Exit.of(held.endpoint(),
+                        held.seq()), read.endpoint(), read.seq());
             }
             // No other writer of the location it reads between the two: one
             // recorded before the write goes before it, any other after the
@@ -1294,11 +1336,12 @@ public final class ConfirmMain {
                     continue;
                 }
                 if (!held.initial() && other.seq() < held.seq()) {
-                    closure.order(holding, other.endpoint(), other.seq(),
-                            held.endpoint(), held.seq());
+                    closure.order(holding, StateClosure.Exit.of(
+                            other.endpoint(), other.seq()), held.endpoint(),
+                            held.seq());
                 } else {
-                    closure.order(holding, read.endpoint(), read.seq(),
-                            other.endpoint(), other.seq());
+                    closure.order(holding, reading, other.endpoint(),
+                            other.seq());
                 }
             }
         }
@@ -1328,7 +1371,8 @@ public final class ConfirmMain {
      * path was cut from, which the replay compares and holds
      * ({@code runtime.Confirmation}).  A pairing's write is the reader's
      * location's write by that writer, the one the read observed else the
-     * last ({@code smt.Arms#stateArms}), or its INITIAL.
+     * last ({@code smt.Arms#stateArms}), or its INITIAL; the reader's reads
+     * of the location are a block ({@link #stateEdges}).
      *
      * @throws Refused naming a pairing whose read or write the session does
      *         not state
@@ -1374,7 +1418,7 @@ public final class ConfirmMain {
                     + unread + ", which session " + session.sessionId()
                     + " states no read at");
         }
-        return stateEdges(closure, reads, chosen);
+        return stateEdges(closure, reads, chosen, true);
     }
 
     /** One write the path rests on: reach its writer, sweep older versions

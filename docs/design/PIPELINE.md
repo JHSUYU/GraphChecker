@@ -670,7 +670,9 @@ The parent world is overlaid (model wins: roots, skews, answers, pairings) and i
 Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`,
 `NOT_ADMITTED`). The world's pairings are held by CONFIRM's rows over the session the path was cut
 from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
-for an INITIAL every writer of the location after the read); a pairing that session states no read
+for an INITIAL every writer of the location after the read; a writer the read must precede waits for
+the reader's occurrence to close, since the choice binds every read it makes of the location and
+the flipped world may read it again, CONFIRM's for the read's activation); a pairing that session states no read
 or write of refuses (`PAIRING_UNSTATED`). The worker writes `obligation_result.jsonl`
 (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`, `gaps.jsonl`,
 `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)), the pairings'
