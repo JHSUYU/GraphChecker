@@ -80,7 +80,10 @@ checks per system) is superseded by this one; Phase 1's eleven cases stay the re
   snapshot `~/gc-run/p232`, VM `vm-model-guards2`), `host-ledger-lease` (V20 13/13, `~/gc-run/p233`: a start's charge
   holds for the JVM's life by a lease; lifts stayed at 7-14% during the round) and `replay-address-only` +
   `readout-stream` (V21 13/13, `~/gc-run/p234`: a root admitted by its address alone; VM read-out pages streamed, a
-  Solr seed replay peaking at 745 MB instead of 1469). The thirteen regression cases are the eleven named ones plus
+  Solr seed replay peaking at 745 MB instead of 1469), `hbase-identity` (V22c 13/13, `~/gc-run/p236`: a work entry's
+  claim ends at the entry's exit; a queue item carries its putter's scope -- V22's cross-node refusal lost DataNode
+  heartbeat claims through IPC's shared sender thread) and `slice-matched-returns` (V23 13/13, `~/gc-run/p237`: a callee
+  formal only the return needs is demanded only where the call's result is; every slice shrinks). The thirteen regression cases are the eleven named ones plus
   `zk-bugs-quota-init` and `zk-bugs-election-offer`. The HDFS
   RPC-fault cases move either direction of one IPC door from round to round (`Client$Connection#sendRpcRequest`
   or `Client#getRpcResponse`, the target DataNode's heartbeat request or response lost): the same chain, valid
@@ -165,11 +168,11 @@ submission order (ORDER edges on the submitters).
 
 `main`: §0.2. Merged and kept for now: `system-zookeeper`, `vm-streams` (its worktree `wt/gc-vm-streams`),
 `seed-functional`, `preWindow-loop-root`, `zk-election-offer`, `pairing-port`, `vm-model-guards`, `main-sf`, `main-pw`,
-`main-eo`, `main-pp`, `main-vg`, `main-ll`, `main-v21`, `host-ledger-lease`, `replay-address-only`, `readout-stream`
-(candidates and sources of V16-V21 and PP1). Live agents: A1 (`slowdisk-dev`: HDFS #15), A2 (`solr-bug-reindex`:
-Solr #04), A5 (`slice-matched-returns`, then `wire-codec-p1`: TODO 6), A6 (HBase engine blockers); merge order:
-`slowdisk-dev`'s INITIAL/ORDER work, `solr-bug-reindex`'s pieces, `slice-matched-returns`, the WIRE-CODEC HDFS change
-(W3 + W6-HDFS, one change), one per round.
+`main-eo`, `main-pp`, `main-vg`, `main-ll`, `main-v21`, `main-v22c`, `main-v23`, `host-ledger-lease`, `replay-address-only`,
+`readout-stream`, `hbase-identity`, `slice-matched-returns` (candidates and sources of V16-V23 and PP1). Live agents: A1
+(`slowdisk-dev`: HDFS #15), A2 (`solr-bug-reindex`: Solr #04), A5 (`wire-codec-p1`: TODO 6), A6 (replay heap bounds;
+HBase (a)/(c) parked on the owner's window decision); merge order: `slowdisk-dev` (V24, 14 cases), the heap bounds,
+`solr-bug-reindex`'s pieces, the WIRE-CODEC HDFS change (W3 + W6-HDFS, one change), one per round.
 
 | branch | head | content | state / next step |
 | --- | --- | --- | --- |

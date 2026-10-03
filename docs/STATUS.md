@@ -20,7 +20,7 @@ Main after the merges of `symbolic-scope` (rounds `V10`, `V11`), `system-zookeep
 `zk-election-offer` (round `V18`, snapshot `p231`, 13/13, hdfs-11741 on its rerun `V18b`) and `pairing-port` (rounds `PP1` +
 `PP1b`, snapshot `pp1`, under `/bigtemp/vnr3ne/gc-out/pairing-port/`: 13/13 and hdfs-11741 twice) `vm-model-guards` (round
 `V19`, snapshot `p232`, 13/13), `host-ledger-lease` (`V20`, `p233`) and `replay-address-only` + `readout-stream`
-(`V21`, `p234`), both 13/13, VM `/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image`, trees `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` (`gc/hdfs-unified-dtx`, the eight
+(`V21`, `p234`), `hbase-identity` (`V22c`, `p236`) and `slice-matched-returns` (`V23`, `p237`), each 13/13, VM `/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image`, trees `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` (`gc/hdfs-unified-dtx`, the eight
 named HDFS cases), `~/hadoop-hdfs-11741`
 (`gc/hdfs-11741`) and `/bigtemp/vnr3ne/wt/lucene-solr-storing` (`gc/solr-unified-storing` `663e0ef`). Runs under
 `/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`, each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every
