@@ -244,7 +244,11 @@ public:
     _pending = IGNORED;
     _pending_argument = (uintptr_t) argument;
     if (_pinned != NULL) return NULL;
-    const size_t called = stage_of(receiver);
+    // The stage the element in flight waits at, when it calls this object;
+    // else the first that does (one object may serve two stages).
+    const size_t called = _live && _current.stage < _stages.size()
+            && _stages[_current.stage].function == receiver
+        ? _current.stage : stage_of(receiver);
     if (called == NO_PENDING) return NULL;
     _seen_callback = true;
     if (_stages[called].kind == SORTED) {
@@ -509,6 +513,11 @@ private:
           position, cap.bound_expression(), op_lt, true));
     }
     if (cap.arrivals != NULL || _current.guard != NULL) {
+      if (before >= ConcolicMngr::initialSnapshotMaxEntries()) {
+        // Past the bound no position is stated (as no member is).
+        pin_all("OVER_BOUND");
+        return;
+      }
       cap.arrivals = appended(
           cap.arrivals != NULL ? cap.arrivals : counted(before), mark(),
           _current.guard);
