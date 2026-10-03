@@ -151,6 +151,25 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<EdgeIdentity, Map<String, Object>> emittedEdgeRows =
             new LinkedHashMap<>();
     private final Set<String> expandedDemands = new LinkedHashSet<>();
+    /** Which demanded formals only their method's return needs. */
+    private final ReturnOnlyFormals returnOnly = new ReturnOnlyFormals(
+            new ReturnOnlyFormals.Slice() {
+                @Override
+                public Set<String> relevant(String method) {
+                    return relevantByMethod.getOrDefault(method,
+                            Collections.<String>emptySet());
+                }
+
+                @Override
+                public String thisCell(String method) {
+                    return methodThisNode(method);
+                }
+
+                @Override
+                public void requeue(String method) {
+                    markDirty(method);
+                }
+            });
     private int discoveredExceptionSeedCount;
     /** Structural accessor per call signature; a cached null is a negative. */
     private final Map<String, StructuralFieldAccessor>
@@ -1728,7 +1747,8 @@ final class SeedBackwardStaticAnalyzer {
         if (!dynamicDispatch) {
             propagateCallArguments("call_argument",
                     callerMethod, fact, callee, actuals,
-                    callerRelevant, calleeRelevant, expandableCallee);
+                    callerRelevant, calleeRelevant, expandableCallee,
+                    exactIntersects(callerRelevant, defs));
             if (!containerQuery) {
                 propagateCallReturns("call_return",
                         callerMethod, fact, callee.raw, defs,
@@ -1773,12 +1793,16 @@ final class SeedBackwardStaticAnalyzer {
         return ((StringConstant) invoke.getArg(0)).value;
     }
 
-    /** One forward argument walk for an ordinary Java call. */
+    /**
+     * One forward argument walk for an ordinary Java call: each actual whose
+     * formal is demanded, a formal only the callee's return needs only where
+     * the call's result is demanded here ({@link ReturnOnlyFormals}).
+     */
     private boolean propagateCallArguments(
             String kind, String callerMethod, Fact fact,
             MethodSig target, List<String> actuals,
             Set<String> callerRelevant, Set<String> targetRelevant,
-            boolean targetExpandable) {
+            boolean targetExpandable, boolean resultDemanded) {
         boolean relevantFlow = false;
         int count = Math.min(actuals.size(), target.params.size());
         for (int index = 0; index < count; index++) {
@@ -1787,7 +1811,9 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             String formal = formalParam(target, index);
-            if (!targetExpandable || !targetRelevant.contains(formal)) {
+            if (!targetExpandable || !targetRelevant.contains(formal)
+                    || !resultDemanded
+                    && returnOnly.returnOnly(target.raw, formal)) {
                 continue;
             }
             relevantFlow = true;
@@ -2441,7 +2467,7 @@ final class SeedBackwardStaticAnalyzer {
             boolean callRelevant = exactIntersects(callerRelevant, defs);
             callRelevant |= propagateCallArguments("dispatch_argument",
                     callerMethod, fact, targetSig, actuals,
-                    callerRelevant, targetRelevant, true);
+                    callerRelevant, targetRelevant, true, callRelevant);
             propagateCallReturns("dispatch_return",
                     callerMethod, fact, targetMethod, defs,
                     callerRelevant, targetRelevant, true);
@@ -2642,9 +2668,11 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * At one call site, demands each actual whose formal is relevant.  A
-     * literal actual is a typed-literal row of {@code literalKind}, or
-     * nothing when that is null.
+     * At one call site, demands each actual whose formal is relevant -- a
+     * formal only the callee's return needs only where the call's result is
+     * demanded ({@link ReturnOnlyFormals}), once as such and once more if it
+     * turns into an effect.  A literal actual is a typed-literal row of
+     * {@code literalKind}, or nothing when that is null.
      *
      * @return whether an actual was demanded
      */
@@ -2658,8 +2686,13 @@ final class SeedBackwardStaticAnalyzer {
         int count = Math.min(callsite.actuals.size(), target.params.size());
         for (int index = 0; index < count; index++) {
             String formal = formalParam(target, index);
-            if (!targetRelevant.contains(formal)
-                    || !expandOnce(demandKind, targetMethod, demandScope,
+            if (!targetRelevant.contains(formal)) {
+                continue;
+            }
+            boolean returning = returnOnly.returnOnly(targetMethod, formal);
+            if (returning && !resultDemanded(callsite, callsiteFact)
+                    || !expandOnce(returning ? demandKind + "/RETURN"
+                            : demandKind, targetMethod, demandScope,
                     index, callsite.method, callsite.unitIndex)) {
                 continue;
             }
@@ -2682,15 +2715,19 @@ final class SeedBackwardStaticAnalyzer {
         return expanded;
     }
 
-    /** At one call site, demands the receiver of a relevant {@code this}. */
+    /** At one call site, demands the receiver of a relevant {@code this},
+     *  as {@link #expandCallerArguments} an actual. */
     private boolean expandCallerReceiver(
             String demandKind, String edgeKind, String targetMethod,
             String targetThis, Callsite callsite, Fact callsiteFact) {
-        if (targetThis == null || ignoreNode(callsite.receiver)) {
+        if (targetThis == null || ignoreNode(callsite.receiver)
+                || !relevant(targetMethod).contains(targetThis)) {
             return false;
         }
-        if (relevant(targetMethod).contains(targetThis)
-                && expandOnce(demandKind, targetMethod,
+        boolean returning = returnOnly.returnOnly(targetMethod, targetThis);
+        if ((!returning || resultDemanded(callsite, callsiteFact))
+                && expandOnce(returning ? demandKind + "/RETURN"
+                        : demandKind, targetMethod,
                 callsite.method, callsite.unitIndex)) {
             addEdge(edgeKind, callsite.receiver,
                     targetThis, callsite.method, callsiteFact);
@@ -2700,6 +2737,12 @@ final class SeedBackwardStaticAnalyzer {
             return true;
         }
         return false;
+    }
+
+    /** Whether the call's result is demanded in its method. */
+    private boolean resultDemanded(Callsite callsite, Fact callsiteFact) {
+        return exactIntersects(relevant(callsite.method),
+                canonicalDefs(callsite.method, callsiteFact));
     }
 
     private List<String> resolveDispatchSources(String targetMethod) {
@@ -2901,6 +2944,7 @@ final class SeedBackwardStaticAnalyzer {
         public boolean add(String value) {
             if (!super.add(value)) return false;
             markDirty(method == null ? value : method);
+            if (method != null) returnOnly.grew(method);
             return true;
         }
 
@@ -3236,6 +3280,7 @@ final class SeedBackwardStaticAnalyzer {
                 }
             }
             emittedEdgeRows.put(key, edge);
+            returnOnly.row(edge);
         }
         return edge;
     }
