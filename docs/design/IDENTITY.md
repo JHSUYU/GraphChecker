@@ -177,8 +177,9 @@ a `Lost` context is a `LINEAGE_LOST` DIAGNOSTIC row (`runtime/RowRuntime#beginAc
 
 The system's test adapter registers nodes through `MessageDoors.registerNode` (anchor plus aliases:
 the objects the node runs its work through), `registerSource`, `registerSourceAlias` and
-`restartSource` (HDFS `CausynthCluster`, Solr `CausynthSolrCluster`, in the trees). Work on no
-registered node is attributed to `workload/unregistered` (`RuntimeRegionPlanner.UNREGISTERED_SOURCE`).
+`restartSource` (HDFS `CausynthCluster`, Solr `CausynthSolrCluster`, ZooKeeper `CausynthZkCluster`,
+in the trees). Work on no registered node is attributed to `workload/unregistered`
+(`RuntimeRegionPlanner.UNREGISTERED_SOURCE`).
 
 PLAN refuses what the address cannot tell apart: activations of one region sharing one address are
 `OCCURRENCE_ADDRESS_SHARED` (BLOCKING when the published closure retains that occurrence, else
@@ -248,7 +249,10 @@ The Hadoop adapter is `src/shim/java/org/apache/hadoop/ipc/CausynthMessagePropag
 with GraphChecker: transports `HADOOP_IPC` (IPC correlation) and `HDFS_SASL` (a handshake of
 several messages on one thread, possibly opened by a thread serving a request). The HDFS trees call
 it from IPC `Client`/`Server` and the SASL data-transfer classes; the Solr trees call
-`MessageDoors` directly (HTTP headers through `CausynthHttp`, ZooKeeper through `SolrZkClient`).
+`MessageDoors` directly (HTTP headers through `CausynthHttp`, ZooKeeper through `SolrZkClient`), and
+so does the ZooKeeper tree (`CausynthZk`: transport `ZOOKEEPER`, one `REQUEST` message per client
+request, sent where `ClientCnxn` queues it, its header beside the bytes under the session and xid
+they carry, served by the server's `PrepRequestProcessor` and `FinalRequestProcessor` stages).
 
 ### 7.2 Store doors
 

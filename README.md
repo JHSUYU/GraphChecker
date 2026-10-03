@@ -1,7 +1,7 @@
 # GraphChecker
 
 GraphChecker is an academic research tool in software engineering. It studies how open-source
-distributed Java systems (HDFS, Solr) fail under fault, clock and ordering counterfactuals.
+distributed Java systems (HDFS, Solr, ZooKeeper) fail under fault, clock and ordering counterfactuals.
 
 It starts from one recorded run of a system's own cluster test that does **not** fail, plus one
 declared failure site (a `throw`, named by its class and source line). It then asks whether a
@@ -326,6 +326,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
 | concolic VM images | main's current VM: **`/bigtemp/vnr3ne/vm-w4h/j2sdk-image`** (vm-w4e + the `frame::metadata_do` fix for interpreted frames + caches cleared when metadata is freed + demand-driven tracking). Parked, unreviewed: `vm-w4i` (per-activation tracked-location read-out, branch `perf-vm-readout`; a jar from that branch refuses vm-w4h by name), `vm-nr41` (reference-compare identity, branch `vm-ref-compare`). Older images (`vm-w4e`, `vm-w4d`, `vm-r3b`, `vm-r3c`) serve only old rounds. Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
 | HDFS trees | `~/hadoop-hdfs-unified` (worktree of `~/hadoop`, branch `gc/hdfs-unified`, trunk 734dd8a67cd): ONE tree for the eight named cases (hdfs-17897, 17899-bug1/2/3, 17960, 17967-pathA/B/C) and the ad-hoc sweep -- one adapter, every workload, the known bugs' pre-fix code and target markers; its commit-by-commit inventory is `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. hdfs-11741 keeps `~/hadoop-hdfs-11741` (`gc/hdfs-11741`); the older per-case trees `~/hadoop-hdfs-<case>` (`gc/<case>`) stay for the runs that used them |
 | Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406, solr-18413 and solr-adhoc name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
+| ZooKeeper tree | `/bigtemp/vnr3ne/wt/zookeeper-unified` (branch `gc/zk-unified` on `branch-3.9`, a worktree of `~/zookeeper`): the adapter (`CausynthZk`, `CausynthZkCluster`), the `zk-bugs` cases' target markers and the quota workload. Maven build into its own repository `/bigtemp/vnr3ne/m2/zookeeper` (`experiments/zookeeper/build.sh`, which installs the GraphChecker jar there; never `~/.m2`). Build a case's workload before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/zookeeper/zk-bugs <case> build`. Its only remote is apache/zookeeper: never push it. |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
 
 ### 3.2 Helper commands (outside the repo)
@@ -541,8 +542,9 @@ A case id names its experiment by its longest prefix, for example `hdfs-17899-bu
 `solr-18413`, `adhoc-<check>.<workload>` or `solr-adhoc-<check>.<workload>`.
 
 `accept.sh` runs the campaign, a z3 probe and `report.py`. `experiments/accept/README.md` says
-what PASS means. `report.py`'s table names the nine HDFS cases and the two Solr cases; a case it
-does not name cannot pass. Before each case `accept.sh` waits for `MIN_FREE_GB` free where `OUT`
+what PASS means. `report.py`'s table names the nine HDFS cases, the two Solr cases and the two
+ZooKeeper cases (`zk-bugs-quota-init`, `zk-bugs-election-offer`); a case it does not name cannot
+pass. Before each case `accept.sh` waits for `MIN_FREE_GB` free where `OUT`
 is written.
 
 `tools/lib/gc-env.sh` states, once for every tool and for `run_engine.sh`, the output root

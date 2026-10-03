@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every ZooKeeper workload JVM's logging (system.sh system_jvm_properties):
+     warnings and errors, without the caller's class and line, which the
+     tree's own test configuration computes for every INFO line. -->
+<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{ISO8601} - %-5p [%t] %logger{0} - %m%n</pattern>
+    </encoder>
+  </appender>
+  <root level="WARN">
+    <appender-ref ref="CONSOLE" />
+  </root>
+</configuration>

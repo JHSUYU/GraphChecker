@@ -1,7 +1,7 @@
 # GraphChecker APIs called from OUTSIDE this repository: the eight
-# /opt/hadoop-hdfs-* workload checkouts and /opt/solr.  They are not woven,
-# so ConcolicHookAbiTest's catalog check cannot see them and a `git grep` of
-# src/ returns empty for every one.  The checkouts compile against an older
+# /opt/hadoop-hdfs-* workload checkouts, /opt/solr and the ZooKeeper tree.
+# They are not woven, so ConcolicHookAbiTest's catalog check cannot see them
+# and a `git grep` of src/ returns empty for every one.  The checkouts compile against an older
 # jar in ~/.m2, so a rename or a deletion here surfaces only when a campaign
 # loads the new jar -- at SEED, as NoSuchMethodError, after the build is
 # already green.  Deleting line 1 once killed every campaign.
@@ -10,9 +10,10 @@
 # Also external, and checked by the compiler rather than here:
 #   annotation.CausynthExceptionTarget, the known-bug marker on a target
 #   throw (the unified HDFS tree: BlockTokenSecretManager,
-#   FSImageFormatPBSnapshot); no engine code reads it -- a target is a class
-#   and a line, causynth.ExceptionTargetLineResolver -- but tools/lib/
-#   annotated.py derives a case's target spec from it.
+#   FSImageFormatPBSnapshot; the ZooKeeper tree: FinalRequestProcessor); no
+#   engine code reads it -- a target is a class and a line,
+#   causynth.ExceptionTargetLineResolver -- but tools/lib/annotated.py
+#   derives a case's target spec from it.
 
 # ipc.CausynthSymbolicSource.symbolize -- every case's configured roots
 runtime.ConcolicRegionRuntime symbolizeConfiguredSourceField boolean string object string
@@ -71,3 +72,14 @@ runtime.MessageDoors outbound doors.Outbound string string string string object 
 # so a watcher notified before its write filed the version waits for it
 runtime.MessageDoors storing long string string
 runtime.MessageDoors storeEnded void string long
+
+# The ZooKeeper tree (gc/zk-unified): CausynthZk, a client request's message,
+# and CausynthZkCluster, its nodes and the recorded window
+runtime.MessageDoors outbound doors.Outbound string string string string object object
+runtime.MessageDoors inbound doors.Inbound string string string string string string object boolean
+runtime.MessageDoors endInbound void doors.Inbound
+runtime.MessageDoors registerNode void object string string string object[]
+runtime.MessageDoors startRecording void
+runtime.MessageDoors stopRecording void
+runtime.MessageDoors beginRequest long object string
+runtime.MessageDoors endRequest void long string
