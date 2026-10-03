@@ -115,6 +115,26 @@ public class ReferenceCellTest {
                 {"a class reaching Map is a map", true,
                         JavaContainerTypes.query("<a.MyMap: java.lang.Object"
                                 + " get(java.lang.Object)>", mine)},
+                {"a list hands its state to a stream", true,
+                        JavaContainerTypes.query("<java.util.List: java.util"
+                                + ".stream.Stream stream()>", null)},
+                {"a map view's stream, through Collection", true,
+                        JavaContainerTypes.query("<java.util.Collection:"
+                                + " java.util.stream.Stream stream()>", null)},
+                {"every stream call is a query", true,
+                        JavaContainerTypes.query("<java.util.stream.Stream:"
+                                + " java.util.stream.Stream limit(long)>",
+                                null)},
+                {"a Collectors factory too", true, JavaContainerTypes.query(
+                        "<java.util.stream.Collectors: java.util.stream"
+                                + ".Collector toList()>", null)},
+                {"an Iterable's forEach reads it", true,
+                        JavaContainerTypes.query("<java.lang.Iterable: void"
+                                + " forEach(java.util.function.Consumer)>",
+                                null)},
+                {"a stream is no container shape", JavaContainerTypes.Shape
+                        .NONE, JavaContainerTypes.shape("java.util.stream"
+                        + ".Stream")},
                 {"CHM is associative", JavaContainerTypes.Shape.ASSOCIATIVE,
                         JavaContainerTypes.shape("L" + CHM.replace('.', '/')
                                 + ";")},
@@ -260,6 +280,48 @@ public class ReferenceCellTest {
                 {"an accessor answering another type declares no input",
                         Collections.<StaticScopeMap.Site>emptyList(),
                         map.declaredSites()}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1], row[2]);
+        }
+    }
+
+    /**
+     * A functional argument of a stream call contributes its functional
+     * method's return: {@code choose} filters its list by a lambda that
+     * captured {@code excluded} and throws on an empty result; the slice
+     * enters the lambda's {@code test} (through which its captured cell is
+     * read) and reaches {@code excluded} at the creation site, through the
+     * lambda's factory and constructor.
+     */
+    @Test
+    public void aFunctionalArgumentIsEnteredAndItsCaptureReachesTheCreation()
+            throws Exception {
+        System.setProperty(LibraryReceivers.ROOTS,
+                tree.newFolder("roots").getPath());
+        StaticProgram program = new SeedBackwardStaticAnalyzer(
+                functionalScene()).analyze();
+        String choose = "<s.Chooser: void choose(java.util.List)>";
+        String lambda = "s.Chooser$lambda_choose_0__1";
+        Object[][] rows = {
+                {"the filter's predicate contributes its test's return",
+                        "functional_return <" + lambda + ": boolean test("
+                                + "java.lang.Object)>.return -> " + choose
+                                + "::$r3 ", edge(program,
+                        "functional_return", choose, 5)},
+                {"a stream call reads its receiver",
+                        "container_receiver " + choose + "::$r4 -> " + choose
+                                + "::$r5 ", edge(program,
+                        "container_receiver", choose, 5)},
+                {"the lambda's capture is read in test",
+                        "field_read <" + lambda + ": java.util.Set cap0> -> <"
+                                + lambda + ": boolean test(java.lang.Object)>"
+                                + "::$r1 ", edge(program, "field_read",
+                        "<" + lambda + ": boolean test(java.lang.Object)>",
+                        2)},
+                {"the captured cell is read at the creation site",
+                        "field_read <s.Chooser: java.util.Set excluded> -> "
+                                + choose + "::$r2 ", edge(program,
+                        "field_read", choose, 2)}};
         for (Object[] row : rows) {
             assertEquals((String) row[0], row[1], row[2]);
         }
@@ -530,6 +592,155 @@ public class ReferenceCellTest {
         return new CausynthTargetContext(Paths.get("unused"),
                 new ExceptionTargetSite("t", POLICY, "check",
                         "(Ljava/lang/Object;)V", CHECK,
+                        "java.lang.IllegalStateException", 0));
+    }
+
+    /** {@code s.Chooser.choose}: {@code if (list.stream().filter(v ->
+     *  excluded.contains(v)).collect(toList()).size() < 1) throw}, with the
+     *  lambda as Soot desugars it (a class, its {@code bootstrap$}). */
+    private static CausynthTargetContext functionalScene() {
+        G.reset();
+        soot.options.Options.v().set_allow_phantom_refs(true);
+        SootClass object = library("java.lang.Object", null, 0);
+        RefType objectType = object.getType();
+        SootClass set = library("java.util.Set", null,
+                Modifier.INTERFACE | Modifier.ABSTRACT);
+        SootClass list = library("java.util.List", null,
+                Modifier.INTERFACE | Modifier.ABSTRACT);
+        SootClass stream = library("java.util.stream.Stream", null,
+                Modifier.INTERFACE | Modifier.ABSTRACT);
+        SootClass collector = library("java.util.stream.Collector", null,
+                Modifier.INTERFACE | Modifier.ABSTRACT);
+        SootClass collectors = library("java.util.stream.Collectors",
+                object, 0);
+        SootClass predicate = library("java.util.function.Predicate", null,
+                Modifier.INTERFACE | Modifier.ABSTRACT);
+        library("java.lang.IllegalStateException", object, 0);
+        SootMethod test = method(predicate, "test",
+                Collections.<Type>singletonList(objectType),
+                BooleanType.v(), Modifier.ABSTRACT);
+        SootMethod contains = method(set, "contains",
+                Collections.<Type>singletonList(objectType),
+                BooleanType.v(), Modifier.ABSTRACT);
+        SootMethod toStream = method(list, "stream",
+                Collections.<Type>emptyList(), stream.getType(),
+                Modifier.ABSTRACT);
+        SootMethod size = method(list, "size",
+                Collections.<Type>emptyList(), soot.IntType.v(),
+                Modifier.ABSTRACT);
+        SootMethod filter = method(stream, "filter",
+                Collections.<Type>singletonList(predicate.getType()),
+                stream.getType(), Modifier.ABSTRACT);
+        SootMethod collect = method(stream, "collect",
+                Collections.<Type>singletonList(collector.getType()),
+                objectType, Modifier.ABSTRACT);
+        SootMethod toList = method(collectors, "toList",
+                Collections.<Type>emptyList(), collector.getType(),
+                Modifier.STATIC);
+        SootMethod objectInit = method(object, "<init>",
+                Collections.<Type>emptyList(), VoidType.v(), 0);
+
+        SootClass chooser = application("s.Chooser", object);
+        SootField excluded = new SootField("excluded", set.getType(), 0);
+        chooser.addField(excluded);
+        SootClass lambda = application("s.Chooser$lambda_choose_0__1",
+                object);
+        lambda.addInterface(predicate);
+        SootField cap0 = new SootField("cap0", set.getType(), 0);
+        lambda.addField(cap0);
+        SootMethod lambdaInit = method(lambda, "<init>",
+                Collections.<Type>singletonList(set.getType()), VoidType.v(),
+                0);
+        Local i0 = local(lambdaInit, "r0", lambda.getType());
+        Local i1 = local(lambdaInit, "r1", set.getType());
+        body(lambdaInit, Jimple.v().newIdentityStmt(i0,
+                        Jimple.v().newThisRef(lambda.getType())),
+                Jimple.v().newIdentityStmt(i1,
+                        Jimple.v().newParameterRef(set.getType(), 0)),
+                Jimple.v().newInvokeStmt(Jimple.v().newSpecialInvokeExpr(i0,
+                        objectInit.makeRef())),
+                Jimple.v().newAssignStmt(Jimple.v().newInstanceFieldRef(i0,
+                        cap0.makeRef()), i1),
+                Jimple.v().newReturnVoidStmt());
+        SootMethod bootstrap = method(lambda, "bootstrap$",
+                Collections.<Type>singletonList(set.getType()),
+                predicate.getType(), Modifier.STATIC);
+        Local b0 = local(bootstrap, "r0", set.getType());
+        Local b1 = local(bootstrap, "$r1", lambda.getType());
+        body(bootstrap, Jimple.v().newIdentityStmt(b0,
+                        Jimple.v().newParameterRef(set.getType(), 0)),
+                Jimple.v().newAssignStmt(b1,
+                        Jimple.v().newNewExpr(lambda.getType())),
+                Jimple.v().newInvokeStmt(Jimple.v().newSpecialInvokeExpr(b1,
+                        lambdaInit.makeRef(), b0)),
+                Jimple.v().newReturnStmt(b1));
+        SootMethod lambdaTest = method(lambda, "test",
+                Collections.<Type>singletonList(objectType),
+                BooleanType.v(), 0);
+        Local t0 = local(lambdaTest, "r0", lambda.getType());
+        Local t1 = local(lambdaTest, "r2", objectType);
+        Local captured = local(lambdaTest, "$r1", set.getType());
+        Local answer = local(lambdaTest, "$z0", BooleanType.v());
+        body(lambdaTest, Jimple.v().newIdentityStmt(t0,
+                        Jimple.v().newThisRef(lambda.getType())),
+                Jimple.v().newIdentityStmt(t1,
+                        Jimple.v().newParameterRef(objectType, 0)),
+                Jimple.v().newAssignStmt(captured, Jimple.v()
+                        .newInstanceFieldRef(t0, cap0.makeRef())),
+                Jimple.v().newAssignStmt(answer, Jimple.v()
+                        .newInterfaceInvokeExpr(captured, contains.makeRef(),
+                                t1)),
+                Jimple.v().newReturnStmt(answer));
+
+        RefType self = chooser.getType();
+        SootMethod choose = method(chooser, "choose",
+                Collections.<Type>singletonList(list.getType()),
+                VoidType.v(), 0);
+        Local c0 = local(choose, "r0", self);
+        Local c1 = local(choose, "r1", list.getType());
+        Local held = local(choose, "$r2", set.getType());
+        Local made = local(choose, "$r3", predicate.getType());
+        Local source = local(choose, "$r4", stream.getType());
+        Local kept = local(choose, "$r5", stream.getType());
+        Local gather = local(choose, "$r6", collector.getType());
+        Local gathered = local(choose, "$r7", objectType);
+        Local chosen = local(choose, "$r8", list.getType());
+        Local count = local(choose, "$i0", soot.IntType.v());
+        RefType failure = RefType.v("java.lang.IllegalStateException");
+        Local thrown = local(choose, "$r9", failure);
+        Unit done = Jimple.v().newReturnVoidStmt();
+        body(choose, Jimple.v().newIdentityStmt(c0,
+                        Jimple.v().newThisRef(self)),
+                Jimple.v().newIdentityStmt(c1,
+                        Jimple.v().newParameterRef(list.getType(), 0)),
+                Jimple.v().newAssignStmt(held, Jimple.v()
+                        .newInstanceFieldRef(c0, excluded.makeRef())),
+                Jimple.v().newAssignStmt(made, Jimple.v()
+                        .newStaticInvokeExpr(bootstrap.makeRef(), held)),
+                Jimple.v().newAssignStmt(source, Jimple.v()
+                        .newInterfaceInvokeExpr(c1, toStream.makeRef())),
+                Jimple.v().newAssignStmt(kept, Jimple.v()
+                        .newInterfaceInvokeExpr(source, filter.makeRef(),
+                                made)),
+                Jimple.v().newAssignStmt(gather, Jimple.v()
+                        .newStaticInvokeExpr(toList.makeRef())),
+                Jimple.v().newAssignStmt(gathered, Jimple.v()
+                        .newInterfaceInvokeExpr(kept, collect.makeRef(),
+                                gather)),
+                Jimple.v().newAssignStmt(chosen, Jimple.v()
+                        .newCastExpr(gathered, list.getType())),
+                Jimple.v().newAssignStmt(count, Jimple.v()
+                        .newInterfaceInvokeExpr(chosen, size.makeRef())),
+                Jimple.v().newIfStmt(Jimple.v().newGtExpr(count,
+                        IntConstant.v(0)), done),
+                Jimple.v().newAssignStmt(thrown,
+                        Jimple.v().newNewExpr(failure)),
+                Jimple.v().newThrowStmt(thrown),
+                done);
+        return new CausynthTargetContext(Paths.get("unused"),
+                new ExceptionTargetSite("t", "s.Chooser", "choose",
+                        "(Ljava/util/List;)V",
+                        "<s.Chooser: void choose(java.util.List)>",
                         "java.lang.IllegalStateException", 0));
     }
 

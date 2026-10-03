@@ -110,6 +110,23 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   demands its arguments into its receiver (`container_mutation_argument`) and, through a field
   alias, is a `field_mutation` of that field. An application class's calls run the body the slice
   follows: it states no contract. Whether the VM models a class is decided at run time, never here.
+  `Collection` and `Iterable` are contracts too (`stream()`, `parallelStream()`, `forEach`,
+  `toArray`, ...: a map view's stream is `Collection.stream()`), and a *stream* is a query over
+  its source: every call of a `java.util.stream` pipeline (`BaseStream`, `Stream`, `IntStream`,
+  `LongStream`, `DoubleStream`) and of `Collectors` reads its receiver, if any, and its arguments.
+- **Functional arguments** (`enterFunctionalArguments`): a functional object a demanded container or
+  stream call takes (a filter's predicate, a `map`'s function, a `removeIf`, `computeIfAbsent`,
+  `merge` or `compute` callback) contributes its functional method's return: a `functional_return`
+  edge from that method's return to the argument, and the slice enters the method -- each method of
+  the object's class implementing an abstract method of a `java.util.function` interface or of
+  `Comparator` it implements. The class is the one the argument is created from: a `new C`, or the
+  static factory of a functional class (Soot's desugared lambda or method reference, `X$lambda_m_N__k`,
+  and its `bootstrap$`). What the object captured reaches the factory's arguments at the creation
+  site through the constructor-object edges (`cap0` written by its constructor, read in its method).
+  hdfs-bugs `slowdisk-zero` (bug #15): `FsVolumeList.chooseVolume`'s `list.stream().filter(v ->
+  !slowDisksToExclude.contains(...)).collect(toList())` reaches `DataNodeDiskMetrics
+  .slowDisksToExclude`, its detector store under `maxSlowDisksToExclude > 0`, and
+  `setMaxSlowDisksToExclude`, the reconfiguration's writer.
 - **Publication** (`publishMutation`): a mutation of the container a local `L` holds shapes the
   referent every later store of `L` (or of a copy of it, before `L` is redefined) publishes into
   a field `F`, and, one call up, the referent a method returns into each field its callers store
@@ -753,6 +770,12 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
   A domain is bounded by clamps only: a field the constructor validates (a throw on a bad value)
   can be planted with a value the validation would refuse. A getter's return is planted only where
   a symbolic occurrence reads it, a field at every read of it.
+- A functional argument is entered only where the call that takes it is demanded and its class is
+  the one it was created from: one read from a field or a parameter states no class, and a `forEach`
+  (no result to demand) enters nothing. A callback's body is still reached through the fields it
+  writes (field-writer expansion over its method) and its captures through the constructor-object
+  edges, but its parameters -- the receiver's elements or entries -- are not bound to the receiver
+  (no edge from a library call's receiver to the functional method's formals).
 - Root demand (§4.6) is chosen once, at SEED: no re-seed admits a boundary the seed left unminted
   or untracked. Its classes read the slice's edges, so a value the slice never reached is no
   boundary, and a concrete anchor's demand joins a read row to a demanded read by its method, kind
