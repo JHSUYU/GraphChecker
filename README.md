@@ -76,8 +76,11 @@ checks per system) is superseded by this one; Phase 1's eleven cases stay the re
   `seed-functional` (V16 + V16b 12/12, snapshot `~/gc-run/p229`), `preWindow-loop-root` (V17 12/12, snapshot
   `~/gc-run/p230`), `zk-election-offer` (V18 13/13, snapshot `~/gc-run/p231`; hdfs-11741 on its rerun V18b: the first run
   met the 11741 balancer race) `pairing-port` (the race fixed, DataTransfer doors, the eight named HDFS cases on the
-  dtx tree; rounds PP1 + PP1b 13/13 and 11741 twice, snapshot `~/gc-run/pp1`) and `vm-model-guards` (V19 13/13,
-  snapshot `~/gc-run/p232`, VM `vm-model-guards2`). The thirteen regression cases are the eleven named ones plus
+  dtx tree; rounds PP1 + PP1b 13/13 and 11741 twice, snapshot `~/gc-run/pp1`) `vm-model-guards` (V19 13/13,
+  snapshot `~/gc-run/p232`, VM `vm-model-guards2`), `host-ledger-lease` (V20 13/13, `~/gc-run/p233`: a start's charge
+  holds for the JVM's life by a lease; lifts stayed at 7-14% during the round) and `replay-address-only` +
+  `readout-stream` (V21 13/13, `~/gc-run/p234`: a root admitted by its address alone; VM read-out pages streamed, a
+  Solr seed replay peaking at 745 MB instead of 1469). The thirteen regression cases are the eleven named ones plus
   `zk-bugs-quota-init` and `zk-bugs-election-offer`. The HDFS
   RPC-fault cases move either direction of one IPC door from round to round (`Client$Connection#sendRpcRequest`
   or `Client#getRpcResponse`, the target DataNode's heartbeat request or response lost): the same chain, valid
@@ -162,9 +165,10 @@ submission order (ORDER edges on the submitters).
 
 `main`: §0.2. Merged and kept for now: `system-zookeeper`, `vm-streams` (its worktree `wt/gc-vm-streams`),
 `seed-functional`, `preWindow-loop-root`, `zk-election-offer`, `pairing-port`, `vm-model-guards`, `main-sf`, `main-pw`,
-`main-eo`, `main-pp`, `main-vg` (candidates of V16-V19 and PP1). Live agents: A1 (`slowdisk-dev`), A2 (`solr-bug-reindex`), A6 (read-out streaming);
-merge order: `replay-address-only` (A5), the ledger's leased charges (A5), `slowdisk-dev`'s INITIAL/ORDER work,
-`solr-bug-reindex`'s pieces, one per round.
+`main-eo`, `main-pp`, `main-vg`, `main-ll`, `main-v21`, `host-ledger-lease`, `replay-address-only`, `readout-stream`
+(candidates and sources of V16-V21 and PP1). Live agents: A1 (`slowdisk-dev`: HDFS #15), A2 (`solr-bug-reindex`:
+Solr #04), A5 (`wire-codec-p1`: TODO 6), A6 (HBase engine blockers); merge order: `slowdisk-dev`'s INITIAL/ORDER work,
+`solr-bug-reindex`'s pieces, the WIRE-CODEC HDFS change (W3 + W6-HDFS, one change), one per round.
 
 | branch | head | content | state / next step |
 | --- | --- | --- | --- |
@@ -175,9 +179,8 @@ merge order: `replay-address-only` (A5), the ledger's leased charges (A5), `slow
 | `pairing-port` | `b818815fe` + this docs commit | `dtx-on-main` (DataTransfer messages and doors) and `fix-11741-pairing` (11741's balancer race) ported onto `main-eo`, the review rework done: CONFIRM takes a delivery into the anchor from another producer of its question only where the arm's session answered the anchor, compares site index, attempt and value, names each substitution (`ADDRESS_UNSTABLE`); a slot's answered bit is read off its opening session, so no landing order matters; the named HDFS cases move to the dtx tree | rounds `PP1` + `PP1b` (snapshot `pp1`, `gc-out/pairing-port/`): 13/13 and 11741 twice; merged into main (`main-pp`) |
 | `pairing-on-main`, `dtx-on-main`, `fix-11741-pairing` | `efaa032d7`, `e3b2efb1f`, `9fd01c95f` + WIPs (`pairing-on-main-wip.patch`, `fix-11741-pairing-review-rework-wip.patch`) | the sources of `pairing-port` | contained in main through `pairing-port` (`7ad095d0f` dropped: main's `c5878482f` covers it); to delete |
 | `fix-no-root` | `2e931192e` + WIP `fix-no-root-hb-edges-wip.patch` and its four new files `fix-no-root-hb-edges-wip-untracked.patch` (in worktree `agent-a5fe8997…`) | NO_ROOT fixes + version-0 writer; HB-edges WIP | commits carried by `state-pairing`; the HB-edges WIP is not |
-| `fix-hdfs-seed-stalls` | `bfd7492bd` | one rule set for seed-replay stalls | needs a live round on the 11 cases and the new checks |
+| `fix-hdfs-seed-stalls` | `bfd7492bd` | one rule set for seed-replay stalls | superseded by `solr-bug-reindex`'s stall rules except `a85c60a9a`/`5b871ae0e` (a DataNode turn numbered by the DataTransfer op it took in): port those after `solr-bug-reindex` merges, then delete |
 | `replay-random-draws` | `d656860b2` | every random draw recorded and replayed | on `dtx-on-main` (in `pairing-port`); needs a live round |
-| `fix-replay-equivalent-context` | `71fedd858` | a root admitted by its address alone | rebase after `pairing-port` |
 | `perf-vm-readout`, `vm-ref-compare` | `3cbea0bee`, `bba1ee25d` | VM read-out per activation; reference compare with an enum constant | parked; each needs a VM review (images `vm-w4i`, `vm-nr41`) |
 | `worktree-agent-a49c8bf5715a00c40` | `90ca7724e` | WIRE-CODEC W3/W6 + the first WP-D integration | deferred; the source of W3/W6 when they are taken up |
 
@@ -211,10 +214,10 @@ does not merge until fixed (§1). The new checks join the round once they pass.
    (HBase first needs Phase A feasibility). Each new check: workload passes natively 5x; campaign to IMPORT; full
    campaign; read the chain against the code; add it to `experiments/accept/report.py` and STATUS "Acceptance".
 3. ~~Merge the pipeline retirement~~ (done, V15).
-4. **README TODO carried over**: ~~`pairing-on-main`~~ (`pairing-port`, rounds PP1/PP1b, on main), then one round
-   each: `fix-hdfs-seed-stalls`, `replay-random-draws`, `fix-replay-equivalent-context` (rebased). (`perf-expr-store`
-   was measured and dropped: no heap effect; the replay heap is the whole read-out page the publication decodes,
-   being streamed instead.)
+4. **README TODO carried over**: ~~`pairing-on-main`~~ (`pairing-port`, PP1/PP1b), ~~`fix-replay-equivalent-context`~~
+   (`replay-address-only`, V21), ~~`replay-random-draws`~~ (superseded by `solr-bug-reindex`), ~~`perf-expr-store`~~
+   (measured and dropped; `readout-stream`, V21, fixed the heap); left: `fix-hdfs-seed-stalls`' two DataTransfer-turn
+   commits after `solr-bug-reindex` merges.
 5. ~~Second-tier bugs~~: dropped by the owner (2026-10-03, "second tier bugs都先不管了。不用作为你的todo").
 6. Then the deferred WIRE-CODEC W3/W6 (`worktree-agent-a49c8bf5715a00c40`), one piece per round.
 
@@ -229,7 +232,7 @@ does not merge until fixed (§1). The new checks join the round once they pass.
 | Configuration roots | `symbolic-scope` |
 | A value crossing processes through a file, a stream with no door, or HDFS namespace state is lost | by the IO rule, such bugs are not picked; open for the engine |
 | Seed replays that stall on their own recording (heartbeat vs block report by clock, late HTTP between concurrent Overseer tasks) | `fix-hdfs-seed-stalls` (HDFS); Solr has no rule yet |
-| Replay heap (large Solr seeds); a trace aggregation that needs 4 GB (SB1) | `perf-expr-store`; measure SB1 |
+| Replay heap: an obligation replay still peaks near 1.1-1.3 GB live (Solr), likely the JVM-wide expression expansion cache (unconfirmed) | measured by A6 (`/bigtemp/vnr3ne/readout-stream/`); the read-out pages are streamed (V21) |
 | DataNode registration order before the window | owner: not now (prototype `handover/startup-order-prototype.patch`) |
 | UNPRODUCIBLE_ANSWER (an IPC answer resting on an unstated value) | seen once on `dtx-on-main`, not traced |
 | Enum constant compared by reference | `vm-ref-compare`, parked |

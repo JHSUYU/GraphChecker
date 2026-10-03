@@ -5,6 +5,8 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -16,15 +18,22 @@ import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBoundCut;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import java.io.IOException;
+import java.io.StringReader;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
@@ -976,6 +985,17 @@ public final class ConcolicRegionRuntime {
         return expressionStore(active).importEnvelope(envelope);
     }
 
+    /** One page of a paged VM read-out, record by record, in the store an
+     *  activation's expressions import into
+     *  ({@link VmExpressionTable.Store#importRecords}). */
+    static JsonObject decodeVmRecords(String page, String records,
+                                      ActiveRegion active,
+                                      Predicate<JsonObject> admit,
+                                      Consumer<JsonElement> each) {
+        return expressionStore(active).importRecords(page, records, admit,
+                each);
+    }
+
     /** The store an activation's expressions import into. */
     private static VmExpressionTable.Store expressionStore(
             ActiveRegion active) {
@@ -1411,9 +1431,7 @@ public final class ConcolicRegionRuntime {
      * the thread ran on concretely from there, so its decisions stop and the
      * published path is a prefix nobody stated.  BLOCKING, never silent.
      */
-    private static void aborted(ActiveRegion active, JsonElement summary) {
-        if (!summary.isJsonObject()) return;
-        JsonObject region = summary.getAsJsonObject();
+    private static void aborted(ActiveRegion active, JsonObject region) {
         if (!JsonFields.optionalBool(region, "aborted", false)) return;
         RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.BLOCKING,
                 firstNonBlank(active.address(), Long.toString(active.token)),
@@ -1431,10 +1449,8 @@ public final class ConcolicRegionRuntime {
      * chain missing there is diagnosable.  Its subject is no occurrence
      * address, so it refuses nothing (Corpus#refusedIn).
      */
-    private static void modelGaps(ActiveRegion active, JsonElement summary) {
-        if (!summary.isJsonObject()) return;
-        for (JsonElement gap : JsonFields.array(summary.getAsJsonObject(),
-                "modelGaps")) {
+    private static void modelGaps(ActiveRegion active, JsonObject summary) {
+        for (JsonElement gap : JsonFields.array(summary, "modelGaps")) {
             if (!gap.isJsonObject()) continue;
             JsonObject named = gap.getAsJsonObject();
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -1488,9 +1504,11 @@ public final class ConcolicRegionRuntime {
                                     + rootCause(throwable));
                 }
             }
-            JsonElement summary = parseJson(api.finish());
+            // What the summary states that is read; the rest is skipped.
+            JsonObject summary = members(api.finish(), "aborted",
+                    "abortReason", "modelGaps");
             engineFinished = true;
-            if (publishRows) {
+            if (publishRows && summary != null) {
                 aborted(active, summary);
                 modelGaps(active, summary);
             }
@@ -1644,6 +1662,36 @@ public final class ConcolicRegionRuntime {
         ActiveRegion active = ACTIVE.get(token);
         return active != null && active.thread == Thread.currentThread()
                 ? active : null;
+    }
+
+    /**
+     * The members {@code names} of one VM read-out (a region summary, a
+     * read-out page's header), streamed off its top level: every other
+     * member is skipped, never built, and the reading stops once each named
+     * one is read (a page's header sits behind its records).  A blank
+     * read-out states none; null when it is no JSON object.
+     */
+    static JsonObject members(String serialized, String... names) {
+        JsonObject read = new JsonObject();
+        if (serialized == null || serialized.trim().isEmpty()) return read;
+        Set<String> wanted = new HashSet<String>(Arrays.asList(names));
+        try {
+            JsonReader reader = new JsonReader(new StringReader(serialized));
+            reader.setLenient(true);
+            if (reader.peek() != JsonToken.BEGIN_OBJECT) return null;
+            reader.beginObject();
+            while (reader.hasNext() && read.size() < wanted.size()) {
+                String name = reader.nextName();
+                if (wanted.contains(name) && !read.has(name)) {
+                    read.add(name, JsonParser.parseReader(reader));
+                } else {
+                    reader.skipValue();
+                }
+            }
+            return read;
+        } catch (IOException | RuntimeException malformed) {
+            return null;
+        }
     }
 
     static JsonElement parseJson(String value) {

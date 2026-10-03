@@ -572,8 +572,7 @@ final class ActiveRegion {
 
     /**
      * Every node this mint is attributed to: the minted object's owner, this
-     * occurrence's sources, and the thread's current source -- the registry
-     * {@link ConcolicTaskPlan#lifecycleMismatch} reads.
+     * occurrence's sources, and the thread's current source.
      */
     private Set<String> mintAttribution(Object mintOwner) {
         Set<String> attributed = new LinkedHashSet<>(
@@ -606,11 +605,16 @@ final class ActiveRegion {
                     + "cannot be shown to be " + planned + "; the "
                     + "recorded value stands";
         }
-        String elsewhere = ConcolicTaskPlan.lifecycleMismatch(planned,
-                attributed);
-        return elsewhere.isEmpty()
-                ? "the registry attributes this mint to " + attributed
-                + ", which does not include " + planned
-                : elsewhere;
+        // Another epoch of the planned node is named as such: the source
+        // identity strips #epoch<n>, so it reads as the planned node.
+        for (String observed : attributed) {
+            if (!observed.equals(planned)
+                    && RuntimeTraceContext.sameSourceIdentity(planned,
+                    observed)) {
+                return "the mint ran at " + observed + ", not at " + planned;
+            }
+        }
+        return "the registry attributes this mint to " + attributed
+                + ", which does not include " + planned;
     }
 }
