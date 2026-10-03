@@ -361,6 +361,39 @@ final class ConcolicTaskPlan {
     }
 
     /**
+     * The task planned at the occurrence a hop named ({@code
+     * Identity#hopOpened}): its whole address, id against id, as at a woven
+     * entry; every other task of that region states the address that opened
+     * instead, so an unanswered one says where its region was named.
+     */
+    synchronized RuntimeTask selectNamed(OccurrenceAddress address,
+                                         SourceRef activationSource) {
+        if (!RecordingWindow.opened()) return null;
+        RuntimeTask admitted = null;
+        for (int index = 0; index < tasks.size(); index++) {
+            RuntimeTask task = tasks.get(index);
+            if (task.address == null
+                    || !task.address.regionId().equals(address.regionId())) {
+                continue;
+            }
+            if (!task.address.id().equals(address.id())) {
+                task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
+                        "a hop named an occurrence of this region",
+                        address, activationSource));
+                continue;
+            }
+            if (admitted != null || candidateLive[index]
+                    || task.completedGoalReserved) {
+                continue;
+            }
+            candidateLive[index] = true;
+            answeredByQuestion[index] = false;
+            admitted = task;
+        }
+        return admitted;
+    }
+
+    /**
      * Whether a task of this root hook plans an occurrence of {@code
      * address}'s region and node in its very context: {@code address}
      * itself, or another invocation under the same anchor.  That context is

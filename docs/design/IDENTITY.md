@@ -32,8 +32,9 @@ and never re-derive it.
 
 **Fold rule** (`Identity#fold`): a declared region entered synchronously inside a running
 occurrence opens none; its events belong to the running occurrence, and a marker region keeps the
-region stack balanced. Exception: an occurrence opened with a `Lost` context absorbs nothing once
-the thread has a context of its own. A thread boundary always ends an occurrence: a child thread
+region stack balanced. An occurrence opened with a `Lost` context folds what is entered while the
+thread is still `Lost`; the hop that gives it a context names it (below). A thread boundary always
+ends an occurrence: a child thread
 inherits region depth but no occurrence. PLAN records the folded regions on their owner
 (`RuntimeRegionPlanner#stampFoldedRegionEntries`).
 
@@ -42,9 +43,31 @@ no occurrence while no hop names it either (its lineage is empty, `Lineage#named
 both); its region entries push a marker as a fold does, and its events are its role's. Such
 siblings differ by nothing an address names: a DataNode's connection threads, which its acceptor
 starts under no root, each enter the SASL server's regions before their first message, and would
-share one address. Once the message's hop stands, the regions they enter open under it. Neither
-pass records an activation for an entry that opened none (the trace states `regionFolded`; an
-unnamed one has no owner). Never silent: each region a node's unnamed work entered is a
+share one address. Once the message's hop stands, the regions they enter open under it.
+
+**Naming rule** (`Identity#hopOpened`, the same rule at every hop, in both passes): a hop that gives
+the thread a context of its own (`RuntimeTraceContext`'s openers: a request, a carried scope or
+claim, a tick, a wake turn, an inbound message) names the region its work stands in when that
+region's entry has no name -- unnamed work entered it, or it opened `Lost` (a turn begun before the
+window). Of several such standing entries the outermost is named: what it entered before the hop is
+its work, as the fold rule makes the enclosing occurrence the owner. The region opens an occurrence
+under the hop (its index §3), what it enters meanwhile folds into it, and its decisions count from
+1; it ends at the hop's end (`#hopClosed`) or its entry's exit, whichever comes first, and the entry
+is what it was before. So a daemon whose service loop was entered once, before the window or under
+no root, has one occurrence per turn: DataNodeDiskMetrics' detector, whose `max > 0` decision and
+store of `slowDisksToExclude` are its `run()`'s, opens `REGION(run)/ctx:Root:WAKE/
+DataNodeDiskMetrics$1.run#k` at each wake. The recording states it as an activation of its own: the
+region root's call and every call standing above it write an entry row again under a new id, the
+root's with the address, and their rows state those ids while it stands
+(`CausynthTraceRecorder#regionNamed`); at the hop's end they close under it and state themselves
+under the root's own chain again. A replay admits the task planned there, by its whole address, at
+the hop (`ConcolicRegionRuntime#regionNamed`, `ConcolicTaskPlan#selectNamed`) and starts its VM
+region mid-method: the VM's attach shadows every frame then standing with no expression
+(`ShadowStack`'s constructor), so the region's work before the hop is concrete and stated by
+nothing. Its activation ends with the occurrence, by a throw when its entry exits by one.
+
+Neither pass records an activation for an entry that opened none (the trace states
+`regionFolded`; an unnamed one has no owner). Never silent: each region a node's unnamed work entered is a
 `LINEAGE_LOST` DIAGNOSTIC row (`RowRuntime#unnamedEntry`, in the recording's trace or the
 session), the session manifest counts every entry (`unnamedEntries`), and a closure that reaches
 such role work names the roots and decisions it left unrecorded (`ClosurePlanner#unrecorded`).
@@ -106,7 +129,10 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   (`RuntimeTraceContext#claimCarried`): a task's index runs from the claiming thread's base (a pool
   worker's own) through its start frame and holds none of the starter's frames, so two starts from
   one site in two calls of the method holding it can share an address.
-- **Occurrence index** = frames from the scope base to the region entry (`#regionEnter`).
+- **Occurrence index** = frames from the scope base to the region entry (`#regionEnter`); for an
+  occurrence a hop named (§1), the frames from the hop's scope base to where the hop opened, empty
+  for a hop opened in the region's own method. Its events are indexed from its entry's base, as
+  before the hop.
 - **Window rule** (`runtime/RecordingWindow`): the workload opens the window
   (`MessageDoors.startRecording`) and may close it (`stopRecording`); every count restarts at the
   window, and a frame entered before it stands at `k = 0` in any address. Neither the trace nor the

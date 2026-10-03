@@ -765,14 +765,16 @@ public final class Identity {
     }
 
     /**
-     * Files the innermost open region's journal under the VM's region-enter
-     * event id, so VM events join their frames by the VM's statement.  A
-     * folded entry keys its own journal, measured from the base of the
-     * occurrence it folded into ({@link #fold}).
+     * Files the journal of the region the running occurrence is under the
+     * VM's region-enter event id, so VM events join their frames by the VM's
+     * statement, measured from that region's entry.  Not the innermost
+     * entry's: a folded entry's marker, or unnamed work's inside a region a
+     * hop named ({@link #hopOpened}), closes before the activation does, and
+     * the frames of every event after it would be unplaced.
      */
     public static void regionKey(long vmRegionEnterEventId) {
         State state = state();
-        Region region = state.region();
+        Region region = state.activeRegion();
         if (region == null || vmRegionEnterEventId <= 0L) return;
         region.journal = FrameJournal.open(vmRegionEnterEventId,
                 state.snapshot(region.base));
@@ -785,9 +787,23 @@ public final class Identity {
      * clean.
      */
     public static void regionExit() {
+        regionExit(null);
+    }
+
+    /**
+     * {@link #regionExit()}, by a throw when {@code thrown} is not null: an
+     * occurrence a hop named ends with its region's entry, whichever comes
+     * first ({@link #hopOpened}), and states how.
+     */
+    public static void regionExit(Throwable thrown) {
         State state = state();
         if (state.regions.isEmpty()) return;
-        Region closed = state.regions.remove(state.regions.size() - 1);
+        int innermost = state.regions.size() - 1;
+        Region exiting = state.regions.get(innermost);
+        if (exiting.before != null) {
+            RowRuntime.regionUnnamed(innermost, exiting.namedBy, thrown);
+        }
+        Region closed = state.regions.remove(innermost);
         int claimed = -1;
         for (int start : state.starts) {
             if (start >= closed.base) claimed = start;
@@ -957,6 +973,7 @@ public final class Identity {
             if (state.unnamed()) {
                 Region marker = new Region(state.regionBase());
                 marker.unnamed = true;
+                marker.of(region, state.top().receiver);
                 state.regions.add(marker);
                 RowRuntime.unnamedEntry(node, region);
                 return null;
@@ -966,8 +983,12 @@ public final class Identity {
         OccurrenceAddress address = OccurrenceAddress.of(
                 NodeId.parse(node), region, here(Lineage.rootRole()), index);
         if (open) {
-            Region entered = state().region();
-            if (entered != null) entered.occurrence = address;
+            State state = state();
+            Region entered = state.region();
+            if (entered != null) {
+                entered.occurrence = address;
+                entered.of(region, state.top().receiver);
+            }
             // Where a prefix focusing this occurrence is cut.
             ScheduleLog.mark(address.id());
             if (Confirmation.ordering()) {
@@ -1014,10 +1035,10 @@ public final class Identity {
      * base and no occurrence, so its exit closes nothing and the two stacks
      * stay balanced ({@code ConcolicRegionRuntime#closeRegionEntry}).</p>
      *
-     * <p>Save one (owner, 2026-09-27): an occurrence that opened Lost names
-     * no context to fold into.  Once this thread has one, a declared region
-     * opens its own, or every context the thread takes later would share
-     * the Lost address.</p>
+     * <p>An occurrence that opened Lost folds what is entered while the
+     * thread is still Lost; the hop that gives the thread a context names
+     * its region ({@link #hopOpened}), so no two contexts share the Lost
+     * address (owner, 2026-09-27).</p>
      *
      * @return the occurrence this entry folded into, or null when the entry
      *         opens its own
@@ -1026,10 +1047,6 @@ public final class Identity {
         State state = state();
         Region running = state.activeRegion();
         if (running == null) return null;
-        if (running.occurrence.lineageLost()
-                && !here(Lineage.rootRole()).isLost()) {
-            return null;
-        }
         state.regions.add(new Region(running.base));
         return running.occurrence;
     }
@@ -1045,6 +1062,85 @@ public final class Identity {
         Region innermost = state.region();
         return innermost != null && innermost.occurrence == null
                 && (innermost.unnamed || state.activeRegion() != null);
+    }
+
+    /**
+     * THE NAMING RULE (IDENTITY §1, unnamed work): a hop that gives this
+     * thread a context of its own names the region its work stands in when
+     * that region's entry has none -- unnamed work entered it, or it opened
+     * {@code Lost} (a turn begun before the window).  The region opens an
+     * occurrence under the hop, indexed from the hop's scope base, until the
+     * hop ends or the region's entry exits, whichever comes first; what it
+     * enters meanwhile folds into it, and its decisions take that
+     * occurrence's ordinals.  Called by every hop opener in both passes
+     * ({@code RuntimeTraceContext}), so both name the same regions at the
+     * same events.
+     *
+     * <p>The outermost such region: what it entered before the hop is its
+     * work (the fold rule, "the enclosing occurrence wins").  A named
+     * occurrence standing below it would have taken its entries, so none
+     * stands.  A daemon started before the window or under no root
+     * (DataNodeDiskMetrics' detector) runs its service loop in a region
+     * whose one entry opened none; each WAKE turn now names one of its
+     * iterations.</p>
+     *
+     * @param hop the lineage token of the hop just opened
+     */
+    public static void hopOpened(long hop) {
+        State state = state();
+        CausalContext context = here(Lineage.rootRole());
+        if (context.isLost()) return;
+        int index = nameless(state);
+        if (index < 0) return;
+        Region region = state.regions.get(index);
+        OccurrenceAddress address = OccurrenceAddress.of(NodeId.parse(
+                RuntimeTraceContext.activationSource(region.receiver).key()),
+                region.regionId, context, state.from(state.scopeBase));
+        region.name(hop, address);
+        ScheduleLog.mark(address.id());
+        if (Confirmation.ordering()) {
+            Confirmation.entering(Confirmation.activation(address,
+                    ExecutionIndex.empty()));
+        }
+        RowRuntime.regionNamed(index, address, region.receiver, hop);
+    }
+
+    /**
+     * Ends the occurrence the hop {@code hop} named, if its region still
+     * stands: the region is nameless again ({@link #hopOpened}).
+     */
+    public static void hopClosed(long hop) {
+        if (hop <= 0L) return;
+        State state = state();
+        for (int index = 0; index < state.regions.size(); index++) {
+            Region region = state.regions.get(index);
+            if (region.before == null || region.namedBy != hop) continue;
+            RowRuntime.regionUnnamed(index, hop, null);
+            ScheduleLog.closed(region.occurrence.id());
+            if (Confirmation.ordering()) {
+                Confirmation.exited(Confirmation.activation(
+                        region.occurrence, ExecutionIndex.empty()));
+            }
+            region.unname();
+            return;
+        }
+    }
+
+    /**
+     * The position of the outermost standing region whose entry has no name
+     * ({@link #hopOpened}), or -1: none stands, or a named occurrence stands
+     * below it.  A fold's marker, and a region a child thread inherited
+     * ({@link State#copy}), is no entry of this thread's work.
+     */
+    private static int nameless(State state) {
+        for (int index = 0; index < state.regions.size(); index++) {
+            Region region = state.regions.get(index);
+            if (region.occurrence != null) {
+                return region.occurrence.lineageLost() ? index : -1;
+            }
+            if (region.unnamed) return index;
+        }
+        return -1;
     }
 
     /**
@@ -1247,13 +1343,56 @@ public final class Identity {
          * Decisions per site on this OCCURRENCE ({@link #nextBranchOrdinal});
          * empty on a folded entry.
          */
-        private final Map<String, Integer> branchOrdinals =
+        private Map<String, Integer> branchOrdinals =
                 new HashMap<String, Integer>();
         /** The window {@link #branchOrdinals} were counted in. */
         private int window = RecordingWindow.index();
+        /** The region this entry is of, "" on a fold's marker. */
+        private String regionId = "";
+        /** Its root activation's receiver: the node a hop's name states. */
+        private Object receiver;
+        /**
+         * While a hop names this entry ({@link #hopOpened}), what it was
+         * before, put back when the hop ends; null otherwise.
+         */
+        private Region before;
+        /** The lineage token of the hop naming it. */
+        private long namedBy;
 
         private Region(int base) {
             this.base = base;
+        }
+
+        /** States which region's entry this is, and its root's receiver. */
+        private void of(String regionId, Object receiver) {
+            this.regionId = regionId;
+            this.receiver = receiver;
+        }
+
+        /** Opens {@code address} under the hop {@code hop}: a new
+         *  occurrence, so its decisions count from 1. */
+        private void name(long hop, OccurrenceAddress address) {
+            Region was = new Region(base);
+            was.occurrence = occurrence;
+            was.unnamed = unnamed;
+            was.branchOrdinals = branchOrdinals;
+            was.window = window;
+            before = was;
+            namedBy = hop;
+            occurrence = address;
+            unnamed = false;
+            branchOrdinals = new HashMap<String, Integer>();
+            window = RecordingWindow.index();
+        }
+
+        /** The hop ended: the entry is what it was before it. */
+        private void unname() {
+            occurrence = before.occurrence;
+            unnamed = before.unnamed;
+            branchOrdinals = before.branchOrdinals;
+            window = before.window;
+            before = null;
+            namedBy = 0L;
         }
     }
 
