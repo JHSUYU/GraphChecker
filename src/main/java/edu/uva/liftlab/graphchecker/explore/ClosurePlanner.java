@@ -136,11 +136,16 @@ public final class ClosurePlanner {
         public final int decided;
         /** Its predicate reads, in corpus order: the closure demands them. */
         public final List<ReadRow> reads;
+        /** The reads it made before it decided off its path guards' cone:
+         *  not demanded, counted ({@code ExploreMain#noRoot} names them). */
+        public final int offCone;
 
-        private Concrete(int paths, int decided, List<ReadRow> reads) {
+        private Concrete(int paths, int decided, List<ReadRow> reads,
+                         int offCone) {
             this.paths = paths;
             this.decided = decided;
             this.reads = Collections.unmodifiableList(reads);
+            this.offCone = offCone;
         }
     }
 
@@ -270,6 +275,7 @@ public final class ClosurePlanner {
         List<ReadRow> reads = new ArrayList<ReadRow>();
         int paths = 0;
         int decided = 0;
+        int offCone = 0;
         for (TargetRow row : corpus.targetsOn(anchor)) {
             String sessionId = row.sessionId();
             SessionReader session = corpus.session(sessionId);
@@ -295,14 +301,17 @@ public final class ClosurePlanner {
             paths++;
             if (at > 0L) decided++;
             for (ReadRow read : corpus.readsOn(sessionId, anchor)) {
-                if (read.seq() < at && scope.demandedAt(
-                        read.endpoint().site(), read.javaType(),
+                if (read.seq() >= at) continue;
+                if (scope.demandedAt(read.endpoint().site(), read.javaType(),
                         read.location().kind())) {
                     reads.add(read);
+                } else {
+                    offCone++;
                 }
             }
         }
-        return paths == 0 ? null : new Concrete(paths, decided, reads);
+        return paths == 0 ? null
+                : new Concrete(paths, decided, reads, offCone);
     }
 
     /**

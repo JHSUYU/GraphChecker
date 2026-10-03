@@ -67,16 +67,19 @@ public class RootDemandTest {
                         : SharedFieldFlow.TrackedKind.NONE,
                 owner -> owner.startsWith("t."));
         List<String> found = new ArrayList<>();
+        String cut = "";
         for (RootDemand.Boundary boundary : demand.boundaries()) {
             found.add(boundary.kind + " " + boundary.distance + " "
                     + boundary.chosen + " " + boundary.cell);
+            if (!boundary.chosen) cut += boundary.kind + ":" + boundary.cut;
         }
         StaticScopeMap.Demanded track = demand.marks().at(CHECK + "#u4",
                 field("int count"));
         Object[][] rows = {
             {"the boundaries, nearest first; the clock past the bound is "
-                    + "none, the configuration behind the tracked count is "
-                    + "found on the cone", Arrays.asList(
+                    + "none, the path to it named where it was cut, the "
+                    + "configuration behind the tracked count found on the "
+                    + "cone", Arrays.asList(
                     "IO 1 true <java.io.FileInputStream: int read()>.return",
                     "PRE_WINDOW 1 true " + field("int old"),
                     "READ 1 true <java.util.concurrent.atomic.AtomicInteger:"
@@ -89,7 +92,9 @@ public class RootDemandTest {
                     "WIRE 1 true " + HANDLE + ".param0:int",
                     "CLOCK 2 true <java.lang.System: long currentTimeMillis()>"
                             + ".return",
-                    "CONFIG_FIELD 4 true " + field("boolean flag")), found},
+                    "CONFIG_FIELD 4 true " + field("boolean flag"),
+                    "CUT 16 false " + CHECK + "::$c16"), found},
+            {"what is not chosen says why", "CUT:DISTANCE", cut},
             {"the configuration minted", "[CONFIG:k.flag]",
                     demand.configSources().toString()},
             {"the scope growth demands", "{" + field("int old")

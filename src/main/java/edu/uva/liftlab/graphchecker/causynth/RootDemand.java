@@ -76,11 +76,19 @@ final class RootDemand {
     /** The most boundaries of one class chosen, nearest first. */
     static final int WIDTH = 12;
 
-    /** A boundary's class. */
+    /** A boundary's class; CUT is a path still open {@value #DISTANCE}
+     *  edges out, no boundary: named, never chosen. */
     enum Kind {
         CLOCK, FAULT, CONFIG_CALL, CONFIG_FIELD, READ, TRACK, TRACK_IDENTITY,
-        TRACK_CONTAINER, PRE_WINDOW, WIRE, IO, SCOPE, LIBRARY
+        TRACK_CONTAINER, PRE_WINDOW, WIRE, IO, SCOPE, LIBRARY, CUT
     }
+
+    /** Why a boundary is not chosen: past the {@value #WIDTH} nearest of
+     *  its class, past {@value #DISTANCE} edges, or a configuration no
+     *  source declares (a {@code String} getter): no root to mint. */
+    static final String WIDTH_CUT = "WIDTH";
+    static final String DISTANCE_CUT = "DISTANCE";
+    static final String NO_SOURCE_CUT = "NO_SOURCE";
 
     /** One boundary where one edge reaches it. */
     static final class Boundary {
@@ -90,6 +98,9 @@ final class RootDemand {
         final String edgeKind;
         final int distance;
         boolean chosen;
+        /** Why it is not chosen ({@link #WIDTH_CUT}, {@link
+         *  #DISTANCE_CUT}, {@link #NO_SOURCE_CUT}), "" when it is. */
+        String cut = "";
 
         private Boundary(Kind kind, String cell, String siteId,
                          String edgeKind, int distance) {
@@ -210,6 +221,7 @@ final class RootDemand {
             row.addProperty("siteId", boundary.siteId);
             row.addProperty("edgeKind", boundary.edgeKind);
             row.addProperty("chosen", boundary.chosen);
+            row.addProperty("cut", boundary.cut);
             rows.add(row);
         }
         return rows;
@@ -220,6 +232,7 @@ final class RootDemand {
     StaticScopeMap.Demand marks() {
         Map<String, Boundary> nearest = new LinkedHashMap<>();
         for (Boundary boundary : boundaries) {
+            if (boundary.kind == Kind.CUT) continue;
             nearest.putIfAbsent(boundary.siteId + "\n" + boundary.cell,
                     boundary);
         }
@@ -268,10 +281,15 @@ final class RootDemand {
         while (!queue.isEmpty()) {
             String cell = queue.removeFirst();
             int next = distance.get(cell) + 1;
-            if (next > DISTANCE) continue;
             for (Map<String, Object> edge : into.getOrDefault(cell,
                     Collections.<Map<String, Object>>emptyList())) {
                 if (!classes.follows(edge)) continue;
+                // A path still open at the bound: cut here, named.
+                if (next > DISTANCE) {
+                    found.putIfAbsent(Kind.CUT + "\n" + cell, new Boundary(
+                            Kind.CUT, cell, "", "", DISTANCE));
+                    break;
+                }
                 String from = text(edge.get("fromCell"));
                 Kind kind = classes.of(from, edge);
                 if (kind != null) {
@@ -364,9 +382,21 @@ final class RootDemand {
                 || boundary.kind == Kind.CONFIG_CALL)
                 && (sources.containsKey(boundary.cell)
                 || sources.containsKey(boundary.siteId)));
+        for (Boundary boundary : found) {
+            if (boundary.kind == Kind.CONFIG_FIELD
+                    || boundary.kind == Kind.CONFIG_CALL) {
+                boundary.cut = NO_SOURCE_CUT;
+            }
+        }
         for (Map.Entry<String, Boundary> source : sources.entrySet()) {
             Boundary boundary = source.getValue();
-            boundary.chosen = chosen.contains(keys.get(source.getKey()));
+            String key = keys.get(source.getKey());
+            boundary.chosen = chosen.contains(key);
+            // A key not minted is named by why: past the bound, or past
+            // the nearest WIDTH within it.
+            boundary.cut = boundary.chosen ? ""
+                    : keyDistance.get(key) > DISTANCE ? DISTANCE_CUT
+                    : WIDTH_CUT;
             found.add(boundary);
         }
         return chosen;
@@ -377,8 +407,10 @@ final class RootDemand {
     private static void choose(List<Boundary> found) {
         Map<Kind, Map<String, Integer>> cells = new HashMap<>();
         for (Boundary boundary : found) {
+            if (boundary.kind == Kind.CUT) boundary.cut = DISTANCE_CUT;
             if (boundary.kind == Kind.CONFIG_FIELD
-                    || boundary.kind == Kind.CONFIG_CALL) {
+                    || boundary.kind == Kind.CONFIG_CALL
+                    || boundary.kind == Kind.CUT) {
                 continue;
             }
             cells.computeIfAbsent(boundary.kind, ignored -> new TreeMap<>())
@@ -395,6 +427,7 @@ final class RootDemand {
             Set<String> nearest = chosen.get(boundary.kind);
             if (nearest != null) {
                 boundary.chosen = nearest.contains(boundary.cell);
+                boundary.cut = boundary.chosen ? "" : WIDTH_CUT;
             }
         }
     }

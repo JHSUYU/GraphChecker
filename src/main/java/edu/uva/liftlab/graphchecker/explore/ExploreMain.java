@@ -304,6 +304,11 @@ public final class ExploreMain {
                         + String.join(", ", named.subList(0,
                                 Math.min(4, named.size())))
                         + (named.size() > 4 ? ", ..." : "") + ")";
+        // What the root demand left out is counted, never dropped silently.
+        if (concrete.decided > 0 && concrete.offCone > 0) {
+            why += ", and not the " + concrete.offCone + " earlier reads off"
+                    + " its path guards' cone (root_demand.jsonl)";
+        }
         return GapRow.of(ExploreCodec.EXPLORATION,
                 GapKind.NO_ROOT_REACHES_ANCHOR, fixpoint ? GapClass.BLOCKING
                         : GapClass.DIAGNOSTIC, anchor.render(),

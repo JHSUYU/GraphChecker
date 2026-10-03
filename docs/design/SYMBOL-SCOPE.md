@@ -133,7 +133,7 @@ causynth output directory:
 | `communication_gaps.jsonl.gz` | ports or loops the planner could not place, and the configuration reads left concrete (§4.3) |
 | `static_scope_map.jsonl` | §3; built before any hook is woven, over the door-woven bodies (§4.2), so site ids are the unit indices every pass and every replay decides at |
 | `scope_frontier.jsonl` | §2.4 |
-| `root_demand.jsonl` | §4.6: every boundary where the values the throw's path guards decide on enter |
+| `root_demand.jsonl` | §4.6: every boundary where the values the throw's path guards decide on enter, every path cut at the bound, and why each is not chosen |
 
 These files are a function of the scope's classes, the same bytes on every host and run
 (`tools/regress/offline-ab.sh` gates on it):
@@ -516,15 +516,19 @@ followed only to a value-like receiver (a box, a `String`). The classes:
 | `IO` | a stream, file, socket, channel or native result | named |
 | `SCOPE` | a call into the system's own code outside the scope, a formal no caller in scope passes | chosen, first in scope growth (§2.4) |
 | `LIBRARY` | any other library result | named |
+| `CUT` | a path still open sixteen edges out, no boundary yet | named |
 
-Of each class the twelve nearest boundaries are *chosen* (a cell per boundary). A configuration
+Of each class the twelve nearest boundaries are *chosen* (a cell per boundary); every row states
+why it is not (`cut`: `WIDTH`, past the twelve nearest of its class; `DISTANCE`, past sixteen edges,
+every `CUT` row and a configuration key measured beyond the bound on the cone; `NO_SOURCE`, a
+configuration no source declares, a `String` getter). A configuration
 belongs to the world: it is read in whichever occurrence wrote what the anchor reads, beyond the
 boundary between them (hdfs-17960's key stands behind the `READ` of `numSnapshots`, in the edit-log
 replay that decremented it), so its keys are measured on the whole cone (every edge, no boundary
 stops it), a field's at the field, a getter call's one past the local it lands in. A named class
 is a row, never a freed value: freeing it would invent a value no execution produces.
 `root_demand.jsonl` lists every boundary (`class`, `distance`, `cell`, `siteId`, `edgeKind`,
-`chosen`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
+`chosen`, `cut`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
 That mark is the static half of a concrete anchor's demand: an anchor every admitted path decided
 on no symbol demands the reads it made before it decided that carry it
 (`explore.ClosurePlanner#concrete`, `StaticScopeMap#demandedAt`; PIPELINE §7.2), their writers

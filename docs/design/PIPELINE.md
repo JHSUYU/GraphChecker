@@ -455,8 +455,9 @@ only through a read on it, whose writers the closure then asks. Their symbols ar
 those a symbolic phi names, so their writers become tasks flipped at their own guards and fault
 sites. The demand tracks the cone's nearest reads however many flows from a branch (a String, a
 reference, a container too), so they have read rows; a cell no region stores has no writer to ask
-(the anchor then "read no shared state its path guards depend on"). A non-concrete anchor plans as
-before. Each demanded boundary input grows the closure:
+(the anchor then "read no shared state its path guards depend on"). The earlier reads off the cone
+are counted, never dropped silently: the `NO_ROOT_REACHES_ANCHOR` detail states how many
+(`ClosurePlanner.Concrete#offCone`). A non-concrete anchor plans as before. Each demanded boundary input grows the closure:
 
 - an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
   sites = the guards of the port's static export sites, contributed = its exports), and every activated
