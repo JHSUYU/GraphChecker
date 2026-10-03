@@ -137,9 +137,8 @@ ab_java() {
 }
 
 # ab_place <need-mb>: the host of AB_HOSTS with the most room for <need-mb>
-# on the ledger (run_engine.sh campaign_host_room), charged it for a stage's
-# whole bound -- not a head step's 120 s ramp: a composer grows for minutes
-# -- until ab_java releases it; waited for while no host has it.  The host
+# on the ledger (run_engine.sh campaign_host_room), charged it until ab_java
+# releases it; waited for while no host has it.  The host
 # is ab_placed_host, its charge ab_placed_charge.
 ab_placed_host=""
 ab_placed_charge=""
@@ -154,8 +153,7 @@ ab_place() {
       best=${host}
       best_room=${room}
     done
-    if [[ -n "${best}" ]] && campaign_host_try_start "${best}" "${need}" \
-        "${AB_STAGE_TIMEOUT_S}"; then
+    if [[ -n "${best}" ]] && campaign_host_try_start "${best}" "${need}"; then
       ab_placed_host=${best}
       ab_placed_charge=${campaign_host_charge_id}
       return 0

@@ -696,15 +696,17 @@ Obligations of a campaign, and GROW's re-runs, fan out over the hosts in
 `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, round-robin, as many on a host as its ledger admits, up to its
 cores. A head's own steps go to its host when it has room, else to the pool's host with the most
 room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
-host is charged to the ledger first, at its measured need, for its ramp: an obligation or a re-run,
-which is its replay (`obligation_memory_mb`, for 60 s), a host's solver of the exploration (its
-heap, for 120 s; PIPELINE §7.5), a campaign head's engine JVM (its main's measured need, else
-`engine_memory_mb`, for 120 s, and once more at `engine_memory_mb` if it runs out; PIPELINE §7.7),
-its seed and CONFIRM replays (seven times the recording's measured peak when above
-`obligation_memory_mb`, else that, for 300 s), REPRODUCE's runs (the recording's peak, for 60 s), and a `fanout.sh` job
-(its `NEED_MB`, for 120 s). A start goes only when `MemAvailable` covers its need, every start
-still in its ramp there and a reserve that keeps the host at most `CAUSYNTH_HOST_MAX_USED_PCT`
-(70) percent full, and is released the moment it returns. A running workload JVM that outgrows its
+host is charged to the ledger first, at its measured need, for as long as it runs: an obligation or
+a re-run, which is its replay (`obligation_memory_mb`), a host's solver of the exploration (its
+start's need; PIPELINE §7.5), a campaign head's engine JVM (its main's measured need, else
+`engine_memory_mb`, and once more at `engine_memory_mb` if it runs out; PIPELINE §7.7), its seed and
+CONFIRM replays (seven times the recording's measured peak when above `obligation_memory_mb`, else
+that), REPRODUCE's runs (the recording's peak), an offline gate's JVM (its heap) and a `fanout.sh`
+job (its `NEED_MB`). A start goes only when both the host's live charges and its real use
+(`MemTotal` less `MemAvailable`), each with the start and a head's held room, stay within
+`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
+(`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released
+the moment what it ran returns. A running workload JVM that outgrows its
 charge is granted the excess, charged on the ledger, unless the host's real use (`MemTotal` less
 `MemAvailable`) would pass that ceiling with it; only then is it ended (`campaign_watch_workload`,
 `campaign_host_try_grow`): what the ledger promised other starts is no reason to end it. A head's "waiting for memory for a head step" line goes to stderr

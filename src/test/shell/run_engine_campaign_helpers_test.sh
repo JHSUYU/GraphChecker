@@ -21,6 +21,11 @@ fail() {
   exit 1
 }
 
+# The charges standing in the ledger <root>, one name per line.
+live_charges() {
+  find "$1" -path '*/charges/*' -type f -printf '%f\n' 2>/dev/null
+}
+
 # CONFIRM's decision is ConfirmMain on the built jar, and the freeze and
 # two-host tests digest that jar: it is an input to these helper tests, and
 # so is a JVM to run it.
@@ -1015,8 +1020,8 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     # Each states its bound and its charge, and the ledger's row for it.
     run_configured_workload() {
       local run=$1 n=${1##*-}
-      echo "$2 $4 $(grep -c " $4 60 " "${campaign_host_gate_root}/gate-head/\
-starts")" >>"${repro_dir}/bounds"
+      echo "$2 $4 $(ls "${campaign_host_gate_root}/gate-head/charges" \
+        | grep -c "^$4\\.")" >>"${repro_dir}/bounds"
       (( n < 4 )) || return 1
       {
         echo '{"event":"BRANCH"}'
@@ -1045,9 +1050,9 @@ held to its ${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
       || "$(cat "${repro_dir}"/final/reproduce/run-*/host.txt | sort -u)" \
         == gate-head ]] \
     || fail "a native run does not name the host it ran on"
-  [[ -z "$(cat "${repro_dir}"/hosts/*/starts 2>/dev/null)" ]] \
+  [[ -z "$(live_charges "${repro_dir}/hosts")" ]] \
     || fail "a native run's charge outlived it: \
-$(cat "${repro_dir}"/hosts/*/starts)"
+$(live_charges "${repro_dir}/hosts")"
 done <<'EOF'
 0|2048|{"runs":4,"planted":3,"fatal":2,"atAnchor":1,"reason":""}
 1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
@@ -1382,7 +1387,7 @@ while read -r need_obligation need_rss need_expected; do
     replay_timeout_s=2400 seed_replay_time_factor=40
     campaign_recorded_workload_s=10
     campaign_task_ids() { echo TASK.SEED; }
-    campaign_head_charged() { printf 'charged=%s ' "$1"; shift 2; "$@"; }
+    campaign_head_charged() { printf 'charged=%s ' "$1"; shift; "$@"; }
     campaign_replay() { printf 'jvm=%s' "$7"; }
     campaign_session_replay "${bound_dir}/seed-iteration"
   )
@@ -1410,25 +1415,24 @@ $(cat "${need_dir}/adapter.args")"
 # excess and holds what it was granted, charged on the ledger; it is ended
 # only when the host's real use -- MemTotal less MemAvailable, 10000 MB and
 # a 70% ceiling -- would pass the ceiling with it, never for what the
-# ledger promised other starts (a foreign start still in its ramp), and
-# what it was granted is released when it ends.  A recording (charged
-# nothing) is only measured: its peak is the trace's workload_rss_mb.  Per
-# row: the host's MemAvailable, the MB a foreign start in its ramp holds on
-# the ledger (0: none), the charge, the JVM's resident memory at each read,
+# ledger promised other starts (a foreign live charge), and what it was
+# granted is released when it ends.  A recording (charged nothing) is only
+# measured: its peak is the trace's workload_rss_mb.  Per row: the host's
+# MemAvailable, the MB a foreign live charge holds on the ledger (0: none),
+# the charge, the JVM's resident memory at each read,
 # whether it was ended, the most rows the ledger held for it, and what it
 # says last.
 watch_dir="${test_tmp}/watch"
 while IFS='|' read -r watch_available watch_foreign watch_charged watch_rss \
     watch_ended watch_rows watch_said; do
   rm -rf -- "${watch_dir}"
-  mkdir -p "${watch_dir}/trace" "${watch_dir}/hosts/gate-head"
+  mkdir -p "${watch_dir}/trace" "${watch_dir}/hosts/gate-head/charges"
   printf '%s\n' ${watch_rss//,/ } >"${watch_dir}/rss"
   : >"${watch_dir}/rows"
   watch_foreign_row=""
   if (( watch_foreign > 0 )); then
-    watch_foreign_row="$(date +%s) ${watch_foreign} 3600 foreign"
-    printf '%s\n' "${watch_foreign_row}" \
-      >"${watch_dir}/hosts/gate-head/starts"
+    watch_foreign_row="${watch_foreign}.foreign"
+    : >"${watch_dir}/hosts/gate-head/charges/${watch_foreign_row}"
   fi
   (
     campaign_host_gate_root="${watch_dir}/hosts"
@@ -1443,8 +1447,8 @@ while IFS='|' read -r watch_available watch_foreign watch_charged watch_rss \
     campaign_process_rss_mb() {
       local mb
       mb=$(head -n 1 "${watch_dir}/rss")
-      cat "${campaign_host_gate_root}/gate-head/starts" 2>/dev/null \
-        | grep -vc ' foreign$' >>"${watch_dir}/rows"
+      ls "${campaign_host_gate_root}/gate-head/charges" \
+        | grep -vc '\.foreign$' >>"${watch_dir}/rows"
       [[ -n "${mb}" ]] || { kill "$1"; return 1; }
       sed -i 1d "${watch_dir}/rss"
       echo "${mb}"
@@ -1467,10 +1471,10 @@ $(cat "${watch_dir}/exit")): $(cat "${watch_dir}/said")"
   [[ "$(sort -n "${watch_dir}/rows" | tail -n 1)" == "${watch_rows}" ]] \
     || fail "the ledger held $(sort -n "${watch_dir}/rows" | tail -n 1) \
 rows for a JVM at ${watch_rss} MB, not ${watch_rows}"
-  [[ "$(cat "${watch_dir}/hosts/gate-head/starts" 2>/dev/null)" \
+  [[ "$(ls "${watch_dir}/hosts/gate-head/charges")" \
       == "${watch_foreign_row}" ]] \
-    || fail "what a JVM was granted outlived it, or a foreign start's row \
-went with it"
+    || fail "what a JVM was granted outlived it, or a foreign charge went \
+with it"
   [[ "$(cat "${watch_dir}/trace/workload_rss_mb")" \
       == "$(tr ',' '\n' <<<"${watch_rss}" | sort -n | tail -n 1)" ]] \
     || fail "the trace does not state the JVM's peak"
@@ -1543,14 +1547,14 @@ $(cat "${solver_test}/${question}.err")"
   solver_home=$(campaign_solver_dir "${solver_test}/iteration/sessions")
   for ((waited = 0; waited < 30; waited++)); do
     [[ -e "${solver_home}/server" ]] \
-      || [[ -n "$(cat "${solver_test}/hosts/"*/starts)" ]] || break
+      || [[ -n "$(live_charges "${solver_test}/hosts")" ]] || break
     sleep 1
   done
   [[ ! -e "${solver_home}/server" ]] \
     || fail "an idle solver did not end: $(cat "${solver_home}/server")"
-  [[ -z "$(cat "${solver_test}/hosts/"*/starts)" ]] \
+  [[ -z "$(live_charges "${solver_test}/hosts")" ]] \
     || fail "an ended solver is still charged: \
-$(cat "${solver_test}/hosts/"*/starts)"
+$(live_charges "${solver_test}/hosts")"
   # No room: 3 at once, no solver named, the question withdrawn.
   campaign_host_max_used_pct=1
   started=${SECONDS}
@@ -2103,9 +2107,9 @@ $(cat "${stream_dir}/campaign_gaps.jsonl" 2>&1)"
   || fail "an empty campaign_worker_hosts invoked ssh"
 [[ "$(cat "${stream_dir}"/obligations-*/*/host.txt | LC_ALL=C sort -u)" \
     == localhost ]] || fail "a local obligation did not record its host"
-[[ ! -s "${campaign_host_gate_root}/$(hostname -s)/starts" ]] \
-  || fail "an obligation's ledger row outlived its return: \
-$(cat "${campaign_host_gate_root}/$(hostname -s)/starts")"
+[[ -z "$(live_charges "${campaign_host_gate_root}/$(hostname -s)")" ]] \
+  || fail "an obligation's charge outlived its return: \
+$(live_charges "${campaign_host_gate_root}/$(hostname -s)")"
 
 # STREAM-2: THE END AT A WITNESS (PIPELINE §7.9).  An admitted replay whose
 # target row at the declared occurrence observed the fatal is, once gated,
@@ -2754,12 +2758,12 @@ while IFS='|' read -r job_kind job_host job_ran; do
     campaign_host_available_mb() { echo 30000; }
     campaign_host_total_mb() { echo 30000; }
     campaign_host_max_used_pct=70
-    campaign_host_try_start "${job_host}" 2500 60 \
+    campaign_host_try_start "${job_host}" 2500 \
       || fail "the job's start was refused"
     job_charge=${campaign_host_charge_id}
     job_record() {
-      printf '%s(%s) ' "$1" "$(cat "${campaign_host_gate_root}"/*/starts \
-        | grep -c -- "${job_charge}")" >>"${job_dir}/ran"
+      printf '%s(%s) ' "$1" "$(live_charges "${campaign_host_gate_root}" \
+        | grep -cF -- "${job_charge}")" >>"${job_dir}/ran"
     }
     campaign_obligation_worker() { job_record "worker:$1"; }
     campaign_obligation_replay() { job_record "replay:$1:$6"; }
@@ -3475,61 +3479,103 @@ for case_config in "${repo}"/experiments/hadoop/hdfs-*/workflow.properties; do
     || fail "${case_config} states no obligation_memory_mb"
 done
 
-# MEMORY-2: the gate's decision.  A start is charged in full for the ramp
-# window, whichever campaign made it; after it only MemAvailable counts; a
-# local host and the same host named over ssh are one ledger; a lock a dead
+# MEMORY-2: the gate's decision.  A start goes only where both the host's
+# live charges and its real use, each with the start, stay within the
+# ceiling -- 70% of a 31 GB host, 22221 MB -- whichever campaign charged
+# them: three 6000 MB obligations fit, and the fourth waits with the host's
+# real use still low, since the three may yet grow into what they were
+# charged (SB13: lift06 at 29 of 30 GB).  A charge lives while the shell
+# that took it renews its lease; one whose holder is gone lapses.  A local
+# host and the same host named over ssh are one ledger; a lock a dead
 # campaign left behind is broken.
 reset_config
 campaign_host_gate_root="${memory_dir}/hosts"
 campaign_local_host_names=" localhost gate-head "
 hostname() { echo gate-head; }
-memory_available=20000
+memory_available=30000
 campaign_host_available_mb() { echo "${memory_available}"; }
 obligation_memory_mb=6000
-campaign_host_total_mb() { echo 10000; }
+campaign_host_total_mb() { echo 31744; }
 campaign_host_max_used_pct=70
-campaign_host_ramp_s=60
 campaign_host_poll_s=0
-# Every start states its need and its ramp: an obligation's, here.
-memory_start=(6000 60)
-campaign_host_try_start lift14 "${memory_start[@]}" \
-  || fail "20000 MB free did not admit a 6000 MB obligation"
-campaign_host_try_start lift14 "${memory_start[@]}" \
-  || fail "20000 MB less one 6000 MB start did not admit a second"
-run_capturing_status campaign_host_try_start lift14 "${memory_start[@]}"
+memory_charges=()
+for memory_start in 1 2 3; do
+  campaign_host_try_start lift14 6000 \
+    || fail "start ${memory_start} of 6000 MB was refused: \
+${campaign_host_wait_reason}"
+  memory_charges+=("${campaign_host_charge_id}")
+done
+run_capturing_status campaign_host_try_start lift14 6000
 [[ "${status}" -eq 1 ]] \
-  || fail "two starts charged 12000 MB, and a third was admitted over the \
-3000 MB reserve"
-[[ "${campaign_host_wait_reason}" == *"12000 MB charged"* ]] \
-  || fail "the wait does not say what is charged: ${campaign_host_wait_reason}"
+  || fail "three starts charged 18000 MB, and a fourth was admitted over \
+the 22221 MB ceiling while the host used 1744 MB"
+[[ "${campaign_host_wait_reason}" == *"18000 MB charged"*"1744 MB in use"* ]] \
+  || fail "the wait does not say what is charged and used: \
+${campaign_host_wait_reason}"
 # Another campaign, the same host: the same ledger refuses it too.
-( run_capturing_status campaign_host_try_start lift14 "${memory_start[@]}"
+( run_capturing_status campaign_host_try_start lift14 6000
   exit "${status}" ) \
   && fail "another campaign's start ignored the charges on the host"
-# The window passes: the JVMs are in MemAvailable now, and the charge lapses.
-sed -i 's/^[0-9]* /1 /' "${campaign_host_gate_root}/lift14/starts"
-campaign_host_try_start lift14 "${memory_start[@]}" \
-  || fail "starts older than the ramp window are still charged"
+[[ "$(campaign_host_room lift14)" -eq 4221 ]] \
+  || fail "the room is not what the charges leave: \
+$(campaign_host_room lift14)"
+# The real use alone refuses too: no charge, 21744 MB in use.
+for memory_charge in "${memory_charges[@]}"; do
+  campaign_host_release lift14 "${memory_charge}"
+done
+memory_available=10000
+run_capturing_status campaign_host_try_start lift14 6000
+[[ "${status}" -eq 1 \
+    && "${campaign_host_wait_reason}" == *"0 MB charged"*"21744 MB in use"* ]] \
+  || fail "a host using 21744 MB admitted 6000 MB more: \
+${campaign_host_wait_reason}"
+memory_available=30000
+# A charge whose shell is gone lapses with its lease; one whose shell lives
+# is renewed past it; one gone ten leases is removed.
+memory_lease=("${campaign_host_lease_s}" "${campaign_host_renew_s}")
+campaign_host_lease_s=5
+campaign_host_renew_s=1
+( campaign_host_try_start lift14 6000 ) || fail "a subshell's start failed"
+memory_gone=$(live_charges "${campaign_host_gate_root}/lift14")
+campaign_host_try_start lift14 6000 || fail "a held start failed"
+memory_held=${campaign_host_charge_id}
+memory_files="${campaign_host_gate_root}/lift14/charges"
+touch -d '1 minute ago' "${memory_files}/${memory_gone}" \
+  "${memory_files}/${memory_held}"
+sleep 2
+[[ "$(campaign_host_charged "${campaign_host_gate_root}/lift14" \
+    "$(date +%s)")" -eq 6000 \
+    && -e "${memory_files}/${memory_held}" ]] \
+  || fail "a held charge lapsed, or one whose shell is gone still counts: \
+$(ls -l --time-style=+%s "${memory_files}")"
+touch -d '1 hour ago' "${memory_files}/${memory_gone}"
+campaign_host_charged "${campaign_host_gate_root}/lift14" "$(date +%s)" \
+  >/dev/null
+[[ ! -e "${memory_files}/${memory_gone}" ]] \
+  || fail "a charge ten leases old was not removed"
+campaign_host_release lift14 "${memory_held}"
+campaign_host_lease_s=${memory_lease[0]}
+campaign_host_renew_s=${memory_lease[1]}
 # The head is one ledger under both of its names.
-campaign_host_try_start localhost "${memory_start[@]}" \
+campaign_host_try_start localhost 6000 \
   || fail "the head's first start was refused"
-[[ -s "${campaign_host_gate_root}/gate-head/starts" \
+[[ -n "$(live_charges "${campaign_host_gate_root}/gate-head")" \
     && ! -e "${campaign_host_gate_root}/localhost" ]] \
   || fail "a local start is not charged to the head's own name"
 # A stale lock: the next try breaks it and the one after starts.
 mkdir "${campaign_host_gate_root}/lift15"
 mkdir "${campaign_host_gate_root}/lift15/lock"
 touch -d '10 minutes ago' "${campaign_host_gate_root}/lift15/lock"
-run_capturing_status campaign_host_try_start lift15 "${memory_start[@]}"
+run_capturing_status campaign_host_try_start lift15 6000
 [[ "${status}" -eq 3 && ! -e "${campaign_host_gate_root}/lift15/lock" ]] \
   || fail "a lock a dead campaign left was not broken"
-campaign_host_try_start lift15 "${memory_start[@]}" \
+campaign_host_try_start lift15 6000 \
   || fail "the host stayed locked"
 # A lock held for the instant another start is charged is waited out, not
 # answered as no room (campaign_host_try_charge).
 mkdir "${campaign_host_gate_root}/lift15/lock"
 ( sleep 1; rmdir "${campaign_host_gate_root}/lift15/lock" ) &
-campaign_host_try_charge lift15 "${memory_start[@]}"
+campaign_host_try_charge lift15 6000
 wait
 [[ "${status}" -eq 0 ]] || fail "a held lock was answered as ${status}"
 # A host whose memory stays unreadable past the ssh patience is the
@@ -3540,7 +3586,7 @@ real_campaign_log=$(declare -f campaign_log)
 campaign_log() { printf '%s\n' "$*" >>"${memory_dir}/gate.log"; }
 campaign_host_poll_s=0
 campaign_ssh_patience_s=1
-run_capturing_status campaign_await_host_memory lift13 "${memory_start[@]}"
+run_capturing_status campaign_await_host_memory lift13 6000
 [[ "${status}" -eq 2 ]] \
   || fail "an unreadable host admitted an obligation"
 grep -q 'the memory of host lift13 could not be read for 1s' \
@@ -3550,43 +3596,33 @@ unset -f hostname campaign_host_available_mb campaign_host_total_mb
 eval "${real_campaign_log}"
 reset_config
 
-# MEMORY-3: a start states its need and its own ramp, and counts while that
-# ramp lasts; a head's start is released when its command returns, so a
-# head's JVMs, one after another, are never charged twice.
-campaign_host_gate_root="${memory_dir}/ramps"
+# MEMORY-3: a charge is named by its need and released by its id; a head's
+# start is charged while its command runs and released when it returns, so
+# a head's JVMs, one after another, are never charged twice.
+campaign_host_gate_root="${memory_dir}/released"
 campaign_local_host_names=" localhost gate-head "
 hostname() { echo gate-head; }
 campaign_host_available_mb() { echo 20000; }
 campaign_host_total_mb() { echo 10000; }
 campaign_host_max_used_pct=70
 campaign_host_poll_s=0
-mkdir -p "${campaign_host_gate_root}/lift14"
-memory_now=$(date +%s)
-printf '%s 8000 60 lapsed\n%s 8000 600 ramping\n' \
-  "$((memory_now - 100))" "$((memory_now - 100))" \
-  >"${campaign_host_gate_root}/lift14/starts"
-campaign_host_try_start lift14 9000 300 \
-  || fail "a row past its own 60 s ramp is still charged"
-read -r _ memory_mb memory_ramp memory_id \
-  < <(grep -v -e lapsed -e ramping "${campaign_host_gate_root}/lift14/starts")
-[[ "${memory_mb} ${memory_ramp} ${memory_id}" \
-    == "9000 300 ${campaign_host_charge_id}" ]] \
-  || fail "a start's row does not state its need, its ramp and its id: \
-$(cat "${campaign_host_gate_root}/lift14/starts")"
-run_capturing_status campaign_host_try_start lift14 1 300
-[[ "${status}" -eq 1 ]] \
-  || fail "a row inside its own 600 s ramp is not charged"
+campaign_host_try_start lift14 4000 || fail "a 4000 MB start was refused"
+memory_id=${campaign_host_charge_id}
+[[ "$(live_charges "${campaign_host_gate_root}/lift14")" == "${memory_id}" \
+    && "${memory_id}" == 4000.gate-head.* ]] \
+  || fail "a start's charge does not state its need and its id: \
+$(live_charges "${campaign_host_gate_root}/lift14")"
 campaign_host_release lift14 "${memory_id}"
-! grep -q -- "${memory_id}" "${campaign_host_gate_root}/lift14/starts" \
+[[ -z "$(live_charges "${campaign_host_gate_root}/lift14")" ]] \
   || fail "a released start is still charged"
 campaign_head_charging=1
-campaign_head_charged 7000 120 bash -c "grep -c ' 7000 120 ' \
-  '${campaign_host_gate_root}/gate-head/starts' >'${memory_dir}/during'" \
+campaign_head_charged 7000 bash -c "ls '${campaign_host_gate_root}/\
+gate-head/charges' | grep -c '^7000\\.' >'${memory_dir}/during'" \
   || fail "a head's charged command did not run"
 [[ "$(cat "${memory_dir}/during")" -eq 1 \
-    && ! -s "${campaign_host_gate_root}/gate-head/starts" ]] \
+    && -z "$(live_charges "${campaign_host_gate_root}/gate-head")" ]] \
   || fail "a head's start was not charged while it ran and released after"
-run_capturing_status campaign_head_charged 7000 120 false
+run_capturing_status campaign_head_charged 7000 false
 [[ "${status}" -eq 1 ]] || fail "a charged command's exit status was lost"
 # A head that waited for room says so on stderr, never in the stdout that is
 # the charged command's artifact.
@@ -3600,11 +3636,11 @@ campaign_host_try_start() {
   campaign_host_charge_id=waited
 }
 campaign_host_poll_s=0
-[[ "$(campaign_head_charged 7000 120 printf artifact 2>/dev/null)" \
+[[ "$(campaign_head_charged 7000 printf artifact 2>/dev/null)" \
     == artifact ]] || fail "a head's wait for memory reached its stdout"
 eval "${real_try_start}"
 campaign_head_charging=0
-campaign_head_charged 999999 120 true \
+campaign_head_charged 999999 true \
   || fail "a start outside a head waited for the ledger"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb
 reset_config
@@ -3614,12 +3650,14 @@ reset_config
 # (campaign_head_need_mb), not the case's engine heap: an obligation counts
 # the largest idle, fresh reservation of the host as used, a head's own
 # start counts none, one of its JVMs running (busy) or a reservation gone
-# stale frees it, and the head gives it up when it exits.
+# stale frees it, and the head gives it up when it exits.  The hosts are
+# 100000 MB, so the 70% ceiling leaves 70000 MB to charge and real use
+# alone decides here.
 campaign_host_gate_root="${memory_dir}/head-room"
 campaign_local_host_names=" localhost gate-head "
 hostname() { echo gate-head; }
-campaign_host_available_mb() { echo 16000; }
-campaign_host_total_mb() { echo 10000; }
+campaign_host_available_mb() { echo 43000; }
+campaign_host_total_mb() { echo 100000; }
 campaign_host_max_used_pct=70
 campaign_host_poll_s=0
 engine_memory_mb=12000
@@ -3629,47 +3667,47 @@ engine_memory_mb=12000
   [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
     || fail "the head reserved no room on its host, or the engine heap's: \
 $(cat "${campaign_host_gate_root}/gate-head/heads/"*)"
-  run_capturing_status campaign_host_try_start localhost 6000 60
+  run_capturing_status campaign_host_try_start localhost 6000
   [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"8192 MB held \
 for a head"* ]] || fail "an obligation took the room a head reserved: \
 ${campaign_host_wait_reason}"
-  campaign_host_try_start lift14 6000 60 \
+  campaign_host_try_start lift14 6000 \
     || fail "a head's room was held on another host"
-  campaign_head_charged 9000 120 bash -c "ls '${campaign_host_gate_root}/\
+  campaign_head_charged 9000 bash -c "ls '${campaign_host_gate_root}/\
 gate-head/heads/' >'${memory_dir}/head-busy'" \
     || fail "the head's own start waited for its own room"
   grep -q '\.busy\.' "${memory_dir}/head-busy" \
     || fail "the head's room is held while its own JVM runs"
   touch -d '20 minutes ago' "${campaign_host_gate_root}/gate-head/heads/"*
-  campaign_host_try_start localhost 6000 60 \
+  campaign_host_try_start localhost 6000 \
     || fail "a stale reservation still holds room"
   campaign_head_heartbeat
   ( campaign_head_unreserve )
   [[ -n "$(ls "${campaign_host_gate_root}/gate-head/heads/")" ]] \
     || fail "a subshell of the head gave up the head's room"
   # A head step no host has room for holds its need on the host with the
-  # most room (lift14's 12400 MB less the 3000 MB reserve, against the
-  # head's 12300 less its own 8192 held): an obligation lift14 would admit
+  # most room (lift14's 39400 MB less the 30000 MB reserve, against the
+  # head's 39300 less its own 8192 held): an obligation lift14 would admit
   # is refused while the 9500 MB step waits, the step takes lift14 once it
   # has room, its own hold not held against it, and gives the hold up.
   campaign_worker_hosts="gate-head lift14"
-  echo 12400 >"${memory_dir}/lift14-available"
+  echo 39400 >"${memory_dir}/lift14-available"
   campaign_host_available_mb() {
     if [[ "$1" == lift14 ]]; then cat "${memory_dir}/lift14-available"
-    else echo 12300; fi
+    else echo 39300; fi
   }
   sleep() {
     # Another campaign's start: it holds no hold of its own.
     campaign_head_hold="" run_capturing_status campaign_host_try_start \
-      lift14 1000 60
+      lift14 1000
     echo "${status} ${campaign_host_wait_reason}" >"${memory_dir}/head-held"
-    echo 13000 >"${memory_dir}/lift14-available"
+    echo 40000 >"${memory_dir}/lift14-available"
   }
-  rm -f -- "${campaign_host_gate_root}"/*/starts
-  campaign_host_try_start lift14 1000 60 \
+  rm -f -- "${campaign_host_gate_root}"/*/charges/*
+  campaign_host_try_start lift14 1000 \
     || fail "lift14 refused a start it has room for"
-  rm -f -- "${campaign_host_gate_root}"/*/starts
-  campaign_head_place 9500 120 >"${memory_dir}/head-place.log"
+  rm -f -- "${campaign_host_gate_root}"/*/charges/*
+  campaign_head_place 9500 >"${memory_dir}/head-place.log"
   unset -f sleep
   [[ "$(cat "${memory_dir}/head-held")" == "1 "*"9500 MB held for a head"* \
      && "${campaign_placed_host}" == lift14 ]] \
@@ -3689,8 +3727,8 @@ unset -f hostname campaign_host_available_mb campaign_host_total_mb
 # HEAD-PLACE: every heavy step of a head -- an engine JVM of any stage, the
 # seed or the CONFIRM replay, a native run of REPRODUCE -- goes wherever
 # there is room: the head's own host when it fits, else the pool's host
-# with the most room under the ceiling (MemAvailable less the 3000 MB
-# reserve of a 10000 MB host), charged there while it runs and released
+# with the most room under the ceiling (MemAvailable less the 30000 MB
+# reserve of a 100000 MB host), charged there while it runs and released
 # after, and run there: --run-placed, in the head's working directory with
 # the head's exported variables, a program or a run_engine.sh function with
 # its arguments, its standard output passed on as its own.  Per row: the
@@ -3708,7 +3746,7 @@ while read -r place_own place_14 place_15 place_need place_expected; do
     campaign_local_host_names=" localhost gate-head "
     hostname() { echo gate-head; }
     campaign_worker_hosts="gate-head lift14 lift15"
-    campaign_host_total_mb() { echo 10000; }
+    campaign_host_total_mb() { echo 100000; }
     campaign_host_available_mb() {
       case "$1" in
         lift14) echo "${place_14}" ;;
@@ -3737,17 +3775,17 @@ while read -r place_own place_14 place_15 place_need place_expected; do
     # and how many starts of its need the ledger holds while it runs.
     place_probe() {
       printf '%s %s %s %s' "${PWD##*/}" "$1" "${CAUSYNTH_PLACE_PROBE:-}" \
-        "$(cat "${campaign_host_gate_root}"/*/starts 2>/dev/null \
-          | grep -c " ${place_need} 120 ")"
+        "$(live_charges "${campaign_host_gate_root}" \
+          | grep -c "^${place_need}\\.")"
     }
     export CAUSYNTH_PLACE_PROBE=exported
     cd "${place_dir}"
-    [[ "$(campaign_head_charged "${place_need}" 120 place_probe argument)" \
+    [[ "$(campaign_head_charged "${place_need}" place_probe argument)" \
         == "place argument exported 1" ]] \
       || fail "a step of ${place_need} MB did not run from the head's \
 directory with its arguments and the head's environment, charged once: \
-$(campaign_head_charged "${place_need}" 120 place_probe argument)"
-    [[ "$(campaign_head_charged "${place_need}" 120 \
+$(campaign_head_charged "${place_need}" place_probe argument)"
+    [[ "$(campaign_head_charged "${place_need}" \
         bash -c 'printf "%s" "${CAUSYNTH_PLACE_PROBE}"')" == exported ]] \
       || fail "a placed program did not see the head's environment"
     place_ran=gate-head
@@ -3756,14 +3794,14 @@ $(campaign_head_charged "${place_need}" 120 place_probe argument)"
     [[ "${place_ran}" == "${place_expected}" ]] \
       || fail "a step of ${place_need} MB with ${place_own}/${place_14}/\
 ${place_15} MB available ran on ${place_ran}, not ${place_expected}"
-    [[ -z "$(cat "${campaign_host_gate_root}"/*/starts 2>/dev/null)" ]] \
+    [[ -z "$(live_charges "${campaign_host_gate_root}")" ]] \
       || fail "a placed step's charge outlived it"
   ) || exit 1
 done <<'EOF'
-4000 7000 9000 5000 lift15
-20000 7000 9000 5000 gate-head
-4000 9000 8500 5000 lift14
-4000 7000 7000 2000 lift14
+31000 34000 36000 5000 lift15
+47000 34000 36000 5000 gate-head
+31000 36000 35500 5000 lift14
+31000 34000 34000 2000 lift14
 EOF
 
 # ENGINE-HEAP: an engine JVM starts at what its main measurably needs, charged
@@ -3836,9 +3874,9 @@ LIFTS=localhost CAUSYNTH_HOST_LEDGER="${fanout_dir}/ledger" JOB_MEMORY_MB=1 \
   || fail "a returned job left no .exit"
 grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
   || fail "the finished-job line changed: $(cat "${fanout_dir}/fanout.out")"
-! grep -q . "${fanout_dir}/ledger/$(command hostname -s)/starts" \
+[[ -z "$(live_charges "${fanout_dir}/ledger")" ]] \
   || fail "a returned job is still charged: \
-$(cat "${fanout_dir}/ledger/$(command hostname -s)/starts")"
+$(live_charges "${fanout_dir}/ledger")"
 
 # HEADS-1: a round's heads are chosen at launch from the hosts' room
 # (tools/rounds/launch-round.sh, tools/lib/heads.sh heads_choose): the
