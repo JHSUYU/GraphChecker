@@ -504,7 +504,8 @@ public class RegionGraphOccurrenceKeyTest {
 
         List<StaticScopeMap.Site> sites = StaticScopeMap.sites(edges, regions,
                 Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, (demandSite, demandCell) -> null, method -> false,
-                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false);
+                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false,
+                cell -> false);
         Path file = tree.newFolder("scope-map").toPath()
                 .resolve(StaticScopeMap.FILE);
         StringBuilder text = new StringBuilder();
@@ -757,7 +758,8 @@ public class RegionGraphOccurrenceKeyTest {
                 edges, regions, Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, (demandSite, demandCell) -> null,
                 method -> !method.startsWith("<example."),
                 CausynthStaticFacts::trackedKind,
-                CausynthStaticFacts::staticField), null)) {
+                CausynthStaticFacts::staticField,
+                CausynthStaticFacts::constructionOnly), null)) {
             text.append(written.toString()).append('\n');
         }
         Path file = tree.newFolder("wrapper").toPath()

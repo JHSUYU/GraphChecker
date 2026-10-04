@@ -210,7 +210,8 @@ public class ReferenceCellTest {
                 Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, (demandSite, demandCell) -> null,
                 method -> !method.startsWith("<s."),
                 CausynthStaticFacts::trackedKind,
-                CausynthStaticFacts::staticField);
+                CausynthStaticFacts::staticField,
+                CausynthStaticFacts::constructionOnly);
         StringBuilder text = new StringBuilder();
         for (JsonObject row : StaticScopeMap.rows(sites,
                 SiteControlDependence.over(StaticScopeMap.siteIds(sites)))) {
@@ -234,6 +235,15 @@ public class ReferenceCellTest {
             for (StaticScopeMap.Site site : map.writersOf(carrier)) {
                 writes.add(site.siteId + " " + site.cell + " "
                         + site.publishedFrom + " " + site.guards);
+            }
+        }
+        String reserves = "<" + POLICY + ": " + CHM + " reserves>";
+        Set<String> constructionOnly = new LinkedHashSet<>();
+        for (String carrier : Arrays.asList(KNOWN, LATEST, reserves)) {
+            for (StaticScopeMap.Site site : map.writersOf(carrier)) {
+                if (site.constructionOnly) {
+                    constructionOnly.add(site.siteId + " " + site.cell);
+                }
             }
         }
         String store = "s.Policy#update(Ls/Commit;)V#12:WRITE";
@@ -277,6 +287,10 @@ public class ReferenceCellTest {
                                 "<s.Policy: void enable()>#u2 VALUE",
                                 CHECK + "#u7 VALUE")),
                         observed(map.observedSites())},
+                {"only the final map's store, by its constructor, is"
+                        + " construction-only (no guarded store)",
+                        Collections.singleton("<" + POLICY + ": void <init>()>"
+                                + "#u3 " + reserves), constructionOnly},
                 {"an accessor answering another type declares no input",
                         Collections.<StaticScopeMap.Site>emptyList(),
                         map.declaredSites()}};
@@ -512,6 +526,21 @@ public class ReferenceCellTest {
                 Jimple.v().newInvokeStmt(Jimple.v().newInterfaceInvokeExpr(
                         built, put.makeRef(), Arrays.<Value>asList(u1, u1))),
                 publish,
+                Jimple.v().newReturnVoidStmt());
+
+        // The final map, stored once, by the constructor.
+        SootMethod construct = method(policy, "<init>",
+                Collections.<Type>emptyList(), VoidType.v(), 0);
+        Local i0 = local(construct, "r0", self);
+        Local fresh = local(construct, "$r1", chm.getType());
+        body(construct, Jimple.v().newIdentityStmt(i0,
+                        Jimple.v().newThisRef(self)),
+                Jimple.v().newAssignStmt(fresh,
+                        Jimple.v().newNewExpr(chm.getType())),
+                Jimple.v().newInvokeStmt(Jimple.v().newSpecialInvokeExpr(
+                        fresh, init.makeRef())),
+                Jimple.v().newAssignStmt(Jimple.v().newInstanceFieldRef(i0,
+                        reserves.makeRef()), fresh),
                 Jimple.v().newReturnVoidStmt());
 
         SootMethod setLatest = method(policy, "setLatest",

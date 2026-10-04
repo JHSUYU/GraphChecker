@@ -305,9 +305,8 @@ public final class CausynthStaticFacts {
      *       reader queries or projects the referent the field held when it
      *       read (solr-18406's {@code knownCommits}, a map each commit
      *       replaces).  A static field too: its location is its class's.  A
-     *       final field is none, nor one final in effect ({@link
-     *       #storedOnlyAtConstruction}): its only writer is its
-     *       constructor, so there is nothing to re-pair.</li>
+     *       field only its construction stores is none ({@link
+     *       #constructionOnly}).</li>
      * </ul>
      */
     static SharedFieldFlow.TrackedKind trackedKind(String signature) {
@@ -320,11 +319,32 @@ public final class CausynthStaticFacts {
             return field.isStatic() ? SharedFieldFlow.TrackedKind.NONE
                     : SharedFieldFlow.TrackedKind.VALUE;
         }
-        return !field.isFinal() && type instanceof RefLikeType
+        return type instanceof RefLikeType
                 && !UNVERSIONED_REFERENCES.contains(type.toString())
-                && !storedOnlyAtConstruction(field)
+                && !constructionOnly(field)
                 ? SharedFieldFlow.TrackedKind.REFERENCE
                 : SharedFieldFlow.TrackedKind.NONE;
+    }
+
+    /**
+     * Whether only its own class's construction stores a field: final, or
+     * final in effect ({@link #storedOnlyAtConstruction}).  Its one writer
+     * is its constructor, so there is nothing to re-pair (SYMBOL-SCOPE
+     * §5.1): a read of it is no {@code REFERENCE} read, and a store into it
+     * is no guarded store (§5.3) -- a concrete store there starts no log,
+     * so the field names no owner its readers would project through
+     * (hdfs-adhoc-03: {@code FSOutputSummer.sum}, a final DataChecksum
+     * stored under a symbolic guard of {@code newStreamForCreate}, made
+     * every chunk's CRC symbolic).
+     */
+    static boolean constructionOnly(String signature) {
+        SootField field = signature == null || signature.isEmpty() ? null
+                : Scene.v().grabField(signature);
+        return field != null && constructionOnly(field);
+    }
+
+    private static boolean constructionOnly(SootField field) {
+        return field.isFinal() || storedOnlyAtConstruction(field);
     }
 
     /**
