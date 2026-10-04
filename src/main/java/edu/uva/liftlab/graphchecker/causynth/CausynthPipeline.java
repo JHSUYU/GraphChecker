@@ -838,12 +838,10 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Where a loop-body frame opens: the outermost declared control edge
-     * whose body successor dominates the demanded unit, or the header when
-     * none does (the demanded unit comes first in the body).  Trap: the
-     * header's lexical successor is often the guard itself ({@code
-     * hasNext()}), and opening there counts the terminal false check.  Other
-     * shapes are refused.
+     * Where a loop-body frame opens: {@link CfgLoopControl#bodyEntry} on the
+     * frozen loop, the one placement SEED asked when it chose the loop
+     * (StaticProgram#loopBodyRoot), mapped to the body's current edge.  A
+     * unit it cannot place is refused by name.
      */
     private static CfgLoopControl.Edge loopBodyEntry(
             Body body, CfgLoopControl.NaturalLoop loop,
@@ -855,68 +853,21 @@ public final class CausynthPipeline {
                             + " has no declared control sites and demanded "
                             + "unit");
         }
-
-        Set<Unit> members = loop.members();
         ResolvedLoopControls controls = resolveLoopControls(body, loop,
                 controlSites, "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: ");
-
         Unit demanded = stableLoopUnit(body, demandedUnitIndex,
                 controls.plannedIndices, controls.units);
-        if (demanded == null || !members.contains(demanded)
-                || !loop.isDominatedBy(demanded, loop.header)) {
+        CfgLoopControl.Edge entry = CfgLoopControl.bodyEntry(loop,
+                controls.units, demanded);
+        if (entry == null) {
             throw new IllegalStateException(
                     "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
-                            + " does not contain a header-dominated demanded "
-                            + "unit u" + demandedUnitIndex);
+                            + " places no iteration frame at demanded unit u"
+                            + demandedUnitIndex + ", which SEED's "
+                            + "bodyEntryCallUnits stated it could");
         }
-        // A control's body edges are an if's one in-loop successor and a
-        // switch's every case that stays in the loop; of one control's, at
-        // most one dominates the demanded unit.
-        List<CfgLoopControl.Edge> demandedEntries = new ArrayList<>();
-        for (Unit unit : controls.units) {
-            for (Unit successor : loop.stableSuccessors(unit)) {
-                if (members.contains(successor)
-                        && loop.isDominatedBy(demanded, successor)) {
-                    demandedEntries.add(currentLoopBoundaryEdge(body,
-                            new CfgLoopControl.Edge(unit, successor), loopId,
-                            false));
-                }
-            }
-        }
-        demandedEntries = deduplicateEdges(demandedEntries);
-
-        if (demandedEntries.isEmpty() && !loop.backedges.isEmpty()) {
-            // The demanded unit comes before every declared control of the
-            // body -- a while (true) whose exits are a return and a throw
-            // (FsDatasetImpl.initReplicaRecovery's retry loop): each of its
-            // runs is the header's once, so the frame opens at the header.
-            return new CfgLoopControl.Edge(loop.backedges.get(0).source,
-                    loop.header);
-        }
-        List<CfgLoopControl.Edge> outermost = new ArrayList<>();
-        for (CfgLoopControl.Edge candidate : demandedEntries) {
-            boolean nested = false;
-            for (CfgLoopControl.Edge other : demandedEntries) {
-                if (candidate == other || candidate.target == other.target) {
-                    continue;
-                }
-                if (loop.isDominatedBy(candidate.target, other.target)) {
-                    nested = true;
-                    break;
-                }
-            }
-            if (!nested) outermost.add(candidate);
-        }
-        if (outermost.size() != 1) {
-            throw new IllegalStateException(
-                    "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
-                            + " cannot prove one outermost declared body "
-                            + "edge reaching demanded unit u"
-                            + demandedUnitIndex + "; candidates="
-                            + demandedEntries.size() + ", outermost="
-                            + outermost.size());
-        }
-        return outermost.get(0);
+        return entry.target == loop.header ? entry
+                : currentLoopBoundaryEdge(body, entry, loopId, false);
     }
 
     /** Maps a planned unit through stable loop-control ordinals. */

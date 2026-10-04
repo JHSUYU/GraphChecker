@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.plan.SiteId;
 import soot.Body;
 import soot.Unit;
 import soot.jimple.IfStmt;
+import soot.jimple.Stmt;
 import soot.jimple.SwitchStmt;
 
 import java.util.ArrayList;
@@ -161,6 +162,17 @@ final class CommunicationCatalogPlanner {
                 }
             }
             row.put(LoopBoundPolicy.LOOP_LATCH_UNIT_INDEX, latchIndex);
+            List<Integer> entries = new ArrayList<>();
+            for (Unit unit : body.getUnits()) {
+                Integer position = unitIndices.get(unit);
+                if (position != null && unit instanceof Stmt
+                        && ((Stmt) unit).containsInvokeExpr()
+                        && CfgLoopControl.bodyEntry(loop.natural,
+                        loop.guards, unit) != null) {
+                    entries.add(position);
+                }
+            }
+            row.put(LoopBoundPolicy.BODY_ENTRY_CALL_UNITS, entries);
             row.put(LoopBoundPolicy.LOOP_CLASSIFICATION, loop.classification);
             row.put(LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY,
                     CfgLoopControl.classificationAuthority(

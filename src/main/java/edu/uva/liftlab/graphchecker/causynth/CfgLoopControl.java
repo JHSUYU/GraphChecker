@@ -173,6 +173,69 @@ final class CfgLoopControl {
 
     }
 
+    /**
+     * Where one iteration's frame opens so that it holds the work at {@code
+     * demanded} (IDENTITY §1, {@code LOOP_BODY_ROOT}), or {@code null} where
+     * none can: the unit must be a member of the loop the header dominates;
+     * the frame opens on the one outermost control edge into the body whose
+     * target dominates it, or, when no control edge does (the work comes
+     * before every control: a {@code while (true)} left by a return or a
+     * throw, FsDatasetImpl.initReplicaRecovery's retry loop), at the header.
+     * A unit on a path that leaves the loop is no member: a call after the
+     * loop's exit decision runs once per call of the method, however often
+     * the loop turned (hdfs-adhoc-41: INodesInPath.getExistingINodes returns
+     * getAncestorINodesInPath from inside its loop).  Two edges reaching it
+     * alike prove no one entry: {@code null}.  SEED states the call units
+     * this places (the retained-loop row's {@code bodyEntryCallUnits}), and
+     * the weave asks it again of the loop it frames.
+     */
+    static Edge bodyEntry(NaturalLoop loop, Collection<Unit> controls,
+                          Unit demanded) {
+        Set<Unit> members = loop.members();
+        if (demanded == null || !members.contains(demanded)
+                || !loop.isDominatedBy(demanded, loop.header)) {
+            return null;
+        }
+        // An if's one in-loop successor, a switch's every case that stays.
+        List<Edge> entries = new ArrayList<Edge>();
+        for (Unit control : controls) {
+            for (Unit successor : loop.stableSuccessors(control)) {
+                if (members.contains(successor)
+                        && loop.isDominatedBy(demanded, successor)
+                        && !holds(entries, control, successor)) {
+                    entries.add(new Edge(control, successor));
+                }
+            }
+        }
+        if (entries.isEmpty()) {
+            return loop.backedges.isEmpty() ? null
+                    : new Edge(loop.backedges.get(0).source, loop.header);
+        }
+        Edge outermost = null;
+        for (Edge candidate : entries) {
+            boolean nested = false;
+            for (Edge other : entries) {
+                if (candidate != other && candidate.target != other.target
+                        && loop.isDominatedBy(candidate.target,
+                        other.target)) {
+                    nested = true;
+                    break;
+                }
+            }
+            if (nested) continue;
+            if (outermost != null) return null;
+            outermost = candidate;
+        }
+        return outermost;
+    }
+
+    private static boolean holds(List<Edge> edges, Unit source, Unit target) {
+        for (Edge edge : edges) {
+            if (edge.source == source && edge.target == target) return true;
+        }
+        return false;
+    }
+
     /** Natural loops in first-backedge order; units with no index skipped. */
     static List<NaturalLoop> naturalLoops(LoopCfg cfg,
                                           ToIntFunction<Unit> unitIndex) {
@@ -236,11 +299,16 @@ final class CfgLoopControl {
         /** Exact members: assign a branch to its innermost loop. */
         final Set<Unit> members;
 
-        private RetainedLoop(Unit header, List<Unit> guards,
+        /** The proved loop itself: where an iteration frame can open
+         *  ({@link #bodyEntry}). */
+        final NaturalLoop natural;
+
+        private RetainedLoop(NaturalLoop natural, List<Unit> guards,
                              String classification,
                              boolean guardsClassifyDifferently,
                              List<Unit> latches, Set<Unit> members) {
-            this.header = header;
+            this.natural = natural;
+            this.header = natural.header;
             this.guards = Collections.unmodifiableList(guards);
             this.classification = classification;
             this.guardsClassifyDifferently = guardsClassifyDifferently;
@@ -274,7 +342,7 @@ final class CfgLoopControl {
             for (Backedge backedge : natural.backedges) {
                 latches.add(backedge.source);
             }
-            result.add(new RetainedLoop(header, guards,
+            result.add(new RetainedLoop(natural, guards,
                     classification(fixedCount), fixed > 0 && !fixedCount,
                     latches, loop));
         }

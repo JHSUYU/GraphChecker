@@ -23,9 +23,17 @@ id = sha16(node/regionId/context/index-hash)
   `STATE_WRITER_ENTRY`, `FAILURE_TARGET_ENTRY`, `EXPLICIT_FAULT_ENTRY` where neither an execution
   context nor the target already roots the method that reads a fault marker), or `ROLE.<role>` for
   work under no region (`runtime/Identity#roleOccurrence`). A region whose closure holds the
-  failure is the failure's exception context whatever roots it. Where a region's root runs a service loop the
-  recording iterated more than once, one loop iteration is the activation (`LOOP_BODY_ROOT`,
-  `causynth/StaticProgram#loopBodyRoot`).
+  failure is the failure's exception context whatever roots it. One loop iteration is the activation
+  (`LOOP_BODY_ROOT`, `causynth/StaticProgram#loopBodyRoot`) where three hold: the loop is a service
+  loop of the region (it issues the call into the region's work; an indexed loop only where an
+  iteration is one unit of demanded work), the recording saw it decide its continuation more than
+  once in one activation, and an iteration's frame can open at that call
+  (`causynth/CfgLoopControl#bodyEntry`: the call is a member of the loop the header dominates, and
+  one outermost control edge into the body holds it, or none does and the frame opens at the
+  header). SEED states the placeable calls on each retained-loop row (`bodyEntryCallUnits`) and the
+  weave asks the same function, so the recording, PLAN and every replay agree; a call on a path
+  leaving the loop runs once per call of the method (hdfs ad-hoc `INodesInPath.getExistingINodes`),
+  and where no loop qualifies the region's root is the activation, never a fallback at run time.
 - **c**, **i**: §2 and §3. Nothing else enters the id: no thread id, object address or run ordinal.
 
 `runtime/Identity#occurrence` is the one computation, called at region entry in both passes;

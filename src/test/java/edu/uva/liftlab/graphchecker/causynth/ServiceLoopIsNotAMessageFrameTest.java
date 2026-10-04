@@ -103,7 +103,15 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 // hdfs-11741's addKeys runs removeExpiredKeys, then its
                 // copy loop: one unit of work, rooted at its entry.
                 {"a root that works before its loop", rootLoop(ENCODE_LEAF),
-                        null}};
+                        null},
+                // hdfs-adhoc-41: the demanded call is on the path leaving
+                // the loop (INodesInPath.getExistingINodes returns it from
+                // inside the loop), so no iteration frame holds it and the
+                // root stands, however often the loop turned.
+                {"a loop below the frame whose call leaves the loop",
+                        unplaceable(decodeRegion()), null},
+                {"a root whose in-loop call leaves the loop",
+                        unplaceable(rootLoop(SET_UP)), null}};
         for (Object[] row : rows) {
             Map<String, Object> rooted = rootLoopOf((Case) row[1]);
             Assert.assertEquals((String) row[0], row[2], rooted == null
@@ -143,7 +151,7 @@ public class ServiceLoopIsNotAMessageFrameTest {
                                      String classification) {
         return program(ENCODE_FRAME, ENCODE_LEAF,
                 Arrays.asList(ENCODE_FRAME, ENCODE_LEAF),
-                loop(ENCODE_FRAME, 14, 19, classification),
+                loop(ENCODE_FRAME, 14, 19, classification, 16),
                 port(ENCODE_LEAF, frameMethod),
                 Collections.singletonList(
                         callEdge(ENCODE_FRAME, 16, ENCODE_LEAF)));
@@ -158,7 +166,7 @@ public class ServiceLoopIsNotAMessageFrameTest {
         return program(DECODE_FRAME, DECODE_LEAF,
                 Arrays.asList(DECODE_FRAME, DECODE_WALK, DECODE_LEAF),
                 loop(DECODE_WALK, 5, 9,
-                        LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED),
+                        LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, 7),
                 port(DECODE_LEAF, DECODE_FRAME),
                 Arrays.asList(callEdge(DECODE_FRAME, 3, DECODE_WALK),
                         callEdge(DECODE_WALK, 7, DECODE_LEAF)));
@@ -189,7 +197,7 @@ public class ServiceLoopIsNotAMessageFrameTest {
         return program(ENCODE_FRAME, ENCODE_FRAME,
                 Arrays.asList(ENCODE_FRAME, ENCODE_LEAF),
                 loop(ENCODE_FRAME, 14, 19,
-                        LoopBoundPolicy.LOOP_CONDITION_BOUNDED),
+                        LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 17),
                 port(ENCODE_LEAF, ""),
                 Arrays.asList(callEdge(ENCODE_FRAME, 3, first),
                         callEdge(ENCODE_FRAME, 17, ENCODE_LEAF)));
@@ -223,10 +231,23 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 loop.get(LoopBoundPolicy.LOOP_SITE_ID))));
     }
 
-    /** One retained loop, with its header, its guard and its latch. */
+    /** {@code built}, its loop stating no call an iteration frame can
+     *  open at. */
+    private static Case unplaceable(Case built) {
+        for (Map<String, Object> loop : built.program.skeletons.get(REGION)
+                .retainedLoops) {
+            loop.put(LoopBoundPolicy.BODY_ENTRY_CALL_UNITS,
+                    Collections.emptyList());
+        }
+        return built;
+    }
+
+    /** One retained loop, with its header, its guard, its latch and the
+     *  calls an iteration frame can open at. */
     private static Map<String, Object> loop(String owner, int header,
                                             int latch,
-                                            String classification) {
+                                            String classification,
+                                            Integer... entryCalls) {
         Map<String, Object> loop = new LinkedHashMap<>();
         loop.put("schemaVersion", 4);
         loop.put("kind", "RETAINED_LOOP");
@@ -238,6 +259,8 @@ public class ServiceLoopIsNotAMessageFrameTest {
         loop.put(LoopBoundPolicy.LOOP_CONTROL_SITE_IDS,
                 Collections.singletonList(owner + "#u" + header));
         loop.put(LoopBoundPolicy.LOOP_LATCH_UNIT_INDEX, latch);
+        loop.put(LoopBoundPolicy.BODY_ENTRY_CALL_UNITS,
+                Arrays.asList(entryCalls));
         return loop;
     }
 
