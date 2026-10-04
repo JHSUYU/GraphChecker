@@ -105,6 +105,13 @@ public final class Identity {
          * its registered object's.
          */
         private Object work;
+        /**
+         * The verb of the request this thread has in hand: its last outbound
+         * named it and no receipt came since ({@link #requestInHand}); a
+         * start it makes meanwhile hands that request off ({@link
+         * #startWork}).  Its own: a child thread starts with none.
+         */
+        private String requestVerb = "";
 
         private State() {
             levels.add(new Level(null, 0L, null));
@@ -612,14 +619,18 @@ public final class Identity {
      * ({@link #occurrence}).  One test decides both: {@link Lineage#named}.</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
-        String site = JvmNames.stable(Text.safe(startSiteId));
-        if (site.isEmpty() || carrier == null) return;
+        String stable = JvmNames.stable(Text.safe(startSiteId));
+        if (stable.isEmpty() || carrier == null) return;
         if (!Lineage.named()) {
             // Never in place of a named start of the same carrier.
             STARTS.putIfAbsent(carrier, Start.UNNAMED);
             return;
         }
         State state = state();
+        // A start made with a request in hand hands that request off: it is
+        // that operation's, its k counted per verb (IDENTITY §3).
+        String site = state.requestVerb.isEmpty() ? stable
+                : stable + ":" + state.requestVerb;
         int iteration = state.nextSiteEvent(site);
         List<Frame> frames = new ArrayList<Frame>(
                 Arrays.asList(state.snapshot(state.scopeBase)));
@@ -633,6 +644,20 @@ public final class Identity {
                                 + ExecutionIndex.of(frames).render(),
                         Thread.currentThread(), state.top(), state.depth()));
         ScheduleLog.observe(ScheduleEvent.Kind.START, site);
+    }
+
+    /**
+     * Sets the request this thread has in hand: every outbound states its
+     * verb ({@code ""} for a message whose door names none, and for a
+     * response), every receipt clears it.  The Hadoop IPC caller sends its
+     * request, hands it to the connection's sender (a queue offer, the
+     * start {@link #startWork} names), waits and receives the response: a
+     * DataNode turn's heartbeat hand-off no longer takes its block report's
+     * START and CLAIM (hdfs-adhoc-15).
+     */
+    static void requestInHand(String verb) {
+        // Not state(): a door is no identity event, and claims no start.
+        CURRENT.get().requestVerb = Endpoint.verb(verb);
     }
 
     /**
@@ -1083,8 +1108,12 @@ public final class Identity {
             }
             Frame frame = state.addressedFrame(index);
             if (chain.length() > 0) chain.append('>');
-            chain.append(frame.callSite()).append('@')
-                    .append(frame.iteration());
+            chain.append(frame.callSite());
+            // An inherited frame by its site alone: its k counts how often
+            // the creator came there (the k-th call of a poll re-creating an
+            // idle connection), which one thread's events must not depend
+            // on; a claim level's k is the start's own.
+            if (level.token == 0L) chain.append('@').append(frame.iteration());
         }
         return chain.toString();
     }

@@ -50,12 +50,21 @@ public final class Endpoint extends Value {
                                      String verb) {
         String site = (transport == null ? "" : transport) + "#"
                 + (half == null ? "" : half);
-        if (verb == null || verb.isEmpty()) return site;
+        String named = verb(verb);
+        return named.isEmpty() ? site : site + ":" + named;
+    }
+
+    /**
+     * A message's verb as a site spells it, {@code ""} for none: no {@code
+     * /} or {@code @}, which separate an index's frames and a frame's k.
+     */
+    public static String verb(String verb) {
+        if (verb == null) return "";
         if (verb.indexOf('/') >= 0 || verb.indexOf('@') >= 0) {
             throw new IllegalArgumentException("a message verb spells no '/'"
                     + " or '@': " + verb);
         }
-        return site + ":" + verb;
+        return verb;
     }
 
     /** The one spelling of a STATE endpoint's site, no descriptor stated. */

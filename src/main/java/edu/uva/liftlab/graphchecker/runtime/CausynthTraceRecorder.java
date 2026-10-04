@@ -697,6 +697,8 @@ public final class CausynthTraceRecorder {
                                           Object localOwner,
                                           Object carriedScope, String verb) {
         initialize();
+        // A start before the next receipt hands this request off.
+        Identity.requestInHand(verb);
         String header;
         try {
             header = RuntimeTraceContext.outboundHeader(localOwner,
@@ -786,6 +788,8 @@ public final class CausynthTraceRecorder {
                                        Object localOwner, boolean awaited,
                                        String via) {
         initialize();
+        // A receipt ends the request this thread had in hand.
+        Identity.requestInHand("");
         long token;
         try {
             token = RuntimeTraceContext.enterInbound(header, transport,

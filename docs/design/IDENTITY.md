@@ -121,7 +121,14 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   site in the enclosing level under the current root hop (`State#nextSiteEvent`, keyed by level,
   root-hop token and site). It is not a loop-iteration count.
 - **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, the starter's
-  index from its scope base followed by a frame (site, k-th start at that site) with the carrier;
+  index from its scope base followed by a frame (site, k-th start at that site) with the carrier.
+  A start made with a request in hand hands that request off: its site is `<site>:<verb>` and its
+  `k` counts per verb (`Identity#requestInHand`). The verb is per thread, set by every outbound to
+  the message's verb (`""` where its door names none, and for a response), cleared by every inbound,
+  and never inherited by a thread the holder starts; the Hadoop IPC caller sends its request, offers
+  it to the connection's sender (the start), waits and receives the response, so a DataNode turn's
+  heartbeat hand-off no longer takes its block report's `START` and `CLAIM` (hdfs-adhoc-15).
+  The frames go with the carrier;
   the started work claims them at its first identity event or at its functional method's entry
   (`#claimStart`). A task claimed on a pool's thread stands on all of them; a started thread
   already stands on its creator's frames and adds the start frame alone. So siblings started from
@@ -489,10 +496,12 @@ begin), `END` (a tick's end), `INTERRUPT`. `context` = `<node>|<ctx render>[|<st
 it was filed with) (`ScheduleLog#contextOf`, `Identity#handoffs`). A task claimed on a pool's
 thread stands on its starter's frames as levels of its claim; a started thread stands on the frames
 it inherited from its creator (§6) and adds its start frame alone, so its inherited frames above its
-scope base are its starter's frames here: two threads started through one utility (Hadoop's
-`Daemon.start`, each call a level of its own, both starts its 0th) after one RPC returned differ by
-the frames they were made under (hdfs-adhoc-02: the LeaseRenewer had taken the DataStreamer's
-addBlock slot). Only the schedule's context strings carry this; occurrence and endpoint ids, and the
+scope base are its starter's frames here, by their call sites alone (their `k` counts how often the
+creator came there: the k-th call of a poll re-creating an idle IPC connection, which one thread's
+events must not depend on): two threads started through one utility (Hadoop's `Daemon.start`, each
+call a level of its own, both starts its 0th) after one RPC returned differ by the sites they were
+made at (hdfs-adhoc-02: the LeaseRenewer had taken the DataStreamer's addBlock slot). Two threads
+one site made in two calls of one method, each started from a level of its own, share a context. Only the schedule's context strings carry this; occurrence and endpoint ids, and the
 question shapes (`ContextShape.Stance` reads node and causal context only), do not; a recording
 made before this rule states shorter contexts for such threads, so it cannot hold a replay made
 after it (every campaign records and replays with one frozen jar). `k` counts events per (kind, context, site). A
