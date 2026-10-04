@@ -37,6 +37,11 @@ else
     ${CAUSYNTH_PLANT:+"-Dcausynth.plant=${CAUSYNTH_PLANT}"})
 fi
 
+# The case's window, the same in the recording and every replay
+# (case-env.sh recording_window; runtime.RecordingWindow#atStartup).
+[[ -z ${recording_window} ]] \
+  || properties+=("-Dcausynth.recording.window=${recording_window}")
+
 mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
 
 # Where the JVM puts its temp files and the cluster its data

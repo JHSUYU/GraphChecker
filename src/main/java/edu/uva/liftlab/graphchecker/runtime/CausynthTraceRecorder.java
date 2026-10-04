@@ -886,6 +886,27 @@ public final class CausynthTraceRecorder {
                 identity(anchor));
     }
 
+    /** Opens one node's construction ({@code MessageDoors#beginNodeStartup}). */
+    public static long beginNodeStartup(String kind, String role,
+                                        String sourceId) {
+        initialize();
+        return RuntimeTraceContext.beginNodeStartup(
+                new SourceRef(kind, role, sourceId, 0L));
+    }
+
+    /** Opens one startup of a registered node, or none. */
+    public static long beginNodeStartup(Object node) {
+        initialize();
+        return RuntimeTraceContext.beginNodeStartup(
+                RuntimeTraceContext.sourceFor(node));
+    }
+
+    /** Ends it. */
+    public static void endNodeStartup(long token) {
+        initialize();
+        RuntimeTraceContext.endNodeStartup(token);
+    }
+
     /** Binds a service/handler object to an already registered source. */
     public static void registerSourceAlias(Object alias, Object anchor) {
         initialize();

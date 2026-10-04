@@ -22,6 +22,12 @@
 #   target_spec         default: <case-dir>/target.yaml; when there is none,
 #                       run.sh derives it from the tree's marker of the case
 #                       (tools/lib/annotated.py)
+#   recording_window    where the recorded window opens, the same in every
+#                       workload JVM of the run (execute.sh): empty, once the
+#                       cluster is up; "startup", before the cluster starts,
+#                       for a bug whose fatal value is set while it starts
+#                       (owner-approved opt-in for that class of bug only;
+#                       the system's cluster adapter must support it)
 # system.sh defines, after the case is read,
 #   system_paths        sets module, report, test_classes, lineage_roots
 #   system_root <name>  a compiled class root the scope names
@@ -40,6 +46,7 @@ here=${case_dir}
 loop_bounds=${case_dir}/loop-bounds.jsonl
 target_spec=${case_dir}/target.yaml
 target_occurrence=
+recording_window=
 scope=()
 # shellcheck source=/dev/null
 source "${system_dir}/system.sh"
@@ -50,6 +57,10 @@ source "${case_dir}/case.sh" "${case_id}"
 # occurrence -- the one honest way to re-read an address after an identity
 # change.
 target_occurrence=${CAUSYNTH_TARGET_OCCURRENCE_OVERRIDE-${target_occurrence}}
+case "${recording_window}" in
+  ""|startup) ;;
+  *) echo "unknown recording_window: '${recording_window}'" >&2; return 2 ;;
+esac
 system_paths
 tag=${case_name}${case_id:+-${case_id}}
 # The run's output directory (run.sh exports it): where every artifact goes.
