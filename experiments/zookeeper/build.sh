@@ -31,8 +31,9 @@ mvn "${common[@]}" install:install-file "-Dfile=${jar}" \
 cd "${repo}"
 common+=(-Dcheckstyle.skip -Dspotbugs.skip -Dmaven.javadoc.skip=true)
 mvn "${common[@]}" -DskipTests install -pl "${module}" -am
+# Surefire takes the method: a parameterized one (m[k]) runs every invocation.
 mvn "${common[@]}" test -pl "${module}" \
-  -Dtest="${test_class##*.}#${test_method}" -Dcausynth.cluster.automatic=true
+  -Dtest="${test_class##*.}#${test_method%%\[*}" -Dcausynth.cluster.automatic=true
 
 python3 - "${repo}/${module}/target/surefire-reports/TEST-${test_class}.xml" <<'PY'
 import sys
@@ -41,7 +42,7 @@ import xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
 counts = {name: int(root.get(name, "0"))
           for name in ("tests", "errors", "failures", "skipped")}
-if counts != {"tests": 1, "errors": 0, "failures": 0, "skipped": 0}:
+if counts["tests"] < 1 or counts["errors"] or counts["failures"] or counts["skipped"]:
     raise SystemExit(f"workload did not pass: {counts}")
 automatic = {p.get("name"): p.get("value")
              for p in root.findall("./properties/property")}.get(
