@@ -230,13 +230,14 @@ final class ConcolicVmBroker {
     /**
      * Starts the version log of the state of the container {@code value} is
      * or stands for (a view, an iterator, a wrapper), unless it stands;
-     * outside every region, a {@code mutation} marks a standing log
-     * incomplete instead (VM.md §5.4).  Answers {@link #OK}, {@link
-     * #NO_ACTIVE_REGION} or {@link #UNSUPPORTED_TARGET} (no container the VM
-     * models); any other status is thrown by name.
+     * {@code afterMutation} on a thread outside every region, marks a
+     * standing log incomplete instead (VM.md §5.4).  Answers {@link #OK},
+     * {@link #NO_ACTIVE_REGION} or {@link #UNSUPPORTED_TARGET} (no container
+     * the VM models); any other status is thrown by name.
      */
-    long observeContainer(Object value, boolean mutation) throws Exception {
-        Object status = observeContainer.invoke(null, value, mutation);
+    long observeContainer(Object value, boolean afterMutation)
+            throws Exception {
+        Object status = observeContainer.invoke(null, value, afterMutation);
         long answered = status instanceof Number
                 ? ((Number) status).longValue() : MALFORMED_RESULT;
         if (answered != OK && answered != NO_ACTIVE_REGION

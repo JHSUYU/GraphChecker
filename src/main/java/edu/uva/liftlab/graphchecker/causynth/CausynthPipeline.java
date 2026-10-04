@@ -2125,8 +2125,10 @@ public final class CausynthPipeline {
      * through an accessor (the site names it), on the call's receiver; a
      * static cell's owner is its declaring class's mirror, the key the VM
      * versions it by.  The state of the container the cell holds ({@code
-     * container}): after a read, on the referent it returned; before a
-     * container mutation through the cell, on the call's receiver.  An
+     * container}): after a read, on the referent it returned; before and
+     * after a container mutation through the cell, on the call's receiver
+     * (before: a region thread starts the log the mutation then versions;
+     * after: a thread outside every region marks it).  An
      * instance access before the constructor call that makes its object has
      * no object to observe yet, and a read site that is no field read of its
      * cell, or whose value nothing holds, observes nothing.
@@ -2179,12 +2181,18 @@ public final class CausynthPipeline {
             if (!target.container) continue;
             List<Unit> observation = new ArrayList<>();
             if (!target.read) {
+                Value receiver = objectArg(body, owner, observation);
                 refs.bracket(observation, Hook.OBSERVE_TRACKED_CONTAINER,
                         StringConstant.v(target.siteId),
-                        StringConstant.v(target.cell),
-                        objectArg(body, owner, observation),
-                        IntConstant.v(1));
+                        StringConstant.v(target.cell), receiver,
+                        IntConstant.v(0));
                 insertBeforeSequence(body, selected, observation);
+                List<Unit> after = new ArrayList<>();
+                refs.bracket(after, Hook.OBSERVE_TRACKED_CONTAINER,
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.cell), receiver,
+                        IntConstant.v(1));
+                insertAfterSequence(body, selected, after);
             } else if (selected instanceof AssignStmt) {
                 refs.bracket(observation, Hook.OBSERVE_TRACKED_CONTAINER,
                         StringConstant.v(target.siteId),

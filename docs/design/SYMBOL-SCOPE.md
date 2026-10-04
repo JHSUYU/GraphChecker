@@ -726,9 +726,9 @@ not the carrier's holder (its log starts at its first model event).
 **A container a cell holds** (a `REFERENCE` or `CONTAINER` cell of a container type, no array) is
 observed by its state: after each read of the cell, on the referent the read returned, and before
 each container mutation through it, on the call's receiver (a view or an iterator stands for its
-container), `ConcolicRegionRuntime.observeTrackedContainer(siteId, cell, container, mutation)` calls
-the VM's `observeContainer` (`runtime/ConcolicVmBroker#observeContainer`, VM.md §5.4), which starts
-the container's state log with an INITIAL stating what it holds, unless a log stands. Every later
+container), `ConcolicRegionRuntime.observeTrackedContainer(siteId, cell, container, afterMutation)`
+calls the VM's `observeContainer` (`runtime/ConcolicVmBroker#observeContainer`, VM.md §5.4), which
+starts the container's state log with an INITIAL stating what it holds, unless a log stands. Every later
 modeled mutation is then a `STATE` version with its writer, site and guard -- whatever object
 reaches the container (VM.md §6) -- and every query reads one, so COMPOSE re-pairs the anchor's
 query of it like any state read (PIPELINE §8, `SmtLowering#movedQuery`): to the INITIAL, or to an
@@ -740,8 +740,9 @@ reached the DataNode's map first. A `CONTAINER` cell's field is never observed (
 store neither), and a mutator call never observes a field -- but an atomic's write of its value: its
 receiver is no holder of the cell (a `GSet`'s `put`, a `BestEffortLongFile`'s `set` had each
 access refused `HANDOFF_FIELD_NOT_FOUND`); a mutator call on a cell holding no container observes
-nothing. Outside every region a mutation runs as bytecode no model sees, so its observation marks a
-standing log incomplete (`UNHOOKED_CONTAINER_MUTATION`) instead of leaving its chain stale. A value
+nothing. Outside every region a mutation runs as bytecode no model sees, so a second observation
+just after it marks a standing log incomplete (`UNHOOKED_CONTAINER_MUTATION`) instead of leaving its
+chain stale -- after, so a log another thread started meanwhile is marked too. A value
 no container model knows (a `TreeMap`, a `CopyOnWriteArrayList`) is an `UNSTATED_VALUE` DIAGNOSTIC
 row naming its class, once per site.
 
