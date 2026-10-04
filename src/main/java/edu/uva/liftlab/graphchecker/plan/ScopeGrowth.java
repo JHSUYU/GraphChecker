@@ -45,6 +45,11 @@ import java.util.zip.ZipFile;
  *       constant, no state;</li>
  *   <li>a {@link ScopeFrontier#FORMAL}: every class calling the method.</li>
  * </ul>
+ * A row the root demand found where a local file fault could stand ({@code
+ * demand} IO: a call into the system that escapes before a demanded store,
+ * or that a handler deciding a demanded site catches) takes its class only
+ * when that class itself calls a demanded door's anchor ({@link
+ * LibraryCatalog#demandedDoor}); any other is skipped, named in the summary.
  * A protobuf message is a wire payload (F3), never scope.  Rows are taken
  * in the frontier's order -- the root demand's first, then nearest first
  * ({@link ScopeFrontier}) -- until the budget of grown classes is spent;
@@ -75,6 +80,8 @@ public final class ScopeGrowth {
     /** The door step's flag, and the kind of its manifest lines. */
     static final String DOORS = "--doors";
     private static final String DOOR = "DOOR";
+    /** The root demand's class of a row where a file fault could stand. */
+    private static final String IO = "IO";
     private static final Pattern METHOD = Pattern.compile(
             "<([^:]+): \\S+ ([^(\\s]+)\\(([^)]*)\\)>");
     private static final Pattern FIELD = Pattern.compile(
@@ -116,13 +123,20 @@ public final class ScopeGrowth {
             if (!line.contains("\t" + DOOR + "\t")) taken++;
         }
         int added = 0;
+        Set<String> noFileOperation = new TreeSet<>();
         for (JsonObject row : rows) {
             String kind = row.get("kind").getAsString();
             String signature = row.get("signature").getAsString();
+            boolean io = row.has("demand")
+                    && IO.equals(row.get("demand").getAsString());
             for (String name : index.resolve(kind, signature)) {
                 if (taken + added >= budget) break;
                 ClassFacts facts = index.classes.get(name);
                 if (present.contains(name) || index.protobuf(name)) continue;
+                if (io && !index.callsFileOperation(name)) {
+                    noFileOperation.add(name);
+                    continue;
+                }
                 Path target = grown.resolve(facts.relative);
                 Files.createDirectories(target.getParent());
                 Files.copy(facts.file, target,
@@ -134,7 +148,29 @@ public final class ScopeGrowth {
             }
         }
         System.out.println(added + " added " + added + " class(es), "
-                + (taken + added) + " of " + budget + " grown");
+                + (taken + added) + " of " + budget + " grown"
+                + (noFileOperation.isEmpty() ? "" : "; IO rows skipped, no "
+                + "file operation of their own: " + noFileOperation));
+    }
+
+    /** Whether a class calls a demanded door's anchor itself: a local file
+     *  operation a door could stand at once it is analysed. */
+    boolean callsFileOperation(String name) {
+        ClassFacts facts = classes.get(name);
+        if (facts == null) return false;
+        for (String call : facts.calls) {
+            String[] at = call.split("\\|", 2);
+            for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
+                Matcher anchor = METHOD.matcher(door.anchor);
+                if (door.demanded && anchor.matches()
+                        && anchor.group(1).equals(at[0])
+                        && at[1].equals(anchor.group(2) + "("
+                        + anchor.group(3) + ")")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** The door step ({@value #DOORS}): one decision per family, in catalog

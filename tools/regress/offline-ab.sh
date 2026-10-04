@@ -278,9 +278,19 @@ ab_stage_seed_static() {
     "-Dcausynth.lineage.roots=$(ab_cfg causynth_lineage_roots)")
   [[ -z "$(ab_cfg causynth_communication_mappings)" ]] || ab_props+=(
     "-Dcausynth.communication.mappings=$(ab_cfg causynth_communication_mappings)")
-  ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
-    "${ab_jar}:${ab_project_cp}" edu.uva.liftlab.graphchecker.GraphCheckerMain \
-    -i "${classes}" -x "${ab_project_cp}" -o "${out}/instrumented-classes"
+  # campaign_analyze_grown_scope's demanded doors: a pass that chose more
+  # runs again over them.
+  ab_props+=("-Dcausynth.io.doors=${out}/io_doors.jsonl")
+  local doors=0 chosen
+  while :; do
+    ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
+      "${ab_jar}:${ab_project_cp}" edu.uva.liftlab.graphchecker.GraphCheckerMain \
+      -i "${classes}" -x "${ab_project_cp}" -o "${out}/instrumented-classes" \
+      || break
+    chosen=$(grep -c . "${out}/io_doors.jsonl" 2>/dev/null || true)
+    (( ${chosen:-0} > doors )) || break
+    doors=${chosen}
+  done
   ab_props=()
 }
 

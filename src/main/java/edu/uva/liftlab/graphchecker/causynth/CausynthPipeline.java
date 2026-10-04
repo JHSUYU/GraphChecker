@@ -174,9 +174,11 @@ public final class CausynthPipeline {
         Map<String, Clock> clocks = RootCatalog.clocks(result.edges);
         ConfigRoots recognized = ConfigRoots.of(result.edges,
                 result.fieldWriters);
+        Predicate<String> systemClass = systemClass();
         RootDemand demand = RootDemand.of(result.edges, result.regions,
                 clocks, recognized, targetPathSites(result.edges),
-                CausynthStaticFacts::trackedKind, systemClass());
+                CausynthStaticFacts::trackedKind, systemClass,
+                new LatentFaults(systemClass), DemandedDoors.woven());
         ConfigRoots config = recognized.limitedTo(demand.configSources());
         Set<String> plantedConfigReads =
                 StaticSymbolicSourceDiscovery.discover(result, config);
@@ -208,6 +210,8 @@ public final class CausynthPipeline {
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
                 target.outputDir, result, scopeMap, frontier, demand.rows());
+        DemandedDoors.write(target.outputDir.resolve(DemandedDoors.FILE),
+                demand.doors());
         long artifactWriteMillis = elapsedMillis(artifactWriteStart);
         LOG.info("Discovery phase timing: seedAnalysis={} ms, "
                         + "skeletonPlanning={} ms, artifactWrite={} ms",

@@ -36,16 +36,22 @@ import java.util.regex.Pattern;
  *
  * <ul>
  *   <li>{@code DOOR} ({@code transport, direction, method?, before | after,
- *       faults}): a transport's fault point ({@link DoorWeave}), at the first
- *       call of {@code before} or {@code after} in {@code method}, one
- *       marker per fault kind in order.  Rows of one door method (its
- *       transport, direction, class and name) are that method's signatures
- *       on different library lines (Hadoop IPC's response wait is a
- *       {@code CompletableFuture} on trunk, a monitor on 3.4).  A door with
- *       no {@code method} is a library call whose outcome each caller reads
- *       where it makes it (a DataTransfer op's response, parsed by every
- *       side that sent the op): it sits at the first call of its anchor in
- *       every analysed method making one.</li>
+ *       faults | result, sites?}): a transport's fault point ({@link
+ *       DoorWeave}), at the first call of {@code before} or {@code after} in
+ *       {@code method}, one marker per fault kind in order.  Rows of one
+ *       door method (its transport, direction, class and name) are that
+ *       method's signatures on different library lines (Hadoop IPC's
+ *       response wait is a {@code CompletableFuture} on trunk, a monitor on
+ *       3.4).  A door with no {@code method} is a library call whose outcome
+ *       each caller reads where it makes it (a DataTransfer op's response,
+ *       parsed by every side that sent the op): it sits at the first call of
+ *       its anchor in every analysed method making one -- or, with {@code
+ *       sites} {@value #DEMANDED}, only at the calls the root demand chose
+ *       ({@link DemandedDoors}: a local file operation, {@code LOCAL_IO}),
+ *       before the call, so a failed operation never happens.  Such a door
+ *       states either the kinds it throws or the failing {@code result} the
+ *       call returns instead ({@code false}, {@code null}: {@code
+ *       File#renameTo}, {@code File#list}).</li>
  *   <li>{@code CONFIG_SOURCE} ({@code method, keyArg, defaultArg?}): a
  *       configuration getter, argument {@code keyArg} (a String) its key and
  *       {@code defaultArg} its default ({@link ConfigRoots}).</li>
@@ -68,13 +74,15 @@ public final class LibraryCatalog {
     static final String CONFIG_FIELD_OWNER = "CONFIG_FIELD_OWNER";
     /** A system's own row: where its hook sits relative to a catalog door. */
     static final String HOOK = "HOOK";
+    /** A door's {@code sites}: only the calls the root demand chose. */
+    static final String DEMANDED = "DEMANDED";
 
     private static final Map<String, Set<String>> MEMBERS =
             new LinkedHashMap<>();
 
     static {
         MEMBERS.put(DOOR, names("transport", "direction", "method", "before",
-                "after", "faults"));
+                "after", "faults", "result", "sites"));
         MEMBERS.put(CONFIG_SOURCE, names("method", "keyArg", "defaultArg"));
         MEMBERS.put(CONFIG_FIELD_OWNER, names("class"));
         MEMBERS.put(HOOK, names("transport", "direction", "door", "method",
@@ -129,6 +137,10 @@ public final class LibraryCatalog {
         }
     }
 
+    /** What a demanded door's call returns instead of failing by a
+     *  throw: nothing (it throws its kinds), {@code false} or {@code null}. */
+    public enum Result { NONE, FALSE, NULL }
+
     /** One fault point of a library transport. */
     public static final class Door {
         public final String transport;
@@ -139,16 +151,25 @@ public final class LibraryCatalog {
         /** The call the door sits at, and on which side of it. */
         public final String anchor;
         public final boolean after;
+        /** The kinds thrown, in order; none for a failing result. */
         public final List<String> faults;
+        /** Woven only at the calls the root demand chose ({@value
+         *  #DEMANDED}). */
+        public final boolean demanded;
+        /** The failing result, or {@link Result#NONE}. */
+        public final Result result;
 
         private Door(String transport, String direction, String method,
-                     String anchor, boolean after, List<String> faults) {
+                     String anchor, boolean after, List<String> faults,
+                     boolean demanded, Result result) {
             this.transport = transport;
             this.direction = direction;
             this.method = method;
             this.anchor = anchor;
             this.after = after;
             this.faults = Collections.unmodifiableList(faults);
+            this.demanded = demanded;
+            this.result = result;
         }
 
         /** {@code FAULT:<TRANSPORT>:<DIRECTION>}, the markers' stem. */
@@ -177,9 +198,11 @@ public final class LibraryCatalog {
             return name() + " at " + member.group(1) + "#" + member.group(2);
         }
 
-        /** Where the door sits: its method, or every call of its anchor. */
+        /** Where the door sits: its method, every call of its anchor, or
+         *  the demanded ones. */
         String place() {
-            return atCalls() ? "every call of " + anchor : method;
+            return demanded ? "the demanded calls of " + anchor
+                    : atCalls() ? "every call of " + anchor : method;
         }
     }
 
@@ -284,7 +307,8 @@ public final class LibraryCatalog {
             for (Hook hook : hooks) {
                 if (!hook.places(door)) continue;
                 placed = new Door(door.transport, door.direction,
-                        hook.method, hook.after, true, door.faults);
+                        hook.method, hook.after, true, door.faults,
+                        door.demanded, door.result);
                 used.add(hook);
             }
             doors.add(placed);
@@ -321,6 +345,14 @@ public final class LibraryCatalog {
             }
         }
         return hooks;
+    }
+
+    /** The demanded door at calls of {@code callee}, or null. */
+    public static Door demandedDoor(String callee) {
+        for (Door door : doors()) {
+            if (door.demanded && door.anchor.equals(callee)) return door;
+        }
+        return null;
     }
 
     /** The door transports: a {@code FAULT:<TRANSPORT>:...} marker is a
@@ -427,23 +459,50 @@ public final class LibraryCatalog {
             throw new IllegalArgumentException(
                     "a door states one of before and after");
         }
+        String method = optionalText(row, "method");
+        String sites = optionalText(row, "sites");
+        boolean demanded = sites != null;
+        if (demanded && (!DEMANDED.equals(sites) || method != null
+                || before == null)) {
+            throw new IllegalArgumentException("sites " + DEMANDED
+                    + " is a door at calls with no method, before its call:"
+                    + " a failed operation never happens");
+        }
         JsonElement listed = row.get("faults");
-        if (listed == null || !listed.isJsonArray()
-                || listed.getAsJsonArray().size() == 0) {
-            throw new IllegalArgumentException(
-                    "faults lists the kinds a door throws");
+        Result result = result(row.get("result"), row.has("result"));
+        if (result != Result.NONE && (!demanded || listed != null)) {
+            throw new IllegalArgumentException("a failing result belongs "
+                    + "to a demanded door that throws no faults");
         }
         List<String> faults = new ArrayList<>();
-        for (JsonElement kind : listed.getAsJsonArray()) {
-            faults.add(matching(CLASS, string(kind, "faults"), "faults")
-                    .group());
+        if (result == Result.NONE) {
+            if (listed == null || !listed.isJsonArray()
+                    || listed.getAsJsonArray().size() == 0) {
+                throw new IllegalArgumentException(
+                        "faults lists the kinds a door throws");
+            }
+            for (JsonElement kind : listed.getAsJsonArray()) {
+                faults.add(matching(CLASS, string(kind, "faults"), "faults")
+                        .group());
+            }
         }
-        String method = optionalText(row, "method");
         return new Door(matching(NAME, text(row, "transport"), "transport")
                 .group(), matching(NAME, text(row, "direction"), "direction")
                 .group(), method == null ? null : signature(method).group(),
                 signature(after != null ? after : before).group(),
-                after != null, faults);
+                after != null, faults, demanded, result);
+    }
+
+    /** A door's {@code result}: {@code false} or {@code null} when stated. */
+    private static Result result(JsonElement value, boolean stated) {
+        if (!stated) return Result.NONE;
+        if (value.isJsonNull()) return Result.NULL;
+        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean()
+                && !value.getAsBoolean()) {
+            return Result.FALSE;
+        }
+        throw new IllegalArgumentException("result is false or null: "
+                + value);
     }
 
     /** One CONFIG_SOURCE row, checked. */

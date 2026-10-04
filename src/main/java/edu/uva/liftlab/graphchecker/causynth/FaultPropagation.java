@@ -8,6 +8,7 @@ import soot.Scene;
 import soot.SootClass;
 import soot.SootMethod;
 import soot.Trap;
+import soot.Type;
 import soot.Unit;
 import soot.Value;
 import soot.jimple.AssignStmt;
@@ -47,6 +48,9 @@ import java.util.TreeSet;
  * <ul>
  *   <li>a woven door throw ({@link DoorWeave#woven}) of a catalog
  *       transport;</li>
+ *   <li>a throw of a checked exception on the failing arm of a demanded
+ *       door's result ({@link DoorWeave#wovenResult}): {@code if
+ *       (!f.renameTo(g)) throw new IOException(..)}, from its marker;</li>
  *   <li>a call whose targets (CHA over the analysed program) let one
  *       escape;</li>
  *   <li>a call of an interface method no analysed class implements (a
@@ -63,6 +67,15 @@ import java.util.TreeSet;
  * the method.  The origins of a raise are the cells the fault comes from:
  * {@code <callee>.throws} of each target it escapes (of each door method a
  * proxy reaches), or the woven throw's marker local.</p>
+ *
+ * <p>The {@link #latent} model is the root demand's alone (SYMBOL-SCOPE
+ * §4.6): it adds, where no door stands yet, every call of a demanded
+ * door's anchor that throws (its kinds) and every checked throw on the
+ * failing arm of a failing-result anchor's call, each a raise whose origin
+ * is that call ({@link Raise#latent}), and every call into the system
+ * outside the analysed program that declares a checked exception
+ * ({@link Raise#frontier}): where a door could stand, and where growing the
+ * scope could find one.  The slice never reads it.</p>
  */
 final class FaultPropagation {
     static final String THROWS = ".throws";
@@ -71,6 +84,7 @@ final class FaultPropagation {
     private static FaultPropagation current;
 
     private final Scene scene;
+    private final boolean latent;
     /** Per analysed method. */
     private final Map<String, MethodFaults> byMethod = new LinkedHashMap<>();
 
@@ -83,6 +97,18 @@ final class FaultPropagation {
         /** The marker locals of the woven throws it throws (itself, or what
          *  a handler rethrows). */
         final Set<Local> markers = new LinkedHashSet<>();
+        /** The raises of this method a rethrow throws again. */
+        final Set<Raise> origins = new LinkedHashSet<>();
+        /** The branch whose arm an in-method throw stands on: a woven
+         *  throw's marker branch, a failing result's test; null for a
+         *  call, which is its own fault branch. */
+        Unit branch;
+        /** The latent model's: the call of a demanded door's anchor whose
+         *  fault this raise throws, where no door stands yet; else null. */
+        Stmt latent;
+        /** The latent model's: a call into the system outside the analysed
+         *  program declaring a checked exception, else null. */
+        String frontier;
 
         private Raise(Unit unit) {
             this.unit = unit;
@@ -106,17 +132,45 @@ final class FaultPropagation {
         }
     }
 
-    private FaultPropagation(Scene scene) {
+    private FaultPropagation(Scene scene, boolean latent) {
         this.scene = scene;
+        this.latent = latent;
     }
 
     /** The model of the analysed program, built at first use over each
      *  Scene. */
     static synchronized FaultPropagation current() {
         if (current == null || current.scene != Scene.v()) {
-            current = build(Scene.v());
+            current = build(Scene.v(), false);
         }
         return current;
+    }
+
+    /**
+     * The woven program's model with every latent fault added: the calls
+     * where a demanded door could stand and the calls into the system
+     * outside the analysed program ({@code systemClass}), for the root
+     * demand to choose from.
+     */
+    static FaultPropagation latent(
+            java.util.function.Predicate<String> systemClass) {
+        FaultPropagation model = new FaultPropagation(Scene.v(), true);
+        model.systemClass = systemClass;
+        return model.settled();
+    }
+
+    private java.util.function.Predicate<String> systemClass;
+
+    /** The raises whose fault branch is {@code unit}: a call raising
+     *  itself, or the in-method throws standing on its arm. */
+    List<Raise> decidedBy(String method, Unit unit) {
+        List<Raise> found = new ArrayList<>();
+        MethodFaults faults = byMethod.get(method);
+        if (faults == null) return found;
+        for (Raise raise : faults.raises) {
+            if (raise.unit == unit || raise.branch == unit) found.add(raise);
+        }
+        return found;
     }
 
     /** The handlers a raise unit's door kinds go to; none for any other
@@ -151,8 +205,13 @@ final class FaultPropagation {
 
     // ---- the model -----------------------------------------------------
 
-    private static FaultPropagation build(Scene scene) {
-        FaultPropagation model = new FaultPropagation(scene);
+    private static FaultPropagation build(Scene scene, boolean latent) {
+        return new FaultPropagation(scene, latent).settled();
+    }
+
+    private FaultPropagation settled() {
+        FaultPropagation model = this;
+        Scene scene = this.scene;
         Set<String> transports = LibraryCatalog.transports();
         List<SootMethod> invokes = new ArrayList<>();
         for (SootClass owner : new ArrayList<>(scene.getApplicationClasses())) {
@@ -167,20 +226,15 @@ final class FaultPropagation {
                 }
             }
         }
-        // The raises every body states by itself: its woven throws.
+        // The raises every body states by itself: its woven throws, the
+        // checked throws on a woven result's failing arm, and in the latent
+        // model the calls where a door could stand.
         boolean raised = false;
-        for (MethodFaults faults : model.byMethod.values()) {
-            for (Unit unit : faults.body.getUnits()) {
-                DoorWeave.Fault woven = DoorWeave.woven(faults.body, unit);
-                String transport = woven == null ? null
-                        : woven.name.split(":", -1)[1];
-                if (transport == null || !transports.contains(transport)) {
-                    continue;
-                }
-                Raise raise = raiseAt(faults, unit);
-                raise.markers.add(woven.marker);
-                raise.kinds.add(woven.kind);
-                raised = true;
+        for (Map.Entry<String, MethodFaults> entry
+                : model.byMethod.entrySet()) {
+            MethodFaults faults = entry.getValue();
+            for (Unit unit : new ArrayList<>(faults.body.getUnits())) {
+                raised |= model.ownRaises(faults, unit, transports);
             }
         }
         if (!raised) return model;
@@ -203,6 +257,154 @@ final class FaultPropagation {
             }
         }
         return model;
+    }
+
+    /** The raises {@code unit} states by itself; whether there are any. */
+    private boolean ownRaises(MethodFaults faults, Unit unit,
+                              Set<String> transports) {
+        DoorWeave.Fault woven = DoorWeave.woven(faults.body, unit);
+        if (woven != null) {
+            if (!transports.contains(woven.name.split(":", -1)[1])) {
+                return false;
+            }
+            Raise raise = raiseAt(faults, unit);
+            raise.markers.add(woven.marker);
+            raise.kinds.add(woven.kind);
+            raise.branch = woven.branch;
+            return true;
+        }
+        DoorWeave.Fault result = DoorWeave.wovenResult(faults.body, unit);
+        if (result != null) {
+            return failingArm(faults, result.call,
+                    raise -> raise.markers.add(result.marker));
+        }
+        if (!latent || !((Stmt) unit).containsInvokeExpr()
+                || DoorWeave.doorSite(unit)
+                || !DoorWeave.analysed(faults.body.getMethod()
+                .getDeclaringClass())) {
+            return false;
+        }
+        Stmt call = (Stmt) unit;
+        LibraryCatalog.Door door = LibraryCatalog.demandedDoor(
+                call.getInvokeExpr().getMethodRef().getSignature());
+        if (door == null) return frontier(faults, call);
+        if (door.result != LibraryCatalog.Result.NONE) {
+            return call instanceof AssignStmt && failingArm(faults,
+                    (AssignStmt) call, raise -> raise.latent = call);
+        }
+        Raise raise = raiseAt(faults, unit);
+        raise.kinds.addAll(door.faults);
+        raise.latent = call;
+        return true;
+    }
+
+    /**
+     * A call into the system outside the analysed program declaring a
+     * checked exception: a raise of the latent model naming its callee, so
+     * the demand can grow the scope where a door could stand.
+     */
+    private boolean frontier(MethodFaults faults, Stmt call) {
+        SootMethod callee;
+        try {
+            callee = call.getInvokeExpr().getMethod();
+        } catch (RuntimeException unresolved) {
+            return false;
+        }
+        String owner = callee.getDeclaringClass().getName();
+        if (byMethod.containsKey(callee.getSignature())
+                || systemClass == null || !systemClass.test(owner)
+                || callee.getExceptionsUnsafe() == null) {
+            return false;
+        }
+        Set<String> kinds = new TreeSet<>();
+        for (SootClass declared : callee.getExceptionsUnsafe()) {
+            if (checked(declared.getType())) {
+                kinds.add(declared.getName());
+            }
+        }
+        if (kinds.isEmpty()) return false;
+        Raise raise = raiseAt(faults, call);
+        raise.kinds.addAll(kinds);
+        raise.frontier = callee.getSignature();
+        return true;
+    }
+
+    /**
+     * The checked throws on the failing arm of {@code call}'s result: the
+     * first test of its result local that the call falls through to
+     * ({@code if r == 0}, {@code if r == null}), and the throws its failing
+     * arm reaches that its other arm does not, each a raise on that test.
+     */
+    private boolean failingArm(MethodFaults faults, AssignStmt call,
+                               java.util.function.Consumer<Raise> origin) {
+        if (!(call.getLeftOp() instanceof Local)) return false;
+        Local result = (Local) call.getLeftOp();
+        soot.util.Chain<Unit> units = faults.body.getUnits();
+        Unit at = units.getSuccOf(call);
+        while (at != null && !(at instanceof soot.jimple.IfStmt)) {
+            if (!at.fallsThrough() || at.branches()
+                    || at.getDefBoxes().stream().anyMatch(
+                    box -> box.getValue() == result)) {
+                return false;
+            }
+            at = units.getSuccOf(at);
+        }
+        if (at == null) return false;
+        soot.jimple.IfStmt test = (soot.jimple.IfStmt) at;
+        Value condition = test.getCondition();
+        if (!(condition instanceof soot.jimple.EqExpr
+                || condition instanceof soot.jimple.NeExpr)
+                || ((soot.jimple.BinopExpr) condition).getOp1() != result) {
+            return false;
+        }
+        // r == 0 / r == null jumps on failure; r != .. falls through on it.
+        Unit failing = condition instanceof soot.jimple.EqExpr
+                ? test.getTarget() : units.getSuccOf(test);
+        Unit holding = condition instanceof soot.jimple.EqExpr
+                ? units.getSuccOf(test) : test.getTarget();
+        BriefUnitGraph cfg = new BriefUnitGraph(faults.body);
+        Set<Unit> other = reach(cfg, holding, test);
+        boolean raised = false;
+        for (Unit unit : reach(cfg, failing, test)) {
+            if (!(unit instanceof ThrowStmt) || other.contains(unit)) continue;
+            Type thrown = ((ThrowStmt) unit).getOp().getType();
+            if (!(thrown instanceof RefType)
+                    || !checked((RefType) thrown)) {
+                continue;
+            }
+            Raise raise = raiseAt(faults, unit);
+            raise.kinds.add(((RefType) thrown).getClassName());
+            raise.branch = test;
+            origin.accept(raise);
+            raised = true;
+        }
+        return raised;
+    }
+
+    /** The units {@code start} reaches, never through {@code barrier}. */
+    private static Set<Unit> reach(BriefUnitGraph cfg, Unit start,
+                                   Unit barrier) {
+        Set<Unit> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Unit> work = new ArrayDeque<>();
+        if (start != null) work.add(start);
+        while (!work.isEmpty()) {
+            Unit unit = work.removeFirst();
+            if (unit == barrier || !seen.add(unit)) continue;
+            work.addAll(cfg.getSuccsOf(unit));
+        }
+        return seen;
+    }
+
+    /** A checked exception: an Exception that is no RuntimeException. */
+    private boolean checked(RefType type) {
+        FastHierarchy hierarchy = scene.getOrMakeFastHierarchy();
+        SootClass exception = Scene.v().getSootClassUnsafe(
+                "java.lang.Exception", false);
+        SootClass runtime = Scene.v().getSootClassUnsafe(
+                "java.lang.RuntimeException", false);
+        return exception != null && hierarchy.canStoreType(type,
+                exception.getType()) && (runtime == null
+                || !hierarchy.canStoreType(type, runtime.getType()));
     }
 
     private static boolean implementsHandler(SootClass owner,
@@ -298,6 +500,7 @@ final class FaultPropagation {
                         moved |= again.kinds.add(kind);
                         moved |= again.callees.addAll(raise.callees);
                         moved |= again.markers.addAll(raise.markers);
+                        moved |= again.origins.add(raise);
                     }
                 }
             }

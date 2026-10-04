@@ -236,12 +236,11 @@ public final class SiteControlDependence {
 
     /** {@link BriefUnitGraph}'s edges and the door faults' handler edges. */
     private static final class FaultGraph extends UnitGraph {
-        FaultGraph(Body body, String method) {
+        FaultGraph(Body body, String method, FaultPropagation faults) {
             super(body);
             unitToSuccs = new LinkedHashMap<Unit, List<Unit>>();
             unitToPreds = new LinkedHashMap<Unit, List<Unit>>();
             buildUnexceptionalEdges(unitToSuccs, unitToPreds);
-            FaultPropagation faults = FaultPropagation.current();
             for (Unit unit : body.getUnits()) {
                 for (Unit handler : faults.handlers(method, unit)) {
                     addEdge(unitToSuccs, unitToPreds, unit, handler);
@@ -349,6 +348,12 @@ public final class SiteControlDependence {
 
         /** The relation of one method, or an empty one with no body. */
         public static MethodGuards of(String method) {
+            return of(method, FaultPropagation.current());
+        }
+
+        /** The relation of one method over a fault model: the slice's, or
+         *  the root demand's latent one. */
+        static MethodGuards of(String method, FaultPropagation raised) {
             Body body = CausynthStaticFacts.activeBody(
                     CausynthStaticFacts.method(method));
             if (body == null) {
@@ -370,27 +375,44 @@ public final class SiteControlDependence {
                 }
             }
             UnitGraph cfg = new BriefUnitGraph(body);
-            FaultPropagation raised = FaultPropagation.current();
             List<Unit> branches = new ArrayList<Unit>();
             // A call that can leave a door fault to a handler of the method,
-            // and the marker branch of a woven throw one catches: its arm
+            // and the branch an in-method throw one catches stands on (a
+            // woven throw's marker, a failing result's test): its arm
             // reaches the handler only over the fault graph.
             List<Unit> faultBranches = new ArrayList<Unit>();
             for (Unit unit : units) {
                 if (original.get(unit).intValue() < 0) continue;
                 if (cfg.getSuccsOf(unit).size() > 1) branches.add(unit);
                 if (raised.handlers(method, unit).isEmpty()) continue;
-                if (unit.fallsThrough()) {
-                    faultBranches.add(unit);
-                } else {
-                    DoorWeave.Fault woven = DoorWeave.woven(body, unit);
-                    if (woven != null) faultBranches.add(woven.branch);
+                FaultPropagation.Raise raise = raised.raise(method, unit);
+                Unit branch = unit.fallsThrough() ? unit
+                        : raise == null ? null : raise.branch;
+                if (branch != null && !faultBranches.contains(branch)) {
+                    faultBranches.add(branch);
                 }
             }
             return new MethodGuards(method, new Relation(cfg, branches),
                     faultBranches.isEmpty() ? null : new Relation(
-                            new FaultGraph(body, method), faultBranches),
+                            new FaultGraph(body, method, raised),
+                            faultBranches),
                     original, byIndex);
+        }
+
+        /** The unit at an ORIGINAL index, or null. */
+        Unit unit(int unitIndex) {
+            return byIndex.get(Integer.valueOf(unitIndex));
+        }
+
+        /** Whether a fault caught by one of {@code handlers} makes the unit
+         *  at {@code unitIndex} unavoidable, over the fault graph. */
+        boolean caughtLeadsTo(Collection<Unit> handlers, int unitIndex) {
+            Unit site = unit(unitIndex);
+            if (faults == null || site == null) return false;
+            for (Unit handler : handlers) {
+                if (faults.post.isDominatedBy(handler, site)) return true;
+            }
+            return false;
         }
 
         /** The branches the unit at this ORIGINAL index depends on. */

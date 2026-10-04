@@ -67,6 +67,20 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * every boundary; the scope map's reads state their distance, the mark a
  * concrete anchor's demand keeps its reads by ({@code
  * explore.ClosurePlanner#concrete}).</p>
+ *
+ * <p>A local file operation is a fault door only where its result or its
+ * failure flows into what the walk demanded ({@link Faults}, a demanded
+ * door of the library catalog): (a) an IO boundary whose call returns a
+ * failing result ({@code File#renameTo}'s false) into the path; (b) a call
+ * whose fault, in the latent model ({@code FaultPropagation#latent}),
+ * escapes its method before a demanded store (a writer of a chosen TRACK,
+ * TRACK_IDENTITY, TRACK_CONTAINER or READ field), or goes to a handler that
+ * decides a site the walk demanded -- a site on the target's path only when
+ * the handler leads to it.  The {@value #WIDTH} nearest calls are chosen, the
+ * doors already woven first ({@link DemandedDoors}); a call into the system
+ * outside the scope where such a fault could stand is an IO frontier row,
+ * the {@value #WIDTH} nearest grown first.  Any other IO boundary is cut
+ * {@value #NO_DOOR_CUT}.</p>
  */
 final class RootDemand {
     /** The file beside the scope map. */
@@ -89,6 +103,69 @@ final class RootDemand {
     static final String WIDTH_CUT = "WIDTH";
     static final String DISTANCE_CUT = "DISTANCE";
     static final String NO_SOURCE_CUT = "NO_SOURCE";
+    /** An IO boundary no demanded door stands at: an observation, a
+     *  stream not typed as a file's, a value its fault would not move. */
+    static final String NO_DOOR_CUT = "NO_DOOR";
+    /** How a door's outcome reaches the slice. */
+    static final String VALUE = "VALUE";
+    static final String ESCAPE = "ESCAPE";
+    static final String HANDLER = "HANDLER";
+
+    /**
+     * Where a local file fault could stand on what the walk demanded: the
+     * Soot side ({@link LatentFaults}).  Sites are this pass's site ids.
+     */
+    interface Faults {
+        /** The demanded door with a failing result the call at {@code
+         *  siteId} of {@code callee} would be, or null. */
+        Candidate valued(String siteId, String callee);
+
+        /**
+         * The latent faults: those escaping before a store of {@code
+         * stores}, and those a handler deciding a site of {@code demanded}
+         * catches (one of {@code path} only where the handler leads to it),
+         * each at its site's distance plus one plus the calls it escapes.
+         */
+        List<Candidate> latent(Map<String, Integer> demanded,
+                               Map<String, Integer> stores,
+                               Set<String> path);
+
+        /** The site id of a woven door's call in this pass, or "". */
+        String site(DemandedDoors.Site door);
+    }
+
+    /** One call where a door could stand, or, a frontier, a call into the
+     *  system outside the scope where growing it could find one. */
+    static final class Candidate {
+        final String siteId;
+        final String callee;
+        final String caller;
+        final int ordinal;
+        final int distance;
+        final String reach;
+        final boolean frontier;
+
+        Candidate(String siteId, String callee, String caller, int ordinal,
+                  int distance, String reach, boolean frontier) {
+            this.siteId = siteId;
+            this.callee = callee;
+            this.caller = caller;
+            this.ordinal = ordinal;
+            this.distance = distance;
+            this.reach = reach;
+            this.frontier = frontier;
+        }
+
+        Candidate at(int distance, String reach) {
+            return new Candidate(siteId, callee, caller, ordinal, distance,
+                    reach, frontier);
+        }
+
+        DemandedDoors.Site door() {
+            return new DemandedDoors.Site(caller, callee, ordinal, distance,
+                    reach);
+        }
+    }
 
     /** One boundary where one edge reaches it. */
     static final class Boundary {
@@ -123,6 +200,9 @@ final class RootDemand {
             Arrays.asList("accessor_field_return", "local_def_use",
                     "container_receiver", "container_argument",
                     "library_receiver"));
+    /** The classes whose chosen fields' writers are demanded stores. */
+    private static final Set<Kind> STORED = java.util.EnumSet.of(Kind.TRACK,
+            Kind.TRACK_IDENTITY, Kind.TRACK_CONTAINER, Kind.READ);
     private static final Set<String> WRITES = new LinkedHashSet<>(
             Arrays.asList("field_write", "field_mutation",
                     "container_mutation_argument",
@@ -144,10 +224,16 @@ final class RootDemand {
 
     private final List<Boundary> boundaries;
     private final Set<String> configSources;
+    private final List<DemandedDoors.Site> doors;
+    private final Map<String, Integer> ioFrontier;
 
-    private RootDemand(List<Boundary> boundaries, Set<String> configSources) {
+    private RootDemand(List<Boundary> boundaries, Set<String> configSources,
+                       List<DemandedDoors.Site> doors,
+                       Map<String, Integer> ioFrontier) {
         this.boundaries = Collections.unmodifiableList(boundaries);
         this.configSources = Collections.unmodifiableSet(configSources);
+        this.doors = Collections.unmodifiableList(doors);
+        this.ioFrontier = Collections.unmodifiableMap(ioFrontier);
     }
 
     /**
@@ -157,6 +243,8 @@ final class RootDemand {
      *                    deciders ({@code StaticScopeMap.Site#pathSites})
      * @param trackedKind how a replay versions a field
      * @param systemClass whether a class is the system's own
+     * @param faults      where a local file fault could stand
+     * @param woven       the demanded doors this pass wove
      */
     static RootDemand of(List<Map<String, Object>> edges,
                          List<Map<String, Object>> regions,
@@ -164,10 +252,12 @@ final class RootDemand {
                          Set<String> pathSites,
                          Function<String, SharedFieldFlow.TrackedKind>
                                  trackedKind,
-                         Predicate<String> systemClass) {
+                         Predicate<String> systemClass, Faults faults,
+                         List<DemandedDoors.Site> woven) {
         Map<String, List<Map<String, Object>>> into = new HashMap<>();
         Set<String> carried = new LinkedHashSet<>();
         Set<String> starts = new LinkedHashSet<>();
+        Set<String> path = new LinkedHashSet<>(pathSites);
         for (Map<String, Object> edge : edges) {
             into.computeIfAbsent(text(edge.get("toCell")),
                     ignored -> new ArrayList<>()).add(edge);
@@ -179,6 +269,9 @@ final class RootDemand {
                     && pathSites.contains(text(edge.get("siteId")))) {
                 starts.add(text(edge.get("fromCell")));
             }
+            if ("exception_throw".equals(text(edge.get("kind")))) {
+                path.add(text(edge.get("siteId")));
+            }
         }
         Set<String> regionMethods = new LinkedHashSet<>();
         Set<String> roots = new LinkedHashSet<>();
@@ -188,19 +281,121 @@ final class RootDemand {
         }
         Classifier classes = new Classifier(into, carried, regionMethods,
                 roots, clocks, config, trackedKind, systemClass);
-        List<Boundary> found = walk(into, starts, classes);
+        Map<String, Integer> demanded = new HashMap<>();
+        List<Boundary> found = walk(into, starts, classes, demanded);
         Map<String, Integer> cone = cone(into, starts);
         Set<String> chosenKeys = configuration(found, cone, config, edges);
         choose(found);
+        List<DemandedDoors.Site> doors = new ArrayList<>(woven);
+        Map<String, Integer> ioFrontier = doors(found, into, demanded, path,
+                faults, doors);
         found.sort(Comparator.comparingInt((Boundary b) -> b.distance)
                 .thenComparing(b -> b.kind.name())
                 .thenComparing(b -> b.cell).thenComparing(b -> b.siteId));
-        return new RootDemand(found, chosenKeys);
+        return new RootDemand(found, chosenKeys, doors, ioFrontier);
+    }
+
+    /**
+     * The demanded doors: those {@code doors} holds (woven by this pass),
+     * then the nearest calls whose failing result reaches the path (a) or
+     * whose latent fault skips a demanded store or decides a demanded site
+     * (b), up to {@value #WIDTH} in all, each added to {@code doors} and
+     * listed as an IO boundary; any other IO boundary cut {@value
+     * #NO_DOOR_CUT}.  Returns the IO frontier chosen: callee to distance.
+     */
+    private static Map<String, Integer> doors(
+            List<Boundary> found, Map<String, List<Map<String, Object>>> into,
+            Map<String, Integer> demanded, Set<String> path, Faults faults,
+            List<DemandedDoors.Site> doors) {
+        Map<Candidate, Boundary> candidates = new LinkedHashMap<>();
+        for (Boundary boundary : found) {
+            if (boundary.kind != Kind.IO) continue;
+            Matcher returned = RETURN.matcher(boundary.cell);
+            Candidate valued = returned.matches()
+                    ? faults.valued(boundary.siteId, returned.group(1))
+                    : null;
+            if (valued == null) {
+                boundary.cut = NO_DOOR_CUT;
+            } else {
+                candidates.put(valued.at(boundary.distance, VALUE),
+                        boundary);
+            }
+        }
+        Map<String, Integer> stores = new HashMap<>();
+        for (Boundary boundary : found) {
+            if (!boundary.chosen || !STORED.contains(boundary.kind)
+                    || !FIELD.matcher(boundary.cell).matches()) {
+                continue;
+            }
+            for (Map<String, Object> write : into.getOrDefault(boundary.cell,
+                    Collections.<Map<String, Object>>emptyList())) {
+                if (WRITES.contains(text(write.get("kind")))) {
+                    stores.merge(text(write.get("siteId")),
+                            boundary.distance, Math::min);
+                }
+            }
+        }
+        List<Boundary> latent = new ArrayList<>();
+        for (Candidate candidate : faults.latent(demanded, stores, path)) {
+            Boundary boundary = new Boundary(Kind.IO, candidate.callee
+                    + FaultPropagation.THROWS, candidate.siteId,
+                    candidate.frontier ? "fault_frontier"
+                            : ESCAPE.equals(candidate.reach) ? "fault_escape"
+                            : "fault_handler", candidate.distance);
+            candidates.put(candidate, boundary);
+            latent.add(boundary);
+        }
+        found.addAll(latent);
+        Set<String> chosen = new LinkedHashSet<>();
+        for (DemandedDoors.Site door : doors) {
+            chosen.add(door.key());
+            found.add(woven(door, faults.site(door)));
+        }
+        List<Candidate> ordered = new ArrayList<>(candidates.keySet());
+        ordered.sort(Comparator.comparingInt((Candidate c) -> c.distance)
+                .thenComparing(c -> c.siteId).thenComparing(c -> c.callee));
+        Map<String, Integer> frontier = new LinkedHashMap<>();
+        for (Candidate candidate : ordered) {
+            Boundary boundary = candidates.get(candidate);
+            String key = candidate.frontier ? candidate.callee
+                    : candidate.door().key();
+            boolean near = candidate.distance <= DISTANCE;
+            if (candidate.frontier) {
+                if (near && (frontier.containsKey(key)
+                        || frontier.size() < WIDTH)) {
+                    frontier.putIfAbsent(key, candidate.distance);
+                }
+                boundary.chosen = frontier.containsKey(key);
+            } else {
+                if (near && !chosen.contains(key) && chosen.size() < WIDTH) {
+                    chosen.add(key);
+                    doors.add(candidate.door());
+                }
+                boundary.chosen = chosen.contains(key);
+            }
+            boundary.cut = boundary.chosen ? "" : near ? WIDTH_CUT
+                    : DISTANCE_CUT;
+        }
+        return frontier;
+    }
+
+    /** A woven door's row: chosen, at the distance it was chosen at. */
+    private static Boundary woven(DemandedDoors.Site door, String siteId) {
+        Boundary boundary = new Boundary(Kind.IO, door.callee
+                + FaultPropagation.THROWS, siteId, "door", door.distance);
+        boundary.chosen = true;
+        return boundary;
     }
 
     /** Every boundary, nearest first. */
     List<Boundary> boundaries() {
         return boundaries;
+    }
+
+    /** The demanded doors the next pass weaves ({@value
+     *  DemandedDoors#FILE}): this pass's, then the ones it chose. */
+    List<DemandedDoors.Site> doors() {
+        return doors;
     }
 
     /** The configuration roots chosen: the ones minted. */
@@ -245,11 +440,11 @@ final class RootDemand {
     }
 
     /** The frontier signatures scope growth takes first, each with its
-     *  class: of the chosen boundaries, the callee of each SCOPE return,
-     *  the method of each SCOPE formal, each PRE_WINDOW field (its writers
-     *  may be out of scope). */
-    Map<String, String> frontier() {
-        Map<String, String> frontier = new LinkedHashMap<>();
+     *  class and distance: of the chosen boundaries, the callee of each
+     *  SCOPE return, the method of each SCOPE formal, each PRE_WINDOW field
+     *  (its writers may be out of scope), each IO frontier callee. */
+    Map<String, StaticScopeMap.Demanded> frontier() {
+        Map<String, StaticScopeMap.Demanded> frontier = new LinkedHashMap<>();
         for (Boundary boundary : boundaries) {
             if (!boundary.chosen) continue;
             Matcher returned = RETURN.matcher(boundary.cell);
@@ -260,17 +455,23 @@ final class RootDemand {
                     : returned.matches() ? returned.group(1)
                     : formal.matches() ? formal.group(1) : null;
             if (signature != null) {
-                frontier.putIfAbsent(signature, boundary.kind.name());
+                frontier.putIfAbsent(signature, new StaticScopeMap.Demanded(
+                        boundary.kind.name(), boundary.distance, true));
             }
+        }
+        for (Map.Entry<String, Integer> io : ioFrontier.entrySet()) {
+            frontier.putIfAbsent(io.getKey(), new StaticScopeMap.Demanded(
+                    Kind.IO.name(), io.getValue(), true));
         }
         return frontier;
     }
 
     /** Nearest first from the path guards' operands, every path stopped at
-     *  its first boundary. */
+     *  its first boundary; {@code demanded} gets the site of every edge it
+     *  followed, at the distance of the cell the edge comes from. */
     private static List<Boundary> walk(
             Map<String, List<Map<String, Object>>> into, Set<String> starts,
-            Classifier classes) {
+            Classifier classes, Map<String, Integer> demanded) {
         Map<String, Integer> distance = new HashMap<>();
         Map<String, Boundary> found = new LinkedHashMap<>();
         Deque<String> queue = new ArrayDeque<>();
@@ -291,6 +492,8 @@ final class RootDemand {
                     break;
                 }
                 String from = text(edge.get("fromCell"));
+                String site = text(edge.get("siteId"));
+                if (!site.isEmpty()) demanded.merge(site, next, Math::min);
                 Kind kind = classes.of(from, edge);
                 if (kind != null) {
                     String siteId = text(edge.get("siteId"));
@@ -410,7 +613,8 @@ final class RootDemand {
             if (boundary.kind == Kind.CUT) boundary.cut = DISTANCE_CUT;
             if (boundary.kind == Kind.CONFIG_FIELD
                     || boundary.kind == Kind.CONFIG_CALL
-                    || boundary.kind == Kind.CUT) {
+                    || boundary.kind == Kind.CUT
+                    || boundary.kind == Kind.IO) {
                 continue;
             }
             cells.computeIfAbsent(boundary.kind, ignored -> new TreeMap<>())

@@ -80,6 +80,13 @@ public class ScopeGrowthTest {
         }
     }
 
+    /** Opens a file itself: where a local file door can stand. */
+    static final class Saver {
+        void save(java.io.File file) throws java.io.IOException {
+            new java.io.FileOutputStream(file).close();
+        }
+    }
+
     private static final String T = ScopeGrowthTest.class.getName();
     private static final String GET = "<" + T + "$Store: long get()>";
     private static final String SHARED = "<" + T + "$Holder: long shared>";
@@ -107,10 +114,14 @@ public class ScopeGrowthTest {
                         "<A: long own()>"),
                 edge("field_write", "w::$l0", "<W: long far>", ""));
         List<String> found = new ArrayList<>();
-        // The root demand's boundaries come first, each nearest first.
-        Map<String, String> demanded = new LinkedHashMap<>();
-        demanded.put(set, "SCOPE");
-        demanded.put(SHARED, "PRE_WINDOW");
+        // The root demand's boundaries come first, each nearest first; an
+        // IO frontier callee is a row though no return of it is demanded.
+        String save = "<" + T + "$Saver: void save(java.io.File)>";
+        Map<String, StaticScopeMap.Demanded> demanded = new LinkedHashMap<>();
+        demanded.put(set, new StaticScopeMap.Demanded("SCOPE", 3, true));
+        demanded.put(SHARED, new StaticScopeMap.Demanded("PRE_WINDOW", 1,
+                true));
+        demanded.put(save, new StaticScopeMap.Demanded("IO", 5, true));
         for (JsonObject row : ScopeFrontier.rows(edges,
                 "<A: long own()>"::equals,
                 Collections.singleton("<C: long now()>"), demanded)) {
@@ -123,6 +134,7 @@ public class ScopeGrowthTest {
         assertEquals(Arrays.asList(
                 "FIELD " + SHARED + " 1 PRE_WINDOW",
                 "FORMAL " + set + " 3 SCOPE",
+                "CALLEE " + save + " 5 IO",
                 "CALLEE " + GET + " 2"), found);
     }
 
@@ -160,6 +172,10 @@ public class ScopeGrowthTest {
         growth.scan(root);
         assertEquals(Arrays.asList(true, false), Arrays.asList(
                 growth.called(T + "$Holder"), growth.called(T + "$Writer")));
+        // An IO row grows a class only where it opens a file itself.
+        assertEquals(Arrays.asList(true, false), Arrays.asList(
+                growth.callsFileOperation(T + "$Saver"),
+                growth.callsFileOperation(T + "$Holder")));
         Path jar = folder.newFolder().toPath().resolve("lib.jar");
         try (java.util.zip.ZipOutputStream out =
                      new java.util.zip.ZipOutputStream(
@@ -184,7 +200,7 @@ public class ScopeGrowthTest {
         Path root = folder.newFolder().toPath();
         for (Class<?> fixture : Arrays.asList(Store.class, Impl.class,
                 Base.class, Inherits.class, Fixed.class, Holder.class,
-                Writer.class, Setter.class)) {
+                Writer.class, Setter.class, Saver.class)) {
             String file = fixture.getName().replace('.', '/') + ".class";
             Path target = root.resolve(file);
             Files.createDirectories(target.getParent());
