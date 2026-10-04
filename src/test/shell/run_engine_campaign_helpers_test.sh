@@ -2023,6 +2023,21 @@ stream_planner() {
       anchorOccurrences: [{node: "anchor"}]}' \
     >"${out}/explore_manifest.json"
 }
+# What ComposeMain publishes beside <manifest>: the claim <claim>
+# (CLOCK_SKEW, its polarity deciding) and a model selecting the path of
+# <path> -- by default the attempt's first witness, so attempts at other
+# witnesses claim other models.
+stream_compose() {
+  local manifest=$1 claim=$2 path=${3:-}
+  jq -n --arg claim "${claim}" '{solver: {campaignClaim: {claim: $claim,
+    findingKind: "CLOCK_SKEW", polarityDecides: true}}}' >"${manifest}"
+  [[ -n "${path}" ]] || path=$(head -n 1 "${stream_dir}/steps/$(ls \
+    "${stream_dir}/steps" | LC_ALL=C sort | tail -n 1)/witnesses")
+  jq -n --arg path "${path}" '{claim: {kind: "CLOCK_SKEW",
+    valuationOrdinal: 0, movedRoots: {}},
+    valuations: [{ordinal: 0, selectedPathId: $path}]}' \
+    >"$(dirname "${manifest}")/claim.json"
+}
 # One obligation row per id, as a round proposes it.
 stream_propose() {
   local out=$1 id
@@ -2059,16 +2074,33 @@ stream_stubs() {
   campaign_host_available_mb() { echo 30000; }
   campaign_host_total_mb() { echo 30000; }
   run_java_main() { stream_planner "$@"; }
-  # Where CONFIRM stands: the attempt's claim confirmed, unless
+  # Where CONFIRM stands.  Its task planned: a verdict now where
+  # stream_realize names the attempt (its selected session is the run),
+  # else the replay owed.  The replay, a job of the pool: what it was handed,
+  # stream_confirm_sleep seconds long.  Its verdict: confirmed, unless
   # stream_refute names the attempt.
-  campaign_confirm_claim() {
+  campaign_confirm_plan() {
+    mkdir -p "$3/worker" "$3/sessions"
+    [[ " ${stream_realize:-} " != *" $(basename "$2") "* ]] \
+      || campaign_confirm_verdict true "realized" "" false >"$2/confirm.json"
+  }
+  campaign_confirm_replay() {
+    printf '%s\n' "$2" >"$1/classes.txt"
+    date +%s.%N >"$1/replay-started-at"
+    sleep "${stream_confirm_sleep:-0}"
+    date +%s.%N >"$1/replay-ended-at"
+    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+      obligationId: "CONFIRM", verdict: "ADMITTED", sessionId: "",
+      detail: "stub"}' >"$1/worker/obligation_result.jsonl"
+  }
+  campaign_confirm_decide() {
     local confirmed=true refutes=false
-    if [[ " ${stream_refute:-} " == *" $(basename "$2") "* ]]; then
+    if [[ " ${stream_refute:-} " == *" $(basename "$1") "* ]]; then
       confirmed=false
       refutes=true
     fi
     campaign_confirm_verdict "${confirmed}" "stub" "" "${refutes}" \
-      >"$2/confirm.json"
+      >"$1/confirm.json"
   }
   campaign_import_gate() {
     shift 3
@@ -2186,14 +2218,14 @@ printf '1\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
   }
   # Where ComposeMain stands, two seconds long: the claim is accepted once
   # C's session is in.
+  # The accepted claim's selected session is the run: decided in its step.
+  stream_realize=0001
   do_compose() {
     local claim=UNSAT_CLOSED
     date +%s.%N >>"${stream_dir}/attempt-started-at"
     sleep 2
     [[ ! -d "${compose_sessions_dir}/SESSION.C" ]] || claim=SAT_CANDIDATE
-    jq -n --arg claim "${claim}" '{solver: {campaignClaim: {claim: $claim,
-      findingKind: "CLOCK_SKEW", polarityDecides: true}}}' \
-      >"${composition_manifest}"
+    stream_compose "${composition_manifest}" "${claim}"
     date +%s.%N >>"${stream_dir}/attempt-ended-at"
   }
   campaign_obligation_worker() {
@@ -2252,9 +2284,7 @@ stream_fixture stream-2b
     [[ "$1" != 0 ]] || stream_propose "$2" A B
   }
   do_compose() {
-    jq -n '{solver: {campaignClaim: {claim: "SAT_CANDIDATE",
-      findingKind: "CLOCK_SKEW", polarityDecides: true}}}' \
-      >"${composition_manifest}"
+    stream_compose "${composition_manifest}" SAT_CANDIDATE
   }
   campaign_obligation_worker() {
     local id=$1 worker=$4
@@ -2272,6 +2302,138 @@ jq -e '.stop == "WITNESSED"
   "${stream_dir}/exploration.json" >/dev/null \
   || fail "a refuted witness ended the exploration, or the next was not \
 attempted: $(cat "${stream_dir}/exploration.json")"
+
+# STREAM-2c: THE CONFIRMATION IS A JOB OF THE POOL.  An accepted attempt's
+# replay runs outside the head's steps: while it runs, what returns lands and
+# the round it owes is planned (N's session, round 1).  Its verdict, landed,
+# ends the exploration, and the corpus COMPOSE reads next is the one the
+# attempt composed: N's session, landed after it, leaves for
+# explore-reaped/after-witness/.  The replay stands on the generation's tree.
+stream_fixture stream-2c
+(
+  stream_stubs
+  stream_confirm_sleep=4
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" A N ;;
+      *) date +%s.%N >>"${stream_dir}/round-planned-at" ;;
+    esac
+  }
+  do_compose() {
+    stream_compose "${composition_manifest}" SAT_CANDIDATE
+  }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    case "${id}" in
+      A) stream_answer "${worker}" A ADMITTED SESSION.A fatal ;;
+      N) sleep 1; stream_answer "${worker}" N ADMITTED SESSION.N ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the confirming loop did not finish: \
+$(cat "${stream_dir}/explore.log")"
+stream_confirm="${campaign_root}/witness-confirm/0000"
+jq -e '.stop == "WITNESSED" and .afterWitness == ["SESSION.N"]
+  and ([.witnessAttempts[] | [.attempt, .accepted, .confirmed]]
+       == [["0000", true, true]])
+  and .witnessAttempts[0].confirmMillis >= 3000' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "the pool's confirmation did not end the exploration on the \
+attempt's corpus: $(cat "${stream_dir}/exploration.json")"
+awk -v p="$(head -n 1 "${stream_dir}/round-planned-at")" \
+    -v e="$(cat "${stream_confirm}/replay-ended-at")" \
+    'BEGIN{exit !(p > 0 && p < e)}' \
+  || fail "nothing landed and no round was planned while the confirmation ran"
+[[ -d "${stream_dir}/sessions/SESSION.A" \
+    && ! -e "${stream_dir}/sessions/SESSION.N" \
+    && -d "${campaign_root}/explore-reaped/after-witness/SESSION.N" ]] \
+  || fail "the corpus is not the accepted attempt's: \
+$(ls "${stream_dir}/sessions")"
+[[ "$(cat "${stream_confirm}/classes.txt")" \
+    == "${stream_dir}/instrumented-classes" ]] \
+  || fail "the confirmation did not stand on the generation's tree: \
+$(cat "${stream_confirm}/classes.txt")"
+jq -e -s 'map(.obligationId) | sort == ["A","N"]' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  || fail "what returned during the confirmation did not land"
+
+# STREAM-2d: A MODEL UNDER CONFIRMATION WAITS.  B's attempt claims the model
+# A's confirmation is still deciding: not confirmed twice, its witness waits,
+# and once A's verdict lands -- refuted -- B is attempted again, confirmed.
+stream_fixture stream-2d
+(
+  stream_stubs
+  stream_confirm_sleep=3
+  stream_refute=0000
+  stream_round_plan() {
+    [[ "$1" != 0 ]] || stream_propose "$2" A B
+  }
+  do_compose() {
+    stream_compose "${composition_manifest}" SAT_CANDIDATE P.same
+  }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    [[ "${id}" == A ]] || sleep 1
+    stream_answer "${worker}" "${id}" ADMITTED "SESSION.${id}" fatal
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "the deferring loop did not finish: \
+$(cat "${stream_dir}/explore.log")"
+jq -e '.stop == "WITNESSED"
+  and ([.witnessAttempts[] | [.attempt, .accepted, .confirmed]]
+       == [["0000", false, false], ["0001", false, null],
+           ["0002", true, true]])
+  and ([.witnessAttempts[].witnesses]
+       == [["SESSION.A"], ["SESSION.B"], ["SESSION.B"]])
+  and (.witnessAttempts[1].confirmReason | test("under confirmation"))' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "a model under confirmation was confirmed twice, or its witness \
+was not attempted again: $(cat "${stream_dir}/exploration.json")"
+[[ ! -e "${campaign_root}/witness-confirm/0001" ]] \
+  || fail "the deferred attempt planned a confirmation"
+
+# STREAM-2e: THE WITNESS BY ATTEMPT ORDER.  Of the confirmations that land
+# together, the earliest attempt confirmed is the witness, whatever their
+# order of return; a later one confirmed says which attempt is.
+for row in "true true 0000" "false true 0001" "true false 0000"; do
+  read -r first second chosen <<<"${row}"
+  decide_dir="${test_tmp}/decide-${first}-${second}"
+  mkdir -p "${decide_dir}/iteration/witness-attempts" "${decide_dir}/step"
+  (
+    iteration_dir="${decide_dir}/iteration"
+    campaign_root="${decide_dir}"
+    attempts="${decide_dir}/attempts.jsonl"
+    for attempt in 0000 0001; do
+      mkdir -p "${iteration_dir}/witness-attempts/${attempt}" \
+        "${campaign_root}/witness-confirm/${attempt}"
+      date +%s%3N >"${campaign_root}/witness-confirm/${attempt}/started-at"
+      jq -n -c --arg a "${attempt}" --arg d "${iteration_dir}/witness-attempts/${attempt}" \
+        '{attempt: $a, step: "0009", witnesses: ["S.\($a)"], dir: $d,
+          composeExit: 0, claim: "SAT_CANDIDATE", findingKind: "CLOCK_SKEW",
+          polarityDecides: true, composeMillis: 1}' \
+        >"${iteration_dir}/witness-attempts/${attempt}/attempt.json"
+    done
+    campaign_confirm_decide() {
+      local verdict=${first}
+      [[ "$(basename "$1")" == 0000 ]] || verdict=${second}
+      campaign_confirm_verdict "${verdict}" "stub" "" false >"$1/confirm.json"
+    }
+    printf '0001 0\n0000 0\n' >"${decide_dir}/step/confirms"
+    campaign_stream_decide "${decide_dir}/step"
+  ) >"${decide_dir}/decide.log" 2>&1 \
+    || fail "the decision of ${row} failed: $(cat "${decide_dir}/decide.log")"
+  [[ "$(basename "$(cat "${decide_dir}/step/attempt")")" == "${chosen}" ]] \
+    || fail "the confirmations ${row} did not take attempt ${chosen}"
+  jq -e -s --arg chosen "${chosen}" --argjson both \
+      "$([[ "${first}${second}" == truetrue ]] && echo true || echo false)" \
+    '(map(select(.accepted)) | map(.attempt)) == [$chosen]
+     and ((map(select(.supersededBy == "0000")) | length == 1) == $both)' \
+    "${decide_dir}/attempts.jsonl" >/dev/null \
+    || fail "the rows of ${row} do not state the witness: \
+$(cat "${decide_dir}/attempts.jsonl")"
+done
 
 # STREAM-3: THE WAVE BUDGET.  A wave deepens only as sessions land: round 1,
 # planned once A's session landed, is of wave 1.  A round of wave
@@ -3046,11 +3208,14 @@ grep -q 'CAUSYNTH_LOCAL_SCRATCH=%q' "${repo}/run_engine.sh" \
 # weaves the generation's own tree, and re-runs OB.x's replay first, on the
 # head, in a directory beside its worker; once it returns and no obligation
 # runs, its session takes the exposing one's place in the corpus, its files
-# the worker's and its verdict the ledger's.  The planner, the
-# exposed-region planner and the weave are stubbed; the re-run is the
-# production replay of a script that publishes a session, so everything
-# between is the production code.
+# the worker's and its verdict the ledger's.  What was queued stays first:
+# Q2, queued through the growth, is in flight for the round after it, which
+# proposes Q3 behind it.  The planner, the exposed-region planner and the
+# weave are stubbed; the re-run is the production replay of a script that
+# publishes a session, so everything between is the production code.
 stream_fixture grow
+mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+printf '1\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
 stream_seed_plan_inode=$(stat -c %i "${stream_dir}/execution_task_plan.jsonl")
 cat >"${stream_dir}/replay.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -3081,10 +3246,11 @@ workload_work_dir="${stream_dir}"
   stream_stubs
   stream_round_plan() {
     case "$1" in
-      0) stream_propose "$2" OB.x ;;
+      0) stream_propose "$2" OB.x Q1 Q2 ;;
       1) printf '%s\n' \
 '{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
            >>"$2/growth.jsonl" ;;
+      2) stream_propose "$2" Q3 ;;
     esac
   }
   run_java_main() {
@@ -3113,7 +3279,13 @@ the round's growth rows: $*"
     : >"$2/woven"
   }
   campaign_obligation_worker() {
-    local worker=$4
+    local id=$1 worker=$4
+    date +%s.%N >"${worker}/started-at"
+    if [[ "${id}" != OB.x ]]; then
+      [[ "${id}" != Q1 ]] || sleep 2
+      stream_answer "${worker}" "${id}" UNSAT
+      return 0
+    fi
     printf '{"taskId":"TASK.seed"}\n' >"${worker}/focused_task.jsonl"
     printf 'the exposing replay\n' >"${worker}/replay.log"
     stream_answer "${worker}" OB.x ADMITTED SESSION.exposing
@@ -3142,11 +3314,25 @@ grep -q TASK.grown "${stream_dir}/seed-replay/execution_task_plan.jsonl" \
 [[ "$(jq -r '.verdict' "${stream_worker}/obligation_result.jsonl")" \
     == NOT_ADMITTED && "$(cat "${stream_worker}/host.txt")" == localhost ]] \
   || fail "the worker's answer is not the re-run's, on the head"
-jq -e -s 'length == 1 and .[0].obligationId == "OB.x"
+jq -e -s 'map(select(.obligationId == "OB.x")) | length == 1
   and .[0].verdict == "NOT_ADMITTED" and .[0].sessionId == "SESSION.regrown"' \
   "${stream_dir}/obligation_results.jsonl" >/dev/null \
   || fail "the re-run's verdict did not replace the exposing one, once: \
 $(cat "${stream_dir}/obligation_results.jsonl")"
+jq -e -s 'map(.obligationId) | sort == ["OB.x","Q1","Q2","Q3"]' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  || fail "an obligation queued through the growth was asked again or \
+dropped: $(cat "${stream_dir}/obligation_results.jsonl")"
+[[ "$(cat "${stream_dir}/obligations-0002/in-flight.txt")" == *Q2* \
+    && -s "${stream_dir}/obligations-0000/Q2/started-at" \
+    && ! -e "${stream_dir}/obligations-0002/Q2" ]] \
+  || fail "the obligation queued through the growth was not in flight for \
+the round after it: $(cat "${stream_dir}/obligations-0002/in-flight.txt")"
+awk -v q="$(cat "${stream_dir}/obligations-0000/Q2/started-at")" \
+    -v n="$(cat "${stream_dir}/obligations-0002/Q3/started-at")" \
+    'BEGIN{exit !(q < n)}' \
+  || fail "a newly planned obligation started before the one queued \
+through the growth"
 [[ -f "${stream_dir}/instrumented-classes/woven" \
     && ! -e "${stream_dir}/generations/g1/instrumented-classes" ]] \
   || fail "the last generation's tree is not the iteration's once nothing runs"
