@@ -892,8 +892,12 @@ re-run has returned and no obligation runs that started before them, no obligati
 round is planned; then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
 worker's previous files move to `<worker>/before-<round>/`, the re-run's files become the
 worker's, its session lands, and its verdict replaces the obligation's row in
-`obligation_results.jsonl`; the queue is left to the next round, since what it held may be cut from
-an exposing session. The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
+`obligation_results.jsonl`. The queue stays first and in flight: the round after the swap gets it as
+`--in-flight` and proposes only what none of it asks, its new obligations queued behind it (hdfs-11741
+HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of 409). A kept
+obligation cut from an exposing session is answered by its solver by name (`NOT_ADMITTED`, "no
+session of this corpus still states path ...") and a later round asks it again of the re-run's
+session. The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
 the region's events stand in new occurrences, so its endpoints have new ids, and a slot of the old
 run would read the re-run and every later session of its world as a replacement (hdfs-11741 V4:
 two BLOCKING rows withheld the witness's composition). Once nothing runs, the last generation's tree is the iteration's
@@ -931,20 +935,35 @@ cancelled or reaped, by id):
   witness gated and not yet attempted, one COMPOSE over the corpus as it stands -- `do_compose`, the
   stage's own entry, into `witness-attempts/NNNN/` -- since an observed fatal is not yet a
   composable witness: COMPOSE's families may need sessions later obligations would add
-  (`campaign_stream_attempt`). Obligations keep starting while it runs; nothing lands, so it reads
-  the corpus as it stood, and what returns meanwhile, a witness too, lands after it: one attempt at
-  a time, the witnesses that come during one coalesced into the next. Each attempt is
-  a row of `witness_attempts.jsonl` (step, witnesses, claim, finding kind, polarity, confirmed,
-  its reason, accepted, and how long its COMPOSE and its CONFIRM took). An attempt that publishes `SAT_CANDIDATE` with `polarityDecides` is
-  confirmed in the step (`campaign_confirm_claim`, §10: its verdict `witness-attempts/NNNN/confirm.json`,
-  its replay in `<campaign>/witness-confirm/NNNN/`, out of the iteration); confirmed, it ends the
-  exploration at once: the queue is cancelled, every running obligation is reaped (its process tree
-  here, its workers on every peer) and its worker directory moves to `<campaign>/explore-reaped/`,
-  as does every one that returned after the step began, so the corpus COMPOSE reads next is exactly
-  the one the attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted, its
-  model is excluded from every later composition (§10) and the exploration goes on, as after any
-  other claim; unconfirmed without a refutation (a replay that published no verdict), the model
-  stays open and a later attempt may claim it again. With no room left in the campaign's budget
+  (`campaign_stream_attempt`; the sessions it composed are its `corpus.txt`). Obligations keep
+  starting while it runs; nothing lands, so it reads the corpus as it stood, and what returns
+  meanwhile, a witness too, lands after it: one attempt at a time, the witnesses that come during
+  one coalesced into the next. Each attempt is a row of `witness_attempts.jsonl` once its outcome is
+  known (attempt, step, witnesses, claim, finding kind, polarity, confirmed, its reason, accepted,
+  how long its COMPOSE and its CONFIRM took, and `supersededBy`, below); `exploration.json` lists
+  them by attempt. An attempt that publishes `SAT_CANDIDATE` with `polarityDecides` is confirmed
+  (§10): its task is planned in the step (`campaign_confirm_plan`, its verdict
+  `witness-attempts/NNNN/confirm.json`, its replay in `<campaign>/witness-confirm/NNNN/`, out of the
+  iteration), a verdict known at once (a refusal, the selected session itself the run) decided there;
+  otherwise its replay is a job of the pool (`CONFIRM`, queued first, charged as the seed replay is,
+  on the class tree and plan of the generation current when it starts), so landing, planning and
+  later attempts go on while it runs (hdfs-17967-pathB HG3: a refuted attempt held the head's only
+  step for 31 min while the witness obligation waited, unlanded). Its return lands like any job's,
+  and the next step decides it (`campaign_stream_decide`, a returned confirmation's verdict going
+  before a new attempt); of the confirmations decided together, the earliest attempt confirmed is
+  the witness, by attempt order and not by finish time, and a later one confirmed states it
+  (`supersededBy`). An attempt whose model is under confirmation is not confirmed twice: its
+  witnesses wait and are attempted again once a verdict lands that does not end the exploration.
+  Confirmed, the attempt ends the exploration at once: the queue is cancelled, every running job is
+  reaped (its process tree here, its workers on every peer) -- an obligation's worker directory moves
+  to `<campaign>/explore-reaped/`, as does every one that returned after the step began, and a
+  confirmation still owed is its attempt's row -- and the sessions that landed after the accepted
+  attempt composed leave the corpus for `<campaign>/explore-reaped/after-witness/`
+  (`exploration.json` `afterWitness`), so the corpus COMPOSE reads next is exactly the one the
+  attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted, its model is
+  excluded from every later composition (§10) and the exploration goes on, as after any other
+  claim; unconfirmed without a refutation (a replay that published no verdict), the model stays
+  open and a later attempt may claim it again. With no room left in the campaign's budget
   for a confirmation (`campaign_claim_room`, below), the claim is accepted unconfirmed and the
   final CONFIRM decides.
   This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once
@@ -1565,7 +1584,12 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   the recording took two still takes the model's edges). A `referentStates` row with no reader (a query asked outside every container
   read), at a read that is no read of the closure, or naming a write the session does not state
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
-- The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
+- The replay runs through `campaign_obligation_replay` into `final/confirm/`, the three halves of
+  `campaign_confirm_claim` in a row: `campaign_confirm_plan` (ConfirmMain's task; a refusal or a
+  realized session is the verdict at once), `campaign_confirm_replay` (charged as the seed replay is,
+  wherever there is room) and `campaign_confirm_decide` (ConfirmMain `--sessions`), then
+  `campaign_confirm_settle` (a refuting verdict refutes the claim). An exploration's attempt runs the
+  same halves apart, its replay a job of the pool (§7.9). At runtime
   `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, for a codec
   hole the message key, and the text that arrived where the arm states one; a consumer of the
   anchor's, where the arm's session answered the anchor by its question (IDENTITY §9, its

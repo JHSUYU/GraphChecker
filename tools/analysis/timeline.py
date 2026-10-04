@@ -15,11 +15,12 @@ the sources are the files the campaign wrote:
                      the planner's wait for memory, off its stderr.log
                      (campaign_head_place: "waiting for memory for a head
                      step", then "room ... after waiting <s> s")
-  EXPLORE head steps steps/NNNN/: its inputs (gate, witnesses, round; written as
-                     it starts) to its last output -- the gate's
+  EXPLORE head steps steps/NNNN/: its inputs (gate, witnesses, confirms, round;
+                     written as it starts) to its last output -- the gate's
                      import_gate.json, an attempt's compose.log, the round's
                      explore_manifest.json; one step runs at a time, beside
-                     the pool
+                     the pool (an attempt's confirmation replay is a job of
+                     the pool, witness-confirm/NNNN/)
   witness attempts   witness-attempts/NNNN/: the directory's creation to its
                      compose.log, and witness_attempts.jsonl's claims
   one obligation     host.txt (claimed) -> the solver's files -> replay.log
@@ -257,7 +258,8 @@ def step_rows(iteration):
         pass
     rows = []
     for step in sorted(glob.glob(os.path.join(iteration, "steps", "[0-9]*"))):
-        started = min([t for t in (mtime(os.path.join(step, n)) for n in ("gate", "witnesses", "round")) if t]
+        started = min([t for t in (mtime(os.path.join(step, n))
+                                   for n in ("gate", "witnesses", "confirms", "round")) if t]
                       or [None])
         gate = os.path.join(step, "gate")
         gated = mtime(os.path.join(step, "import_gate.json"))
