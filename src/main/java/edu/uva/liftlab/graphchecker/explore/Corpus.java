@@ -1225,6 +1225,29 @@ public final class Corpus implements Arms.Rows {
         return read.keySet();
     }
 
+    /** The read events a term's expressions name, by their structure
+     *  (every {@code readEventId} under its {@code EXPR} references): what
+     *  a predicate read, wherever it stands in the event order. */
+    public Set<Long> readEvents(String sessionId, String term) {
+        Set<Long> events = new LinkedHashSet<Long>();
+        java.util.regex.Matcher refs = EXPRESSION_REF.matcher(
+                term == null ? "" : term);
+        Set<JsonElement> walked = ExpressionWalk.identitySet();
+        while (refs.find()) {
+            for (ExpressionWalk walk = ExpressionWalk.of(
+                    expression(sessionId, refs.group()), walked);
+                 walk.hasNext(); ) {
+                JsonObject node = walk.next();
+                JsonElement at = node.get("readEventId");
+                if (node.get("location") != null && at != null
+                        && at.isJsonPrimitive()) {
+                    events.add(Long.valueOf(at.getAsLong()));
+                }
+            }
+        }
+        return events;
+    }
+
     private static final java.util.regex.Pattern EXPRESSION_REF =
             java.util.regex.Pattern.compile("EXPR\\.[0-9a-f]+");
 

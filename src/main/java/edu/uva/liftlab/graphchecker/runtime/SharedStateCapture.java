@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -260,8 +261,11 @@ final class SharedStateCapture {
             versions.add(entry);
         }
         // The read log, by event id: it supplies the activation a
-        // ReadFromExpression node does not name.  No value -- the node
-        // already carries the version it observed.
+        // ReadFromExpression node does not name, and states each read under
+        // the node's names -- the version its plan chose and how far that
+        // is the value it read -- so a read no published expression holds
+        // is a row too (RowPublication#loggedReads).  No value: an exact
+        // read returned its version's.
         JsonArray reads = new JsonArray();
         for (JsonElement element : array(envelope, "reads")) {
             if (!element.isJsonObject()) continue;
@@ -270,6 +274,11 @@ final class SharedStateCapture {
             copyIfPresent(read, entry, "readEventId");
             copyIfPresent(read, entry, "regionEnterEventId");
             copyIfPresent(read, entry, "site");
+            copyIfPresent(read, entry, VmRows.OBSERVED_VERSION);
+            copyIfPresent(read, entry, VmRows.OBSERVED_EXACT);
+            copyIfPresent(read, entry, VmRows.WRITER_SET_COMPLETE);
+            copyIfPresent(read, entry, VmRows.UNNAMED_WRITER);
+            copyIfPresent(read, entry, "_java_type");
             reads.add(entry);
         }
         JsonObject kept = new JsonObject();
@@ -351,8 +360,13 @@ final class SharedStateCapture {
 
     // ---- the VM's shared-state vocabulary (this decoder is its one reader)
 
-    /** Schema of the VM envelopes and gap rows this vocabulary reads. */
-    private static final int SCHEMA_VERSION = 1;
+    /**
+     * Schema of the VM's version-store envelope this vocabulary reads: 2,
+     * whose read log states each read's chosen version (VM.md §5.2).  An
+     * envelope of another schema -- an image older than its jar -- is
+     * refused by name, never read as a log of unversioned reads.
+     */
+    private static final int SCHEMA_VERSION = 2;
 
     /** Envelope kind of one selected location's version store. */
     private static final String VERSIONS_ENVELOPE_KIND =
@@ -548,9 +562,14 @@ final class SharedStateCapture {
         if (envelope == null || envelope.size() == 0) {
             return "no version envelope";
         }
-        if (!VERSIONS_ENVELOPE_KIND.equals(optionalString(envelope, "kind"))
-                || optionalInteger(envelope, "schemaVersion", -1) != SCHEMA_VERSION) {
+        if (!VERSIONS_ENVELOPE_KIND.equals(optionalString(envelope, "kind"))) {
             return "envelope is not an authoritative version store";
+        }
+        int schema = optionalInteger(envelope, "schemaVersion", -1);
+        if (schema != SCHEMA_VERSION) {
+            return "version store of schema " + schema + ", and this jar"
+                    + " reads schema " + SCHEMA_VERSION + " (a VM image"
+                    + " whose read log states no read's version?)";
         }
         if (!booleanMember(envelope, "selected")
                 || !optionalBool(envelope, "selected", false)) {
@@ -757,6 +776,11 @@ final class SharedStateCapture {
                 || optionalString(read, "regionId").isEmpty()
                 || optionalString(read, "taskId").isEmpty()) {
             return "read " + readEvent + " names no reader case";
+        }
+        if (optionalLongInteger(read, VmRows.OBSERVED_VERSION, 0L) <= 0L
+                || !booleanMember(read, VmRows.OBSERVED_EXACT)
+                || !booleanMember(read, VmRows.WRITER_SET_COMPLETE)) {
+            return "read " + readEvent + " states no version it observed";
         }
         return "";
     }

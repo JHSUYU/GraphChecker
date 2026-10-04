@@ -30,6 +30,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.apache.hadoop.ipc.CausynthMessagePropagation;
 import java.io.InputStreamReader;
 import java.io.Reader;
@@ -2488,6 +2489,59 @@ public class RowRuntimeTest {
         assertTrue(RowPublication.disjunction(Collections.singletonList(
                 decided("G#u3", false, c)), guards, "G#u3", 1, arms));
         assertEquals(Collections.singletonList(refC), arms);
+    }
+
+    /**
+     * A concrete target testing a helper's constant return is decided by the
+     * latest decision in the helper's method before it, when that is a
+     * decider arm (causynth.BooleanReturns); a concrete one testing a
+     * nested helper's return by that helper's in turn (hdfs-adhoc-40:
+     * {@code isSufficientlyReplicated}'s concrete test of {@code
+     * hasMinStorage}'s return, chosen by {@code liveNum >= min}).  Never an
+     * earlier call's: a latest decision at an arm that runs on, or concrete
+     * with nothing below it, decides nothing.
+     */
+    @Test
+    public void aHelpersReturnIsDecidedByTheLatestArmInItsMethod() {
+        String helper = "<a.H: boolean sufficient(int)>";
+        String nested = "<a.H: boolean hasMin(int)>";
+        List<StaticScopeMap.Guard> deciders = Arrays.asList(
+                new StaticScopeMap.Guard(helper + "#u2", false, Arrays.asList(
+                        new StaticScopeMap.Guard(nested + "#u1", true),
+                        new StaticScopeMap.Guard(nested + "#u1", false))),
+                new StaticScopeMap.Guard(helper + "#u4", true),
+                new StaticScopeMap.Guard(helper + "#u4", false));
+        JsonObject m = predicate("m"), h = predicate("h");
+        Object[][] rows = {
+            // the decisions before the target at 12, which one decided it
+            {"the nested helper's comparison", new Object[][]{
+                    {nested + "#u1", 10L, false, m},
+                    {helper + "#u2", 11L, false, null}}, 10L},
+            {"the helper's own comparison", new Object[][]{
+                    {nested + "#u1", 9L, true, m},
+                    {helper + "#u2", 10L, true, null},
+                    {helper + "#u4", 11L, true, h}}, 11L},
+            {"an arm that runs on decides nothing", new Object[][]{
+                    {nested + "#u1", 10L, true, m},
+                    {helper + "#u2", 11L, true, null}}, null},
+            {"never an earlier call's", new Object[][]{
+                    {helper + "#u4", 5L, true, h},
+                    {helper + "#u4", 11L, false, null}}, null},
+            {"nor one after the target", new Object[][]{
+                    {helper + "#u4", 13L, true, h}}, null}};
+        for (Object[] row : rows) {
+            List<JsonObject> mappings = new ArrayList<>();
+            for (Object[] each : (Object[][]) row[1]) {
+                JsonObject mapping = decided((String) each[0],
+                        (Boolean) each[2], (JsonObject) each[3]);
+                mapping.addProperty("vmEventId", (Long) each[1]);
+                mappings.add(mapping);
+            }
+            JsonObject found = RowPublication.decidedBy(mappings, deciders,
+                    12L);
+            assertEquals((String) row[0], row[2], found == null ? null
+                    : found.get("vmEventId").getAsLong());
+        }
     }
 
     private static JsonObject predicate(String name) {

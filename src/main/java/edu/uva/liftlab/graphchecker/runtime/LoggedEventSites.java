@@ -104,6 +104,13 @@ final class LoggedEventSites {
             return !className.isEmpty() && !method.isEmpty();
         }
 
+        /** The method half of {@link #site}, a scope map row's
+         *  {@code vmSite}: {@code <class>#<method><descriptor>}. */
+        private String method() {
+            String site = site(false);
+            return site.substring(0, site.lastIndexOf('#'));
+        }
+
         /**
          * The one spelling of the site, and the one place a VM class name is
          * converted to source form.  Stabilised BEFORE slashes become dots:
@@ -198,6 +205,13 @@ final class LoggedEventSites {
             return Endpoint.stateSite(locationKey, "UNSTATED_SITE", 0, write);
         }
         return site.site(write);
+    }
+
+    /** The method a logged event states it ran in, as a scope map row's
+     *  {@code vmSite} spells it; "" when it states no site. */
+    static String method(JsonObject node) {
+        Logged own = node == null ? null : new Logged(node);
+        return own != null && own.states() ? own.method() : "";
     }
 
     /**

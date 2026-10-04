@@ -243,10 +243,9 @@ public final class CausynthPipeline {
             }
             for (StaticScopeMap.Guard guard : control.chainOf(target)) {
                 sites.add(guard.siteId());
-                if (guard.decider() != null) {
-                    sites.add(guard.decider().siteId());
-                }
             }
+            sites.addAll(StaticScopeMap.Guard.decidingSites(
+                    control.chainOf(target)));
         }
         return sites;
     }

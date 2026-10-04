@@ -128,9 +128,10 @@ none.
    the `NEW`'s ordinal among the method's `NEW`s of that type, which the analyzer matches on Jimple.
    A spec of more than one line is refused (`MULTI_TARGET_UNSUPPORTED`).
    The scope map is [SYMBOL-SCOPE.md §3](SYMBOL-SCOPE.md); its `TARGET_SITE` rows state the
-   target's `guards` with their fatal arms, the helper branch deciding a guard on a helper's
-   returned 0/1 (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards before them;
-   `StaticScopeMap.Site.pathSites` = guards + chain + the chain's deciders. Loop-bound
+   target's `guards` with their fatal arms, the helper branch arms deciding a guard on a helper's
+   constant return, nested (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards
+   before them; `StaticScopeMap.Site.pathSites` = guards + chain + the chain's deciders at every
+   depth. Loop-bound
    rows are keyed by Jimple unit id (`<method signature>#uNN`, field `loopSiteId`); the ids the
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
@@ -315,9 +316,11 @@ which COMPOSE pins (§8, *A query's stated answer*).
 
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
-the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on the 0/1 a
-helper returned, the helper branch's last decision before it (its `guardDeciders` entry), the target
-standing at that decision; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
+the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on a constant
+a helper returned, the predicate of the decision that chose it (`RowPublication#decidedBy`: the latest
+decision in the helper's method before the target, when it is one of its `guardDeciders` arms; a
+concrete one there is decided by its nested helper's in turn; none: the target's constant) in the
+polarity of the arm the target took, the target standing at that decision; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
 evaluation decided, from the test it reached the target at, with `observedFatal` = one
 test took its fatal arm. A decision that states no predicate (the VM decided it concretely) is the
 constant of the arm it took: `true` on the fatal arm, `false` on the healthy one, so a concrete
@@ -429,7 +432,10 @@ decided it on a recorded symbol: every path COMPOSE takes is refused (§8, "deci
 its healthy arm" or never reached) and nothing above names a value. An unreached path with a
 symbolic decision on the way is not concrete, since flipping it is how a replay reaches the throw
 (SOLR-18413's leader leaves at a concrete test of the boolean its clock-decided `isExpired`
-returned). Its predicate reads are then the read rows the anchor made, in each admitted path,
+returned). Its predicate reads are then the read rows its deciding predicate names, by read event
+(`Corpus#readEvents` of phi or of the flip-site decisions' terms: a compound guard's phi stands at its
+first test, and the reads of its later tests come after it -- hdfs-adhoc-26's cTime reads), and the
+read rows the anchor made, in each admitted path,
 before that path's deciding event, of the reads the root demand found on the throw's path guards
 (SYMBOL-SCOPE §4.6; `StaticScopeMap#demandedAt`: a READ_SITE or READ placeholder stating its
 `demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins).

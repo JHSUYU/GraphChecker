@@ -126,13 +126,9 @@ public final class ConcolicScheduler {
                         candidate.targetOccurrence);
                 target.addProperty("requiredOutcome",
                         candidate.targetRequiredOutcome);
-                if (candidate.targetDecider != null) {
-                    JsonObject decider = new JsonObject();
-                    decider.addProperty("siteId",
-                            candidate.targetDecider.siteId());
-                    decider.addProperty("requiredOutcome",
-                            candidate.targetDecider.outcome());
-                    target.add("decidedBy", decider);
+                if (!candidate.targetDeciders.isEmpty()) {
+                    target.add("decidedBy", StaticScopeMap.guardsJson(
+                            candidate.targetDeciders));
                 }
                 if (!candidate.targetGuards.isEmpty()) {
                     JsonArray guards = new JsonArray();
@@ -290,16 +286,16 @@ public final class ConcolicScheduler {
         return guards;
     }
 
-    /** The helper branch deciding the target guard {@code guardSiteId}, as
-     *  the TARGET_SITE rows state it, or null. */
-    static StaticScopeMap.Guard fatalDecider(StaticScopeMap map,
-                                             String guardSiteId) {
+    /** The helper branch arms deciding the target guard {@code
+     *  guardSiteId}, as the TARGET_SITE rows state them; empty for none. */
+    static List<StaticScopeMap.Guard> fatalDeciders(StaticScopeMap map,
+                                                    String guardSiteId) {
         for (StaticScopeMap.Site target : map.targetSites()) {
-            StaticScopeMap.Guard decider =
+            List<StaticScopeMap.Guard> deciders =
                     target.guardDeciders.get(guardSiteId);
-            if (decider != null) return decider;
+            if (deciders != null) return deciders;
         }
-        return null;
+        return Collections.<StaticScopeMap.Guard>emptyList();
     }
 
     private static void scheduleTargetFirst(Arguments arguments)
@@ -527,7 +523,8 @@ public final class ConcolicScheduler {
         result.add(new Candidate(goal, branches, site,
                 optionalInteger(fatal, "selectedOccurrence", 1),
                 fatalArm(scopeMap, site).booleanValue(),
-                guards.isEmpty() ? fatalDecider(scopeMap, site) : null,
+                guards.isEmpty() ? fatalDeciders(scopeMap, site)
+                        : Collections.<StaticScopeMap.Guard>emptyList(),
                 guards, inputActions));
     }
 
@@ -897,8 +894,9 @@ public final class ConcolicScheduler {
         private final String targetSiteId;
         private final int targetOccurrence;
         private final boolean targetRequiredOutcome;
-        /** The helper branch that decides the target branch, or null. */
-        private final StaticScopeMap.Guard targetDecider;
+        /** The helper branch arms that decide the target branch, each with
+         *  its own (causynth.BooleanReturns); empty for none. */
+        private final List<StaticScopeMap.Guard> targetDeciders;
         /** Every test of a disjunctive guard with its fatal arm, first the
          *  target branch; empty for one guard. */
         private final List<StaticScopeMap.Guard> targetGuards;
@@ -909,7 +907,8 @@ public final class ConcolicScheduler {
                           boolean targetRequiredOutcome,
                           JsonArray inputActions) {
             this(goal, branches, targetSiteId, targetOccurrence,
-                    targetRequiredOutcome, null,
+                    targetRequiredOutcome,
+                    Collections.<StaticScopeMap.Guard>emptyList(),
                     Collections.<StaticScopeMap.Guard>emptyList(),
                     inputActions);
         }
@@ -917,11 +916,11 @@ public final class ConcolicScheduler {
         private Candidate(Goal goal, JsonArray branches,
                           String targetSiteId, int targetOccurrence,
                           boolean targetRequiredOutcome,
-                          StaticScopeMap.Guard targetDecider,
+                          List<StaticScopeMap.Guard> targetDeciders,
                           List<StaticScopeMap.Guard> targetGuards,
                           JsonArray inputActions) {
             this.goal = goal;
-            this.targetDecider = targetDecider;
+            this.targetDeciders = targetDeciders;
             this.targetGuards = targetGuards;
             this.branches = branches;
             this.targetSiteId = nonNull(targetSiteId);

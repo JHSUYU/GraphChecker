@@ -492,8 +492,10 @@ public final class SiteControlDependence {
                 Boolean arm = reachingArm(plain, branch, site);
                 if (named.add(siteOf(branch))) {
                     found.add(new StaticScopeMap.Guard(siteOf(branch), arm,
-                            arm == null ? null : BooleanReturns.decider(
-                                    plain.cfg.getBody(), branch, arm)));
+                            arm == null
+                                    ? Collections.<StaticScopeMap.Guard>emptyList()
+                                    : BooleanReturns.deciders(
+                                            plain.cfg.getBody(), branch)));
                 }
             }
         }

@@ -4548,7 +4548,9 @@ public class ExploreTest {
      * decided on its guards' cone (the scope map's demandDistance,
      * SYMBOL-SCOPE §4.6), so the fault that chose what that state's writer
      * wrote is asked; a read made after the decision, or off the cone,
-     * reaches nothing.  Each round
+     * reaches nothing -- unless its predicate names that read (a compound
+     * guard's phi stands at its first test, and its later tests read
+     * after it: hdfs-adhoc-26's cTime reads).  Each round
      * names it NO_ROOT_REACHES_ANCHOR: DIAGNOSTIC while there is work,
      * BLOCKING at the fixed point.  An anchor whose predicate names a
      * symbol, an unreached one with a symbolic decision on the way to the
@@ -4576,6 +4578,9 @@ public class ExploreTest {
             {null, false, true, true, "(= M_OTHER 0)", false, null, ""},
             {"(= M_OTHER 0)", false, true, true, "", false, null, ""},
             {"true", true, true, true, "", false, null, ""},
+            // phi names the read it made after the target row, off the cone
+            {NAMES_ITS_READ, false, false, false, "", true,
+                GapClass.DIAGNOSTIC, "its closure demands the 1 "},
         };
         for (int at = 0; at < cases.length; at++) {
             Object[] row = cases[at];
@@ -4603,6 +4608,10 @@ public class ExploreTest {
                         "Guard#u8#1", "", false, false));
             } else if ((Boolean) row[1]) {
                 seed.fatal(TARGET, "Guard#u8#1", phi);
+            } else if (NAMES_ITS_READ.equals(phi)) {
+                seed.target(TARGET, "Guard#u8#1", phi);
+                // The read the second test makes, joined to a constant.
+                seed.expression(phi, readTest(seed.seq + 1, stored));
             } else {
                 seed.target(TARGET, "Guard#u8#1", phi);
             }
@@ -4642,6 +4651,37 @@ public class ExploreTest {
                         noRoot.detail().startsWith((String) row[7]));
             }
         }
+    }
+
+    /** A phi whose expression names its own read (ConcreteAnchor case). */
+    private static final String NAMES_ITS_READ = "EXPR.00000000000000a7";
+
+    /** {@code read == 7}, the read node at {@code event} of {@code at}. */
+    private static JsonObject readTest(long event, LocationId at) {
+        JsonObject location = new JsonObject();
+        location.addProperty("ownerSymRid", Long.parseLong(at.owner()));
+        location.addProperty("slot", Integer.parseInt(at.slot()));
+        location.addProperty("locationKind", "INSTANCE_FIELD");
+        JsonObject version = new JsonObject();
+        version.addProperty("fieldVersionId", 1L);
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "ReadFromExpression");
+        read.addProperty("_java_type", "I");
+        read.addProperty("readEventId", event);
+        read.add("location", location);
+        read.add("observedVersion", version);
+        read.addProperty("writerSetComplete", true);
+        read.addProperty("observedExact", true);
+        JsonObject seven = new JsonObject();
+        seven.addProperty("_type", "ConstExpr");
+        seven.addProperty("_java_type", "I");
+        seven.addProperty("_exp", "Y_I_7");
+        JsonObject test = new JsonObject();
+        test.addProperty("_type", "BinaryExpression");
+        test.addProperty("_op", "==");
+        test.add("_left", read);
+        test.add("_right", seven);
+        return test;
     }
 
     /**
