@@ -888,8 +888,8 @@ public final class Corpus implements Arms.Rows {
      * UNSTATED_VALUE row it filed on that occurrence (an attach the VM
      * refused, whose rows compute on the arrival as a constant; an attach
      * that minted no boundary variable).  A REFUSAL IS ITS FRAME'S: what
-     * rests on that occurrence is refused, and nothing else
-     * ({@code Composer#frameRefusals}).
+     * rests on that occurrence composes with the constants its rows state,
+     * and names the frame ({@code Composer#frames}).
      */
     public GapRow refusedIn(String sessionId, String occurrenceId) {
         return refusedIn.get(sessionId + "|" + occurrenceId);

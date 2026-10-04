@@ -18,6 +18,15 @@ public enum ClaimKind {
     STATE_PAIRING_FLIPPED,
     /** The seed run itself observed the fatal arm. */
     RECORDED_FAILURE_EXPLAINED,
+    /**
+     * The formula is satisfiable and no mechanism the recording decides
+     * names why (a formula sat as the run happened on a healthy run, a
+     * polarity the recording does not decide, a root moved inside an
+     * unattested arm): composer imprecision until CONFIRM says otherwise,
+     * so it is confirmed like any claim, its model's arms and valuation
+     * planted, and a refutation excluded before the claim is decided again.
+     */
+    FORMULA_SAT,
     /** Nothing in the corpus supports a witness: the honest answer. */
     NO_SUPPORTED_WITNESS
 }

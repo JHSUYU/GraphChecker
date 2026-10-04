@@ -1171,7 +1171,7 @@ campaign_require_claim() {
   jq -e '.solver as $r
     | ($r.campaignClaim | type) == "object"
     and (($r.campaignClaim.claim // "")
-      | IN("SAT_CANDIDATE", "UNSAT_CLOSED", "INCONCLUSIVE_PARTIAL"))
+      | IN("SAT_CANDIDATE", "UNSAT_CLOSED", "RUN_DEFECT"))
     and ($r.campaignClaim.blockers | type) == "array"
     and ($r.campaignClaim.blockerCount | type) == "number"
     and ($r.campaignClaim.claimReason | type) == "string"
@@ -1179,7 +1179,7 @@ campaign_require_claim() {
     and (($r.campaignClaim.findingKind // "")
       | IN("MARKER_FLIPPED", "CLOCK_SKEW", "MESSAGE_PAIRING_FLIPPED",
            "STATE_PAIRING_FLIPPED", "RECORDED_FAILURE_EXPLAINED",
-           "NO_SUPPORTED_WITNESS"))
+           "FORMULA_SAT", "NO_SUPPORTED_WITNESS"))
     and ($r.campaignClaim.polarityDecides | type) == "boolean"' \
     "${path}" >/dev/null \
     || campaign_fail EMIT ClaimPolicy "${path}" \
@@ -6053,11 +6053,22 @@ campaign_emit() {
   # positives (tools/adhoc/triage.py), whatever the claim published.
   local refuted="${iteration_dir}/refuted_claims.jsonl"
   [[ -s "${refuted}" ]] || refuted=/dev/null
+  # What the last EXPLORE round found decided on no symbol (ExploreMain's
+  # concreteAnchors): information beside the verdict, never a gap.
+  local explored=/dev/null round
+  for round in "${iteration_dir}"/obligations-*/explore_manifest.json; do
+    [[ -s "${round}" ]] && explored=${round}
+  done
+  # The formula the claim is about, SAT or UNSAT: the file z3 re-solves.
+  require_nonempty "composed formula" "${campaign_final}/candidate.smt2"
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --argjson confirmation "${confirmation}" \
+    --arg formula "${campaign_final}/candidate.smt2" \
+    --arg formulaSha "$(campaign_digest "${campaign_final}/candidate.smt2")" \
     --slurpfile refutedClaims "${refuted}" \
     --slurpfile composedDocuments "${composition_manifest}" \
+    --slurpfile exploreDocuments "${explored}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
     $composedDocuments[0] as $c | ($c.solver // {}) as $r |
     $gapDocuments[0] as $gaps |
@@ -6067,9 +6078,14 @@ campaign_emit() {
     ($gaps.gapCount) as $gapCount |
     ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
+    # The formula decides, SAT or UNSAT.  A SAT claim is what CONFIRM made
+    # of it; an UNSAT closes only where no stage named a defect, else the
+    # run left no verdict (RUN_DEFECT), the defects named in defects[].
     (if $decided.claim == "SAT_CANDIDATE"
-        and ($confirmation.confirmed != true)
-     then "SAT_UNCONFIRMED" else $decided.claim end) as $claim |
+     then (if $confirmation.confirmed == true then "SAT_CANDIDATE"
+           else "SAT_UNCONFIRMED" end)
+     elif $gapCount > 0 then "RUN_DEFECT"
+     else $decided.claim end) as $claim |
     {schemaVersion: 1,
      kind: "CAMPAIGN_RESULT",
      provenance: $provenance,
@@ -6077,13 +6093,23 @@ campaign_emit() {
      claimReason: (if $claim == "SAT_UNCONFIRMED"
        then "the confirmation replay did not agree with the model: "
             + $confirmation.reason
+       elif $claim == "RUN_DEFECT" and $decided.claim != "RUN_DEFECT"
+       then "the formula decided " + $decided.claim + ", and the run named "
+            + ($gapCount | tostring) + " defect(s) that leave no verdict"
        else $decided.claimReason end),
+     # What the composition itself decided, whatever the run made of it,
+     # and the formula it decided it on (z3 reproduces the verdict on it).
+     formulaClaim: $decided.claim,
+     formula: {path: $formula, sha256: $formulaSha},
      blockers: $decided.blockers,
      # ClaimPolicy counts its own blockers; re-counting the array here let
      # the published count drift from the policy that decided the claim.
      blockerCount: $decided.blockerCount,
      whyNotAccepted: (if $claim == "SAT_UNCONFIRMED"
        then "SAT_UNCONFIRMED: " + $confirmation.reason
+       elif $claim == "RUN_DEFECT" and $decided.claim != "RUN_DEFECT"
+       then "RUN_DEFECT: the run named " + ($gapCount | tostring)
+            + " defect(s): " + ([$gaps.gaps[] | .code] | unique | join(", "))
        else $decided.whyNotAccepted end),
      # The confirmation itself, so a reader of result.json sees which
      # session answered and why, not only that the claim was downgraded.
@@ -6132,6 +6158,15 @@ campaign_emit() {
      accepted: (($claim == "SAT_CANDIDATE" or $claim == "UNSAT_CLOSED")
                 and $gapCount == 0),
      blockingGapCodes: ($gaps.byCode // {}),
+     # The defects of the run or the engine, each a bug to fix: the BLOCKING
+     # gaps, whichever stage raised them.
+     defects: [$gaps.gaps[] | {stage, code, subject, detail}],
+     # What the decision rested on concretely: each anchor every admitted
+     # path decided on no symbol (EXPLORE), each value COMPOSE pinned to its
+     # row though what it rests on can move, each occurrence whose run
+     # computed on a value as a constant (Composer.Concrete).
+     concrete: ([($exploreDocuments[0].concreteAnchors // [])[]
+                 | {kind: "ANCHOR"} + .] + ($c.concrete // [])),
      # What each satisfying witness named, and whether the policy read it as a
      # finding or as freedom nobody accounted for. A reader asking "why is this
      # sat" gets the mechanism narrative here rather than having to rebuild it
@@ -6228,14 +6263,15 @@ campaign_emit() {
 }
 
 # The campaign's exit, read off the result EMIT published.  A published
-# artifact set is not an accepted candidate: a run that reached no witness
-# and no closed refutation exits 2 with its own named reason, because a
-# top-level zero exit is not completion; one that names BLOCKING gaps, 3.
+# artifact set is not an accepted candidate: a SAT claim CONFIRM did not
+# agree with exits 2 with its reason, because a top-level zero exit is not
+# completion; a run that named defects, 3 -- no verdict (RUN_DEFECT), or a
+# confirmed witness beside a defect of the run.
 campaign_exit_verdict() {
   local gapCount
   gapCount=$(jq -r '.gapCount' "${campaign_final}/gaps.json")
   case "$(jq -r '.claim' "${campaign_final}/result.json")" in
-    SAT_CANDIDATE|UNSAT_CLOSED) ;;
+    SAT_CANDIDATE|UNSAT_CLOSED|RUN_DEFECT) ;;
     *)
       jq -r '"[campaign] no accepted candidate: claim=\(.claim) reason=\(.claimReason)"' \
         "${campaign_final}/result.json" >&2
@@ -6244,15 +6280,17 @@ campaign_exit_verdict() {
       exit 2
       ;;
   esac
-  # Every blocking gap is a hard failure, whichever stage raised it.  The
+  # Every defect is a hard failure, whichever stage raised it.  The
   # telemetry array holds only the rows their own producer classed as unable
   # to change a chain, and each of those carries its reason there.
-  [[ "${gapCount}" -eq 0 ]] || {
-    jq -r '"[campaign] candidate withheld: claim=\(.claim), but the run named "
-      + (.gapCount | tostring) + " BLOCKING gap(s); "
+  [[ "${gapCount}" -eq 0 && "$(jq -r '.claim' "${campaign_final}/result.json")" \
+      != RUN_DEFECT ]] || {
+    jq -r '"[campaign] no accepted verdict: claim=\(.claim) (the formula "
+      + .formulaClaim + "), and the run named "
+      + (.gapCount | tostring) + " defect(s); "
       + (.telemetryCount | tostring) + " diagnostic row(s) withhold nothing"' \
       "${campaign_final}/result.json" >&2
-    echo "  named gaps: ${campaign_final}/gaps.json" >&2
+    echo "  named defects: ${campaign_final}/gaps.json" >&2
     exit 3
   }
 }

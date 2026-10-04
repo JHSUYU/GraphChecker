@@ -178,6 +178,8 @@ public final class Composer {
 
     /** What one composition is, before the solver is asked. */
     public static final class Composition {
+        /** What the composed paths rest on concretely ({@link Concrete}). */
+        private final List<Concrete> concrete;
         private final OccurrenceAddress anchor;
         private final String body;
         private final List<Disjunct> disjuncts;
@@ -260,6 +262,8 @@ public final class Composer {
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
+            this.concrete = Collections.unmodifiableList(
+                    new ArrayList<Concrete>(composed.concrete.values()));
             this.ownArms = composed.composedFamilies.ownArms();
             this.recordedAtPlants =
                     composed.composedFamilies.recordedAtPlants();
@@ -459,6 +463,12 @@ public final class Composer {
 
         public List<Family> families() {
             return families;
+        }
+
+        /** What the composed paths rest on concretely: information, never
+         *  a gap (result.json {@code concrete[]}). */
+        public List<Concrete> concrete() {
+            return concrete;
         }
 
         public List<RootDomain> roots() {
@@ -772,6 +782,15 @@ public final class Composer {
     private final Set<String> replacing = new LinkedHashSet<String>();
     /** What refused the first path that reached the anchor, or "". */
     private String firstRefusal = "";
+    /** The path being composed: the arrivals it pins to the value its run
+     *  received ({@link #handoffRead}), and what it rests on concretely
+     *  ({@link Concrete}), kept once the path is a disjunct. */
+    private final List<String> pinnedArrivals = new ArrayList<String>();
+    private final Map<String, Concrete> pathConcrete =
+            new LinkedHashMap<String, Concrete>();
+    /** What the composed paths rest on concretely, by subject. */
+    private final Map<String, Concrete> concrete =
+            new LinkedHashMap<String, Concrete>();
     /** How the alternatives of one slot read in SMT. */
     private final ComposedFamilies composedFamilies;
 
@@ -898,14 +917,14 @@ public final class Composer {
             }
         }
         if (disjuncts.isEmpty()) {
-            // Say which absence: nothing reached, or all were refused.
+            // Say which absence: no admitted path, or all were refused.
             gap(GapKind.ADMISSION_GAP, GapClass.BLOCKING, anchor.render(),
                     admitted.isEmpty()
-                            ? "no session of this corpus published a path "
-                            + "that reached the declared occurrence"
-                            : admitted.size() + " paths reached the anchor "
-                            + "and all were refused: " + (firstRefusal
-                            .isEmpty() ? "no refusal was named"
+                            ? "the declared occurrence ran, and no admitted "
+                            + "session published a path at it"
+                            : admitted.size() + " paths ran the declared "
+                            + "occurrence and all were refused: "
+                            + (firstRefusal.isEmpty() ? "no refusal was named"
                             : firstRefusal));
         } else {
             List<String> selectors = selectors(disjuncts);
@@ -993,9 +1012,11 @@ public final class Composer {
     // ------------------------------------------------------------------
 
     /**
-     * Every session's path that reached the anchor.  The declared occurrence
-     * is always the anchor; a session without a target row is an admission
-     * gap, never a reason to elect another occurrence.
+     * Every session's path that reached the anchor, or, where none did,
+     * every session's path that ran the occurrence and left the way to the
+     * throw (its fatal arm the constant healthy decision).  The declared
+     * occurrence is always the anchor; a corpus without a target row for it
+     * never ran it, a defect, never a reason to elect another occurrence.
      */
     private List<Corpus.RecordedPath> admit() {
         List<Corpus.RecordedPath> admitted =
@@ -1003,14 +1024,21 @@ public final class Composer {
         List<TargetRow> targets = corpus.targetsOn(anchor);
         if (targets.isEmpty()) {
             gap(GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
-                    anchor.render(), "no session of this corpus published a "
-                            + "target row for the declared occurrence");
+                    anchor.render(), "the declared occurrence never ran: no "
+                            + "session of this corpus published a target row "
+                            + "for it");
             return admitted;
         }
+        // Where no session reached the anchor, each that ran the occurrence
+        // and left the way to the throw at a guard is a path: its fatal arm
+        // is the constant healthy decision ({@link #compose}).  Beside a
+        // path that reached it, such a disjunct adds nothing.
+        boolean reached = false;
+        for (TargetRow target : targets) reached |= target.reachedAnchor();
         for (TargetRow target : targets) {
             Corpus.RecordedPath path = corpus.path(target.sessionId(),
                     anchor);
-            if (!target.reachedAnchor()) {
+            if (reached && !target.reachedAnchor()) {
                 gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         target.sessionId(), "this session ran the occurrence "
                                 + "and did not reach the anchor");
@@ -1018,8 +1046,8 @@ public final class Composer {
             }
             if (path == null) {
                 gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        target.sessionId(), "this session reached the anchor "
-                                + "and published no path at the occurrence");
+                        target.sessionId(), "this session ran the occurrence "
+                                + "and published no path at it");
                 continue;
             }
             if (!settled(target.sessionId())) continue;
@@ -1099,7 +1127,10 @@ public final class Composer {
         List<ReadRow> joined = new ArrayList<ReadRow>();
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
-        frameRefusals(session, reached.keySet(), refusals);
+        pinnedArrivals.clear();
+        pathConcrete.clear();
+        int pinsBefore = lowering.pins().size();
+        frames(session, reached.keySet());
 
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
@@ -1176,20 +1207,39 @@ public final class Composer {
         // (5) phi_p is the FATAL arm as published; never re-derive its
         //     polarity.  A concrete fatal condition is the constant of its
         //     arm (invariant 9): `true` rests the fatal on pi_p, the path
-        //     condition that reached the anchor; `false` is no path to the
-        //     fatal arm in any world of this one; none stated is no phi.
+        //     condition that reached the anchor; `false` is the constant
+        //     healthy decision, a disjunct no valuation of this formula
+        //     satisfies (what was concrete is EXPLORE's concreteAnchors);
+        //     a path that left the way to the throw at a guard takes the
+        //     healthy arm there, the same constant, the guard named in
+        //     concrete[] (WAY); none stated is no phi.
         String subject = "phi of " + anchor.render();
         String published = target.phiTerm().trim();
         int fatalArm = -1;
-        if (published.isEmpty() || "false".equals(published)) {
+        if (!target.reachedAnchor()) {
+            fatalArm = terms.size();
+            terms.add("false");
+            DecisionRow way = wayGuard(path.decisions);
+            pathConcrete.put("way:" + session, new Concrete("WAY",
+                    way == null ? anchor.render() : way.siteId() + "#"
+                            + way.ordinal(), way == null ? ""
+                    : Boolean.toString(way.outcome()),
+                    Collections.<String>emptyList()));
+            // An unreached target row stands at no point of the path (its
+            // seq states none): the path is its decisions up to the guard it
+            // left the way at (all of them where it left at none named).
+            terms.addAll(healthyDecisions(session, ordinal, path.decisions,
+                    way == null ? Long.MAX_VALUE : way.seq(), relevant));
+        } else if (published.isEmpty()) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                    GapClass.DIAGNOSTIC, subject, published.isEmpty()
-                            ? "the target row states no phi (invariant 9), "
-                            + "so what the fatal rests on is stated by no "
-                            + "row"
-                            : "the anchor decided concretely on its healthy "
-                            + "arm, so no world of this path reaches the "
-                            + "fatal one"));
+                    GapClass.DIAGNOSTIC, subject, "the target row states "
+                            + "no phi (invariant 9), so what the fatal rests "
+                            + "on is stated by no row"));
+        } else if ("false".equals(published)) {
+            fatalArm = terms.size();
+            terms.add(published);
+            terms.addAll(healthyDecisions(session, ordinal, path.decisions,
+                    target.seq(), relevant));
         } else {
             String phi = lowering.statedTerm(published, "phi:" + subject);
             if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
@@ -1209,6 +1259,7 @@ public final class Composer {
         // (it would otherwise rest on a free constant).
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
+        terms.addAll(pinnedArrivals);
         terms.addAll(lowering.end());
 
         // (1b) Refuse the path only if its own terms name a declared root
@@ -1249,11 +1300,24 @@ public final class Composer {
         // Nothing refuses the path from here: it is a disjunct.
         composedFamilies.commit();
         String fatal = "path_fatal__" + ordinal;
-        lowering.assertNamed(fatal,
-                "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
         List<String> withoutFatalArm = new ArrayList<String>(terms);
         if (fatalArm >= 0) withoutFatalArm.remove(fatalArm);
+        // A constant healthy decision is conjoined unflattened, so the body
+        // still declares what the rest of the path names: the self-check
+        // asks the path without it (Composition#withoutFatalArm).
+        String conjunction = fatalArm >= 0
+                && "false".equals(terms.get(fatalArm))
+                ? "(and " + VmTermLowering.and(withoutFatalArm) + " false)"
+                : VmTermLowering.and(terms);
+        lowering.assertNamed(fatal,
+                "(=> " + selector + " " + conjunction + ")");
         observedReads.put(path.pathId, observed);
+        for (SmtLowering.Pin pin : lowering.pins().subList(pinsBefore,
+                lowering.pins().size())) {
+            pathConcrete.put(pin.subject, new Concrete("PIN", pin.subject,
+                    pin.value, pin.movesWith));
+        }
+        concrete.putAll(pathConcrete);
         observedArrivals.put(path.pathId,
                 arrivals(corpus.attachesOn(session, anchor)));
         heldArrivals.put(path.pathId, arrivals(bound));
@@ -1271,9 +1335,63 @@ public final class Composer {
     private static List<String> fatalRests(TargetRow target,
                                            List<DecisionRow> decisions) {
         String phi = target.phiTerm().trim();
-        return "true".equals(phi) || "false".equals(phi)
+        return !target.reachedAnchor() || "true".equals(phi)
+                || "false".equals(phi)
                 ? Arms.pathCondition(decisions, target.seq())
                 : Collections.singletonList(target.phiTerm());
+    }
+
+    /**
+     * THE DECISIONS OF A PATH THAT TOOK THE HEALTHY ARM CONCRETELY, stated:
+     * each decision up to {@code upTo} (the anchor's own deciding guard
+     * included) that pi_p does not state -- independence left it out, none
+     * of its variables moving, or it states no term -- is conjoined as a
+     * proposition named for it ({@code decided__}) at the arm it took, and
+     * named in concrete[] (DECISION) with its term, so the formula states
+     * the path the run took and not a bare constant.  Its term is not
+     * lowered: over nothing that moves it holds at its recorded value in
+     * every world, so it adds no answer, and lowered it can contradict the
+     * run where the lowering is less precise than the run (hdfs-adhoc-07:
+     * 25 of 33 healthy paths unsatisfiable without their fatal arm).
+     */
+    private List<String> healthyDecisions(String session, int ordinal,
+                                          List<DecisionRow> decisions,
+                                          long upTo,
+                                          Independence relevant) {
+        List<String> stated = new ArrayList<String>();
+        for (DecisionRow decision : decisions) {
+            // pi_p states a kept decision whose term it can state.
+            if (decision.seq() > upTo || relevant.keeps(decision)
+                    && decision.seq() < upTo
+                    && Arms.predicate(Arms.conjunct(decision))) {
+                continue;
+            }
+            String subject = decision.siteId() + "#" + decision.ordinal();
+            String name = "decided__" + ordinal + "__" + ArtifactIO.digest(
+                    session + "|" + subject, 12);
+            lowering.declare(name, Sort.BOOL);
+            stated.add(decision.outcome() ? name : "(not " + name + ")");
+            pathConcrete.put("decision:" + session + ":" + subject,
+                    new Concrete("DECISION", subject, decision.outcome()
+                            + (decision.term().isEmpty() ? ""
+                            : " " + decision.term()),
+                            Collections.singletonList(name)));
+        }
+        return stated;
+    }
+
+    /** The last decision a path took at a site on the way to the throw
+     *  (the target sites' path sites), or null. */
+    private DecisionRow wayGuard(List<DecisionRow> decisions) {
+        Set<String> way = new LinkedHashSet<String>();
+        for (StaticScopeMap.Site target : scope.targetSites()) {
+            way.addAll(target.pathSites());
+        }
+        DecisionRow last = null;
+        for (DecisionRow decision : decisions) {
+            if (way.contains(decision.siteId())) last = decision;
+        }
+        return last;
     }
 
     private static List<String> selectors(List<Disjunct> disjuncts) {
@@ -1521,7 +1639,10 @@ public final class Composer {
      * with its path delivered (hdfs-17967-pathC rb1: a flip answered the
      * DataNode's key id with 119532 while the moved serial had its producer
      * deliver 119533, and the answer, pinned as a literal, let the solver
-     * move the serial past it).  Otherwise refused by name.
+     * move the serial past it).  An arrival no producer this corpus attests
+     * delivered is pinned to the value its run received instead, which no
+     * moved root follows (a {@link Concrete} PIN): a witness over it is
+     * CONFIRM's to refute.  A row stating no value is refused by name.
      */
     private void handoffRead(String session, AttachRow attach,
                              Set<String> interactionIds,
@@ -1529,26 +1650,41 @@ public final class Composer {
                              List<AttachRow> bound) {
         if (!handoffs.add(attach.symbol())) return;
         Interaction interaction = attach.interaction();
-        if (interaction != null) {
-            interactionIds.add(interaction.id());
-        } else {
-            // No known source, so no family: named, and refused below.
+        if (interaction == null) {
+            // No known source, so no family: named, and pinned below.
             composedFamilies.unpaired(session, attach);
         }
         if (attestedArrival(attach)) {
+            // An attested arrival has a producer, so its interaction.
+            interactionIds.add(interaction.id());
             bound.add(attach);
             return;
         }
-        // Never pin the literal it took: the question is whether the
-        // producer could have delivered another value.  Refuse by name.
-        refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
-                GapClass.DIAGNOSTIC, attach.symbol(),
-                "no session of this corpus states the rows of the producer "
-                        + "occurrence this delivery came from, so what was "
-                        + "delivered is stated and why is not: this path "
-                        + "would have to pin the read to the literal it "
-                        + (attach.answered() ? "was answered with"
-                        : "received")));
+        // No producer this corpus attests (or none named): what it delivered
+        // is stated and why is not, so the arrival is a constant -- the value
+        // the run received (an answered one, the answer) -- whatever the
+        // producer might have delivered under a moved root; a witness over it
+        // is CONFIRM's to refute (hdfs-17967-pathC rb1).  A row stating no
+        // value refuses the path by name.
+        Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
+        String literal = smtLiteral(JsonFields.firstNonBlank(
+                attach.answeredValue(), attach.arrival()), sort);
+        if (literal.isEmpty()) {
+            refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
+                    GapClass.DIAGNOSTIC, attach.symbol(),
+                    "no session of this corpus states the rows of the "
+                            + "producer occurrence this delivery came from, "
+                            + "and its row states no value it "
+                            + (attach.answered() ? "was answered with"
+                            : "received")));
+            return;
+        }
+        lowering.declareStated(attach.symbol(), sort);
+        pinnedArrivals.add("(= " + attach.symbol() + " " + literal + ")");
+        pathConcrete.put(attach.symbol(), new Concrete("PIN",
+                attach.symbol(), literal, Collections.singletonList(
+                attach.producer() == null ? "no producer named"
+                        : "unattested producer " + attach.producer().id())));
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
@@ -1678,20 +1814,40 @@ public final class Composer {
 
     /**
      * A REFUSAL IS ITS FRAME'S: a value the run refused inside an occurrence
-     * ({@link Corpus#refusedIn}) refuses a path or an arm whose closure
-     * reaches that occurrence, and nothing else.  A refused attach used to
-     * be BLOCKING for the whole campaign, wherever it ran (hdfs-17899-bug1
-     * r1: 55 of them, all in NameNode registration handlers).
+     * ({@link Corpus#refusedIn}) is one it computed on as a constant, which
+     * its rows state concretely, so a path or an arm whose closure reaches
+     * that occurrence composes with those constants: what the decision
+     * rested on concretely ({@link Concrete}, kind FRAME), never a refusal.
      */
-    void frameRefusals(String session, Set<String> reached,
-                       List<GapRow> refusals) {
+    void frames(String session, Set<String> reached) {
         for (String occurrenceId : reached) {
             GapRow refused = corpus.refusedIn(session, occurrenceId);
             if (refused == null) continue;
-            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                    GapClass.DIAGNOSTIC, refused.subject(), "this closure "
-                            + "reaches an occurrence whose own run refused a "
-                            + "value it computes on: " + refused.detail()));
+            pathConcrete.put(refused.subject(), new Concrete("FRAME",
+                    refused.subject(), refused.detail(),
+                    Collections.<String>emptyList()));
+        }
+    }
+
+    /**
+     * One thing a composed path rests on concretely: an arrival or a read
+     * pinned to the value its row states though what it rests on can move
+     * (PIN, {@link SmtLowering#pins}), or an occurrence whose run computed
+     * on a value as a constant (FRAME).  Information beside the verdict
+     * (result.json {@code concrete[]}), never a gap.
+     */
+    public static final class Concrete {
+        public final String kind;
+        public final String subject;
+        public final String value;
+        public final List<String> movesWith;
+
+        Concrete(String kind, String subject, String value,
+                 List<String> movesWith) {
+            this.kind = kind;
+            this.subject = subject;
+            this.value = value;
+            this.movesWith = Collections.unmodifiableList(movesWith);
         }
     }
 
@@ -2308,8 +2464,9 @@ public final class Composer {
      * read's too, so the two cannot disagree): JOIN, the expression of the
      * write version it observed, if it lowers with no refusal; else its
      * MINT; else PIN; else REFUSE.  A join that refused gives way to the
-     * mint or the pin only where nothing it rests on can move.  No "latest
-     * write", no choice between writers.
+     * mint or the pin, which says what it cut where what it rests on can
+     * move ({@link SmtLowering#pins}).  No "latest write", no choice
+     * between writers.
      */
     void stateJoins(String session, Set<String> occurrences,
                     Independence relevant, SmtLowering.SessionJoin join,

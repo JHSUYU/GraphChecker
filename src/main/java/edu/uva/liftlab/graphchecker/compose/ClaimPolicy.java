@@ -51,15 +51,19 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *   <li><b>RECORDED_FAILURE_EXPLAINED</b> -- the seed observed the fatal arm
  *       and the composition reproduces it with nothing moved, every flipped
  *       valuation decided and unsat.</li>
- *   <li><b>NO_SUPPORTED_WITNESS</b> -- everything else, including an
+ *   <li><b>FORMULA_SAT</b> -- a valuation satisfies the formula and none of
+ *       the above names why: composer imprecision until CONFIRM says
+ *       otherwise, confirmed like any claim ({@link #formulaSat}).</li>
+ *   <li><b>NO_SUPPORTED_WITNESS</b> -- every valuation unsat, or an
  *       occurrence no session reached; an answer, not an exception.</li>
  * </ul>
  *
- * <p>Two refusals ride on top: a formula sat as the run happened (recorded
+ * <p>Two names ride on top: a formula sat as the run happened (recorded
  * roots, clocks and pairings) on a session that took the HEALTHY arm raises
- * the blocking FORMULA_SAT_AT_RECORDED_VALUATION, and enumeration continues
- * past it; a witness moving a root inside an UNATTESTED arm is refused,
- * since no producer path condition says the delivery survives the move.  A
+ * FORMULA_SAT_AT_RECORDED_VALUATION, and enumeration continues past it; a
+ * witness moving a root inside an UNATTESTED arm is not a mechanism, since
+ * no producer path condition says the delivery survives the move.  Either
+ * leaves a FORMULA_SAT for CONFIRM, never a gap that withholds a verdict.  A
  * witness moving configuration only is claimed after every other, clocks
  * and pairings included, and one moving a configuration whose plant leaves
  * reads of its key at the recording's value is not claimed, named.</p>
@@ -154,7 +158,7 @@ public final class ClaimPolicy {
                                   Z3 solver) {
         Decision decision;
         try (Disjunction asks = new Disjunction(composition, solver)) {
-            decision = read(composition, asks);
+            decision = formulaSat(composition, read(composition, asks));
         }
         // After every ask: a solver error means some query was never read,
         // so the claim over it is refused by name.
@@ -174,6 +178,49 @@ public final class ClaimPolicy {
                 decision.claim().valuationOrdinal(),
                 Collections.<String, String>emptyMap(), false, gaps),
                 decision.outcomes());
+    }
+
+    /**
+     * A satisfiable formula the policy named no mechanism for is the
+     * formula's own claim: FORMULA_SAT at its first satisfying valuation a
+     * replay can plant, which CONFIRM plants and judges like any other
+     * (over-approximate, confirm strictly), never a gap that leaves no
+     * verdict.  A formula satisfiable only by moving a configuration whose
+     * plant leaves reads of its key at the recording's value ({@link
+     * #unplanted}) is a world no replay can plant: a defect of the plant
+     * (UNPRODUCIBLE_ANSWER, BLOCKING) until those reads are planted too.
+     */
+    private static Decision formulaSat(Composer.Composition composition,
+                                       Decision decided) {
+        Claim claim = decided.claim();
+        if (claim.kind() != ClaimKind.NO_SUPPORTED_WITNESS) return decided;
+        Set<String> unplantable = new LinkedHashSet<String>();
+        for (Outcome outcome : decided.outcomes()) {
+            if (!outcome.witness()) continue;
+            Set<String> partial = composition.unplanted(
+                    outcome.valuation().moved().keySet()).keySet();
+            if (!partial.isEmpty()) {
+                unplantable.addAll(partial);
+                continue;
+            }
+            return new Decision(Claim.of(ClaimKind.FORMULA_SAT,
+                    outcome.valuation().ordinal(),
+                    movedRoots(composition, outcome),
+                    claim.polarityDecides(), claim.gaps()),
+                    decided.outcomes());
+        }
+        if (unplantable.isEmpty()) return decided;
+        List<GapRow> gaps = new ArrayList<GapRow>(claim.gaps());
+        gaps.add(GapRow.of(Composer.COMPOSITION, GapKind.UNPRODUCIBLE_ANSWER,
+                GapClass.BLOCKING, composition.anchor().render(),
+                "the formula is satisfiable only by moving configuration "
+                        + unplantable + " whose plant leaves reads of its "
+                        + "key at the recording's value, a world no replay "
+                        + "can plant: a defect until those reads are "
+                        + "planted"));
+        return new Decision(Claim.of(claim.kind(), claim.valuationOrdinal(),
+                claim.movedRoots(), claim.polarityDecides(), gaps),
+                decided.outcomes());
     }
 
     private static Decision read(Composer.Composition composition,
@@ -243,7 +290,7 @@ public final class ClaimPolicy {
                 && !recordingDecides) {
             gaps.add(GapRow.of(recorded.selected().path().sessionId,
                     GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
-                    GapClass.BLOCKING,
+                    GapClass.DIAGNOSTIC,
                     recorded.selected().path().pathId,
                     "this disjunct is satisfiable with every declared root "
                             + "at its recorded value, and its own recording "
@@ -593,7 +640,7 @@ public final class ClaimPolicy {
                         ? Composer.COMPOSITION
                         : recorded.selected().path().sessionId,
                 GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
-                GapClass.BLOCKING, shown, "the formula shows " + shown
+                GapClass.DIAGNOSTIC, shown, "the formula shows " + shown
                         + (recorded.answer().sat()
                         ? ", and it is satisfiable with every declared root "
                         + "at its recorded value too"
@@ -738,10 +785,11 @@ public final class ClaimPolicy {
         }
         if (refused.isEmpty()) return false;
         gaps.add(GapRow.of(outcome.selected().path().sessionId,
-                GapKind.UNATTESTED_ARM, GapClass.BLOCKING, refused.toString(),
-                "this witness moves a root that occurs inside an arm no "
-                        + "producer path condition attests, so it is not a "
-                        + "supported witness"));
+                GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
+                refused.toString(), "this witness moves a root that occurs "
+                        + "inside an arm no producer path condition attests, "
+                        + "so it names no mechanism and is the formula's "
+                        + "alone (FORMULA_SAT)"));
         return true;
     }
 

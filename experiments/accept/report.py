@@ -250,10 +250,11 @@ findings = result.get("witnessFindings") or []
 # The claim layer is the whole gate: the conditions below, all read off
 # result.json (and the cone gate's cone.json), none of them re-derived here.
 #
-# The five mechanisms a composition may conclude.  NO_SUPPORTED_WITNESS is the
-# sixth ClaimKind and is deliberately not among them: it is the honest answer
-# that nothing in the corpus supports a witness, and a case that reaches it
-# has not passed.
+# The five mechanisms a composition may conclude.  FORMULA_SAT (a satisfiable
+# formula no mechanism names, which CONFIRM judges) and NO_SUPPORTED_WITNESS
+# (the honest answer that nothing in the corpus supports a witness) are the
+# other ClaimKinds and deliberately not among them: a named case that reaches
+# one has not passed.
 ACCEPTED_FINDINGS = {"MARKER_FLIPPED", "CLOCK_SKEW",
                      "MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED",
                      "RECORDED_FAILURE_EXPLAINED"}
@@ -524,12 +525,36 @@ if polarity.get("terms"):
             ""]
 
 if blocking:
-    out += ["## Blocking gaps", ""]
+    out += ["## Defects", "",
+            "Defects of the run or the engine, each a bug to fix: with one, an"
+            " UNSAT formula is no verdict (RUN_DEFECT).", ""]
     for row in blocking:
         out.append("* **%s** %s `%s` -- %s" % (row.get("stage", "?"),
                                                row.get("code", "?"),
                                                row.get("subject", ""),
                                                row.get("detail", "")))
+    out.append("")
+
+concrete = result.get("concrete") or []
+if concrete:
+    out += ["## Concrete", "",
+            "What the decision rested on concretely (result.json concrete[]):"
+            " information, never a gap.", ""]
+    for row in concrete:
+        if row.get("kind") == "ANCHOR":
+            out.append("* anchor `%s` decided on no symbol: %d of %d path(s)"
+                       " decided it, %d read(s) of %s demanded, %d off the"
+                       " cone" % (row.get("anchor", "?"),
+                                  row.get("decided", 0), row.get("paths", 0),
+                                  row.get("reads", 0),
+                                  ", ".join(row.get("locations") or [])
+                                  or "no location", row.get("offCone", 0)))
+        else:
+            out.append("* %s `%s` = `%s`%s" % (
+                row.get("kind", "?"), row.get("subject", ""),
+                row.get("value", ""),
+                (" (moves with %s)" % ", ".join(row["movesWith"]))
+                if row.get("movesWith") else ""))
     out.append("")
 
 if findings:

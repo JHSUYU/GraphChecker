@@ -167,7 +167,7 @@ emit_fixture_undecided_roots() {
     valuations: [{values: [false], status: "sat"},
                  {values: [true], status: "sat"}],
     campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
-      claim: "INCONCLUSIVE_PARTIAL",
+      claim: "RUN_DEFECT",
       claimReason: "2 blocker(s) withhold an accepted claim from a REACHABLE solver result: TARGET_UNCONSTRAINED_BY_ROOTS,FINDING_MECHANISM_UNNAMED",
       blockerCount: 2,
       blockers: [
@@ -175,7 +175,7 @@ emit_fixture_undecided_roots() {
          detail: "no symbolic root flips the target predicate"},
         {code: "FINDING_MECHANISM_UNNAMED", subject: "NO_MECHANISM",
          detail: "no satisfying witness names a mechanism"}],
-      whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 2 blocker(s) withhold acceptance\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  FINDING_MECHANISM_UNNAMED [NO_MECHANISM]: no satisfying witness names a mechanism"),
+      whyNotAccepted: ("claim=RUN_DEFECT: 2 blocker(s) withhold acceptance\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  FINDING_MECHANISM_UNNAMED [NO_MECHANISM]: no satisfying witness names a mechanism"),
       findingKind: "NO_SUPPORTED_WITNESS", polarityDecides: false,
       valuationOrdinal: 0, movedRoots: {}, witnessFindings: []}}' \
     "${composition_manifest}" >"${composition_manifest}.tmp"
@@ -417,17 +417,16 @@ jq -e '[(.gaps + .telemetryGaps)[] | select((.classReason // "") == "")]
   "${campaign_final}/gaps.json" >/dev/null \
   || fail "a gap row carries no classification reason"
 
-# An undecided root space is no longer a witness. The claim ClaimPolicy
-# decided is published with every named blocker and one readable summary, and
-# the run exits 2 because it named no accepted candidate.
+# An undecided root space is no witness and no verdict: the claim ClaimPolicy
+# decided is published (RUN_DEFECT) with every named blocker and one readable
+# summary, and the run exits 3 because it named defects.
 emit_fixture_undecided_roots
 run_emit
-[[ "${emit_status}" -eq 2 ]] \
+[[ "${emit_status}" -eq 3 ]] \
   || fail "an undecided root space was accepted (exit ${emit_status}): \
 $(<"${emit_root}/emit.log")"
-[[ $(jq -r '.claim' "${campaign_final}/result.json") \
-    == INCONCLUSIVE_PARTIAL ]] \
-  || fail "the undecided root space did not publish INCONCLUSIVE_PARTIAL"
+[[ $(jq -r '.claim' "${campaign_final}/result.json") == RUN_DEFECT ]] \
+  || fail "the undecided root space did not publish RUN_DEFECT"
 jq -e '[.blockers[].code] == ["TARGET_UNCONSTRAINED_BY_ROOTS",
     "FINDING_MECHANISM_UNNAMED"]
   and .blockerCount == 2' \
@@ -450,6 +449,136 @@ grep -q 'FINDING_MECHANISM_UNNAMED' "${emit_root}/emit.log" \
 jq -e '.finalStatus == "FINAL_READY" and .gapCount == 0' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the withheld fixture no longer reproduces the accepted state"
+
+# DECISIVE-1: the formula decides, SAT or UNSAT.  An UNSAT formula is the
+# verdict only where no stage named a defect: beside a BLOCKING row it
+# publishes RUN_DEFECT, the formula's own claim and every defect named, and
+# exits 3.  What the last EXPLORE round found decided on no symbol travels as
+# information (concrete[]), never as a gap.
+emit_unsat_fixture() {
+  emit_fixture
+  jq '.solver.campaignClaim += {claim: "UNSAT_CLOSED",
+        claimReason: "every enumerated valuation is decided and unsat",
+        findingKind: "NO_SUPPORTED_WITNESS", polarityDecides: false,
+        valuationOrdinal: 0, movedRoots: {}, movedRootCategories: {},
+        witnessFindings: []}' \
+    "${composition_manifest}" >"${composition_manifest}.tmp"
+  mv "${composition_manifest}.tmp" "${composition_manifest}"
+  mkdir -p "${emit_iteration}/obligations-0000"
+  jq -n '{concreteAnchors: [{anchor: "REGION.T#1", paths: 1, decided: 1,
+    reads: 2, locations: ["INSTANCE/1#2"], offCone: 3}]}' \
+    >"${emit_iteration}/obligations-0000/explore_manifest.json"
+}
+emit_unsat_fixture
+jq -n -c '{schemaVersion: 1, sessionId: "SESSION.seed",
+  kind: "ADMISSION_GAP", cls: "BLOCKING", subject: "REGION.T#1",
+  detail: "only the seed replay ran this occurrence"}' \
+  >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+run_emit
+[[ "${emit_status}" -eq 3 ]] \
+  || fail "an UNSAT formula beside a defect exited ${emit_status}: \
+$(<"${emit_root}/emit.log")"
+jq -e '.claim == "RUN_DEFECT" and .formulaClaim == "UNSAT_CLOSED"
+  and .accepted == false
+  and [.defects[].code] == ["ADMISSION_GAP"]
+  and (.whyNotAccepted | startswith("RUN_DEFECT: the run named 1 defect"))
+  and [.concrete[] | {kind, decided, reads, offCone}]
+      == [{kind: "ANCHOR", decided: 1, reads: 2, offCone: 3}]' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "an UNSAT formula beside a defect was not RUN_DEFECT: \
+$(jq -c '{claim, formulaClaim, accepted, defects, concrete, whyNotAccepted}' \
+    "${campaign_final}/result.json")"
+grep -q 'no accepted verdict: claim=RUN_DEFECT (the formula UNSAT_CLOSED)' \
+  "${emit_root}/emit.log" \
+  || fail "EMIT did not name the defect run: $(<"${emit_root}/emit.log")"
+# The same formula with no defect is the verdict, concrete anchor and all,
+# and what COMPOSE pinned beside it (Composer.Concrete) travels too.
+emit_unsat_fixture
+jq '.concrete = [{kind: "PIN", subject: "vh", value: "20",
+      movesWith: ["unattested producer P"]}]' "${composition_manifest}" \
+  >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a defect-free UNSAT was not accepted: $(<"${emit_root}/emit.log")"
+jq -e --arg formula "${campaign_final}/candidate.smt2" \
+  '.claim == "UNSAT_CLOSED" and .accepted == true and .defects == []
+  and [.concrete[].kind] == ["ANCHOR", "PIN"]
+  and .formula.path == $formula and (.formula.sha256 | length) == 64' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "a defect-free UNSAT was not published as the verdict: \
+$(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"
+
+# A satisfiable formula no mechanism names (FORMULA_SAT) is a claim like any
+# other: published as CONFIRM left it.
+emit_fixture
+jq '.solver.campaignClaim.findingKind = "FORMULA_SAT"' "${composition_manifest}" \
+  >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a confirmed FORMULA_SAT was not published: $(<"${emit_root}/emit.log")"
+jq -e '.claim == "SAT_CANDIDATE" and .findingKind == "FORMULA_SAT"
+  and .accepted == true' "${campaign_final}/result.json" >/dev/null \
+  || fail "a confirmed FORMULA_SAT is not the verdict: \
+$(jq -c '{claim, findingKind, accepted}' "${campaign_final}/result.json")"
+
+# DECISIVE-2: triage reads the verdict: UNSAT (the concrete anchor as its
+# reason), RUN_DEFECT (the first defect), CONFIRMED, REFUTED; no NO_ROOT or
+# NO_WITNESS class is left.
+triage_out="${test_tmp}/triage"
+mkdir -p "${triage_out}"
+printf '1\tcase-unsat\n2\tcase-defect\n3\tcase-sat\n4\tcase-refuted\n' \
+  >"${triage_out}/sweep-T1-cases.tsv"
+triage_case() {
+  local dir="${triage_out}/accept-T1-$1/out/$2/schedule/final"
+  mkdir -p "${dir}"
+  printf 'case\texit\telapsed\tclaim\nx\t0\t9\t-\n' \
+    >"${triage_out}/accept-T1-$1/summary.tsv"
+  printf '%s\n' "$3" >"${dir}/result.json"
+}
+triage_case 1 case-unsat '{"claim": "UNSAT_CLOSED", "concrete": [{"kind":
+  "ANCHOR", "decided": 1, "paths": 1, "reads": 2}]}'
+triage_case 2 case-defect '{"claim": "RUN_DEFECT", "defects": [{"code":
+  "ADMISSION_GAP", "detail": "no session reached the declared occurrence"}]}'
+triage_case 3 case-sat '{"claim": "SAT_CANDIDATE",
+  "confirmation": {"confirmed": true}, "findingKind": "MARKER_FLIPPED"}'
+triage_case 4 case-refuted '{"claim": "SAT_UNCONFIRMED",
+  "confirmation": {"confirmed": false, "reason": "WIRE e1"}}'
+triage_rows=$(python3 "${repo}/tools/adhoc/triage.py" T1 "${triage_out}" \
+  2>/dev/null | tr -d '\r' | awk -F'\t' 'NR > 1 {print $2 "=" $3 "|" $NF}')
+[[ "${triage_rows}" == "case-unsat=UNSAT|the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
+case-defect=RUN_DEFECT|ADMISSION_GAP no session reached the declared occurrence
+case-sat=CONFIRMED|
+case-refuted=REFUTED|WIRE e1" ]] \
+  || fail "triage did not class the verdicts: ${triage_rows}"
+
+# DECISIVE-3: report.py names a defect run's claim and its defects, and the
+# concrete anchor beside an UNSAT, and passes neither.
+report_case="${test_tmp}/report-case"
+report_work="${test_tmp}/report-work"
+mkdir -p "${report_case}/schedule/final" "${report_work}"
+printf '%s\n' '{"claim": "RUN_DEFECT", "finalStatus": "FINAL_READY",
+  "findingKind": "NO_SUPPORTED_WITNESS", "accepted": false,
+  "concrete": [{"kind": "ANCHOR", "anchor": "REGION.T#1", "paths": 1,
+    "decided": 1, "reads": 2, "locations": ["INSTANCE/1#2"], "offCone": 0}]}' \
+  >"${report_case}/schedule/final/result.json"
+printf '%s\n' '{"gaps": [{"stage": "EXPLORE", "code": "ADMISSION_GAP",
+  "class": "BLOCKING", "subject": "REGION.T#1",
+  "detail": "only the seed replay ran this occurrence"}]}' \
+  >"${report_case}/schedule/final/gaps.json"
+python3 "${repo}/experiments/accept/report.py" case-x "${report_case}" \
+  "${report_work}" >/dev/null
+awk -F'\t' '{exit !($4 == "RUN_DEFECT" && $6 == "1 BLOCKING" &&
+  $11 == "FAIL" && index($12, "claim=RUN_DEFECT") > 0)}' \
+  "${report_work}/row.tsv" \
+  || fail "report.py did not fail the defect run by name: \
+$(<"${report_work}/row.tsv")"
+grep -q '^## Defects' "${report_work}/report.md" \
+  && grep -q 'anchor `REGION.T#1` decided on no symbol: 1 of 1 path(s)' \
+    "${report_work}/report.md" \
+  || fail "report.md did not name the defects and the concrete anchor: \
+$(<"${report_work}/report.md")"
 
 # The claim has one home. A solved manifest without the policy's decision is
 # a manifest EMIT may not publish a result from.
@@ -3469,7 +3598,7 @@ confirm_says() {
 }
 reset_config
 # Only a SAT_CANDIDATE is confirmed: any other claim has nothing to confirm.
-run_confirm INCONCLUSIVE_PARTIAL
+run_confirm RUN_DEFECT
 [[ ! -e "${campaign_final}/confirm.json" && ! -e "${campaign_final}/confirm" ]] \
   || fail "a claim that is not SAT_CANDIDATE was confirmed"
 grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
@@ -3684,7 +3813,7 @@ run_emit
 emit_fixture_undecided_roots
 rm -f -- "${campaign_final}/confirm.json"
 run_emit
-jq -e '.claim == "INCONCLUSIVE_PARTIAL" and .confirmation == null' \
+jq -e '.claim == "RUN_DEFECT" and .confirmation == null' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "a claim that was never confirmed does not carry null: \
 $(jq -c '{claim, confirmation}' "${campaign_final}/result.json")"

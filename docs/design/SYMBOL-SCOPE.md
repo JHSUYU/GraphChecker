@@ -855,8 +855,9 @@ refused export or attach files a gap on the occurrence it ran in, with the port 
 beside that activation, stated unselected; one inside an admitted activation is DIAGNOSTIC
 `UNSTATED_VALUE`, since its rows compute on the arrived value as a constant; a refused export is
 DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTIC `UNSTATED_VALUE`.
-A refusal is its frame's: COMPOSE refuses the paths and arms whose closure reaches an occurrence its
-session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#frameRefusals`).
+A refusal is its frame's: the paths and arms whose closure reaches an occurrence its session filed an
+`UNSTATED_VALUE` row on compose with the constants its rows state, and name the frame
+(`compose/Composer#frames`, a `Composer.Concrete` FRAME).
 
 ## 7. Current limits
 

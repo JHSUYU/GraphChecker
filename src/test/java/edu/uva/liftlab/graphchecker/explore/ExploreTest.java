@@ -4652,11 +4652,12 @@ public class ExploreTest {
      * decided on its guards' cone (the scope map's demandDistance,
      * SYMBOL-SCOPE §4.6), so the fault that chose what that state's writer
      * wrote is asked; a read made after the decision, or off the cone,
-     * reaches nothing.  Each round
-     * names it NO_ROOT_REACHES_ANCHOR: DIAGNOSTIC while there is work,
-     * BLOCKING at the fixed point.  An anchor whose predicate names a
-     * symbol, an unreached one with a symbolic decision on the way to the
-     * throw, or a run that observed the fatal, plans as before.
+     * reaches nothing.  Each round's manifest states it as information
+     * ({@code concreteAnchors}: how many paths decided it, the reads its
+     * closure demands, those off the cone), never a gap.  An anchor whose
+     * predicate names a symbol, an unreached one with a symbolic decision
+     * on the way to the throw, or a run that observed the fatal, plans as
+     * before and is no concrete anchor.
      */
     @Test
     public void aConcreteAnchorDemandsWhatItReadBeforeItDecided()
@@ -4664,22 +4665,18 @@ public class ExploreTest {
         LocationId stored = LocationId.of(LocationKind.INSTANCE, "5", "8");
         // phi (null: unreached), observed fatal, the anchor's read before
         // its decision at its guard, the read on the guards' cone, that
-        // decision's term (null: none) -> the writer is a task, the gap's
-        // class (null: none) and the start of its detail.
+        // decision's term (null: none) -> the writer is a task, and the
+        // concrete anchor's {decided, demanded reads, off the cone} (null:
+        // no concrete anchor).
         Object[][] cases = {
-            {"false", false, true, true, "", true, GapClass.DIAGNOSTIC,
-                "its closure demands the 1 "},
-            {"false", false, false, true, "", false, GapClass.BLOCKING,
-                "it read no shared state"},
-            {"false", false, true, false, "", false, GapClass.BLOCKING,
-                "it read no shared state"},
-            {null, false, true, true, "", true, GapClass.DIAGNOSTIC,
-                "its closure demands the 1 "},
-            {null, false, true, true, null, false, GapClass.BLOCKING,
-                "none of its 1 admitted paths decided"},
-            {null, false, true, true, "(= M_OTHER 0)", false, null, ""},
-            {"(= M_OTHER 0)", false, true, true, "", false, null, ""},
-            {"true", true, true, true, "", false, null, ""},
+            {"false", false, true, true, "", true, new int[]{1, 1, 0}},
+            {"false", false, false, true, "", false, new int[]{1, 0, 0}},
+            {"false", false, true, false, "", false, new int[]{1, 0, 1}},
+            {null, false, true, true, "", true, new int[]{1, 1, 0}},
+            {null, false, true, true, null, false, new int[]{0, 0, 0}},
+            {null, false, true, true, "(= M_OTHER 0)", false, null},
+            {"(= M_OTHER 0)", false, true, true, "", false, null},
+            {"true", true, true, true, "", false, null},
         };
         for (int at = 0; at < cases.length; at++) {
             Object[] row = cases[at];
@@ -4735,15 +4732,18 @@ public class ExploreTest {
             assertEquals(label, row[5], focused.contains(WRITER.render()));
             assertEquals(label, row[5], named(obligations(wave),
                     "Door#u3") != null);
-            GapRow noRoot = null;
-            for (GapRow gap : RowCodec.readAll(wave.resolve("gaps.jsonl"),
-                    RowCodec::readGap)) {
-                if (gap.kind() == GapKind.NO_ROOT_REACHES_ANCHOR) noRoot = gap;
-            }
-            assertEquals(label, row[6], noRoot == null ? null : noRoot.cls());
-            if (noRoot != null) {
-                assertTrue(label + ": " + noRoot.detail(),
-                        noRoot.detail().startsWith((String) row[7]));
+            JsonArray concrete = manifest.getAsJsonArray("concreteAnchors");
+            int[] expected = (int[]) row[6];
+            assertEquals(label + ": " + concrete, expected == null ? 0 : 1,
+                    concrete.size());
+            if (expected != null) {
+                JsonObject anchor = concrete.get(0).getAsJsonObject();
+                assertEquals(label, expected[0],
+                        anchor.get("decided").getAsInt());
+                assertEquals(label, expected[1],
+                        anchor.get("reads").getAsInt());
+                assertEquals(label, expected[2],
+                        anchor.get("offCone").getAsInt());
             }
         }
     }

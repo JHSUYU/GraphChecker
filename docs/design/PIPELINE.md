@@ -397,12 +397,12 @@ schedule) and:
    `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
    verdict histogram, gap counts, state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
-   flight) | `FIXED_POINT`). What only the seed ran is BLOCKING at the fixed point alone: nothing
-   proposed, exposed or in flight, and no witness. So is a concrete anchor (§7.2): every round on it
-   states `NO_ROOT_REACHES_ANCHOR` (`ExploreMain#noRoot`), DIAGNOSTIC while the exploration has
-   work, BLOCKING at the fixed point, its detail one of three ends: none of its admitted paths
-   decided a site on its way to the throw, it read no shared state its path guards depend on before
-   it decided, or the reads (and their locations) its closure demands.
+   flight) | `FIXED_POINT`, and `concreteAnchors`). What only the seed ran is BLOCKING at the fixed
+   point alone: nothing proposed, exposed or in flight, and no witness. A concrete anchor (§7.2) is
+   information, never a gap: its decision is a constant of the formula (§8, a `false` phi), and each
+   round's manifest states it in `concreteAnchors` (`ExploreMain#concreteRow`: its admitted paths,
+   how many decided it on the way to the throw, the reads its closure demands and their locations,
+   the earlier reads off the cone), which EMIT publishes in `result.json` `concrete[]`.
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -439,7 +439,7 @@ those a symbolic phi names, so their writers become tasks flipped at their own g
 sites. The demand tracks the cone's nearest reads however many flows from a branch (a String, a
 reference, a container too), so they have read rows; a cell no region stores has no writer to ask
 (the anchor then "read no shared state its path guards depend on"). The earlier reads off the cone
-are counted, never dropped silently: the `NO_ROOT_REACHES_ANCHOR` detail states how many
+are counted, never dropped silently: `concreteAnchors` states how many
 (`ClosurePlanner.Concrete#offCone`). A non-concrete anchor plans as before. Each demanded boundary input grows the closure:
 
 - an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
@@ -1031,18 +1031,22 @@ one SEED, an unreadable slot table, one name at two sorts, one name for two iden
 replace a slot (§7.1) give no arms.
 
 **Admission** (`admit`, `settled`): one path per session whose target row at the anchor reached it
-(a target row that did not reach it is a DIAGNOSTIC gap); the seed always, a focused session only
-when all its own verdicts are `ADMITTED`; an obligation its manifest names with no verdict is
-BLOCKING. No target row at all is
-BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming the first refusal.
+(beside one, a target row that did not reach it is a DIAGNOSTIC gap); where none reached it, one per
+session that ran the occurrence and left the way to the throw at a guard, its fatal arm the constant
+healthy decision (`false`, the guard named in `concrete[]` as WAY), so such a corpus closes UNSAT
+(hdfs-adhoc-07, 48); the seed always, a focused session only when all its own verdicts are
+`ADMITTED`; an obligation its manifest names with no verdict is BLOCKING. No target row at all --
+the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING
+`ADMISSION_GAP` naming the first refusal.
 
 **One path** (`compose(path, ordinal)`), in its own session's scope:
 
 - P3 closure (`closure`): the occurrences the path's joins reach, each with the seq its prefix runs to,
   including earlier versions of every reached write's location; a refusal is its frame's
-  (`frameRefusals`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
-  attach, an attach that minted no `v_H`; `Corpus#refusedIn`) refuses the path, and an arm whose
-  closure reaches one is no option;
+  (`frames`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
+  attach, an attach that minted no `v_H`; `Corpus#refusedIn`) is a value its run computed on as a
+  constant, which its rows state, so the path or arm composes with those constants and names the
+  frame (`Composer.Concrete` FRAME, `concrete[]`);
 - constraint independence (`compose.Independence.of`), by what MOVES: a root of the session, what a
   family binds (an anchor handoff's symbol, a location a STATE family may re-pair), a read whose value
   (its observed write's, walked, and the construction guards of its referent) rests on one. A
@@ -1074,16 +1078,21 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   session neither minted nor read refuses the path only when the path's terms name it;
 - anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
-  an attach no session attests the producer of refuses the path (`UNATTESTED_ARM`);
+  an attach no session attests the producer of (or with no producer named) is held at the value
+  its run received -- an answered one at its answer -- a constant no moved root follows, named as a
+  `Composer.Concrete` PIN (a witness over it is CONFIRM's to refute); a row stating no value refuses
+  the path (`UNATTESTED_ARM`);
 - the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
   too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
   of that version (a placeholder), else PIN to the value the row states, else REFUSE
-  (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
+  (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin, and where what it rests on
   can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair) --
-  `SmtLowering#moves`, the one predicate every pin asks, a method return's and a container
-  answer's too, and EXPLORE's flip query alike, where a read of any location with write rows
-  moves (it takes one of its eligible writers, `SmtLowering#forSession`) -- and
-  dropped it raises nothing (no refusal, side condition or gap); what a read row's binding required
+  `SmtLowering#movers`, the one walk every pin asks, a method return's and a container answer's
+  too, and EXPLORE's flip query alike, where a read of any location with write rows moves (it takes
+  one of its eligible writers, `SmtLowering#forSession`) -- the pin cuts that dependence and says so
+  (`SmtLowering#pins`: subject, value and what it rests on, a `Composer.Concrete` PIN in
+  `concrete[]`); dropped, the join raises nothing (no refusal, side condition or gap); what a read
+  row's binding required
   (container membership and cell tags, recorded readings) is stated with its join, so only where
   the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
   object the VM named (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a
@@ -1095,9 +1104,14 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
 - `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); a concrete fatal condition's `true` is the
-  fatal resting on `pi_p`, the path condition that reached the anchor, and its `false` refuses the
-  path ("decided concretely on its healthy arm"); a row stating no phi refuses it too (invariant 9),
-  as the composer never invents one;
+  fatal resting on `pi_p`, the path condition that reached the anchor, and its `false` the constant
+  healthy decision: the path is a disjunct no valuation satisfies (symbolic stays symbolic, concrete
+  is a constant), so a corpus whose paths all decided concretely closes UNSAT, its formula stating
+  the decisions the path took up to the target, the anchor's own included, or for a path that never
+  reached the anchor up to the guard it left the way at (`Composer#healthyDecisions`: each pi_p does
+  not state, as a proposition named for it at the arm it took, `decided__`, its term in `concrete[]`
+  as DECISION; a term over nothing that moves adds no answer, and lowered it contradicted the run
+  where the lowering is less precise, hdfs-adhoc-07), never a bare constant; a row stating no phi refuses the path (invariant 9), as the composer never invents one;
 - every other handoff the conjunction reaches, by the same rules; a handoff variable the corpus
   states of another session and this one minted no attach for refuses the path by name
   (`UNSTATED_VALUE`), so no path names a boundary variable its families do not bind.
@@ -1483,7 +1497,7 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    (`REFINE_BUDGET_MS`); past them the witness is published as far as it got, its untried cells named
    DIAGNOSTIC `SOLVER_TIMEOUT`. Every open path is asked in its own run before any is asked free
    (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
-   when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
+   when the recording does not decide, is named DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
 4. The claim, first match. A witness moving configuration only (`Composition#configurationOnly`:
    every moved root `CONFIG`) ranks after every other, so the first rule takes the others, then the
@@ -1492,10 +1506,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    `CONFIG_KEY` row, SYMBOL-SCOPE §4.3) is not claimed: no cluster holds that world, so no replay can
    confirm it as one; `UNPRODUCIBLE_ANSWER` DIAGNOSTIC names the root and the reads, once.
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
-     whose moved roots are in no unattested arm (else BLOCKING `UNATTESTED_ARM`): its `mechanism`;
+     whose moved roots are in no unattested arm (else DIAGNOSTIC `UNATTESTED_ARM`): its `mechanism`;
      without `recordingDecides` it also needs `polarityDecides`, checked before the witness is
      refined (`leastClocks`, margins, `mechanism`: rounds of path asks for a witness it would refuse)
-     (else BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
+     (else DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
      by a core naming no valuation pin; an undecided ordinal 0 is BLOCKING already and raises no
      second gap);
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
@@ -1505,6 +1519,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      `NO_SUPPORTED_WITNESS`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
      every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any;
+   - else, where a valuation is still a witness, `FORMULA_SAT` at the first one a replay can plant
+     (`ClaimPolicy#formulaSat`): composer imprecision until CONFIRM says otherwise, planted and judged
+     like any claim, a refutation excluded before the claim is decided again; a formula satisfiable
+     only by moving a configuration whose plant leaves reads at the recording's value is BLOCKING
+     `UNPRODUCIBLE_ANSWER`, a defect of the plant;
    - else `NO_SUPPORTED_WITNESS`.
 5. `mechanism`, narrowest first: pinning the path's observed reads makes it unsat →
    `STATE_PAIRING_FLIPPED`; its observed anchor arrivals → `MESSAGE_PAIRING_FLIPPED`; a moved root →
@@ -1527,11 +1546,18 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 | `STATE_PAIRING_FLIPPED` | the roots stay; the path's anchor reads must take another writer than the run's |
 | `MESSAGE_PAIRING_FLIPPED` | the roots stay; the anchor's attaches must receive another delivery than the run's |
 | `RECORDED_FAILURE_EXPLAINED` | the seed itself observed the fatal and every moved valuation is refuted |
-| `NO_SUPPORTED_WITNESS` | nothing in the corpus supports a witness; an answer, not an error |
+| `FORMULA_SAT` | a valuation satisfies the formula and none of the above names why: the formula's own claim, which CONFIRM plants (its arms and valuation) and judges |
+| `NO_SUPPORTED_WITNESS` | every valuation is unsat; an answer, not an error |
 
-`ComposeMain.campaignClaim` maps it: any BLOCKING claim gap → `INCONCLUSIVE_PARTIAL`; else a kind other
-than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else every valuation decided unsat → `UNSAT_CLOSED`; else
-`INCONCLUSIVE_PARTIAL`. The manifest's `solver` block carries `state` (sat/unsat/unknown),
+`ComposeMain.campaignClaim` maps it: the formula decides, SAT or UNSAT, and a blocking gap is a
+defect of the run or the engine that leaves no verdict: any BLOCKING claim gap → `RUN_DEFECT`; else a
+kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else `UNSAT_CLOSED` (every valuation is
+decided, an undecided one being BLOCKING, and none sat, a sat one being a claim). EMIT publishes
+`SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when it did not agree), and an `UNSAT_CLOSED`
+beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
+with every defect in `defects[]`, what the decision rested on concretely in `concrete[]`, and the
+formula it decided on in `formula` (`final/candidate.smt2`'s path and sha256: the composed paths,
+which a standalone z3 re-solves to the same verdict, UNSAT included). The manifest's `solver` block carries `state` (sat/unsat/unknown),
 `reachability`, `unsatClosureComplete`, `valuations` (status, assignment, moved, selected path and
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
 `findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved
@@ -1769,9 +1795,9 @@ with a `result.json` `CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmati
 `CONFIG_ONLY` when `configurationOnly` is true (COMPOSE's rule, read, never re-derived), a finding read
 after the others (`findings.py` ranks its mechanism after every other: a configuration-validation throw
 fires by design) --, `REFUTED` when
-`claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `NO_ROOT` when a
-BLOCKING `NO_ROOT_REACHES_ANCHOR` gap ended EXPLORE (§7.1; the gap's detail is the reason), else
-`NO_WITNESS` (`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row
+`claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `UNSAT` when it is
+`UNSAT_CLOSED` (a concrete anchor of `concrete[]` is the reason), else `RUN_DEFECT` (the first of
+`defects[]` is the reason). A case without one is `STOPPED` when its summary row
 exists (the stage and reason its logs state: the campaign's own failure, the case timeout, a
 failed trace aggregation, a stage's Java main, the engine's `die`, a full disk or quota),
 `PENDING` when never started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still

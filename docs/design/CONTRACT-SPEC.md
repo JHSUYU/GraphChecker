@@ -146,7 +146,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `SCHEDULE_DIVERGED` | a focused replay left its schedule prefix (stated with both events; DIAGNOSTIC) |
 | `UNSTATED_VALUE` | a value no row states: a read joining no version and pinning no value, a lowering refusal, a malformed row; a STATE location at the anchor whose reads' recorded pairing no family arm states (BLOCKING, [PIPELINE.md §8](PIPELINE.md)); filed by a replay on an occurrence (its subject the address), the frame's own refusal, which COMPOSE applies to the paths and arms whose closure reaches it; a VM model's statement it could not make, a region's `modelGaps` (DIAGNOSTIC, its subject the model's name, e.g. `STREAM_PINNED:LIMIT_EXHAUSTED`, [VM.md §8](VM.md)), which refuses nothing |
 | `UNPRODUCIBLE_ANSWER` | an attach answered or needed with a value no producer arm can produce |
-| `FORMULA_SAT_AT_RECORDED_VALUATION` | the composed formula reaches the fatal arm at the recorded valuation on a healthy path |
+| `FORMULA_SAT_AT_RECORDED_VALUATION` | the composed formula reaches the fatal arm at the recorded valuation on a healthy path (DIAGNOSTIC: the claim is then `FORMULA_SAT`, CONFIRM's to judge) |
 | `DECLARATION_MISSING` | a root, port or name the case never declared; an undecided or erroring solver ask |
 | `HOOK_UNDECLARED` | a tree hook that ran in a case whose plan declares its source nowhere (`ActiveRegion#observeConfiguredSourceEntry`): no root of the case, nothing minted, its value concrete (DIAGNOSTIC; an `UNSAT_CLOSED` result counts them, `undeclaredHookCount`) |
 | `LINEAGE_LOST` | an address degraded by an unattributable hop; an unpaired attach; a missing site index |
@@ -167,7 +167,6 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `PATH_SELF_CONTRADICTORY` | when every composed path is unsatisfiable with every root free: a path that is so even without its fatal arm, or that observed the fatal arm (DIAGNOSTIC per path, BLOCKING for the composition); a path refuted by its fatal arm alone is no gap ([PIPELINE.md §9](PIPELINE.md)) |
 | `CONFIRM_MISMATCH` | the confirmation replay took an edge the model did not choose, could not hold its order, or could not read the edges it was handed (`EDGES:`) |
 | `CLAIM_REFUTED` | a model CONFIRM refuted (`<iteration>/refuted_claims.jsonl`), which the composition excludes (DIAGNOSTIC; BLOCKING when the file cannot be read), [PIPELINE.md §10](PIPELINE.md) |
-| `NO_ROOT_REACHES_ANCHOR` | every admitted path decided the declared anchor on no symbol and none observed the fatal (R1-ROOTS D0); stated by each EXPLORE round on it with the predicate reads its closure demands: DIAGNOSTIC while the exploration has work, BLOCKING at the fixed point ([PIPELINE.md §7.1, §7.2](PIPELINE.md)) |
 | `CODEC_MISMATCH` | a value a codec carried that crossed with less than its template (DIAGNOSTIC: the leaf stays as it was decoded and pairs with nothing; a decoded leaf is paired only when its value is the one its producer recorded, as the producer's template or, when that template is one hole over the whole leaf, as one hole of the leaf's own sort -- WIRE-CODEC designer decision 14); the detail starts with the reason: `PATH_UNMATCHED` (the entry's key path is absent from the decoded graph), `VALUE_MISMATCH`, `TEMPLATE_MISMATCH`, `LEAF_SHARED`, `LEAF_SHADOWED` (a leaf object that already carries an expression its holder cannot replace), `LEAF_UNSUPPORTED`, `LEAF_UNADDRESSABLE`, `VIEW_MISSING`, `NULL_LEAF`, `UNSENT` (encodes no message carried, one row per codec and session with their count). Raised by the codec runtime (`runtime/CodecRuntime`, `HandoffMint#mintHoles`) |
 
 ### 2.6 The row invariants (`RowInvariants`, run by `ImportGateMain`)
@@ -273,7 +272,7 @@ field=<f> <subject>`.
   bounds, which are absolute (a configuration's `domainMin` `-2` is minus two), with the mint's
   kind and recorded value.
 - `ClaimKind`: `MARKER_FLIPPED`, `CLOCK_SKEW`, `MESSAGE_PAIRING_FLIPPED`, `STATE_PAIRING_FLIPPED`,
-  `RECORDED_FAILURE_EXPLAINED`, `NO_SUPPORTED_WITNESS` ([PIPELINE.md §9](PIPELINE.md)).
+  `RECORDED_FAILURE_EXPLAINED`, `FORMULA_SAT`, `NO_SUPPORTED_WITNESS` ([PIPELINE.md §9](PIPELINE.md)).
 - `Claim(kind, valuationOrdinal, movedRoots, polarityDecides, gaps)`: `valuationOrdinal` 0 is the
   recorded valuation; `movedRoots` maps a moved root's id, or a moved clock cell's symbol, to its
   value in the witness; `polarityDecides` = the recorded valuation's disjunct is unsat with a
@@ -298,15 +297,17 @@ field=<f> <subject>`.
   refusal, else to its version's mint, else to the value its row states, else it is refused
   `UNSTATED_VALUE` (`compose.SmtLowering.bind`, the one rule of a read row in
   `compose.Composer.stateJoins` and of a guarded read node). A join that refused yields to the mint
-  or the value only if nothing it rests on can move -- a root or clock cell, a handoff, a read a
-  STATE family may re-pair, through every read's own write; otherwise the read is refused. A flip
+  or the value; where what it rests on can move -- a root or clock cell, a handoff, a read a STATE
+  family may re-pair, through every read's own write -- the pin cuts it and says so
+  (`SmtLowering#pins`, `concrete[]`). A flip
   query offers eligible writers as choices first ([PIPELINE.md §7.5](PIPELINE.md)).
 - A method-return symbol (`M_<t>_return<n>`) is the call its node states (VM f14 member `call`:
   `holder`, `name`, `arguments`), as a `MethodExpression` node is the call it names (`_name`
   `"<holder> <method>"`, `_param_list`): `Integer.parseInt`/`Long.parseLong` (radix 10) of a String
   and `String.valueOf`/`Integer`/`Long.toString` of an integral are relations; any other callee's
-  return is pinned to the node's `concreteValue` by a named assertion, only if nothing its
-  arguments rest on can move. A method-return node stating no call is refused.
+  return is pinned to the node's `concreteValue` by a named assertion; where its arguments rest on
+  what can move, the pin cuts it and says so (`SmtLowering#pins`). A method-return node stating no
+  call is refused.
 - A decimal or boolean rendering is compared, parsed and split as the value it renders
   (WIRE-CODEC §6.2, `compose.StringIdentities`), read on the expression IR before any text and
   never through a read (its value is the write a family pairs it with): `String.valueOf` of a
