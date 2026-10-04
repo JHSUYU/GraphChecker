@@ -638,6 +638,20 @@ public final class SmtLowering {
     }
 
     /**
+     * The term as {@link #statedTerm} lowers it, where it lowers with no
+     * refusal; else "" and nothing it raised is kept.  For a statement a
+     * path's verdict does not rest on: a decision a constant healthy arm
+     * makes moot ({@code Composer#compose}).
+     */
+    public String statedIfLowered(String term, String origin) {
+        Attempt<String> lowered = attempting(() -> statedTerm(term, origin));
+        if (lowered.raised != null && !lowered.raised.refusals.isEmpty()) {
+            return "";
+        }
+        return commit(lowered);
+    }
+
+    /**
      * One pass: every reference token of this text, lowered in place; ""
      * at the first that refuses, lowering none after it.
      */

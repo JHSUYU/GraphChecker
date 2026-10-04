@@ -1082,8 +1082,10 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
 - `phi_p`: the published `phiTerm` (fatal polarity); a concrete fatal condition's `true` is the
   fatal resting on `pi_p`, the path condition that reached the anchor, and its `false` the constant
   healthy decision: the path is a disjunct no valuation satisfies (symbolic stays symbolic, concrete
-  is a constant), so a corpus whose paths all decided concretely closes UNSAT; a row stating no phi
-  refuses the path (invariant 9), as the composer never invents one;
+  is a constant), so a corpus whose paths all decided concretely closes UNSAT, its formula stating
+  the decisions the path took (`Composer#healthyDecisions`: each that independence left out,
+  conjoined where it lowers with no refusal, else named in `concrete[]` as DECISION), never a bare
+  constant; a row stating no phi refuses the path (invariant 9), as the composer never invents one;
 - every other handoff the conjunction reaches, by the same rules; a handoff variable the corpus
   states of another session and this one minted no attach for refuses the path by name
   (`UNSTATED_VALUE`), so no path names a boundary variable its families do not bind.

@@ -1568,10 +1568,13 @@ public class ComposerTest {
         // stands at the declared occurrence and never reached the anchor
         // took the healthy arm at a guard on the way: its path is a
         // disjunct whose fatal arm is the constant false, so the claim
-        // closes UNSAT with no gap, the way it left named in concrete[].
+        // closes UNSAT with no gap, the way it left named in concrete[],
+        // and the formula states the decisions it took, concrete ones
+        // included, never a bare constant.
         Path ran = folder.newFolder("ran-unreached").toPath();
         Session unreached = new Session(ran, "s0", false);
         unreached.marker("false");
+        unreached.decision(ANCHOR, "way#u3", false, "(< 3 2)");
         unreached.target("", false, false);
         unreached.write();
         Composer.Composition left = compose(ran, 4);
@@ -1584,6 +1587,8 @@ public class ComposerTest {
         assertEquals("the way it left is named",
                 Collections.singletonList("WAY " + ANCHOR.render() + "= []"),
                 concrete(left));
+        assertTrue("and the decision it took is stated: " + left.body(),
+                left.body().contains("(and (not (< 3 2)) false)"));
 
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its

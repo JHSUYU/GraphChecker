@@ -1225,6 +1225,8 @@ public final class Composer {
                             + way.ordinal(), way == null ? ""
                     : Boolean.toString(way.outcome()),
                     Collections.<String>emptyList()));
+            terms.addAll(healthyDecisions(session, path.decisions,
+                    target.seq(), relevant));
         } else if (published.isEmpty()) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, subject, "the target row states "
@@ -1233,6 +1235,8 @@ public final class Composer {
         } else if ("false".equals(published)) {
             fatalArm = terms.size();
             terms.add(published);
+            terms.addAll(healthyDecisions(session, path.decisions,
+                    target.seq(), relevant));
         } else {
             String phi = lowering.statedTerm(published, "phi:" + subject);
             if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
@@ -1332,6 +1336,39 @@ public final class Composer {
                 || "false".equals(phi)
                 ? Arms.pathCondition(decisions, target.seq())
                 : Collections.singletonList(target.phiTerm());
+    }
+
+    /**
+     * THE DECISIONS OF A PATH THAT TOOK THE HEALTHY ARM CONCRETELY, stated:
+     * each decision before the target that independence left out (none of
+     * its variables moves, so it holds at its recorded value in every world)
+     * is conjoined where it lowers with no refusal, so the formula states
+     * the path the run took and not a bare constant; one that does not
+     * lower is named in concrete[] (DECISION), since the constant healthy
+     * arm, not it, decides the path.
+     */
+    private List<String> healthyDecisions(String session,
+                                          List<DecisionRow> decisions,
+                                          long before,
+                                          Independence relevant) {
+        List<String> stated = new ArrayList<String>();
+        for (DecisionRow decision : decisions) {
+            if (decision.seq() >= before || relevant.keeps(decision)) {
+                continue;
+            }
+            String subject = decision.siteId() + "#" + decision.ordinal();
+            String conjunct = lowering.statedIfLowered(
+                    Arms.conjunct(decision), "decision " + subject);
+            if (Arms.predicate(conjunct)) {
+                stated.add(conjunct);
+            } else {
+                pathConcrete.put("decision:" + session + ":" + subject,
+                        new Concrete("DECISION", subject,
+                                Boolean.toString(decision.outcome()),
+                                Collections.<String>emptyList()));
+            }
+        }
+        return stated;
     }
 
     /** The last decision a path took at a site on the way to the throw
