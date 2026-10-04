@@ -178,10 +178,16 @@ set models) when a symbolic value reaches it, when it is a guarded mutation (§5
 mutation of a container whose state is tracked -- whatever object reaches the container: an
 iterator or a view the program built before the log began is no alias the model knows, and its
 `remove()` run as bytecode would leave the chain stale with no trace (the models' unaliased-cursor
-paths state it: a map's from the entry the iterator last returned, a list's from its last index) --
-and, for a call with a callback on one of the four maps, when the map's state is tracked; otherwise
-it runs as bytecode. A query through such an unaliased iterator or view stays bytecode: its
-positions began before the log did. A visiting callback (`forEach`,
+paths state it: a map's from the entry the iterator last returned, a list's from its last index; a
+list iterator's `set`/`add`, a deque iterator's `remove` -- its index is the circular buffer's --
+and a key view's `remove(k)` abandon the container by name) -- and, for a call with a callback on
+one of the four maps, when the map's state is tracked; otherwise it runs as bytecode. A container a
+model abandoned (an incomplete log, no state) is not taken again. A query through such an unaliased
+iterator or view stays bytecode: its positions began before the log did. Two mutations no model
+states are named: a `Hashtable` enumerator's `remove()` abandons its table
+(`HASHTABLE_ENUMERATOR_REMOVE_UNMODELED`), and a node's `setValue` (`HashMap$Node`,
+`LinkedHashMap$Entry`, `Hashtable$Entry`), which stores into the node and names no map, is a model
+gap of the region (`ASSOCIATIVE_ENTRY_SET_VALUE_UNMODELED`) where a modeled walk handed the node out. A visiting callback (`forEach`,
 `replaceAll`, `removeIf`) is seeded with a READ of the state per element, so a decision on it is
 one path condition per element per call; past the snapshot bound (64,
 `-Dcausynth.concolic.initial.snapshot.max`) a call's visits are not seeded and it refuses its map
@@ -369,7 +375,9 @@ subclasses, `ArrayDeque`), `HashMap`, `LinkedHashMap` (insertion order), `Concur
 entries and `Collections` wrappers (unmodifiable, synchronized, checked) are their backing
 container (`ContainerSupport::backing_container`, through `this$0`, `map`, `m`, `c`): a view a
 modeled call made is aliased to it, and one the program built resolves at `state_location` (a
-`KeySetView` is aliased at its first model event). A log opens with an INITIAL version stating
+`KeySetView` is aliased at its first model event; a list's and a deque's iterators by `this$0`); a
+HashSet's private map becomes the set when the set's log starts (`ContainerSupport::start_log`), so
+an iterator of the set reaches the set. A log opens with an INITIAL version stating
 what the container held when tracking began (`ContainerSupport#snapshot_for_receiver`): walkable
 for the modeled classes and `Object[]`, each in the order its class's iterator returns them -- a
 `LinkedHashMap` (and a `LinkedHashSet`'s map) from `head` by `after`, a `HashMap` and a
@@ -377,7 +385,10 @@ for the modeled classes and `Object[]`, each in the order its class's iterator r
 `Hashtable` by its bins from the last down; a `ConcurrentHashMap` resize in flight refused as
 `RESIZING` (the log still starts, at the bare root), past 4096 bins over the bound -- capped at 64
 members, else a stated refusal (`NO_MODELLED_SHAPE`, `UNREADABLE_CONTAINER`,
-`MUTATED_BEFORE_FIRST_READ`). A map's or set's `SNAPSHOT_BASE` states the order those members
+`MUTATED_BEFORE_FIRST_READ`, or `SNAPSHOT_RACED` when its modCount -- a ConcurrentHashMap's baseCount,
+an ArrayDeque's head and tail -- moved during the lock-free walk). Only the thread whose INITIAL
+started the log installs the snapshot it walked, so a racing loser leaves no second `SNAPSHOT_BASE`.
+A map's or set's `SNAPSHOT_BASE` states the order those members
 follow it in and how many of the `PUT`s above it they are (`order`: `INSERTION` or `HASH`,
 `ContainerSupport::iteration_order`; `members`). `compose/ContainerStateModel` and
 `compose/ContainerSmtCodec` lower the chains (`AssocState` for maps, `IndexedState` for lists and
@@ -612,6 +623,8 @@ that does not hold.
 | a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
 | a tracked container mutated through an iterator or view built before its log began | modeled (§4: `ContainerSupport::admits`) |
 | a tracked container mutated by a thread outside every region, at a mutation site the scope map names | detected (`UNHOOKED_CONTAINER_MUTATION`, §5.4) |
+| a list iterator's `set`/`add`, a deque iterator's `remove`, a key view's `remove(k)`, a `Hashtable` enumerator's `remove` on a tracked container | detected (the container abandoned by name, §4) |
+| a map node's `setValue` | detected where a modeled walk handed the node out (a region model gap), else silently lost: a node names no map |
 | an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
 | map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6): a choice a guard, a callback's result and its side effects hooked; what a callback that did not run would have stored detected and named (an unknown cell, `CONTAINER_PINNED:`) |
 | a `java.util.stream` pipeline over a modeled container | modeled (§4): its result a guarded chain, its stages' callbacks seeded; what no relation states detected and pinned (a `PIN`, or the run's result named `STREAM_PINNED:`); an unmodeled operation named and hooked as bytecode |
@@ -664,7 +677,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 70
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 71
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
