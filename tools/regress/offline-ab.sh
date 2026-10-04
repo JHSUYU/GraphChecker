@@ -10,9 +10,10 @@
 # outputs are compared by tools/regress/ab_compare.py:
 #
 #   chain     stage       mirrors                       reads
-#   SEED      SEED.static do_analyze (static pass),     the case's scope, copied again from its tree,
-#                         after the door step of        and the library doors' classes it calls
-#                         campaign_analyze_grown_scope
+#   SEED      SEED.static do_analyze (static pass) in   the case's scope, copied again from its tree,
+#                         campaign_analyze_grown_scope's the library doors' classes it calls and the
+#                         loop (door step, pass, scope  classes its frontier grows (within the
+#                         growth, until none is added)  case's causynth_scope_growth_budget)
 #             SEED.trace  do_workload's aggregation     the recording's runtime/ + one set of static
 #                                                       artifacts for both sides (ab_seed)
 #             PLAN        do_schedule                   this side's SEED.trace plan
@@ -24,10 +25,15 @@
 #   COMPOSE   COMPOSE     do_compose (+SOLVE, DECIDE)   the recorded final corpus (z3)
 #             CONFIRM     campaign_confirm's ConfirmMain this side's COMPOSE claim, no replay
 #
+# The chain SEED.static is SEED's static pass alone: what a slice change
+# costs (wall, edges, methods, scope rows, chosen keys) on cases whose
+# recording no later stage of this checkout reads.
+#
 # The recorded runs are the rounds named (--round, at least one; the first
 # holding a case wins): a TAG is ${AB_ACCEPT_ROOT}/accept-<TAG>-<case without
 # hdfs->, as tools/rounds writes them; a DIR is an accept.sh output
-# (DIR/out/<case>).  A round is read as the current engine reads it, so name
+# (DIR/out/<case>).  AB_STAGES=SEED.static reads no recording, so a case no
+# round recorded runs too.  A round is read as the current engine reads it, so name
 # rounds recorded by a build whose row contract HEAD still reads.
 #
 # A stage that reads an iteration reads a private one: the recorded sessions
@@ -66,7 +72,8 @@
 #                 above it is lowered to it)
 #   AB_SOLVE_JOBS concurrent SOLVE.0 solvers of one side (default 1)
 #   AB_STAGE_TIMEOUT_S  wall bound of one JVM (default 1800)
-#   AB_STAGES     the chains to run (default "SEED IMPORT EXPLORE.N COMPOSE")
+#   AB_STAGES     the chains to run (default "SEED IMPORT EXPLORE.N COMPOSE";
+#                 SEED.static: the static pass alone)
 #   AB_ACCEPT_ROOT  where round TAGs live (default $GC_OUT, tools/lib/gc-env.sh)
 #   AB_Z3         the z3 both sides use (default: the case's z3_bin)
 #   AB_BASELINE_REPO  the checkout whose experiments/ declare the baseline's
@@ -86,6 +93,8 @@ set +e
 AB_CASES=(hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17967-pathA
   hdfs-17967-pathB hdfs-17967-pathC hdfs-17960 hdfs-17897 hdfs-11741)
 AB_CHAINS=(SEED IMPORT EXPLORE.N COMPOSE)
+# Chains AB_STAGES may name beside the default ones.
+AB_EXTRA_CHAINS=(SEED.static)
 AB_SIDES=(baseline candidate)
 
 ab_log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
@@ -229,15 +238,14 @@ ab_explore_args() {
 }
 
 ab_stage_seed_static() {
-  local dir classes out grown growth sha
-  local -a roots=()
+  local dir classes out grown growth sha step=0 changes summary heap
+  local -a roots=() pass=()
   dir=$(ab_stage_dir SEED.static)
   classes=${dir}/classes
   out=${dir}/out
   grown=${dir}/scope-classes
   growth=$(ab_cfg causynth_scope_growth_budget)
-  [[ -z "${growth}" || "${growth}" == 0 ]] \
-    || ab_skip "${dir}" "scope growth (budget ${growth}) is not mirrored" || return
+  heap=$(ab_heap "$(ab_cfg engine_memory_mb)")
   # The scope, copied out of the case's tree into this stage, never into the
   # per-host directory a running campaign of the case weaves from.
   (cd "${ab_case_decl}" && env CAUSYNTH_ANALYSIS_CLASSES_DIR="${classes}" \
@@ -250,38 +258,80 @@ ab_stage_seed_static() {
     | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')
   printf '%s\n' "${sha}" >"${dir}/classes.sha256"
   mkdir -p "${out}" "${grown}"
-  # campaign_analyze_grown_scope's door step, outside the budget: the class
-  # families of the library doors the analysis scope calls join it
-  # (doors/stdout.txt names them).  A jar that ships no catalog has no doors.
   IFS=: read -r -a roots <<<"$(ab_cfg causynth_lineage_roots)"
   # The system's own doors replace the catalog's, in the door step as in
   # the static pass (run_engine.sh run_java_main, do_analyze).
   ab_props=("-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)")
-  if (( ${#roots[@]} > 0 )) && unzip -Z1 "${ab_jar}" \
-      edu/uva/liftlab/graphchecker/library-catalog.jsonl >/dev/null 2>&1; then
-    mkdir -p "${dir}/doors"
-    ab_java "${dir}/doors" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
-      "${ab_jar}" edu.uva.liftlab.graphchecker.plan.ScopeGrowth --doors \
-      "${grown}" "${classes}" "${ab_project_cp}" "${roots[@]}" \
-      || ab_skip "${dir}" "the door scope failed (doors/stderr.log)" || return
-    cp "${dir}/doors/stdout.log" "${dir}/doors/stdout.txt"
-  fi
-  ab_props+=(
+  pass=(
     "-Dcausynth.output.dir=${out}"
     "-Dcausynth.target.spec=$(ab_cfg causynth_target_spec)"
     "-Dcausynth.loop.bounds=$(ab_cfg causynth_loop_bounds)"
     "-Dcausynth.region.skeletons=${out}/region_skeletons.jsonl.gz"
   )
-  [[ ! -s "${grown}/GROWN" ]] \
-    || ab_props+=("-Dcausynth.process.dirs=${grown}")
-  [[ -z "$(ab_cfg causynth_lineage_roots)" ]] || ab_props+=(
+  [[ -z "$(ab_cfg causynth_lineage_roots)" ]] || pass+=(
     "-Dcausynth.lineage.roots=$(ab_cfg causynth_lineage_roots)")
-  [[ -z "$(ab_cfg causynth_communication_mappings)" ]] || ab_props+=(
+  [[ -z "$(ab_cfg causynth_communication_mappings)" ]] || pass+=(
     "-Dcausynth.communication.mappings=$(ab_cfg causynth_communication_mappings)")
-  ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \
-    "${ab_jar}:${ab_project_cp}" edu.uva.liftlab.graphchecker.GraphCheckerMain \
-    -i "${classes}" -x "${ab_project_cp}" -o "${out}/instrumented-classes"
+  # campaign_analyze_grown_scope: the door step, then the static pass and
+  # scope growth over its frontier until nothing is added or the budget is
+  # spent, the door step again after every growth.  The stage's wall is the
+  # whole loop's; each step's directory names what it grew.
+  ab_seed_doors "${dir}/doors" || { ab_props=(); return; }
+  while :; do
+    ab_props+=("${pass[@]}")
+    [[ ! -s "${grown}/GROWN" ]] \
+      || ab_props+=("-Dcausynth.process.dirs=${grown}")
+    ab_java "${dir}" "${heap}" "${ab_jar}:${ab_project_cp}" \
+      edu.uva.liftlab.graphchecker.GraphCheckerMain \
+      -i "${classes}" -x "${ab_project_cp}" -o "${out}/instrumented-classes" \
+      || break
+    ab_seed_wall "${dir}"
+    ab_props=("-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)")
+    [[ "${growth:-0}" != 0 ]] && (( ${#roots[@]} > 0 )) || break
+    step=$(( step + 1 ))
+    mkdir -p "${dir}/growth-${step}"
+    ab_java "${dir}/growth-${step}" "${heap}" "${ab_jar}" \
+      edu.uva.liftlab.graphchecker.plan.ScopeGrowth "${grown}" \
+      "${out}/scope_frontier.jsonl" "${growth}" "${classes}" "${roots[@]}" \
+      || { ab_skip "${dir}" "scope growth failed (growth-${step}/stderr.log)"
+           break; }
+    ab_seed_wall "${dir}/growth-${step}"
+    read -r changes summary <"${dir}/growth-${step}/stdout.log"
+    [[ "${changes}" =~ ^[1-9][0-9]*$ ]] || break
+    ab_seed_doors "${dir}/doors-${step}" || break
+  done
   ab_props=()
+  # The loop's wall in place of the last pass's.
+  [[ ! -f "${dir}/status" ]] || sed -i "s/ wall_s=[^ ]* / wall_s=${ab_seed_total} /" \
+    "${dir}/status"
+  ab_seed_total=0
+}
+
+# The door step (campaign_scope_doors) into the stage's grown scope: the
+# class families of the library doors the analysis scope calls join it
+# (<dir>/stdout.txt names them).  A jar that ships no catalog has no doors.
+ab_seed_doors() {
+  local step=$1
+  (( ${#roots[@]} > 0 )) && unzip -Z1 "${ab_jar}" \
+    edu/uva/liftlab/graphchecker/library-catalog.jsonl >/dev/null 2>&1 \
+    || return 0
+  mkdir -p "${step}"
+  ab_java "${step}" "${heap}" "${ab_jar}" \
+    edu.uva.liftlab.graphchecker.plan.ScopeGrowth --doors \
+    "${grown}" "${classes}" "${ab_project_cp}" "${roots[@]}" \
+    || ab_skip "${dir}" "the door scope failed ($(basename "${step}")/stderr.log)" \
+    || return
+  ab_seed_wall "${step}"
+  cp "${step}/stdout.log" "${step}/stdout.txt"
+}
+
+# Adds one step's wall (its time.txt) to the SEED.static loop's.
+ab_seed_total=0
+ab_seed_wall() {
+  local wall
+  read -r wall _ < <(tail -n 1 "$1/time.txt" 2>/dev/null) || return 0
+  ab_seed_total=$(awk -v a="${ab_seed_total}" -v b="${wall:-0}" \
+    'BEGIN {printf "%.2f", a + b}')
 }
 
 # The recording's trace, aggregated over the static artifacts in ${ab_static}.
@@ -521,6 +571,11 @@ ab_task() {
   # shellcheck source=/dev/null
   source "${out}/env.sh"
   [[ " ${AB_STAGES} " != *" SEED "* ]] || ab_seed "${out}" "${case_id}" &
+  if [[ " ${AB_STAGES} " == *" SEED.static "* ]]; then
+    for side in "${AB_SIDES[@]}"; do
+      ( ab_side_env "${out}" "${side}" "${case_id}"; ab_stage_seed_static ) &
+    done
+  fi
   for side in "${AB_SIDES[@]}"; do
     ( ab_side_env "${out}" "${side}" "${case_id}"
       for chain in ${AB_STAGES}; do
@@ -601,8 +656,9 @@ ab_main() {
   AB_ACCEPT_ROOT=${AB_ACCEPT_ROOT:-${GC_OUT}}
   AB_STAGES=${AB_STAGES:-${AB_CHAINS[*]}}
   for chain in ${AB_STAGES}; do
-    [[ " ${AB_CHAINS[*]} " == *" ${chain} "* ]] \
-      || ab_die "AB_STAGES names ${chain}; the chains are ${AB_CHAINS[*]}"
+    [[ " ${AB_CHAINS[*]} ${AB_EXTRA_CHAINS[*]} " == *" ${chain} "* ]] \
+      || ab_die "AB_STAGES names ${chain}; the chains are ${AB_CHAINS[*]} \
+${AB_EXTRA_CHAINS[*]}"
   done
   (( ${#cases[@]} > 0 )) || cases=("${AB_CASES[@]}")
   [[ ! -e "${AB_OUT}" || -z "$(ls -A "${AB_OUT}")" ]] \
@@ -628,7 +684,10 @@ ab_main() {
   # config run_engine.sh reads -- with the classpath the run froze, when it
   # states one.
   for case_id in "${cases[@]}"; do
-    acc=$(ab_recorded_run "${case_id}") \
+    # The static pass alone reads no recording: a case no round recorded
+    # runs against none (its base~acc is "-").
+    acc=$(ab_recorded_run "${case_id}") || acc=-
+    [[ "${acc}" != - || "${AB_STAGES}" == SEED.static ]] \
       || ab_die "no round of ${ab_rounds[*]} recorded ${case_id}"
     printf '%s\t%s\n' "${case_id}" "${acc}" >>"${AB_OUT}/accepted.tsv"
     classpath=$(ab_recorded_classpath "${acc}")
@@ -662,8 +721,9 @@ ${ab_rounds[*]} -> ${AB_OUT}"
   trap 'kill ${pids[*]} 2>/dev/null; exit 130' INT TERM
   for case_id in $(for case_id in "${cases[@]}"; do
         acc=$(awk -F'\t' -v c="${case_id}" '$1 == c {print $2}' "${AB_OUT}/accepted.tsv")
+        # A recording no session came of (a SEED-only run) weighs 0.
         printf '%s %s\n' "$(du -sk "${acc}/schedule/iteration-0000/sessions/" \
-          2>/dev/null | cut -f1)" "${case_id}"
+          2>/dev/null | cut -f1 | grep . || echo 0)" "${case_id}"
       done | sort -rn | awk '{print $2}'); do
     bash "${ab_self}" --task "${AB_OUT}" "${case_id}" \
       >"${AB_OUT}/logs/${case_id}.log" 2>&1 &

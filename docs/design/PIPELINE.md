@@ -1738,12 +1738,16 @@ runs a process naming its directory, `DEAD` when none does.
 
 `tools/regress/offline-ab.sh --round <round>... <baseline-jar> <candidate-jar> [case...]` is the
 offline regression gate: per case of the first `--round` holding it, it runs every stage that is
-a pure function of the recording once per jar — the static pass (after the door step,
-`ScopeGrowth --doors`, when the jar ships the library catalog), the trace aggregation, PLAN,
+a pure function of the recording once per jar — the static pass in `campaign_analyze_grown_scope`'s
+loop (the door step, `ScopeGrowth --doors`, when the jar ships the library catalog; then the pass
+and `ScopeGrowth` over its frontier until nothing is added or the case's budget is spent, the door
+step again after each growth; the stage's wall is the loop's), the trace aggregation, PLAN,
 EXPLORE round 0 and its solves, IMPORT, the closing EXPLORE round, COMPOSE with SOLVE and DECIDE,
 and CONFIRM's planning — over private iterations that link the recorded sessions, with no
 workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
-2 when one could not be checked. It runs beside live rounds, so each of its engine JVMs is placed
+2 when one could not be checked; the static pass's summary is the slice's size (edges, the methods
+they lie in, scope rows, READ_SITEs, CONFIG_KEYs, chosen/all root-demand boundaries, skeletons,
+grown classes), and `AB_STAGES=SEED.static` runs that pass alone. It runs beside live rounds, so each of its engine JVMs is placed
 through the host ledger (`ab_place`: the host of `AB_HOSTS`, default `LIFTS`, with the most room,
 charged its heap for its whole run, waited for when none has it). Every stage gates on bytes, the static pass included: it is the
 same on every host and run ([SYMBOL-SCOPE.md §2.3](SYMBOL-SCOPE.md)). A round is read as the
