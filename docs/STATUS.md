@@ -318,6 +318,10 @@ Scale and robustness:
     the seed's closure PLAN did not plan to fit `schedule_max_jobs` (the index's `closureCut`, a
     `PLAN_CLOSURE_CUT` row, DIAGNOSTIC under an accepted witness).
 12. The seed recording has no wall-clock bound; only the case budget ends it.
+46. The objects one session placed unnamed (`P_L'c'_`) of one class are one opaque identity in
+    COMPOSE (PIPELINE §8): two of them may compare equal in a formula though they were two objects.
+    An over-approximation (a false SAT CONFIRM refutes); it can drop a witness only where the fatal
+    path itself compares two such objects.
 45. A retained-loop row from a static pass before `bodyEntryCallUnits` places no loop body (IDENTITY
     §1): an offline gate over such a recording plans those regions whole (solr-18413's one
     loop-body region on V25); a fresh run states the field and roots them again.

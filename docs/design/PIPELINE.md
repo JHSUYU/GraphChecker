@@ -1242,10 +1242,18 @@ cell where it is empty and no member required; `POLL` is the queue without its h
 where its size is a stated nonzero literal, itself where it is 0, and refused by name over no
 stated size (`ContainerRelation:INDEXED:POLL:unstated-size`). A String a map
 answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
-(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). An object reference is an
-opaque identity: one the VM named (`M_L'c'_rid`) is non-null and distinct from its session's other
-named objects, one it placed unnamed (`P_L'c'_`, made only for a non-null object) is non-null
-(`SmtLowering#opaque`). A view's positions are
+(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A value the lowering hands
+the codec keeps what it stated (`SmtLowering#codecTerm`): a String its nullness (a recorded String is
+not null; hdfs ad-hoc `FinalizeCommand.blockPoolId` read off the command list reached `equals` as of
+unknown nullness), and an answer per candidate object is null where its case's is, of unknown
+nullness only where a case states none (`#perCandidateTerm`), which an operation dereferencing it
+still refuses by name. A cell holds what Java stores: an object, a container included, is boxed as
+its reference (`Host#box`; hdfs ad-hoc `bpStorageDirMap.put(bpid, dirs)` was cut `CannotBox`). An
+object reference is an opaque identity: one the VM named (`M_L'c'_rid`) is non-null and distinct
+from its session's other named objects, one it placed unnamed (`P_L'c'_`, made only for a non-null
+object) is non-null (`SmtLowering#opaque`), and either is that identity wherever it is asked as a
+reference. The objects a session placed unnamed of one class share one identity, an
+over-approximation (two such objects may compare equal) CONFIRM filters. A view's positions are
 stated linearly in its chain's puts: each position below the size names a present key held at that
 position, and each put key present is held at a position below the size. A position is the run's
 iteration count, so the chain's order is the positions' only where it is the order the map's class
