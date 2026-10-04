@@ -541,9 +541,12 @@ begin), `END` (a tick's end), `INTERRUPT`. A tick's `WAKE` is computed at its be
 the turn's first event is admitted, before it, in both passes (`ScheduleLog#turnBegun`,
 `#takeTurnWake`: at `observe`, at a held timed wait's admitted or timed-out `WAKE`; asking whether
 the turn is vacant is that first step), its `END` only if its `WAKE` was: a turn that makes no event
-holds no slot, and its begin shows its thread away from the frontier (`ELSEWHERE`), so a spinning
-loop defers no stall. In a replay the turn's first event first takes the `WAKE`'s slot; what the turn
-computes before it makes no event and is not held. `context` = `<node>|<ctx render>[|<start frames>]`
+holds no slot. In a replay a turn the order has a `WAKE` slot for begins only once that slot is due,
+taking nothing (`ScheduleLog#awaitDueLocked`), so what it decides before its first event runs after
+what came before it (hdfs-adhoc-43, round DS3: a DataNode actor's heartbeat-due check ran before the
+write it followed in the recording); its first event then takes the slot, and a spin of empty turns
+finds it due and runs on. A turn with no slot does not wait, and its begin shows its thread away from
+the frontier (`ELSEWHERE`), so a spinning loop defers no stall. `context` = `<node>|<ctx render>[|<start frames>]`
 (the claimed starts' levels from the scope base, each start's own frame after the starter's frames
 it was filed with) (`ScheduleLog#contextOf`, `Identity#handoffs`). Where a consumer claimed work
 (a queue item, or a task taken on another thread than its starter's) the levels start at its
