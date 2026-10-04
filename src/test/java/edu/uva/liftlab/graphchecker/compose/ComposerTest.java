@@ -1575,6 +1575,8 @@ public class ComposerTest {
         Session unreached = new Session(ran, "s0", false);
         unreached.marker("false");
         unreached.decision(ANCHOR, "way#u3", false, "(< 3 2)");
+        // A decision the VM recorded concretely, stating no term.
+        unreached.decision(ANCHOR, "way#u4", true, "");
         unreached.target("", false, false);
         unreached.write();
         Composer.Composition left = compose(ran, 4);
@@ -1584,11 +1586,14 @@ public class ComposerTest {
         assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, healthy.claim().kind());
         assertFalse("no gap withholds it: " + healthy.claim().gaps(),
                 healthy.claim().blocked());
-        assertEquals("the way it left is named",
-                Collections.singletonList("WAY " + ANCHOR.render() + "= []"),
+        assertEquals("the way it left is named, and the decision no term "
+                        + "states", Arrays.asList("WAY " + ANCHOR.render()
+                        + "= []", "DECISION way#u4#2=true []"),
                 concrete(left));
-        assertTrue("and the decision it took is stated: " + left.body(),
-                left.body().contains("(and (not (< 3 2)) false)"));
+        assertTrue("and the decisions it took are stated, the concrete one "
+                        + "as a proposition at its arm: " + left.body(),
+                left.body().matches("(?s).*\\(and \\(and \\(not \\(< 3 2\\)\\) "
+                        + "decided__0__\\w+\\) false\\).*"));
 
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its

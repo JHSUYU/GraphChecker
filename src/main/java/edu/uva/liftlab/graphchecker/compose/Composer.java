@@ -1225,7 +1225,7 @@ public final class Composer {
                             + way.ordinal(), way == null ? ""
                     : Boolean.toString(way.outcome()),
                     Collections.<String>emptyList()));
-            terms.addAll(healthyDecisions(session, path.decisions,
+            terms.addAll(healthyDecisions(session, ordinal, path.decisions,
                     target.seq(), relevant));
         } else if (published.isEmpty()) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
@@ -1235,7 +1235,7 @@ public final class Composer {
         } else if ("false".equals(published)) {
             fatalArm = terms.size();
             terms.add(published);
-            terms.addAll(healthyDecisions(session, path.decisions,
+            terms.addAll(healthyDecisions(session, ordinal, path.decisions,
                     target.seq(), relevant));
         } else {
             String phi = lowering.statedTerm(published, "phi:" + subject);
@@ -1340,20 +1340,22 @@ public final class Composer {
 
     /**
      * THE DECISIONS OF A PATH THAT TOOK THE HEALTHY ARM CONCRETELY, stated:
-     * each decision before the target that independence left out (none of
-     * its variables moves, so it holds at its recorded value in every world)
-     * is conjoined where it lowers with no refusal, so the formula states
-     * the path the run took and not a bare constant; one that does not
-     * lower is named in concrete[] (DECISION), since the constant healthy
-     * arm, not it, decides the path.
+     * each decision up to the target (the anchor's own deciding guard
+     * included) that independence left out -- none of its variables moves,
+     * so it holds at its recorded value in every world -- is conjoined, so
+     * the formula states the path the run took and not a bare constant:
+     * its term where it lowers with no refusal, else a proposition named for
+     * the decision ({@code decided__}) at the arm it took, the decision
+     * named in concrete[] (DECISION).  The constant healthy arm decides the
+     * path either way.
      */
-    private List<String> healthyDecisions(String session,
+    private List<String> healthyDecisions(String session, int ordinal,
                                           List<DecisionRow> decisions,
-                                          long before,
+                                          long upTo,
                                           Independence relevant) {
         List<String> stated = new ArrayList<String>();
         for (DecisionRow decision : decisions) {
-            if (decision.seq() >= before || relevant.keeps(decision)) {
+            if (decision.seq() > upTo || relevant.keeps(decision)) {
                 continue;
             }
             String subject = decision.siteId() + "#" + decision.ordinal();
@@ -1361,12 +1363,16 @@ public final class Composer {
                     Arms.conjunct(decision), "decision " + subject);
             if (Arms.predicate(conjunct)) {
                 stated.add(conjunct);
-            } else {
-                pathConcrete.put("decision:" + session + ":" + subject,
-                        new Concrete("DECISION", subject,
-                                Boolean.toString(decision.outcome()),
-                                Collections.<String>emptyList()));
+                continue;
             }
+            String name = "decided__" + ordinal + "__" + ArtifactIO.digest(
+                    session + "|" + subject, 12);
+            lowering.declare(name, Sort.BOOL);
+            stated.add(decision.outcome() ? name : "(not " + name + ")");
+            pathConcrete.put("decision:" + session + ":" + subject,
+                    new Concrete("DECISION", subject,
+                            Boolean.toString(decision.outcome()),
+                            Collections.<String>emptyList()));
         }
         return stated;
     }
