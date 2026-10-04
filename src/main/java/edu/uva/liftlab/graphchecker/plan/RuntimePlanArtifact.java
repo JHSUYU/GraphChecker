@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -41,16 +42,23 @@ public final class RuntimePlanArtifact {
 
     public List<JsonObject> regions() { return copies(regions); }
 
-    /** Catalog row (regions + gaps) followed by the plan rows. */
-    public static String encode(Collection<JsonObject> encodedPlans,
-                                Collection<JsonObject> encodedRegions,
-                                Collection<JsonObject> encodedGaps) {
-        StringBuilder output = new StringBuilder();
-        output.append(encodeCatalog(encodedRegions, encodedGaps));
+    /**
+     * Writes the catalog row (regions + gaps), then the plan rows as {@code
+     * encodedPlans} yields them, each rendered and written before the next
+     * is built: a plan of 2000 occurrences is 130 MB of text, which built
+     * whole (rows, then one string of them, then its bytes) took a 2 GB
+     * aggregation out of its heap (hdfs-adhoc-43).
+     */
+    public static void write(Writer output,
+                             Collection<JsonObject> encodedRegions,
+                             Collection<JsonObject> encodedGaps,
+                             Iterable<JsonObject> encodedPlans)
+            throws IOException {
+        output.write(encodeCatalog(encodedRegions, encodedGaps));
         for (JsonObject source : encodedPlans) {
-            output.append(CanonicalJson.render(source)).append('\n');
+            output.write(CanonicalJson.render(source));
+            output.write('\n');
         }
-        return output.toString();
     }
 
     private static String encodeCatalog(Collection<JsonObject> encodedRegions,

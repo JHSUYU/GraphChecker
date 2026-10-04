@@ -13,7 +13,6 @@ import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Deque;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -32,12 +31,12 @@ import java.util.concurrent.atomic.AtomicLong;
 final class RuntimeTraceContext {
     private static final Object LOCK = new Object();
     private static final AtomicLong IDS = new AtomicLong(1L);
-    private static final IdentityHashMap<Object, SourceRef> SOURCE_ALIASES =
-            new IdentityHashMap<>();
+    private static final WeakIdentityMap<SourceRef> SOURCE_ALIASES =
+            new WeakIdentityMap<>();
     private static final Map<String, SourceRef> SOURCES_BY_KEY =
             new LinkedHashMap<>();
-    private static final IdentityHashMap<Object, Seed> ASYNC_SEEDS =
-            new IdentityHashMap<>();
+    private static final WeakIdentityMap<Seed> ASYNC_SEEDS =
+            new WeakIdentityMap<>();
     private static final InheritableThreadLocal<State> CURRENT =
             new InheritedState<State>() {
                 @Override
