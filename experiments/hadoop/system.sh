@@ -73,9 +73,11 @@ system_build() {
 }
 
 # MiniDFSCluster puts its name directories, edit logs and block data under
-# test.build.data.
+# test.build.data; a test unpacks its stored images and storage directories
+# from test.cache.data, which Hadoop's surefire sets to the module's test
+# classes (TestDatanodeLayoutUpgrade's hadoop-24-datanode-dir.tgz).
 system_jvm_properties() {
-  jvm_properties=("-Dtest.build.data=$2")
+  jvm_properties=("-Dtest.build.data=$2" "-Dtest.cache.data=${test_classes}")
   [[ "${cluster_automatic}" != true ]] \
     || jvm_properties+=("-Dcausynth.cluster.automatic=true")
 }
