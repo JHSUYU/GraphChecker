@@ -174,50 +174,76 @@ final class CfgLoopControl {
     }
 
     /**
+     * Where one iteration's frame opens: a body unit and the control edges
+     * into it the frame opens on; at the header, every edge into it.
+     */
+    static final class BodyEntry {
+        final Unit target;
+        final List<Edge> edges;
+
+        BodyEntry(Unit target, List<Edge> edges) {
+            this.target = target;
+            this.edges = Collections.unmodifiableList(edges);
+        }
+    }
+
+    /**
      * Where one iteration's frame opens so that it holds the work at {@code
      * demanded} (IDENTITY §1, {@code LOOP_BODY_ROOT}), or {@code null} where
      * none can: the unit must be a member of the loop the header dominates;
-     * the frame opens on the one outermost control edge into the body whose
-     * target dominates it, or, when no control edge does (the work comes
-     * before every control: a {@code while (true)} left by a return or a
-     * throw, FsDatasetImpl.initReplicaRecovery's retry loop), at the header.
-     * A unit on a path that leaves the loop is no member: a call after the
+     * the frame opens at the one outermost body unit a control edge enters
+     * and that dominates it -- on every control edge into that unit, so
+     * {@code if (a || b) handle();}, two controls entering one block, is one
+     * entry -- or, when no control edge does (the work comes before every
+     * control: a {@code while (true)} left by a return or a throw,
+     * FsDatasetImpl.initReplicaRecovery's retry loop), at the header.  A
+     * unit on a path that leaves the loop is no member: a call after the
      * loop's exit decision runs once per call of the method, however often
      * the loop turned (hdfs-adhoc-41: INodesInPath.getExistingINodes returns
-     * getAncestorINodesInPath from inside its loop).  Two edges reaching it
-     * alike prove no one entry: {@code null}.  SEED states the call units
-     * this places (the retained-loop row's {@code bodyEntryCallUnits}), and
-     * the weave asks it again of the loop it frames.
+     * getAncestorINodesInPath from inside its loop).  SEED states the call
+     * units this places (the retained-loop row's {@code
+     * bodyEntryCallUnits}), and the weave asks it again of the loop it
+     * frames.
      */
-    static Edge bodyEntry(NaturalLoop loop, Collection<Unit> controls,
-                          Unit demanded) {
+    static BodyEntry bodyEntry(NaturalLoop loop, Collection<Unit> controls,
+                               Unit demanded) {
         Set<Unit> members = loop.members();
         if (demanded == null || !members.contains(demanded)
                 || !loop.isDominatedBy(demanded, loop.header)) {
             return null;
         }
-        // An if's one in-loop successor, a switch's every case that stays.
-        List<Edge> entries = new ArrayList<Edge>();
+        // An if's one in-loop successor, a switch's every case that stays;
+        // edges into one unit are one entry.
+        List<Unit> targets = new ArrayList<Unit>();
+        Map<Unit, List<Edge>> into = new IdentityHashMap<Unit, List<Edge>>();
         for (Unit control : controls) {
             for (Unit successor : loop.stableSuccessors(control)) {
-                if (members.contains(successor)
-                        && loop.isDominatedBy(demanded, successor)
-                        && !holds(entries, control, successor)) {
-                    entries.add(new Edge(control, successor));
+                if (!members.contains(successor)
+                        || !loop.isDominatedBy(demanded, successor)) {
+                    continue;
+                }
+                List<Edge> edges = into.get(successor);
+                if (edges == null) {
+                    edges = new ArrayList<Edge>();
+                    into.put(successor, edges);
+                    targets.add(successor);
+                }
+                if (!holds(edges, control, successor)) {
+                    edges.add(new Edge(control, successor));
                 }
             }
         }
-        if (entries.isEmpty()) {
-            return loop.backedges.isEmpty() ? null
-                    : new Edge(loop.backedges.get(0).source, loop.header);
+        if (targets.isEmpty()) {
+            return loop.backedges.isEmpty() ? null : new BodyEntry(
+                    loop.header, Collections.singletonList(new Edge(
+                    loop.backedges.get(0).source, loop.header)));
         }
-        Edge outermost = null;
-        for (Edge candidate : entries) {
+        Unit outermost = null;
+        for (Unit candidate : targets) {
             boolean nested = false;
-            for (Edge other : entries) {
-                if (candidate != other && candidate.target != other.target
-                        && loop.isDominatedBy(candidate.target,
-                        other.target)) {
+            for (Unit other : targets) {
+                if (candidate != other
+                        && loop.isDominatedBy(candidate, other)) {
                     nested = true;
                     break;
                 }
@@ -226,7 +252,7 @@ final class CfgLoopControl {
             if (outermost != null) return null;
             outermost = candidate;
         }
-        return outermost;
+        return new BodyEntry(outermost, into.get(outermost));
     }
 
     private static boolean holds(List<Edge> edges, Unit source, Unit target) {

@@ -113,9 +113,19 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 {"a root whose in-loop call leaves the loop",
                         unplaceable(rootLoop(SET_UP)), null}};
         for (Object[] row : rows) {
-            Map<String, Object> rooted = rootLoopOf((Case) row[1]);
+            Case built = (Case) row[1];
+            Map<String, Object> rooted = rootLoopOf(built);
             Assert.assertEquals((String) row[0], row[2], rooted == null
                     ? null : rooted.get(LoopBoundPolicy.ROOT_LOOP_METHOD));
+            // Where the loop turned and holds the call but no frame can
+            // open, the plan says so by name; nowhere else.
+            boolean stated = false;
+            for (Map<String, Object> gap : built.program.planGaps) {
+                stated |= String.valueOf(gap.get("subject"))
+                        .startsWith("LOOP_BODY_UNPLACEABLE:");
+            }
+            Assert.assertEquals((String) row[0],
+                    ((String) row[0]).endsWith("leaves the loop"), stated);
         }
     }
 

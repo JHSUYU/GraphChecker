@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import java.lang.ref.WeakReference;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -473,9 +474,15 @@ public final class Identity {
         private final String key;
         /** The window the start was counted in ({@link Level#window}). */
         private final int window = RecordingWindow.index();
-        /** The thread that made the start, and its innermost level then. */
-        private final Thread thread;
-        private final Level level;
+        /**
+         * The thread that made the start, and its innermost level then,
+         * held weakly: a level holds its activation's receiver, which may be
+         * the carrier this start is filed under (a task resubmitting
+         * itself), and a value holding its own key would keep the weak
+         * entry forever.  Gone, neither can be standing ({@link #ranHere}).
+         */
+        private final WeakReference<Thread> thread;
+        private final WeakReference<Level> level;
         private final int depth;
 
         private Start(List<Frame> frames, Attribution.Reference starter,
@@ -483,8 +490,8 @@ public final class Identity {
             this.frames = frames;
             this.starter = starter;
             this.key = key;
-            this.thread = thread;
-            this.level = level;
+            this.thread = new WeakReference<Thread>(thread);
+            this.level = new WeakReference<Level>(level);
             this.depth = depth;
         }
 
@@ -502,9 +509,10 @@ public final class Identity {
          * such run doubled the stack.
          */
         private boolean ranHere(State state) {
-            return thread == Thread.currentThread()
+            Level standing = level.get();
+            return thread.get() == Thread.currentThread() && standing != null
                     && depth <= state.depth()
-                    && state.levels.get(depth) == level;
+                    && state.levels.get(depth) == standing;
         }
     }
 

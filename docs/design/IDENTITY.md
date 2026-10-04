@@ -29,11 +29,14 @@ id = sha16(node/regionId/context/index-hash)
   iteration is one unit of demanded work), the recording saw it decide its continuation more than
   once in one activation, and an iteration's frame can open at that call
   (`causynth/CfgLoopControl#bodyEntry`: the call is a member of the loop the header dominates, and
-  one outermost control edge into the body holds it, or none does and the frame opens at the
+  one outermost body unit a control edge enters holds it -- the frame opens on every control edge
+  into that unit, so `if (a || b) work();` is one entry -- or none does and the frame opens at the
   header). SEED states the placeable calls on each retained-loop row (`bodyEntryCallUnits`) and the
   weave asks the same function, so the recording, PLAN and every replay agree; a call on a path
   leaving the loop runs once per call of the method (hdfs ad-hoc `INodesInPath.getExistingINodes`),
-  and where no loop qualifies the region's root is the activation, never a fallback at run time.
+  and where no loop qualifies the region's root is the activation, never a fallback at run time. An
+  iterated loop holding the call where no frame can open is a DIAGNOSTIC `ADMISSION_GAP`
+  `LOOP_BODY_UNPLACEABLE:<loop>@u<unit>@<region>` in the plan.
 - **c**, **i**: §2 and §3. Nothing else enters the id: no thread id, object address or run ordinal.
 
 `runtime/Identity#occurrence` is the one computation, called at region entry in both passes;

@@ -46,9 +46,14 @@ final class RegionSkeletonInstrumentationSelection {
         return methods;
     }
 
+    /** The candidate skeletons' file every weave opens its regions from. */
+    static File skeletonFile() {
+        return new File(configuredFile());
+    }
+
     /** The candidate skeletons every weave opens its regions from. */
     static List<StaticProgram.RegionRow> skeletonsFromEnvironment() {
-        File file = new File(configuredFile());
+        File file = skeletonFile();
         try {
             List<StaticProgram.RegionRow> regions = StaticProgram.regionRows(
                     MapFields.readRows(file),
