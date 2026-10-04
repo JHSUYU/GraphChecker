@@ -88,6 +88,37 @@ public final class CausynthMessagePropagation {
   }
 
   /**
+   * One request of the IPC client leaving, named by the operation its
+   * request asks for ({@link #verb}): a DataNode turn's block report is that
+   * turn's first report whether or not a heartbeat went before it, as the
+   * recorded turn's was (IDENTITY §4).
+   */
+  public static Outbound outboundRequest(String transport,
+      String correlationId, String attemptId, Object localOwner,
+      Object scope, Object request) {
+    return new Outbound(MessageDoors.outboundRequest(transport,
+        correlationId, attemptId, localOwner, scope, verb(request)));
+  }
+
+  /**
+   * The operation a protobuf RPC request asks for, as {@code
+   * <protocol>.<method>} with the protocol's simple name: the name Hadoop
+   * gives the request itself ({@code RpcProtobufRequest#toString}, from its
+   * header, package-private in Hadoop), a constant of the call.  Any other
+   * request names none ({@code ""}).
+   */
+  static String verb(Object request) {
+    if (request == null
+        || !"RpcProtobufRequest".equals(request.getClass().getSimpleName())) {
+      return "";
+    }
+    String named = String.valueOf(request);
+    int method = named.lastIndexOf('.');
+    int protocol = method < 0 ? -1 : named.lastIndexOf('.', method - 1);
+    return named.substring(protocol + 1);
+  }
+
+  /**
    * The protobuf message an IPC payload wraps: an {@code RpcProtobufRequest}
    * holds it in its {@code payload} field, a {@code ProtobufWrapper} answers
    * it from {@code getMessage()} (both package-private in Hadoop, read here

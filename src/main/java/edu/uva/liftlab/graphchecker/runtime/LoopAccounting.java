@@ -146,14 +146,21 @@ final class LoopAccounting {
         long token = ConcolicRegionRuntime.TOKEN_COUNTER.incrementAndGet();
         // No index frame: only the campaign weaves this hook, so the
         // recording never stands on it; the REGION hook pushes the frame.
-        Set<String> admittedTasks = config.addressLoopRootInvocation(
-                loopRootHookGroup, rootMethod, receiver, rootArguments,
-                token);
+        ConcolicTaskPlan.LoopRootAdmission admission =
+                config.addressLoopRootInvocation(loopRootHookGroup,
+                        rootMethod, receiver, rootArguments, token);
+        // The declared occurrence its question answered takes the declared
+        // address here, once, where it opened (IDENTITY §9): its bodies'
+        // rows, endpoints and ordinals state it.
+        if (admission.answered != null) {
+            RowRuntime.answered(Identity.answer(admission.answered.address),
+                    admission.answered.address);
+        }
         // Asked here, the only place this entry's marker is still innermost:
         // an entry that opened no occurrence addresses no bodies
         // (#bodiesAddressedHere).
         contexts.push(new LoopRootInvocationContext(token, loopRootHookGroup,
-                admittedTasks, Identity.openedNone()));
+                admission.admitted, Identity.openedNone()));
         return token;
     }
 

@@ -1387,17 +1387,17 @@ public final class Identity {
      * Files the producer endpoint of one whole message, for the anchor its
      * receiver states (IDENTITY §4): {@code minted} when the message
      * was given its endpoint elsewhere (a response, at its request's
-     * receipt), else the one sent here now.  Returns the endpoint, not its
-     * digest, so rows and refusals spell out what the anchor digests.
+     * receipt), else the one sent here now at {@code site} ({@code
+     * Endpoint#messageSite}).  Returns the endpoint, not its digest, so rows
+     * and refusals spell out what the anchor digests.
      *
      * @return the endpoint filed, or {@code null}
      */
     public static Endpoint messageSent(String nodeKey, String transport,
                                        String correlationId, String half,
-                                       Endpoint minted) {
+                                       String site, Endpoint minted) {
         Endpoint producer = minted != null ? minted
-                : endpointAt(currentOccurrence(nodeKey),
-                Text.safe(transport) + "#" + Text.safe(half), 0);
+                : endpointAt(currentOccurrence(nodeKey), site, 0);
         if (producer == null) return null;
         Interactions.sent(Text.safe(transport), Text.safe(correlationId),
                 Text.safe(half), producer);

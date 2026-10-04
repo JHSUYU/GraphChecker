@@ -179,13 +179,22 @@ siteIndex.hash / attempt)`, rendered `<address>/site:<site>/sidx:<frames>/att:<n
 - `site` is the port id (WIRE), `<class>#<method><descriptor>#<bci>:WRITE|READ` (STATE,
   `Endpoint#stateSite`; a location's INITIAL is `:INITIAL` at the access that started its log,
   `Endpoint#initialSite`, so it is no event of that access), or `<transport>#<half>` for a whole
-  message.
+  message, `<transport>#<half>:<verb>` where its door names the operation the message asks for
+  (`Endpoint#messageSite`, `MessageDoors#outboundRequest`; no verb spells `/` or `@`). The HDFS IPC
+  client door names `<protocol>.<method>` off its request (the shim's `outboundRequest`, Hadoop's
+  own `RpcProtobufRequest#toString`), a constant of the call, so k counts the requests of one
+  operation: a DataNode turn that sends a heartbeat before a block report, where the recorded turn
+  sent the report alone, no longer gives the heartbeat the report's endpoint (hdfs-adhoc-15: the
+  NameNode's handler under the report's anchor answered a heartbeat and never made the recorded
+  enqueue). A door naming no verb keeps `<transport>#<half>`; a recording made before the IPC
+  door named its verb states the shorter sites, so it cannot hold a replay made after.
 - The id is recursive through the Anchor chain: one unreproduced link anywhere upstream changes it.
 
 **Message producers.** A sent message's producer endpoint is minted at the send
-(`Identity#messageSent`) in the sender's current occurrence. A response's producer endpoint is
+(`Identity#messageSent`) in the sender's current occurrence, at its site (with its verb, if its door
+names one); its `SEND` event states the same site. A response's producer endpoint is
 minted when its request is received (`Identity#responseEndpoint`: the request scope's role
-occurrence, site `<transport>#RESPONSE`, index `[site@0]`), and the send reuses it
+occurrence, site `<transport>#RESPONSE`, index `[site@0]`, never a verb), and the send reuses it
 (`runtime/CausynthTraceRecorder` `RECEIPTS`), so whichever thread sends the response names the same
 producer. Two messages carrying one producer endpoint are named as a `LINEAGE_LOST` DIAGNOSTIC row.
 
@@ -611,7 +620,13 @@ opened its own occurrence, answers it when its own context, shaped over this run
 reaches a root (`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then
 takes the declared address (`Identity#answer`): its rows, endpoints, decision ordinals, schedule
 mark and close state it, so every later stage reads the declared address as before, and a
-DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). Which
+DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). A
+declared loop body is asked where its occurrence opens, at its loop root's enclosing entry
+(`ConcolicTaskPlan#addressLoopRootInvocation`, the same four tests, `#answeredHere`), since no root
+entry admits a body: the entry binds the declared task (`RuntimeTask#claimsEnclosingInvocation`), its
+bodies run under it, and the entry's occurrence takes the declared address there, once
+(`LoopAccounting#enterLoopRoot`; hdfs-adhoc-29: a block recovery's worker under the response of
+another DataNode heartbeat than the recorded one). Which
 turn of a daemon carries another node's asynchronous work is that node's timing, which no schedule
 holds: in round `a40h` a NameNode command (block recovery queued by the lease monitor, replication
 after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
@@ -650,8 +665,8 @@ randomness is seeded by endpoint where the occurrence has a context, else by sit
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
-- Only the declared occurrence is answered by its question (§9), and only at a root entry, not a
-  loop body. Every other task still needs its whole address, so the chain a replay took to the
+- Only the declared occurrence is answered by its question (§9). Every other task still needs its
+  whole address, so the chain a replay took to the
   declared occurrence instead of the recorded one has no planned rows, and that session sends no
   message under the declared anchor: EXPLORE finds no door of it there
   (`explore/ClosurePlanner#controlProducer`).

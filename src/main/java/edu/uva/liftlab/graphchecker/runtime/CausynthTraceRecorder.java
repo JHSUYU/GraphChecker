@@ -682,6 +682,20 @@ public final class CausynthTraceRecorder {
                                           String attemptId, String half,
                                           Object localOwner,
                                           Object carriedScope) {
+        return outboundExchange(transport, correlationId, attemptId, half,
+                localOwner, carriedScope, "");
+    }
+
+    /**
+     * The same exchange, its message naming the operation it asks for
+     * ({@code verb}, "" for none): its site ({@code Endpoint#messageSite})
+     * names its producer endpoint and its SEND.
+     */
+    public static String outboundExchange(String transport,
+                                          String correlationId,
+                                          String attemptId, String half,
+                                          Object localOwner,
+                                          Object carriedScope, String verb) {
         initialize();
         String header;
         try {
@@ -700,13 +714,17 @@ public final class CausynthTraceRecorder {
         // where its request was received, whichever thread sends it.
         Receipt receipt = RESPONSE.equals(half) ? RECEIPTS.remove(
                 receiptKey(transport, correlationId, attemptId)) : null;
+        // A response keeps the endpoint its request's receipt minted, named
+        // by its transport and half alone; a verb names what a message
+        // minted here asks for.
+        String site = Endpoint.messageSite(MapFields.safe(transport),
+                MapFields.safe(half), receipt == null ? verb : "");
         Endpoint producer = Identity.messageSent(
                 RuntimeTraceContext.ownedSource(localOwner).key(),
-                transport, correlationId, half,
+                transport, correlationId, half, site,
                 receipt == null ? null : receipt.response);
         // The schedule's SEND, naming the minted producer.
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                MapFields.safe(transport) + "#" + MapFields.safe(half),
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, site,
                 producer == null ? "" : producer.id(),
                 receipt == null ? null : receipt.stance);
         if (DEBUG_PRODUCERS && producer != null) {

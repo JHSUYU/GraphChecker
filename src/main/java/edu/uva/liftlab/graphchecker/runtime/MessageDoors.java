@@ -134,8 +134,34 @@ public final class MessageDoors {
                                     String attemptId, String half,
                                     Object localOwner, Object scope,
                                     Object payload) {
+        return outbound(transport, correlationId, attemptId, half,
+                localOwner, scope, payload, "");
+    }
+
+    /**
+     * One request leaves naming the operation it asks for ({@code verb}, a
+     * constant its door reads off the request: a Hadoop RPC's protocol and
+     * method), so its producer endpoint and its SEND are that operation's
+     * (IDENTITY §4): a DataNode turn that sends a heartbeat before a block
+     * report, where the recorded turn sent the report alone, no longer gives
+     * the heartbeat the report's identity (hdfs-adhoc-15).
+     */
+    public static Outbound outboundRequest(String transport,
+                                           String correlationId,
+                                           String attemptId,
+                                           Object localOwner, Object scope,
+                                           String verb) {
+        return outbound(transport, correlationId, attemptId, REQUEST,
+                localOwner, scope, null, verb);
+    }
+
+    private static Outbound outbound(String transport, String correlationId,
+                                     String attemptId, String half,
+                                     Object localOwner, Object scope,
+                                     Object payload, String verb) {
         String trace = CausynthTraceRecorder.outboundExchange(transport,
-                correlationId, attemptId, half, localOwner, scope);
+                correlationId, attemptId, half, localOwner, scope,
+                Text.safe(verb));
         // One bound for the whole symbolic header: the declared ports' segment
         // first, the codec envelope in what is left.
         String declared = SymbolicMessageEnvelope.takeOutbound();

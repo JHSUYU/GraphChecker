@@ -38,6 +38,26 @@ public final class Endpoint extends Value {
                 Fields.nonNegative(attempt, "attempt"));
     }
 
+    /**
+     * The one spelling of a whole message's site: {@code <transport>#<half>},
+     * or {@code <transport>#<half>:<verb>} where its door names the operation
+     * the message asks for (a Hadoop RPC's {@code DatanodeProtocol.sendHeartbeat}),
+     * so its endpoint's k counts messages asking for that operation and two
+     * turns that send other operations first still name it alike (IDENTITY
+     * §4).  A verb, like every site, spells no {@code /} or {@code @}.
+     */
+    public static String messageSite(String transport, String half,
+                                     String verb) {
+        String site = (transport == null ? "" : transport) + "#"
+                + (half == null ? "" : half);
+        if (verb == null || verb.isEmpty()) return site;
+        if (verb.indexOf('/') >= 0 || verb.indexOf('@') >= 0) {
+            throw new IllegalArgumentException("a message verb spells no '/'"
+                    + " or '@': " + verb);
+        }
+        return site + ":" + verb;
+    }
+
     /** The one spelling of a STATE endpoint's site, no descriptor stated. */
     public static String stateSite(String className, String method, int bci,
                                    boolean write) {
