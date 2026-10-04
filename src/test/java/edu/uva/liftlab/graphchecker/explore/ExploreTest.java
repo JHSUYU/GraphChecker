@@ -3701,6 +3701,14 @@ public class ExploreTest {
      *  {@code "Z"} a comparison's boolean. */
     private Path twoWriters(String name, String term, String limit,
                             String secondType) throws IOException {
+        return twoWriters(name, term, limit, secondType, 6L);
+    }
+
+    /** {@link #twoWriters}, the lookup again seeing version {@code seen}:
+     *  the second writer's 6, or one no row wrote. */
+    private Path twoWriters(String name, String term, String limit,
+                            String secondType, long seen)
+            throws IOException {
         Path iteration = tree.newFolder(name).toPath();
         // A second addKeys, started by a request of its own.
         OccurrenceAddress again = occurrence("hdfs-case/dn0",
@@ -3726,7 +3734,7 @@ public class ExploreTest {
         seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
                 "retrieveDataEncryptionKey", 9, false),
                 "BlockTokenSecretManager#retrieveDataEncryptionKey#9"),
-                KEY_ID, 6L, "M_READ_AGAIN", "2");
+                KEY_ID, seen, "M_READ_AGAIN", "2");
         // The lookup as the VM states it: the guarded read, joined to the
         // write it observed, compared.
         seed.expression(VM_LOOKUP, binary("==", readNode(KEY_ID, 5L, "I",
@@ -3749,26 +3757,52 @@ public class ExploreTest {
 
     /**
      * One writer choice binds every read one occurrence made of a location
-     * (IDENTITY §4); reads of it that saw two writes have no choice that is
-     * the run's pairing, and the flip is refused by name, as COMPOSE refuses
-     * such a family ("the reads saw two writes"), never asked with the two
-     * reads forced equal.
+     * (IDENTITY §4), so where its reads saw two writes, or a version no row
+     * wrote, no writer's choice is the run: the run's own choice holds each
+     * read to the value it read, as COMPOSE's observed arm does, and is the
+     * recorded pairing, never the two reads forced equal.  A model moving
+     * both to the other writer plants that pairing for each; a writer whose
+     * store is of another sort than a read is no choice, the recorded one
+     * included once the run's choice is (its row's value holds that read),
+     * so the model takes the run and plants nothing.
      */
     @Test
-    public void readsOfOneBlockThatSawTwoWritesAreRefusedByName()
+    public void readsNoOneWriterExplainsKeepTheRunsOwnChoice()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        Path iteration = twoWriters("two-writes",
-                "(and (= M_READ_KEY 2) (= M_READ_AGAIN 2))", null);
-        Path out = tree.newFolder("two-writes-out").toPath();
-        Path wave = out.resolve("obligations-0000");
-        plan(iteration, TARGET_SELECTOR, null,
-                out.resolve("results.jsonl"), wave, 0);
-        Worker worker = solve(iteration, wave,
-                named(obligations(wave), "Lookup#u8"), out, "w0");
-        assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
-        assertTrue(detail(worker), detail(worker).contains(
-                "READS_SAW_TWO_WRITES"));
+        // the lookup again's version, the second writer's type, the
+        // flipped term, the pairings the model plants
+        Object[][] table = {
+                {6L, "I", "(and (= M_READ_KEY 2) (= M_READ_AGAIN 2))", 2},
+                {9L, "I", "(and (= M_READ_KEY 2) (= M_READ_AGAIN 2))", 2},
+                {6L, "Z", "(and (= M_READ_AGAIN 2) (= M_READ_KEY 1))", 0},
+        };
+        for (Object[] row : table) {
+            String name = "two-writes-" + row[0] + row[1];
+            Path iteration = twoWriters(name, (String) row[2], null,
+                    (String) row[1], (Long) row[0]);
+            Path out = tree.newFolder(name + "-out").toPath();
+            Path wave = out.resolve("obligations-0000");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave, 0);
+            Worker worker = solve(iteration, wave,
+                    named(obligations(wave), "Lookup#u8"), out, "w0");
+            String detail = name + ": " + detail(worker) + "\n"
+                    + query(worker);
+            assertTrue(detail, query(worker).matches(
+                    "(?s).*\\(=> wchoice_\\S+_run \\(= \\S+ 1\\)\\).*"));
+            if ((Integer) row[3] > 0) {
+                assertEquals(detail, Verdict.SAT_MODEL_READY,
+                        worker.verdict);
+                assertTrue(detail, detail(worker).contains(row[3]
+                        + " planted pairing(s)"));
+            } else {
+                assertTrue(detail, query(worker).matches(
+                        "(?s).*\\(not wchoice_\\S+\\).*"));
+                assertFalse(detail, detail(worker).contains(
+                        "planted pairing"));
+            }
+        }
     }
 
     /**
