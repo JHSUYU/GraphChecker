@@ -225,7 +225,7 @@ cross-run object identity.
 ## 5. Attribution: which node
 
 `runtime/Attribution#resolve`, four rules in order: the innermost explicit scope on the thread
-(a request, a registered inbound owner, a tick owner); else the innermost frame whose receiver is a
+(a request, a registered inbound owner, a tick owner, a node startup); else the innermost frame whose receiver is a
 registered object, the receiver of the thread's last work entry (`Identity#claimStart`) counting
 as its outermost; else, on a thread that claimed no start, the node its creator carried when it
 constructed it (`RuntimeTraceContext#inheritedSource`: its explicit scope's, or a node startup's,
@@ -252,11 +252,14 @@ thread its constructor creates. A system's cluster adapter brackets each node's 
 registers the node by once built, and a registered node's start in `beginNodeStartup(node)`: a
 restart builds the node anew under its name at its next epoch (`restartSource` first; HDFS
 `CausynthCluster`: every NameNode, DataNode and JournalNode an automatic `MiniDFSCluster` or
-`MiniJournalCluster` builds or restarts). Attribution only -- no event, no lineage hop, no flow, and
-the thread running the startup keeps its own node, so what the test's thread itself runs inside a
-construction (a NameNode's format and fsimage load) stays the test's: work started or created inside
-carries the startup's node in place of its starter's explicit node (`RuntimeTraceContext#carriedIn`,
-read by `captureAsync`, `Attribution#capture` and a new thread's inherited state). The node is named
+`MiniJournalCluster` builds or restarts). Attribution only -- no event, no lineage hop, no flow: the
+startup is the node's explicit scope while it stands (rule 1), so what the test's thread itself runs
+inside a construction (a NameNode's format and fsimage load) is the node's, under the test's context,
+and work started or created inside carries the startup's node in place of its starter's explicit node
+(`RuntimeTraceContext#carriedIn`, read by `captureAsync`, `Attribution#capture` and a new thread's
+inherited state). Left the test client's, a NameNode's format and image work could never join its
+later work: the demand walk crosses writers on one node only (round HN1: 46, 47 and 52's targets on
+`auto<n>/client0`). The node is named
 from the startup's first moment: bound only once built and registered, what its constructor's
 threads did before raced the registration (HBase's HBA2: ZooKeeper callbacks a region server's
 construction set up were the unregistered workload's in the recording and the region server's in the
