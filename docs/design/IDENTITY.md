@@ -129,6 +129,11 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   root-hop token and site). It is not a loop-iteration count.
 - **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, the starter's
   index from its scope base followed by a frame (site, k-th start at that site) with the carrier.
+  That `k` counts starts at the site in the top level under the hop that gives the context -- the
+  innermost hop carrying an anchor, else the root (`State#nextStartEvent`, `Lineage#contextToken`)
+  -- not under the whole root hop: under a test's one request every poll and node start before it
+  moved a shell command's thread's `k` (hdfs-adhoc-35: `@317` recorded, `@404` replayed). Two works
+  cannot share an address by it: each carries the context of the hop its start was counted under.
   A start made with a request in hand hands that request off: its site is `<site>:<verb>` and its
   `k` counts per verb (`Identity#requestInHand`). The verb is per thread, set by every outbound to
   the message's verb (`""` where its door names none, and for a response), cleared by every inbound,
@@ -512,7 +517,12 @@ of the same codec is transparent; and brackets each declared `EXCHANGE` method.
 `CLAIM`, `SEND` (with the producer endpoint), `RECV`, `WAKE` (a timed wait's timeout; a tick's
 begin), `END` (a tick's end), `INTERRUPT`. `context` = `<node>|<ctx render>[|<start frames>]`
 (the claimed starts' levels from the scope base, each start's own frame after the starter's frames
-it was filed with) (`ScheduleLog#contextOf`, `Identity#handoffs`). A task claimed on a pool's
+it was filed with) (`ScheduleLog#contextOf`, `Identity#handoffs`). Where a consumer claimed work
+(a queue item, or a task taken on another thread than its starter's) the levels start at its
+outermost such claim (`State#consumedStart`): a queue item's claim carries its putter's scope
+(§3), so the consumer's own start and the frames it inherited -- which IPC handler or reader took
+it -- are the queue's scheduling, no part of the context (hdfs-adhoc-46: which handler claimed a
+call moved its `CLAIM`'s context). A task claimed on a pool's
 thread stands on its starter's frames as levels of its claim; a started thread stands on the frames
 it inherited from its creator (§6) and adds its start frame alone, so its inherited frames above its
 scope base are its starter's frames here, by their call sites alone (their `k` counts how often the
@@ -524,7 +534,13 @@ one site made in two calls of one method, each started from a level of its own, 
 question shapes (`ContextShape.Stance` reads node and causal context only), do not; a recording
 made before this rule states shorter contexts for such threads, so it cannot hold a replay made
 after it (every campaign records and replays with one frozen jar). `k` counts events per (kind, context, site). A
-`Lost` context, and a context anchored by an unawaited receipt, make no event. `mark` rows state
+`Lost` context, a context anchored by an unawaited receipt, and one anchored by a message this run
+stated no `SEND` for (`ScheduleLog#unordered`, `#SENDERS`: sent before the window, from a Lost turn,
+or from a context that makes none) make no event: the order cannot hold what a cause outside it
+causes (hdfs-adhoc-19/35: a DataNode's block report went out before the window, and its reply, with
+the NameNode's commands, came inside it). A response stands where its request was received, so a
+receipt in such a context answers with no `SEND` (`CausynthTraceRecorder#outboundExchange`), and
+what the reply causes makes none either. `mark` rows state
 where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS, at}` states the run
 was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameterized workload test
 the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
@@ -562,7 +578,13 @@ order:
   unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
   follows a cause the order holds, and runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
-  not do; a waiter gives up what its own occurrence did not make before its slot. The watchdog
+  not do; a waiter gives up what its own occurrence did not make before its slot. A waiter no
+  occurrence names gives up the earlier slots of its own exact context, no occurrence naming them,
+  at the sites it made itself since it entered that context: the rest of a loop it left early
+  (hdfs-adhoc-44: a test's wall-clock poll made 8 of 171 recorded RPCs); never an event or a slot an
+  occurrence names. Threads an unwoven starter started share their creator's context, so each such
+  give-up is a named `SCHEDULE_DIVERGED` DIAGNOSTIC (`schedule-passed#<slot>`, with how often it fired
+  in that context), counted in the progress line; a given-up slot is still taken if it comes. The watchdog
   watches the order's frontier (`ScheduleLog#firstBlocking`: the first open slot that is no
   `WAKE` or `INTERRUPT`), which every wait for a slot or for the line waits on. It acts once the frontier has
   stood `causynth.schedule.timeout.ms` (default 15 s) with no thread computing toward it, or eight

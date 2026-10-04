@@ -308,17 +308,31 @@ public final class Lineage {
     }
 
     /**
-     * Whether the root hop {@code token} is still standing on this thread;
-     * {@code 0} (no root hop) is a thread state and always standing.
+     * Whether the hop {@code token} is still standing on this thread; {@code
+     * 0} (no hop) is a thread state and always standing.
      */
-    public static boolean isOpenRoot(long token) {
+    public static boolean isOpen(long token) {
         if (token == 0L) return true;
         List<Frame> stack = STACK.get();
         for (int index = stack.size() - 1; index >= 0; index--) {
-            Frame frame = stack.get(index);
-            if (frame.root && frame.token == token) return true;
+            if (stack.get(index).token == token) return true;
         }
         return false;
+    }
+
+    /**
+     * The token of the hop that gives this thread's causal context, or 0:
+     * the innermost hop carrying an anchor above the innermost root, else
+     * that root -- the hop {@link #here} reads the context from.  The
+     * lifetime of a start frame's count ({@code Identity#startWork}).
+     */
+    public static long contextToken() {
+        List<Frame> stack = STACK.get();
+        for (int index = stack.size() - 1; index >= 0; index--) {
+            Frame frame = stack.get(index);
+            if (!frame.anchor.isEmpty() || frame.root) return frame.token;
+        }
+        return 0L;
     }
 
     /** Test hook: one window, one thread, nothing carried over. */

@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
+import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -142,6 +143,83 @@ public class ScheduleLogTest {
         assertEquals(Arrays.asList(ContextShape.UNKNOWN_HOP),
                 ScheduleLog.shape(
                         CausalContext.parse("Anchor:e2@HADOOP_IPC/check")));
+    }
+
+    /**
+     * A receipt's work holds a place only where this run stated the SEND
+     * that anchored it: a message sent before the window, or by work that
+     * makes no events, anchors a context that makes none (hdfs-adhoc-19/35:
+     * a block report's reply cut by the window's opening).
+     */
+    @Test
+    public void aReceiptHoldsAPlaceOnlyWhereThisRunStatedItsSend() {
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST",
+                "e1");
+        List<Boolean> stood = new ArrayList<Boolean>();
+        for (String producer : new String[] {"e1", "cut"}) {
+            long hop = Lineage.push(NODE.key(), Role.of("HANDLER"), "check");
+            Lineage.anchor(producer, "HADOOP_IPC/check");
+            stood.add(ScheduleLog.stanceHere() != null);
+            ScheduleLog.observe(ScheduleEvent.Kind.RECV,
+                    "HADOOP_IPC#REQUEST");
+            Lineage.pop(hop);
+        }
+        assertEquals(Arrays.asList(true, false), stood);
+        assertEquals(Arrays.asList(ScheduleEvent.Kind.SEND,
+                ScheduleEvent.Kind.RECV), kinds());
+    }
+
+    /**
+     * A taken item's work stands in its putter's scope, whoever takes it:
+     * the consumer's own start is the queue's scheduling (hdfs-adhoc-46:
+     * which IPC handler took a call moved its CLAIM's context).  And a
+     * start's k counts per hop of the context, not per root hop: the
+     * putter's second anchored hop counts from 0 again (hdfs-adhoc-35).
+     */
+    @Test
+    public void aTakenItemStandsInItsPuttersScopeCountedPerHop()
+            throws Exception {
+        final String put = "<Q: void put(java.lang.Object)>#u7";
+        final BlockingQueue<Object> queue = new LinkedBlockingQueue<Object>();
+        List<Thread> consumers = new ArrayList<Thread>();
+        for (int i = 0; i < 2; i++) {
+            Thread consumer = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        Identity.claimItem(queue.take());
+                    } catch (InterruptedException stop) {
+                        return;
+                    }
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+                }
+            });
+            Identity.startWork("<S: void start()>#u5", consumer);
+            consumer.start();
+            consumers.add(consumer);
+        }
+        List<String> expected = new ArrayList<String>();
+        for (String producer : new String[] {"e1", "e2"}) {
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                    "HADOOP_IPC#REQUEST", producer);
+            long hop = Lineage.push(NODE.key(), Role.of("HANDLER"), "check");
+            Lineage.anchor(producer, "HADOOP_IPC/check");
+            expected.add(ScheduleLog.contextOf(Identity.contextHere()) + "|"
+                    + put + "@0");
+            Object item = new Object();
+            Identity.startWork(put, item);
+            Lineage.pop(hop);
+            queue.put(item);
+        }
+        for (Thread consumer : consumers) {
+            consumer.join(5000L);
+        }
+        List<String> taken = new ArrayList<String>();
+        for (ScheduleEvent event : events()) {
+            if ("x".equals(event.site())) taken.add(event.context());
+        }
+        Collections.sort(taken);
+        assertEquals(expected, taken);
     }
 
     /** An event survives its row, and a torn last row ends the read. */
@@ -1667,6 +1745,53 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A waiter no occurrence names passes the earlier slots of its own
+     * context, no occurrence naming them, at sites it made itself there: a
+     * test's wall-clock poll ran fewer rounds than recorded (hdfs-adhoc-44).
+     * A slot an occurrence names is not passed, nor one of a site only
+     * another thread made, and a passed slot is still taken if it comes.
+     */
+    @Test
+    public void aWaiterNoOccurrenceNamesPassesTheRestOfItsOwnLoop()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "poll"),
+                event(ScheduleEvent.Kind.SEND, "poll"),
+                event(ScheduleEvent.Kind.SEND, "other"),
+                inOccurrence(ScheduleEvent.Kind.START, "named", "o1"),
+                event(ScheduleEvent.Kind.SEND, "after")));
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "poll");
+        Thread other = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Thread.sleep(300L);
+                } catch (InterruptedException stop) {
+                    return;
+                }
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "other");
+                ScheduleLog.observe(ScheduleEvent.Kind.START, "named");
+            }
+        });
+        other.start();
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+        assertTrue("after waited for other and the named start",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        >= 250L);
+        other.join(5000L);
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "poll");
+        assertEquals(Arrays.asList("poll", "other", "named", "after",
+                "poll"), sites());
+        assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(
+                " 0 given up in 0 stall(s), 0 settled by their occurrence's"
+                        + " close, 0 settled by their turn's END, 1 passed"
+                        + " by their own occurrence or context (1 context(s)"
+                        + " without an occurrence)"));
+    }
+
+    /**
      * A computing workload thread defers a stall, whichever context it last
      * stood in: which thread owes x cannot be seen between two of its events
      * (one that made w, one that made nothing yet, one whose last event was a
@@ -2114,6 +2239,14 @@ public class ScheduleLogTest {
             }
         }
         return events;
+    }
+
+    private List<ScheduleEvent.Kind> kinds() {
+        List<ScheduleEvent.Kind> kinds = new ArrayList<ScheduleEvent.Kind>();
+        for (ScheduleEvent event : events()) {
+            kinds.add(event.kind());
+        }
+        return kinds;
     }
 
     private List<String> sites() {

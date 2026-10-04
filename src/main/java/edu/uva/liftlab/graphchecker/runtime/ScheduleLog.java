@@ -328,11 +328,29 @@ public final class ScheduleLog {
         UNAWAITED.add(Text.safe(transport).toUpperCase(java.util.Locale.ROOT));
     }
 
+    /**
+     * Whether a context makes no event: one an unawaited receipt anchored,
+     * or one anchored by a message this run stated no SEND for ({@link
+     * #SENDERS}): sent before the window, from a Lost turn, or from a
+     * context of its own that makes none.  Its cause is outside the order,
+     * so the order cannot hold what it causes -- hdfs-adhoc-19/35: a
+     * DataNode's first block report went out before the window and its
+     * reply, with the NameNode's commands, came inside it, a slot a replay
+     * whose report was answered before its window never made.  A response
+     * sent in such a context states no SEND either, so the work its reply
+     * causes is free too.
+     */
     private static boolean unordered(CausalContext context) {
         if (!(context instanceof CausalContext.Anchor)) return false;
-        String site = ((CausalContext.Anchor) context).rpcSite();
+        CausalContext.Anchor anchor = (CausalContext.Anchor) context;
+        String site = anchor.rpcSite();
         int slash = site.indexOf('/');
-        return UNAWAITED.contains(slash < 0 ? site : site.substring(0, slash));
+        if (UNAWAITED.contains(slash < 0 ? site : site.substring(0, slash))) {
+            return true;
+        }
+        synchronized (SENDERS) {
+            return !SENDERS.containsKey(anchor.producerEndpointId());
+        }
     }
 
     /** The same, standing where {@code at} says rather than on this thread
@@ -762,7 +780,29 @@ public final class ScheduleLog {
         if (event.kind == ScheduleEvent.Kind.WAKE) {
             POLLED.put(event.key, before);
         }
+        Thread self = Thread.currentThread();
+        Made made = MADE.get(self);
+        if (made == null || !made.context.equals(event.context)) {
+            made = new Made(event.context);
+            MADE.put(self, made);
+        }
+        made.sites.add(event.kind + " " + event.site);
     }
+
+    /** What a thread made in the context of its last admitted event, since
+     *  it entered it: the sites a waiter no occurrence names passes
+     *  ({@link #passedLocked}). */
+    private static final class Made {
+        private final String context;
+        private final Set<String> sites = new HashSet<String>();
+
+        private Made(String context) {
+            this.context = context;
+        }
+    }
+
+    private static final Map<Thread, Made> MADE =
+            new java.util.WeakHashMap<Thread, Made>();
 
     /**
      * What an admitted event shows of its thread.  In the frontier's own
@@ -971,28 +1011,64 @@ public final class ScheduleLog {
      * waits past them, so only a watchdog timeout would settle them (a8
      * reader-chunk.flush: a NameNode handler whose block report enqueued
      * nothing held addBlock past the client's 60 s).  Given up, WAKEs aside.
+     *
+     * <p>A waiter no occurrence names passes the slots of its own exact
+     * context, no occurrence naming them either, at the sites it made itself
+     * since it entered that context: the rest of a loop it left (a test
+     * polling with a wall-clock sleep made fewer RPCs than the recording
+     * did -- hdfs-adhoc-44, TestFileTruncate's checkBlockRecovery: 171
+     * recorded, 8 replayed -- and the rest never came).  Threads an unwoven
+     * starter started share their creator's context, so such a give-up is
+     * named, counted per context; given up, not dead, a slot is still taken
+     * if its event comes.</p>
      */
     private static boolean passedLocked(Pending event, int at) {
-        List<Integer> own = event.occurrence.isEmpty() ? null
+        boolean byContext = event.occurrence.isEmpty();
+        List<Integer> own = byContext ? BY_CONTEXT.get(event.context)
                 : BY_OCCURRENCE.get(event.occurrence);
-        if (own == null) return false;
+        Made made = byContext ? MADE.get(Thread.currentThread()) : null;
+        if (own == null || byContext && (made == null
+                || !made.context.equals(event.context))) {
+            return false;
+        }
         int count = 0;
+        int first = -1;
         for (int slot : own) {
             if (slot >= at) break;
             ScheduleEvent passedOver = order.get(slot);
             if (state[slot] != OPEN
                     || passedOver.kind() == ScheduleEvent.Kind.WAKE
-                    || !event.context.equals(passedOver.context())) {
+                    || !event.context.equals(passedOver.context())
+                    || byContext && (!passedOver.occurrence().isEmpty()
+                    || !made.sites.contains(passedOver.kind() + " "
+                            + passedOver.site()))) {
                 continue;
             }
             markLocked(slot, GIVEN_UP);
+            if (first < 0) first = slot;
             count++;
         }
         if (count == 0) return false;
         passed += count;
+        if (byContext) {
+            int times = PASSED_BY_CONTEXT.merge(event.context, 1,
+                    Integer::sum);
+            stateLocked("schedule-passed#" + first, count + " slot(s) of"
+                    + " the order from " + first + " on (the first "
+                    + order.get(first).render() + ") were passed by "
+                    + event.render() + ", the next event of their context,"
+                    + " which no occurrence names (" + times + " time(s) in"
+                    + " this context): they are given up, and each still"
+                    + " takes its slot if it comes");
+        }
         settleLocked();
         return true;
     }
+
+    /** Per context, how often a waiter no occurrence names passed its
+     *  earlier slots ({@link #passedLocked}). */
+    private static final Map<String, Integer> PASSED_BY_CONTEXT =
+            new HashMap<String, Integer>();
 
     /**
      * Something was settled -- the order moved: the first open slot, the
@@ -1389,6 +1465,8 @@ public final class ScheduleLog {
         HELD.clear();
         LET_GO.clear();
         POLLED.clear();
+        PASSED_BY_CONTEXT.clear();
+        MADE.clear();
         moves = 0L;
         letGoAt = 0L;
         stallSince = -1L;
@@ -1453,7 +1531,9 @@ public final class ScheduleLog {
                     + " given up in " + stalls + " stall(s), " + dead
                     + " settled by their occurrence's close, " + settledByEnd
                     + " settled by their turn's END, " + passed
-                    + " passed by their own occurrence; " + ranFree
+                    + " passed by their own occurrence or context ("
+                    + PASSED_BY_CONTEXT.size() + " context(s) without an"
+                    + " occurrence); " + ranFree
                     + " event(s) ran free, " + letGo + " of them let go"
                     + " where no slot held them; " + closedOpen
                     + " open at the window's"
@@ -1504,6 +1584,8 @@ public final class ScheduleLog {
             HELD.clear();
             LET_GO.clear();
             POLLED.clear();
+            PASSED_BY_CONTEXT.clear();
+            MADE.clear();
             ClockLoops.resetForTests();
             moves = 0L;
             letGoSinceProgress = false;
