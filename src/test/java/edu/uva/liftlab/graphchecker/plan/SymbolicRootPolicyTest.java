@@ -232,7 +232,8 @@ public class SymbolicRootPolicyTest {
      * mutation through it, on the call's receiver -- and a mutator call is
      * never a field observation.  A CONTAINER cell's reference never
      * changes: its read observes no field and its constructor's store
-     * nothing.  A REFERENCE cell's read observes both; a mutator call on a
+     * nothing, and only a read the root demand chose is a read site
+     * (§5.1).  A REFERENCE cell's read observes both; a mutator call on a
      * REFERENCE cell holding no container observes nothing (its receiver is
      * not the cell's holder: HANDOFF_FIELD_NOT_FOUND).
      */
@@ -247,6 +248,7 @@ public class SymbolicRootPolicyTest {
         kinds.put(FILE, SharedFieldFlow.TrackedKind.REFERENCE);
         JsonArray sites = map(Arrays.asList(
                 read(KEYS, 8, "$r1"), guard(GET_NUM + "::$r1"),
+                read(KEYS, 11, "$r4"), guard(GET_NUM + "::$r4"),
                 mutation(KEYS, DELETE, 50, MAP_PUT), store(KEYS, INIT, 3),
                 read(CHILDREN, 9, "$r2"), guard(GET_NUM + "::$r2"),
                 mutation(CHILDREN, DELETE, 51, LIST_ADD),
@@ -254,7 +256,10 @@ public class SymbolicRootPolicyTest {
                 mutation(FILE, DELETE, 52, FILE_SET)), apart,
                 Collections.<String, Clock>emptyMap(), method -> false,
                 cell -> kinds.getOrDefault(cell,
-                        SharedFieldFlow.TrackedKind.NONE)).observedSites();
+                        SharedFieldFlow.TrackedKind.NONE),
+                (demandSite, demandCell) -> (GET_NUM + "#u8").equals(
+                        demandSite) ? new StaticScopeMap.Demanded(
+                        "TRACK_CONTAINER", 2, true) : null).observedSites();
         Map<String, String> observed = new LinkedHashMap<>();
         for (int index = 0; index < sites.size(); index++) {
             observed.put(member(sites, index, "siteId"),
@@ -263,6 +268,8 @@ public class SymbolicRootPolicyTest {
         }
         Map<String, String> expected = new LinkedHashMap<>();
         expected.put(GET_NUM + "#u8", "false/true");
+        // GET_NUM#u11 decides a branch too, but the demand chose no CONTAINER
+        // read there: no read site, nothing observed.
         expected.put(DELETE + "#u50", "false/true");
         expected.put(GET_NUM + "#u9", "true/true");
         expected.put(DELETE + "#u51", "false/true");
@@ -304,7 +311,8 @@ public class SymbolicRootPolicyTest {
                                Predicate<String> unwoven)
             throws IOException {
         return map(edges, regionMethods, clocks, unwoven,
-                cell -> SharedFieldFlow.TrackedKind.VALUE);
+                cell -> SharedFieldFlow.TrackedKind.VALUE,
+                (demandSite, demandCell) -> null);
     }
 
     private StaticScopeMap map(List<Map<String, Object>> edges,
@@ -312,7 +320,8 @@ public class SymbolicRootPolicyTest {
                                Map<String, Clock> clocks,
                                Predicate<String> unwoven,
                                java.util.function.Function<String,
-                                       SharedFieldFlow.TrackedKind> kinds)
+                                       SharedFieldFlow.TrackedKind> kinds,
+                               StaticScopeMap.Demand demand)
             throws IOException {
         List<Map<String, Object>> regions = new java.util.ArrayList<>();
         for (Map.Entry<String, List<String>> region
@@ -324,7 +333,7 @@ public class SymbolicRootPolicyTest {
         }
         StringBuilder text = new StringBuilder();
         for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(edges,
-                regions, clocks, (m, u, c) -> null, (demandSite, demandCell) -> null, unwoven,
+                regions, clocks, (m, u, c) -> null, demand, unwoven,
                 kinds, cell -> false, cell -> false),
                 null)) {
             text.append(row.toString()).append('\n');

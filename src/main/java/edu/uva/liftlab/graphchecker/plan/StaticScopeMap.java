@@ -574,9 +574,16 @@ public final class StaticScopeMap {
                 String siteId = SiteId.of(method, unitIndex);
                 Demanded mark = demand.at(siteId, field);
                 // A read the demand chose decides the anchor's own guard,
-                // however many flows away.
+                // however many flows away.  A container a final field holds
+                // only where the demand chose it: any query of one reaches
+                // a branch, so by the deciding rule every final cache a
+                // configuration parse reads would be tracked, and its
+                // region record from entry (hdfs-adhoc-28's seed:
+                // Configuration.CACHE_CLASSES and REGISTRY, 13 -> 262
+                // decisions, a seed replay of 169 -> 623 s).
                 if (tracked != SharedFieldFlow.TrackedKind.NONE
-                        && (deciding.contains(text(edge.get("toCell")))
+                        && (tracked != SharedFieldFlow.TrackedKind.CONTAINER
+                        && deciding.contains(text(edge.get("toCell")))
                         || chosen(mark, TRACKED_DEMAND))) {
                     // A read through an accessor call names the accessor:
                     // the replay observes the call's receiver, there being

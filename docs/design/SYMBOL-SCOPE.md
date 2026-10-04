@@ -682,7 +682,11 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
   (`StaticScopeMap#decidingCells`, `DECIDING_FLOWS`), never through a field and never across a
   `wire_handoff` edge, or the root demand chose it, a `TRACK`, `TRACK_IDENTITY` or
   `TRACK_CONTAINER` boundary of the throw's own guards however many flows away (§4.6); a read that
-  only feeds data stays untracked;
+  only feeds data stays untracked. A `CONTAINER` read is tracked only where the root demand chose
+  it: every query of a container reaches a branch, so the deciding rule would track every final
+  cache a configuration parse reads and make its region record from entry (hdfs-adhoc-28's seed:
+  `Configuration.CACHE_CLASSES` and `REGISTRY`, 13 -> 262 decisions, its seed replay 169 -> 623 s
+  through the schedule's give-ups);
 - is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
 
 `WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,

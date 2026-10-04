@@ -206,9 +206,15 @@ public class ReferenceCellTest {
             assertEquals((String) row[0], row[1], row[2]);
         }
 
+        String reserves = "<" + POLICY + ": " + CHM + " reserves>";
+        // The root demand chose the final map's read (a CONTAINER read is a
+        // read site only where it did, SYMBOL-SCOPE §5.1).
         List<StaticScopeMap.Site> sites = StaticScopeMap.sites(program.edges,
                 Collections.<Map<String, Object>>singletonList(region()),
-                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, (demandSite, demandCell) -> null,
+                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null,
+                (demandSite, demandCell) -> reserves.equals(demandCell)
+                        ? new StaticScopeMap.Demanded("TRACK_CONTAINER", 1,
+                        true) : null,
                 method -> !method.startsWith("<s."),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField,
@@ -238,7 +244,6 @@ public class ReferenceCellTest {
                         + site.publishedFrom + " " + site.guards);
             }
         }
-        String reserves = "<" + POLICY + ": " + CHM + " reserves>";
         Set<String> constructionOnly = new LinkedHashSet<>();
         for (String carrier : Arrays.asList(KNOWN, LATEST, reserves)) {
             for (StaticScopeMap.Site site : map.writersOf(carrier)) {
