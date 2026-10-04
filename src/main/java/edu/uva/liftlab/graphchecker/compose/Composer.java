@@ -923,14 +923,14 @@ public final class Composer {
             }
         }
         if (disjuncts.isEmpty()) {
-            // Say which absence: nothing reached, or all were refused.
+            // Say which absence: no admitted path, or all were refused.
             gap(GapKind.ADMISSION_GAP, GapClass.BLOCKING, anchor.render(),
                     admitted.isEmpty()
-                            ? "no session of this corpus published a path "
-                            + "that reached the declared occurrence"
-                            : admitted.size() + " paths reached the anchor "
-                            + "and all were refused: " + (firstRefusal
-                            .isEmpty() ? "no refusal was named"
+                            ? "the declared occurrence ran, and no admitted "
+                            + "session published a path at it"
+                            : admitted.size() + " paths ran the declared "
+                            + "occurrence and all were refused: "
+                            + (firstRefusal.isEmpty() ? "no refusal was named"
                             : firstRefusal));
         } else {
             List<String> selectors = selectors(disjuncts);
@@ -1018,9 +1018,11 @@ public final class Composer {
     // ------------------------------------------------------------------
 
     /**
-     * Every session's path that reached the anchor.  The declared occurrence
-     * is always the anchor; a session without a target row is an admission
-     * gap, never a reason to elect another occurrence.
+     * Every session's path that reached the anchor, or, where none did,
+     * every session's path that ran the occurrence and left the way to the
+     * throw (its fatal arm the constant healthy decision).  The declared
+     * occurrence is always the anchor; a corpus without a target row for it
+     * never ran it, a defect, never a reason to elect another occurrence.
      */
     private List<Corpus.RecordedPath> admit() {
         List<Corpus.RecordedPath> admitted =
@@ -1028,14 +1030,21 @@ public final class Composer {
         List<TargetRow> targets = corpus.targetsOn(anchor);
         if (targets.isEmpty()) {
             gap(GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
-                    anchor.render(), "no session of this corpus published a "
-                            + "target row for the declared occurrence");
+                    anchor.render(), "the declared occurrence never ran: no "
+                            + "session of this corpus published a target row "
+                            + "for it");
             return admitted;
         }
+        // Where no session reached the anchor, each that ran the occurrence
+        // and left the way to the throw at a guard is a path: its fatal arm
+        // is the constant healthy decision ({@link #compose}).  Beside a
+        // path that reached it, such a disjunct adds nothing.
+        boolean reached = false;
+        for (TargetRow target : targets) reached |= target.reachedAnchor();
         for (TargetRow target : targets) {
             Corpus.RecordedPath path = corpus.path(target.sessionId(),
                     anchor);
-            if (!target.reachedAnchor()) {
+            if (reached && !target.reachedAnchor()) {
                 gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         target.sessionId(), "this session ran the occurrence "
                                 + "and did not reach the anchor");
@@ -1043,8 +1052,8 @@ public final class Composer {
             }
             if (path == null) {
                 gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        target.sessionId(), "this session reached the anchor "
-                                + "and published no path at the occurrence");
+                        target.sessionId(), "this session ran the occurrence "
+                                + "and published no path at it");
                 continue;
             }
             if (!settled(target.sessionId())) continue;
@@ -1206,11 +1215,22 @@ public final class Composer {
         //     condition that reached the anchor; `false` is the constant
         //     healthy decision, a disjunct no valuation of this formula
         //     satisfies (what was concrete is EXPLORE's concreteAnchors);
-        //     none stated is no phi.
+        //     a path that left the way to the throw at a guard takes the
+        //     healthy arm there, the same constant, the guard named in
+        //     concrete[] (WAY); none stated is no phi.
         String subject = "phi of " + anchor.render();
         String published = target.phiTerm().trim();
         int fatalArm = -1;
-        if (published.isEmpty()) {
+        if (!target.reachedAnchor()) {
+            fatalArm = terms.size();
+            terms.add("false");
+            DecisionRow way = wayGuard(path.decisions);
+            pathConcrete.put("way:" + session, new Concrete("WAY",
+                    way == null ? anchor.render() : way.siteId() + "#"
+                            + way.ordinal(), way == null ? ""
+                    : Boolean.toString(way.outcome()),
+                    Collections.<String>emptyList()));
+        } else if (published.isEmpty()) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, subject, "the target row states "
                             + "no phi (invariant 9), so what the fatal rests "
@@ -1301,9 +1321,24 @@ public final class Composer {
     private static List<String> fatalRests(TargetRow target,
                                            List<DecisionRow> decisions) {
         String phi = target.phiTerm().trim();
-        return "true".equals(phi) || "false".equals(phi)
+        return !target.reachedAnchor() || "true".equals(phi)
+                || "false".equals(phi)
                 ? Arms.pathCondition(decisions, target.seq())
                 : Collections.singletonList(target.phiTerm());
+    }
+
+    /** The last decision a path took at a site on the way to the throw
+     *  (the target sites' path sites), or null. */
+    private DecisionRow wayGuard(List<DecisionRow> decisions) {
+        Set<String> way = new LinkedHashSet<String>();
+        for (StaticScopeMap.Site target : scope.targetSites()) {
+            way.addAll(target.pathSites());
+        }
+        DecisionRow last = null;
+        for (DecisionRow decision : decisions) {
+            if (way.contains(decision.siteId())) last = decision;
+        }
+        return last;
     }
 
     private static List<String> selectors(List<Disjunct> disjuncts) {

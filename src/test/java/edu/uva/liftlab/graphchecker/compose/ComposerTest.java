@@ -1564,6 +1564,27 @@ public class ComposerTest {
         assertTrue("with check-sat after it and nothing else",
                 candidate.endsWith("(check-sat)\n"));
 
+        // RAN, AND LEFT THE WAY TO THE THROW.  A session whose target row
+        // stands at the declared occurrence and never reached the anchor
+        // took the healthy arm at a guard on the way: its path is a
+        // disjunct whose fatal arm is the constant false, so the claim
+        // closes UNSAT with no gap, the way it left named in concrete[].
+        Path ran = folder.newFolder("ran-unreached").toPath();
+        Session unreached = new Session(ran, "s0", false);
+        unreached.marker("false");
+        unreached.target("", false, false);
+        unreached.write();
+        Composer.Composition left = compose(ran, 4);
+        ClaimPolicy.Decision healthy = ClaimPolicy.decide(left, solver());
+        assertEquals("the run's path is a disjunct: " + left.gaps(), 1,
+                left.disjuncts().size());
+        assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, healthy.claim().kind());
+        assertFalse("no gap withholds it: " + healthy.claim().gaps(),
+                healthy.claim().blocked());
+        assertEquals("the way it left is named",
+                Collections.singletonList("WAY " + ANCHOR.render() + "= []"),
+                concrete(left));
+
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its
         // path is not a disjunct -- and where the WAVE's aggregate copy

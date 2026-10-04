@@ -1007,10 +1007,13 @@ one SEED, an unreadable slot table, one name at two sorts, one name for two iden
 replace a slot (§7.1) give no arms.
 
 **Admission** (`admit`, `settled`): one path per session whose target row at the anchor reached it
-(a target row that did not reach it is a DIAGNOSTIC gap); the seed always, a focused session only
-when all its own verdicts are `ADMITTED`; an obligation its manifest names with no verdict is
-BLOCKING. No target row at all is
-BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming the first refusal.
+(beside one, a target row that did not reach it is a DIAGNOSTIC gap); where none reached it, one per
+session that ran the occurrence and left the way to the throw at a guard, its fatal arm the constant
+healthy decision (`false`, the guard named in `concrete[]` as WAY), so such a corpus closes UNSAT
+(hdfs-adhoc-07, 48); the seed always, a focused session only when all its own verdicts are
+`ADMITTED`; an obligation its manifest names with no verdict is BLOCKING. No target row at all --
+the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING
+`ADMISSION_GAP` naming the first refusal.
 
 **One path** (`compose(path, ordinal)`), in its own session's scope:
 
