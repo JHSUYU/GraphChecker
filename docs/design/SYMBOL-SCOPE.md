@@ -685,8 +685,8 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
   only feeds data stays untracked. A `CONTAINER` read is tracked only where the root demand chose
   it: every query of a container reaches a branch, so the deciding rule would track every final
   cache a configuration parse reads and make its region record from entry (hdfs-adhoc-28's seed:
-  `Configuration.CACHE_CLASSES` and `REGISTRY`, 13 -> 262 decisions, its seed replay 169 -> 623 s
-  through the schedule's give-ups);
+  `Configuration.CACHE_CLASSES` and `REGISTRY`, `WeakHashMap`s no model knows, took the DataNode
+  startup region from 13 to 262 recorded decisions);
 - is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
 
 `WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,

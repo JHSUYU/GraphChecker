@@ -579,8 +579,9 @@ public final class StaticScopeMap {
                 // a branch, so by the deciding rule every final cache a
                 // configuration parse reads would be tracked, and its
                 // region record from entry (hdfs-adhoc-28's seed:
-                // Configuration.CACHE_CLASSES and REGISTRY, 13 -> 262
-                // decisions, a seed replay of 169 -> 623 s).
+                // Configuration.CACHE_CLASSES and REGISTRY, WeakHashMaps no
+                // model knows, took the DataNode startup region from 13 to
+                // 262 recorded decisions).
                 if (tracked != SharedFieldFlow.TrackedKind.NONE
                         && (tracked != SharedFieldFlow.TrackedKind.CONTAINER
                         && deciding.contains(text(edge.get("toCell")))
