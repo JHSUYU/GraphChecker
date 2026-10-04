@@ -630,7 +630,7 @@ public final class MessageDoors {
     }
 
     /**
-     * The node {@code owner} names is about to take startup {@code step}, a
+     * The node {@code owner} belongs to is about to take startup {@code step}, a
      * step before the window that builds state a replay reads: a replay
      * holds it until the nodes its recording saw complete the step first
      * have completed it ({@link StartupOrder}).
