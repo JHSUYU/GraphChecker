@@ -343,9 +343,9 @@ Scale and robustness:
     not fit the aggregation, which holds every row it reads (and 19 M object observations for the
     naming of hdfs-adhoc-49's 8.5 GB of read rows: out of 8 GB). The recording writes only those
     rows (`causynth/TracedRows`, a frame's repeated decisions capped at two): 21-38 % of the bytes
-    on the ten HDFS regression recordings, the same plans, object names aside. hdfs-adhoc-49/50/51
+    on the ten HDFS regression recordings, the same plans, object names aside. hdfs-adhoc-49/50
     (`TestSnapshot#testSnapshot`, 36 clusters, ~8.5 GB of read rows) stay past the bound;
-    `TestNestedSnapshots#testNestedSnapshots` (one cluster) evaluates the same three guards.
+    `TestNestedSnapshots#testNestedSnapshots` (one cluster) evaluates the same guards.
 13. VM: every expression is kept until the session closes, under one global mutex.
 32. COMPOSE lowers and states a message family once per path that binds it
     (`gc/compose/ComposedFamilies#messageFamily`): hdfs-11741 r3's 47 paths carry 7 MB of family
