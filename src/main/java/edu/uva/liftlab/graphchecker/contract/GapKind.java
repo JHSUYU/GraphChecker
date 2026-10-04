@@ -26,6 +26,13 @@ public enum GapKind {
     FORMULA_SAT_AT_RECORDED_VALUATION,
     /** A root or a port the case never declared. */
     DECLARATION_MISSING,
+    /**
+     * A tree hook ran in a case whose plan declares its source nowhere: no
+     * root of this case, nothing minted, its value concrete.  DIAGNOSTIC;
+     * a closed negative (UNSAT_CLOSED) counts them in {@code result.json}
+     * ({@code undeclaredHookCount}).
+     */
+    HOOK_UNDECLARED,
     /** An address degraded because a lineage hop was unattributable. */
     LINEAGE_LOST,
     /**

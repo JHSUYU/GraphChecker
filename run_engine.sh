@@ -5896,6 +5896,13 @@ campaign_emit() {
        unsatClosureComplete: $unsatClosureComplete},
      gapCount: $gapCount,
      telemetryCount: $telemetryCount,
+     # A closed negative states how many tree hooks ran on their own
+     # concrete value: no task of the plan declared their source
+     # (HOOK_UNDECLARED, one per hook and activation).
+     undeclaredHookCount: (if $claim == "UNSAT_CLOSED"
+       then ([$gaps.telemetryGaps[] | select(.code == "HOOK_UNDECLARED")
+              | [.subject, .detail]] | unique | length)
+       else null end),
      # The claim is what ClaimPolicy decided; acceptance is that claim
      # together with the named gaps, because the stages the policy cannot
      # see -- IMPORT, EXPLORE and the static plan -- raise their own blocking
