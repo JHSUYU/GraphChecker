@@ -233,6 +233,20 @@ public final class SessionReader {
         return stated[0];
     }
 
+    /** The startup marks a schedule file states ({@link
+     *  ScheduleEvent#STARTUP}), whole, in their order. */
+    public static List<JsonObject> readScheduleStartup(Path file)
+            throws IOException {
+        List<JsonObject> marks = new ArrayList<JsonObject>();
+        schedulePrefix(file, row -> {
+            if (row.has("mark") && ScheduleEvent.STARTUP.equals(
+                    row.get("mark").getAsString())) {
+                marks.add(row);
+            }
+        });
+        return marks;
+    }
+
     /** Each row of a schedule file, up to the first one that will not read. */
     private static void schedulePrefix(Path file, Consumer<JsonObject> each)
             throws IOException {

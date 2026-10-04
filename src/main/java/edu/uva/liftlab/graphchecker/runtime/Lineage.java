@@ -38,7 +38,7 @@ public final class Lineage {
                 protected List<Frame> inherit(List<Frame> parent) {
                     return parent == null || PoolWorkers.constructing()
                             ? new ArrayList<Frame>()
-                            : new ArrayList<Frame>(parent);
+                            : carried(parent);
                 }
             };
 
@@ -59,13 +59,18 @@ public final class Lineage {
         private final boolean turn;
         /** The window this hop was entered in ({@link RecordingWindow}). */
         private final int window;
+        /** The counter a ROOT hop's k was taken from, or null. */
+        private final AtomicInteger counter;
+        /** Whether an identity read this TURN's k ({@link #pop}). */
+        private volatile boolean named;
         /** The producer endpoint whose message opened this scope, or "". */
         private String anchor = "";
         /** The transport site that message crossed, or "". */
         private String rpcSite = "";
 
         private Frame(long token, Role role, String api, int k,
-                      boolean root, boolean turn, int window) {
+                      boolean root, boolean turn, int window,
+                      AtomicInteger counter) {
             this.token = token;
             this.role = role;
             this.api = api;
@@ -73,8 +78,14 @@ public final class Lineage {
             this.root = root;
             this.turn = turn;
             this.window = window;
+            this.counter = counter;
         }
     }
+
+    /** Per thread, whether a read of a turn's k names nothing ({@link
+     *  #quietly}). */
+    private static final ThreadLocal<Boolean> QUIET =
+            new ThreadLocal<Boolean>();
 
     /** One captured lineage, carried with the work that was created in it. */
     public static final class Carried {
@@ -128,29 +139,83 @@ public final class Lineage {
         Role kind = role == null ? Role.UNKNOWN : role;
         String family = Text.safe(api);
         int window = RecordingWindow.index();
-        int k = root
+        AtomicInteger counter = root
                 ? COUNTERS.computeIfAbsent(window + "\n" + node + "\n"
                         + kind.name() + "\n" + family,
-                        scope -> new AtomicInteger()).incrementAndGet()
-                : 0;
+                        scope -> new AtomicInteger())
+                : null;
+        int k = counter == null ? 0 : counter.incrementAndGet();
         long token = TOKENS.getAndIncrement();
-        stack.add(new Frame(token, kind, family, k, root, turn, window));
+        stack.add(new Frame(token, kind, family, k, root, turn, window,
+                counter));
         return token;
     }
 
-    /** Leaves frame {@code token} and any frame a non-local exit left. */
+    /**
+     * Leaves frame {@code token} and any frame a non-local exit left.
+     *
+     * <p>A TURN no identity named gives its k back, unless a later turn of
+     * its counter took one meanwhile: a loop that spins through turns that
+     * do nothing (a DataNode actor whose heartbeats a test disabled never
+     * waits: hdfs-adhoc-16 recorded 0.89M turns, its replay 47k) no longer
+     * moves the k of the turns that act.  The turn wrote nothing under its
+     * k -- no event, occurrence, endpoint or draw, and handed its frames to
+     * no work ({@link #carried}) -- so the turn that takes it again collides
+     * with nothing (IDENTITY §2).  The compare-and-set makes the ks equal in
+     * both passes only where one thread takes a counter's turns (a daemon's
+     * loop); turns of one counter on several threads may interleave their
+     * gives-back differently.</p>
+     */
     public static void pop(long token) {
         List<Frame> stack = STACK.get();
         for (int i = stack.size() - 1; i >= 0; i--) {
             if (stack.get(i).token != token) continue;
-            while (stack.size() > i) stack.remove(stack.size() - 1);
+            while (stack.size() > i) {
+                Frame left = stack.remove(stack.size() - 1);
+                if (left.turn && !left.named) {
+                    left.counter.compareAndSet(left.k, left.k - 1);
+                }
+            }
             return;
+        }
+    }
+
+    /** States that the turn {@code token} is named: what it wrote carries
+     *  its k (a turn's WAKE, computed {@link #quietly} at its begin). */
+    static void name(long token) {
+        List<Frame> stack = STACK.get();
+        for (int i = stack.size() - 1; i >= 0; i--) {
+            if (stack.get(i).token == token) stack.get(i).named = true;
+        }
+    }
+
+    /** {@code read} on this thread with no turn's k named by it: what a turn
+     *  computes at its begin and writes only if the turn does something. */
+    static <T> T quietly(java.util.function.Supplier<T> read) {
+        Boolean outer = QUIET.get();
+        QUIET.set(Boolean.TRUE);
+        try {
+            return read.get();
+        } finally {
+            QUIET.set(outer);
         }
     }
 
     /** The frames this thread stands in, as a value the work carries. */
     public static Carried capture() {
-        return new Carried(new ArrayList<Frame>(STACK.get()));
+        return new Carried(carried(STACK.get()));
+    }
+
+    /**
+     * The frames work started or captured here carries, shared by
+     * reference: each turn among them is named, since the work reads its k
+     * whenever it runs, perhaps after the turn ended ({@link #pop}).
+     */
+    private static List<Frame> carried(List<Frame> frames) {
+        for (Frame frame : frames) {
+            if (frame.turn) frame.named = true;
+        }
+        return new ArrayList<Frame>(frames);
     }
 
     /**
@@ -280,8 +345,10 @@ public final class Lineage {
         return windowIndex(root());
     }
 
+    /** A root's window index; an identity reading a turn's names it. */
     private static int windowIndex(Frame root) {
         if (root == null) return 0;
+        if (root.turn && QUIET.get() == null) root.named = true;
         return root.turn && root.window != RecordingWindow.index()
                 ? 0 : root.k;
     }
@@ -308,17 +375,31 @@ public final class Lineage {
     }
 
     /**
-     * Whether the root hop {@code token} is still standing on this thread;
-     * {@code 0} (no root hop) is a thread state and always standing.
+     * Whether the hop {@code token} is still standing on this thread; {@code
+     * 0} (no hop) is a thread state and always standing.
      */
-    public static boolean isOpenRoot(long token) {
+    public static boolean isOpen(long token) {
         if (token == 0L) return true;
         List<Frame> stack = STACK.get();
         for (int index = stack.size() - 1; index >= 0; index--) {
-            Frame frame = stack.get(index);
-            if (frame.root && frame.token == token) return true;
+            if (stack.get(index).token == token) return true;
         }
         return false;
+    }
+
+    /**
+     * The token of the hop that gives this thread's causal context, or 0:
+     * the innermost hop carrying an anchor above the innermost root, else
+     * that root -- the hop {@link #here} reads the context from.  The
+     * lifetime of a start frame's count ({@code Identity#startWork}).
+     */
+    public static long contextToken() {
+        List<Frame> stack = STACK.get();
+        for (int index = stack.size() - 1; index >= 0; index--) {
+            Frame frame = stack.get(index);
+            if (!frame.anchor.isEmpty() || frame.root) return frame.token;
+        }
+        return 0L;
     }
 
     /** Test hook: one window, one thread, nothing carried over. */

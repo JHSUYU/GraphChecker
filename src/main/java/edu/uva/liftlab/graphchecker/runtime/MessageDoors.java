@@ -629,6 +629,24 @@ public final class MessageDoors {
         return CausynthTraceRecorder.vacantDaemonTick(tick);
     }
 
+    /**
+     * {@code who} is about to take startup {@code step}, a step before the
+     * window that builds state a replay reads: a replay holds it until those
+     * its recording saw complete the step first have completed it ({@link
+     * StartupOrder}).  {@code who} names the taker the same in both passes
+     * (a DataNode's UUID, which its seeded draw makes).
+     *
+     * @return what {@link #startupDone} takes
+     */
+    public static Object startupStep(String step, String who) {
+        return CausynthTraceRecorder.startupStep(step, who);
+    }
+
+    /** The step {@link #startupStep} began completed. */
+    public static void startupDone(Object pass) {
+        CausynthTraceRecorder.startupDone(pass);
+    }
+
     /** Closes the tick {@link #beginTick} opened. */
     public static void endTick(long token) {
         CausynthTraceRecorder.endDaemonTick(token);

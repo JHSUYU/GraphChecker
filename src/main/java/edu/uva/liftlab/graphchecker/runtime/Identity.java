@@ -193,8 +193,8 @@ public final class Identity {
                 while (depth() > held.depth) levels.remove(depth());
                 closeStartsFrom(held.depth);
             }
-            starts.push(new Claim(depth(), start.key, own, claimScope(),
-                    claimSerial++));
+            starts.push(new Claim(depth(), start.key, own, !own && !ranHere,
+                    claimScope(), claimSerial++));
             // The frames belong to the window the start was counted in.
             for (Frame frame : own || ranHere
                     ? Collections.singletonList(start.frame())
@@ -227,6 +227,22 @@ public final class Identity {
                 if (claim.own) return claim.depth;
             }
             return -1;
+        }
+
+        /**
+         * The depth of the outermost claim a consumer made, or -1: a queue
+         * item or a task carries its putter's scope (IDENTITY §3), so which
+         * consumer took it -- an IPC server's handler or reader, its own
+         * start and the frames it inherited -- is the queue's scheduling,
+         * stated by no context of the work (hdfs-adhoc-46: which handler
+         * claimed a call moved the CLAIM's context).
+         */
+        private int consumedStart() {
+            int outermost = -1;
+            for (Claim claim : starts) {
+                if (claim.consumed) outermost = claim.depth;
+            }
+            return outermost;
         }
 
         /** The depth of the innermost claimed start frame, or -1. */
@@ -345,7 +361,22 @@ public final class Identity {
          * levels.</p>
          */
         private int nextSiteEvent(String site) {
-            Map<String, Integer> events = top().events(Lineage.rootToken());
+            return next(top().events(Lineage.rootToken()), site);
+        }
+
+        /**
+         * THE start counter: the k of one start at {@code site} in the top
+         * level under the hop that gives the context (IDENTITY §3), not the
+         * whole root hop: under a test's one request every poll and node
+         * start before it moved the k of a shell command's thread
+         * (hdfs-adhoc-35: @317 recorded, @404 replayed).  No two works can
+         * share an address by it: each carries that hop's context.
+         */
+        private int nextStartEvent(String site) {
+            return next(top().startEvents(Lineage.contextToken()), site);
+        }
+
+        private static int next(Map<String, Integer> events, String site) {
             Integer made = events.get(site);
             int iteration = made == null ? 0 : made;
             events.put(site, iteration + 1);
@@ -377,6 +408,8 @@ public final class Identity {
          * token instead restarts counts at every request sent.</p>
          */
         private final List<Counters> counters = new ArrayList<Counters>();
+        /** Start counts, one map per context hop ({@link #nextStartEvent}). */
+        private final List<Counters> startCounters = new ArrayList<Counters>();
 
         /** The window {@link #frame} was entered in ({@link RecordingWindow}). */
         private final int window;
@@ -407,26 +440,36 @@ public final class Identity {
          * a long-lived pool level holds no map per past task.
          */
         private Map<String, Integer> events(long rootToken) {
-            for (int index = counters.size() - 1; index >= 0; index--) {
-                Counters filed = counters.get(index);
-                if (filed.rootToken == rootToken) {
+            return counts(counters, rootToken);
+        }
+
+        /** This level's start counts under the context hop {@code hop}. */
+        private Map<String, Integer> startEvents(long hop) {
+            return counts(startCounters, hop);
+        }
+
+        private static Map<String, Integer> counts(List<Counters> filedHops,
+                                                   long hop) {
+            for (int index = filedHops.size() - 1; index >= 0; index--) {
+                Counters filed = filedHops.get(index);
+                if (filed.rootToken == hop) {
                     // Hops filed above this one were nested and have closed.
-                    while (counters.size() > index + 1) {
-                        counters.remove(counters.size() - 1);
+                    while (filedHops.size() > index + 1) {
+                        filedHops.remove(filedHops.size() - 1);
                     }
                     // Counted before the window opened: count again.
                     if (filed.window != RecordingWindow.index()) {
-                        filed = new Counters(rootToken);
-                        counters.set(index, filed);
+                        filed = new Counters(hop);
+                        filedHops.set(index, filed);
                     }
                     return filed.events;
                 }
                 // An open hop encloses this one: its counts stand.
-                if (Lineage.isOpenRoot(filed.rootToken)) break;
-                counters.remove(index);
+                if (Lineage.isOpen(filed.rootToken)) break;
+                filedHops.remove(index);
             }
-            Counters opened = new Counters(rootToken);
-            counters.add(opened);
+            Counters opened = new Counters(hop);
+            filedHops.add(opened);
             return opened.events;
         }
     }
@@ -526,14 +569,21 @@ public final class Identity {
         private final String start;
         /** Whether this is the thread's own start, which is no claimed work. */
         private final boolean own;
+        /**
+         * Whether a consumer claimed it: a queue item or a task taken on
+         * another thread than its starter's, whose context is its putter's
+         * ({@link #handoffs}).
+         */
+        private final boolean consumed;
         private final long scope;
         private final long serial;
 
-        private Claim(int depth, String start, boolean own, long scope,
-                      long serial) {
+        private Claim(int depth, String start, boolean own, boolean consumed,
+                      long scope, long serial) {
             this.depth = depth;
             this.start = start;
             this.own = own;
+            this.consumed = consumed;
             this.scope = scope;
             this.serial = serial;
         }
@@ -639,7 +689,7 @@ public final class Identity {
         // that operation's, its k counted per verb (IDENTITY §3).
         String site = state.requestVerb.isEmpty() ? stable
                 : stable + ":" + state.requestVerb;
-        int iteration = state.nextSiteEvent(site);
+        int iteration = state.nextStartEvent(site);
         List<Frame> frames = new ArrayList<Frame>(
                 Arrays.asList(state.snapshot(state.scopeBase)));
         frames.add(Frame.of(site, iteration));
@@ -1108,8 +1158,8 @@ public final class Identity {
         State state = state();
         int own = state.ownStart();
         StringBuilder chain = new StringBuilder();
-        for (int index = Math.max(0, state.scopeBase);
-             index < state.depth(); index++) {
+        for (int index = Math.max(0, Math.max(state.scopeBase,
+                state.consumedStart())); index < state.depth(); index++) {
             Level level = state.levels.get(index + 1);
             if (level.frame == null || level.token != 0L && index >= own) {
                 continue;
@@ -1290,10 +1340,12 @@ public final class Identity {
      */
     public static void hopOpened(long hop) {
         State state = state();
-        CausalContext context = here(Lineage.rootRole());
-        if (context.isLost()) return;
+        // Only a region with no name reads the hop's context: a turn that
+        // names nothing stays unnamed (Lineage#pop).
         int index = nameless(state);
         if (index < 0) return;
+        CausalContext context = here(Lineage.rootRole());
+        if (context.isLost()) return;
         Region region = state.regions.get(index);
         OccurrenceAddress address = OccurrenceAddress.of(NodeId.parse(
                 RuntimeTraceContext.activationSource(region.receiver).key()),

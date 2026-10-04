@@ -583,6 +583,15 @@ public final class RowCodec {
         return json;
     }
 
+    /** The mark of {@code who} completing startup {@code step} ({@link
+     *  ScheduleEvent#STARTUP}). */
+    public static JsonObject writeScheduleStartup(String step, String who) {
+        JsonObject json = writeScheduleMark(ScheduleEvent.STARTUP, 0L);
+        json.addProperty("step", step);
+        json.addProperty("who", who);
+        return json;
+    }
+
     public static ScheduleEvent readScheduleEvent(JsonObject json) {
         return ScheduleEvent.of(number(json, SEQ),
                 ScheduleEvent.Kind.valueOf(string(json, "kind")),
