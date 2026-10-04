@@ -226,11 +226,12 @@ public final class StaticProgram {
      *
      * <p>A once-entered root cannot admit an alias published later (VM frame
      * tracking is push-time), so for a service loop the iteration, not the
-     * entry, is the activation.  Fires only when a caller of the anchor issues
-     * the demanded call inside one of its retained loops ({@link
-     * #serviceLoopCandidate}) and the trace saw that loop decide its
-     * continuation more than once in one activation.  The innermost such loop
-     * wins.</p>
+     * entry, is the activation (IDENTITY §1).  Fires only when a caller of the
+     * anchor issues the demanded call inside one of its retained loops
+     * ({@link #serviceLoopCandidate}), the trace saw that loop decide its
+     * continuation more than once in one activation, and an iteration frame
+     * can open at that call ({@link #placeable}).  The innermost such loop
+     * wins; with none the root stands, a whole-method activation.</p>
      */
     Map<String, Object> loopBodyRoot(
             RegionRow skeleton,
@@ -260,8 +261,8 @@ public final class StaticProgram {
                         Collections.<String>emptyList())) {
                     String caller = site.substring(0, site.lastIndexOf("#u"));
                     int unitIndex = SiteId.unitIndexOf(site);
-                    Map<String, Object> loop = iteratedLoopAt(loopsByMethod,
-                            iterated, caller, unitIndex);
+                    Map<String, Object> loop = placeableLoopAt(
+                            loopsByMethod, iterated, caller, unitIndex);
                     if (loop != null
                             && !orphansAFold(caller, regionActivations)) {
                         return rootLoop(loop, caller, unitIndex);
@@ -299,11 +300,30 @@ public final class StaticProgram {
         if (loop == null) return null;
         Collections.sort(units);
         for (int unit : units) {
-            if (unit > lastControlUnit(loop) && loopContains(loop, unit)) {
+            if (unit > lastControlUnit(loop) && loopContains(loop, unit)
+                    && placeable(loop, unit)) {
                 return rootLoop(loop, root, unit);
             }
         }
-        return rootLoop(loop, root, work);
+        return placeable(loop, work) ? rootLoop(loop, root, work) : null;
+    }
+
+    /**
+     * Whether an iteration frame of {@code loop} can open at the call at
+     * {@code unitIndex}: the static pass stated it ({@link
+     * LoopBoundPolicy#BODY_ENTRY_CALL_UNITS}), from the same placement the
+     * weave frames the loop by, so SEED never names a loop body INSTRUMENT
+     * cannot open.  A row stating none (a static pass before the member)
+     * places none.
+     */
+    private static boolean placeable(Map<String, Object> loop,
+                                     int unitIndex) {
+        Object entries = loop.get(LoopBoundPolicy.BODY_ENTRY_CALL_UNITS);
+        if (!(entries instanceof Collection)) return false;
+        for (Object entry : (Collection<?>) entries) {
+            if (number(entry, -1) == unitIndex) return true;
+        }
+        return false;
     }
 
     /**
@@ -340,6 +360,23 @@ public final class StaticProgram {
             last = Math.max(last, SiteId.unitIndexOf(site));
         }
         return last;
+    }
+
+    /** The first iterated loop of {@code method} holding the unit where an
+     *  iteration frame can open, or null. */
+    private static Map<String, Object> placeableLoopAt(
+            Map<String, List<Map<String, Object>>> loopsByMethod,
+            Set<String> iterated, String method, int unitIndex) {
+        for (Map<String, Object> loop : loopsByMethod.getOrDefault(method,
+                Collections.<Map<String, Object>>emptyList())) {
+            if (iterated.contains(text(loop.get(
+                    LoopBoundPolicy.RUNTIME_LOOP_ID)))
+                    && loopContains(loop, unitIndex)
+                    && placeable(loop, unitIndex)) {
+                return loop;
+            }
+        }
+        return null;
     }
 
     /** The first iterated loop of {@code method} holding the unit, or null. */

@@ -45,6 +45,13 @@ public final class LoopBoundPolicy {
     public static final String HEADER_UNIT_INDEX = "headerUnitIndex";
     /** {@link #ROOT_LOOP} member naming the original unit this region needs. */
     public static final String DEMANDED_UNIT_INDEX = "demandedUnitIndex";
+    /**
+     * Retained-loop row member: the call units of the loop at which an
+     * iteration frame can open ({@code causynth.CfgLoopControl#bodyEntry}),
+     * the only demanded units a {@link #LOOP_BODY_ROOT} may name.  A row
+     * stating none places none.
+     */
+    public static final String BODY_ENTRY_CALL_UNITS = "bodyEntryCallUnits";
 
     /** Array-backed indexed {@code for}; an early exit is a path effect, not an
      *  unroll bound. */

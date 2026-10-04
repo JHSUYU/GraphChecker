@@ -315,6 +315,9 @@ Scale and robustness:
     the seed's closure PLAN did not plan to fit `schedule_max_jobs` (the index's `closureCut`, a
     `PLAN_CLOSURE_CUT` row, DIAGNOSTIC under an accepted witness).
 12. The seed recording has no wall-clock bound; only the case budget ends it.
+45. A retained-loop row from a static pass before `bodyEntryCallUnits` places no loop body (IDENTITY
+    §1): an offline gate over such a recording plans those regions whole (solr-18413's one
+    loop-body region on V25); a fresh run states the field and roots them again.
 43. The HDFS adapter's registries (`CausynthCluster` `REGISTERED`, `AUTOMATIC_CLUSTERS`, in the HDFS
     trees) hold every DataNode and MiniDFSCluster a test shut down, and name `auto<n>` by the map's
     size. hdfs-adhoc-49 (`TestSnapshot#testSnapshot`, 36 clusters one after another): with the
