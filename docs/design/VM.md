@@ -327,16 +327,19 @@ the next read names a version. No referent is snapshotted there. It answers a st
 declaring class), `-12` (`float`/`double`). SYMBOL-SCOPE.md §5.2 says where it is woven. A read of
 a wrapper field is its value's sort (`J` for a `Long`) and its unboxing reads the read.
 
-`observeContainer(value, mutation)` (`ConcolicMngr::observeContainer`) starts the log of the state
-of the container `value` is or stands for (a view, an iterator, a `Collections` wrapper:
+`observeContainer(value, afterMutation)` (`ConcolicMngr::observeContainer`) starts the log of the
+state of the container `value` is or stands for (a view, an iterator, a `Collections` wrapper:
 `ContainerSupport::backing_container`) with an INITIAL stating what it holds, the one start a
 model's own first operation makes (`ContainerSupport::state_base_before_operation`: the snapshot of
-§6, its refusals -- `UNREADABLE_CONTAINER`, `TRUNCATED`, `RESIZING` -- stated on that INITIAL),
-unless a log stands. A container a final field holds is mutated in place and its contents may all
-be concrete, so nothing else would start it (SYMBOL-SCOPE §5.2). Without a region (no context, or
-an aborted one), a `mutation` marks a standing log incomplete instead (`UNHOOKED_CONTAINER_MUTATION`,
-`unnamedWriter`): that thread runs the mutation as bytecode no model sees. It answers `0`, `-1` (no
-region), `-2` (null) or `-12` (no container a model knows: an object, a `TreeMap`).
+§6, its refusals -- the unreadable class, `TRUNCATED`, `RESIZING`, `SNAPSHOT_RACED` -- stated on
+that INITIAL), unless a log stands. A container a final field holds is mutated in place and its
+contents may all be concrete, so nothing else would start it (SYMBOL-SCOPE §5.2). No value is read,
+so the path condition's gate stays as it was. Called `afterMutation` it starts nothing: on a thread
+without a region (no context, or an aborted one) it marks a standing log incomplete
+(`UNHOOKED_CONTAINER_MUTATION`, `unnamedWriter`), the mutation having run as bytecode no model saw --
+after it, so a log another thread started meanwhile is marked too, and one started later walks the
+mutated contents. It answers `0`, `-1` (no region), `-2` (null) or `-12` (no container a model
+knows: an object, a `TreeMap`).
 
 ### 5.5 A container behind a reference
 

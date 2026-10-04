@@ -17,10 +17,11 @@ import java.util.concurrent.CountDownLatch;
  * log began, which no model saw (the tracked state admits it,
  * {@code ContainerSupport::admits}); a query reads the newest version.  A
  * thread outside every region that mutates the map runs bytecode no model
- * sees: its observation marks the log incomplete instead of leaving its chain
- * silently stale.  Refused: a null (-2), an object that is no container
- * (-12), a container class no model knows (a TreeMap, -12), and outside a
- * region (-1).</p>
+ * sees: its observation just after the mutation marks the log incomplete
+ * instead of leaving its chain silently stale, while one after a region
+ * thread's mutation does nothing.  Refused: a null (-2), an object that is
+ * no container (-12), a container class no model knows (a TreeMap, -12),
+ * and outside a region (-1).</p>
  */
 public final class RegionContainerObservationSmoke {
     private static final class Manager {
@@ -52,8 +53,8 @@ public final class RegionContainerObservationSmoke {
                 } catch (InterruptedException interrupted) {
                     return;
                 }
-                outsideStatus[0] = System.observeContainer(manager.keys, true);
                 manager.keys.put(Integer.valueOf(4), "four");
+                outsideStatus[0] = System.observeContainer(manager.keys, true);
             }
         });
         outside.start();
@@ -76,6 +77,9 @@ public final class RegionContainerObservationSmoke {
         walk.next();
         walk.remove();
         manager.keys.put(Integer.valueOf(3), "three");
+        // After a region thread's mutation, which the model versioned.
+        require(System.observeContainer(manager.keys, true) == 0,
+                "an observation after a modeled mutation was refused");
         Sink sink = new Sink();
         sink.value = manager.keys.get(Integer.valueOf(3));
         String query = System.getSymbolicFieldExpression(sink,

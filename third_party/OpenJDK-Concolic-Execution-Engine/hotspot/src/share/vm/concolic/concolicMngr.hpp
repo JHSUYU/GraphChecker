@@ -350,10 +350,10 @@ public:
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor);
   // Starts the version log of the state of the container `value` is or
-  // stands for (System.observeContainer); outside every region, a mutation
-  // marks a standing log incomplete.  Answers an
+  // stands for (System.observeContainer); after a mutation outside every
+  // region, marks a standing log incomplete instead.  Answers an
   // ExpressionBroker::HandoffStatus, 0 when the log stands.
-  static jint observeContainer(Handle value, bool mutation);
+  static jint observeContainer(Handle value, bool after_mutation);
   inline static bool has_symbolized_method() {
     return ctx && !ctx->is_aborted() && ctx->is_symbolizing_method();
   }
