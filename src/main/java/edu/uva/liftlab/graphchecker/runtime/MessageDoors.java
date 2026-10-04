@@ -624,8 +624,8 @@ public final class MessageDoors {
      * adapter registers it by once it is built ({@link #registerNode}, the
      * same kind, role and id): what it starts or creates until {@link
      * #endNodeStartup} belongs to that node, though the test's request
-     * stands where it runs (IDENTITY.md §5).  Attribution only: no event, no
-     * lineage hop, and the calling thread's own work keeps its node.  A
+     * stands where it runs (IDENTITY.md §5), the calling thread's own work
+     * inside it included.  Attribution only: no event, no lineage hop.  A
      * system's cluster adapter brackets each node it constructs this way,
      * and a registered node's start, a restart's included, by {@link
      * #beginNodeStartup(Object)}.

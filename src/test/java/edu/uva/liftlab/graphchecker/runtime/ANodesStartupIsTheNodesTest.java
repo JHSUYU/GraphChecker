@@ -14,8 +14,8 @@ import org.junit.Test;
  * node from its first moment, before the node is built and registered; the
  * start of a registered node's thread names that node, and a restart's (the
  * node's slot moved to its next epoch first) that epoch.  The thread running
- * the startup keeps its own node.  Outside a startup both are the test's
- * client, as before.
+ * the startup is the node's while it stands, and the test's client again
+ * once it ends.  Outside a startup all are the test's client, as before.
  */
 public class ANodesStartupIsTheNodesTest {
     private static final SourceRef CLIENT =
@@ -84,8 +84,11 @@ public class ANodesStartupIsTheNodesTest {
                 : startup == Startup.NONE ? 0L
                 : RuntimeTraceContext.beginNodeStartup(
                         RuntimeTraceContext.sourceFor(slot));
-        assertEquals("the thread running the startup keeps its node",
-                CLIENT.key(), Attribution.resolve(null).key());
+        assertEquals("the thread running the startup is the node's",
+                startup == Startup.NONE ? CLIENT.key()
+                        : startup == Startup.RESTART ? RESTARTED.key()
+                        : NODE.key(),
+                Attribution.resolve(null).key());
         AtomicReference<String> node = new AtomicReference<>("");
         Thread thread = new Thread(() -> {
             SourceRef resolved = Attribution.resolve(null);
@@ -97,6 +100,8 @@ public class ANodesStartupIsTheNodesTest {
         thread.start();
         thread.join(5000L);
         RuntimeTraceContext.endNodeStartup(token);
+        assertEquals("the startup over, the thread is the test's client",
+                CLIENT.key(), Attribution.resolve(null).key());
         RuntimeTraceContext.endRequest(request);
         return node.get();
     }

@@ -315,17 +315,21 @@ final class RuntimeTraceContext {
 
     /**
      * Opens one startup of {@code node} on this thread -- its construction,
-     * or its threads' start: attribution only (no lineage hop, no request
-     * flow, no event, and this thread's own work keeps its node), so what
-     * the startup starts, and every thread it creates, is the node's
-     * ({@link #carriedIn}).  A node's threads the test's thread starts under
-     * its request carried the test's client otherwise (rule 1 outranks a
-     * frame), and the threads its constructor creates inherited it (rule 3).
-     * The node is named from the start: named only once constructed and
-     * registered, what its threads did before raced its registration (HBA2:
-     * ZooKeeper callbacks a region server's construction set up were the
-     * unregistered workload's in the recording and the region server's in
-     * the replay, and the seed replay stalled on them).
+     * or its threads' start: the node's explicit scope while it stands
+     * ({@link Attribution}, rule 1), with no lineage hop, no request flow and
+     * no event, so this thread's own work inside it, what it starts and
+     * every thread it creates are the node's ({@link #carriedIn}).  A node's
+     * threads the test's thread starts under its request carried the test's
+     * client otherwise (rule 1 outranks a frame), the threads its
+     * constructor creates inherited it (rule 3), and what the test's thread
+     * ran itself -- a NameNode's format and fsimage load -- was the client's,
+     * which the demand walk, crossing writers on one node only, could not
+     * join to the node's later work.  The node is named from the start: named
+     * only once constructed and registered, what its threads did before raced
+     * its registration (HBA2: ZooKeeper callbacks a region server's
+     * construction set up were the unregistered workload's in the recording
+     * and the region server's in the replay, and the seed replay stalled on
+     * them).
      *
      * @param node the node, or null: then no startup opens
      * @return the token that ends the startup, 0 when none opened
@@ -335,10 +339,16 @@ final class RuntimeTraceContext {
         State state = CURRENT.get();
         long token = nextId();
         ScopeFrame scope = new ScopeFrame(token, state);
+        SourceRef canonical;
         synchronized (LOCK) {
-            scope.startup = canonicalSourceLocked(node);
+            canonical = canonicalSourceLocked(node);
         }
+        scope.startup = canonical;
+        scope.opened = canonical;
         state.scopes.push(scope);
+        state.source = canonical;
+        if (scope.activeFrame != null) scope.activeFrame.source = canonical;
+        publishCausalSource(state);
         return token;
     }
 

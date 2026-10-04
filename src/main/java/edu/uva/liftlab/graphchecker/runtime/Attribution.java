@@ -22,8 +22,9 @@ import java.util.List;
  *       counts.</li>
  * </ol>
  *
- * <p>What a node's startup starts or creates carries that node in rules 3
- * and 4 ({@link RuntimeTraceContext#beginNodeStartup}).  All four failing
+ * <p>A node's startup is that node's explicit scope while it stands, and
+ * what it starts or creates carries the node in rules 3 and 4 ({@link
+ * RuntimeTraceContext#beginNodeStartup}).  All four failing
  * answers {@code null} (LINEAGE_LOST), never a guess.</p>
  */
 final class Attribution {
