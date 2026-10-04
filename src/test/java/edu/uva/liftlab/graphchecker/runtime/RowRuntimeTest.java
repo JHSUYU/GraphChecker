@@ -1481,7 +1481,9 @@ public class RowRuntimeTest {
         read.addProperty("_exp", "M_I_placeholder");
         read.addProperty("_java_type", "I");
         read.add("location", location);
-        read.addProperty("observedVersion", version);
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", version);
+        read.add("observedVersion", observed);
         return read;
     }
 
