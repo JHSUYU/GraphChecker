@@ -108,10 +108,11 @@ The owner's rulings (binding; also in §1):
 
 | tree (worktree) | branch, head | of | what |
 | --- | --- | --- | --- |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` | `gc/hdfs-unified-dtx` `51f1e058380` | `~/hadoop` | the eight named HDFS cases: `gc/hdfs-unified` + the DataTransfer op's envelope; Maven repo `/bigtemp/vnr3ne/wt/dtx/m2` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study` | `gc/hdfs-study` | `~/hadoop` | EVERY HDFS case but 11741 (branch `system/hdfs`): `gc/hdfs-unified-dtx` + bug #15's workload + the study's 51 ad hoc check markers (`hdfs-adhoc-NN`) + the MiniJournalCluster hooks + HDFS-2 #09's workload (`TestCausynthReencryptNegativeSleep`); Maven repo `/bigtemp/vnr3ne/m2/hdfs-study` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` | `gc/hdfs-unified-dtx` `51f1e058380` | `~/hadoop` | `gc/hdfs-unified` + the DataTransfer op's envelope: the base of `gc/hdfs-study`; main's eight named HDFS cases run it; Maven repo `/bigtemp/vnr3ne/wt/dtx/m2` |
 | `~/hadoop-hdfs-11741` | `gc/hdfs-11741` | `~/hadoop` | hdfs-11741 |
 | `~/hadoop-hdfs-unified` | `gc/hdfs-unified` `89f4c5348df` | `~/hadoop` | base of the dtx and bugs trees |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-bugs` | `gc/hdfs-bugs` | `~/hadoop` | HDFS #15 (`hdfs-bugs-slowdisk-zero`): target marker in `RoundRobinVolumeChoosingPolicy`, workload `TestCausynthSlowDiskZeroMax` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-bugs` | `gc/hdfs-bugs` | `~/hadoop` | HDFS #15 (`hdfs-bugs-slowdisk-zero`) on main; folded into `gc/hdfs-study` |
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx-w6`, `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-w6` | `gc/hdfs-unified-dtx-w6` `93e481224d3`, `gc/hdfs-11741-w6` `9eb9b9bcf0c` | `~/hadoop` | for `wire-codec-p1` (W6-HDFS: IPC doors pass payloads, upstream SASL name); built, clean |
 | `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | `~/lucene-solr-8_11` | solr-18406, solr-18413; `04f8489` = the per-collection refresh lock in `ZkStateReader` (the upstream race of §0.7) |
 | `/bigtemp/vnr3ne/wt/lucene-solr-bugs` | `gc/solr-bugs` `f65aaf7` | `~/lucene-solr-8_11` | Solr #04 (`solr-bugs-reindex-cleanup`): target marker; `9d572a4` the same refresh lock (built); `f65aaf7` the `spelledAs` adapter (committed, NOT built: needs a jar with `MessageDoors.spelledAs`, i.e. `solr-bug-reindex`) |
