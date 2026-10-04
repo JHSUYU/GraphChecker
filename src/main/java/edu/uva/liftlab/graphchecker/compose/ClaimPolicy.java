@@ -226,7 +226,8 @@ public final class ClaimPolicy {
                 Collections.<String>emptyList(), false);
         Z3.Answer formula = free.answer();
         if (formula.unsat()) {
-            return new Decision(claim, outcomes, formula);
+            contradictions(composition, asks, gaps);
+            return new Decision(claimWith(claim, gaps), outcomes, formula);
         }
         if (!formula.decided()) {
             String reason = formula.reason();
@@ -643,14 +644,11 @@ public final class ClaimPolicy {
     private static void selfContradictory(Composer.Composition composition,
                                           Disjunction asks,
                                           List<GapRow> gaps) {
-        int refuted = 0;
         int undecided = 0;
         // A sanity check, not the witness search: its own short budget.  An
         // undecided run leaves the path in the disjunction (safe direction).
-        List<Z3.Answer> answers = asks.selfCheck();
-        for (Z3.Answer answer : answers) {
+        for (Z3.Answer answer : asks.selfCheck()) {
             if (!answer.decided()) undecided++;
-            if (answer.unsat()) refuted++;
         }
         if (undecided > 0) {
             // A budget that drops a question says so: runs stay comparable.
@@ -663,7 +661,22 @@ public final class ClaimPolicy {
                             + "self-refutation budget and stay in the "
                             + "disjunction unexamined"));
         }
-        if (refuted < answers.size()) return;
+    }
+
+    /**
+     * THE PATHS AN UNSAT RESTS ON, each checked against its own run: every
+     * path, with the formula unsat, is unsat with every root free, so each
+     * is asked once more with its fatal arm left out
+     * ({@code Disjunction#withoutFatalArms}), what its own run satisfied.
+     * One unsat there (or undecided within the budget), or one that
+     * observed the fatal arm, contradicts its run: DIAGNOSTIC per path, and
+     * BLOCKING for the composition, since an UNSAT resting on it is about
+     * the formula built and not about the recording.  A path refuted by its
+     * fatal arm alone is the claim's own answer.
+     */
+    private static void contradictions(Composer.Composition composition,
+                                       Disjunction asks,
+                                       List<GapRow> gaps) {
         List<Z3.Answer> withoutFatalArms = asks.withoutFatalArms();
         int contradictory = 0;
         for (int i = 0; i < withoutFatalArms.size(); i++) {
@@ -690,11 +703,10 @@ public final class ClaimPolicy {
         gaps.add(GapRow.of(Composer.COMPOSITION,
                 GapKind.PATH_SELF_CONTRADICTORY, GapClass.BLOCKING,
                 composition.anchor().render(),
-                "all " + refuted + " composed paths are unsatisfiable with "
-                        + "every root free, and " + contradictory + " of them "
-                        + "contradict their own run, so the composition's "
-                        + "verdicts are about the formula it built, not "
-                        + "about the recording"));
+                "the composed formula is unsat, and " + contradictory
+                        + " of its " + withoutFatalArms.size() + " paths "
+                        + "contradict their own run, so the verdict is about "
+                        + "the formula it built, not about the recording"));
     }
 
     /**

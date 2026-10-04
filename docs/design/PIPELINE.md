@@ -1417,12 +1417,13 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
 2. Each path is first asked alone with every root free (60 s, `Disjunction#selfCheck`): an unsat
-   path is refuted for every question. When every path is, each is asked once more with its fatal
-   arm left out (`Disjunction#withoutFatalArms`, `Composition#withoutFatalArm`: its `path_fatal__`
-   implication without phi), what its own run satisfied: a path unsat there (or undecided), or one
-   that observed the fatal arm, contradicts its run -- `PATH_SELF_CONTRADICTORY` DIAGNOSTIC, and
-   BLOCKING for the composition; refuted by phi alone everywhere, no root of the corpus turns any
-   path to the fatal arm, which is the claim's own answer (b20h BlockTokenSecretManager-511, a40s
+   path is refuted for every question. When the composed formula is unsat (4), every path is asked
+   once more with its fatal arm left out (`ClaimPolicy#contradictions`, `Disjunction#withoutFatalArms`,
+   `Composition#withoutFatalArm`: its `path_fatal__` implication without phi), what its own run
+   satisfied: a path unsat there (or undecided), or one that observed the fatal arm, contradicts its
+   run -- `PATH_SELF_CONTRADICTORY` DIAGNOSTIC, and BLOCKING for the composition, since the UNSAT rests
+   on it; refuted by phi alone everywhere, no root of the corpus turns any path to the fatal arm,
+   which is the claim's own answer (b20h BlockTokenSecretManager-511, a40s
    BackupCmd-343: the null-checked read is pinned to the object the run read). Then every valuation is asked (4 at
    once; each question is written to its z3s from the one body the composition holds, never copied
    per ask or per arithmetic engine, `Composition#query`/`#pathQuery`, `Z3#ask`) for the path
