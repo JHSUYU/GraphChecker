@@ -172,10 +172,13 @@ public class ScopeGrowthTest {
         growth.scan(root);
         assertEquals(Arrays.asList(true, false), Arrays.asList(
                 growth.called(T + "$Holder"), growth.called(T + "$Writer")));
-        // An IO row grows a class only where it opens a file itself.
+        // An IO row grows a class only where the called body opens a file
+        // itself.
         assertEquals(Arrays.asList(true, false), Arrays.asList(
-                growth.callsFileOperation(T + "$Saver"),
-                growth.callsFileOperation(T + "$Holder")));
+                growth.callsFileOperation(T + "$Saver",
+                        "<" + T + "$Saver: void save(java.io.File)>"),
+                growth.callsFileOperation(T + "$Saver",
+                        "<" + T + "$Saver: void <init>()>")));
         Path jar = folder.newFolder().toPath().resolve("lib.jar");
         try (java.util.zip.ZipOutputStream out =
                      new java.util.zip.ZipOutputStream(

@@ -221,8 +221,9 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
    - `FIELD`: its owner and, unless the field is private or final, every class storing it; a
      static final field is a constant and grows nothing;
    - `FORMAL`: every class calling the method;
-   - an IO row: its class only when that class itself calls a demanded door's anchor, else it is
-     skipped and named in the step's summary (one level per growth round);
+   - an IO row: the class whose body runs the called method, only when that body itself calls a
+     demanded door's anchor (listed as `IO` in `GROWN`), else it is skipped and named in the
+     step's summary (one level per growth round);
    - never a generated protobuf class (a supertype in `*.protobuf.*`).
    Each class taken is copied into `<causynth_output_dir>/scope-classes/` and listed in `GROWN`
    (`class`, `kind`, `signature`, `distance`) until `causynth_scope_growth_budget` classes

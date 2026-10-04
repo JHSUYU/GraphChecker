@@ -47,9 +47,10 @@ import java.util.zip.ZipFile;
  * </ul>
  * A row the root demand found where a local file fault could stand ({@code
  * demand} IO: a call into the system that escapes before a demanded store,
- * or that a handler deciding a demanded site catches) takes its class only
- * when that class itself calls a demanded door's anchor ({@link
- * LibraryCatalog#demandedDoor}); any other is skipped, named in the summary.
+ * or that a handler deciding a demanded site catches) takes the class whose
+ * body runs the called method only when that body itself calls a demanded
+ * door's anchor ({@link LibraryCatalog#demandedDoor}), listed as {@value
+ * #IO} in the manifest; any other is skipped, named in the summary.
  * A protobuf message is a wire payload (F3), never scope.  Rows are taken
  * in the frontier's order -- the root demand's first, then nearest first
  * ({@link ScopeFrontier}) -- until the budget of grown classes is spent;
@@ -134,7 +135,7 @@ public final class ScopeGrowth {
                 if (taken + added >= budget) break;
                 ClassFacts facts = index.classes.get(name);
                 if (present.contains(name) || index.protobuf(name)) continue;
-                if (io && !index.callsFileOperation(name)) {
+                if (io && !index.callsFileOperation(name, signature)) {
                     noFileOperation.add(name);
                     continue;
                 }
@@ -142,8 +143,9 @@ public final class ScopeGrowth {
                 Files.createDirectories(target.getParent());
                 Files.copy(facts.file, target,
                         StandardCopyOption.REPLACE_EXISTING);
-                append(grown.resolve(MANIFEST), name + "\t" + kind + "\t"
-                        + signature + "\t" + row.get("distance").getAsInt());
+                append(grown.resolve(MANIFEST), name + "\t"
+                        + (io ? IO : kind) + "\t" + signature + "\t"
+                        + row.get("distance").getAsInt());
                 present.add(name);
                 added++;
                 if (io) byIo++;
@@ -156,12 +158,15 @@ public final class ScopeGrowth {
                 + "file operation of their own: " + noFileOperation));
     }
 
-    /** Whether a class calls a demanded door's anchor itself: a local file
-     *  operation a door could stand at once it is analysed. */
-    boolean callsFileOperation(String name) {
+    /** Whether the body {@code name} has for the method {@code signature}
+     *  names calls a demanded door's anchor itself: a local file operation
+     *  a door could stand at once it is analysed. */
+    boolean callsFileOperation(String name, String signature) {
         ClassFacts facts = classes.get(name);
-        if (facts == null) return false;
-        for (String call : facts.calls) {
+        Matcher member = METHOD.matcher(signature);
+        if (facts == null || !member.matches()) return false;
+        for (String call : facts.callsBy.getOrDefault(member.group(2) + "("
+                + member.group(3) + ")", Collections.<String>emptySet())) {
             String[] at = call.split("\\|", 2);
             for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
                 Matcher anchor = METHOD.matcher(door.anchor);
@@ -484,6 +489,8 @@ public final class ScopeGrowth {
         final Set<String> stores = new LinkedHashSet<>();
         /** {@code owner|name(paramType,...)} of every method it calls. */
         final Set<String> calls = new LinkedHashSet<>();
+        /** The same, by the calling method's {@code name(paramType,...)}. */
+        final Map<String, Set<String>> callsBy = new LinkedHashMap<>();
 
         ClassFacts(Path file, Path relative) {
             super(Opcodes.ASM9);
@@ -543,8 +550,11 @@ public final class ScopeGrowth {
                 public void visitMethodInsn(int opcode, String owner,
                                             String callee, String type,
                                             boolean isInterface) {
-                    calls.add(owner.replace('/', '.') + "|"
-                            + key(callee, type));
+                    String call = owner.replace('/', '.') + "|"
+                            + key(callee, type);
+                    calls.add(call);
+                    callsBy.computeIfAbsent(body,
+                            ignored -> new LinkedHashSet<>()).add(call);
                     if (bodies.containsKey(body)) bodies.put(body, null);
                 }
 
