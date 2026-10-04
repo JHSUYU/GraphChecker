@@ -19,8 +19,8 @@ import org.junit.Test;
 
 /**
  * What a draw is keyed by (SYMBOL-SCOPE §4.5): its endpoint in an occurrence
- * with a context; its site and its count there in this window anywhere else,
- * so draws a Lost context makes stay apart.
+ * with a context; anywhere else its node, handoffs, site and count under
+ * that key in this window, so draws a Lost context makes stay apart.
  */
 public class RandomsTest {
     private static final String SITE =
@@ -38,15 +38,49 @@ public class RandomsTest {
 
     @Test
     public void aDrawWithNoContextOfItsOwnIsKeyedByItsCountInItsWindow() {
-        assertEquals("before the window", Arrays.asList("0#" + SITE + "#0",
-                "0#" + SITE + "#1"), Arrays.asList(Randoms.key(SITE),
-                Randoms.key(SITE)));
+        String unregistered = "#" + RuntimeTraceContext.nodeHere() + "|#"
+                + SITE + "#";
+        assertEquals("before the window", Arrays.asList("0" + unregistered
+                + "0", "0" + unregistered + "1"), Arrays.asList(
+                Randoms.key(SITE), Randoms.key(SITE)));
         RecordingWindow.open();
         assertEquals("a Lost context inside the window, counted afresh",
-                "1#" + SITE + "#0", Randoms.key(SITE));
+                "1" + unregistered + "0", Randoms.key(SITE));
         RecordingWindow.open();
-        assertEquals("every window counts from 0", "2#" + SITE + "#0",
+        assertEquals("every window counts from 0", "2" + unregistered + "0",
                 Randoms.key(SITE));
+    }
+
+    /** Each node's thread counts its own draws, in its own program order,
+     *  however the two threads' draws interleave. */
+    @Test
+    public void lostDrawsOfTwoNodesCountApart() throws InterruptedException {
+        RecordingWindow.open();
+        List<String> second = new CopyOnWriteArrayList<>();
+        Thread other = new Thread(() -> second.addAll(drawsOn("t/dn1", 1)));
+        List<String> first = drawsOn("t/dn0", 1);
+        other.start();
+        other.join();
+        first.addAll(drawsOn("t/dn0", 1));
+        assertEquals(Arrays.asList("1#t/dn0#epoch0|#" + SITE + "#0",
+                "1#t/dn0#epoch0|#" + SITE + "#1"), first);
+        assertEquals(Arrays.asList("1#t/dn1#epoch0|#" + SITE + "#0"), second);
+    }
+
+    /** {@code draws} keys of the running thread inside a startup of node
+     *  {@code id}. */
+    private static List<String> drawsOn(String id, int draws) {
+        long startup = RuntimeTraceContext.beginNodeStartup(new SourceRef(
+                "CLUSTER_NODE", "DATANODE", id, 0L));
+        try {
+            List<String> keys = new java.util.ArrayList<>();
+            for (int i = 0; i < draws; i++) {
+                keys.add(Randoms.key(SITE));
+            }
+            return keys;
+        } finally {
+            RuntimeTraceContext.endNodeStartup(startup);
+        }
     }
 
     /** hdfs-adhoc-01, round HS1: DataNodes started inside the window under

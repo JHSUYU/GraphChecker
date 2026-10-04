@@ -651,8 +651,8 @@ an event (`startWork`, `claimStart`, `endClaim`, `claimItem`, `enterMethodFrame`
 in both hook catalogs (`CausynthPipeline.HookCatalog#shared`); every site string is stabilized once
 by `contract/JvmNames#stable` (reflection accessors and lambda proxies lose their JVM-minted
 counters; a desugared lambda class is named by content in every weave, `LambdaClassNames`);
-randomness is seeded by endpoint where the occurrence has a context, else by site and count
-(SYMBOL-SCOPE.md §4.5).
+randomness is seeded by endpoint where the occurrence has a context, else by node, handoffs, site
+and count, equal in both passes where one thread alone draws under that key (SYMBOL-SCOPE.md §4.5).
 
 ## 11. Current limits
 
