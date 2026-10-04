@@ -80,6 +80,7 @@ marked * below.
 | `solver_timeout_ms`* | one z3 run, in a flip query and in COMPOSE |
 | `replay_timeout_s`* (2400) | the wall clock of one obligation replay |
 | `seed_replay_time_factor`* (40) | the seed replay's wall clock, as a multiple of the recorded workload's (§5) |
+| `recording_max_trace_mb`* (4096) | the most trace the recording may write; past it the workload is ended and SEED fails `RECORDING_BOUND` (§2) |
 | `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth` | EXPLORE's bounds (§7.4, §7.9) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb`, `stream_max_in_flight` (0) | the pool's hosts, one replay's memory at the host gate (§7.7), the most heap a head JVM is given and a solver asked again, the obligations the capped explorations running at once keep in flight together (§7.7; 0 is no cap) |
@@ -136,7 +137,15 @@ none.
 2. `do_workload`: one weave in trace mode `region-state` (lineage classes from `plan.LineageScan`
    included), then the workload itself (`workload_command`; a nonzero exit fails SEED; its wall
    time in seconds is kept as `campaign_recorded_workload_s`, the base of the seed replay's
-   bound, §5; the recording itself runs under no bound), then
+   bound, §5; the recording itself runs under no wall-clock bound). The weave writes only the rows
+   the aggregation reads (`causynth/TracedRows`): call rows at a declared site, a field-accessing
+   call, a configured-source hook site or a port's capture, argument and normal-exit rows only
+   where a port captures them; every hook is still called, so each row keeps its number. A frame
+   writes one decision at one site at most twice (`CausynthTraceRecorder#emitDecision`: readers
+   take a frame's decisions as a set, its first, or "more than once" for a loop). Its trace is
+   bounded: past `recording_max_trace_mb` its watcher (`campaign_watch_workload`) ends the
+   workload and leaves `runtime/RECORDING_BOUND` saying so, and SEED fails by that name (a trace
+   cut short is never aggregated). Then
    `runtime.CausynthTraceRecorder` aggregates the trace into `runtime/concolic_region_plan.jsonl`
    (the runtime region plan) and `runtime/region_skeletons.jsonl`; the recording's
    `runtime/schedule.jsonl` sits beside them.

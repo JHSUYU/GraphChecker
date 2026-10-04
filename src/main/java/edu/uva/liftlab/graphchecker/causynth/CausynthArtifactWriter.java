@@ -24,6 +24,9 @@ import java.util.zip.GZIPOutputStream;
  * scope map and {@code region_skeletons}.
  */
 final class CausynthArtifactWriter {
+    /** The candidate dataflow graph's file in the campaign's output. */
+    static final String CANDIDATE_GRAPH = "candidate_dataflow_edges.jsonl.gz";
+
     private CausynthArtifactWriter() {
     }
 
@@ -34,8 +37,7 @@ final class CausynthArtifactWriter {
                                         List<JsonObject> rootDemand)
             throws IOException {
         Files.createDirectories(outputDir);
-        writeGzipJsonl(outputDir.resolve(
-                "candidate_dataflow_edges.jsonl.gz"), program.edges);
+        writeGzipJsonl(outputDir.resolve(CANDIDATE_GRAPH), program.edges);
         writeGzipJsonl(outputDir.resolve("region_skeletons.jsonl.gz"),
                 program.regions);
         writeGzipJsonl(outputDir.resolve("communication_gaps.jsonl.gz"),

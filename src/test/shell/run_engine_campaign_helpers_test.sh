@@ -713,7 +713,9 @@ done
 # campaign may take, and how much of it the stages after EXPLORE are kept.
 # 52: `causynth_static_root` and `record_timeout_s` left with the batch
 # campaign and the pre-screen: every campaign slices and records its own.
-[[ "$(print_normalized_config | wc -l)" -eq 52 ]] \
+# 53: `recording_max_trace_mb` joined it: the most trace a recording may
+# write before SEED ends it, RECORDING_BOUND.
+[[ "$(print_normalized_config | wc -l)" -eq 53 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -1496,6 +1498,47 @@ done <<'EOF'
 3000|0|2500|2541|ended|0|causynth: the workload JVM's resident memory peaked at 2541 MB; its host was charged 2500 MB for it
 3000|0|2500|2400|ran|0|causynth: the workload JVM's resident memory peaked at 2400 MB; its host was charged 2500 MB for it
 28000|0|0|400,486|ran|0|
+EOF
+
+# RECORDING-BOUND: a recording whose trace passes recording_max_trace_mb is
+# ended by its watcher, which says so beside the trace (the reason SEED
+# fails by); one under it runs to its end and leaves no marker.  Per row:
+# the bound in MB, the MB the "recording" writes, ended or ran.
+while IFS='|' read -r bound_mb bound_writes bound_ended; do
+  bound_dir="${test_tmp}/bound"
+  rm -rf -- "${bound_dir}"
+  mkdir -p "${bound_dir}/trace"
+  (
+    campaign_watch_interval_s=0.1
+    ( for (( mb = 0; mb < bound_writes; mb++ )); do
+        head -c 1048576 /dev/zero >>"${bound_dir}/trace/runtime_trace.jsonl"
+        sleep 0.05
+      done
+      sleep 1 ) &
+    bound_jvm=$!
+    campaign_watch_workload "${bound_jvm}" 0 "${bound_dir}/trace" \
+      "${bound_mb}" 2>"${bound_dir}/said" &
+    bound_watch=$!
+    bound_exit=0
+    wait "${bound_jvm}" 2>/dev/null || bound_exit=$?
+    wait "${bound_watch}"
+    echo "${bound_exit}" >"${bound_dir}/exit"
+  ) || fail "a bounded recording's watch failed"
+  if [[ "${bound_ended}" == ended ]]; then
+    [[ "$(cat "${bound_dir}/exit")" == 137 ]] \
+      || fail "a recording past its ${bound_mb} MB bound was not ended"
+    grep -q "^RECORDING_BOUND: the recording's trace passed recording_max_trace_mb (${bound_mb} MB) at [0-9]* MB" \
+      "${bound_dir}/trace/${campaign_recording_bound_marker}" \
+      || fail "a bounded recording does not say why beside its trace"
+  else
+    [[ "$(cat "${bound_dir}/exit")" == 0 \
+        && ! -e "${bound_dir}/trace/${campaign_recording_bound_marker}" ]] \
+      || fail "a recording under its ${bound_mb} MB bound was ended or marked"
+  fi
+done <<'EOF'
+2|40|ended
+50|3|ran
+0|5|ran
 EOF
 
 # SOLVER-SERVICE: an obligation's question goes to ONE solver JVM of its host

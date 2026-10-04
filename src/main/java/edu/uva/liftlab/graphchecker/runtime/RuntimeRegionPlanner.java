@@ -1627,48 +1627,36 @@ public final class RuntimeRegionPlanner {
                 && "ZBCSIJFD".indexOf(descriptor.charAt(component)) >= 0;
     }
 
-    /** Package-visible for the required-outcome selection contract test. */
+    /**
+     * Each policy site's FIRST recorded decision in these events; polarity is
+     * stated only by the scope map's TARGET_SITE row, never elected from
+     * evidence.  Package-visible for the required-outcome selection contract
+     * test.
+     */
     static List<Map<String, Object>> branches(
             List<Map<String, Object>> policies,
             List<RuntimeEvent> events) {
-        Map<String, List<RuntimeEvent>> bySite = new LinkedHashMap<>();
+        Map<String, RuntimeEvent> firstBySite = new HashMap<>();
         for (RuntimeEvent event : events) {
             if ("BRANCH".equals(event.kind)) {
-                bySite.computeIfAbsent(event.siteId,
-                        ignored -> new ArrayList<>()).add(event);
+                firstBySite.putIfAbsent(event.siteId, event);
             }
         }
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> policy : policies) {
-            String site = stringValue(policy.get("siteId"));
-            List<RuntimeEvent> occurrences = bySite.getOrDefault(site,
-                    Collections.emptyList());
-            List<Map<String, Object>> encoded = new ArrayList<>();
-            for (int index = 0; index < occurrences.size(); index++) {
-                RuntimeEvent event = occurrences.get(index);
-                encoded.add(object(
-                        "occurrence", index + 1,
-                        "outcome", event.outcome,
-                        "eventSeq", event.seq));
-            }
-            // The FIRST recorded decision here; polarity is stated only by
-            // the scope map's TARGET_SITE row, never elected from evidence.
-            int selectedIndex = 0;
-            RuntimeEvent selected = occurrences.isEmpty() ? null
-                    : occurrences.get(selectedIndex);
+            RuntimeEvent selected = firstBySite.get(stringValue(
+                    policy.get("siteId")));
             Map<String, Object> branch = new LinkedHashMap<>(policy);
             // "observed" means "executed", not "took the required outcome":
             // conflating them would make every flip target ineligible.
             branch.put("observed", selected != null);
             branch.put("observedOutcome",
                     selected == null ? null : selected.outcome);
-            branch.put("selectedOccurrence", selected == null
-                    ? 0 : selectedIndex + 1);
+            branch.put("selectedOccurrence", selected == null ? 0 : 1);
             if (selected != null) {
                 branch.put("selectedRuntimeEventSeq", selected.seq);
                 branch.put("selectedCallId", selected.callId);
             }
-            branch.put("occurrences", encoded);
             result.add(branch);
         }
         return result;

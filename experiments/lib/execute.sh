@@ -111,7 +111,8 @@ set +e
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
   "${test_class}" "${test_method}" &
 jvm=$!
-campaign_watch_workload "${jvm}" "${charged_mb}" "${trace:-}" &
+campaign_watch_workload "${jvm}" "${charged_mb}" "${trace:-}" \
+  "${CAUSYNTH_RECORDING_MAX_TRACE_MB:-0}" &
 watch=$!
 wait "${jvm}"
 status=$?

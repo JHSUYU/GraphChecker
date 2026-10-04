@@ -803,7 +803,7 @@ public class ManualMintStatesItsValueTest {
                 + "\"answers\":{},\"unproducible\":[]}");
 
         long invocation = CausynthTraceRecorder.beginCall(0L, PHASE_METHOD,
-                UNIT, PHASE_METHOD, new Object());
+                UNIT, PHASE_METHOD, new Object(), true);
         try {
             // A HOOK UNDER NO OCCURRENCE AT ALL.  Nothing to mint on and
             // nothing to attribute to, so it mints nothing and says which

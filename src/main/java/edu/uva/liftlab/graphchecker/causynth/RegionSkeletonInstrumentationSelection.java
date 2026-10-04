@@ -25,7 +25,7 @@ final class RegionSkeletonInstrumentationSelection {
      */
     static Map<String, String> regionRootsFromEnvironment() {
         Map<String, String> roots = new LinkedHashMap<>();
-        for (StaticProgram.RegionRow region : selectedSkeletons()) {
+        for (StaticProgram.RegionRow region : skeletonsFromEnvironment()) {
             if (region.rootMethod.isEmpty()) continue;
             roots.putIfAbsent(region.rootMethod, region.regionId);
         }
@@ -34,7 +34,7 @@ final class RegionSkeletonInstrumentationSelection {
 
     static Set<String> methodsFromEnvironment() {
         Set<String> methods = new LinkedHashSet<>();
-        for (StaticProgram.RegionRow region : selectedSkeletons()) {
+        for (StaticProgram.RegionRow region : skeletonsFromEnvironment()) {
             methods.addAll(region.sourcePhaseTraceMethods);
             methods.addAll(region.methods);
         }
@@ -46,7 +46,8 @@ final class RegionSkeletonInstrumentationSelection {
         return methods;
     }
 
-    private static List<StaticProgram.RegionRow> selectedSkeletons() {
+    /** The candidate skeletons every weave opens its regions from. */
+    static List<StaticProgram.RegionRow> skeletonsFromEnvironment() {
         File file = new File(configuredFile());
         try {
             List<StaticProgram.RegionRow> regions = StaticProgram.regionRows(

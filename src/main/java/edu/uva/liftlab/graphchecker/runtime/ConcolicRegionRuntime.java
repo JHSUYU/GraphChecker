@@ -131,7 +131,7 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active = activeRegion();
             long replayOwnerId = active == null ? 0L : active.token;
             return CausynthTraceRecorder.beginCall(replayOwnerId, safe(method),
-                    unitIndex, safe(declaredCallee), null);
+                    unitIndex, safe(declaredCallee), null, true);
         } catch (Throwable ignored) {
             // Never perturb the workload; id 0 makes both close hooks no-ops.
             return 0L;

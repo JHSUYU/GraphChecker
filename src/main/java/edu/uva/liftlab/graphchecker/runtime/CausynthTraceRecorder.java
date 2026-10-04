@@ -58,6 +58,10 @@ public final class CausynthTraceRecorder {
     /** Exact process-local object tokens; identity hash collisions are unsafe. */
     /** Each observed object's id, held weakly: a collected object is never
      *  observed again, and its id is never reused. */
+    /** The rows of one decision at one site a frame writes: two keep
+     *  "decided here more than once" (a loop that iterated) and the
+     *  first decision; later repeats are numbered and not written. */
+    private static final int DECISION_ROWS_PER_FRAME = 2;
     private static final WeakIdentityMap<Integer> OBJECT_IDS =
             new WeakIdentityMap<>();
     private static int nextObjectId = 1;
@@ -420,12 +424,19 @@ public final class CausynthTraceRecorder {
         }
     }
 
+    /**
+     * The trace hooks below take {@code traced}: whether SEED's aggregation
+     * reads the row ({@code causynth.TracedRows}, decided at the weave).  An
+     * untraced row is numbered like any other and not written.
+     */
     public static void recordMethodArgument(long callId, int argumentIndex,
                                             String declaredType, Object value,
-                                            String primitiveValue) {
+                                            String primitiveValue,
+                                            boolean traced) {
         ActiveCall call = activeCall(callId);
         ExecutionEvent event = newExecutionEvent("METHOD_ARGUMENT",
                 call == null ? "" : call.method, callId);
+        if (!traced) return;
         event.argumentIndex = argumentIndex;
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
@@ -433,30 +444,37 @@ public final class CausynthTraceRecorder {
         emitExecutionEvent(event);
     }
 
+    /** {@code traced} covers every row of the call: its enter, return and
+     *  unwinding rows. */
     public static long beginCall(long ownerCallId, String caller, int unitIndex,
-                                 String declaredCallee, Object receiver) {
+                                 String declaredCallee, Object receiver,
+                                 boolean traced) {
         ActiveCall owner = activeCall(ownerCallId);
         closeStaleCallSite(ownerCallId);
         ExecutionEvent event = newExecutionEvent("CALL_SITE_ENTER",
                 firstNonBlank(caller, owner == null ? "" : owner.method), ownerCallId);
         event.siteId = SiteId.render(event.method, unitIndex);
         event.declaredCallee = MapFields.safe(declaredCallee);
-        event.runtimeType = runtimeType(receiver);
-        event.objectId = identity(receiver);
         event.invocationId = event.id;
-        emitExecutionEvent(event);
+        if (traced) {
+            event.runtimeType = runtimeType(receiver);
+            event.objectId = identity(receiver);
+            emitExecutionEvent(event);
+        }
         // No scope capture here: Identity.startWork owns it in both passes.
         ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
-                event.siteId, event.method, event.declaredCallee));
+                event.siteId, event.method, event.declaredCallee, traced));
         return event.id;
     }
 
     public static void recordCallArgument(long invocationId, int argumentIndex,
                                           String declaredType, Object value,
-                                          String primitiveValue) {
+                                          String primitiveValue,
+                                          boolean traced) {
         ActiveCallSite site = activeCallSite(invocationId);
         ExecutionEvent event = callSiteEvent("CALL_ARGUMENT", site,
                 invocationId);
+        if (!traced) return;
         event.argumentIndex = argumentIndex;
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
@@ -494,10 +512,12 @@ public final class CausynthTraceRecorder {
         ActiveCallSite site = activeCallSite(invocationId);
         ExecutionEvent event = callSiteEvent("CALL_SITE_RETURN", site,
                 invocationId);
-        event.runtimeType = runtimeType(returnValue);
-        event.objectId = identity(returnValue);
-        event.primitiveValue = MapFields.safe(primitiveValue);
-        emitExecutionEvent(event);
+        if (site == null || site.traced) {
+            event.runtimeType = runtimeType(returnValue);
+            event.objectId = identity(returnValue);
+            event.primitiveValue = MapFields.safe(primitiveValue);
+            emitExecutionEvent(event);
+        }
         removeCallSite(invocationId);
     }
 
@@ -510,8 +530,24 @@ public final class CausynthTraceRecorder {
                                     String expression, boolean outcome) {
         ExecutionEvent event = branchEvent(callId, method, unitIndex);
         event.outcome = outcome;
-        emitExecutionEvent(event);
+        emitDecision(callId, event, String.valueOf(outcome));
         RecordingPlant.decided(event.siteId, event.outcome);
+    }
+
+    /**
+     * Writes a decision unless its frame already wrote this decision at this
+     * site twice: every reader takes the decisions of a frame as a set, its
+     * first one, or whether it decided a loop's control site more than once
+     * (hdfs-adhoc-49: two thirds of the BRANCH rows repeated one in their
+     * frame).
+     */
+    private static void emitDecision(long callId, ExecutionEvent event,
+                                     String outcome) {
+        ActiveCall frame = activeCall(callId);
+        if (frame == null || frame.decided(event.siteId + "\n" + outcome)
+                <= DECISION_ROWS_PER_FRAME) {
+            emitExecutionEvent(event);
+        }
     }
 
     /** One branch row at the exact unit of the method that executed it. */
@@ -538,22 +574,25 @@ public final class CausynthTraceRecorder {
                 : encodedCaseKeys.split(",", -1).length;
         event.outcome = event.successorIndex == null ? null
                 : successorIndex < caseCount;
-        emitExecutionEvent(event);
+        emitDecision(callId, event, "#" + successorIndex);
         RecordingPlant.decided(event.siteId, event.outcome);
     }
 
     /** Normal exit resolved from the current thread-local call stack. */
     public static void exitActiveMethod(Object returnValue,
-                                        String primitiveValue) {
+                                        String primitiveValue,
+                                        boolean traced) {
         ActiveCall call = activeCall(0L);
         long resolvedCallId = call == null ? 0L : call.callId;
         closeCallSites(resolvedCallId, "CALL_SITE_INCOMPLETE");
         ExecutionEvent event = newExecutionEvent("METHOD_EXIT_NORMAL",
                 call == null ? "" : call.method, resolvedCallId);
-        event.runtimeType = runtimeType(returnValue);
-        event.objectId = identity(returnValue);
-        event.primitiveValue = MapFields.safe(primitiveValue);
-        emitExecutionEvent(event);
+        if (traced) {
+            event.runtimeType = runtimeType(returnValue);
+            event.objectId = identity(returnValue);
+            event.primitiveValue = MapFields.safe(primitiveValue);
+            emitExecutionEvent(event);
+        }
         closeCall(call, resolvedCallId, null);
     }
 
@@ -1180,7 +1219,8 @@ public final class CausynthTraceRecorder {
         if (site == null) {
             return;
         }
-        emitExecutionEvent(callSiteEvent(kind, site, site.invocationId));
+        ExecutionEvent event = callSiteEvent(kind, site, site.invocationId);
+        if (site.traced) emitExecutionEvent(event);
         ACTIVE_CALL_SITES.get().remove(site);
     }
 
@@ -2280,6 +2320,14 @@ public final class CausynthTraceRecorder {
         private final int region;
         /** The occurrence this entry opened, rendered; "" for none. */
         private final String occurrence;
+        /** Decisions this frame took, by site and outcome: how often. */
+        private Map<String, Integer> decisions;
+
+        /** How often this frame has now taken {@code decision}. */
+        private int decided(String decision) {
+            if (decisions == null) decisions = new HashMap<>();
+            return decisions.merge(decision, 1, Integer::sum);
+        }
 
         private ActiveCall(long callId, long parentCallId, long parentSiteId,
                            String method, Object receiver, long spanId,
@@ -2385,15 +2433,18 @@ public final class CausynthTraceRecorder {
         private final String siteId;
         private final String caller;
         private final String declaredCallee;
+        /** Whether its rows are written ({@link #beginCall}). */
+        private final boolean traced;
 
         private ActiveCallSite(long invocationId, long ownerCallId,
                                String siteId, String caller,
-                               String declaredCallee) {
+                               String declaredCallee, boolean traced) {
             this.invocationId = invocationId;
             this.ownerCallId = ownerCallId;
             this.siteId = MapFields.safe(siteId);
             this.caller = MapFields.safe(caller);
             this.declaredCallee = MapFields.safe(declaredCallee);
+            this.traced = traced;
         }
     }
 
