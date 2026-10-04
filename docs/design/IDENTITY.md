@@ -179,13 +179,22 @@ siteIndex.hash / attempt)`, rendered `<address>/site:<site>/sidx:<frames>/att:<n
 - `site` is the port id (WIRE), `<class>#<method><descriptor>#<bci>:WRITE|READ` (STATE,
   `Endpoint#stateSite`; a location's INITIAL is `:INITIAL` at the access that started its log,
   `Endpoint#initialSite`, so it is no event of that access), or `<transport>#<half>` for a whole
-  message.
+  message, `<transport>#<half>:<verb>` where its door names the operation the message asks for
+  (`Endpoint#messageSite`, `MessageDoors#outboundRequest`; no verb spells `/` or `@`). The HDFS IPC
+  client door names `<protocol>.<method>` off its request (the shim's `outboundRequest`, Hadoop's
+  own `RpcProtobufRequest#toString`), a constant of the call, so k counts the requests of one
+  operation: a DataNode turn that sends a heartbeat before a block report, where the recorded turn
+  sent the report alone, no longer gives the heartbeat the report's endpoint (hdfs-adhoc-15: the
+  NameNode's handler under the report's anchor answered a heartbeat and never made the recorded
+  enqueue). A door naming no verb keeps `<transport>#<half>`; a recording made before the IPC
+  door named its verb states the shorter sites, so it cannot hold a replay made after.
 - The id is recursive through the Anchor chain: one unreproduced link anywhere upstream changes it.
 
 **Message producers.** A sent message's producer endpoint is minted at the send
-(`Identity#messageSent`) in the sender's current occurrence. A response's producer endpoint is
+(`Identity#messageSent`) in the sender's current occurrence, at its site (with its verb, if its door
+names one); its `SEND` event states the same site. A response's producer endpoint is
 minted when its request is received (`Identity#responseEndpoint`: the request scope's role
-occurrence, site `<transport>#RESPONSE`, index `[site@0]`), and the send reuses it
+occurrence, site `<transport>#RESPONSE`, index `[site@0]`, never a verb), and the send reuses it
 (`runtime/CausynthTraceRecorder` `RECEIPTS`), so whichever thread sends the response names the same
 producer. Two messages carrying one producer endpoint are named as a `LINEAGE_LOST` DIAGNOSTIC row.
 

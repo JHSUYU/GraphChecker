@@ -30,6 +30,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import org.apache.hadoop.ipc.CausynthMessagePropagation;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.lang.reflect.Field;
@@ -365,6 +366,62 @@ public class RowRuntimeTest {
     }
 
     /**
+     * A request whose door names the operation it asks for is that
+     * operation's (IDENTITY §4): its site states the verb and its k counts
+     * that operation's requests, so a block report is its turn's first
+     * report whether or not the turn sent a heartbeat before it
+     * (hdfs-adhoc-15: the heartbeat took the report's identity).  A door
+     * naming none keeps {@code <transport>#<half>}.
+     */
+    @Test
+    public void aRequestNamingItsOperationIsThatOperationsKth()
+            throws Exception {
+        SourceRef dataNode = new SourceRef("CLUSTER_NODE", "DATANODE",
+                "hdfs-adhoc-15/dn0", 0);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, dataNode);
+        String heartbeat = "DatanodeProtocol.sendHeartbeat";
+        String report = "DatanodeProtocol.blockReceivedAndDeleted";
+        String[][] turns = {{heartbeat, report}, {report}};
+        List<Endpoint> reports = new ArrayList<>();
+        for (int turn = 0; turn < turns.length; turn++) {
+            long tick = RuntimeTraceContext.beginTick(owner,
+                    "BP_SERVICE_ACTOR");
+            for (String verb : turns[turn]) {
+                String correlation = "corr-" + turn + "-" + verb;
+                CausynthMessagePropagation.outboundRequest("HADOOP_IPC",
+                        correlation, "0", owner, null, new RpcProtobufRequest(
+                                "org.apache.hadoop.hdfs.server.protocol."
+                                        + verb));
+                Endpoint producer = Interactions.producer(Interactions.sender(
+                        "HADOOP_IPC", correlation, "REQUEST"));
+                assertEquals("HADOOP_IPC#REQUEST:" + verb, producer.site());
+                if (verb.equals(report)) reports.add(producer);
+            }
+            RuntimeTraceContext.endTick(tick);
+        }
+        assertEquals("the report is its turn's first report either way",
+                reports.get(1).siteIndex(), reports.get(0).siteIndex());
+        assertEquals("HADOOP_IPC#REQUEST",
+                Endpoint.messageSite("HADOOP_IPC", "REQUEST", ""));
+    }
+
+    /** Named as Hadoop's protobuf RPC request is, which names itself by
+     *  its header's protocol and method. */
+    static final class RpcProtobufRequest {
+        private final String named;
+
+        RpcProtobufRequest(String named) {
+            this.named = named;
+        }
+
+        @Override
+        public String toString() {
+            return named;
+        }
+    }
+
+    /**
      * A response is produced by its request's role scope, which no region
      * opened and so no activation states: its send states it, naming the
      * client's send its anchor answers, so a chain through the response
@@ -388,8 +445,9 @@ public class RowRuntimeTest {
             long inbound = RuntimeTraceContext.enterInbound(header,
                     "HADOOP_IPC", "corr-1", "0", "REQUEST", null, "");
             response.set(Identity.messageSent(NN.key(), "HADOOP_IPC",
-                    "corr-1", "RESPONSE", Identity.responseEndpoint(NN.key(),
-                            "HADOOP_IPC", "RESPONSE")));
+                    "corr-1", "RESPONSE", "HADOOP_IPC#RESPONSE",
+                    Identity.responseEndpoint(NN.key(), "HADOOP_IPC",
+                            "RESPONSE")));
             RuntimeTraceContext.exitInbound(inbound);
         });
         handler.start();
@@ -2182,7 +2240,7 @@ public class RowRuntimeTest {
             if (response > 0L) RuntimeTraceContext.exitInbound(response);
             long outbound = Identity.enterFrame("Propagation.outbound()#u4", null);
             sent.add(Identity.messageSent(NN.key(), "HADOOP_IPC",
-                    "corr-" + rpc, "REQUEST", null));
+                    "corr-" + rpc, "REQUEST", "HADOOP_IPC#REQUEST", null));
             Identity.exitFrame(outbound);
             Identity.exitFrame(sending);
             response = installResponses
