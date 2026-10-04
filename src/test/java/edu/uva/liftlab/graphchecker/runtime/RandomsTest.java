@@ -1,0 +1,104 @@
+package edu.uva.liftlab.graphchecker.runtime;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Random;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+import edu.uva.liftlab.graphchecker.contract.Role;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+
+/**
+ * What a draw is keyed by (SYMBOL-SCOPE §4.5): its endpoint in an occurrence
+ * with a context; its site and its count there in this window anywhere else,
+ * so draws a Lost context makes stay apart.
+ */
+public class RandomsTest {
+    private static final String SITE =
+            "<o.a.h.hdfs.server.datanode.DataNode: java.lang.String"
+                    + " generateUuid()>#u3";
+
+    @Before
+    @After
+    public void freshRun() {
+        Identity.resetForTests();
+        RuntimeTraceContext.resetForTests();
+        RecordingWindow.reset();
+        Randoms.resetForTests();
+    }
+
+    @Test
+    public void aDrawWithNoContextOfItsOwnIsKeyedByItsCountInItsWindow() {
+        assertEquals("before the window", Arrays.asList("0#" + SITE + "#0",
+                "0#" + SITE + "#1"), Arrays.asList(Randoms.key(SITE),
+                Randoms.key(SITE)));
+        RecordingWindow.open();
+        assertEquals("a Lost context inside the window, counted afresh",
+                "1#" + SITE + "#0", Randoms.key(SITE));
+        RecordingWindow.open();
+        assertEquals("every window counts from 0", "2#" + SITE + "#0",
+                Randoms.key(SITE));
+    }
+
+    /** hdfs-adhoc-01, round HS1: DataNodes started inside the window under
+     *  no hop drew one UUID and refused each other's registrations. */
+    @Test
+    public void unnamedThreadsInsideTheWindowDrawDistinctUuids()
+            throws InterruptedException {
+        RecordingWindow.open();
+        List<UUID> drawn = new CopyOnWriteArrayList<>();
+        Thread[] dataNodes = new Thread[3];
+        for (int i = 0; i < dataNodes.length; i++) {
+            dataNodes[i] = new Thread(
+                    () -> drawn.add(Randoms.randomUUID(SITE)));
+            dataNodes[i].start();
+        }
+        for (Thread dataNode : dataNodes) {
+            dataNode.join();
+        }
+        assertEquals(3, new HashSet<>(drawn).size());
+    }
+
+    @Test
+    public void aDrawInAnOccurrenceWithAContextIsKeyedByItsEndpoint() {
+        RecordingWindow.open();
+        long turn = Lineage.pushRoot("hdfs/dn0", Role.of("BP_SERVICE_ACTOR"),
+                "");
+        String first = Randoms.key(SITE);
+        String second = Randoms.key(SITE);
+        Lineage.pop(turn);
+        assertNotEquals("two draws of one site in one occurrence", first,
+                second);
+        assertFalse("an endpoint, not a count", first.contains(SITE));
+
+        Identity.resetForTests();
+        RuntimeTraceContext.resetForTests();
+        RecordingWindow.reset();
+        RecordingWindow.open();
+        turn = Lineage.pushRoot("hdfs/dn0", Role.of("BP_SERVICE_ACTOR"), "");
+        assertEquals("the same inputs, the same key, in another run", first,
+                Randoms.key(SITE));
+        Lineage.pop(turn);
+    }
+
+    /** Neighbouring counts of one site start unlike generators: unmixed,
+     *  every one of these draws picks the same of four. */
+    @Test
+    public void neighbouringKeysSeedUnlikeGenerators() {
+        Set<Integer> picked = new HashSet<>();
+        for (int count = 0; count < 8; count++) {
+            picked.add(new Random(Randoms.seed("1#" + SITE + "#" + count))
+                    .nextInt(4));
+        }
+        assertNotEquals(1, picked.size());
+    }
+}

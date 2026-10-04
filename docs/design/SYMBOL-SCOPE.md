@@ -578,8 +578,17 @@ depths that fit whole (PIPELINE.md §3).
 ### 4.5 Randomness is not a root
 
 The weave replaces `new Random()`, `Math.random()`, `Collections.shuffle(List)` and
-`UUID.randomUUID()` in both passes with `runtime/Randoms`, seeded by the draw's endpoint inside the
-window (by site and count before it), so a replay draws what the recording drew.
+`UUID.randomUUID()` in both passes with `runtime/Randoms`, so a replay draws what the recording drew.
+A draw is keyed (`Randoms#key`) by its endpoint where it runs in an occurrence with a context (a Root
+or an Anchor) inside the window: the same function of the same inputs in both passes. Anywhere else
+-- before the window, or in a Lost context, whose address siblings share (unnamed work, a turn begun
+before the window) -- it is keyed by its site and its count at that site, the counts restarting at
+each window: hdfs-adhoc-01 (round HS1) started a cluster inside the window while no hop stood, its
+DataNodes all drew one endpoint's UUID, and their registrations refused each other for the rest of
+the run. Such a count follows the run's own arrival order (the work is unscheduled), so two runs may
+hand two such draws each other's values: distinct is what is guaranteed, not equal. A key's bits are
+mixed into the seed (`Randoms#seed`): neighbouring counts of one site would otherwise start
+generators nearly alike (alike UUID prefixes, one pick of four for every count).
 
 ### 4.6 Root demand
 
