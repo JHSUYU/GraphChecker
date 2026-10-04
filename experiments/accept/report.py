@@ -114,7 +114,6 @@ EXPECTED_MECHANISM = {
     # HDFS bug study HDFS-2 #09: the re-encryption throttle's stopwatch
     # readings (nn0's clock) make its sleep negative, the handler dies, and
     # the zone's next START is refused as already submitted.
-    "hdfs-bugs-reencrypt-negative-sleep": {"kinds": ("CLOCK_SKEW",)},
 }
 
 
