@@ -1226,9 +1226,10 @@ public final class Composer {
                     : Boolean.toString(way.outcome()),
                     Collections.<String>emptyList()));
             // An unreached target row stands at no point of the path (its
-            // seq states none): every decision the path took is the way.
+            // seq states none): the path is its decisions up to the guard it
+            // left the way at (all of them where it left at none named).
             terms.addAll(healthyDecisions(session, ordinal, path.decisions,
-                    Long.MAX_VALUE, relevant));
+                    way == null ? Long.MAX_VALUE : way.seq(), relevant));
         } else if (published.isEmpty()) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, subject, "the target row states "
@@ -1342,15 +1343,16 @@ public final class Composer {
 
     /**
      * THE DECISIONS OF A PATH THAT TOOK THE HEALTHY ARM CONCRETELY, stated:
-     * each decision up to the target (the anchor's own deciding guard
+     * each decision up to {@code upTo} (the anchor's own deciding guard
      * included) that pi_p does not state -- independence left it out, none
-     * of its variables moving, so it holds at its recorded value in every
-     * world, or it states no term -- is conjoined, so
-     * the formula states the path the run took and not a bare constant:
-     * its term where it lowers with no refusal, else a proposition named for
-     * the decision ({@code decided__}) at the arm it took, the decision
-     * named in concrete[] (DECISION).  The constant healthy arm decides the
-     * path either way.
+     * of its variables moving, or it states no term -- is conjoined as a
+     * proposition named for it ({@code decided__}) at the arm it took, and
+     * named in concrete[] (DECISION) with its term, so the formula states
+     * the path the run took and not a bare constant.  Its term is not
+     * lowered: over nothing that moves it holds at its recorded value in
+     * every world, so it adds no answer, and lowered it can contradict the
+     * run where the lowering is less precise than the run (hdfs-adhoc-07:
+     * 25 of 33 healthy paths unsatisfiable without their fatal arm).
      */
     private List<String> healthyDecisions(String session, int ordinal,
                                           List<DecisionRow> decisions,
@@ -1365,20 +1367,15 @@ public final class Composer {
                 continue;
             }
             String subject = decision.siteId() + "#" + decision.ordinal();
-            String conjunct = lowering.statedIfLowered(
-                    Arms.conjunct(decision), "decision " + subject);
-            if (Arms.predicate(conjunct)) {
-                stated.add(conjunct);
-                continue;
-            }
             String name = "decided__" + ordinal + "__" + ArtifactIO.digest(
                     session + "|" + subject, 12);
             lowering.declare(name, Sort.BOOL);
             stated.add(decision.outcome() ? name : "(not " + name + ")");
             pathConcrete.put("decision:" + session + ":" + subject,
-                    new Concrete("DECISION", subject,
-                            Boolean.toString(decision.outcome()),
-                            Collections.<String>emptyList()));
+                    new Concrete("DECISION", subject, decision.outcome()
+                            + (decision.term().isEmpty() ? ""
+                            : " " + decision.term()),
+                            Collections.singletonList(name)));
         }
         return stated;
     }

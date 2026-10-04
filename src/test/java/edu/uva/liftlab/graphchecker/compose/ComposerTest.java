@@ -1569,8 +1569,9 @@ public class ComposerTest {
         // took the healthy arm at a guard on the way: its path is a
         // disjunct whose fatal arm is the constant false, so the claim
         // closes UNSAT with no gap, the way it left named in concrete[],
-        // and the formula states the decisions it took, concrete ones
-        // included, never a bare constant.
+        // and the formula states the decisions it took up to that guard,
+        // each a proposition at the arm it took (its term, over nothing
+        // that moves, in concrete[]), never a bare constant.
         Path ran = folder.newFolder("ran-unreached").toPath();
         Session unreached = new Session(ran, "s0", false);
         unreached.marker("false");
@@ -1589,14 +1590,20 @@ public class ComposerTest {
         assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, healthy.claim().kind());
         assertFalse("no gap withholds it: " + healthy.claim().gaps(),
                 healthy.claim().blocked());
-        assertEquals("the way it left is named, and the decision no term "
-                        + "states", Arrays.asList("WAY " + ANCHOR.render()
-                        + "= []", "DECISION way#u4#2=true []"),
-                concrete(left));
-        assertTrue("and the decisions it took are stated, the concrete one "
-                        + "as a proposition at its arm: " + left.body(),
-                left.body().matches("(?s).*\\(and \\(and \\(not \\(< 3 2\\)\\) "
-                        + "decided__0__\\w+ \\(> 2 1\\)\\) false\\).*"));
+        List<String> kinds = new ArrayList<String>();
+        for (Composer.Concrete row : left.concrete()) {
+            kinds.add(row.kind + " " + row.subject + " " + row.value);
+        }
+        assertEquals("the way it left is named, and each decision with its "
+                        + "term", Arrays.asList("WAY " + ANCHOR.render() + " ",
+                        "DECISION way#u3#1 false (< 3 2)",
+                        "DECISION way#u4#2 true",
+                        "DECISION way#u5#3 true (> 2 1)"), kinds);
+        assertTrue("and the decisions it took are stated, each a "
+                        + "proposition at its arm: " + left.body(),
+                left.body().matches("(?s).*\\(and \\(and \\(not "
+                        + "decided__0__\\w+\\) decided__0__\\w+ "
+                        + "decided__0__\\w+\\) false\\).*"));
 
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its

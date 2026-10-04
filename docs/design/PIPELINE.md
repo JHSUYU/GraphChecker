@@ -1083,10 +1083,11 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   fatal resting on `pi_p`, the path condition that reached the anchor, and its `false` the constant
   healthy decision: the path is a disjunct no valuation satisfies (symbolic stays symbolic, concrete
   is a constant), so a corpus whose paths all decided concretely closes UNSAT, its formula stating
-  the decisions the path took up to the target, the anchor's own included (`Composer#healthyDecisions`:
-  each that independence left out, conjoined by its term where it lowers with no refusal, else as a
-  proposition named for it at the arm it took, `decided__`, and named in `concrete[]` as DECISION),
-  never a bare constant; a row stating no phi refuses the path (invariant 9), as the composer never invents one;
+  the decisions the path took up to the target, the anchor's own included, or for a path that never
+  reached the anchor up to the guard it left the way at (`Composer#healthyDecisions`: each pi_p does
+  not state, as a proposition named for it at the arm it took, `decided__`, its term in `concrete[]`
+  as DECISION; a term over nothing that moves adds no answer, and lowered it contradicted the run
+  where the lowering is less precise, hdfs-adhoc-07), never a bare constant; a row stating no phi refuses the path (invariant 9), as the composer never invents one;
 - every other handoff the conjunction reaches, by the same rules; a handoff variable the corpus
   states of another session and this one minted no attach for refuses the path by name
   (`UNSTATED_VALUE`), so no path names a boundary variable its families do not bind.
