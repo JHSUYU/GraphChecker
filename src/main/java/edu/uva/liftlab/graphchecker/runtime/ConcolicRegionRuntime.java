@@ -852,6 +852,50 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Starts versioning the state of the container a tracked cell holds, at
+     * a read of the cell (the referent it returned) or before a container
+     * mutation through it (the call's receiver), unless its log already
+     * stands (SYMBOL-SCOPE §5.2).
+     *
+     * <p>A container a field holds is mutated in place; while its contents
+     * stay concrete nothing starts its log, so a query of it names no
+     * version and no mutation is a writer to re-pair it with.  After this,
+     * every modeled mutation is a version and every query reads one.
+     * Outside every region a mutation runs as bytecode no model sees: the VM
+     * marks a standing log incomplete instead of leaving its chain silently
+     * stale.  A value that is no container the VM models is named once per
+     * site.  PLAN decides which sites are observed.</p>
+     */
+    public static void observeTrackedContainer(String siteId,
+                                               String fieldSignature,
+                                               Object container,
+                                               boolean mutation) {
+        ActiveRegion active = activeRegion();
+        if (container == null || active == null && !mutation) return;
+        try {
+            long status = engine().observeContainer(container, mutation);
+            if (status == ConcolicVmBroker.OK && active != null) {
+                active.pathRecordingStarted = true;
+            } else if (status == ConcolicVmBroker.UNSUPPORTED_TARGET) {
+                RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        firstNonBlank(safe(siteId), safe(fieldSignature)),
+                        safe(fieldSignature) + " holds a "
+                                + container.getClass().getName() + ", which"
+                                + " no container model of the VM knows, so"
+                                + " its state at this site is not versioned"
+                                + " and a query of it reads no version");
+            }
+        } catch (Throwable failure) {
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    firstNonBlank(safe(siteId), safe(fieldSignature)),
+                    "this access could not start the VM's version log of the"
+                            + " container " + safe(fieldSignature) + " holds,"
+                            + " so a query of it reads no version: "
+                            + rootCause(failure));
+        }
+    }
+
+    /**
      * Called once per Java argument immediately after
      * {@link #enterRegionFrame}.
      */

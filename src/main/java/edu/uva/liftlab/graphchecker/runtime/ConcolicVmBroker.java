@@ -20,8 +20,10 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 final class ConcolicVmBroker {
     /** The statuses this side reads, mirrored from expressionBroker.hpp. */
     static final int OK = 0;
+    static final int NO_ACTIVE_REGION = -1;
     static final int MISSING_METADATA = -2;
     static final int NOT_SYMBOLIC = -4;
+    static final int UNSUPPORTED_TARGET = -12;
     /** Bridge-local statuses, below every value the VM answers. */
     static final int INVOCATION_FAILED = -1001;
     static final int MALFORMED_RESULT = -1002;
@@ -74,6 +76,7 @@ final class ConcolicVmBroker {
     private Method symbolizeField;
     private Method symbolizeExactField;
     private Method observeField;
+    private Method observeContainer;
     private Method getExpression;
     private Method getFieldExpression;
     private Method finishRegion;
@@ -222,6 +225,26 @@ final class ConcolicVmBroker {
             throw new IllegalStateException(statusName(answered)
                     + ": the VM did not observe " + safe(fieldSignature));
         }
+    }
+
+    /**
+     * Starts the version log of the state of the container {@code value} is
+     * or stands for (a view, an iterator, a wrapper), unless it stands;
+     * outside every region, a {@code mutation} marks a standing log
+     * incomplete instead (VM.md §5.4).  Answers {@link #OK}, {@link
+     * #NO_ACTIVE_REGION} or {@link #UNSUPPORTED_TARGET} (no container the VM
+     * models); any other status is thrown by name.
+     */
+    long observeContainer(Object value, boolean mutation) throws Exception {
+        Object status = observeContainer.invoke(null, value, mutation);
+        long answered = status instanceof Number
+                ? ((Number) status).longValue() : MALFORMED_RESULT;
+        if (answered != OK && answered != NO_ACTIVE_REGION
+                && answered != UNSUPPORTED_TARGET) {
+            throw new IllegalStateException(statusName(answered)
+                    + ": the VM did not observe a container");
+        }
+        return answered;
     }
 
     String expression(Object value) throws Exception {
@@ -397,6 +420,8 @@ final class ConcolicVmBroker {
                 String.class);
         api.observeField = method(system, "observeField", Object.class,
                 String.class, String.class, String.class);
+        api.observeContainer = method(system, "observeContainer",
+                Object.class, boolean.class);
         api.getExpression = method(system, "getSymbolicExpression",
                 Object.class);
         api.getFieldExpression = method(system,

@@ -1468,17 +1468,26 @@ public final class StaticScopeMap {
 
     /**
      * Every access of a tracked cell ({@link #READ_SITE}), each observed
-     * before it runs: a store, so the replay versions the cell from it and a
+     * when it runs: a store, so the replay versions the cell from it and a
      * read of the cell has a writer to join whatever value the store wrote
-     * (for every cell); and a read, so a location no store of
-     * the window reached still has a log -- its INITIAL -- that the read
-     * states and the closure asks the cell's writers about (GreyGraph
-     * §3.1's Writers_W(l), SYMBOL-SCOPE §5.5).  Each row states its cell's {@code
+     * (for every cell); and a read, so a location no store of the window
+     * reached still has a log -- its INITIAL -- that the read states and the
+     * closure asks the cell's writers about (GreyGraph §3.1's Writers_W(l),
+     * SYMBOL-SCOPE §5.5).  A row says what it observes: {@code field}, the
+     * cell on its holder before the access (a {@code CONTAINER} cell's
+     * reference never changes, so its constructor's store is none); and
+     * {@code container}, the state of the container a cell holds -- the
+     * read's referent after a read, the call's receiver before a container
+     * mutation -- so its in-place mutations are versions and a query reads
+     * one (SYMBOL-SCOPE §5.2).  A mutator call is never a field
+     * observation, except an atomic's write of its value: its receiver is
+     * not the cell's holder.  Each row states its cell's {@code
      * trackedKind}, and a static cell's {@code static}: its location is its
-     * declaring class's, observed on the class's mirror.  Not observed here: a
-     * mutation of a container a local holds before its publication ({@link
-     * Site#publishedFrom}), whose receiver is that local's container, not the
-     * carrier's holder -- its log starts at its first model event.
+     * declaring class's, observed on the class's mirror.  Not observed here:
+     * a mutation of a container a local holds before its publication
+     * ({@link Site#publishedFrom}), whose receiver is that local's
+     * container, not the carrier's -- its log starts at its first model
+     * event.
      */
     public JsonArray observedSites() {
         Map<String, Site> tracked = new LinkedHashMap<String, Site>();
@@ -1491,10 +1500,18 @@ public final class StaticScopeMap {
             boolean read = READ_SITE.equals(site.role);
             Site cell = tracked.get(site.cell);
             if (!read && !WRITE_SITE.equals(site.role) || cell == null
-                    || !site.publishedFrom.isEmpty()
-                    || !seen.add(site.siteId)) {
+                    || !site.publishedFrom.isEmpty()) {
                 continue;
             }
+            boolean call = !site.declaredCallee.isEmpty();
+            boolean atomic = SharedFieldFlow.atomicWrite(site.declaredCallee);
+            boolean container = holdsContainer(site.cell)
+                    && (read || call && !atomic);
+            boolean field = read || !call
+                    ? !SharedFieldFlow.TrackedKind.CONTAINER.name()
+                            .equals(cell.trackedKind)
+                    : atomic;
+            if (!field && !container || !seen.add(site.siteId)) continue;
             JsonObject row = new JsonObject();
             row.addProperty("method", SiteId.methodOf(site.siteId));
             row.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
@@ -1502,11 +1519,21 @@ public final class StaticScopeMap {
             row.addProperty("declaredCallee", site.declaredCallee);
             row.addProperty("cell", site.cell);
             row.addProperty("read", read);
+            row.addProperty("field", field);
+            row.addProperty("container", container);
             row.addProperty("trackedKind", cell.trackedKind);
             if (cell.staticField) row.addProperty("static", true);
             found.add(row);
         }
         return found;
+    }
+
+    /** Whether a cell holds a map, set, list, queue or deque (an array's
+     *  elements are locations of their own). */
+    private static boolean holdsContainer(String cell) {
+        String type = descriptorOfCellType(cell);
+        return !type.startsWith("[") && JavaContainerTypes.shape(type)
+                != JavaContainerTypes.Shape.NONE;
     }
 
     /** Definition sites of one root cell, within the methods a task

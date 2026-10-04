@@ -11,12 +11,14 @@ import java.util.Set;
 public final class SharedFieldFlow {
     /**
      * How the replay versions a field (SYMBOL-SCOPE F2): by the {@code
-     * VALUE} it holds -- an integral primitive or its wrapper -- or as a
+     * VALUE} it holds -- an integral primitive or its wrapper --, as a
      * {@code REFERENCE} a store re-points, whose referent a reader then
-     * queries or projects; {@code NONE} is no tracked cell.
+     * queries or projects, or, for a {@code CONTAINER} only its class's
+     * construction stores, by the state of the container it holds, which is
+     * mutated in place; {@code NONE} is no tracked cell.
      */
     public enum TrackedKind {
-        VALUE, REFERENCE, NONE
+        VALUE, REFERENCE, CONTAINER, NONE
     }
 
     /** Each JDK atomic, with the one field every call of it reads or

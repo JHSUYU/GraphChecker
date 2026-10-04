@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import soot.ArrayType;
 import soot.Body;
 import soot.RefLikeType;
 import soot.Scene;
@@ -304,9 +306,14 @@ public final class CausynthStaticFacts {
      *       object, an array included, other than a String or a wrapper: a
      *       reader queries or projects the referent the field held when it
      *       read (solr-18406's {@code knownCommits}, a map each commit
-     *       replaces).  A static field too: its location is its class's.  A
-     *       field only its construction stores is none ({@link
-     *       #constructionOnly}).</li>
+     *       replaces).  A static field too: its location is its class's.</li>
+     *   <li>{@code CONTAINER}: a field only its construction stores ({@link
+     *       #constructionOnly}) holding a map, set, list, queue or deque
+     *       ({@code JavaContainerTypes#shape}; an array is none): its
+     *       reference never changes, and the container's contents, mutated
+     *       in place, are what a reader queries
+     *       ({@code BlockTokenSecretManager.allKeys}).  Any other field only
+     *       its construction stores is none: there is nothing to re-pair.</li>
      * </ul>
      */
     static SharedFieldFlow.TrackedKind trackedKind(String signature) {
@@ -319,18 +326,25 @@ public final class CausynthStaticFacts {
             return field.isStatic() ? SharedFieldFlow.TrackedKind.NONE
                     : SharedFieldFlow.TrackedKind.VALUE;
         }
-        return type instanceof RefLikeType
-                && !UNVERSIONED_REFERENCES.contains(type.toString())
-                && !constructionOnly(field)
-                ? SharedFieldFlow.TrackedKind.REFERENCE
+        if (!(type instanceof RefLikeType)
+                || UNVERSIONED_REFERENCES.contains(type.toString())) {
+            return SharedFieldFlow.TrackedKind.NONE;
+        }
+        if (!constructionOnly(field)) {
+            return SharedFieldFlow.TrackedKind.REFERENCE;
+        }
+        return !(type instanceof ArrayType) && JavaContainerTypes.shape(
+                type.toString()) != JavaContainerTypes.Shape.NONE
+                ? SharedFieldFlow.TrackedKind.CONTAINER
                 : SharedFieldFlow.TrackedKind.NONE;
     }
 
     /**
      * Whether only its own class's construction stores a field: final, or
      * final in effect ({@link #storedOnlyAtConstruction}).  Its one writer
-     * is its constructor, so there is nothing to re-pair (SYMBOL-SCOPE
-     * §5.1): a read of it is no {@code REFERENCE} read, and a store into it
+     * is its constructor, so the field itself has nothing to re-pair
+     * (SYMBOL-SCOPE §5.1): a read of it is no {@code REFERENCE} read (of a
+     * container, a {@code CONTAINER} read of its contents), and a store into it
      * is no guarded store (§5.3) -- a concrete store there starts no log,
      * so the field names no owner its readers would project through
      * (hdfs-adhoc-03: {@code FSOutputSummer.sum}, a final DataChecksum
