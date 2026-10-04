@@ -78,6 +78,8 @@
 #   AB_Z3         the z3 both sides use (default: the case's z3_bin)
 #   AB_BASELINE_REPO  the checkout whose experiments/ declare the baseline's
 #                 cases (default: this one)
+#   AB_FRESH_SLICE  1: each side's SEED.trace, PLAN and EXPLORE.0 read its own
+#                 fresh SEED.static (default 0: one shared set, ab_seed)
 set -uo pipefail
 
 ab_self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")
@@ -541,8 +543,10 @@ ab_trace_rest() {
 # over ONE set of static artifacts -- the recording's own when the baseline
 # still aggregates the trace over them, else the baseline's fresh ones (a
 # v92 run's skeletons declare ports main refuses, while 17960's fresh ones
-# open a region its v92 trace never addressed).  The static pass is not
-# deterministic, so neither side reads its own.
+# open a region its v92 trace never addressed) -- or, with AB_FRESH_SLICE=1,
+# over each side's own fresh slice: what a slice change does to the region
+# plan and PLAN's closure.  The static pass is not deterministic, so by
+# default neither side reads its own.
 ab_seed() {
   local out=$1 case_id=$2 side fresh
   for side in "${AB_SIDES[@]}"; do
@@ -552,14 +556,18 @@ ab_seed() {
   fresh=${out}/baseline/${case_id}/SEED.static/out
   ab_side_env "${out}" baseline "${case_id}"
   ab_static=${ab_acc}
+  [[ "${AB_FRESH_SLICE:-0}" != 1 ]] || ab_static=${fresh}
   ab_stage_seed_trace
-  if ! ab_ok SEED.trace && [[ -s "${ab_acc}/runtime/runtime_trace.jsonl" ]] \
+  if [[ "${ab_static}" != "${fresh}" ]] && ! ab_ok SEED.trace \
+      && [[ -s "${ab_acc}/runtime/runtime_trace.jsonl" ]] \
       && ab_ok SEED.static && [[ -s "${fresh}/static_scope_map.jsonl" ]]; then
     ab_static=${fresh}
     ab_stage_seed_trace
   fi
   ( ab_trace_rest ) &
   ( ab_side_env "${out}" candidate "${case_id}"
+    [[ "${AB_FRESH_SLICE:-0}" != 1 ]] \
+      || ab_static=${out}/candidate/${case_id}/SEED.static/out
     ab_stage_seed_trace
     ab_trace_rest ) &
   wait
@@ -671,9 +679,10 @@ ${AB_EXTRA_CHAINS[*]}"
   # Both jars, frozen, and what every task reads.
   cp "${baseline}" "${AB_OUT}/jars/baseline.jar"
   cp "${candidate}" "${AB_OUT}/jars/candidate.jar"
-  printf 'AB_HEAP_MB=%q\nAB_SOLVE_JOBS=%q\nAB_STAGE_TIMEOUT_S=%q\nAB_STAGES=%q\nAB_HOSTS=%q\n' \
+  printf 'AB_HEAP_MB=%q\nAB_SOLVE_JOBS=%q\nAB_STAGE_TIMEOUT_S=%q\nAB_STAGES=%q\nAB_HOSTS=%q\nAB_FRESH_SLICE=%q\n' \
     "${AB_HEAP_MB:-8192}" "${AB_SOLVE_JOBS:-1}" "${AB_STAGE_TIMEOUT_S:-1800}" \
-    "${AB_STAGES}" "${AB_HOSTS:-${LIFTS}}" >"${AB_OUT}/env.sh"
+    "${AB_STAGES}" "${AB_HOSTS:-${LIFTS}}" "${AB_FRESH_SLICE:-0}" \
+    >"${AB_OUT}/env.sh"
   [[ -z "${AB_Z3:-}" ]] || printf 'AB_Z3=%q\n' "${AB_Z3}" >>"${AB_OUT}/env.sh"
   printf '%s\n' ${AB_STAGES} >"${AB_OUT}/chains.txt"
   printf 'baseline\t%s\t%s\ncandidate\t%s\t%s\n' \
@@ -739,6 +748,8 @@ ${ab_rounds[*]} -> ${AB_OUT}"
   return "${verdict}"
 }
 
+# Sourced (the shell test), it only defines.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 if [[ "${1:-}" == --task ]]; then
   shift
   ab_task "$@"
