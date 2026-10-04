@@ -573,6 +573,16 @@ public final class RowCodec {
         return json;
     }
 
+    /**
+     * The mark of the invocation of a parameterized test the run is, as its
+     * arguments render ({@link ScheduleEvent#INVOCATION}): {@code of}.
+     */
+    public static JsonObject writeScheduleInvocation(String stated) {
+        JsonObject json = writeScheduleMark(ScheduleEvent.INVOCATION, 0L);
+        json.addProperty("of", stated);
+        return json;
+    }
+
     public static ScheduleEvent readScheduleEvent(JsonObject json) {
         return ScheduleEvent.of(number(json, SEQ),
                 ScheduleEvent.Kind.valueOf(string(json, "kind")),

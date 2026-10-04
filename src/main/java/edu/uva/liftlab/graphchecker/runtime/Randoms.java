@@ -23,16 +23,24 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
  * there -- the same function of the same inputs in both passes.  A Lost
  * context names no work of its own: siblings share its address (unnamed
  * work, a turn begun before the window), so a draw there is seeded as one
- * before the window, where no occurrence stands: by its site and its count
- * at that site in this window.  hdfs-adhoc-01 (round HS1): a cluster started
- * inside the window while no hop stood drew one UUID for every DataNode, and
- * their registrations refused each other for the rest of the run.  Such a
- * count follows the run's own arrival order (the work is unscheduled), so
- * two runs may hand two such draws each other's values: distinct is what is
- * guaranteed, not equal.</p>
+ * before the window, where no occurrence stands: by the thread's node, the
+ * starts it was handed on through ({@link Identity#handoffs}, as a schedule
+ * event's context is), its site, and its count under that key in this
+ * window.  hdfs-adhoc-01 (round HS1): a cluster started inside the window
+ * while no hop stood drew one UUID for every DataNode, and their
+ * registrations refused each other for the rest of the run.  A key one
+ * thread alone draws under counts in that thread's program order, the same
+ * in both passes (a cluster whose nodes are named from their construction,
+ * the adapters' node startups, keys each DataNode's draws by its node);
+ * threads that share one (unnamed work of one node, started under no hop:
+ * HS1's DataNodes, all {@code workload/unregistered} on a tree without node
+ * startups) take its counts in the run's arrival order, so two runs may hand
+ * them each other's values: distinct is what is guaranteed there, not
+ * equal.</p>
  */
 public final class Randoms {
-    /** Per window and site, the draws seeded by their count so far. */
+    /** Per window, node, handoffs and site, the draws seeded by their count
+     *  so far. */
     private static final Map<String, AtomicLong> COUNTS =
             new ConcurrentHashMap<String, AtomicLong>();
 
@@ -49,7 +57,9 @@ public final class Randoms {
                         .id();
             }
         }
-        String counted = RecordingWindow.index() + "#" + site;
+        String counted = RecordingWindow.index() + "#"
+                + RuntimeTraceContext.nodeHere() + "|" + Identity.handoffs()
+                + "#" + site;
         return counted + "#" + COUNTS.computeIfAbsent(counted,
                 ignored -> new AtomicLong()).getAndIncrement();
     }

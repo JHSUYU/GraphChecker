@@ -498,7 +498,9 @@ made before this rule states shorter contexts for such threads, so it cannot hol
 after it (every campaign records and replays with one frozen jar). `k` counts events per (kind, context, site). A
 `Lost` context, and a context anchored by an unawaited receipt, make no event. `mark` rows state
 where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS, at}` states the run
-was cut at its witness.
+was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameterized workload test
+the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
+order, so a replay held to a run of another invocation is refused by name (`ScheduleLog#invocation`).
 
 `runtime/ScheduleLog` records in both passes into `schedule.jsonl`. In a replay it also holds the
 order:
@@ -651,8 +653,8 @@ an event (`startWork`, `claimStart`, `endClaim`, `claimItem`, `enterMethodFrame`
 in both hook catalogs (`CausynthPipeline.HookCatalog#shared`); every site string is stabilized once
 by `contract/JvmNames#stable` (reflection accessors and lambda proxies lose their JVM-minted
 counters; a desugared lambda class is named by content in every weave, `LambdaClassNames`);
-randomness is seeded by endpoint where the occurrence has a context, else by site and count
-(SYMBOL-SCOPE.md §4.5).
+randomness is seeded by endpoint where the occurrence has a context, else by node, handoffs, site
+and count, equal in both passes where one thread alone draws under that key (SYMBOL-SCOPE.md §4.5).
 
 ## 11. Current limits
 
