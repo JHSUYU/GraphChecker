@@ -148,6 +148,26 @@ public class AStartWithNoIdentityFilesNoFrameTest {
         assertEquals("Lost:UNKNOWN", tasks[1]);
     }
 
+    /**
+     * A message unnamed work sends files no producer endpoint: its index
+     * would count what sibling threads did (round HG2: every IPC handler's
+     * response shared one anchor).  Named by a hop, the same send files one.
+     */
+    @Test
+    public void unnamedWorkSendsUnanchored() {
+        assertEquals(null, Identity.messageSent(DN.key(), "IPC", "c1",
+                "RESPONSE", "IPC#RESPONSE", null));
+        assertEquals("", Interactions.sender("IPC", "c1", "RESPONSE"));
+        long hop = Lineage.push(DN.key(), Role.UNKNOWN, "accept");
+        try {
+            assertTrue(Identity.messageSent(DN.key(), "IPC", "c2",
+                    "RESPONSE", "IPC#RESPONSE", null) != null);
+        } finally {
+            Lineage.pop(hop);
+            Interactions.resetForTests();
+        }
+    }
+
     /** What one region entry opened: its context, or "none". */
     private static String opened(String region) {
         OccurrenceAddress address = Identity.occurrence(DN.key(), region,

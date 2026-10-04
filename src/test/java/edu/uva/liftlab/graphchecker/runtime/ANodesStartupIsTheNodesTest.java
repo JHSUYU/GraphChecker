@@ -60,6 +60,27 @@ public class ANodesStartupIsTheNodesTest {
     }
 
     /**
+     * A startup is construction work: a timed wait inside it is a pause and
+     * opens no turn, though the startup names a node and no request stands
+     * (round HG2: a NameNode format's wait made every IPC handler its
+     * constructor started serve in that one turn).
+     */
+    @Test
+    public void aTimedWaitInAStartupOpensNoTurn() {
+        RecordingWindow.reset();
+        RecordingWindow.open();
+        long startup = RuntimeTraceContext.beginNodeStartup(NODE);
+        try {
+            assertEquals("a pause in a construction", 0L,
+                    RuntimeTraceContext.beginWake(
+                            "FSEditLogAsync$SyncEdit.logSyncWait"));
+        } finally {
+            RuntimeTraceContext.endNodeStartup(startup);
+            RecordingWindow.reset();
+        }
+    }
+
+    /**
      * The test's thread, in its request, starts or creates one of a node's
      * threads, in a startup or not.
      *

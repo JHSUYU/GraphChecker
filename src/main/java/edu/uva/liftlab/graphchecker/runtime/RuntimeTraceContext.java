@@ -535,10 +535,14 @@ final class RuntimeTraceContext {
      */
     static long beginWake(String api) {
         // A timed wait inside non-turn work is a pause within it, not a
-        // daemon's next turn.
+        // daemon's next turn -- a node startup's included: a construction
+        // is work, and every thread it then started took a turn opened in
+        // it as its lineage (round HG2, hdfs-adhoc-11/14: a NameNode's
+        // format timed out in FSEditLogAsync$SyncEdit.logSyncWait on the
+        // test's thread, and every IPC handler the constructor started
+        // served each uncarried call in that one turn, at one address).
         State state = CURRENT.get();
         for (ScopeFrame open : state.scopes) {
-            if (open.startup != null) continue;
             if (!open.turn) return 0L;
         }
         SourceRef source = activationSource(null);
@@ -689,8 +693,9 @@ final class RuntimeTraceContext {
     /**
      * Names a receipt whose sender this run does not hold -- evicted past
      * {@link Interactions#LIMIT} (a store version read long after its write)
-     * or never filed: the work it opens stands on this thread's own root or
-     * lost context, not on the sender's anchor.
+     * or never filed (sent by unnamed work, {@link Identity#messageSent}):
+     * the work it opens stands on this thread's own root or lost context,
+     * not on the sender's anchor.
      */
     private static void unanchored(State state, String rpcSite) {
         OccurrenceAddress here = RowRuntime.occurrenceHere(
@@ -702,7 +707,8 @@ final class RuntimeTraceContext {
                         + " names no sender this run holds ("
                         + Interactions.sendersEvicted() + " sent messages"
                         + " were evicted past the " + Interactions.LIMIT
-                        + "-entry bound, or its sender filed none), so the"
+                        + "-entry bound, or its sender filed none: work no"
+                        + " hop named sends unanchored), so the"
                         + " work it opens is addressed under this thread's"
                         + " own context instead of an anchor");
     }
