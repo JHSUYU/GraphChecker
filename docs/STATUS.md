@@ -295,11 +295,12 @@ Correctness:
 41. Performance: the VM re-sends an expression node's whole closure with every branch window and
     every read-out page; the engine skips the rows it holds by id, unscanned, but parses every node
     new to it at about 1-1.7 ms on the interpreter, on one publication thread for pages. A symbolic
-    checksum (hdfs-adhoc-02/03/04: `FSOutputSummer.sum`'s guarded read makes every 512-byte chunk's
-    CRC ~10k nodes) is that cost per chunk: on image `vm-size-source` (run TD2) adhoc-03's branch
-    captures cost 1.3 s for its first 24 writes (55 s per write before), but its first 9 minutes
-    read out 24 pages, 328 MB, 224k nodes new to the store and 690k held (skipped at ~0.17 ms each),
-    380 s of decoding, and the writer waited 818 s at the four-page hand-off: still over its bound.
+    checksum is that cost per 512-byte chunk (~10k nodes). hdfs-adhoc-03's came from the guarded
+    store of the final `FSOutputSummer.sum` (now no guarded store, SYMBOL-SCOPE §5.1/§5.3): its seed
+    replay takes 289 s (run TD4; bound 2400 s). hdfs-adhoc-04's still comes from a tracked VALUE read
+    of the final `DataChecksum.bytesPerChecksum` (the root demand chose it; §5.1 excludes
+    construction-only fields from REFERENCE read sites only). hdfs-adhoc-02's seed replay stalls in
+    the test's own `waitFor` of a new generation stamp (schedule give-ups of 15 s each), not here.
 42. In the systems: Solr's `ZkStateReader` lets a stale state fetch resurrect a deleted collection
     (each watch event runs on its own pool thread; nothing orders one refresh's fetch against its
     apply; still on Solr main, the symptom of SOLR-12544). Under `CausynthBounds` a delete's
