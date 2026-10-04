@@ -605,8 +605,9 @@ public final class ObligationFactory {
                 planted.unproducible.add(control.attachEndpointId);
             }
         }
-        // A writer the model chose that is not the one the recording's reads
-        // observed is a pairing the replay is held to, the location's
+        // A writer the model chose that is not the recording's pairing (the
+        // writer its reads observed, or the run's own choice) is a pairing
+        // the replay is held to, the location's
         // INITIAL among them; a read another session made is no event of
         // the world this replay runs.
         for (FlipQuery.WriterChoice choice : built.choices) {
@@ -707,8 +708,10 @@ public final class ObligationFactory {
     }
 
     /**
-     * The query with every writer choice held to the writer the recording's
-     * reads observed ({@link FlipQuery.WriterChoice#recorded}); a container
+     * The query with every writer choice held to the recording's pairing
+     * ({@link FlipQuery.WriterChoice#recorded}: the writer its reads
+     * observed, or the run's own choice where that is no one writer's
+     * arm); a container
      * state follows its writer's.  A term the lowering refused ({@code
      * unsupported__*}) has no recorded value and stays free.  "" when the
      * query has no writer choice to hold.

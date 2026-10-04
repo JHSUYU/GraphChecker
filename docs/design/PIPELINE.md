@@ -620,10 +620,14 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   upstream hole's symbol, is a nested slot.
 - READ: the eligible writers (`Arms.stateArms`, the location's INITIAL among them, the writer at
   version 0) become one Bool selector each (`wchoice_*`, exactly one), one choice per (reader
-  occurrence, location) binding every read of it -- reads of it that saw two writes have no choice
-  that is the run's pairing and refuse the flip by name (`UNSTATED_VALUE:READS_SAW_TWO_WRITES`, as
-  COMPOSE's family does); a writer whose write lowers to another sort than the read delivers
-  nothing it could be and is no choice (`ARM_SORT_MISMATCH`, the recorded one excepted); no writer:
+  occurrence, location) binding every read of it, so a writer's choice is the run only where every
+  read saw that writer's one write; where the reads saw several writes, or a version no row wrote,
+  one more selector, the run's own (`wchoice_*_run`, `FlipQuery#choices`), holds each read to the
+  value it read (its observed write's delivery, else its row's `concreteValue`; neither refuses
+  `UNSTATED_VALUE`) and is the recorded pairing, as COMPOSE's observed arm is (§8): a model taking it
+  plants nothing, `heldToRecording` asserts it, and the writer choices stay beside it; a writer
+  whose write lowers to another sort than the read delivers nothing it could be and is no choice
+  (`ARM_SORT_MISMATCH`, the recorded one excepted); no writer:
   pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A scalar read of a field or array cell
   of the flipped occurrence (not a container's state or a query of one) with more than one
   eligible writer is its own symbol, as COMPOSE keeps the anchor's
