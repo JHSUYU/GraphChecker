@@ -469,8 +469,14 @@ refused). Its value is planted at a focused occurrence only, and its domain is t
 is pinned. A hook that runs in a case whose plan declares a phase of its source in no task (a
 block key's serial in every NameNode of an unrelated check) mints nothing and is named by a
 DIAGNOSTIC `DECLARATION_MISSING` row: its source is no root of that case
-(`runtime/ActiveRegion#observeConfiguredSourceEntry`, `ConcolicTaskPlan#declaresSource`); a hook
-whose source the plan declares, run at a site it does not declare, still refuses BLOCKING.
+(`runtime/ActiveRegion#observeConfiguredSourceEntry`, `ConcolicTaskPlan#declaredPhase`); a hook
+whose source the plan declares, run at a site its occurrence does not declare, still refuses
+BLOCKING: a hook's plant is per site, so the value there stays unplanted. A configuration read at a
+site its occurrence's catalog lacks (the recording never read the key there; a flipped path reaches
+new reads) is not refused: the world's value is already in the field (`RootMint#configuration` writes
+it at every read before the mint), so no symbol is minted, the read is stated as a concrete reading
+(`SessionManifest#concreteReadings`), and a `DECLARATION_MISSING` DIAGNOSTIC row names it (that
+occurrence's decisions on it are concrete). A claim moving the key stays producible.
 
 Either way `runtime/RootMint#configuredSource` mints one symbol per source on the owner's
 primitive instance field, keeps a propagated expression instead when the field already carries one

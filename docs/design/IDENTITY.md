@@ -56,7 +56,11 @@ no occurrence while no hop names it either (its lineage is empty, `Lineage#named
 both); its region entries push a marker as a fold does, and its events are its role's. Such
 siblings differ by nothing an address names: a DataNode's connection threads, which its acceptor
 starts under no root, each enter the SASL server's regions before their first message, and would
-share one address. Once the message's hop stands, the regions they enter open under it.
+share one address. Once the message's hop stands, the regions they enter open under it. A message
+unnamed work sends files no producer endpoint (`Identity#messageSent`), as its start filed no frame
+(§3): its index would count what sibling threads did, and two IPC handlers' responses would share one
+anchor (round HG2). Its receipt is unanchored, a `LINEAGE_LOST` row (`RuntimeTraceContext#unanchored`),
+and the work it opens stands on the receiver's own context.
 
 **Naming rule** (`Identity#hopOpened`, the same rule at every hop, in both passes): a hop that gives
 the thread a context of its own (`RuntimeTraceContext`'s openers: a request, a carried scope or
@@ -106,7 +110,7 @@ Hops are opened by (all in `runtime/RuntimeTraceContext`):
 |---|---|
 | `beginRequest` (the workload, `MessageDoors.beginRequest`/`beginWorkloadCall`) | role `CLIENT`, api = the request's name; a root where none stands, or always (`pushCallRoot`) for a workload call |
 | `beginTick` (`MessageDoors.beginTick`) | a root of the given role, whatever the thread stands in (`pushRoot`) |
-| `beginWake` (at the return of a timed wait, `runtime/WakeScopes`) | a root of role `WAKE`, api = `Class.method` of the wait; only on a thread attributed to a node and only when every open scope is itself a turn |
+| `beginWake` (at the return of a timed wait, `runtime/WakeScopes`) | a root of role `WAKE`, api = `Class.method` of the wait; only on a thread attributed to a node and only when every open scope is itself a turn (a request, a served message, a node startup are not: a wait inside them is a pause) |
 | `enterInbound` (a received message) | role = the transport, api = the request's `<source>/<api>`; the anchor is `Interactions.sender(transport, correlation, half)`, rpcSite `<TRANSPORT>[.<VIA>]/<api>` |
 | `enterCarriedScope`, `claimCarried` (queued or started work) | the carried lineage restored, plus a nested hop (`EXECUTOR_TASK` for a claimed start) |
 
@@ -293,7 +297,12 @@ from the startup's first moment: bound only once built and registered, what its 
 threads did before raced the registration (HBase's HBA2: ZooKeeper callbacks a region server's
 construction set up were the unregistered workload's in the recording and the region server's in the
 replay, and its seed replay stalled; HDFS round HS1: a DataNode started inside the window ran its
-storage checks as the test's client).
+storage checks as the test's client). A startup is construction work, not a turn: a timed wait inside
+it is a pause and opens no `WAKE` turn (`RuntimeTraceContext#beginWake`), as inside any scope that is
+not itself a turn. Round HG2 (hdfs-adhoc-11, 14): a NameNode's format, inside its startup on the
+test's thread, timed out in `FSEditLogAsync$SyncEdit.logSyncWait`; the turn it opened was the lineage
+of every IPC handler the constructor then started, and each call that carried no context was served in
+that one turn at one address (`OCCURRENCE_ADDRESS_SHARED`).
 
 PLAN refuses what the address cannot tell apart: activations of one region sharing one address are
 `OCCURRENCE_ADDRESS_SHARED` (BLOCKING when the published closure retains that occurrence, else

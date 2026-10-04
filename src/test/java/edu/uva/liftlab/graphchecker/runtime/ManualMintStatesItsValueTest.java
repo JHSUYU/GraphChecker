@@ -26,6 +26,7 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -875,6 +876,68 @@ public class ManualMintStatesItsValueTest {
         } finally {
             CausynthTraceRecorder.endCall(invocation, null, "");
         }
+    }
+
+    /**
+     * A read at a site its occurrence's catalog lacks (its recording never
+     * read the source there; a flipped path reaches new reads): a
+     * configuration's field already holds the world's value, written at
+     * every read, so the read mints nothing and is named, DIAGNOSTIC; a
+     * tree hook's plant is per site, so its unnamed site still blocks.
+     */
+    @Test
+    public void aReadOutsideItsOccurrencesCatalogBlocksOnlyForAHook()
+            throws Exception {
+        openSession();
+        JsonObject configTask = task(REGION, NODE + "#epoch1",
+                NODE + "#epoch1/region/" + REGION + "#7");
+        JsonArray reads = new JsonArray();
+        reads.add(ConfiguredSourcePhaseContract.configOccurrence(
+                ConfiguredSourcePhaseContract.declarationsOf(
+                        singletonArray(ConfiguredSourcePhaseContract
+                                .configDeclaration("CONFIG:k", FIELD,
+                                        PHASE_METHOD, UNIT, "0", "4")))
+                        .get(0), NODE + "#epoch1/region/" + REGION + "#7",
+                11L, FIELD, Arrays.asList(7L)));
+        configTask.add(ConfiguredSourcePhaseContract.PLAN_FIELD, reads);
+        configTask.addProperty("taskId", "TASK.CONFIG");
+        Field installed = ConcolicTaskPlan.class.getDeclaredField("plan");
+        installed.setAccessible(true);
+        Object before = installed.get(null);
+        installed.set(null, new ConcolicTaskPlan(null, Arrays.asList(
+                new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
+                        configTask)),
+                new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
+                        phaseTask(NODE + "#epoch1", PLANNED))))));
+        // An occurrence whose catalog declares neither source, at a site of
+        // its own.
+        ActiveRegion elsewhere = open(task(REGION, NODE + "#epoch1",
+                NODE + "#epoch1/region/" + REGION + "#9"));
+        long invocation = CausynthTraceRecorder.beginCall(0L, PHASE_METHOD,
+                UNIT + 5, PHASE_METHOD, new Object(), true);
+        try {
+            Object[][] rows = {
+                {"CONFIG:k", false, "world's value"},
+                {SOURCE_ID, true, "outside the frozen phase catalog"}};
+            for (Object[] row : rows) {
+                assertNull((String) row[0] + " mints nothing",
+                        elsewhere.observeConfiguredSourceEntry(
+                                (String) row[0], FIELD));
+                assertEquals(GapKind.DECLARATION_MISSING, gap().kind());
+                assertEquals((String) row[0], row[1], gap().blocking());
+                assertTrue(gap().detail(),
+                        gap().detail().contains((String) row[2]));
+            }
+        } finally {
+            CausynthTraceRecorder.endCall(invocation, null, "");
+            installed.set(null, before);
+        }
+    }
+
+    private static JsonArray singletonArray(JsonObject row) {
+        JsonArray array = new JsonArray();
+        array.add(row);
+        return array;
     }
 
     /**

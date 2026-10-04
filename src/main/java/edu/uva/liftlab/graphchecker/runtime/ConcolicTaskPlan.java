@@ -81,18 +81,20 @@ final class ConcolicTaskPlan {
     boolean unansweredAddressesPublished;
 
     /**
-     * Whether some task of this plan declares a phase of the configured
-     * source: a tree hook of a source no task declares is no root of this
-     * case ({@link ActiveRegion#observeConfiguredSourceEntry}).
+     * A phase some task of this plan declares of the configured source, or
+     * null: a tree hook of a source no task declares is no root of this
+     * case, and the phase's category says how a read at a site its
+     * occurrence does not declare is stated ({@link
+     * ActiveRegion#observeConfiguredSourceEntry}).
      */
-    boolean declaresSource(String sourceId) {
+    ConfiguredSourcePhaseContract.Occurrence declaredPhase(String sourceId) {
         for (RuntimeTask task : tasks) {
             for (ConfiguredSourcePhaseContract.Occurrence phase
                     : task.configuredSourcePhases) {
-                if (phase.sourceId().equals(sourceId)) return true;
+                if (phase.sourceId().equals(sourceId)) return phase;
             }
         }
-        return false;
+        return null;
     }
 
     ConcolicTaskPlan(Path resultFile, List<RuntimeTask> tasks) {

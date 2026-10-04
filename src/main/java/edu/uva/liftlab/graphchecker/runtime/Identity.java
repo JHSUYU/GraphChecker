@@ -1428,11 +1428,18 @@ public final class Identity {
      * Endpoint#messageSite}).  Returns the endpoint, not its digest, so rows
      * and refusals spell out what the anchor digests.
      *
+     * <p>A message unnamed work sends here (no hop names the thread, §1)
+     * files none, as an unnamed start files no frame (§3): its index would
+     * count what sibling threads did, and two handlers' sends would share
+     * one anchor.  Its receipt is unanchored and named ({@code
+     * RuntimeTraceContext#unanchored}).</p>
+     *
      * @return the endpoint filed, or {@code null}
      */
     public static Endpoint messageSent(String nodeKey, String transport,
                                        String correlationId, String half,
                                        String site, Endpoint minted) {
+        if (minted == null && !Lineage.named()) return null;
         Endpoint producer = minted != null ? minted
                 : endpointAt(currentOccurrence(nodeKey), site, 0);
         if (producer == null) return null;
