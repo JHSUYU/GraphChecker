@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Selector;
 import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan.Goal;
@@ -19,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
@@ -113,8 +115,10 @@ public final class RuntimeWorkflowDiscovery {
 
     /**
      * The first observed occurrence of the declared target site in THIS
-     * recording, fixed at the seed like any declaration and handed to every
-     * later stage as the address PLAN resolved it to: what a case declares
+     * recording that the window holds back to its root ({@link
+     * #declaredOccurrence}), fixed at the seed like any declaration and
+     * handed to every later stage as the address PLAN resolved it to: what a
+     * case declares
      * whose failure is the target's first occurrence (solr-18406), and what
      * a case declaring none gets.  An address read off one recording need
      * not name anything in the next.
@@ -123,35 +127,70 @@ public final class RuntimeWorkflowDiscovery {
 
     /**
      * The occurrence a declaration names among the observed target
-     * occurrences, in recorded order: {@link #FIRST}, the first; a resolved
-     * address, itself; a selector, its k-th match (the {@link
-     * SelectorResolution} rule).  Resolved once, at the seed ({@code
-     * causynth.RuntimeSelectedRegionFinalizer}, which plans only the
-     * question's own {@code (r,c)} around it and marks it on its plan row,
-     * {@link #declaredTarget}); every later stage reads that.  No match is a
-     * named refusal, never a fallback or a rank.
+     * occurrences the window holds back to their root, in recorded order:
+     * {@link #FIRST}, the first; a resolved address, itself; a selector, its
+     * k-th match (the {@link SelectorResolution} rule).  Resolved once, at
+     * the seed ({@code causynth.RuntimeSelectedRegionFinalizer}, which plans
+     * only the question's own {@code (r,c)} around it and marks it on its
+     * plan row, {@link #declaredTarget}); every later stage reads that.  No
+     * match is a named refusal, never a fallback or a rank.
+     *
+     * <p>An occurrence whose chain is not known back to its root ({@code
+     * shapes}, {@link ContextShape#rootedInWindow}) rests on a message the
+     * window's order does not hold: one sent before the window, which a
+     * replay answers inside or before its own window as its timing falls,
+     * or one whose sender nothing names.  Round HG2's hdfs-adhoc-19 declared
+     * {@code first}: the DataNode's first block report, sent before the
+     * window, was answered inside it in the recording and before it in the
+     * replay, which then never ran the declared finalize command.  Such an
+     * occurrence is never the question (it still seeds the closure walk);
+     * none other observed is a refusal naming them with their shapes,
+     * {@code DECLARED_TARGET_BEFORE_WINDOW}.</p>
+     *
+     * @param shapes an observed occurrence's context shape over the
+     *        recording's senders
      */
     public static String declaredOccurrence(List<String> observed,
-                                            String declaredOccurrence)
-            throws IOException {
+            String declaredOccurrence,
+            Function<String, List<String>> shapes) throws IOException {
+        List<String> inWindow = new ArrayList<>();
+        Map<String, List<String>> beforeWindow = new LinkedHashMap<>();
+        for (String candidate : observed) {
+            List<String> shape = shapes.apply(candidate);
+            if (ContextShape.rootedInWindow(shape)) {
+                inWindow.add(candidate);
+            } else {
+                beforeWindow.put(candidate, shape);
+            }
+        }
+        if (inWindow.isEmpty()) {
+            throw new IOException("DECLARED_TARGET_BEFORE_WINDOW: each of "
+                    + "the " + observed.size() + " observed target "
+                    + "occurrence(s) rests on a chain not known back to its "
+                    + "root inside the window (a message sent before it, or "
+                    + "one whose sender nothing names: a ? hop), which no "
+                    + "replay holds; occurrence -> shape: " + beforeWindow);
+        }
         String declared = declaredOccurrence == null ? ""
                 : declaredOccurrence.trim();
-        if (FIRST.equals(declared)) return observed.get(0);
+        if (FIRST.equals(declared)) return inWindow.get(0);
         int k = declaredK(declared);
-        String named = SelectorResolution.kth(observed,
+        String named = SelectorResolution.kth(inWindow,
                 candidate -> declares(declared, candidate), k);
         if (named != null) return named;
         int matched = 0;
-        for (String candidate : observed) {
+        for (String candidate : inWindow) {
             if (declares(declared, candidate)) matched++;
         }
         // A selector a region change renamed is re-derived from the listing
         // this refusal states.
         throw new IOException("DECLARED_TARGET_OCCURRENCE_UNOBSERVED: "
                 + declared + " names " + matched + " of the "
-                + observed.size() + " observed target occurrence(s), and k="
-                + k + " selects none of them; observed target occurrences: "
-                + observed);
+                + inWindow.size() + " observed target occurrence(s) inside "
+                + "the window, and k=" + k + " selects none of them; observed "
+                + "target occurrences: " + inWindow + "; on a chain not "
+                + "known back to its root (DECLARED_TARGET_BEFORE_WINDOW): "
+                + beforeWindow.keySet());
     }
 
     /** The target row the seed marked as the declared occurrence ({@link

@@ -617,9 +617,18 @@ A case names its target occurrence (`declared_target_occurrence`) as a selector
 (`contract/Selector`), `<node>#epoch<N>/region/REGION.x[@<src>#epoch<N>/<api>]#k`, or as `first`,
 the first observed occurrence of the declared target site in the recording
 (`plan/RuntimeWorkflowDiscovery.FIRST`; a case stating none is refused at PLAN). The recording's aggregation
-resolves it once, against the target occurrences it observed in recorded order
-(`RuntimeWorkflowDiscovery#declaredOccurrence`: the k-th a selector matches, by `SelectorResolution`'s
-rule), marks that occurrence's plan row, and plans only the question `(r,c)` around it: the target
+resolves it once, against the target occurrences it observed in recorded order whose chain the window
+holds back to its root (`RuntimeWorkflowDiscovery#declaredOccurrence`: the k-th a selector matches, by
+`SelectorResolution`'s rule; the chain over the recording's senders, `causynth/RecordedMessages#shape`, by
+`contract/ContextShape#rootedInWindow`, the rule a replay's answer is held to), marks that occurrence's
+plan row, and plans only the question `(r,c)` around it. A target whose shape has an unknown hop -- a
+message sent before the window, or one whose sender nothing names -- is never the question: the window's
+order does not hold that message, and one sent before the window a replay answers inside or before its
+own window as its timing falls (round HG2's hdfs-adhoc-19: the
+DataNode's first block report, sent before the window, was answered inside the recording's and before
+the replay's, so `first` named a finalize command the replay ran unrecorded); it still seeds the walk
+when its shape is the question's, and with no other target the aggregation refuses,
+`DECLARED_TARGET_BEFORE_WINDOW`, naming each with its shape. The walk's origins are the target
 occurrences of its region and node whose context has its shape (`contract/ContextShape#sameQuestion`,
 the rule `explore/Branches` stops replays by), at any index (SYMBOL-SCOPE.md §4.4). Every stage after
 PLAN reads the resolved address. `plan/SelectorResolution#resolve` takes the k-th seed activation a

@@ -170,7 +170,8 @@ every other occurrence the plan states is replayable, in recorded order; no slic
 (the closure is EXPLORE's). The declaration is `declared_target_occurrence`: a resolved address, a
 selector (`node#epochN/region/REGION.x[@api]#k`, the k-th match in recorded order), or `first` (none stated:
 SEED resolves `first` and PLAN refuses, `DECLARED_TARGET_OCCURRENCE_MISSING`). SEED's aggregation resolves it once against the recording's target occurrences
-(`RuntimeWorkflowDiscovery#declaredOccurrence`) and marks that row `declaredOccurrence`; PLAN takes
+whose chain the window holds back to its root (`RuntimeWorkflowDiscovery#declaredOccurrence`; none:
+`DECLARED_TARGET_BEFORE_WINDOW`, IDENTITY.md §9) and marks that row `declaredOccurrence`; PLAN takes
 the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNED`), and the shell
 uses the address PLAN's index states for every later stage, whatever form the declaration had
 (`campaign_plan`). When the closure holds more occurrences than
