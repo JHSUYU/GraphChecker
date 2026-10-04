@@ -148,6 +148,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `UNPRODUCIBLE_ANSWER` | an attach answered or needed with a value no producer arm can produce |
 | `FORMULA_SAT_AT_RECORDED_VALUATION` | the composed formula reaches the fatal arm at the recorded valuation on a healthy path |
 | `DECLARATION_MISSING` | a root, port or name the case never declared; an undecided or erroring solver ask |
+| `HOOK_UNDECLARED` | a tree hook that ran in a case whose plan declares its source nowhere (`ActiveRegion#observeConfiguredSourceEntry`): no root of the case, nothing minted, its value concrete (DIAGNOSTIC; an `UNSAT_CLOSED` result counts them, `undeclaredHookCount`) |
 | `LINEAGE_LOST` | an address degraded by an unattributable hop; an unpaired attach; a missing site index |
 | `TASK_UNANSWERED` | a planned task no activation answered (BLOCKING when PLAN states it) |
 | `ADDRESS_UNSTABLE` | one planned task answered at two addresses across the corpus; a replay's occurrence that answered the declared one by its question, at the address the run computed ([IDENTITY.md §9](IDENTITY.md); DIAGNOSTIC) |

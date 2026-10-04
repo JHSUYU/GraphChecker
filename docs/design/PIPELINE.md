@@ -1680,7 +1680,9 @@ refutes it. Then the campaign exits by its verdict (`campaign_exit_verdict`).
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `findingKind`,
    `polarityDecides`, `valuationOrdinal`, `movedRoots`, `movedRootCategories` (each moved root's
    category, `contract.RootCategory`), `configurationOnly`, `blockers`, `reachability`, `finalStatus`, `gapCount`,
-   `telemetryCount`, `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
+   `telemetryCount`, `undeclaredHookCount` (an `UNSAT_CLOSED` claim's count of the tree hooks that
+   ran on their own concrete value, `HOOK_UNDECLARED` rows by hook and activation; null for any
+   other claim), `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
    `targetOccurrence`, `valuations`, `witnessFindings`.
 4. `final/run-manifest.json`: provenance, iteration manifests, the path, size and sha256 of each
    required final artifact (`candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json`,

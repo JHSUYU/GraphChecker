@@ -256,7 +256,9 @@ cross-run object identity.
 registered object, the receiver of the thread's last work entry (`Identity#claimStart`) counting
 as its outermost; else, on a thread that claimed no start, the node its creator carried when it
 constructed it (`RuntimeTraceContext#inheritedSource`: its explicit scope's, or a node startup's,
-below); else the node of whatever started this work (followed through starters, at most 32 deep). All four failing is `null`, never a guess:
+below); else the node of whatever started this work: its starter's by these same four rules
+(`Attribution.Reference`: the explicit scope and the inherited node as they stood at the start, the
+receivers' registration asked now, then the starter's own starter, at most 32 deep). All four failing is `null`, never a guess:
 the activation is then attributed to `workload/unregistered`
 (`RuntimeTraceContext#activationSource`), so every activation has an address. An activation under
 a `Lost` context is a `LINEAGE_LOST` DIAGNOSTIC row (`runtime/RowRuntime#beginActivation`).
@@ -313,7 +315,12 @@ another node than its address is `TASK_UNANSWERED` BLOCKING
 
 A start made under a hop (§3) captures the starter's scope with the carrier
 (`RuntimeTraceContext#captureAsync`) and writes a `START` event; the claim restores it
-(`RuntimeTraceContext#claimCarried`) and writes a `CLAIM` event. A start no hop names captures
+(`RuntimeTraceContext#claimCarried`) and writes a `CLAIM` event. Only an explicit node travels in
+the scope (a weaker one made explicit would outrank the work's own frames); the start's reference
+(`Attribution#capture`, rule 4) names the starter's node by all four rules, so a task or a queue
+item names its putter's node whenever the putter has one -- a DataNode's actor, created by its
+startup under no request and so its node by inheritance alone, handed Hadoop IPC's shared sender
+work that claimed as `workload/unregistered` until the node registered (round HN1, hdfs-adhoc-53). A start no hop names captures
 nothing and writes no event; its work is unnamed (§1). A pool's own worker thread
 inherits no scope (`runtime/PoolWorkers`: `ThreadPoolExecutor.addWorker`,
 `ForkJoinPool.createWorker`, Jetty `QueuedThreadPool.startThread`); each task carries its own.

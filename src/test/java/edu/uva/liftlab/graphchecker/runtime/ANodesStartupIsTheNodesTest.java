@@ -1,6 +1,8 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
@@ -57,6 +59,28 @@ public class ANodesStartupIsTheNodesTest {
             assertEquals(startup + " started=" + started,
                     ((SourceRef) row[2]).key(), attributed(startup, started));
         }
+    }
+
+    /**
+     * A startup names the node's live epoch: one naming an epoch the run
+     * registered a later one of is refused by name.
+     */
+    @Test
+    public void aStartupNamingADeadEpochIsRefused() {
+        Object slot = new Object();
+        RuntimeTraceContext.registerSource(slot, NODE);
+        RuntimeTraceContext.restartSource(slot, RESTARTED);
+        try {
+            RuntimeTraceContext.beginNodeStartup(NODE);
+            fail("a startup of the dead epoch opened");
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains(RESTARTED.key()));
+        }
+        long token = RuntimeTraceContext.beginNodeStartup(
+                RuntimeTraceContext.sourceFor(slot));
+        assertEquals(RESTARTED.key(), Attribution.resolve(null).key());
+        RuntimeTraceContext.endNodeStartup(token);
     }
 
     /**
