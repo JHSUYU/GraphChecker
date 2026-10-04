@@ -85,7 +85,9 @@ checks per system) is superseded by this one; Phase 1's eleven cases stay the re
   heartbeat claims through IPC's shared sender thread) and `slice-matched-returns` (V23 13/13, `~/gc-run/p237`: a callee
   formal only the return needs is demanded only where the call's result is; every slice shrinks) and `slowdisk-dev` (V24
   14/14, `~/gc-run/p238`; solr-18413 on its rerun V24b after the storing tree took the ZkStateReader race workaround
-  04f8489: HDFS #15 -- the INITIAL arm, ORDER-planted pairings, world-planted re-pairing in COMPOSE). The fourteen
+  04f8489: HDFS #15 -- the INITIAL arm, ORDER-planted pairings, world-planted re-pairing in COMPOSE) and `replay-heap-bound`
+  (V25 14/14, `~/gc-run/p239`: a branch window no longer re-imports the whole expression closure, O(n^2) in a long
+  loop; read-out pages decoded as captured, at most four waiting). The fourteen
   regression cases are the eleven named ones plus `zk-bugs-quota-init`, `zk-bugs-election-offer` and
   `hdfs-bugs-slowdisk-zero`. The HDFS
   RPC-fault cases move either direction of one IPC door from round to round (`Client$Connection#sendRpcRequest`
@@ -175,8 +177,8 @@ submission order (ORDER edges on the submitters).
 `readout-stream`, `hbase-identity`, `slice-matched-returns`, `slowdisk-dev` (candidates and sources of V16-V24 and PP1).
 Live agents: A1 (happens-before: per-session vector clocks over the schedule), A2 (`solr-bug-reindex`: Solr #04), A5
 (`wire-codec-p1`: TODO 6), A6 (replay heap bounds and the per-branch expression import; HBase (a)/(c) parked on the
-owner's window decision); merge order: `solr-bug-reindex` (one change, after its review), the heap bounds, the
-happens-before relation, the WIRE-CODEC HDFS change (W3 + W6-HDFS), one per round.
+owner's window decision); merge order: `solr-bug-reindex` (one change, after its review fixes), the
+happens-before relation (`hb-schedule`, then `hb-sync`, after their review fixes), the WIRE-CODEC HDFS change (W3 + W6-HDFS), one per round.
 
 | branch | head | content | state / next step |
 | --- | --- | --- | --- |

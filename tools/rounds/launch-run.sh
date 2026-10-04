@@ -14,4 +14,7 @@ export CASES="$2"
 export OUT=${GC_OUT}/accept-"$3"
 export Z3_BIN=/u/vnr3ne/.local/bin/z3
 export CAUSYNTH_CUSTOM_JDK_HOME
+# Its obligations go to every host in LIFTS, as a round's do (launch-round.sh):
+# a run left to its head alone replayed two or three at a time (W6C2-W6C4).
+export CAUSYNTH_CAMPAIGN_WORKER_HOSTS="${CAUSYNTH_CAMPAIGN_WORKER_HOSTS:-${LIFTS}}"
 exec bash "$1"/experiments/accept/accept.sh
