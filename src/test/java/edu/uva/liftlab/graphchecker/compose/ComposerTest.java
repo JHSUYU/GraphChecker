@@ -1578,6 +1578,9 @@ public class ComposerTest {
         // A decision the VM recorded concretely, stating no term.
         unreached.decision(ANCHOR, "way#u4", true, "");
         unreached.target("", false, false);
+        // An unreached target row's seq marks no point of the path (the
+        // runtime states 0): a decision after it is the path's too.
+        unreached.decision(ANCHOR, "way#u5", true, "(> 2 1)");
         unreached.write();
         Composer.Composition left = compose(ran, 4);
         ClaimPolicy.Decision healthy = ClaimPolicy.decide(left, solver());
@@ -1593,7 +1596,7 @@ public class ComposerTest {
         assertTrue("and the decisions it took are stated, the concrete one "
                         + "as a proposition at its arm: " + left.body(),
                 left.body().matches("(?s).*\\(and \\(and \\(not \\(< 3 2\\)\\) "
-                        + "decided__0__\\w+\\) false\\).*"));
+                        + "decided__0__\\w+ \\(> 2 1\\)\\) false\\).*"));
 
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its

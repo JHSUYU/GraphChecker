@@ -1225,8 +1225,10 @@ public final class Composer {
                             + way.ordinal(), way == null ? ""
                     : Boolean.toString(way.outcome()),
                     Collections.<String>emptyList()));
+            // An unreached target row stands at no point of the path (its
+            // seq states none): every decision the path took is the way.
             terms.addAll(healthyDecisions(session, ordinal, path.decisions,
-                    target.seq(), relevant));
+                    Long.MAX_VALUE, relevant));
         } else if (published.isEmpty()) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, subject, "the target row states "
@@ -1341,8 +1343,9 @@ public final class Composer {
     /**
      * THE DECISIONS OF A PATH THAT TOOK THE HEALTHY ARM CONCRETELY, stated:
      * each decision up to the target (the anchor's own deciding guard
-     * included) that independence left out -- none of its variables moves,
-     * so it holds at its recorded value in every world -- is conjoined, so
+     * included) that pi_p does not state -- independence left it out, none
+     * of its variables moving, so it holds at its recorded value in every
+     * world, or it states no term -- is conjoined, so
      * the formula states the path the run took and not a bare constant:
      * its term where it lowers with no refusal, else a proposition named for
      * the decision ({@code decided__}) at the arm it took, the decision
@@ -1355,7 +1358,10 @@ public final class Composer {
                                           Independence relevant) {
         List<String> stated = new ArrayList<String>();
         for (DecisionRow decision : decisions) {
-            if (decision.seq() > upTo || relevant.keeps(decision)) {
+            // pi_p states a kept decision whose term it can state.
+            if (decision.seq() > upTo || relevant.keeps(decision)
+                    && decision.seq() < upTo
+                    && Arms.predicate(Arms.conjunct(decision))) {
                 continue;
             }
             String subject = decision.siteId() + "#" + decision.ordinal();
