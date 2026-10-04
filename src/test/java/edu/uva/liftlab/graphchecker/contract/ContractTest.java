@@ -326,16 +326,40 @@ public class ContractTest {
                     }
                 });
         assertNotNull("a page's consumer holds no lock", meanwhile[0]);
+        // Refused, never read past: a record naming a node the table lacks;
+        // a row spelled otherwise than the VM does (no row start the reader
+        // knows: it stays in the row before it, which then holds two); a
+        // count the rows do not meet; a table that does not close the page.
         JsonObject dangling = new JsonObject();
         dangling.add("value", vmReference(9));
-        try {
-            store.importRecords(vmPage(new JsonObject[] {dangling},
-                    vmDefinition(1, symbol("M_I_site"))).toString(),
-                    "records", stated -> true, record -> { });
-            fail("node 9 is no definition of the page");
-        } catch (IllegalArgumentException refused) {
-            assertTrue(refused.getMessage(),
-                    refused.getMessage().contains("missing"));
+        String twoRows = vmPage(new JsonObject[] {first},
+                vmDefinition(1, symbol("M_I_site")), vmDefinition(2,
+                        binary("==", vmReference(1), symbol("M_I_site"))))
+                .toString();
+        JsonObject tableFirst = new JsonObject();
+        tableFirst.add(VmExpressionTable.FIELD,
+                page.get(VmExpressionTable.FIELD));
+        tableFirst.add("records", page.get("records"));
+        String[][] refusals = {
+            {vmPage(new JsonObject[] {dangling}, vmDefinition(1,
+                    symbol("M_I_site"))).toString(), "missing"},
+            {twoRows.replace(",{\"_type\":\"VmExpressionDefinition\","
+                    + "\"sessionId\":1,\"expressionId\":2,",
+                    ",{\"sessionId\":1,\"_type\":\"VmExpressionDefinition\","
+                            + "\"expressionId\":2,"), "more than one row"},
+            {twoRows.replace("\"definitionCount\":2",
+                    "\"definitionCount\":3"), "count"},
+            {tableFirst.toString(), "close"},
+        };
+        for (String[] refused : refusals) {
+            try {
+                new VmExpressionTable.Store().importRecords(refused[0],
+                        "records", stated -> true, record -> { });
+                fail("read: " + refused[0]);
+            } catch (IllegalArgumentException refusal) {
+                assertTrue(refusal.getMessage(),
+                        refusal.getMessage().contains(refused[1]));
+            }
         }
     }
 

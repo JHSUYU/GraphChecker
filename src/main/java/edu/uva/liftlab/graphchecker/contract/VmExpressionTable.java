@@ -108,11 +108,12 @@ public final class VmExpressionTable {
          * read-out page and a branch's path-condition window are -- read as a
          * stream: never parsed whole, never copied whole.  The table comes
          * last, so the envelope is read twice.  First every member but the
-         * records: the table's rows are read, each node this store has
-         * expanded already skipped unparsed (its expansion answers for it:
-         * a window repeats the closure of its condition, a page the closure
-         * its locations share), the rest checked closed and kept; the
-         * records are counted and the rest is the header; {@code admit} is
+         * records: the table's rows are read off the text, a row of a node
+         * this store has expanded already skipped by its id, unscanned (its
+         * expansion answers for it: a window repeats the closure of its
+         * condition, a page the closure its locations share), the rest
+         * parsed, checked closed and kept; the records are counted and
+         * the rest is the header; {@code admit} is
          * asked of the header with the count stated as {@link
          * #RECORD_COUNT}.  Admitted, each record is then parsed, expanded
          * against the table and handed to {@code each} in order, one at a
@@ -189,11 +190,14 @@ public final class VmExpressionTable {
             JsonObject header = new JsonObject();
             try {
                 int count = 0;
+                boolean tabled = false;
                 JsonReader reader = reader(page);
                 while (reader.hasNext()) {
                     String name = reader.nextName();
                     if (FIELD.equals(name)) {
-                        readTable(reader, supplied, table);
+                        // The envelope's last member, read off the text.
+                        tabled = true;
+                        break;
                     } else if (records.equals(name)
                             && reader.peek() == JsonToken.BEGIN_ARRAY) {
                         reader.beginArray();
@@ -203,6 +207,7 @@ public final class VmExpressionTable {
                         header.add(name, JsonParser.parseReader(reader));
                     }
                 }
+                if (tabled) readTable(page, supplied, table);
                 header.addProperty(RECORD_COUNT, count);
                 SharedExpressionTable.Dag<RawKey> dag =
                         new SharedExpressionTable.Dag<>("VM expression",
@@ -263,55 +268,130 @@ public final class VmExpressionTable {
          *  node with nothing left to check. */
         private static final JsonObject CLOSED = new JsonObject();
 
+        /** How the VM spells the start of the table, the last member of an
+         *  envelope, and of its rows (CONTRACT-SPEC §2.3): compact, a row's
+         *  members in this order.  A definition is one shallow object (a
+         *  child is a reference) whose strings are escaped, so neither can
+         *  occur inside one. */
+        private static final String TABLE_KEY = ",\"" + FIELD + "\":{";
+        private static final String ROWS_KEY = ",\"definitions\":[";
+        private static final String ROW = "{\"_type\":\"" + DEFINITION_TYPE
+                + "\",\"sessionId\":";
+        private static final String ROW_ID = ",\"expressionId\":";
+        private static final String ROW_EXPRESSION = ",\"expression\":";
+        /** Closes the rows, the table and the envelope. */
+        private static final String TABLE_END = "]}}";
+
         /**
-         * One expression table, read off {@code reader} at its value: each
-         * row's key into {@code supplied}, and into {@code table} the
-         * definition of every node this store has not expanded yet, checked
-         * against what an earlier envelope defined it as; a node it has
-         * expanded is skipped unparsed.  The table must state its schema,
-         * its own session on every row, and its row count.
+         * The envelope's expression table, read off its text: each row's
+         * key into {@code supplied}, and into {@code table} the definition
+         * of every node this store has not expanded yet, checked against
+         * what an earlier envelope defined it as.  A row of a node the
+         * store has expanded is skipped by its id, unparsed: a row ends
+         * where the next one starts, so its definition is never scanned as
+         * JSON (a branch window repeats the closure of its condition, a page
+         * the closure its locations share: hdfs-adhoc-03's read-out pages
+         * were 20 MB of rows the store held, 18 s each to scan).  Fail
+         * closed: a row whose id does not read as the VM spells it is
+         * parsed whole, and the table must close the envelope, state its
+         * schema, its own session on every row, and its row count.
          */
-        private void readTable(JsonReader reader, Set<RawKey> supplied,
+        private void readTable(String page, Set<RawKey> supplied,
                                Map<RawKey, JsonObject> table)
                 throws IOException {
-            if (reader.peek() != JsonToken.BEGIN_OBJECT) {
+            int start = page.indexOf(TABLE_KEY);
+            int rows = start < 0 ? -1 : page.indexOf(ROWS_KEY, start);
+            int end = page.length() - TABLE_END.length();
+            if (rows < 0 || !page.startsWith(TABLE_END, end)) {
                 throw new IllegalArgumentException(
-                        "VM expression table must be an object");
+                        "VM expression table must close its envelope");
             }
-            JsonObject stated = new JsonObject();
-            List<RawKey> rows = new ArrayList<>();
-            reader.beginObject();
-            while (reader.hasNext()) {
-                String name = reader.nextName();
-                if (!"definitions".equals(name)
-                        || reader.peek() != JsonToken.BEGIN_ARRAY) {
-                    stated.add(name, JsonParser.parseReader(reader));
-                    continue;
+            JsonObject stated = JsonParser.parseString(page.substring(
+                    start + TABLE_KEY.length() - 1, rows) + "}")
+                    .getAsJsonObject();
+            List<RawKey> keys = new ArrayList<>();
+            for (int row = rows + ROWS_KEY.length(); row < end; ) {
+                if (!keys.isEmpty() && page.charAt(row++) != ',') {
+                    throw new IllegalArgumentException(
+                            "VM expression rows must be separated");
                 }
-                reader.beginArray();
-                while (reader.hasNext()) {
-                    rows.add(readDefinition(reader, table));
-                }
-                reader.endArray();
+                int next = page.indexOf("," + ROW, row);
+                int stop = next < 0 || next > end ? end : next;
+                RawKey held = heldRow(page, row);
+                keys.add(held != null ? held : readDefinition(
+                        page.substring(row, stop), table));
+                row = stop;
             }
-            reader.endObject();
             long session = exactNonNegativeLong(stated, "sessionId");
             if (optionalInteger(stated, "schemaVersion", -1) != 1
                     || !KIND.equals(optionalString(stated, "kind"))
                     || !AUTHORITY.equals(optionalString(stated, "authority"))
-                    || optionalInteger(stated, "definitionCount", -1)
-                            != rows.size()
-                    || session == 0L && !rows.isEmpty()) {
+                    || session == 0L && !keys.isEmpty()) {
                 throw new IllegalArgumentException(
                         "unsupported VM expression table schema");
             }
-            for (RawKey key : rows) {
+            if (optionalInteger(stated, "definitionCount", -1)
+                    != keys.size()) {
+                throw new IllegalArgumentException("the VM expression table"
+                        + " states another count than the rows it holds");
+            }
+            for (RawKey key : keys) {
                 if (key.session != session) {
                     throw new IllegalArgumentException(
                             "VM expression definition disagrees with table");
                 }
                 supplied.add(key);
             }
+        }
+
+        /** The key of the row at {@code row} when its ids read as the VM
+         *  spells them and this store has expanded that node; else null. */
+        private RawKey heldRow(String page, int row) {
+            if (!page.startsWith(ROW, row)) return null;
+            int at = row + ROW.length();
+            int sessionEnd = digits(page, at);
+            if (sessionEnd < 0 || !page.startsWith(ROW_ID, sessionEnd)) {
+                return null;
+            }
+            int idEnd = digits(page, sessionEnd + ROW_ID.length());
+            if (idEnd < 0 || !page.startsWith(ROW_EXPRESSION, idEnd)) {
+                return null;
+            }
+            RawKey key = new RawKey(
+                    Long.parseLong(page.substring(at, sessionEnd)),
+                    Long.parseLong(page.substring(
+                            sessionEnd + ROW_ID.length(), idEnd)));
+            return key.session > 0L && key.expression > 0L && expanded(key)
+                    ? key : null;
+        }
+
+        /** The end of the run of 1-18 decimal digits at {@code at}, or -1. */
+        private static int digits(String text, int at) {
+            int end = at;
+            while (end < text.length() && end - at < 19
+                    && Character.isDigit(text.charAt(end))) {
+                end++;
+            }
+            return end == at || end - at > 18 ? -1 : end;
+        }
+
+        /** One row's text parsed whole: it must be exactly one row. */
+        private RawKey readDefinition(String row,
+                                      Map<RawKey, JsonObject> table)
+                throws IOException {
+            JsonReader reader = new JsonReader(new StringReader(row));
+            RawKey key = readDefinition(reader, table);
+            boolean one;
+            try {
+                one = reader.peek() == JsonToken.END_DOCUMENT;
+            } catch (IOException more) {
+                one = false;
+            }
+            if (!one) {
+                throw new IllegalArgumentException(
+                        "a VM expression row holds more than one row");
+            }
+            return key;
         }
 
         /** One table row: its key, its definition kept in {@code table}

@@ -60,6 +60,8 @@ class ContainerExpression : public Expression {
   int _members;
   // See has_constant_size().
   bool _constant_size;
+  // See size_source().
+  Expression *_size_source;
   // See stored_at().  `_writes` is the log this chain's WRITEs share, and
   // `_ordinal` this node's place in it; the WRITE whose ordinal is 1 made
   // the log and frees it.
@@ -91,6 +93,21 @@ class ContainerExpression : public Expression {
   // replaces an element in place.  Decided at construction from the
   // receiver's answer, so asking costs nothing however long the chain is.
   bool has_constant_size() const { return _constant_size; }
+
+  // What an INDEXED SIZE of `state` is built over: the nearest state at or
+  // below it that is not an element set.  An INDEXED WRITE (a set() or an
+  // array store: position and value) replaces an element in place and never
+  // changes a size, so its size source is its receiver's; every other node
+  // is its own -- APPEND, INSERT, REMOVE, POLL and CLEAR change the size,
+  // and a consumer boundary or a guarded read under a chain is the
+  // provenance of the whole container, never skipped.  Decided at
+  // construction, so asking costs nothing however long the chain is.  The
+  // constructor builds every INDEXED SIZE over it: hdfs-adhoc-03's
+  // `buf.length` (a packet buffer of non-constant length, a checksum
+  // written into it per chunk) was a SIZE over every element write, ten
+  // thousand checksum nodes more per chunk, and each branch on it re-sent
+  // them all.
+  static Expression *size_source(Expression *state);
 
   // What a read at the concrete `position` of this state returns, when the
   // chain alone decides it: the state is a Java array's STATE root with a

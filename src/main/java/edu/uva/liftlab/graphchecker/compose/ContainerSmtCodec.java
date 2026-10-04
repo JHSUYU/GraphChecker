@@ -316,24 +316,6 @@ public final class ContainerSmtCodec {
         return projected;
     }
 
-    /** Skips the writes a size query cannot observe. */
-    private static JsonElement sizePreservingIndexedReceiver(
-            JsonElement receiver) {
-        JsonElement cursor = receiver;
-        while (cursor != null && cursor.isJsonObject()) {
-            JsonObject node = cursor.getAsJsonObject();
-            if (!EXPRESSION_TYPE.equals(optionalString(node, "_type"))
-                    || !"INDEXED".equals(optionalString(node, "shape"))
-                    || !"WRITE".equals(optionalString(node, "operation"))
-                    || array(node, "arguments").size() != 2
-                    || node.get("receiver") == null) {
-                return cursor;
-            }
-            cursor = node.get("receiver");
-        }
-        return receiver;
-    }
-
     /** One exact {@code int} literal, or null when nothing is decided. */
     private static Integer exactIndexLiteral(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;
@@ -554,9 +536,6 @@ public final class ContainerSmtCodec {
             if (stored != null) {
                 return host.unbox(host.box(stored), javaType);
             }
-        }
-        if ("SIZE".equals(operation) && !preserveReceiver) {
-            receiverIr = sizePreservingIndexedReceiver(receiverIr);
         }
         Term receiver = shared(host.operand(receiverIr, Sort.INDEXED),
                 host);

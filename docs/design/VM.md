@@ -358,6 +358,17 @@ follow it in and how many of the `PUT`s above it they are (`order`: `INSERTION` 
 `compose/ContainerSmtCodec` lower the chains (`AssocState` for maps, `IndexedState` for lists and
 arrays).
 
+**An indexed size skips element sets.** Every INDEXED `SIZE` (`arraylength`, `List.size()`, the
+stream models) is built over its state's size source (`ContainerExpression::size_source`, decided at
+construction): an element set -- an INDEXED `WRITE` (an array store or `set()`: position and value)
+-- never changes a size, so its size source is its receiver's; every other node is its own: `APPEND`,
+`INSERT`, `REMOVE`, `POLL` and `CLEAR` change the size, and a consumer boundary or guarded read under
+a chain is the container's provenance, never skipped. An array of constant length answers its length
+concretely (`has_constant_size`). Built over the current state, hdfs-adhoc-03's packet `buf.length`
+(a length that is no constant) carried every checksum byte written into the buffer, ten thousand
+nodes more per chunk, to each branch on it (`RegionIndexedSizeSmoke`). `ContainerSupport::measures`
+(`new T[c.size()]` filled by `toArray`) compares size sources.
+
 **The owner of a relation.** A query or mutation whose receiver slot carried a guarded reference
 read -- a tracked reference field, an `AtomicReference`, a container `READ` result -- states that
 read as its `owner` member (`ContainerSupport::receiver_owner`), so the choice the read made
@@ -520,9 +531,15 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   pages' text wait there undecoded, and decodes it there one location at a time
   (`contract/VmExpressionTable.Store#importRecords`), asking for `READ_OUT_PAGE_BYTES` pages
   (`runtime/SharedStateCapture`); a branch's path-condition window (`CONCOLIC_PATH_CONDITION_RANGE`,
-  its conditions then the closure's table) is read the same way (`runtime/PathConditionWindow`). A
-  node the store has expanded is skipped unparsed in every later table, and the store is locked
-  only while a node expands. Each envelope is bounded by its own bytes
+  its conditions then the closure's table) is read the same way (`runtime/PathConditionWindow`).
+  The table is the envelope's last member, compact, spelled `,"vmExpressionTable":{<schema,
+  session, definitionCount>,"definitions":[<rows>]}}`, each row `{"_type":"VmExpressionDefinition",
+  "sessionId":<s>,"expressionId":<n>,"expression":{...}}` in ascending id (`write_table`); a
+  definition is one shallow object whose strings are escaped, so no row start occurs inside one.
+  The importer reads the table off the text: a row of a node the store has expanded is skipped by
+  its id, never scanned; a row whose ids do not read so is parsed whole; a table that does not close
+  the envelope, a row holding more than one row, or a count the rows do not meet is refused. The
+  store is locked only while a node expands. Each envelope is bounded by its own bytes
   (32 MB, `serializationTruncated` when cut), never by the page's. An envelope states `writerSetComplete` and,
   when false, `incompleteReasons` and `unnamedWriter`; an INITIAL's `initialSnapshot.stated` is
   true only for a stated count.
@@ -617,7 +634,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 67
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 68
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -633,7 +650,9 @@ collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, 
 tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
 `RegionWrapperViewSmoke` (a view or wrapper is its container), `RegionStreamSmoke` (stream
 pipelines: filter, limit, map, an unmodifiable map's entries, count, anyMatch, a set, the pins and
-the model gaps), `RegionModelGuardSmoke` (the pin/guard discipline, §6: each guarded choice, the
+the model gaps), `RegionIndexedSizeSmoke` (an INDEXED size over its size source, §6: an array of no constant
+length past its element writes, a list's size past `set()` and at its `APPEND`/`REMOVE`),
+`RegionModelGuardSmoke` (the pin/guard discipline, §6: each guarded choice, the
 named unknown cells, no version for a call that changed nothing, an `equals()` match, answers
 stated on query and array-element nodes, nothing added to the path) and
 `RegionAtomicCarrierSmoke` (AtomicBoolean and AtomicReference as carriers); the leaf natives have

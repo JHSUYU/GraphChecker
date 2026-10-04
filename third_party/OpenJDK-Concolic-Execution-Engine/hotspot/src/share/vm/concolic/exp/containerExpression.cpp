@@ -88,7 +88,24 @@ bool constant_size(const std::string &shape, const std::string &operation,
   return operation == "WRITE" && base != NULL && base->has_constant_size();
 }
 
+// The receiver an INDEXED SIZE is built over (size_source()); any other
+// node keeps the receiver it was given.
+Expression *sized_receiver(const char *shape, const char *operation,
+                           Expression *receiver) {
+  return shape != NULL && operation != NULL
+      && std::string(shape) == "INDEXED" && std::string(operation) == "SIZE"
+      ? ContainerExpression::size_source(receiver) : receiver;
+}
+
 }  // namespace
+
+Expression *ContainerExpression::size_source(Expression *state) {
+  ContainerExpression *relation =
+      state == NULL ? NULL : state->as_container_expression();
+  // A boundary that delegates to the container it wraps is its own source.
+  return relation == NULL || (Expression *)relation != state
+      ? state : relation->_size_source;
+}
 
 ContainerExpression::ContainerExpression(
     const char *shape, const char *operation, Expression *receiver,
@@ -97,7 +114,7 @@ ContainerExpression::ContainerExpression(
     const ElementWord &word)
     : _shape(shape == NULL ? "" : shape),
       _operation(operation == NULL ? "" : operation),
-      _receiver(receiver),
+      _receiver(sized_receiver(shape, operation, receiver)),
       _arguments(arguments),
       _java_type(java_type.empty()
                      ? std::string(1, type2char(result_type))
@@ -107,10 +124,14 @@ ContainerExpression::ContainerExpression(
       _members(-1),
       _constant_size(constant_size(_shape, _operation, receiver,
                                    arguments)),
+      _size_source(NULL),
       _decides_reads(false),
       _ordinal(0),
       _writes(NULL),
       _answer(0) {
+  _size_source = _shape == "INDEXED" && _operation == "WRITE"
+      && _arguments.size() == 2 && receiver != NULL
+      ? size_source(receiver) : this;
   if (_operation == "STATE") {
     // An array's root answers every read no WRITE above it answers: the
     // element is the root's.  Whether the root's elements are the heap's is
