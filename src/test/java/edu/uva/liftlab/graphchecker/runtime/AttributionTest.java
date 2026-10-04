@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
@@ -11,7 +13,8 @@ import org.junit.Test;
 /**
  * THE attribution rule, one case per rule: an explicit scope, then the
  * innermost registered receiver on the stack, then the starter by reference
- * -- and nothing when all three fail.
+ * (its node by the same rules, its inherited node included) -- and nothing
+ * when all fail.
  */
 public class AttributionTest {
     private static final SourceRef NN =
@@ -97,6 +100,50 @@ public class AttributionTest {
                 before.get());
         assertEquals("the reference resolves once it is", DN.key(),
                 after.get());
+    }
+
+    /**
+     * A thread a node's startup created under no request is that node by
+     * rule 3 alone; the work it hands a shared consumer thread names that
+     * node too, before the node registers (hdfs-adhoc-53: a DataNode
+     * actor's IPC sends, claimed by Hadoop's one sender pool).
+     */
+    @Test
+    public void aStartersInheritedNodeTravelsWithWhatItStarts()
+            throws Exception {
+        final BlockingQueue<Object> queue = new ArrayBlockingQueue<>(1);
+        final AtomicReference<String> claimed = new AtomicReference<>("");
+        Thread consumer = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Identity.claimItem(queue.take());
+                } catch (InterruptedException interrupted) {
+                    return;
+                }
+                SourceRef node = Attribution.resolve(null);
+                claimed.set(node == null ? "" : node.key());
+            }
+        });
+        consumer.start();
+        long startup = RuntimeTraceContext.beginNodeStartup(DN);
+        Thread actor = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                // A tick whose owner the run has not registered yet.
+                long tick = RuntimeTraceContext.beginTick(new Object(),
+                        "BP_SERVICE_ACTOR");
+                Object item = new Object();
+                Identity.startWork("<a.Connection: void send()>#u1", item);
+                queue.add(item);
+                RuntimeTraceContext.endTick(tick);
+            }
+        });
+        RuntimeTraceContext.endNodeStartup(startup);
+        actor.start();
+        actor.join(5000L);
+        consumer.join(5000L);
+        assertEquals(DN.key(), claimed.get());
     }
 
     @Test

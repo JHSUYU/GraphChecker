@@ -331,8 +331,15 @@ final class RuntimeTraceContext {
      * and the region server's in the replay, and the seed replay stalled on
      * them).
      *
+     * <p>A startup names the node's live epoch or none: one naming an epoch
+     * the run already registered a later one of is refused by name.  It
+     * would attribute the new life's work to the dead one, whose writers the
+     * demand walk's same-node rule then drops.</p>
+     *
      * @param node the node, or null: then no startup opens
      * @return the token that ends the startup, 0 when none opened
+     * @throws IllegalArgumentException when a later epoch of the node is
+     *         registered
      */
     static long beginNodeStartup(SourceRef node) {
         if (node == null) return 0L;
@@ -341,6 +348,15 @@ final class RuntimeTraceContext {
         ScopeFrame scope = new ScopeFrame(token, state);
         SourceRef canonical;
         synchronized (LOCK) {
+            for (SourceRef registered : SOURCES_BY_KEY.values()) {
+                if (registered.id().equals(node.id())
+                        && registered.epoch() > node.epoch()) {
+                    throw new IllegalArgumentException("a node startup names "
+                            + node.key() + ", but " + registered.key()
+                            + " is registered: a restarted node's startup"
+                            + " is its live epoch's");
+                }
+            }
             canonical = canonicalSourceLocked(node);
         }
         scope.startup = canonical;

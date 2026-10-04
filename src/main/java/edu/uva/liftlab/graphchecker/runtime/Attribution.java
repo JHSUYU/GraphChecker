@@ -17,9 +17,9 @@ import java.util.List;
  *   <li>else, on a thread that claimed no start, the node its creator
  *       carried when it constructed it
  *       ({@link RuntimeTraceContext#inheritedSource});</li>
- *   <li>else the node of whatever STARTED this work ({@link Reference}),
- *       resolved now, so a registration made after the start still
- *       counts.</li>
+ *   <li>else the node of whatever STARTED this work ({@link Reference}):
+ *       its starter's by these same rules, resolved now, so a registration
+ *       made after the start still counts.</li>
  * </ol>
  *
  * <p>A node's startup is that node's explicit scope while it stands, and
@@ -35,29 +35,35 @@ final class Attribution {
     }
 
     /**
-     * Where some work was started, resolved when asked.  The explicit scope
-     * is fixed at the start; receivers are held weakly and their
+     * Where some work was started, resolved when asked by the four rules as
+     * they stood for its starter: the explicit scope and the inherited node
+     * are fixed at the start; receivers are held weakly and their
      * registration is asked at use time.
      */
     static final class Reference {
         private final SourceRef explicit;
         private final List<WeakReference<Object>> receivers;
+        private final SourceRef inherited;
         private final Reference parent;
 
         private Reference(SourceRef explicit, List<Object> receivers,
-                          Reference parent) {
+                          SourceRef inherited, Reference parent) {
             this.explicit = explicit;
             this.receivers = new ArrayList<WeakReference<Object>>(
                     receivers.size());
             for (Object receiver : receivers) {
                 this.receivers.add(new WeakReference<Object>(receiver));
             }
+            this.inherited = inherited;
             this.parent = parent;
         }
 
-        /** A creator's reference: its receivers and its own starter. */
+        /**
+         * A creator's reference: its receivers and its own starter (what it
+         * carried, the new thread inherits itself, rule 3).
+         */
         static Reference of(List<Object> receivers, Reference parent) {
-            return new Reference(null, receivers, parent);
+            return new Reference(null, receivers, null, parent);
         }
 
         SourceRef resolve() {
@@ -74,16 +80,27 @@ final class Attribution {
                 SourceRef registered =
                         RuntimeTraceContext.firstRegistered(alive);
                 if (registered != null) return registered;
+                if (cursor.inherited != null) return cursor.inherited;
                 cursor = cursor.parent;
             }
             return null;
         }
     }
 
-    /** The reference a work started HERE carries. */
+    /**
+     * The reference a work started HERE carries: this thread's node by the
+     * four rules, its inherited node included -- a thread a node's startup
+     * created under no request is that node only by rule 3, and work it
+     * handed to a shared executor before the node registered named none
+     * (round HN1: a DataNode's actor's IPC sends from Hadoop's one sender
+     * pool, CLAIMed as workload/unregistered).
+     */
     static Reference capture() {
         return new Reference(RuntimeTraceContext.carriedNode(),
-                Identity.receivers(), Identity.starter());
+                Identity.receivers(),
+                Identity.adoptedStarter() ? null
+                        : RuntimeTraceContext.inheritedSource(),
+                Identity.starter());
     }
 
     /**
