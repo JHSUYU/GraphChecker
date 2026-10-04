@@ -11,7 +11,8 @@
 # for the case id it is given:
 #   repo          the system's worktree the case runs
 #   test_class    the workload's JUnit class
-#   test_method   its test method
+#   test_method   its test method m, or one invocation m[k] of a parameterized
+#                 test or class (m[i][j] for both; runtime/JUnitInvocation)
 #   scope         the analysis scope, one "<root>:<class path>" per entry,
 #                 root one the system names (system_root); "=" after the root
 #                 copies exactly that class and its nested classes (no prefix

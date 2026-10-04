@@ -8,7 +8,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 
 /**
@@ -19,56 +18,77 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
  * shuffles the live nodes it sends an admin request to, and a replay that
  * sent it to another node than the recording did held no order past it.
  *
- * <p>Inside the window a draw is seeded by its endpoint: the occurrence it
- * runs in, its site and its count there -- the same function of the same
- * inputs in both passes.  Before the window no occurrence stands, and a draw
- * is seeded by its site and its count at that site.</p>
+ * <p>Inside the window a draw in an occurrence with a context (a Root or an
+ * Anchor) is seeded by its endpoint: the occurrence, its site and its count
+ * there -- the same function of the same inputs in both passes.  A Lost
+ * context names no work of its own: siblings share its address (unnamed
+ * work, a turn begun before the window), so a draw there is seeded as one
+ * before the window, where no occurrence stands: by its site and its count
+ * at that site in this window.  hdfs-adhoc-01 (round HS1): a cluster started
+ * inside the window while no hop stood drew one UUID for every DataNode, and
+ * their registrations refused each other for the rest of the run.  Such a
+ * count follows the run's own arrival order (the work is unscheduled), so
+ * two runs may hand two such draws each other's values: distinct is what is
+ * guaranteed, not equal.</p>
  */
 public final class Randoms {
-    private static final Map<String, AtomicLong> BEFORE_WINDOW =
+    /** Per window and site, the draws seeded by their count so far. */
+    private static final Map<String, AtomicLong> COUNTS =
             new ConcurrentHashMap<String, AtomicLong>();
 
     private Randoms() {
     }
 
-    /** The seed of the draw at {@code site} here. */
-    static long seed(String site) {
-        String key;
+    /** What the draw at {@code site} here is keyed by (class comment). */
+    static String key(String site) {
         if (RecordingWindow.opened()) {
-            SourceRef source = RuntimeTraceContext.ownedSource(null);
             OccurrenceAddress occurrence = Identity.currentOccurrence(
-                    source == null ? "" : source.key());
-            Endpoint at = Identity.endpointAt(occurrence, "random#" + site, 0);
-            key = at == null ? site : at.id();
-        } else {
-            key = site + "#" + BEFORE_WINDOW.computeIfAbsent(site,
-                    ignored -> new AtomicLong()).getAndIncrement();
+                    RuntimeTraceContext.nodeHere());
+            if (occurrence != null && !occurrence.lineageLost()) {
+                return Identity.endpointAt(occurrence, "random#" + site, 0)
+                        .id();
+            }
         }
+        String counted = RecordingWindow.index() + "#" + site;
+        return counted + "#" + COUNTS.computeIfAbsent(counted,
+                ignored -> new AtomicLong()).getAndIncrement();
+    }
+
+    /** A key as a seed, its bits mixed (two neighbouring keys of one site
+     *  would otherwise start two generators nearly alike). */
+    static long seed(String key) {
         long seed = 1125899906842597L;
         for (int i = 0; i < key.length(); i++) {
             seed = 31 * seed + key.charAt(i);
         }
-        return seed;
+        seed = (seed ^ (seed >>> 33)) * 0xff51afd7ed558ccdL;
+        seed = (seed ^ (seed >>> 33)) * 0xc4ceb9fe1a85ec53L;
+        return seed ^ (seed >>> 33);
+    }
+
+    /** Test seam: a fresh run's counts. */
+    static void resetForTests() {
+        COUNTS.clear();
     }
 
     /** {@code new Random()}'s seed. */
     public static long constructed(String site) {
-        return seed(site);
+        return seed(key(site));
     }
 
     /** {@code Math.random()}. */
     public static double random(String site) {
-        return new Random(seed(site)).nextDouble();
+        return new Random(seed(key(site))).nextDouble();
     }
 
     /** {@code Collections.shuffle(list)}. */
     public static void shuffle(List<?> list, String site) {
-        Collections.shuffle(list, new Random(seed(site)));
+        Collections.shuffle(list, new Random(seed(key(site))));
     }
 
     /** {@code UUID.randomUUID()}: a version-4 UUID from the seeded draw. */
     public static UUID randomUUID(String site) {
-        Random draw = new Random(seed(site));
+        Random draw = new Random(seed(key(site)));
         long most = (draw.nextLong() & ~0xF000L) | 0x4000L;
         long least = (draw.nextLong() & ~(0xC000000000000000L))
                 | 0x8000000000000000L;

@@ -4,9 +4,10 @@
 # gc/hdfs-study.  The tree marks each check's throw with
 # @CausynthExceptionTarget("hdfs-adhoc-NN"); checks.tsv declares, per NN, the
 # workload and the classes the analysis starts from.  Declarations only.
-# A row is NN, test class, test method, target occurrence (`first`, or a
-# selector), then the scope entries; no column is empty, since `read`
-# takes a run of tabs as one separator.
+# A row is NN, test class, test method (m[k] for one invocation of a
+# parameterized test or class, README "Run one case"), target occurrence
+# (`first`, or a selector), then the scope entries; no column is empty,
+# since `read` takes a run of tabs as one separator.
 repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study
 row=$(awk -F'\t' -v id="${1:?usage: case.sh <NN>}" '$1 == id' "${here}/checks.tsv")
 [[ -n "${row}" ]] || { echo "unknown HDFS ad hoc check: $1" >&2; return 2; }

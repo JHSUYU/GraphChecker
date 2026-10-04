@@ -807,7 +807,10 @@ The stages, their gates and the claim kinds are specified in
 
 A case directory holds declarations only. `experiments/<system>/<case>/` contains:
 
-- `case.sh`: the tree, the workload test, the target occurrence and the analysis scope;
+- `case.sh`: the tree, the workload test, the target occurrence and the analysis scope; the test
+  is a class and a method `m`, or one invocation of a parameterized test or class, `m[k]` (`m[i][j]`
+  when both are: the class's, then the method's), k from 1 in the argument sources' order, as JUnit
+  numbers them (`runtime/JUnitInvocation`);
 - `workflow.properties`: budgets and inputs. `run_engine.sh` accepts only the keys it knows, so
   an unknown key is refused;
 - `target.yaml`: `exception_target: <name> <binary class name> <source line> [<thrown type>]`.

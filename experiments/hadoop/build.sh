@@ -31,8 +31,9 @@ common=(-q -Djavac.version=8 -DskipShade -Dskip.npm -Dskip.yarn
   || common+=("-Dmaven.repo.local=${MAVEN_REPO_LOCAL}")
 "${maven[@]}" "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \
   -am -DskipTests clean install
+# Surefire takes the method: a parameterized one (m[k]) runs every invocation.
 "${maven[@]}" "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \
-  -Dtest="${test_class##*.}#${test_method}" test
+  -Dtest="${test_class##*.}#${test_method%%\[*}" test
 
 python3 - "${repo}/hadoop-hdfs-project/hadoop-hdfs/target/surefire-reports/TEST-${test_class}.xml" <<'PY'
 import sys
@@ -41,7 +42,7 @@ import xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
 counts = {name: int(root.get(name, "0"))
           for name in ("tests", "errors", "failures", "skipped")}
-if counts != {"tests": 1, "errors": 0, "failures": 0, "skipped": 0}:
+if counts["tests"] < 1 or counts["errors"] or counts["failures"] or counts["skipped"]:
     raise SystemExit(f"workload did not pass: {counts}")
 print(f"Workload passed: {root.get('name')}")
 PY

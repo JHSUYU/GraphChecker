@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import java.io.File;
 import java.lang.annotation.Annotation;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -37,12 +36,18 @@ import java.util.Set;
  * {@code @Test} one.  A lifecycle or test method may take Jupiter's {@code
  * TestInfo}, which the same context answers (ZooKeeper's {@code
  * ZKTestCase#starting} logs the test it starts); any other parameter is
- * refused by name.</p>
+ * refused by name.  A parameterized test or class runs the one invocation
+ * the case names, {@code m[k]} ({@link JUnitInvocation}): its arguments go to
+ * the method's leading parameters and to the class's constructor or
+ * {@code @Parameter} fields.</p>
  */
 final class JUnitLifecycle {
     /** What marks the method the adapter names, in either vocabulary. */
     private static final String[] TEST = {
             "org.junit.jupiter.api.Test", "org.junit.Test"};
+    /** What marks a method run once per argument set. */
+    private static final String[] PARAMETERIZED = {
+            JUnitInvocation.PARAMETERIZED_TEST};
     private static final String[] TEMP_DIR = {
             "org.junit.jupiter.api.io.TempDir"};
     private static final String[] REGISTER_EXTENSION = {
@@ -80,20 +85,32 @@ final class JUnitLifecycle {
         }
     }
 
+    /** The invocation this run is of: one per workload JVM. */
+    private static JUnitInvocation running;
+
     private JUnitLifecycle() {
     }
 
     static void run(String[] args) throws Exception {
         if (args == null || args.length != 2) {
             throw new IllegalArgumentException(
-                    "usage: JUnitMethodRunner <class> <method>");
+                    "usage: JUnitMethodRunner <class> <method>[k]...");
         }
         Class<?> testClass = Class.forName(args[0]);
-        Method testMethod = testMethod(testClass, args[1]);
+        JUnitInvocation named = JUnitInvocation.parse(args[1]);
+        Method testMethod = testMethod(testClass, named.method);
         if (declaresRunner(testClass)) {
+            if (!named.plain()) {
+                throw new IllegalArgumentException(testClass.getName()
+                        + " is run by its own runner, which takes a method"
+                        + " name, not an invocation: " + args[1]);
+            }
             runWithItsRunner(testClass, testMethod.getName());
             return;
         }
+        // Before anything of the test runs, so before its window.
+        named.resolve(testClass, testMethod);
+        running = named;
         Throwable failure = null;
         // A static field's extension is the class's; an instance field's,
         // the test's alone.
@@ -104,9 +121,7 @@ final class JUnitLifecycle {
                     classExtensions);
             invokeAll(null, lifecycleMethods(testClass, Lifecycle.BEFORE_ALL),
                     testClass, null);
-            Constructor<?> constructor = testClass.getDeclaredConstructor();
-            constructor.setAccessible(true);
-            Object test = constructor.newInstance();
+            Object test = named.newTest(testClass);
             List<Object> extensions = new ArrayList<>(classExtensions);
             try {
                 prepareFields(testClass, test, extensions);
@@ -115,7 +130,8 @@ final class JUnitLifecycle {
                 invokeAll(test,
                         lifecycleMethods(testClass, Lifecycle.BEFORE_EACH),
                         testClass, testMethod);
-                invoke(test, testMethod, testClass, testMethod);
+                call(test, testMethod, named.arguments(testMethod, type
+                        -> context(type, testClass, test, testMethod)));
             } catch (Throwable thrown) {
                 failure = thrown;
             } finally {
@@ -194,8 +210,8 @@ final class JUnitLifecycle {
 
     /**
      * The named test method, most derived first so an override wins; a
-     * same-named helper is passed over; refused if missing, parameterized or
-     * not marked a test.
+     * same-named helper is passed over; refused if missing or not marked a
+     * test.  What its parameters take is {@link JUnitInvocation#resolve}'s.
      */
     private static Method testMethod(Class<?> testClass, String methodName)
             throws NoSuchMethodException {
@@ -207,13 +223,10 @@ final class JUnitLifecycle {
                     continue;
                 }
                 named = true;
-                if (!hasAnnotation(method.getDeclaredAnnotations(), TEST)) {
+                Annotation[] marks = method.getDeclaredAnnotations();
+                if (!hasAnnotation(marks, TEST)
+                        && !hasAnnotation(marks, PARAMETERIZED)) {
                     continue;
-                }
-                if (!resolvable(method)) {
-                    throw new NoSuchMethodException(
-                            "test method takes parameters: "
-                                    + testClass.getName() + "#" + methodName);
                 }
                 method.setAccessible(true);
                 return method;
@@ -332,10 +345,13 @@ final class JUnitLifecycle {
                         case "getDisplayName":
                             return testMethod == null
                                     ? testClass.getSimpleName()
+                                    : running.display() != null
+                                    ? running.display()
                                     : testMethod.getName() + "()";
                         case "getUniqueId":
                             return testClass.getName() + (testMethod == null
-                                    ? "" : "#" + testMethod.getName());
+                                    ? "" : "#" + testMethod.getName()
+                                    + running.picked());
                         case "getParent":
                         case "getExecutionException":
                         case "getConfigurationParameter":
@@ -503,6 +519,12 @@ final class JUnitLifecycle {
         for (int i = 0; i < types.length; i++) {
             arguments[i] = context(types[i], testClass, receiver, testMethod);
         }
+        call(receiver, method, arguments);
+    }
+
+    /** Calls {@code method}, the workload's own throwable unwrapped. */
+    private static void call(Object receiver, Method method,
+                             Object[] arguments) throws Throwable {
         try {
             method.invoke(receiver, arguments);
         } catch (InvocationTargetException exception) {
