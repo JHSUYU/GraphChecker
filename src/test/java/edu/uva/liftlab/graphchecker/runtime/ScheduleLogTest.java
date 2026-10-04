@@ -1002,9 +1002,14 @@ public class ScheduleLogTest {
         }
     }
 
-    /** A turn the window saw begin states its END; the set-up's, none. */
+    /**
+     * A turn the window saw begin states its WAKE before its first event and
+     * its END; the set-up's, none.  A turn that makes no event writes
+     * nothing and gives its k back (hdfs-adhoc-16: an actor spinning through
+     * empty turns), so the turn that acts after any number of them is #1.
+     */
     @Test
-    public void aTurnTheWindowSawBeginStatesItsEnd() {
+    public void aTurnThatActsStatesItsWakeAndEndAndAnEmptyOneNothing() {
         RecordingWindow.reset();
         long setUp = RuntimeTraceContext.beginTick(new Object(),
                 "BP_SERVICE_ACTOR");
@@ -1013,6 +1018,12 @@ public class ScheduleLogTest {
         assertTrue("the set-up's turn is not the window's", written.isEmpty());
 
         Object daemon = new Object();
+        RuntimeTraceContext.registerSource(daemon, NODE);
+        for (int spin = 0; spin < 3; spin++) {
+            RuntimeTraceContext.endTick(RuntimeTraceContext.beginTick(daemon,
+                    "HEARTBEAT_TICK"));
+        }
+        assertTrue("empty turns hold no slot", written.isEmpty());
         long tick = RuntimeTraceContext.beginTick(daemon, "HEARTBEAT_TICK");
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
         RuntimeTraceContext.endTick(tick);
@@ -1021,6 +1032,8 @@ public class ScheduleLogTest {
                 ScheduleEvent.Kind.SEND, ScheduleEvent.Kind.END),
                 Arrays.asList(events.get(0).kind(), events.get(1).kind(),
                         events.get(2).kind()));
+        assertTrue(events.get(0).context(),
+                events.get(0).context().contains("Root:HEARTBEAT_TICK#1"));
         assertEquals("the END stands in the turn's own context",
                 events.get(0).context(), events.get(2).context());
         assertEquals("tick.HEARTBEAT_TICK", events.get(2).site());
@@ -1036,7 +1049,8 @@ public class ScheduleLogTest {
         turn.join(5000L);
         List<ScheduleEvent> free = events();
         ScheduleEvent wake = free.get(0);
-        ScheduleEvent end = free.get(1);
+        ScheduleEvent beat = free.get(1);
+        ScheduleEvent end = free.get(2);
         assertEquals(ScheduleEvent.Kind.END, end.kind());
 
         RuntimeTraceContext.resetForTests();
@@ -1044,7 +1058,7 @@ public class ScheduleLogTest {
         restart();
         openRequest();
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        ScheduleLog.enforceForTests(Arrays.asList(wake,
+        ScheduleLog.enforceForTests(Arrays.asList(wake, beat,
                 event(ScheduleEvent.Kind.SEND, "y"), end));
         final CountDownLatch ending = new CountDownLatch(1);
         Thread held = daemonTurn(monitor, ending);
@@ -1056,7 +1070,7 @@ public class ScheduleLogTest {
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
         held.join(5000L);
         assertFalse(held.isAlive());
-        assertEquals(Arrays.asList("tick.HEARTBEAT_TICK", "y",
+        assertEquals(Arrays.asList("tick.HEARTBEAT_TICK", "beat", "y",
                 "tick.HEARTBEAT_TICK"), sites());
         assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(" 0 given up"));
     }
@@ -1372,6 +1386,7 @@ public class ScheduleLogTest {
             public void run() {
                 long tick = RuntimeTraceContext.beginTick(owner,
                         "HEARTBEAT_TICK");
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "beat");
                 if (ending != null) ending.countDown();
                 RuntimeTraceContext.endTick(tick);
             }

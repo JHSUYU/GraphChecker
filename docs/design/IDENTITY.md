@@ -116,7 +116,14 @@ Hops are opened by (all in `runtime/RuntimeTraceContext`):
 
 `k` counts root hops only, per (window, node, role, api), in one JVM-wide counter
 (`Lineage#push`). A turn begun before the window has `k = 0` (`Lineage#rootWindowIndex`), so its
-context is `Lost`; a request begun before the window keeps its `k`.
+context is `Lost`; a request begun before the window keeps its `k`. A turn (a tick, a wake turn) is
+named once an identity reads its `k` (`Identity#here`: a schedule event, an occurrence, an endpoint,
+a draw; the flow key and the WAKE its begin computes are read `Lineage#quietly`); one that ends
+unnamed gives its `k` back (`Lineage#pop`, a compare-and-set, so only while no later turn of its
+counter took one). A loop spinning through turns that do nothing (hdfs-adhoc-16: a DataNode actor
+whose heartbeats a test disabled never waits; 0.89M turns recorded, 47k replayed) then moves no `k`
+of the turns that act. The turn that takes a given-back `k` again collides with nothing: the turn
+that gave it back wrote nothing under it.
 
 ## 3. The execution index `i`
 
@@ -515,7 +522,12 @@ of the same codec is transparent; and brackets each declared `EXCHANGE` method.
 
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
 `CLAIM`, `SEND` (with the producer endpoint), `RECV`, `WAKE` (a timed wait's timeout; a tick's
-begin), `END` (a tick's end), `INTERRUPT`. `context` = `<node>|<ctx render>[|<start frames>]`
+begin), `END` (a tick's end), `INTERRUPT`. A tick's `WAKE` is computed at its begin and written
+before the turn's first event (`ScheduleLog#turnBegun`, `#takeTurnWake`; asking whether the turn is
+vacant is that first step), its `END` only if its `WAKE` was: a turn that makes no event holds no
+slot, and its begin shows its thread away from the frontier (`ELSEWHERE`), so a spinning loop
+defers no stall. In a replay the turn's first event first takes the `WAKE`'s slot; what the turn
+computes before it makes no event and is not held. `context` = `<node>|<ctx render>[|<start frames>]`
 (the claimed starts' levels from the scope base, each start's own frame after the starter's frames
 it was filed with) (`ScheduleLog#contextOf`, `Identity#handoffs`). Where a consumer claimed work
 (a queue item, or a task taken on another thread than its starter's) the levels start at its

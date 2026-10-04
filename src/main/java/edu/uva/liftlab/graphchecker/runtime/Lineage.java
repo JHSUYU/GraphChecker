@@ -59,13 +59,18 @@ public final class Lineage {
         private final boolean turn;
         /** The window this hop was entered in ({@link RecordingWindow}). */
         private final int window;
+        /** The counter a ROOT hop's k was taken from, or null. */
+        private final AtomicInteger counter;
+        /** Whether an identity read this TURN's k ({@link #pop}). */
+        private volatile boolean named;
         /** The producer endpoint whose message opened this scope, or "". */
         private String anchor = "";
         /** The transport site that message crossed, or "". */
         private String rpcSite = "";
 
         private Frame(long token, Role role, String api, int k,
-                      boolean root, boolean turn, int window) {
+                      boolean root, boolean turn, int window,
+                      AtomicInteger counter) {
             this.token = token;
             this.role = role;
             this.api = api;
@@ -73,8 +78,14 @@ public final class Lineage {
             this.root = root;
             this.turn = turn;
             this.window = window;
+            this.counter = counter;
         }
     }
+
+    /** Per thread, whether a read of a turn's k names nothing ({@link
+     *  #quietly}). */
+    private static final ThreadLocal<Boolean> QUIET =
+            new ThreadLocal<Boolean>();
 
     /** One captured lineage, carried with the work that was created in it. */
     public static final class Carried {
@@ -128,23 +139,61 @@ public final class Lineage {
         Role kind = role == null ? Role.UNKNOWN : role;
         String family = Text.safe(api);
         int window = RecordingWindow.index();
-        int k = root
+        AtomicInteger counter = root
                 ? COUNTERS.computeIfAbsent(window + "\n" + node + "\n"
                         + kind.name() + "\n" + family,
-                        scope -> new AtomicInteger()).incrementAndGet()
-                : 0;
+                        scope -> new AtomicInteger())
+                : null;
+        int k = counter == null ? 0 : counter.incrementAndGet();
         long token = TOKENS.getAndIncrement();
-        stack.add(new Frame(token, kind, family, k, root, turn, window));
+        stack.add(new Frame(token, kind, family, k, root, turn, window,
+                counter));
         return token;
     }
 
-    /** Leaves frame {@code token} and any frame a non-local exit left. */
+    /**
+     * Leaves frame {@code token} and any frame a non-local exit left.
+     *
+     * <p>A TURN no identity named gives its k back, unless a later turn of
+     * its counter took one meanwhile: a loop that spins through turns that
+     * do nothing (a DataNode actor whose heartbeats a test disabled never
+     * waits: hdfs-adhoc-16 recorded 0.89M turns, its replay 47k) no longer
+     * moves the k of the turns that act.  The turn wrote nothing under its
+     * k -- no event, occurrence, endpoint or draw -- so the turn that takes
+     * it again collides with nothing (IDENTITY §2).</p>
+     */
     public static void pop(long token) {
         List<Frame> stack = STACK.get();
         for (int i = stack.size() - 1; i >= 0; i--) {
             if (stack.get(i).token != token) continue;
-            while (stack.size() > i) stack.remove(stack.size() - 1);
+            while (stack.size() > i) {
+                Frame left = stack.remove(stack.size() - 1);
+                if (left.turn && !left.named) {
+                    left.counter.compareAndSet(left.k, left.k - 1);
+                }
+            }
             return;
+        }
+    }
+
+    /** States that the turn {@code token} is named: what it wrote carries
+     *  its k (a turn's WAKE, computed {@link #quietly} at its begin). */
+    static void name(long token) {
+        List<Frame> stack = STACK.get();
+        for (int i = stack.size() - 1; i >= 0; i--) {
+            if (stack.get(i).token == token) stack.get(i).named = true;
+        }
+    }
+
+    /** {@code read} on this thread with no turn's k named by it: what a turn
+     *  computes at its begin and writes only if the turn does something. */
+    static <T> T quietly(java.util.function.Supplier<T> read) {
+        Boolean outer = QUIET.get();
+        QUIET.set(Boolean.TRUE);
+        try {
+            return read.get();
+        } finally {
+            QUIET.set(outer);
         }
     }
 
@@ -280,8 +329,10 @@ public final class Lineage {
         return windowIndex(root());
     }
 
+    /** A root's window index; an identity reading a turn's names it. */
     private static int windowIndex(Frame root) {
         if (root == null) return 0;
+        if (root.turn && QUIET.get() == null) root.named = true;
         return root.turn && root.window != RecordingWindow.index()
                 ? 0 : root.k;
     }

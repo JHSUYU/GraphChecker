@@ -1340,10 +1340,12 @@ public final class Identity {
      */
     public static void hopOpened(long hop) {
         State state = state();
-        CausalContext context = here(Lineage.rootRole());
-        if (context.isLost()) return;
+        // Only a region with no name reads the hop's context: a turn that
+        // names nothing stays unnamed (Lineage#pop).
         int index = nameless(state);
         if (index < 0) return;
+        CausalContext context = here(Lineage.rootRole());
+        if (context.isLost()) return;
         Region region = state.regions.get(index);
         OccurrenceAddress address = OccurrenceAddress.of(NodeId.parse(
                 RuntimeTraceContext.activationSource(region.receiver).key()),

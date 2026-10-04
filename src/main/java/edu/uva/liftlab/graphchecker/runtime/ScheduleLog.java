@@ -534,8 +534,108 @@ public final class ScheduleLog {
         if (stable.isEmpty()) return null;
         Stance stance = at != null ? at : standing();
         if (stance == null) return null;
+        takeTurnWake(TURN.get());
         return new Pending(kind, stance.context, stable, stance.region,
                 Text.safe(endpoint));
+    }
+
+    // ---- a turn's WAKE ---------------------------------------------------
+
+    /**
+     * The WAKE of one turn begun ({@code RuntimeTraceContext#beginTick}),
+     * computed at its begin and written before its first event, in both
+     * passes: a turn that makes no event holds no slot.  A loop whose turns
+     * do nothing (hdfs-adhoc-16: a DataNode actor whose heartbeats a test
+     * disabled never waits) recorded 0.89M turns, 1.78M slots, its replay
+     * 47k.  In a replay that first event first takes the WAKE's slot, held as
+     * a tick's WAKE is.
+     */
+    static final class TurnWake {
+        private final Pending event;
+        private final long hop;
+        private final TurnWake outer;
+        private boolean written;
+        private boolean vacant;
+
+        private TurnWake(Pending event, long hop, TurnWake outer) {
+            this.event = event;
+            this.hop = hop;
+            this.outer = outer;
+        }
+
+        String site() {
+            return event.site;
+        }
+    }
+
+    /** Per thread, the innermost turn begun ({@link TurnWake}). */
+    private static final ThreadLocal<TurnWake> TURN =
+            new ThreadLocal<TurnWake>();
+
+    /**
+     * A turn of lineage hop {@code hop} begins: its WAKE waits for the
+     * turn's first event.  Its thread is seen away from the frontier, so a
+     * loop spinning through empty turns never defers a stall.  Null outside
+     * the window or any attributable context.
+     */
+    static TurnWake turnBegun(String site, long hop) {
+        if (!RecordingWindow.opened()) return null;
+        mute();
+        try {
+            String stable = JvmNames.stable(Text.safe(site));
+            Stance stance = standing();
+            if (stable.isEmpty() || stance == null) return null;
+            TurnWake turn = new TurnWake(new Pending(ScheduleEvent.Kind.WAKE,
+                    stance.context, stable, stance.region, ""), hop,
+                    TURN.get());
+            TURN.set(turn);
+            synchronized (LOCK) {
+                long self = Thread.currentThread().getId();
+                if (firstBlocking < order.size()
+                        && !RELEASED.contains(self)) {
+                    ELSEWHERE.add(self);
+                }
+            }
+            return turn;
+        } finally {
+            unmute();
+        }
+    }
+
+    /** Writes {@code turn}'s WAKE, the turns it began inside first, unless
+     *  written; the turn's k is named by it ({@code Lineage#name}). */
+    private static void takeTurnWake(TurnWake turn) {
+        if (turn == null || turn.written) return;
+        turn.written = true;
+        takeTurnWake(turn.outer);
+        VACANT.remove();
+        admit(turn.event);
+        turn.vacant = vacated();
+        VACANT.remove();
+        Lineage.name(turn.hop);
+    }
+
+    /** Whether {@code turn} is vacant ({@link #vacated}); asking writes its
+     *  WAKE. */
+    static boolean vacant(TurnWake turn) {
+        if (turn == null) return false;
+        mute();
+        try {
+            takeTurnWake(turn);
+        } finally {
+            unmute();
+        }
+        return turn.vacant;
+    }
+
+    /** {@code turn} ends: whether its WAKE was written, so its END is. */
+    static boolean turnEnded(TurnWake turn) {
+        if (turn == null) return false;
+        if (TURN.get() == turn) {
+            if (turn.outer == null) TURN.remove();
+            else TURN.set(turn.outer);
+        }
+        return turn.written;
     }
 
     private static void appendLocked(Pending pending) {
@@ -1560,6 +1660,7 @@ public final class ScheduleLog {
     }
 
     public static void resetForTests() {
+        TURN.remove();
         synchronized (LOCK) {
             sink = null;
             PENDING.clear();
