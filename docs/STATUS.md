@@ -249,6 +249,8 @@ Correctness:
     nor pinned.
 31. `gc/smt/Arms#concurrent` orders an anchor-chain ancestor occurrence before all of its
     descendant, so the writes of a task are no alternative arm for its starter's later reads.
+    (Replaced on branch `hb-schedule`/`hb-sync` by a per-session happens-before relation over the
+    schedule; not merged, README §0.5.)
 33. A declared occurrence a replay answered by its question (`gc/runtime/Identity#answer`) keeps the
     declared anchor, which that run never sent: the session names no sender or receiver of it
     (`gc/explore/Corpus#senderOf`, `#receiverOf`), so `gc/explore/ClosurePlanner#controlProducer`
@@ -287,6 +289,19 @@ Correctness:
     declared occurrence ran on another node. Seeding `ThreadLocalRandom.current()` by the draw's
     endpoint, with every drawing class woven (tried, not kept), left 2 of 4 hand seeds of
     BlockSender-509 reading the other DataNode (1 of 4 without it): it does not settle the choice.
+    (Branch `solr-bug-reindex` records and replays every draw by the schedule's stance; not merged.)
+41. Performance: the VM re-sends an expression node's whole closure with every branch window and
+    every read-out page, and one publication thread decodes pages at about 0.39 MB/s on the
+    interpreter (SB19's seed: 125 MB of windows; 418 s of waiting at the four-page bound). Fix,
+    queued: the VM sends each node once per channel (per session for pages, per thread for
+    windows).
+42. In the systems: Solr's `ZkStateReader` lets a stale state fetch resurrect a deleted collection
+    (each watch event runs on its own pool thread; nothing orders one refresh's fetch against its
+    apply; still on Solr main, the symptom of SOLR-12544). Under `CausynthBounds` a delete's
+    `waitForState` then never ends (natively it times out after 60 s). Worked around in both Solr
+    trees by a per-collection refresh lock (`gc/solr-unified-storing` `04f8489`, `gc/solr-bugs`
+    `9d572a4`); a recording silent for 600 s is ended by name (`RECORDING_STALLED`, branch
+    `solr-bug-reindex`).
 
 Scale and robustness:
 
