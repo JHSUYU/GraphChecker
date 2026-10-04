@@ -557,6 +557,15 @@ where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS,
 was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameterized workload test
 the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
 order, so a replay held to a run of another invocation is refused by name (`ScheduleLog#invocation`).
+`{mark: STARTUP, step, node}` states one node completing a startup step an adapter names
+(`MessageDoors#startupStep`/`#startupDone`): a step taken before the window that builds state a
+replay reads, which no slot holds. Marks are written in completion order, before the window as inside
+it, and handed on with every order (`SchedulePrefix#write`). A replay holds a node at the step until
+every pass marked before its own (a node's n-th pass is its n-th mark) completed it, at most one
+schedule timeout, then gives the missing ones up by name (`runtime/StartupOrder`, a
+`SCHEDULE_DIVERGED` DIAGNOSTIC `startup#<step>`). HDFS's step is a DataNode's `registerDatanode`: the
+NameNode adds DataNodes to its topology in that order, and block placement picks pipelines by
+position there (hdfs-adhoc-01/43).
 
 `runtime/ScheduleLog` records in both passes into `schedule.jsonl`. In a replay it also holds the
 order:

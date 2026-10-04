@@ -25,6 +25,15 @@ public final class ScheduleEvent extends Value {
      */
     public static final String INVOCATION = "INVOCATION";
 
+    /**
+     * The mark of one node completing a startup step an adapter names
+     * ({@code RowCodec#writeScheduleStartup}: {@code step}, {@code node}),
+     * in completion order, before the window as inside it: a replay holds a
+     * node at the step until the nodes marked before it there completed it
+     * ({@code runtime.StartupOrder}).
+     */
+    public static final String STARTUP = "STARTUP";
+
     /** What kind of handoff the event is. */
     public enum Kind {
         /** A work start: {@code Thread.start}, a submission, a queue put. */

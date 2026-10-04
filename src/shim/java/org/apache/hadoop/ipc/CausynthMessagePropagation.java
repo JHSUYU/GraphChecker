@@ -316,6 +316,20 @@ public final class CausynthMessagePropagation {
     return MessageDoors.beginTick(owner, role);
   }
 
+  /**
+   * The node {@code owner} names is about to take startup {@code step}
+   * (a DataNode's registration): a replay holds it to the order its
+   * recording's nodes completed the step.
+   */
+  public static Object startupStep(String step, Object owner) {
+    return MessageDoors.startupStep(step, owner);
+  }
+
+  /** The step {@link #startupStep} began completed. */
+  public static void startupDone(Object pass) {
+    MessageDoors.startupDone(pass);
+  }
+
   /** Closes the tick {@link #beginTick} opened. */
   public static void endTick(long token) {
     MessageDoors.endTick(token);

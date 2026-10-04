@@ -1044,6 +1044,20 @@ public final class CausynthTraceRecorder {
         return RuntimeTraceContext.vacantTick(token);
     }
 
+    /** The node {@code owner} names begins startup {@code step} ({@link
+     *  StartupOrder#begin}); an owner no node is registered for names
+     *  none. */
+    public static Object startupStep(String step, Object owner) {
+        initialize();
+        SourceRef node = RuntimeTraceContext.sourceFor(owner);
+        return node == null ? null : StartupOrder.begin(step, node.key());
+    }
+
+    /** The step {@link #startupStep} began completed. */
+    public static void startupDone(Object pass) {
+        StartupOrder.done((String[]) pass);
+    }
+
     /** Closes the tick {@link #beginDaemonTick} opened. */
     public static void endDaemonTick(long token) {
         RuntimeTraceContext.endTick(token);

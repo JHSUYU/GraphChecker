@@ -1502,7 +1502,7 @@ public final class ScheduleLog {
         return holds;
     }
 
-    private static long timeoutMillis() {
+    static long timeoutMillis() {
         String configured = Text.safe(System.getProperty(TIMEOUT_PROPERTY));
         if (configured.isEmpty()) return DEFAULT_TIMEOUT_MS;
         try {
@@ -1600,6 +1600,34 @@ public final class ScheduleLog {
         restStalls = 0;
         frontierMovedLocked();
         settleLocked();
+    }
+
+    /** Writes one mark row into this run's schedule, before the window as
+     *  inside it. */
+    static void writeMark(JsonObject row) {
+        synchronized (LOCK) {
+            writeLocked(row);
+        }
+    }
+
+    /** The startup marks of the order this replay is handed, prefix then
+     *  rest; none in a recording ({@link StartupOrder}). */
+    static List<JsonObject> startupMarks() {
+        List<JsonObject> marks = new ArrayList<JsonObject>();
+        for (Path file : Arrays.asList(prefixFile(), suffixFile())) {
+            if (file == null || !file.toFile().isFile()) continue;
+            try {
+                marks.addAll(SessionReader.readScheduleStartup(file));
+            } catch (IOException unreadable) {
+                // Its schedule names an unreadable order once it loads it.
+            }
+        }
+        return marks;
+    }
+
+    /** A divergence the order states by name ({@code SCHEDULE_DIVERGED}). */
+    static void diverged(String where, String detail) {
+        stateLocked(where, detail);
     }
 
     private static Path prefixFile() {
