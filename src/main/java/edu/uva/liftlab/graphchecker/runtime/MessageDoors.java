@@ -630,15 +630,16 @@ public final class MessageDoors {
     }
 
     /**
-     * The node {@code owner} belongs to is about to take startup {@code step}, a
-     * step before the window that builds state a replay reads: a replay
-     * holds it until the nodes its recording saw complete the step first
-     * have completed it ({@link StartupOrder}).
+     * {@code who} is about to take startup {@code step}, a step before the
+     * window that builds state a replay reads: a replay holds it until those
+     * its recording saw complete the step first have completed it ({@link
+     * StartupOrder}).  {@code who} names the taker the same in both passes
+     * (a DataNode's UUID, which its seeded draw makes).
      *
      * @return what {@link #startupDone} takes
      */
-    public static Object startupStep(String step, Object owner) {
-        return CausynthTraceRecorder.startupStep(step, owner);
+    public static Object startupStep(String step, String who) {
+        return CausynthTraceRecorder.startupStep(step, who);
     }
 
     /** The step {@link #startupStep} began completed. */

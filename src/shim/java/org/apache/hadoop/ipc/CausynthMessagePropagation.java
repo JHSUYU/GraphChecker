@@ -317,12 +317,12 @@ public final class CausynthMessagePropagation {
   }
 
   /**
-   * The node {@code owner} names is about to take startup {@code step}
-   * (a DataNode's registration): a replay holds it to the order its
-   * recording's nodes completed the step.
+   * {@code who} is about to take startup {@code step} (the NameNode adding
+   * a DataNode, by its UUID): a replay holds it to the order its recording
+   * completed the step in.
    */
-  public static Object startupStep(String step, Object owner) {
-    return MessageDoors.startupStep(step, owner);
+  public static Object startupStep(String step, String who) {
+    return MessageDoors.startupStep(step, who);
   }
 
   /** The step {@link #startupStep} began completed. */

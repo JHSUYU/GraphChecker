@@ -583,12 +583,12 @@ public final class RowCodec {
         return json;
     }
 
-    /** The mark of {@code node} completing startup {@code step} ({@link
+    /** The mark of {@code who} completing startup {@code step} ({@link
      *  ScheduleEvent#STARTUP}). */
-    public static JsonObject writeScheduleStartup(String step, String node) {
+    public static JsonObject writeScheduleStartup(String step, String who) {
         JsonObject json = writeScheduleMark(ScheduleEvent.STARTUP, 0L);
         json.addProperty("step", step);
-        json.addProperty("node", node);
+        json.addProperty("who", who);
         return json;
     }
 

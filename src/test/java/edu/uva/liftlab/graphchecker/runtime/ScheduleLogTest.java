@@ -1020,8 +1020,11 @@ public class ScheduleLogTest {
         Object daemon = new Object();
         RuntimeTraceContext.registerSource(daemon, NODE);
         for (int spin = 0; spin < 3; spin++) {
-            RuntimeTraceContext.endTick(RuntimeTraceContext.beginTick(daemon,
-                    "HEARTBEAT_TICK"));
+            long empty = RuntimeTraceContext.beginTick(daemon,
+                    "HEARTBEAT_TICK");
+            // A held wait's WAKE, which only a replay computes, names none.
+            ScheduleLog.wake("<D: void poll()>#u3");
+            RuntimeTraceContext.endTick(empty);
         }
         assertTrue("empty turns hold no slot", written.isEmpty());
         long tick = RuntimeTraceContext.beginTick(daemon, "HEARTBEAT_TICK");
@@ -1037,6 +1040,16 @@ public class ScheduleLogTest {
         assertEquals("the END stands in the turn's own context",
                 events.get(0).context(), events.get(2).context());
         assertEquals("tick.HEARTBEAT_TICK", events.get(2).site());
+
+        long carrying = RuntimeTraceContext.beginTick(daemon,
+                "HEARTBEAT_TICK");
+        Lineage.capture();
+        RuntimeTraceContext.endTick(carrying);
+        long next = RuntimeTraceContext.beginTick(daemon, "HEARTBEAT_TICK");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
+        RuntimeTraceContext.endTick(next);
+        assertTrue("work captured in a turn keeps its k: " + events(),
+                events().get(3).context().contains("Root:HEARTBEAT_TICK#3"));
     }
 
     @Test

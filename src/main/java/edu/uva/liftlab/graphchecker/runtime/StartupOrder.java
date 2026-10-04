@@ -10,31 +10,36 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * THE order nodes pass a startup step an adapter names: a step that builds
+ * THE order takers pass a startup step an adapter names: a step that builds
  * state a replay reads, taken before the window, where no slot of the
- * schedule holds it (IDENTITY §8).  HDFS's is a DataNode's
- * {@code registerDatanode}: the NameNode adds the DataNodes to its
- * NetworkTopology in that order, and block placement picks a pipeline by
- * position in it, so a replay whose DataNodes registered in another order
- * wrote its blocks to other nodes though it drew what its recording drew
- * (hdfs-adhoc-01/43, STATUS open defect 40).
+ * schedule holds it (IDENTITY §8).  HDFS's is the NameNode adding a
+ * DataNode ({@code FSNamesystem#registerDatanode}): its NetworkTopology
+ * orders DataNodes as they are added, and block placement picks a pipeline
+ * by position in it, so a replay whose DataNodes were added in another
+ * order wrote its blocks to other nodes though it drew what its recording
+ * drew (hdfs-adhoc-01/43, STATUS open defect 40).
  *
  * <p>The recording states each completion as a {@code STARTUP} mark of its
- * schedule (step, node), in completion order, handed on with every order
- * ({@code explore.SchedulePrefix}).  A replay holds a node at the step until
- * every node marked before it there has completed it, a node's n-th pass
- * standing for its n-th mark; at most one schedule timeout, after which the
- * missing nodes are given up by name ({@code SCHEDULE_DIVERGED}).</p>
+ * schedule (step, who), in completion order, handed on with every order
+ * ({@code explore.SchedulePrefix}).  Before the window, a replay holds the
+ * taker at the step until every pass marked before its own completed it, a
+ * taker's n-th pass standing for its n-th mark; at most one schedule
+ * timeout, after which the missing ones are given up by name ({@code
+ * SCHEDULE_DIVERGED}), and an interrupt ends the hold by name too.  Inside
+ * the window the schedule's slots order the step's events, so nothing holds
+ * there.  HDFS's taker is the NameNode adding a DataNode, named by the
+ * DataNode's UUID, the same in both passes: its draw is seeded
+ * ({@code Randoms}).</p>
  */
 public final class StartupOrder {
     private static final Object LOCK = new Object();
     /** Per step, the passes the order handed to this replay marks, in their
-     *  order ({@code node#n}); read once. */
+     *  order ({@code who#n}); read once. */
     private static Map<String, List<String>> marked;
     /** Per step, the passes completed in this run, or given up. */
     private static final Map<String, Set<String>> PASSED =
             new HashMap<String, Set<String>>();
-    /** Per step and node, how often it began the step in this run. */
+    /** Per step and taker, how often it began the step in this run. */
     private static final Map<String, Integer> BEGUN =
             new HashMap<String, Integer>();
 
@@ -42,14 +47,14 @@ public final class StartupOrder {
     }
 
     /**
-     * {@code node} is about to take {@code step}: in a replay, held until the
-     * passes marked before its own completed.
+     * {@code who} is about to take {@code step}: in a replay before the
+     * window, held until the passes marked before its own completed.
      *
      * @return what {@link #done} takes, or null when nothing is named
      */
-    static String[] begin(String step, String node) {
+    static String[] begin(String step, String who) {
         String named = Text.safe(step);
-        String by = Text.safe(node);
+        String by = Text.safe(who);
         if (named.isEmpty() || by.isEmpty()) return null;
         synchronized (LOCK) {
             int n = BEGUN.merge(named + "\n" + by, 1, Integer::sum) - 1;
@@ -61,7 +66,7 @@ public final class StartupOrder {
                     : new ArrayList<String>(order.subList(0, at));
             long deadline = System.currentTimeMillis()
                     + ScheduleLog.timeoutMillis();
-            while (!passed.containsAll(before)) {
+            while (!RecordingWindow.opened() && !passed.containsAll(before)) {
                 long left = deadline - System.currentTimeMillis();
                 if (left <= 0L) {
                     before.removeAll(passed);
@@ -77,6 +82,10 @@ public final class StartupOrder {
                     LOCK.wait(left);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
+                    before.removeAll(passed);
+                    ScheduleLog.diverged("startup#" + named, pass + " took "
+                            + named + " when interrupted while waiting for "
+                            + before + ", marked before it");
                     break;
                 }
             }
@@ -84,7 +93,7 @@ public final class StartupOrder {
         }
     }
 
-    /** The pass {@link #begin} returned completed: marked, and the nodes
+    /** The pass {@link #begin} returned completed: marked, and the takers
      *  held behind it go on. */
     static void done(String[] pass) {
         if (pass == null) return;
@@ -92,8 +101,8 @@ public final class StartupOrder {
             passedLocked(pass[0]).add(pass[1]);
             LOCK.notifyAll();
         }
-        String node = pass[1].substring(0, pass[1].lastIndexOf('#'));
-        ScheduleLog.writeMark(RowCodec.writeScheduleStartup(pass[0], node));
+        String who = pass[1].substring(0, pass[1].lastIndexOf('#'));
+        ScheduleLog.writeMark(RowCodec.writeScheduleStartup(pass[0], who));
     }
 
     private static Set<String> passedLocked(String step) {
@@ -106,10 +115,10 @@ public final class StartupOrder {
             Map<String, Integer> passes = new HashMap<String, Integer>();
             for (JsonObject mark : ScheduleLog.startupMarks()) {
                 String step = mark.get("step").getAsString();
-                String node = mark.get("node").getAsString();
-                int n = passes.merge(step + "\n" + node, 1, Integer::sum) - 1;
+                String who = mark.get("who").getAsString();
+                int n = passes.merge(step + "\n" + who, 1, Integer::sum) - 1;
                 marked.computeIfAbsent(step, ignored -> new ArrayList<String>())
-                        .add(node + "#" + n);
+                        .add(who + "#" + n);
             }
         }
         return marked;

@@ -38,7 +38,7 @@ public final class Lineage {
                 protected List<Frame> inherit(List<Frame> parent) {
                     return parent == null || PoolWorkers.constructing()
                             ? new ArrayList<Frame>()
-                            : new ArrayList<Frame>(parent);
+                            : carried(parent);
                 }
             };
 
@@ -159,8 +159,12 @@ public final class Lineage {
      * do nothing (a DataNode actor whose heartbeats a test disabled never
      * waits: hdfs-adhoc-16 recorded 0.89M turns, its replay 47k) no longer
      * moves the k of the turns that act.  The turn wrote nothing under its
-     * k -- no event, occurrence, endpoint or draw -- so the turn that takes
-     * it again collides with nothing (IDENTITY §2).</p>
+     * k -- no event, occurrence, endpoint or draw, and handed its frames to
+     * no work ({@link #carried}) -- so the turn that takes it again collides
+     * with nothing (IDENTITY §2).  The compare-and-set makes the ks equal in
+     * both passes only where one thread takes a counter's turns (a daemon's
+     * loop); turns of one counter on several threads may interleave their
+     * gives-back differently.</p>
      */
     public static void pop(long token) {
         List<Frame> stack = STACK.get();
@@ -199,7 +203,19 @@ public final class Lineage {
 
     /** The frames this thread stands in, as a value the work carries. */
     public static Carried capture() {
-        return new Carried(new ArrayList<Frame>(STACK.get()));
+        return new Carried(carried(STACK.get()));
+    }
+
+    /**
+     * The frames work started or captured here carries, shared by
+     * reference: each turn among them is named, since the work reads its k
+     * whenever it runs, perhaps after the turn ended ({@link #pop}).
+     */
+    private static List<Frame> carried(List<Frame> frames) {
+        for (Frame frame : frames) {
+            if (frame.turn) frame.named = true;
+        }
+        return new ArrayList<Frame>(frames);
     }
 
     /**

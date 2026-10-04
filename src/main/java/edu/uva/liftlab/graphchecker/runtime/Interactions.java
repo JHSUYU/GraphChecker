@@ -52,6 +52,11 @@ public final class Interactions {
             super.clear();
             evicted = 0L;
         }
+
+        /** How many entries it dropped; under the owner's monitor. */
+        long evicted() {
+            return evicted;
+        }
     }
 
     /** Files the producer of one staged value, by every key it states. */
@@ -190,7 +195,7 @@ public final class Interactions {
 
     /** How many messages {@link #sender} can no longer answer for. */
     static synchronized long sendersEvicted() {
-        return MESSAGES.evicted;
+        return MESSAGES.evicted();
     }
 
     /** The whole endpoint a message's anchor names, or {@code null} when

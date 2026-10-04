@@ -15,10 +15,10 @@ import org.junit.Before;
 import org.junit.Test;
 
 /**
- * A replay holds a node at a startup step to the order its recording's nodes
- * completed it (hdfs-adhoc-01/43: DataNodes registered in another order
- * placed every pipeline elsewhere); a node the order does not mark, or one
- * whose predecessor never comes, goes on.
+ * A replay before its window holds a taker at a startup step to the order its
+ * recording completed it in (hdfs-adhoc-01/43: DataNodes added in another
+ * order placed every pipeline elsewhere); a taker the order does not mark,
+ * one whose predecessor never comes, and any inside the window go on.
  */
 public class StartupOrderTest {
     @Before
@@ -28,6 +28,7 @@ public class StartupOrderTest {
         System.clearProperty(ScheduleLog.TIMEOUT_PROPERTY);
         ScheduleLog.resetForTests();
         StartupOrder.resetForTests();
+        RecordingWindow.reset();
     }
 
     @Test
@@ -56,7 +57,14 @@ public class StartupOrderTest {
                 System.nanoTime() - before >= 250_000_000L);
         before = System.nanoTime();
         take("dn9", took);
-        assertTrue("a node the order does not mark goes on",
+        assertTrue("a taker the order does not mark goes on",
+                System.nanoTime() - before < 250_000_000L);
+
+        StartupOrder.resetForTests();
+        RecordingWindow.open();
+        before = System.nanoTime();
+        take("dn0", took);
+        assertTrue("inside the window the schedule orders, nothing holds",
                 System.nanoTime() - before < 250_000_000L);
         Files.delete(order);
     }

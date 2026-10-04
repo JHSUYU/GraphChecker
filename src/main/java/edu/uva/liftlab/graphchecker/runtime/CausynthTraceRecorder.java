@@ -1044,15 +1044,11 @@ public final class CausynthTraceRecorder {
         return RuntimeTraceContext.vacantTick(token);
     }
 
-    /** The node {@code owner} belongs to begins startup {@code step}
-     *  ({@link StartupOrder#begin}), by the attribution rule: a step before
-     *  the node is registered (a DataNode's registration) is named by the
-     *  startup its thread was started in; one no node is attributed to
-     *  names none. */
-    public static Object startupStep(String step, Object owner) {
+    /** {@code who} begins startup {@code step} ({@link
+     *  StartupOrder#begin}). */
+    public static Object startupStep(String step, String who) {
         initialize();
-        SourceRef node = Attribution.resolve(owner);
-        return node == null ? null : StartupOrder.begin(step, node.key());
+        return StartupOrder.begin(step, who);
     }
 
     /** The step {@link #startupStep} began completed. */
