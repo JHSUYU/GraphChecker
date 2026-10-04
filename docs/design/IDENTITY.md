@@ -465,10 +465,12 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
 The library catalog's doors and the woven markers are SYMBOL-SCOPE.md §4.2. A marker's branch is a decision of
 the occurrence that runs the door; `explore/ClosurePlanner#controlProducer` adds the sender and the
 receiver of the message a demanded occurrence served (its `Anchor`, else the message its turn took
-in, `explore/Corpus#startedBy`; `#senderOf`, `#receiverOf`) as control producers, so their door faults are proposed
-as flips. PLAN plans the door occurrences that read a fault marker on the same relation, over the
-recording's schedule (`causynth/RecordedMessages#doorsOf`, SYMBOL-SCOPE.md §4.4), so the faults EXPLORE
-proposes are minted.
+in, `explore/Corpus#startedBy`; `#senderOf`, `#receiverOf`) as control producers where a session
+recorded a fault decision of them, so their door faults are proposed as flips. PLAN plans the door
+occurrences that read a fault marker on the same relation, over the recording's schedule
+(`causynth/RecordedMessages#doorsOf`, SYMBOL-SCOPE.md §4.4), so the faults EXPLORE proposes are
+minted: one predicate. A door that decided no fault -- unplanned, since it read no marker (a
+transport with no woven door in the case's scope), or a role -- is a DIAGNOSTIC row, not a member.
 
 ### 7.4 Captures bound to exchanges
 

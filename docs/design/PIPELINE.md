@@ -473,7 +473,12 @@ are counted, never dropped silently: the `NO_ROOT_REACHES_ANCHOR` detail states 
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
 - the two doors of the message a demanded occurrence served (sender and receiver of its causal
-  anchor's producer endpoint): `CONTROL_PRODUCER`, contributing no value.
+  anchor's producer endpoint), each where a session recorded a fault decision of it (its fault
+  point decides whether the message exists; the doors PLAN's `CONTROL_PRODUCER_V1` admits):
+  `CONTROL_PRODUCER`, contributing no value. Any other door -- run under no planned task, a role,
+  or one that decided no fault (hdfs-adhoc-28/29's heartbeat tick in a scope with no IPC client
+  door, HG3: it waited as "only the seed replay ran this occurrence" and blocked the fixed point) --
+  is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for.
 
 An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint. A region holds a
 static site when the map's method set of the region contains the site's method or one of its callers;

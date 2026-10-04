@@ -4577,6 +4577,76 @@ public class ExploreTest {
     }
 
     /**
+     * IDENTITY §7.3: a door of the message the anchor served joins its
+     * closure as a control producer only where a session recorded a fault
+     * decision of it -- what decides whether the message exists, the door
+     * PLAN's CONTROL_PRODUCER rule admits.  Any other door, captured with no
+     * fault branch or run only by the seed under no planned task
+     * (hdfs-adhoc-28's heartbeat tick, its scope holding no IPC client door),
+     * is one DIAGNOSTIC row: no task, and nothing waited for.
+     */
+    @Test
+    public void aDoorIsAControlProducerWhereItDecidedAFault()
+            throws Exception {
+        OccurrenceAddress anchor = occurrence("hdfs-case/dn0",
+                "REGION.recovery", CausalContext.of("e-door",
+                        "HADOOP_IPC/heartbeat"),
+                "o.a.h.h.s.d.BlockRecoveryWorker#run#3");
+        OccurrenceAddress door = occurrence("hdfs-case/dn0", "REGION.actor",
+                CausalContext.of(Role.of("BP_SERVICE_ACTOR"), "", 3),
+                "o.a.h.h.s.d.BPServiceActor#run#1");
+        // the door captured (a planned task ran it), it decided a fault
+        Object[][] cases = {{true, true}, {true, false}, {false, false}};
+        for (Object[] row : cases) {
+            boolean captured = (Boolean) row[0];
+            boolean faulted = (Boolean) row[1];
+            String label = "captured=" + captured + " faulted=" + faulted;
+            Path iteration = tree.newFolder().toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(anchor, false);
+            // Named by the seed either way; instrumented only if captured.
+            seed.activation(door, false, captured);
+            if (faulted) {
+                seed.root(door, "CASE.DOOR", "M_DOOR", RootKind.MARKER,
+                        "false", null, null, true);
+                seed.decision(door, "Client#u7", 1, false, "M_DOOR");
+            } else if (captured) {
+                seed.decision(door, "Actor#u3", 1, true, "");
+            }
+            seed.target(anchor, "Recovery#u8#1", "false");
+            seed.flush();
+            RowCodec.writeJsonl(SessionDir.of(iteration, "s-seed").schedule(),
+                    Collections.singletonList(RowCodec.writeScheduleEvent(
+                            ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
+                                    door.node().render() + "|"
+                                            + door.context().render(),
+                                    "HADOOP_IPC#REQUEST", 0, door.id(),
+                                    "e-door"))));
+            StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                    targetSite("REGION.recovery", "Recovery#u9", "Recovery#u8")));
+            ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
+                    anchor, map);
+            boolean task = false;
+            for (Task planned : plan.tasks) {
+                task |= planned.focused().equals(door);
+            }
+            int rows = 0;
+            for (GapRow gap : plan.gaps) {
+                if (gap.subject().equals(door.render())
+                        && gap.detail().contains("decided no fault")) {
+                    assertEquals(label, GapClass.DIAGNOSTIC, gap.cls());
+                    rows++;
+                }
+            }
+            assertEquals(label, faulted, task);
+            assertEquals("one row for a door that decided no fault: " + label,
+                    faulted ? 0 : 1, rows);
+            assertFalse("never waited for: " + label,
+                    plan.waiting.contains(door));
+        }
+    }
+
+    /**
      * D0 (R1-ROOTS §2.3, PIPELINE §7.2): an anchor every admitted path
      * decided on no symbol demands the shared state it read BEFORE it
      * decided on its guards' cone (the scope map's demandDistance,
