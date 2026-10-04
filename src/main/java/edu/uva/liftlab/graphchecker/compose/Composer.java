@@ -1298,10 +1298,17 @@ public final class Composer {
         // Nothing refuses the path from here: it is a disjunct.
         composedFamilies.commit();
         String fatal = "path_fatal__" + ordinal;
-        lowering.assertNamed(fatal,
-                "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
         List<String> withoutFatalArm = new ArrayList<String>(terms);
         if (fatalArm >= 0) withoutFatalArm.remove(fatalArm);
+        // A constant healthy decision is conjoined unflattened, so the body
+        // still declares what the rest of the path names: the self-check
+        // asks the path without it (Composition#withoutFatalArm).
+        String conjunction = fatalArm >= 0
+                && "false".equals(terms.get(fatalArm))
+                ? "(and " + VmTermLowering.and(withoutFatalArm) + " false)"
+                : VmTermLowering.and(terms);
+        lowering.assertNamed(fatal,
+                "(=> " + selector + " " + conjunction + ")");
         observedReads.put(path.pathId, observed);
         concrete.putAll(pathConcrete);
         observedArrivals.put(path.pathId,
