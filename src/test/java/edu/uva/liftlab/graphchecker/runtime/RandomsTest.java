@@ -139,20 +139,20 @@ public class RandomsTest {
     }
 
     /**
-     * {@code ThreadLocalRandom.current()}'s stand-in draws, in a fresh run,
-     * what the first drew; its bounded draws keep ThreadLocalRandom's
-     * contract: in [origin, bound), and a bad bound refused.
+     * A draw keyed by its site draws, in a fresh run, what the first drew;
+     * the bounded draws keep ThreadLocalRandom's contract: in [origin,
+     * bound), and a bad bound refused.
      */
     @Test
-    public void aThreadLocalDrawRepeatsInEveryPassWithinItsBounds() {
+    public void aSiteKeyedDrawRepeatsInEveryPassWithinItsBounds() {
         List<Long> passes = new java.util.ArrayList<>();
         for (int pass = 0; pass < 2; pass++) {
             freshRun();
-            Random drawn = Randoms.current(SITE);
+            Random drawn = Randoms.at(SITE);
             passes.add(Randoms.nextLong(drawn, 1L << 40));
         }
         assertEquals(passes.get(0), passes.get(1));
-        Random drawn = Randoms.current(SITE);
+        Random drawn = Randoms.at(SITE);
         for (int i = 0; i < 100; i++) {
             int one = Randoms.nextInt(drawn, -3, 4);
             long other = Randoms.nextLong(drawn, Long.MIN_VALUE, -5L);

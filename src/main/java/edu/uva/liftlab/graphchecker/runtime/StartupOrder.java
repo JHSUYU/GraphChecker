@@ -20,15 +20,21 @@ import java.util.Set;
  * drew (hdfs-adhoc-01/43, STATUS open defect 40).
  *
  * <p>The recording states each completion as a {@code STARTUP} mark of its
- * schedule (step, who), in completion order, handed on with every order
- * ({@code explore.SchedulePrefix}).  Before the window, a replay holds the
- * taker at the step until every pass marked before its own completed it, a
- * taker's n-th pass standing for its n-th mark; at most one schedule
- * timeout, after which the missing ones are given up by name ({@code
- * SCHEDULE_DIVERGED}), and an interrupt ends the hold by name too.  Inside
- * the window the schedule's slots order the step's events, so nothing holds
- * there.  HDFS's taker is the NameNode adding a DataNode, named by the
- * DataNode's UUID, the same in both passes: its draw is seeded
+ * schedule (step, who, and whether its window had not opened yet: {@code
+ * pre}), in completion order, handed on with every order ({@code
+ * explore.SchedulePrefix}).  A replay holds a taker whose pass is marked
+ * {@code pre} until every pass marked before its own completed it, whatever
+ * its own window's state -- the two passes' windows may open at different
+ * points of the start-up (hdfs-adhoc-43, round SS5: two DataNodes added in
+ * the other order, no hold) -- a taker's n-th pass standing for its n-th
+ * mark; inside its own window the held thread is away from the schedule's
+ * frontier ({@code ScheduleLog#elsewhere}).  At most one schedule timeout,
+ * after which the missing ones are given up by name ({@code
+ * SCHEDULE_DIVERGED}); an interrupt ends the hold by name too.  A pass
+ * marked inside the recording's window is held by the schedule's slots;
+ * one this replay takes before its own window opens is named ({@code
+ * startup-unheld}).  HDFS's taker is the NameNode adding a DataNode, named
+ * by the DataNode's UUID, the same in both passes: its draw is keyed
  * ({@code Randoms}).</p>
  */
 public final class StartupOrder {
@@ -39,6 +45,9 @@ public final class StartupOrder {
     /** Per step, the passes completed in this run, or given up. */
     private static final Map<String, Set<String>> PASSED =
             new HashMap<String, Set<String>>();
+    /** The marked passes the recording took before its window opened
+     *  ({@code step\nwho#n}): held whatever this replay's window. */
+    private static final Set<String> PRE = new HashSet<String>();
     /** Per step and taker, how often it began the step in this run. */
     private static final Map<String, Integer> BEGUN =
             new HashMap<String, Integer>();
@@ -47,8 +56,9 @@ public final class StartupOrder {
     }
 
     /**
-     * {@code who} is about to take {@code step}: in a replay before the
-     * window, held until the passes marked before its own completed.
+     * {@code who} is about to take {@code step}: in a replay, a pass its
+     * recording marked {@code pre} is held until the passes marked before
+     * its own completed, whatever this replay's window.
      *
      * @return what {@link #done} takes, or null when nothing is named
      */
@@ -64,9 +74,23 @@ public final class StartupOrder {
             Set<String> passed = passedLocked(named);
             List<String> before = at <= 0 ? new ArrayList<String>()
                     : new ArrayList<String>(order.subList(0, at));
+            if (at >= 0 && !PRE.contains(named + "\n" + pass)) {
+                // Marked inside the recording's window: its slots order it,
+                // unless this replay takes it before its own window opens.
+                if (!RecordingWindow.opened()) {
+                    ScheduleLog.diverged("startup-unheld#" + named, pass
+                            + " takes " + named + " before this replay's"
+                            + " window opened, where its recording took it"
+                            + " inside its window: nothing orders it");
+                }
+                before.clear();
+            } else if (RecordingWindow.opened() && !passed.containsAll(before)) {
+                // Held inside this replay's window: the schedule sees it.
+                ScheduleLog.elsewhere();
+            }
             long deadline = System.currentTimeMillis()
                     + ScheduleLog.timeoutMillis();
-            while (!RecordingWindow.opened() && !passed.containsAll(before)) {
+            while (!passed.containsAll(before)) {
                 long left = deadline - System.currentTimeMillis();
                 if (left <= 0L) {
                     before.removeAll(passed);
@@ -102,7 +126,8 @@ public final class StartupOrder {
             LOCK.notifyAll();
         }
         String who = pass[1].substring(0, pass[1].lastIndexOf('#'));
-        ScheduleLog.writeMark(RowCodec.writeScheduleStartup(pass[0], who));
+        ScheduleLog.writeMark(RowCodec.writeScheduleStartup(pass[0], who,
+                !RecordingWindow.opened()));
     }
 
     private static Set<String> passedLocked(String step) {
@@ -119,6 +144,9 @@ public final class StartupOrder {
                 int n = passes.merge(step + "\n" + who, 1, Integer::sum) - 1;
                 marked.computeIfAbsent(step, ignored -> new ArrayList<String>())
                         .add(who + "#" + n);
+                if (mark.get("pre").getAsBoolean()) {
+                    PRE.add(step + "\n" + who + "#" + n);
+                }
             }
         }
         return marked;
@@ -128,6 +156,7 @@ public final class StartupOrder {
     static void resetForTests() {
         synchronized (LOCK) {
             marked = null;
+            PRE.clear();
             PASSED.clear();
             BEGUN.clear();
         }

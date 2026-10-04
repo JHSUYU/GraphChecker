@@ -575,15 +575,19 @@ where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS,
 was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameterized workload test
 the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
 order, so a replay held to a run of another invocation is refused by name (`ScheduleLog#invocation`).
-`{mark: STARTUP, step, who}` states one taker completing a startup step an adapter names
+`{mark: STARTUP, step, who, pre}` states one taker completing a startup step an adapter names
 (`MessageDoors#startupStep(step, who)`/`#startupDone`): a step taken before the window that builds
-state a replay reads, which no slot holds; `who` names the taker the same in both passes. Marks are
-written in completion order, before the window as inside it, and handed on with every order
-(`SchedulePrefix#write`). Before its window a replay holds the taker at the step until every pass
-marked before its own (a taker's n-th pass is its n-th mark) completed it, at most one schedule
-timeout, then gives the missing ones up by name (`runtime/StartupOrder`, a `SCHEDULE_DIVERGED`
-DIAGNOSTIC `startup#<step>`; an interrupt ends the hold by that name too). Inside the window nothing
-holds there: the schedule's slots order the step's events, and no hold is hidden from the watchdog.
+state a replay reads, which no slot holds; `who` names the taker the same in both passes, `pre` that
+the run's window had not opened yet. Marks are written in completion order and handed on with every
+order (`SchedulePrefix#write`). A replay holds the taker of a `pre` pass at the step until every pass
+marked before its own (a taker's n-th pass is its n-th mark) completed it, whatever its own window's
+state -- two passes' windows may open at different points of the start-up (hdfs-adhoc-43, round SS5:
+two DataNodes added in the other order, no hold) -- at most one schedule timeout, then gives the
+missing ones up by name (`runtime/StartupOrder`, a `SCHEDULE_DIVERGED` DIAGNOSTIC `startup#<step>`;
+an interrupt ends the hold by that name too). Inside its own window a held thread is away from the
+frontier (`ScheduleLog#elsewhere`), so no hold is hidden from the watchdog. A pass the recording took
+inside its window is the schedule's to order; one a replay takes before its own window opens is named
+(`startup-unheld#<step>`).
 HDFS's step is the NameNode adding a DataNode (`FSNamesystem#registerDatanode`, around its write
 lock), named by the DataNode's UUID, which its seeded draw makes equal in both passes: the topology
 orders DataNodes as they are added, and block placement picks pipelines by position there

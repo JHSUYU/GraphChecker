@@ -11,11 +11,13 @@ import java.util.concurrent.atomic.AtomicLong;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 
 /**
- * THE unseeded randomness of the application scope, seeded by where it is
- * drawn.  The weave replaces {@code new Random()}, {@code Math.random()},
- * {@code Collections.shuffle(List)}, {@code UUID.randomUUID()} and {@code
- * ThreadLocalRandom.current()} with these in BOTH passes, so a replay draws
- * what the recording drew: a Solr client
+ * THE randomness of the application scope, keyed by where it is drawn.
+ * The weave makes every draw on a Random receiver (Random, ThreadLocalRandom,
+ * SecureRandom) a draw on {@link #at}, a Random handed to a library method
+ * {@link #at} at that call, and {@code Math.random()}, {@code
+ * Collections.shuffle(List)} and {@code UUID.randomUUID()} these stand-ins,
+ * in BOTH passes, so a replay draws what the recording drew, never a
+ * stream's next value whatever was drawn from it before: a Solr client
  * shuffles the live nodes it sends an admin request to, and a replay that
  * sent it to another node than the recording did held no order past it.
  *
@@ -83,11 +85,12 @@ public final class Randoms {
     }
 
     /**
-     * {@code ThreadLocalRandom.current()}: a Random seeded by where it is
-     * drawn, one per call, whose draws the weave makes its own (a bounded
-     * draw only ThreadLocalRandom declares through the stand-ins below).
+     * The Random one draw at {@code site} draws from, seeded by its key: a
+     * fresh one per draw, so the draw is a function of where it is drawn
+     * alone (a bounded draw only ThreadLocalRandom declares goes through the
+     * helpers below).
      */
-    public static Random current(String site) {
+    public static Random at(String site) {
         return new Random(seed(key(site)));
     }
 
@@ -117,11 +120,6 @@ public final class Randoms {
     public static double nextDouble(Random random, double origin,
                                     double bound) {
         return random.doubles(1L, origin, bound).iterator().nextDouble();
-    }
-
-    /** {@code new Random()}'s seed. */
-    public static long constructed(String site) {
-        return seed(key(site));
     }
 
     /** {@code Math.random()}. */

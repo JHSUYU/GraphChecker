@@ -17,8 +17,10 @@ import org.junit.Test;
 /**
  * A replay before its window holds a taker at a startup step to the order its
  * recording completed it in (hdfs-adhoc-01/43: DataNodes added in another
- * order placed every pipeline elsewhere); a taker the order does not mark,
- * one whose predecessor never comes, and any inside the window go on.
+ * order placed every pipeline elsewhere), whatever its own window's state
+ * when the recording took it before its window opened; a taker the order
+ * does not mark, one whose predecessor never comes, and one the recording
+ * took inside its window go on.
  */
 public class StartupOrderTest {
     @Before
@@ -35,8 +37,9 @@ public class StartupOrderTest {
     public void aReplayTakesTheStepInItsRecordingsOrder() throws Exception {
         Path order = Files.createTempFile("startup", ".jsonl");
         RowCodec.writeJsonl(order, Arrays.asList(
-                RowCodec.writeScheduleStartup("register", "dn1"),
-                RowCodec.writeScheduleStartup("register", "dn0")));
+                RowCodec.writeScheduleStartup("register", "dn1", true),
+                RowCodec.writeScheduleStartup("register", "dn0", true),
+                RowCodec.writeScheduleStartup("register", "dn2", false)));
         System.setProperty(ScheduleLog.PREFIX_PROPERTY, order.toString());
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
         final List<String> took =
@@ -64,8 +67,13 @@ public class StartupOrderTest {
         RecordingWindow.open();
         before = System.nanoTime();
         take("dn0", took);
-        assertTrue("inside the window the schedule orders, nothing holds",
-                System.nanoTime() - before < 250_000_000L);
+        assertTrue("a pass the recording took before its window holds"
+                + " inside this replay's window too",
+                System.nanoTime() - before >= 250_000_000L);
+        before = System.nanoTime();
+        take("dn2", took);
+        assertTrue("one the recording took inside its window is the"
+                + " schedule's", System.nanoTime() - before < 250_000_000L);
         Files.delete(order);
     }
 

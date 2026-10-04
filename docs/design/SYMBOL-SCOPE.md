@@ -655,18 +655,20 @@ depths that fit whole (PIPELINE.md §3).
 
 ### 4.5 Randomness is not a root
 
-The weave replaces `new Random()`, `Math.random()`, `Collections.shuffle(List)`,
-`UUID.randomUUID()` and `ThreadLocalRandom.current()` in both passes with `runtime/Randoms`, so a
-replay draws what the recording drew. `ThreadLocalRandom.current()` becomes `Randoms#current`, a
-`Random` seeded by the same key, and each draw on what it returned becomes that `Random`'s (a bounded
-draw only `ThreadLocalRandom` declares, `nextInt(int,int)`, `nextLong(long[,long])`,
-`nextDouble(double[,double])`, a `Randoms` stand-in of that name), only where every use of the value
-is such a draw or stands where a `Random` may (a return, an assignment, an argument); any other use
-leaves the site as written, counted and named in the weave's log (`CausynthPipeline#seedThreadLocalRandom`).
-The draws are one list (`plan/WorkStartSites#UNSEEDED_DRAWS`), which the lineage scan keeps a class for. HDFS's block placement picks
-a pipeline's DataNodes through NetworkTopology's `ThreadLocalRandom`: hdfs-adhoc-42's replay wrote to
-dn0 first where its recording wrote to dn2 first, and every DataXceiver turn after took another
-node's slot.
+Every draw is keyed by its site, in both passes (`CausynthPipeline#replaceRandom`,
+`runtime/Randoms`), so a replay draws what the recording drew whatever was drawn before it. A draw on
+any Random receiver (`plan/WorkStartSites#RANDOM_RECEIVERS`: `Random`, `ThreadLocalRandom`,
+`SecureRandom`; `#RANDOM_DRAWS`) draws from `Randoms#at(site)`, a `Random` seeded by the draw's key,
+never from the receiver's stream; a bounded draw only `ThreadLocalRandom` declares (`#BOUNDED_DRAWS`:
+`nextInt(int,int)`, `nextLong(long[,long])`, `nextDouble(double[,double])`) is the `Randoms` helper
+of its name over that `Random`. A `Random` handed to a method outside the weave (the JDK's
+`Collections.shuffle(list, random)`) is `Randoms#at(site)` at that call, and `Math.random()`,
+`Collections.shuffle(List)` and `UUID.randomUUID()` are `Randoms` stand-ins (`#STATIC_DRAWS`). The
+lineage scan keeps every class making one (`WorkStartSites#draws`). HDFS's block placement picks a
+pipeline's DataNodes from NetworkTopology's `ThreadLocalRandom` and DFSNetworkTopology's one static
+`Random`, which every IPC handler shares: draw k depended on every draw before it (hdfs-adhoc-01,
+round SS5), and a replay that wrote another pipeline than its recording put every DataXceiver turn
+after it on another node's slot. A `SecureRandom`'s draws (block-key nonces) are keyed too.
 A draw is keyed (`Randoms#key`) by its endpoint where it runs in an occurrence with a context (a Root
 or an Anchor) inside the window: the same function of the same inputs in both passes. Anywhere else
 -- before the window, or in a Lost context, whose address siblings share (unnamed work, a turn begun

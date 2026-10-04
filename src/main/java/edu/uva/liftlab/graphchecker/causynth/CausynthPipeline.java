@@ -65,6 +65,8 @@ import soot.jimple.NullConstant;
 import soot.jimple.ReturnStmt;
 import soot.jimple.ReturnVoidStmt;
 import soot.jimple.SpecialInvokeExpr;
+import soot.jimple.VirtualInvokeExpr;
+import soot.jimple.InterfaceInvokeExpr;
 import soot.jimple.StaticFieldRef;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
@@ -88,7 +90,6 @@ import java.util.Deque;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumMap;
-import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -1749,12 +1750,6 @@ public final class CausynthPipeline {
                 + " of the application scope for the execution index, {} "
                 + "class(es) of it for their lineage alone", framed, filed,
                 claimed, waited, walked, lineage);
-        if (!UNSEEDED.isEmpty()) {
-            LOG.info("Left {} ThreadLocalRandom draw site(s) unseeded, a use"
-                    + " of the value each returns being no draw and no"
-                    + " Random's place: {}", UNSEEDED.size(), UNSEEDED);
-            UNSEEDED.clear();
-        }
     }
 
     /**
@@ -1812,204 +1807,90 @@ public final class CausynthPipeline {
             "edu.uva.liftlab.graphchecker.runtime.Randoms";
 
     /**
-     * Seeds one unseeded draw by where it is drawn ({@code runtime.Randoms}),
-     * in both passes, so a replay draws what the recording drew: a call
-     * {@link WorkStartSites#UNSEEDED_DRAWS} lists.  {@code new Random()}
-     * takes its seed from {@code Randoms#constructed}, {@code
-     * ThreadLocalRandom.current()} becomes a seeded Random whose draws are
-     * rewritten ({@link #seedThreadLocalRandom}), and a static draw ({@code
-     * Math.random()}, {@code Collections.shuffle(List)}, {@code
-     * UUID.randomUUID()}) becomes the {@code Randoms} stand-in of its name,
-     * the site its last argument.
+     * Keys one draw by where it is drawn ({@code runtime.Randoms}), in both
+     * passes, so a replay draws what the recording drew whatever the draws
+     * before it (IDENTITY §10, SYMBOL-SCOPE §4.5).  A draw on any Random
+     * receiver ({@link WorkStartSites#RANDOM_RECEIVERS}: Random,
+     * ThreadLocalRandom, SecureRandom) draws from {@code Randoms#at(site)}
+     * instead of the receiver's stream -- HDFS's DFSNetworkTopology picks
+     * pipelines from one static Random every handler shares, so draw k
+     * depended on every draw before it (hdfs-adhoc-01); a bounded draw only
+     * ThreadLocalRandom declares becomes the {@code Randoms} helper of its
+     * name.  A Random handed to a method outside the weave ({@code
+     * Collections.shuffle(list, random)}) is {@code Randoms#at(site)} at that
+     * call.  A static draw ({@link WorkStartSites#STATIC_DRAWS}) becomes the
+     * {@code Randoms} stand-in of its name, the site its last argument.
      */
     private static void replaceRandom(Body body, Stmt stmt, String site) {
         InvokeExpr invoke = stmt.getInvokeExpr();
         SootMethodRef callee = invoke.getMethodRef();
         String owner = callee.declaringClass().getName();
-        if (!WorkStartSites.UNSEEDED_DRAWS.contains(owner.replace('.', '/')
-                + "." + callee.getName()
-                + soot.AbstractJasminClass.jasminDescriptorOf(callee))) {
-            return;
-        }
+        String draw = callee.getName()
+                + soot.AbstractJasminClass.jasminDescriptorOf(callee);
         SootClass randoms = phantomClass(RANDOMS_CLASS);
-        RefType string = RefType.v("java.lang.String");
-        if (THREAD_LOCAL_RANDOM.equals(owner)) {
-            seedThreadLocalRandom(body, stmt, site, randoms);
-            return;
-        }
-        if (invoke instanceof SpecialInvokeExpr) {
-            Local seed = newTraceLocal(body, LongType.v(), "$causynthSeed");
-            body.getUnits().insertBefore(Jimple.v().newAssignStmt(seed,
-                    Jimple.v().newStaticInvokeExpr(Scene.v().makeMethodRef(
-                            randoms, "constructed",
-                            Collections.<Type>singletonList(string),
-                            LongType.v(), true),
-                            StringConstant.v(site))), stmt);
-            SootMethodRef seeded = Scene.v().makeMethodRef(
-                    callee.declaringClass(), "<init>",
-                    Collections.<Type>singletonList(LongType.v()),
-                    VoidType.v(), false);
-            stmt.getInvokeExprBox().setValue(Jimple.v().newSpecialInvokeExpr(
-                    (Local) ((SpecialInvokeExpr) invoke).getBase(), seeded,
-                    seed));
-            return;
-        }
-        List<Type> parameters = new ArrayList<>(callee.getParameterTypes());
-        parameters.add(string);
-        List<Value> arguments = new ArrayList<>(invoke.getArgs());
-        arguments.add(StringConstant.v(site));
-        stmt.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
-                Scene.v().makeMethodRef(randoms, callee.getName(), parameters,
-                        callee.getReturnType(), true), arguments));
-    }
-
-    /** The ThreadLocalRandom sites one weave left unseeded, named in its
-     *  log ({@link #seedThreadLocalRandom}). */
-    private static final List<String> UNSEEDED = new ArrayList<>();
-
-    private static final String THREAD_LOCAL_RANDOM =
-            "java.util.concurrent.ThreadLocalRandom";
-    private static final String RANDOM = "java.util.Random";
-    /** The types a seeded Random stands as where a ThreadLocalRandom was. */
-    private static final Set<String> RANDOM_HOLDERS = new HashSet<>(
-            Arrays.asList(RANDOM, "java.lang.Object"));
-    /** The draws {@code java.util.Random} declares as ThreadLocalRandom
-     *  does: a ThreadLocalRandom call of one becomes a Random call. */
-    private static final Set<String> RANDOM_DRAWS = new HashSet<>(
-            Arrays.asList("int nextInt()", "int nextInt(int)",
-                    "long nextLong()", "double nextDouble()",
-                    "boolean nextBoolean()", "float nextFloat()",
-                    "double nextGaussian()", "void nextBytes(byte[])",
-                    "java.util.stream.IntStream ints()",
-                    "java.util.stream.IntStream ints(long)",
-                    "java.util.stream.IntStream ints(int,int)",
-                    "java.util.stream.IntStream ints(long,int,int)",
-                    "java.util.stream.LongStream longs()",
-                    "java.util.stream.LongStream longs(long)",
-                    "java.util.stream.LongStream longs(long,long)",
-                    "java.util.stream.LongStream longs(long,long,long)",
-                    "java.util.stream.DoubleStream doubles()",
-                    "java.util.stream.DoubleStream doubles(long)",
-                    "java.util.stream.DoubleStream doubles(double,double)",
-                    "java.util.stream.DoubleStream doubles(long,double,double)"));
-    /** The bounded draws only ThreadLocalRandom declares: each becomes the
-     *  {@code runtime.Randoms} stand-in of that name taking the Random
-     *  first. */
-    private static final Set<String> BOUNDED_DRAWS = new HashSet<>(
-            Arrays.asList("int nextInt(int,int)", "long nextLong(long)",
-                    "long nextLong(long,long)", "double nextDouble(double)",
-                    "double nextDouble(double,double)"));
-
-    /**
-     * Seeds a ThreadLocalRandom draw by where it is drawn, as {@code new
-     * Random()} is: {@code ThreadLocalRandom.current()} becomes {@code
-     * Randoms.current(site)}, a Random seeded by the same key, and every
-     * draw on what it returned becomes that Random's (HDFS's block placement
-     * picks a pipeline's DataNodes from NetworkTopology's ThreadLocalRandom:
-     * hdfs-adhoc-42's replay wrote dn0 first where the recording wrote dn2
-     * first, and every DataXceiver turn after it took another node's slot).
-     * Only where every use of the returned value is a draw this rewrites or
-     * stands where a Random may (a return, an assignment, an argument, as
-     * in {@code Collections.shuffle(list, ThreadLocalRandom.current())});
-     * any other use leaves the site as written, named ({@link #UNSEEDED}).
-     */
-    private static void seedThreadLocalRandom(Body body, Stmt stmt,
-                                              String site,
-                                              SootClass randoms) {
-        if (!(stmt instanceof AssignStmt)
-                || !(((AssignStmt) stmt).getLeftOp() instanceof Local)) {
-            UNSEEDED.add(site);
-            return;
-        }
-        Local drawn = (Local) ((AssignStmt) stmt).getLeftOp();
-        Set<Stmt> draws = new LinkedHashSet<>();
-        for (Unit unit : body.getUnits()) {
-            for (ValueBox box : unit.getUseBoxes()) {
-                if (box.getValue() != drawn) continue;
-                Stmt use = (Stmt) unit;
-                if (use.containsInvokeExpr()
-                        && use.getInvokeExpr() instanceof InstanceInvokeExpr
-                        && ((InstanceInvokeExpr) use.getInvokeExpr())
-                                .getBase() == drawn) {
-                    SootMethodRef called = use.getInvokeExpr()
-                            .getMethodRef();
-                    String declared = called.declaringClass().getName();
-                    String sub = called.getSubSignature().getString();
-                    if (THREAD_LOCAL_RANDOM.equals(declared)
-                            && (RANDOM_DRAWS.contains(sub)
-                            || BOUNDED_DRAWS.contains(sub))) {
-                        draws.add(use);
-                    } else if (!RANDOM_HOLDERS.contains(declared)) {
-                        UNSEEDED.add(site);
-                        return;
-                    }
-                } else if (!holdsRandom(body, use, drawn)) {
-                    UNSEEDED.add(site);
-                    return;
-                }
-            }
-        }
-        RefType random = RefType.v(RANDOM);
-        ((AssignStmt) stmt).setRightOp(Jimple.v().newStaticInvokeExpr(
-                Scene.v().makeMethodRef(randoms, "current",
-                        Collections.<Type>singletonList(
-                                RefType.v("java.lang.String")),
-                        random, true), StringConstant.v(site)));
-        drawn.setType(random);
-        SootClass randomClass = phantomClass(RANDOM);
-        for (Stmt use : draws) {
-            InstanceInvokeExpr call = (InstanceInvokeExpr) use.getInvokeExpr();
-            SootMethodRef called = call.getMethodRef();
-            String sub = called.getSubSignature().getString();
-            if (RANDOM_DRAWS.contains(sub)) {
-                use.getInvokeExprBox().setValue(Jimple.v().newVirtualInvokeExpr(
-                        drawn, Scene.v().makeMethodRef(randomClass,
-                                called.getName(), called.getParameterTypes(),
-                                called.getReturnType(), false),
-                        call.getArgs()));
-                continue;
+        if ((invoke instanceof VirtualInvokeExpr
+                || invoke instanceof InterfaceInvokeExpr)
+                && WorkStartSites.RANDOM_RECEIVERS.contains(owner)
+                && WorkStartSites.drawn(draw)) {
+            Local drawn = randomAt(body, stmt, site, randoms);
+            if (WorkStartSites.RANDOM_DRAWS.contains(draw)) {
+                stmt.getInvokeExprBox().setValue(Jimple.v()
+                        .newVirtualInvokeExpr(drawn, Scene.v().makeMethodRef(
+                                phantomClass(RANDOM), callee.getName(),
+                                callee.getParameterTypes(),
+                                callee.getReturnType(), false),
+                                invoke.getArgs()));
+                return;
             }
             List<Type> parameters = new ArrayList<>();
-            parameters.add(random);
-            parameters.addAll(called.getParameterTypes());
+            parameters.add(drawn.getType());
+            parameters.addAll(callee.getParameterTypes());
             List<Value> arguments = new ArrayList<>();
             arguments.add(drawn);
-            arguments.addAll(call.getArgs());
-            use.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
-                    Scene.v().makeMethodRef(randoms, called.getName(),
-                            parameters, called.getReturnType(), true),
+            arguments.addAll(invoke.getArgs());
+            stmt.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
+                    Scene.v().makeMethodRef(randoms, callee.getName(),
+                            parameters, callee.getReturnType(), true),
                     arguments));
+            return;
+        }
+        if (WorkStartSites.STATIC_DRAWS.contains(owner.replace('.', '/')
+                + "." + draw)) {
+            List<Type> parameters = new ArrayList<>(
+                    callee.getParameterTypes());
+            parameters.add(RefType.v("java.lang.String"));
+            List<Value> arguments = new ArrayList<>(invoke.getArgs());
+            arguments.add(StringConstant.v(site));
+            stmt.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
+                    Scene.v().makeMethodRef(randoms, callee.getName(),
+                            parameters, callee.getReturnType(), true),
+                    arguments));
+            return;
+        }
+        if (callee.declaringClass().isApplicationClass()) return;
+        for (int index = 0; index < invoke.getArgCount(); index++) {
+            Type parameter = callee.getParameterType(index);
+            if (parameter instanceof RefType && RANDOM.equals(
+                    ((RefType) parameter).getClassName())) {
+                invoke.setArg(index, randomAt(body, stmt, site, randoms));
+            }
         }
     }
 
-    /** Whether a use of {@code drawn} other than a call on it stands where
-     *  a Random may: returned, assigned or passed as one (ThreadLocalRandom
-     *  is a Random, so another definition of the local stays well typed). */
-    private static boolean holdsRandom(Body body, Stmt use, Local drawn) {
-        List<Type> held = new ArrayList<>();
-        if (use instanceof ReturnStmt) {
-            held.add(body.getMethod().getReturnType());
-        } else if (use instanceof AssignStmt
-                && ((AssignStmt) use).getRightOp() == drawn) {
-            held.add(((AssignStmt) use).getLeftOp().getType());
-        }
-        if (use.containsInvokeExpr()) {
-            InvokeExpr call = use.getInvokeExpr();
-            for (int index = 0; index < call.getArgCount(); index++) {
-                if (call.getArg(index) == drawn) {
-                    held.add(call.getMethodRef().getParameterType(index));
-                }
-            }
-        }
-        for (Type type : held) {
-            if (!(type instanceof RefType)
-                    || !RANDOM_HOLDERS.contains(
-                            ((RefType) type).getClassName())) {
-                return false;
-            }
-        }
-        return !held.isEmpty();
+    /** {@code Randoms#at(site)} in a fresh local, before {@code stmt}. */
+    private static Local randomAt(Body body, Stmt stmt, String site,
+                                  SootClass randoms) {
+        RefType random = RefType.v(RANDOM);
+        Local drawn = newTraceLocal(body, random, "$causynthDraw");
+        body.getUnits().insertBefore(Jimple.v().newAssignStmt(drawn,
+                Jimple.v().newStaticInvokeExpr(Scene.v().makeMethodRef(
+                        randoms, "at", Collections.<Type>singletonList(
+                                RefType.v("java.lang.String")), random,
+                        true), StringConstant.v(site))), stmt);
+        return drawn;
     }
+
+    private static final String RANDOM = "java.util.Random";
 
     /** The Soot type a {@link WorkStartSites.TimedWait} names. */
     private static Type sootType(String name) {
