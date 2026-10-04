@@ -50,8 +50,12 @@ bind is pinned to its recorded value or refused as `UNSTATED_VALUE` (`compose/Co
 
 The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 
-- **Locals, arguments, returns** into callees whose body is analysed: a concrete method of a
-  non-abstract application class that is not a structural field accessor (`isExpandableMethod`).
+- **Locals, arguments, returns** into callees whose body is analysed: a concrete method of an
+  application class, an abstract class's or an interface's default one included, that is not a
+  structural field accessor (`isExpandableMethod`). A call whose CHA targets include the callee
+  itself (a concrete method an abstract class declares and its subclasses inherit: HDFS's
+  `BlockInfo.isComplete()`, `getBlockUCState()`) is the plain call for that target -- its
+  `call_argument` and `call_return` rows and its body -- and dispatched to the others.
   Callers of a demanded formal or of a demanded `this`, constructor callers, and CHA dispatch to the
   application implementations of an interface or abstract call (`processDispatchInvoke`; owners in
   `java.`, `javax.`, `com.google.`, `org.slf4j.` are not dispatched). A call is indexed under the
@@ -102,9 +106,24 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   `<m>.throws` (`expandThrows`) takes an `exception_flow` edge from the origin of each raise a fault
   escapes `m` from -- the woven throw's marker local, a callee's `<callee>.throws` -- under the
   raise's guards, so a handler's effects lead back to the door's marker.
-- **Constant stores**: a store of a constant carries no data, so the guards of the calls into the
-  storing method are demanded too, up to three calls up, dispatch included
-  (`expandStoreCallerGuards`, `STORE_CALLER_DEPTH`).
+- **Activation**: a branch that decides whether code carrying the slice's data runs is demanded
+  like data (owner 2026-10-04). Within a method that is the rule above, and a mutation of a
+  demanded container -- a local's (`list.add` under `if (...)`), a helper's mutation of one it is
+  passed, an array store -- demands its own guards, guarding the container's cell. Across calls
+  (`expandActivationGuards`, `ACTIVATION_DEPTH` = 3, `SiteControlDependence`'s `CALL_DEPTH`): for
+  the declared target's method and for every method holding a demanded store or container
+  mutation, constant or not, each call into it, three calls up, dispatch included, demands its
+  deciding operands -- its branches and door-fault branches -- in its method, guarding the
+  method's `<m>.activation` or the stored cells; a dispatched call links the caller to the method
+  it runs (`dispatch_activation`). hdfs-adhoc-29's anchor leaves `BlockRecoveryWorker
+  $RecoveryTaskContiguous.recover()` at `candidateReplicaCnt > 0 && syncList.isEmpty()`, the
+  guard of its call into `syncBlock` and on to the target's `getActiveNamenodeForBP`: the count
+  rests on `initReplicaRecovery`'s answer, which `FsDatasetImpl.initReplicaRecoveryImpl` gives
+  only past `rur.getRecoveryID() >= recoveryId`, so `ReplicaUnderRecovery.recoveryId` is read on
+  the anchor's way. SOLR-18406: Lucene's `CommitPoint.delete()` sets `deleted = true`, and Solr's
+  deletion policy calls it through `IndexCommit.delete()` only when the commit's reservation, a
+  clock, has run out. A call's demanded result needs no rule of its own: the call's definition
+  is demanded, and with it the call's guards.
 - **Field reads**: a demanded `x = b.f` demands `f` (`field_read`, then the field jump) and `b`,
   the object it reads from (`local_def_use`: the base is a use of the read), as an accessor's
   receiver (`accessor_receiver`) and a dispatched call's (`dispatch_receiver`) are. A reference
@@ -113,7 +132,10 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 - **Library calls**: the result of a non-application call depends on its arguments, and on its
   receiver by one of these rules: `String`, `StringBuilder`, `StringBuffer` and every wrapper's
   unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`, `Boolean.booleanValue` included) keep
-  the receiver as a value (`isValueLikeLibraryInvoke`); a JDK atomic's `get()` is an accessor of
+  the receiver as a value (`isValueLikeLibraryInvoke`), as do the final methods every enum
+  inherits from `java.lang.Enum` (`equals`, `hashCode`, `compareTo`, `ordinal`, `name`), called
+  on an application enum with no body of its own (`getBlockUCState().equals(COMPLETE)`), their
+  arguments values too; a JDK atomic's `get()` is an accessor of
   its `value` (`AtomicBoolean.get()` is `value != 0`), read off a table rather than its body
   (`plan/SharedFieldFlow#atomicRead`, `StructuralFieldAccessorProof#atomicField`); a container
   query depends on receiver and arguments (`processSemanticContainerOperation`,
@@ -239,7 +261,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 
 | role | one row per | extra members |
 |---|---|---|
-| `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
+| `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`), then the guards of the calls into its method, three calls up, never into an execution context's entry (a thread's or task's `run`, a `call`, a `main`: its starter runs it) (`StaticScopeMap#targetChain`, `Guards#callsInto`): the decisions its occurrence takes on the way to the throw. The static planner roots a region at the target's method itself (`FAILURE_TARGET_ENTRY`), but its callers' region is the occurrence it folds into at run time |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `demandDistance` (the root demand's distance to this read, §4.6) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field), `demandDistance` (§4.6) |
@@ -611,8 +633,9 @@ generators nearly alike (alike UUID prefixes, one pick of four for every count).
 ### 4.6 Root demand
 
 `causynth/RootDemand` asks where the values the declared throw's path guards decide on enter what
-the slice follows. Backward from the operands of the `exception_guard` edges at the TARGET_SITE's
-guards, its chain and the chain's deciders (`Site#pathSites`), over the candidate edges, nearest
+the slice follows. Backward from the operands of the guard edges (`exception_guard`,
+`guard_dependency`) at the TARGET_SITE's guards, its chain -- the calls into its method up to
+its execution context's entry included (§3) -- and the chain's deciders (`Site#pathSites`), over the candidate edges, nearest
 first, every path stops at its first *boundary*, at most sixteen edges out; a receiver edge
 (`accessor_receiver`, `method_receiver`, ...) names which object is read, not the value, and is
 followed only to a value-like receiver (a box, a `String`). The classes:
@@ -621,7 +644,7 @@ followed only to a value-like receiver (a box, a `String`). The classes:
 | --- | --- | --- |
 | `CLOCK` | a clock's return (§4.1) | nothing more: it is declared |
 | `FAULT` | a fault marker's return (§4.2) | nothing more: it is declared |
-| `CONFIG_CALL`, `CONFIG_FIELD` | a configuration (§4.3) | the twelve nearest keys within sixteen edges are minted |
+| `CONFIG_CALL`, `CONFIG_FIELD` | a configuration (§4.3) | the twelve nearest keys within sixteen edges are minted, and twelve more at the writers' guards (below) |
 | `READ` | a JDK atomic's value | a chosen read is a READ placeholder (§5.4) though only its own region stores it |
 | `TRACK` | an integral or boxed field a region stores | a chosen read is a READ_SITE (§5.1) however many flows from a branch |
 | `TRACK_IDENTITY` | a reference, `String` or enum field a region stores | a chosen read is a READ_SITE as well; its value is never freed (R3) |
@@ -640,10 +663,17 @@ configuration no source declares, a `String` getter). A configuration
 belongs to the world: it is read in whichever occurrence wrote what the anchor reads, beyond the
 boundary between them (hdfs-17960's key stands behind the `READ` of `numSnapshots`, in the edit-log
 replay that decremented it), so its keys are measured on the whole cone (every edge, no boundary
-stops it), a field's at the field, a getter call's one past the local it lands in. A named class
+stops it), a field's at the field, a getter call's one past the local it lands in. Whether a
+writer of a tracked read ran decides what the read saw, so the keys are measured again on the
+cone from the guards of the writers of each chosen `TRACK`, `TRACK_IDENTITY`, `TRACK_CONTAINER` or
+`READ` read (the guard rows into its cell: the store's own branches and those of the calls into
+its method, §2.2), each one edge past the read; of the keys the path's cone did not choose, the
+twelve nearest within sixteen there are minted too, so a key near a writer never displaces one
+near the anchor. Each configuration row states the cone
+it was measured on (`measured`: `PATH`, `WRITERS`); a row is chosen when its key is. A named class
 is a row, never a freed value: freeing it would invent a value no execution produces.
 `root_demand.jsonl` lists every boundary (`class`, `distance`, `cell`, `siteId`, `edgeKind`,
-`chosen`, `cut`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
+`chosen`, `cut`, `measured`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
 That mark is the static half of a concrete anchor's demand: an anchor every admitted path decided
 on no symbol demands the reads it made before it decided that carry it
 (`explore.ClosurePlanner#concrete`, `StaticScopeMap#demandedAt`; PIPELINE §7.2), their writers
@@ -903,9 +933,13 @@ session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#fr
 - Control dependence follows only door faults a handler catches; any other exception edge is
   ignored. A fault reaches a caller only through the analysed program: a protocol call of a class
   outside the scope (HDFS's `*TranslatorPB`, whose RPC engine invoker is out of scope too) raises
-  nothing, so the IPC doors of the named HDFS cases stay outside their callers' slices. It
-  follows a call up only for constant stores, field-effect calls and write-site guards (three
-  calls up); it never crosses a thread start, an executor submission or the wire.
+  nothing, so the IPC doors of the named HDFS cases stay outside their callers' slices. A program
+  exception (`throw new` of a non-door kind, e.g. `RecoveryInProgressException` from
+  `FsDatasetImpl.initReplicaRecoveryImpl` caught in `recover()`) is no fault branch, and a
+  precondition helper that throws decides nothing at its caller. Across calls it follows the
+  activation of the target's method and of a method holding a demanded store or mutation, three
+  calls up (§2.2), and write-site guards; it never crosses a thread start, an executor submission
+  or the wire.
 - Derived ports cover only scalar getters of protobuf messages a protobuf service carries, with a
   setter call in scope: no repeated, enum, `bytes`, nested or map-keyed fields, no string codecs,
   no frames, no message of a transport without services (DataTransfer ops, HTTP bodies, ZooKeeper

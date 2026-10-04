@@ -138,11 +138,9 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, Set<String>> methodsReferencingField =
             new LinkedHashMap<>();
     private final Set<String> mutationIndexedFields = new LinkedHashSet<>();
+    /** Per method, the demanded field cells it stores or mutates: the
+     *  effects the calls into it decide ({@link #expandActivationGuards}). */
     private final Map<String, Set<String>> relevantFieldEffectsByMethod =
-            new LinkedHashMap<>();
-    /** Per method, the relevant field cells it stores a constant into
-     *  ({@link #expandStoreCallerGuards}). */
-    private final Map<String, Set<String>> constantStoresByMethod =
             new LinkedHashMap<>();
     private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
     private final Set<String> dirtyMethods = new LinkedHashSet<>();
@@ -834,7 +832,7 @@ final class SeedBackwardStaticAnalyzer {
             expandFieldWriters(method);
             expandConstructorCallers(method);
             expandMethodCallers(method);
-            expandStoreCallerGuards(method);
+            expandActivationGuards(method);
         }
     }
 
@@ -1008,6 +1006,8 @@ final class SeedBackwardStaticAnalyzer {
         }
         addEdge("container_array_store_base", element, base, method, fact);
         relevant.add(element);
+        demandControllingGuards(method, fact, relevant,
+                Collections.singletonList(element));
         for (String source : arrayStoreSources(method, fact)) {
             if (ignoreNode(source)) {
                 continue;
@@ -1054,11 +1054,8 @@ final class SeedBackwardStaticAnalyzer {
         if (!fieldHit) {
             return;
         }
-        if (fact.unit instanceof AssignStmt
-                && ((AssignStmt) fact.unit).getRightOp() instanceof Constant) {
-            constantStoresByMethod.computeIfAbsent(method,
-                    DirtyMarkingSet::new).add(fieldNode);
-        }
+        relevantFieldEffectsByMethod.computeIfAbsent(method,
+                DirtyMarkingSet::new).add(fieldNode);
         if (sources.isEmpty()) {
             sources = Collections.singletonList(factNode(fact));
         }
@@ -1096,9 +1093,6 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 Set<String> writerRelevant = relevant(writer.method);
                 writerRelevant.add(writer.field);
-                relevantFieldEffectsByMethod
-                        .computeIfAbsent(writer.method, DirtyMarkingSet::new)
-                        .add(writer.field);
                 selectedMethods.add(writer.method);
                 processFieldWrite(writer.method, writerFact, writerRelevant,
                         writer.field, writer.sources, writer.kind);
@@ -1181,8 +1175,6 @@ final class SeedBackwardStaticAnalyzer {
             expandCallerArguments("METHOD_CALLER_PARAM", "caller_argument",
                     "method_caller_literal_argument", method, method, callee,
                     callsite, callsiteFact);
-            addReceiverFieldEffectPathGuards(method,
-                    callsite, callsiteFact, relevant(callsite.method));
             if (thisRelevant) {
                 expandCallerReceiver("METHOD_CALLER_RECEIVER",
                         "method_receiver", method, thisNode, callsite,
@@ -1191,56 +1183,74 @@ final class SeedBackwardStaticAnalyzer {
         });
     }
 
-    /** How many calls up a constant store's callers' guards are sliced. */
-    private static final int STORE_CALLER_DEPTH = 3;
+    /** How many calls up the guards of the calls into a method whose
+     *  activation the slice needs are sliced (SiteControlDependence's
+     *  CALL_DEPTH, the scope map's calls-into guards). */
+    private static final int ACTIVATION_DEPTH = 3;
 
     /**
-     * A constant store carries no data: its cause is the branches that let
-     * it run -- those of its own method ({@link #processFieldWrites}) and
-     * those of the calls into its method, {@link #STORE_CALLER_DEPTH} calls
-     * up, a virtual call included (SOLR-18406: Lucene's
+     * A branch that decides whether code carrying the slice's data runs is
+     * demanded like data, at the calls into it too (SYMBOL-SCOPE §2.2).  Two
+     * kinds of method need their activation: the declared target's, whose
+     * callers are its occurrence's way to the throw, and one holding a
+     * demanded store or container mutation, constant or
+     * not, which runs only where a call into it did (SOLR-18406: Lucene's
      * CommitPoint.delete() sets {@code deleted = true}, and Solr's deletion
      * policy calls it through IndexCommit.delete() only when the commit's
-     * reservation, a clock, has run out).  Each call's deciding operands are
-     * demanded in its method, guarding the stored cells, and a dispatched
-     * call links its caller to the method it runs.
+     * reservation, a clock, has run out).  For each call into it, {@link
+     * #ACTIVATION_DEPTH} calls up, a virtual call included, never into an
+     * execution context's entry (its starter runs it: the slice crosses no
+     * thread start), the call's
+     * deciding operands -- its branches and door-fault branches -- are
+     * demanded in its method, guarding the method's {@code .activation} or
+     * the stored cells; a dispatched call links its caller to the method it
+     * runs.  A result the slice demands needs no rule of its own: its
+     * call's definition is demanded, and with it the call's guards.
      */
-    private void expandStoreCallerGuards(String method) {
-        Set<String> stored = constantStoresByMethod.get(method);
-        if (stored == null || stored.isEmpty()) {
+    private void expandActivationGuards(String method) {
+        Set<String> cells = new LinkedHashSet<>(
+                relevantFieldEffectsByMethod.getOrDefault(method,
+                        Collections.<String>emptySet()));
+        if (method.equals(target.exceptionTargetSite.methodSignature)) {
+            cells.add(method + ".activation");
+        }
+        if (cells.isEmpty()) {
             return;
         }
         buildGlobalStaticIndex();
         Set<String> visited = new LinkedHashSet<>();
         List<String> level = Collections.singletonList(method);
-        for (int depth = 0; depth < STORE_CALLER_DEPTH && !level.isEmpty();
+        for (int depth = 0; depth < ACTIVATION_DEPTH && !level.isEmpty();
              depth++) {
             List<String> next = new ArrayList<>();
             for (String callee : level) {
-                if (!visited.add(callee)) continue;
+                if (!visited.add(callee)
+                        || !executionContextAuthority(callee).isEmpty()) {
+                    continue;
+                }
                 List<String> declared = new ArrayList<>();
                 declared.add(callee);
                 declared.addAll(resolveDispatchSources(callee));
-                for (String target : declared) {
-                    forEachCallsite(methodCallersByCallee, target,
+                for (String declaring : declared) {
+                    forEachCallsite(methodCallersByCallee, declaring,
                             (callsite, callsiteFact) -> {
                         // Once per callee and call, and again whenever the
-                        // stored set has grown.
-                        if (!expandOnce("STORE_CALLER_GUARDS", method,
-                                stored.size(), callee, callsite.method,
+                        // guarded set has grown.
+                        if (!expandOnce("ACTIVATION_GUARDS", method,
+                                cells.size(), callee, callsite.method,
                                 callsiteFact.unitIndex)) {
                             return;
                         }
                         loadMethod(concreteMethod(callsite.method));
                         selectedMethods.add(callsite.method);
-                        if (!target.equals(callee)) {
+                        if (!declaring.equals(callee)) {
                             addEdge("dispatch_activation",
                                     factNode(callsiteFact),
                                     callee + ".activation", callsite.method,
                                     callsiteFact);
                         }
                         demandControllingGuards(callsite.method, callsiteFact,
-                                relevant(callsite.method), stored);
+                                relevant(callsite.method), cells);
                         next.add(callsite.method);
                     });
                 }
@@ -1316,19 +1326,6 @@ final class SeedBackwardStaticAnalyzer {
             return value == 0 ? "false" : value == 1 ? "true" : "";
         }
         return literal instanceof Constant ? literal.toString() : "";
-    }
-
-    /** The guards of a relevant field-writing call decide its effect. */
-    private void addReceiverFieldEffectPathGuards(
-            String calleeMethod, Callsite callsite, Fact callsiteFact,
-            Set<String> callerRelevant) {
-        Set<String> effectFields = relevantFieldEffectsByMethod.get(
-                calleeMethod);
-        if (effectFields != null && !effectFields.isEmpty()
-                && demandControllingGuards(callsite.method, callsiteFact,
-                callerRelevant, effectFields)) {
-            selectedMethods.add(callsite.method);
-        }
     }
 
     private ConstructorParam constructorParam(String node) {
@@ -1742,8 +1739,12 @@ final class SeedBackwardStaticAnalyzer {
                 actuals, callerRelevant);
         processConstructorObjectInvoke(callerMethod, fact, callee,
                 actuals, callerRelevant);
-        boolean dynamicDispatch = !resolveDispatchTargets(callee)
-                .isEmpty();
+        // A dispatch target that is the callee itself (a concrete method an
+        // abstract class declares and a subclass inherits: BlockInfo
+        // .isComplete()) is the plain call; the others are dispatched.
+        List<String> dispatchTargets = resolveDispatchTargets(callee);
+        boolean plainCall = dispatchTargets.isEmpty()
+                || dispatchTargets.contains(callee.raw);
         boolean containerQuery = JavaContainerTypes.query(
                 callee.raw, this::libraryHierarchy);
         boolean expandableCallee = isExpandableMethod(callee.raw);
@@ -1756,7 +1757,7 @@ final class SeedBackwardStaticAnalyzer {
                 ? relevant(callee.raw)
                 : Collections.emptySet();
 
-        if (!dynamicDispatch) {
+        if (plainCall) {
             propagateCallArguments("call_argument",
                     callerMethod, fact, callee, actuals,
                     callerRelevant, calleeRelevant, expandableCallee,
@@ -2057,6 +2058,9 @@ final class SeedBackwardStaticAnalyzer {
                     callerMethod, fact);
             callerRelevant.add(argument);
         }
+        // Whether the mutation ran is part of the container's state.
+        demandControllingGuards(callerMethod, fact, callerRelevant,
+                Collections.singletonList(receiverNode));
         enterFunctionalArguments(callerMethod, fact);
         publishMutation(callerMethod, fact, receiver);
     }
@@ -2167,6 +2171,8 @@ final class SeedBackwardStaticAnalyzer {
             String parameterLocal = mutation.getValue();
             addEdge("container_call_mutation_effect", parameterLocal, actual,
                     callerMethod, fact);
+            demandControllingGuards(callerMethod, fact, callerRelevant,
+                    Collections.singletonList(actual));
             relevant(callee.raw).add(parameterLocal);
             selectedMethods.add(callee.raw);
         }
@@ -2841,13 +2847,14 @@ final class SeedBackwardStaticAnalyzer {
         return runners;
     }
 
+    /** A body the slice follows: a concrete method of an application
+     *  class, an abstract class's or an interface's default one included,
+     *  that is no structural field accessor. */
     private boolean isExpandableMethod(String signature) {
         SootMethod method = concreteMethod(signature);
         MethodSig sig = parseMethodSig(signature);
         return method != null
                 && method.getDeclaringClass().isApplicationClass()
-                && !method.getDeclaringClass().isInterface()
-                && !method.getDeclaringClass().isAbstract()
                 && structuralFieldAccessor(sig) == null;
     }
 
@@ -3009,9 +3016,12 @@ final class SeedBackwardStaticAnalyzer {
             String invokeBase = invokeBaseLocal(fact.unitText);
             Set<String> applicationInvokeArgs = new LinkedHashSet<>();
             MethodSig invoked = parseMethodSig(fact.invoke);
-            boolean applicationInvoke = invoked != null
-                    && isApplicationClassName(invoked.owner);
             boolean valueLikeLibraryInvoke = isValueLikeLibraryInvoke(invoked);
+            // An application call's actuals reach its body's formals; a
+            // value-like one (an enum's identity) has no body to reach.
+            boolean applicationInvoke = invoked != null
+                    && isApplicationClassName(invoked.owner)
+                    && !valueLikeLibraryInvoke;
             if (applicationInvoke) {
                 applicationInvokeArgs.addAll(actualInvokeArgs(fact.unitText));
             }
@@ -3073,7 +3083,24 @@ final class SeedBackwardStaticAnalyzer {
         }
         return "java.lang.StringBuilder".equals(owner)
                 || "java.lang.StringBuffer".equals(owner)
-                || "java.lang.AbstractStringBuilder".equals(owner);
+                || "java.lang.AbstractStringBuilder".equals(owner)
+                || enumIdentity(invoked);
+    }
+
+    /** The final methods every enum inherits from java.lang.Enum, read off
+     *  the constant's identity: an application enum's call of one runs no
+     *  body of its own (HDFS's {@code getBlockUCState().equals(COMPLETE)}). */
+    private static final Set<String> ENUM_IDENTITY = names(
+            "boolean equals(java.lang.Object)", "int hashCode()",
+            "int ordinal()", "java.lang.String name()");
+
+    private boolean enumIdentity(MethodSig invoked) {
+        SootClass owner = sceneClass(invoked.owner);
+        return owner != null
+                && (ENUM_IDENTITY.contains(methodSubSignature(invoked))
+                || "compareTo".equals(invoked.name)
+                && invoked.params.size() == 1)
+                && hierarchyNames(owner).contains("java.lang.Enum");
     }
 
     private boolean isFieldAccessValue(String value) {

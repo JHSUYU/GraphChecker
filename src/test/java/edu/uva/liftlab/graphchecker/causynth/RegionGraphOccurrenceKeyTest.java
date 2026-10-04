@@ -514,7 +514,8 @@ public class RegionGraphOccurrenceKeyTest {
                         ? Arrays.asList(
                         new StaticScopeMap.Guard(decrement + "#u7", true),
                         new StaticScopeMap.Guard(decrement + "#u15", false))
-                        : Collections.<StaticScopeMap.Guard>emptyList())) {
+                        : Collections.<StaticScopeMap.Guard>emptyList(),
+                method -> false)) {
             text.append(written.toString()).append('\n');
         }
         Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
@@ -759,7 +760,8 @@ public class RegionGraphOccurrenceKeyTest {
                 method -> !method.startsWith("<example."),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField,
-                CausynthStaticFacts::constructionOnly), null)) {
+                CausynthStaticFacts::constructionOnly), null,
+                method -> false)) {
             text.append(written.toString()).append('\n');
         }
         Path file = tree.newFolder("wrapper").toPath()

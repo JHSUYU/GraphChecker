@@ -175,7 +175,9 @@ public final class CausynthPipeline {
         ConfigRoots recognized = ConfigRoots.of(result.edges,
                 result.fieldWriters);
         RootDemand demand = RootDemand.of(result.edges, result.regions,
-                clocks, recognized, targetPathSites(result.edges),
+                clocks, recognized,
+                targetPathSites(result.edges,
+                        result.executionContextAuthorities::containsKey),
                 CausynthStaticFacts::trackedKind, systemClass());
         ConfigRoots config = recognized.limitedTo(demand.configSources());
         Set<String> plantedConfigReads =
@@ -197,7 +199,8 @@ public final class CausynthPipeline {
                 CausynthStaticFacts::constructionOnly);
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
-                        StaticScopeMap.siteIds(scopeSites)));
+                        StaticScopeMap.siteIds(scopeSites)),
+                result.executionContextAuthorities::containsKey);
         scopeMap.addAll(recognized.keyRows(demand.configSources(),
                 plantedConfigReads));
         Set<String> rootCallees = new LinkedHashSet<>(clocks.keySet());
@@ -225,10 +228,11 @@ public final class CausynthPipeline {
     /**
      * The decisions an occurrence the declared throw is about takes on its
      * way there ({@code StaticScopeMap.Site#pathSites}): the throw's guards,
-     * their chain and the chain's deciders.
+     * their chain -- the calls into its method up to its execution context's
+     * entry included -- and the chain's deciders.
      */
     private static Set<String> targetPathSites(
-            List<Map<String, Object>> edges) {
+            List<Map<String, Object>> edges, Predicate<String> entry) {
         Set<String> sites = new LinkedHashSet<>();
         for (Map<String, Object> edge : edges) {
             if (!"exception_throw".equals(MapFields.text(edge.get("kind")))) {
@@ -241,7 +245,8 @@ public final class CausynthPipeline {
             for (StaticScopeMap.Guard guard : control.of(target)) {
                 sites.add(guard.siteId());
             }
-            for (StaticScopeMap.Guard guard : control.chainOf(target)) {
+            for (StaticScopeMap.Guard guard
+                    : StaticScopeMap.targetChain(control, target, entry)) {
                 sites.add(guard.siteId());
                 if (guard.decider() != null) {
                     sites.add(guard.decider().siteId());
