@@ -45,8 +45,9 @@ import java.util.concurrent.TimeUnit;
  * ({@link #SUFFIX_FILE}).  An event takes the earliest open or given-up slot
  * of its key {@code (kind, c, site)}; with none it runs free.  A slot before
  * the cut, or a WAKE slot anywhere, is HELD until every earlier slot is
- * settled; other slots past the cut are taken at once.  INTERRUPT is never
- * held.  While the prefix stands a WAKE with no slot is held too: at the
+ * settled; other slots past the cut are taken at once.  An INTERRUPT slot
+ * holds nothing and is in no later event's way: it is taken if it comes.
+ * While the prefix stands a WAKE with no slot is held too: at the
  * cut when the recording never made it, and past its recorded count -- a
  * loop polling longer than recorded -- once per move of the order, unless
  * its loop reads a CLOCK root ({@link #waitsAtLocked}).  An order cut at its
@@ -57,12 +58,12 @@ import java.util.concurrent.TimeUnit;
  * dead; a turn's END gives up what the turn did not do; a WAITER gives up
  * what its own occurrence, in its own context, did not make before its slot
  * (one thread, in program order, now past them); the WATCHDOG, once the
- * order's FRONTIER -- its first open slot that is no WAKE, which every wait
- * for a slot or the line waits on -- has stood a timeout, counted from its
- * last move or its earliest waiter's arrival, whichever is later, with no
- * thread computing toward it, first lets the waits held without a slot go,
- * then, a grace later, gives up every open slot before the earliest waiter
- * a slot holds.  A slot taken past the frontier or an event run free moves
+ * order's FRONTIER -- its first open slot that is no WAKE or INTERRUPT,
+ * which every wait for a slot or the line waits on -- has stood a timeout,
+ * counted from its last move or its earliest waiter's arrival, whichever is
+ * later, with no thread computing toward it, first lets the waits held
+ * without a slot go, then, a grace later, gives up every open slot before
+ * the earliest waiter a slot holds.  A slot taken past the frontier or an event run free moves
  * no such wait (a poll past its recorded count goes on any move, but waits
  * for no slot's event), and a thread making them away from the frontier's
  * context computes elsewhere ({@link #computingLocked}).  A given-up slot
@@ -200,13 +201,15 @@ public final class ScheduleLog {
     private static final String ENGINE_THREAD = "causynth-";
     private static int firstOpen;
     /**
-     * The first open slot in a later event's way; an open WAKE never is,
-     * since its daemon may be blocked behind a lock a held thread owns.  A
-     * daemon's turn never comes sooner than recorded, and is never waited
-     * for.
+     * The first open slot in a later event's way ({@link #blocking}): an
+     * open WAKE never is, since its daemon may be blocked behind a lock a
+     * held thread owns -- a daemon's turn never comes sooner than recorded,
+     * and is never waited for -- nor an open INTERRUPT, which another
+     * thread's call made where the interrupted thread then stood ({@link
+     * #heldKind}).
      */
     private static int firstBlocking;
-    /** Open slots that hold: before the cut, or a WAKE. */
+    /** Open slots that hold ({@link #heldKind}). */
     private static int openHeld;
     /**
      * When {@link #firstBlocking}, the order's frontier, last moved: every
@@ -769,7 +772,8 @@ public final class ScheduleLog {
 
     /**
      * Where {@code event}, whose slot is {@code slot} (-1: none), waits now,
-     * or {@link #GO}.  INTERRUPT is never held.  A WAKE no slot holds is
+     * or {@link #GO}.  An INTERRUPT is never held ({@link #heldKind}).  A
+     * WAKE no slot holds is
      * held while the line stands ({@link #line}: the prefix, or the whole
      * order cut at its witness), and only then ({@link #HELD}):
      *
@@ -793,8 +797,7 @@ public final class ScheduleLog {
         Thread self = Thread.currentThread();
         HELD.remove(self);
         if (slot >= 0) {
-            return event.kind == ScheduleEvent.Kind.INTERRUPT
-                    || !heldKind(slot) || dueLocked(slot) ? GO : slot;
+            return !heldKind(slot) || dueLocked(slot) ? GO : slot;
         }
         if (event.kind != ScheduleEvent.Kind.WAKE || !lineStandsLocked()) {
             return GO;
@@ -840,10 +843,30 @@ public final class ScheduleLog {
         return -1;
     }
 
-    /** Whether a slot holds its event: before the cut, or a WAKE. */
+    /**
+     * Whether a slot holds its event: before the cut, or a WAKE; never an
+     * INTERRUPT.  Whether an interrupt is observed at all, and in which
+     * context, is the state the interrupted thread stood in when another
+     * thread's call came: a Hadoop IPC sender idle between two calls stands
+     * in its last call's claim, so its INTERRUPT at a client's stop names
+     * whichever call went last (hdfs-adhoc-03's seed replay held its order
+     * at two such slots, 17 s each).  The interrupter's own events hold the
+     * order; nothing waits for the INTERRUPT.
+     */
     private static boolean heldKind(int slot) {
-        return slot < cut
-                || order.get(slot).kind() == ScheduleEvent.Kind.WAKE;
+        ScheduleEvent.Kind kind = order.get(slot).kind();
+        return kind != ScheduleEvent.Kind.INTERRUPT
+                && (slot < cut || kind == ScheduleEvent.Kind.WAKE);
+    }
+
+    /**
+     * Whether an open slot is in a later event's way: neither a WAKE nor an
+     * INTERRUPT ({@link #firstBlocking}).
+     */
+    private static boolean blocking(int slot) {
+        ScheduleEvent.Kind kind = order.get(slot).kind();
+        return kind != ScheduleEvent.Kind.WAKE
+                && kind != ScheduleEvent.Kind.INTERRUPT;
     }
 
     /** Whether every slot before {@code slot} is settled or an open WAKE. */
@@ -945,8 +968,7 @@ public final class ScheduleLog {
         firstBlocking = Math.max(firstBlocking, firstOpen);
         while (firstBlocking < state.length
                 && (state[firstBlocking] != OPEN
-                || order.get(firstBlocking).kind()
-                        == ScheduleEvent.Kind.WAKE)) {
+                || !blocking(firstBlocking))) {
             firstBlocking++;
         }
         if (firstBlocking > frontier) frontierMovedLocked();

@@ -436,8 +436,17 @@ of the same codec is transparent; and brackets each declared `EXCHANGE` method.
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
 `CLAIM`, `SEND` (with the producer endpoint), `RECV`, `WAKE` (a timed wait's timeout; a tick's
 begin), `END` (a tick's end), `INTERRUPT`. `context` = `<node>|<ctx render>[|<start frames>]`
-(the claimed starts' levels, each start's own frame after the starter's frames it was filed with)
-(`ScheduleLog#contextOf`, `Identity#handoffs`); `k` counts events per (kind, context, site). A
+(the claimed starts' levels from the scope base, each start's own frame after the starter's frames
+it was filed with) (`ScheduleLog#contextOf`, `Identity#handoffs`). A task claimed on a pool's
+thread stands on its starter's frames as levels of its claim; a started thread stands on the frames
+it inherited from its creator (§6) and adds its start frame alone, so its inherited frames above its
+scope base are its starter's frames here: two threads started through one utility (Hadoop's
+`Daemon.start`, each call a level of its own, both starts its 0th) after one RPC returned differ by
+the frames they were made under (hdfs-adhoc-02: the LeaseRenewer had taken the DataStreamer's
+addBlock slot). Only the schedule's context strings carry this; occurrence and endpoint ids, and the
+question shapes (`ContextShape.Stance` reads node and causal context only), do not; a recording
+made before this rule states shorter contexts for such threads, so it cannot hold a replay made
+after it (every campaign records and replays with one frozen jar). `k` counts events per (kind, context, site). A
 `Lost` context, and a context anchored by an unawaited receipt, make no event. `mark` rows state
 where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS, at}` states the run
 was cut at its witness.
@@ -450,8 +459,12 @@ order:
 - an event takes the earliest open or given-up slot of its key that its own occurrence made, else
   the earliest of its key (`ScheduleLog#slotOf`: two concurrent RPCs under one context share a key
   and must not swap slots); with none it runs free. A slot
-  before the cut, or a `WAKE` slot anywhere, is held until every earlier slot is settled;
-  `INTERRUPT` is never held;
+  before the cut, or a `WAKE` slot anywhere, is held until every earlier slot is settled. An
+  `INTERRUPT` slot holds nothing and is in no later event's way, as an open `WAKE` is not
+  (`ScheduleLog#heldKind`, `#blocking`): whether an interrupt is observed, and in which context, is
+  the state the interrupted thread stood in when another thread's call came (a Hadoop IPC sender
+  idle between calls stands in its last call's claim), and the interrupter's own events hold the
+  order; it takes its slot if it comes;
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order
@@ -472,7 +485,7 @@ order:
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
   not do; a waiter gives up what its own occurrence did not make before its slot. The watchdog
   watches the order's frontier (`ScheduleLog#firstBlocking`: the first open slot that is no
-  `WAKE`), which every wait for a slot or for the line waits on. It acts once the frontier has
+  `WAKE` or `INTERRUPT`), which every wait for a slot or for the line waits on. It acts once the frontier has
   stood `causynth.schedule.timeout.ms` (default 15 s) with no thread computing toward it, or eight
   timeouts (`CEILING`) whatever threads do, both counted from the frontier's last move or its
   earliest current waiter's arrival, whichever is later (`ScheduleLog#stallSinceLocked`): the
