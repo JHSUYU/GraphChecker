@@ -313,6 +313,19 @@ Scale and robustness:
     the seed's closure PLAN did not plan to fit `schedule_max_jobs` (the index's `closureCut`, a
     `PLAN_CLOSURE_CUT` row, DIAGNOSTIC under an accepted witness).
 12. The seed recording has no wall-clock bound; only the case budget ends it.
+43. The HDFS adapter's registries (`CausynthCluster` `REGISTERED`, `AUTOMATIC_CLUSTERS`, in the HDFS
+    trees) hold every DataNode and MiniDFSCluster a test shut down, and name `auto<n>` by the map's
+    size. hdfs-adhoc-49 (`TestSnapshot#testSnapshot`, 36 clusters one after another): with the
+    engine's identity tables weak (`runtime/WeakIdentityMap`), the adapter's maps alone keep the dead
+    clusters (old INodeMap/BlocksMap sets 1.5 GB, 20 740 netty threads) and the 4 GB recording
+    collects from ~9 min on; with them weak too (a measurement patch, not in a tree) it ends in 602 s.
+44. The recording writes every call, argument, return, branch and field access of every candidate
+    method; no aggregation rule reads about 70 % of the bytes (call rows outside declared,
+    field-accessing, hook and port sites; arguments and exits outside ports; a branch or field
+    access repeated in its frame). Applied to recorded traces, that filter leaves hdfs-adhoc-42's and
+    the ten HDFS regression cases' plans as they were, object names and the unread branch
+    `occurrences` lists aside. hdfs-adhoc-49 writes 32 GB in 10 min, 8.5 GB filtered, which the
+    aggregation still cannot hold at 8 GB (5.8 M frames, 19 M object observations for the naming).
 13. VM: every expression is kept until the session closes, under one global mutex.
 32. COMPOSE lowers and states a message family once per path that binds it
     (`gc/compose/ComposedFamilies#messageFamily`): hdfs-11741 r3's 47 paths carry 7 MB of family
