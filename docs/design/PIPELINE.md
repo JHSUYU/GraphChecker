@@ -1054,20 +1054,19 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   session neither minted nor read refuses the path only when the path's terms name it;
 - anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
-  an attach no session attests the producer of (or with no producer named) is held at the value
-  its run received -- an answered one at its answer -- a constant no moved root follows, named as a
-  `Composer.Concrete` PIN (a witness over it is CONFIRM's to refute); a row stating no value refuses
-  the path (`UNATTESTED_ARM`);
+  an attach no session attests the producer of (or with no producer named) rests on what no row
+  states, so it is FREE, named as a `Composer.Concrete` FREE with its producer (a witness over it is
+  CONFIRM's to judge: completeness first);
 - the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
   too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
-  of that version (a placeholder), else PIN to the value the row states, else REFUSE
-  (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin, and where what it rests on
-  can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair) --
-  `SmtLowering#movers`, the one walk every pin asks, a method return's and a container answer's
-  too, and EXPLORE's flip query alike, where a read of any location with write rows moves (it takes
-  one of its eligible writers, `SmtLowering#forSession`) -- the pin cuts that dependence and says so
-  (`SmtLowering#pins`: subject, value and what it rests on, a `Composer.Concrete` PIN in
-  `concrete[]`); dropped, the join raises nothing (no refusal, side condition or gap); what a read
+  of that version (a placeholder), else -- where what the refused write rests on can move (a root, a
+  clock cell, a handoff, an anchor location a STATE family may re-pair: `SmtLowering#movers`, the one
+  walk every pin asks, a method return's and a container answer's too, and EXPLORE's flip query
+  alike, where a read of any location with write rows moves, `SmtLowering#forSession`) -- FREE, the
+  read unconstrained and named with what it rests on (`SmtLowering#frees`, a `Composer.Concrete` FREE
+  in `concrete[]`), since a pin would hold it while a witness moves that; else PIN to the value the
+  row states, else REFUSE (`UNSTATED_VALUE`); dropped, the join raises nothing (no refusal, side
+  condition or gap); what a read
   row's binding required
   (container membership and cell tags, recorded readings) is stated with its join, so only where
   the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an

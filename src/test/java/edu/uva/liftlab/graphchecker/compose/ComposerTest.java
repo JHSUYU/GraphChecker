@@ -1455,10 +1455,9 @@ public class ComposerTest {
 
         // AND THE OTHER HALF OF THE ONE RULE.  The same two sessions with
         // no rows for the producer at all: nothing attests what it
-        // delivered, so each path holds the arrival at the value its own
-        // session received -- a constant no moved root follows, named as a
-        // PIN beside the verdict (a witness over it is CONFIRM's to
-        // refute).
+        // delivered, so what it rests on is unknown and the arrival is free
+        // in each path, named FREE with its producer beside the verdict (a
+        // witness over it is CONFIRM's to judge).
         Path unstated = folder.newFolder("arrivals-unstated").toPath();
         for (String[] each : new String[][]{{"s0", "10", "false"},
                 {"s1", "20", "true"}}) {
@@ -1469,15 +1468,15 @@ public class ComposerTest {
             session.target("true", false, true);
             session.write();
         }
-        Composer.Composition pinned = compose(unstated, 4);
-        assertEquals("each path rests on its own arrival: " + pinned.gaps(),
-                2, pinned.disjuncts().size());
-        assertTrue("held at the value its session received: "
-                + pinned.body(), pinned.body().contains("(= vh 10)")
-                && pinned.body().contains("(= vh 20)"));
-        assertEquals("and named as a pin", Collections.singletonList(
-                "PIN vh=20 [unattested producer " + producer.id() + "]"),
-                concrete(pinned));
+        Composer.Composition freed = compose(unstated, 4);
+        assertEquals("each path composes: " + freed.gaps(),
+                2, freed.disjuncts().size());
+        assertFalse("its arrival held at no value: " + freed.body(),
+                freed.body().contains("(= vh 10)")
+                        || freed.body().contains("(= vh 20)"));
+        assertEquals("and named free", Collections.singletonList(
+                "FREE vh= [unattested producer " + producer.id() + "]"),
+                concrete(freed));
 
         // R1: ATTESTATION IS THE PRODUCER'S PROPERTY.  The same two paths,
         // where the SEED instrumented the producer and the focused replay
@@ -5879,10 +5878,10 @@ public class ComposerTest {
 
     /**
      * THE ONE BINDING RULE ({@code SmtLowering#bind}), at the row and at the
-     * node alike: JOIN, MINT, PIN, REFUSE; a refused join gives way to the
-     * mint or the pin, and where what it rests on can move the pin cuts it
-     * and says so ({@code SmtLowering#pins}, a {@code Composer.Concrete}
-     * PIN).  One case per row:
+     * node alike: JOIN, MINT, FREE or PIN, REFUSE; a refused join gives way
+     * to the mint, else, where what it rests on can move, the read is FREE
+     * and named with what it rests on ({@code SmtLowering#frees}, a {@code
+     * Composer.Concrete} FREE), else the pin.  One case per row:
      * <ul>
      *   <li>pin: the write refuses over nothing that moves, and the row
      *       states its value: the pin binds the read, and what the dropped
@@ -5891,14 +5890,14 @@ public class ComposerTest {
      *       the join's refusal beside the read's;</li>
      *   <li>H1: the write is a call no lowering models over R, a declared
      *       root (the review's {@code parseInt(valueOf(R))} is R now,
-     *       {@link #aMethodReturnIsItsCall}): pinned to the run's 3, phi
-     *       {@code x != R} moves R past a constant, a witness CONFIRM is to
-     *       refute, and the pin names R as what it cut;</li>
+     *       {@link #aMethodReturnIsItsCall}): the read is free, named with
+     *       R, so phi {@code x != R} is satisfiable, a witness CONFIRM is to
+     *       refute;</li>
      *   <li>H2a: the node's own projection lowers where the write refused:
      *       phi reads the projection, never the pinned constant;</li>
      *   <li>H2b: the write joins and a STATE family may re-pair the read,
-     *       while the node's projection refuses: the read is pinned to the
-     *       value it returned, the pin naming the re-paired read it cut;</li>
+     *       while the node's projection refuses: the read is free, named
+     *       with the re-paired read it rests on;</li>
      *   <li>bound: the write refuses over a read of a field the reader
      *       alone writes, one of whose versions no row wrote (the VM's
      *       version bound dropped it): no read of it has another writer,
@@ -6058,18 +6057,18 @@ public class ComposerTest {
                                     + "UndeclaredFreeSymbol:" + NO_ROW));
                     break;
                 case "H1":
-                    assertEquals(name + ": the run's value is pinned", 1,
+                    assertEquals(name + ": the read is free", 1,
                             composition.disjuncts().size());
-                    assertEquals(name + ": and the pin names the root it "
-                                    + "cut: " + concrete(composition),
-                            Collections.singletonList("PIN " + key
-                                    + "@2=3 " + Collections.singletonList(
+                    assertEquals(name + ": named with the root it rests "
+                                    + "on: " + concrete(composition),
+                            Collections.singletonList("FREE " + key
+                                    + "@2= " + Collections.singletonList(
                                     SERIAL)), concrete(composition));
-                    assertEquals(name + ": a witness moving the root past "
-                                    + "the pin, CONFIRM's to refute",
-                            ClaimKind.MARKER_FLIPPED,
+                    assertTrue(name + ": so the formula is satisfiable, a "
+                                    + "witness CONFIRM is to judge",
                             ClaimPolicy.decide(composition, solver())
-                                    .claim().kind());
+                                    .claim().kind()
+                                    != ClaimKind.NO_SUPPORTED_WITNESS);
                     break;
                 case "H2a":
                     assertEquals(name + ": the projection binds the node",
@@ -6100,12 +6099,12 @@ public class ComposerTest {
                                     "observed_arm__"));
                     break;
                 default:
-                    assertEquals(name + ": the read is pinned", 1,
+                    assertEquals(name + ": the read is free", 1,
                             composition.disjuncts().size());
-                    assertEquals(name + ": the pin names the re-paired read "
-                                    + "it cut: " + concrete(composition),
-                            Collections.singletonList("PIN " + key
-                                    + "@2=2 [read " + key + "@2]"),
+                    assertEquals(name + ": named with the re-paired read "
+                                    + "it rests on: " + concrete(composition),
+                            Collections.singletonList("FREE " + key
+                                    + "@2= [read " + key + "@2]"),
                             concrete(composition));
             }
         }
@@ -6134,9 +6133,8 @@ public class ComposerTest {
      *       (the pin C1 made gave one);</li>
      *   <li>pinned: a callee the lowering does not know, over nothing that
      *       moves, is pinned by a NAMED assertion an unsat core shows;</li>
-     *   <li>moving: the same over R is pinned too, carrying a moved R
-     *       through the call as a constant: the pin names R as what it
-     *       cut;</li>
+     *   <li>moving: the same over R is a free value, named with R: a pin
+     *       would carry a moved R through the call as a constant;</li>
      *   <li>no-call: a node stating no call (a VM before f14) refuses.</li>
      * </ul>
      */
@@ -6207,9 +6205,9 @@ public class ComposerTest {
                                 + RETURNED));
             }
             if ("moving".equals(name)) {
-                assertEquals(name + ": the pin names the root it cut",
-                        Collections.singletonList("PIN call:" + RETURNED
-                                + "=2 " + Collections.singletonList(
+                assertEquals(name + ": free, named with the root it rests on",
+                        Collections.singletonList("FREE call:" + RETURNED
+                                + "= " + Collections.singletonList(
                                 SERIAL)), concrete(composition));
             }
             if ("no-call".equals(name)) {

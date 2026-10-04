@@ -494,7 +494,7 @@ grep -q 'no accepted verdict: claim=RUN_DEFECT (the formula UNSAT_CLOSED)' \
 # The same formula with no defect is the verdict, concrete anchor and all,
 # and what COMPOSE pinned beside it (Composer.Concrete) travels too.
 emit_unsat_fixture
-jq '.concrete = [{kind: "PIN", subject: "vh", value: "20",
+jq '.concrete = [{kind: "FREE", subject: "vh", value: "",
       movesWith: ["unattested producer P"]}]' "${composition_manifest}" \
   >"${composition_manifest}.tmp"
 mv "${composition_manifest}.tmp" "${composition_manifest}"
@@ -503,7 +503,7 @@ run_emit
   || fail "a defect-free UNSAT was not accepted: $(<"${emit_root}/emit.log")"
 jq -e --arg formula "${campaign_final}/candidate.smt2" \
   '.claim == "UNSAT_CLOSED" and .accepted == true and .defects == []
-  and [.concrete[].kind] == ["ANCHOR", "PIN"]
+  and [.concrete[].kind] == ["ANCHOR", "FREE"]
   and .formula.path == $formula and (.formula.sha256 | length) == 64' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "a defect-free UNSAT was not published as the verdict: \

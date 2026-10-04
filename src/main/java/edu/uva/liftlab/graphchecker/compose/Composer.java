@@ -861,10 +861,8 @@ public final class Composer {
     private final Set<String> replacing = new LinkedHashSet<String>();
     /** What refused the first path that reached the anchor, or "". */
     private String firstRefusal = "";
-    /** The path being composed: the arrivals it pins to the value its run
-     *  received ({@link #handoffRead}), and what it rests on concretely
+    /** What the path being composed rests on concretely or leaves free
      *  ({@link Concrete}), kept once the path is a disjunct. */
-    private final List<String> pinnedArrivals = new ArrayList<String>();
     private final Map<String, Concrete> pathConcrete =
             new LinkedHashMap<String, Concrete>();
     /** What the composed paths rest on concretely, by subject. */
@@ -1206,9 +1204,8 @@ public final class Composer {
         List<ReadRow> joined = new ArrayList<ReadRow>();
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
-        pinnedArrivals.clear();
         pathConcrete.clear();
-        int pinsBefore = lowering.pins().size();
+        int freesBefore = lowering.frees().size();
         frames(session, reached.keySet());
 
         // (0a') What phi rests on (constraint independence): conditions and
@@ -1338,7 +1335,6 @@ public final class Composer {
         // (it would otherwise rest on a free constant).
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
-        terms.addAll(pinnedArrivals);
         terms.addAll(lowering.end());
 
         // (1b) Refuse the path only if its own terms name a declared root
@@ -1391,10 +1387,10 @@ public final class Composer {
         lowering.assertNamed(fatal,
                 "(=> " + selector + " " + conjunction + ")");
         observedReads.put(path.pathId, observed);
-        for (SmtLowering.Pin pin : lowering.pins().subList(pinsBefore,
-                lowering.pins().size())) {
-            pathConcrete.put(pin.subject, new Concrete("PIN", pin.subject,
-                    pin.value, pin.movesWith));
+        for (SmtLowering.Free free : lowering.frees().subList(freesBefore,
+                lowering.frees().size())) {
+            pathConcrete.put(free.subject, new Concrete("FREE", free.subject,
+                    "", free.movesWith));
         }
         concrete.putAll(pathConcrete);
         observedArrivals.put(path.pathId,
@@ -1719,9 +1715,9 @@ public final class Composer {
      * DataNode's key id with 119532 while the moved serial had its producer
      * deliver 119533, and the answer, pinned as a literal, let the solver
      * move the serial past it).  An arrival no producer this corpus attests
-     * delivered is pinned to the value its run received instead, which no
-     * moved root follows (a {@link Concrete} PIN): a witness over it is
-     * CONFIRM's to refute.  A row stating no value is refused by name.
+     * delivered rests on what no row states, so it is FREE (a {@link
+     * Concrete} FREE naming the producer): a witness over it is CONFIRM's
+     * to refute.
      */
     private void handoffRead(String session, AttachRow attach,
                              Set<String> interactionIds,
@@ -1740,28 +1736,14 @@ public final class Composer {
             return;
         }
         // No producer this corpus attests (or none named): what it delivered
-        // is stated and why is not, so the arrival is a constant -- the value
-        // the run received (an answered one, the answer) -- whatever the
-        // producer might have delivered under a moved root; a witness over it
-        // is CONFIRM's to refute (hdfs-17967-pathC rb1).  A row stating no
-        // value refuses the path by name.
-        Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
-        String literal = smtLiteral(JsonFields.firstNonBlank(
-                attach.answeredValue(), attach.arrival()), sort);
-        if (literal.isEmpty()) {
-            refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
-                    GapClass.DIAGNOSTIC, attach.symbol(),
-                    "no session of this corpus states the rows of the "
-                            + "producer occurrence this delivery came from, "
-                            + "and its row states no value it "
-                            + (attach.answered() ? "was answered with"
-                            : "received")));
-            return;
-        }
-        lowering.declareStated(attach.symbol(), sort);
-        pinnedArrivals.add("(= " + attach.symbol() + " " + literal + ")");
-        pathConcrete.put(attach.symbol(), new Concrete("PIN",
-                attach.symbol(), literal, Collections.singletonList(
+        // is stated and why is not, so what it rests on is unknown and a pin
+        // would hold it while a witness moves that (hdfs-17967-pathC rb1):
+        // the arrival is FREE, an over-approximation CONFIRM filters, named
+        // with the producer it came from.
+        lowering.declareStated(attach.symbol(),
+                JavaSmtSorts.sortOfJava(attach.javaType()));
+        pathConcrete.put(attach.symbol(), new Concrete("FREE",
+                attach.symbol(), "", Collections.singletonList(
                 attach.producer() == null ? "no producer named"
                         : "unattested producer " + attach.producer().id())));
     }
@@ -1909,11 +1891,13 @@ public final class Composer {
     }
 
     /**
-     * One thing a composed path rests on concretely: an arrival or a read
-     * pinned to the value its row states though what it rests on can move
-     * (PIN, {@link SmtLowering#pins}), or an occurrence whose run computed
-     * on a value as a constant (FRAME).  Information beside the verdict
-     * (result.json {@code concrete[]}), never a gap.
+     * One thing a composed path rests on concretely or leaves free: a read,
+     * a call's return or an arrival left FREE because what it rests on can
+     * move ({@link SmtLowering#frees}, {@link #handoffRead}), an occurrence
+     * whose run computed on a value as a constant (FRAME), the guard a path
+     * left the way at (WAY), a decision stated as a proposition (DECISION).
+     * Information beside the verdict (result.json {@code concrete[]}), never
+     * a gap.
      */
     public static final class Concrete {
         public final String kind;
@@ -2620,6 +2604,15 @@ public final class Composer {
                         return null;
                     }
                     return joins.containsKey(read.symbol());
+                }
+
+                @Override
+                public Boolean free() {
+                    // Unbound: what it rests on can move, so no pin holds
+                    // it ({@link SmtLowering#bind}).
+                    lowering.declareStated(read.symbol(),
+                            JavaSmtSorts.sortOfJava(read.javaType()));
+                    return true;
                 }
 
                 @Override
