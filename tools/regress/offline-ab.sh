@@ -521,7 +521,8 @@ ab_side_env() {
   # selector's k-th match among the observed target occurrences -- handed on
   # raw, a selector was matched again against every activation of its
   # region (zk-bugs-election-offer's "#2" named a create, not a getData).
-  ab_declared=$(jq -r '.target.occurrenceId' \
+  ab_declared=""
+  [[ ! -d "${ab_acc_it}" ]] || ab_declared=$(jq -r '.target.occurrenceId' \
     "${ab_acc_it}/runtime_workflow_schedule_index.json")
 }
 
