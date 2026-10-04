@@ -8,6 +8,7 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
+import edu.uva.liftlab.graphchecker.causynth.TracedRows;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -21,6 +22,8 @@ import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileWriter;
@@ -55,13 +58,13 @@ public final class CausynthTraceRecorder {
     private static final Object LOCK = new Object();
     private static final AtomicBoolean INITIALIZED = new AtomicBoolean();
     private static final AtomicLong EVENT_COUNTER = new AtomicLong();
-    /** Exact process-local object tokens; identity hash collisions are unsafe. */
-    /** Each observed object's id, held weakly: a collected object is never
-     *  observed again, and its id is never reused. */
     /** The rows of one decision at one site a frame writes: two keep
      *  "decided here more than once" (a loop that iterated) and the
      *  first decision; later repeats are numbered and not written. */
     private static final int DECISION_ROWS_PER_FRAME = 2;
+    /** Each observed object's exact process-local id (an identity hash
+     *  collides), held weakly: a collected object is never observed again,
+     *  and its id is never reused. */
     private static final WeakIdentityMap<Integer> OBJECT_IDS =
             new WeakIdentityMap<>();
     private static int nextObjectId = 1;
@@ -81,6 +84,10 @@ public final class CausynthTraceRecorder {
     private static volatile boolean contextOnlyConcolicReplay;
 
     private static volatile File outputDir;
+    /** The digest of the static artifacts the recording weave decided this
+     *  recording's rows on ({@code causynth.TracedRows#DIGEST_RESOURCE},
+     *  beside the woven classes), or "" where it left none. */
+    private static volatile String tracedRowsDigest = "";
     private static volatile String testName;
     /** Guarded by {@link #LOCK}; persisted in the streaming close manifest. */
     private static boolean traceWriteFailure;
@@ -144,6 +151,9 @@ public final class CausynthTraceRecorder {
         AggregationTarget target =
                 AggregationTarget.parse(required(options, "target"));
         try {
+            requireTracedOver(requireClosedTrace(new File(directory,
+                    "streaming_trace_manifest.json")), target.scopeMap,
+                    target.graph, target.skeletons);
             aggregateTarget(readStateTrace(directory, test), target, declared);
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
@@ -1392,6 +1402,7 @@ public final class CausynthTraceRecorder {
                 traceWriteFailure = false;
                 outputDir = configuredOutputDir;
                 traceWriter = configuredWriter;
+                tracedRowsDigest = wovenTracedRowsDigest();
                 contextOnlyConcolicReplay = false;
                 // The recording's schedule, in the replay's shape.
                 ScheduleLog.installFile(configuredOutputDir);
@@ -1446,12 +1457,13 @@ public final class CausynthTraceRecorder {
                 writeFileQuietly(new File(outputDir,
                                 "streaming_trace_manifest.json"),
                         objectWithoutNulls(
-                                "schemaVersion", 1,
+                                "schemaVersion", TRACED_ROWS_MANIFEST,
                                 "kind", "STREAMING_RUNTIME_TRACE",
                                 // INCOMPLETE means a crash or a failed
                                 // write, nothing else.
                                 "status", traceWriteFailure
-                                        ? "INCOMPLETE" : "CLOSED"));
+                                        ? "INCOMPLETE" : "CLOSED",
+                                "tracedRows", tracedRowsDigest));
             }
         }
     }
@@ -1665,7 +1677,12 @@ public final class CausynthTraceRecorder {
         });
     }
 
-    private static void requireClosedTrace(File manifestFile)
+    /**
+     * The manifest of a closed trace.  Schema 1 is a recording before the
+     * weave pruned its rows (every row written); schema {@value
+     * #TRACED_ROWS_MANIFEST} states the digest its rows were decided on.
+     */
+    private static JsonObject requireClosedTrace(File manifestFile)
             throws IOException {
         if (!manifestFile.isFile()) {
             throw new IOException("Runtime trace manifest not found: "
@@ -1676,12 +1693,58 @@ public final class CausynthTraceRecorder {
                 StandardCharsets.UTF_8));
         JsonObject manifest = parsed.isJsonObject()
                 ? parsed.getAsJsonObject() : new JsonObject();
-        if (optionalInteger(manifest, "schemaVersion", -1) != 1
+        int schema = optionalInteger(manifest, "schemaVersion", -1);
+        if ((schema != 1 && schema != TRACED_ROWS_MANIFEST)
                 || !"STREAMING_RUNTIME_TRACE".equals(
                 optionalString(manifest, "kind"))
                 || !"CLOSED".equals(optionalString(manifest, "status"))) {
             throw new IOException("Runtime trace is incomplete: "
                     + manifestFile);
+        }
+        return manifest;
+    }
+
+    /** The manifest schema that states {@code tracedRows}. */
+    private static final int TRACED_ROWS_MANIFEST = 2;
+
+    /**
+     * Refuses to aggregate a pruned recording over other static artifacts
+     * than the weave decided its rows on: a declared site or port they add
+     * would find no rows, silently.  A schema-1 recording wrote every row.
+     */
+    static void requireTracedOver(JsonObject manifest, File scopeMap,
+                                  File graph, File skeletons)
+            throws IOException {
+        if (optionalInteger(manifest, "schemaVersion", -1)
+                != TRACED_ROWS_MANIFEST) {
+            return;
+        }
+        String stated = optionalString(manifest, "tracedRows");
+        String own = TracedRows.inputsDigest(scopeMap, graph, skeletons);
+        if (!own.equals(stated)) {
+            throw new IOException("TRACED_ROWS_MISMATCH: the recording wrote"
+                    + " only the rows its weave's static artifacts read ("
+                    + (stated.isEmpty() ? "none stated" : stated) + "), and "
+                    + "these are others (" + own + "): a site or port they "
+                    + "declare would find no rows; aggregate over the "
+                    + "artifacts it was woven from, or record again");
+        }
+    }
+
+    /** What the recording weave left beside the classes it wove, or "". */
+    private static String wovenTracedRowsDigest() {
+        try (InputStream in = CausynthTraceRecorder.class.getClassLoader()
+                .getResourceAsStream(TracedRows.DIGEST_RESOURCE)) {
+            if (in == null) return "";
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            byte[] buffer = new byte[256];
+            for (int read; (read = in.read(buffer)) > 0; ) {
+                bytes.write(buffer, 0, read);
+            }
+            return new String(bytes.toByteArray(), StandardCharsets.UTF_8)
+                    .trim();
+        } catch (IOException unreadable) {
+            return "";
         }
     }
 

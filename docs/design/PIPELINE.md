@@ -140,7 +140,12 @@ none.
    bound, §5; the recording itself runs under no wall-clock bound). The weave writes only the rows
    the aggregation reads (`causynth/TracedRows`): call rows at a declared site, a field-accessing
    call, a configured-source hook site or a port's capture, argument and normal-exit rows only
-   where a port captures them; every hook is still called, so each row keeps its number. A frame
+   where a port captures them; every hook is still called, so each row keeps its number. The weave
+   leaves the digest of the three static artifacts it decided the rows on (scope map, candidate
+   graph, candidate skeletons: `TracedRows#inputsDigest`) beside the woven classes; the recorder
+   states it in the trace's manifest (schema 2, `tracedRows`), and the aggregation refuses a pruned
+   trace over other artifacts by name (`TRACED_ROWS_MISMATCH`: a site or port they add would find
+   no rows); a schema-1 trace wrote every row. A frame
    writes one decision at one site at most twice (`CausynthTraceRecorder#emitDecision`: readers
    take a frame's decisions as a set, its first, or "more than once" for a loop). Its trace is
    bounded: past `recording_max_trace_mb` its watcher (`campaign_watch_workload`) ends the

@@ -103,25 +103,30 @@ public class LoopBodyEntryTest {
         });
 
         Object[][] rows = {
-            // name, method, the demanded call, the entry's target (null: none)
-            {"a call on the loop's exit path", exiting, exitPath[6], null},
+            // name, method, the demanded call, the entry's target (null:
+            // none), the control edges the frame opens on
+            {"a call on the loop's exit path", exiting, exitPath[6], null, 0},
             {"a call in the body after the controls", body, inBody[3],
-                    inBody[2]},
+                    inBody[2], 1},
             {"work before every control", before, beforeControls[1],
-                    beforeControls[1]},
-            {"a call two controls enter alike", twice, alike[6], null},
+                    beforeControls[1], 1},
+            // if (a || b) work(): two control edges into one block are one
+            // entry, opened on both.
+            {"a call two controls enter alike", twice, alike[6], alike[6],
+                    2},
         };
         for (Object[] row : rows) {
             List<CfgLoopControl.RetainedLoop> loops =
                     CfgLoopControl.retainedLoops(CfgLoopControl.loopCfg(
                             ((SootMethod) row[1]).getActiveBody()));
             assertEquals((String) row[0], 1, loops.size());
-            CfgLoopControl.Edge entry = CfgLoopControl.bodyEntry(
+            CfgLoopControl.BodyEntry entry = CfgLoopControl.bodyEntry(
                     loops.get(0).natural, loops.get(0).guards, (Unit) row[2]);
             if (row[3] == null) {
                 assertNull((String) row[0], entry);
             } else {
                 assertSame((String) row[0], row[3], entry.target);
+                assertEquals((String) row[0], row[4], entry.edges.size());
             }
         }
     }

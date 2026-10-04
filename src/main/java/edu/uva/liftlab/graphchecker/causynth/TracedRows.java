@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.io.File;
 import java.io.IOException;
@@ -45,6 +46,16 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * stage (hdfs-adhoc-49, TestSnapshot: 65 % of the trace's bytes).
  */
 public final class TracedRows {
+    /**
+     * What the recording weave leaves beside the classes it wove: the
+     * digest of the static artifacts it decided its rows on ({@link
+     * #inputsDigest}).  The recorder states it in the trace's manifest, and
+     * the aggregation refuses a trace whose digest is not its own artifacts'
+     * ({@code TRACED_ROWS_MISMATCH}): over other artifacts, a declared site
+     * or port they add would find no rows and say nothing.
+     */
+    public static final String DIGEST_RESOURCE = "causynth-traced-rows.digest";
+
     /** {@code <siteId>\n<declaredCallee>}: every call row there. */
     private final Set<String> callSites = new HashSet<>();
     /** Sites whose every call is traced, whatever its callee. */
@@ -54,10 +65,21 @@ public final class TracedRows {
     /** {@code <method>\n<index>}. */
     private final Set<String> methodArguments = new HashSet<>();
     private final Set<String> methodExits = new HashSet<>();
+    /** {@link #inputsDigest} of the artifacts these rows were read off, or
+     *  "" for rows built from no files. */
+    final String digest;
 
     TracedRows(Collection<StaticProgram.RegionRow> skeletons,
-                    StaticScopeMap scopeMap,
-                    Collection<Map<String, Object>> graph) {
+               StaticScopeMap scopeMap,
+               Collection<Map<String, Object>> graph) {
+        this(skeletons, scopeMap, graph, "");
+    }
+
+    private TracedRows(Collection<StaticProgram.RegionRow> skeletons,
+                       StaticScopeMap scopeMap,
+                       Collection<Map<String, Object>> graph,
+                       String digest) {
+        this.digest = digest;
         for (StaticScopeMap.Site site : scopeMap.declaredSites()) {
             callSites.add(site.siteId + "\n" + site.declaredCallee);
         }
@@ -78,8 +100,8 @@ public final class TracedRows {
 
     /** The recording weave's: the campaign's static artifacts beside the
      *  candidate skeletons it weaves from ({@code causynth.output.dir}). */
-    static TracedRows of(Collection<StaticProgram.RegionRow> skeletons)
-            throws IOException {
+    static TracedRows of(Collection<StaticProgram.RegionRow> skeletons,
+                         File skeletonFile) throws IOException {
         String declared = System.getProperty("causynth.output.dir", "");
         if (declared.trim().isEmpty()) {
             throw new IOException("the campaign declared no "
@@ -87,10 +109,24 @@ public final class TracedRows {
                     + "rows its aggregation reads");
         }
         Path output = Paths.get(declared.trim());
-        return new TracedRows(skeletons,
-                StaticScopeMap.read(output.resolve(StaticScopeMap.FILE)),
-                MapFields.readRows(new File(output.toFile(),
-                        CausynthArtifactWriter.CANDIDATE_GRAPH)));
+        File scopeMap = output.resolve(StaticScopeMap.FILE).toFile();
+        File graph = new File(output.toFile(),
+                CausynthArtifactWriter.CANDIDATE_GRAPH);
+        return new TracedRows(skeletons, StaticScopeMap.read(scopeMap.toPath()),
+                MapFields.readRows(graph),
+                inputsDigest(scopeMap, graph, skeletonFile));
+    }
+
+    /**
+     * The digest of the three static artifacts the rows are decided on: the
+     * scope map, the candidate graph and the candidate skeletons, by their
+     * bytes.  The weave and the aggregation compute it alike.
+     */
+    public static String inputsDigest(File scopeMap, File graph,
+                                      File skeletons) throws IOException {
+        return ArtifactIO.sha256(ArtifactIO.sha256(scopeMap.toPath()) + "\n"
+                + ArtifactIO.sha256(graph.toPath()) + "\n"
+                + ArtifactIO.sha256(skeletons.toPath()));
     }
 
     private void tracePort(Map<String, Object> port) {

@@ -1,6 +1,8 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
@@ -262,7 +264,8 @@ public final class StaticProgram {
                     String caller = site.substring(0, site.lastIndexOf("#u"));
                     int unitIndex = SiteId.unitIndexOf(site);
                     Map<String, Object> loop = placeableLoopAt(
-                            loopsByMethod, iterated, caller, unitIndex);
+                            loopsByMethod, iterated, caller, unitIndex,
+                            skeleton.regionId);
                     if (loop != null
                             && !orphansAFold(caller, regionActivations)) {
                         return rootLoop(loop, caller, unitIndex);
@@ -305,7 +308,29 @@ public final class StaticProgram {
                 return rootLoop(loop, root, unit);
             }
         }
-        return placeable(loop, work) ? rootLoop(loop, root, work) : null;
+        if (placeable(loop, work)) return rootLoop(loop, root, work);
+        unplaceable(loop, work, skeleton.regionId);
+        return null;
+    }
+
+    /**
+     * States, once, that the recording iterated a loop holding a region's
+     * demanded call where no iteration frame can open ({@link #placeable}):
+     * the region's root stands, a whole-method activation, and the rows
+     * say why rather than nothing.
+     */
+    private void unplaceable(Map<String, Object> loop, int unitIndex,
+                             String regionId) {
+        RuntimeSelectedRegionFinalizer.planGap(planGaps,
+                GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                "LOOP_BODY_UNPLACEABLE:" + text(loop.get(
+                        LoopBoundPolicy.RUNTIME_LOOP_ID)) + "@u" + unitIndex
+                        + "@" + regionId,
+                "the recording iterated this loop, which holds the region's "
+                        + "demanded call, and no iteration frame can open at "
+                        + "it (a call on a path leaving the loop, or a row "
+                        + "stating no " + LoopBoundPolicy.BODY_ENTRY_CALL_UNITS
+                        + "): the region's root is the activation");
     }
 
     /**
@@ -363,18 +388,21 @@ public final class StaticProgram {
     }
 
     /** The first iterated loop of {@code method} holding the unit where an
-     *  iteration frame can open, or null. */
-    private static Map<String, Object> placeableLoopAt(
+     *  iteration frame can open, or null; one holding it where none can is
+     *  stated ({@link #unplaceable}). */
+    private Map<String, Object> placeableLoopAt(
             Map<String, List<Map<String, Object>>> loopsByMethod,
-            Set<String> iterated, String method, int unitIndex) {
+            Set<String> iterated, String method, int unitIndex,
+            String regionId) {
         for (Map<String, Object> loop : loopsByMethod.getOrDefault(method,
                 Collections.<Map<String, Object>>emptyList())) {
-            if (iterated.contains(text(loop.get(
+            if (!iterated.contains(text(loop.get(
                     LoopBoundPolicy.RUNTIME_LOOP_ID)))
-                    && loopContains(loop, unitIndex)
-                    && placeable(loop, unitIndex)) {
-                return loop;
+                    || !loopContains(loop, unitIndex)) {
+                continue;
             }
+            if (placeable(loop, unitIndex)) return loop;
+            unplaceable(loop, unitIndex, regionId);
         }
         return null;
     }

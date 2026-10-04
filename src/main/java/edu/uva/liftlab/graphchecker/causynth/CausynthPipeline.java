@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import soot.options.Options;
 import soot.ArrayType;
 import soot.Body;
 import soot.BooleanType;
@@ -77,6 +78,9 @@ import soot.validation.UnitBoxesValidator;
 import soot.validation.ValidationException;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -393,7 +397,13 @@ public final class CausynthPipeline {
         // Only the rows the aggregation reads are written (PIPELINE §2).
         TracedRows traced = TracedRows.of(
                 RegionSkeletonInstrumentationSelection
-                        .skeletonsFromEnvironment());
+                        .skeletonsFromEnvironment(),
+                RegionSkeletonInstrumentationSelection.skeletonFile());
+        // Beside the woven classes, on the recording's classpath: the
+        // recorder states it in its manifest, the aggregation checks it.
+        Files.write(Paths.get(Options.v().output_dir(),
+                TracedRows.DIGEST_RESOURCE),
+                traced.digest.getBytes(StandardCharsets.UTF_8));
         Set<String> rewritten = instrumentMethods(result.traceMethods,
                 "REGION_STATE method is outside production application "
                         + "scope: ",
@@ -682,13 +692,13 @@ public final class CausynthPipeline {
             tagOriginalUnits(originalUnits);
             CfgLoopControl.NaturalLoop rootLoop = plan.loopBodyRoot()
                     ? envelope.rootLoop(plan) : null;
-            CfgLoopControl.Edge loopBodyEntryEdge = rootLoop == null
+            CfgLoopControl.BodyEntry loopBodyEntry = rootLoop == null
                     ? null : loopBodyEntry(body, rootLoop,
                     plan.rootLoopControlSites(),
                     plan.rootLoopDemandedUnitIndex());
             Unit insertionPoint = rootLoop == null
                     ? safeInstrumentationEntry(body, method)
-                    : loopBodyEntryEdge.target;
+                    : loopBodyEntry.target;
             if (method.isConstructor() && insertionPoint == null) {
                 throw new IllegalStateException(
                         "Selected constructor root has no initialized-this "
@@ -726,7 +736,7 @@ public final class CausynthPipeline {
                         StringConstant.v(signature));
             } else {
                 insertLoopBodyEntry(body, method,
-                        rootLoop, loopBodyEntryEdge, entry,
+                        rootLoop, loopBodyEntry, entry,
                         rootLoop.identity(method));
                 // One iteration is one activation; backedges close it too.
                 insertLoopBodyRegionExits(body, method, rootLoop, plan,
@@ -840,10 +850,10 @@ public final class CausynthPipeline {
     /**
      * Where a loop-body frame opens: {@link CfgLoopControl#bodyEntry} on the
      * frozen loop, the one placement SEED asked when it chose the loop
-     * (StaticProgram#loopBodyRoot), mapped to the body's current edge.  A
-     * unit it cannot place is refused by name.
+     * (StaticProgram#loopBodyRoot), its control edges mapped to the body's
+     * current ones.  A unit it cannot place is refused by name.
      */
-    private static CfgLoopControl.Edge loopBodyEntry(
+    private static CfgLoopControl.BodyEntry loopBodyEntry(
             Body body, CfgLoopControl.NaturalLoop loop,
             Set<String> controlSites, int demandedUnitIndex) {
         String loopId = loop.identity(body.getMethod());
@@ -857,7 +867,7 @@ public final class CausynthPipeline {
                 controlSites, "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: ");
         Unit demanded = stableLoopUnit(body, demandedUnitIndex,
                 controls.plannedIndices, controls.units);
-        CfgLoopControl.Edge entry = CfgLoopControl.bodyEntry(loop,
+        CfgLoopControl.BodyEntry entry = CfgLoopControl.bodyEntry(loop,
                 controls.units, demanded);
         if (entry == null) {
             throw new IllegalStateException(
@@ -866,8 +876,12 @@ public final class CausynthPipeline {
                             + demandedUnitIndex + ", which SEED's "
                             + "bodyEntryCallUnits stated it could");
         }
-        return entry.target == loop.header ? entry
-                : currentLoopBoundaryEdge(body, entry, loopId, false);
+        if (entry.target == loop.header) return entry;
+        List<CfgLoopControl.Edge> current = new ArrayList<>();
+        for (CfgLoopControl.Edge edge : entry.edges) {
+            current.add(currentLoopBoundaryEdge(body, edge, loopId, false));
+        }
+        return new CfgLoopControl.BodyEntry(entry.target, current);
     }
 
     /** Maps a planned unit through stable loop-control ordinals. */
@@ -1003,27 +1017,36 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Inserts a straight-line bridge on the selected body edge; a
-     * latch-controlled header also admits its proved initial-entry paths.
+     * Inserts a straight-line bridge before the entry's unit, entered by
+     * each of its control edges (every edge into a header, preheader and
+     * latches alike); any other edge into a body unit keeps its old path.
      */
     private static void insertLoopBodyEntry(
             Body body, SootMethod method, CfgLoopControl.NaturalLoop loop,
-            CfgLoopControl.Edge edge, List<Unit> entry, String loopId) {
+            CfgLoopControl.BodyEntry selected, List<Unit> entry,
+            String loopId) {
+        Unit target = selected.target;
+        boolean headerEntry = target == loop.header;
         List<UnitBox> matchingTargets = new ArrayList<>();
-        for (UnitBox targetBox : edge.source.getUnitBoxes()) {
-            if (targetBox.getUnit() == edge.target) {
-                matchingTargets.add(targetBox);
+        Unit fallThroughSource = null;
+        for (CfgLoopControl.Edge edge : selected.edges) {
+            for (UnitBox targetBox : edge.source.getUnitBoxes()) {
+                if (targetBox.getUnit() == target) {
+                    matchingTargets.add(targetBox);
+                }
+            }
+            if (edge.source.fallsThrough()
+                    && body.getUnits().getSuccOf(edge.source) == target) {
+                fallThroughSource = edge.source;
             }
         }
-        boolean fallThrough = edge.source.fallsThrough()
-                && body.getUnits().getSuccOf(edge.source) == edge.target;
-        boolean headerEntry = edge.target == loop.header;
         // A header entry takes every edge into the header, whichever one
         // the selection named.
-        if (!headerEntry && matchingTargets.isEmpty() && !fallThrough) {
+        if (!headerEntry && matchingTargets.isEmpty()
+                && fallThroughSource == null) {
             throw new IllegalStateException(
                     "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
-                            + " no longer has its selected body edge in "
+                            + " no longer has its selected body edges in "
                             + method.getSignature());
         }
 
@@ -1034,29 +1057,29 @@ public final class CausynthPipeline {
             matchingTargets.clear();
             for (Unit source : body.getUnits()) {
                 for (UnitBox targetBox : source.getUnitBoxes()) {
-                    if (targetBox.getUnit() == edge.target) {
+                    if (targetBox.getUnit() == target) {
                         matchingTargets.add(targetBox);
                     }
                 }
             }
-        } else if (!fallThrough) {
-            Unit lexicalPredecessor = body.getUnits().getPredOf(edge.target);
+        } else if (fallThroughSource == null) {
+            Unit lexicalPredecessor = body.getUnits().getPredOf(target);
             if (lexicalPredecessor != null
                     && lexicalPredecessor.fallsThrough()
                     && body.getUnits().getSuccOf(lexicalPredecessor)
-                    == edge.target) {
-                // Only the selected UnitBox enters the activation; an
+                    == target) {
+                // Only the selected UnitBoxes enter the activation; an
                 // unrelated fallthrough keeps its old path.
                 body.getUnits().insertBeforeNoRedirect(
-                        Jimple.v().newGotoStmt(edge.target), edge.target);
+                        Jimple.v().newGotoStmt(target), target);
             }
         }
-        insertBeforeOrAppendNoRedirect(body, edge.target, entry);
+        insertBeforeOrAppendNoRedirect(body, target, entry);
         for (UnitBox targetBox : matchingTargets) {
             targetBox.setUnit(first);
         }
-        if (fallThrough
-                && body.getUnits().getSuccOf(edge.source) != first) {
+        if (fallThroughSource != null
+                && body.getUnits().getSuccOf(fallThroughSource) != first) {
             throw new IllegalStateException(
                     "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
                             + " could not preserve its body fallthrough in "
