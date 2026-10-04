@@ -1738,6 +1738,12 @@ public final class CausynthPipeline {
                 + " of the application scope for the execution index, {} "
                 + "class(es) of it for their lineage alone", framed, filed,
                 claimed, waited, walked, lineage);
+        if (!UNSEEDED.isEmpty()) {
+            LOG.info("Left {} ThreadLocalRandom draw site(s) unseeded, a use"
+                    + " of the value each returns being no draw and no"
+                    + " Random's place: {}", UNSEEDED.size(), UNSEEDED);
+            UNSEEDED.clear();
+        }
     }
 
     /**
@@ -1795,24 +1801,32 @@ public final class CausynthPipeline {
             "edu.uva.liftlab.graphchecker.runtime.Randoms";
 
     /**
-     * Seeds one unseeded draw by where it is drawn ({@code runtime.Randoms}):
-     * {@code Math.random()}, {@code Collections.shuffle(List)} and {@code
-     * UUID.randomUUID()} become their stand-ins, and {@code new Random()}
-     * takes its seed from one, in both passes, so a replay draws what the
-     * recording drew.
+     * Seeds one unseeded draw by where it is drawn ({@code runtime.Randoms}),
+     * in both passes, so a replay draws what the recording drew: a call
+     * {@link WorkStartSites#UNSEEDED_DRAWS} lists.  {@code new Random()}
+     * takes its seed from {@code Randoms#constructed}, {@code
+     * ThreadLocalRandom.current()} becomes a seeded Random whose draws are
+     * rewritten ({@link #seedThreadLocalRandom}), and a static draw ({@code
+     * Math.random()}, {@code Collections.shuffle(List)}, {@code
+     * UUID.randomUUID()}) becomes the {@code Randoms} stand-in of its name,
+     * the site its last argument.
      */
     private static void replaceRandom(Body body, Stmt stmt, String site) {
         InvokeExpr invoke = stmt.getInvokeExpr();
         SootMethodRef callee = invoke.getMethodRef();
-        String signature = callee.getSignature();
+        String owner = callee.declaringClass().getName();
+        if (!WorkStartSites.UNSEEDED_DRAWS.contains(owner.replace('.', '/')
+                + "." + callee.getName()
+                + soot.AbstractJasminClass.jasminDescriptorOf(callee))) {
+            return;
+        }
         SootClass randoms = phantomClass(RANDOMS_CLASS);
         RefType string = RefType.v("java.lang.String");
-        if (THREAD_LOCAL_RANDOM_CURRENT.equals(signature)) {
+        if (THREAD_LOCAL_RANDOM.equals(owner)) {
             seedThreadLocalRandom(body, stmt, site, randoms);
             return;
         }
-        if (invoke instanceof SpecialInvokeExpr
-                && "<java.util.Random: void <init>()>".equals(signature)) {
+        if (invoke instanceof SpecialInvokeExpr) {
             Local seed = newTraceLocal(body, LongType.v(), "$causynthSeed");
             body.getUnits().insertBefore(Jimple.v().newAssignStmt(seed,
                     Jimple.v().newStaticInvokeExpr(Scene.v().makeMethodRef(
@@ -1829,38 +1843,21 @@ public final class CausynthPipeline {
                     seed));
             return;
         }
-        String name;
-        Type returns;
-        List<Type> parameters = new ArrayList<>();
-        switch (signature) {
-            case "<java.lang.Math: double random()>":
-                name = "random";
-                returns = soot.DoubleType.v();
-                break;
-            case "<java.util.Collections: void shuffle(java.util.List)>":
-                name = "shuffle";
-                returns = VoidType.v();
-                parameters.add(RefType.v("java.util.List"));
-                break;
-            case "<java.util.UUID: java.util.UUID randomUUID()>":
-                name = "randomUUID";
-                returns = RefType.v("java.util.UUID");
-                break;
-            default:
-                return;
-        }
+        List<Type> parameters = new ArrayList<>(callee.getParameterTypes());
         parameters.add(string);
         List<Value> arguments = new ArrayList<>(invoke.getArgs());
         arguments.add(StringConstant.v(site));
         stmt.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
-                Scene.v().makeMethodRef(randoms, name, parameters, returns,
-                        true), arguments));
+                Scene.v().makeMethodRef(randoms, callee.getName(), parameters,
+                        callee.getReturnType(), true), arguments));
     }
+
+    /** The ThreadLocalRandom sites one weave left unseeded, named in its
+     *  log ({@link #seedThreadLocalRandom}). */
+    private static final List<String> UNSEEDED = new ArrayList<>();
 
     private static final String THREAD_LOCAL_RANDOM =
             "java.util.concurrent.ThreadLocalRandom";
-    private static final String THREAD_LOCAL_RANDOM_CURRENT = "<"
-            + THREAD_LOCAL_RANDOM + ": " + THREAD_LOCAL_RANDOM + " current()>";
     private static final String RANDOM = "java.util.Random";
     /** The types a seeded Random stands as where a ThreadLocalRandom was. */
     private static final Set<String> RANDOM_HOLDERS = new HashSet<>(
@@ -1903,13 +1900,14 @@ public final class CausynthPipeline {
      * Only where every use of the returned value is a draw this rewrites or
      * stands where a Random may (a return, an assignment, an argument, as
      * in {@code Collections.shuffle(list, ThreadLocalRandom.current())});
-     * any other use leaves the site as written.
+     * any other use leaves the site as written, named ({@link #UNSEEDED}).
      */
     private static void seedThreadLocalRandom(Body body, Stmt stmt,
                                               String site,
                                               SootClass randoms) {
         if (!(stmt instanceof AssignStmt)
                 || !(((AssignStmt) stmt).getLeftOp() instanceof Local)) {
+            UNSEEDED.add(site);
             return;
         }
         Local drawn = (Local) ((AssignStmt) stmt).getLeftOp();
@@ -1931,9 +1929,11 @@ public final class CausynthPipeline {
                             || BOUNDED_DRAWS.contains(sub))) {
                         draws.add(use);
                     } else if (!RANDOM_HOLDERS.contains(declared)) {
+                        UNSEEDED.add(site);
                         return;
                     }
                 } else if (!holdsRandom(body, use, drawn)) {
+                    UNSEEDED.add(site);
                     return;
                 }
             }

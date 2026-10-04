@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -18,6 +19,20 @@ import java.util.Set;
 public final class WorkStartSites {
     private WorkStartSites() {
     }
+
+    /**
+     * The unseeded draws the weave seeds ({@code
+     * CausynthPipeline#replaceRandom}), by JVM owner, name and descriptor:
+     * a class making one is kept in the lineage scope ({@link LineageScan}).
+     */
+    public static final Set<String> UNSEEDED_DRAWS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "java/util/Random.<init>()V",
+                    "java/lang/Math.random()D",
+                    "java/util/Collections.shuffle(Ljava/util/List;)V",
+                    "java/util/UUID.randomUUID()Ljava/util/UUID;",
+                    "java/util/concurrent/ThreadLocalRandom.current()"
+                            + "Ljava/util/concurrent/ThreadLocalRandom;")));
 
     /** Whether a type is, or inherits, the named one. */
     public interface Types {

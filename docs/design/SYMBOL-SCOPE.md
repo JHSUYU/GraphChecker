@@ -597,7 +597,8 @@ replay draws what the recording drew. `ThreadLocalRandom.current()` becomes `Ran
 draw only `ThreadLocalRandom` declares, `nextInt(int,int)`, `nextLong(long[,long])`,
 `nextDouble(double[,double])`, a `Randoms` stand-in of that name), only where every use of the value
 is such a draw or stands where a `Random` may (a return, an assignment, an argument); any other use
-leaves the site as written (`CausynthPipeline#seedThreadLocalRandom`). HDFS's block placement picks
+leaves the site as written, counted and named in the weave's log (`CausynthPipeline#seedThreadLocalRandom`).
+The draws are one list (`plan/WorkStartSites#UNSEEDED_DRAWS`), which the lineage scan keeps a class for. HDFS's block placement picks
 a pipeline's DataNodes through NetworkTopology's `ThreadLocalRandom`: hdfs-adhoc-42's replay wrote to
 dn0 first where its recording wrote to dn2 first, and every DataXceiver turn after took another
 node's slot.
