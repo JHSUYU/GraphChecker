@@ -872,7 +872,7 @@ a `target.yaml`, whose tree marks the bug's throw with `@CausynthExceptionTarget
 as one campaign. A list of case ids, one per line, runs through `tools/adhoc/sweep.sh`: one
 campaign per case, at most `heads-per-host` heads on each lift and every case's obligations on all
 of them, every start through `fanout.sh` and the host ledger (§3.4); each case gets
-`CASE_TIMEOUT_SECONDS` (5400 s by default) and `PRUNE=1`, and a sweep started again resumes. Give
+`CASE_TIMEOUT_SECONDS` (5400 s by default) and `PRUNE=1` (`PRUNE=0` keeps every artifact, for a measurement sweep, e.g. `CAUSYNTH_CAMPAIGN_STOP_AFTER=SEED`, which reaches each head on its job's command line), and a sweep started again resumes. Give
 a sweep its own `GC_OUT`, so that `findings.py` reads that sweep's cases only (the host ledger
 stays the cluster's one):
 
