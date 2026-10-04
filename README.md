@@ -896,8 +896,8 @@ python3 tools/adhoc/findings.py ${out} --ledger /bigtemp/vnr3ne/gc-out/findings/
 Case `n` of the file writes `$GC_OUT/accept-<round>-<n>` (`sweep-<round>-cases.tsv` maps n to the
 id); the sweep waits for head room by itself (a quiet log at the start is the ledger, not a hang).
 `triage.py` classes each case: CONFIRMED, CONFIG_ONLY (confirmed, every moved root a
-configuration), REFUTED (a real false positive: keep it), NO_ROOT, NO_WITNESS, STOPPED (stage and
-reason), DEAD, RUNNING, PENDING. `findings.py` writes `findings.tsv`, one row per mechanism among
+configuration), REFUTED (a real false positive: keep it), UNSAT, RUN_DEFECT (a defect of the run
+or the engine to fix: no verdict), STOPPED (stage and reason), DEAD, RUNNING, PENDING. `findings.py` writes `findings.tsv`, one row per mechanism among
 the confirmed witnesses (the target site, the finding kind and each moved root's kind, site, node
 role and context), weighted by kind and native reproduction (REPRODUCE), the configuration-only
 ones last; the ledger marks each new, known or dismissed (`dismissed.tsv` beside it), and

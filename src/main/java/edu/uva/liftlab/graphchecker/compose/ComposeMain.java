@@ -227,7 +227,9 @@ public final class ComposeMain {
 
     /**
      * WHETHER the run produced an accepted candidate (the {@link ClaimKind}
-     * says which mechanism); a blocking gap withholds it regardless.
+     * says which mechanism).  The formula decides, SAT or UNSAT; a blocking
+     * gap is a defect of the run or the engine that leaves no verdict
+     * (RUN_DEFECT), named until it is fixed, never a verdict of its own.
      */
     private static JsonObject campaignClaim(
             Composer.Composition composition, ClaimPolicy.Decision decision,
@@ -238,10 +240,10 @@ public final class ComposeMain {
         String kind;
         String reason;
         if (blockers > 0) {
-            kind = "INCONCLUSIVE_PARTIAL";
+            kind = "RUN_DEFECT";
             reason = "the composition named " + blockers
-                    + " blocking gap(s); the claim it reached is "
-                    + claim.kind();
+                    + " defect(s) that leave no verdict; the claim it reached"
+                    + " is " + claim.kind();
         } else if (claim.kind() != ClaimKind.NO_SUPPORTED_WITNESS) {
             kind = "SAT_CANDIDATE";
             reason = "valuation " + claim.valuationOrdinal() + " reaches the"
@@ -257,7 +259,7 @@ public final class ComposeMain {
                     + " declared roots do not reach the fatal arm on the"
                     + " paths this corpus admits";
         } else {
-            kind = "INCONCLUSIVE_PARTIAL";
+            kind = "RUN_DEFECT";
             reason = decision.outcomes().isEmpty()
                     ? "no path of this corpus reached the declared"
                     + " occurrence"

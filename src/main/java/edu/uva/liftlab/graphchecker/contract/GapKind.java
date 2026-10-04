@@ -141,14 +141,6 @@ public enum GapKind {
      */
     CLAIM_REFUTED,
     /**
-     * Every admitted path decided the declared anchor on no symbol and none
-     * observed the fatal, so no root reaches its predicate in this corpus
-     * (R1-ROOTS D0).  Stated by each EXPLORE round on the anchor, with the
-     * predicate reads its closure demands: DIAGNOSTIC while the exploration
-     * still has work, BLOCKING at the fixed point, where nothing will.
-     */
-    NO_ROOT_REACHES_ANCHOR,
-    /**
      * A value a codec carried that crossed with less than its template: an
      * encode no message carried, or a decoded leaf that does not match its
      * entry or cannot be minted.  DIAGNOSTIC: the leaf stays as it was

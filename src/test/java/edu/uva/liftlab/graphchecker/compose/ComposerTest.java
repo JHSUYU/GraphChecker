@@ -2122,14 +2122,15 @@ public class ComposerTest {
      * took (SOLR-18413 r9: {@code targetColl == null} on a reference the
      * lookup returned concretely).  {@code true} rests the fatal on the path
      * condition that reached the anchor -- here the clock compare before
-     * it, so the witness moves the clock; {@code false} is no path to the
-     * fatal arm in any world; a row stating none is no path either, as the
-     * composer never invents phi.  {phi, observedFatal, disjuncts}.
+     * it, so the witness moves the clock; {@code false} is the constant
+     * healthy decision, a disjunct no valuation satisfies (the claim closes
+     * negative, no gap); a row stating none is no path, as the composer
+     * never invents phi.  {phi, observedFatal, disjuncts}.
      */
     @Test
     public void aConcreteFatalConditionRestsOnThePathThatReachedIt()
             throws Exception {
-        Object[][] rows = {{"true", true, 1}, {"false", false, 0},
+        Object[][] rows = {{"true", true, 1}, {"false", false, 1},
                 {"", true, 0}};
         for (Object[] row : rows) {
             Path iteration = folder.newFolder("concrete-" + row[0] + "-"
@@ -2150,11 +2151,21 @@ public class ComposerTest {
                                 + ANCHOR.render()));
                 continue;
             }
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            if ("false".equals(row[0])) {
+                assertEquals(ClaimKind.NO_SUPPORTED_WITNESS,
+                        decision.claim().kind());
+                assertFalse("a constant decision is no gap: "
+                        + decision.claim().gaps(), decision.claim().blocked());
+                for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+                    assertTrue(outcome.answer().unsat());
+                }
+                continue;
+            }
             assertTrue("the fatal rests on the compare before the anchor: "
                             + fatalArm(composition),
                     fatalArm(composition).contains("(> " + CLOCK + " 1000)"));
-            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
-                    solver());
             assertEquals(ClaimKind.CLOCK_SKEW, decision.claim().kind());
             assertTrue("the clock moved past the compare: "
                             + decision.claim().movedRoots(),

@@ -397,12 +397,12 @@ schedule) and:
    `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
    verdict histogram, gap counts, state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
-   flight) | `FIXED_POINT`). What only the seed ran is BLOCKING at the fixed point alone: nothing
-   proposed, exposed or in flight, and no witness. So is a concrete anchor (§7.2): every round on it
-   states `NO_ROOT_REACHES_ANCHOR` (`ExploreMain#noRoot`), DIAGNOSTIC while the exploration has
-   work, BLOCKING at the fixed point, its detail one of three ends: none of its admitted paths
-   decided a site on its way to the throw, it read no shared state its path guards depend on before
-   it decided, or the reads (and their locations) its closure demands.
+   flight) | `FIXED_POINT`, and `concreteAnchors`). What only the seed ran is BLOCKING at the fixed
+   point alone: nothing proposed, exposed or in flight, and no witness. A concrete anchor (§7.2) is
+   information, never a gap: its decision is a constant of the formula (§8, a `false` phi), and each
+   round's manifest states it in `concreteAnchors` (`ExploreMain#concreteRow`: its admitted paths,
+   how many decided it on the way to the throw, the reads its closure demands and their locations,
+   the earlier reads off the cone), which EMIT publishes in `result.json` `concrete[]`.
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -439,7 +439,7 @@ those a symbolic phi names, so their writers become tasks flipped at their own g
 sites. The demand tracks the cone's nearest reads however many flows from a branch (a String, a
 reference, a container too), so they have read rows; a cell no region stores has no writer to ask
 (the anchor then "read no shared state its path guards depend on"). The earlier reads off the cone
-are counted, never dropped silently: the `NO_ROOT_REACHES_ANCHOR` detail states how many
+are counted, never dropped silently: `concreteAnchors` states how many
 (`ClosurePlanner.Concrete#offCone`). A non-concrete anchor plans as before. Each demanded boundary input grows the closure:
 
 - an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
@@ -1071,9 +1071,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
 - `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); a concrete fatal condition's `true` is the
-  fatal resting on `pi_p`, the path condition that reached the anchor, and its `false` refuses the
-  path ("decided concretely on its healthy arm"); a row stating no phi refuses it too (invariant 9),
-  as the composer never invents one;
+  fatal resting on `pi_p`, the path condition that reached the anchor, and its `false` the constant
+  healthy decision: the path is a disjunct no valuation satisfies (symbolic stays symbolic, concrete
+  is a constant), so a corpus whose paths all decided concretely closes UNSAT; a row stating no phi
+  refuses the path (invariant 9), as the composer never invents one;
 - every other handoff the conjunction reaches, by the same rules; a handoff variable the corpus
   states of another session and this one minted no attach for refuses the path by name
   (`UNSTATED_VALUE`), so no path names a boundary variable its families do not bind.
@@ -1505,9 +1506,13 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 | `RECORDED_FAILURE_EXPLAINED` | the seed itself observed the fatal and every moved valuation is refuted |
 | `NO_SUPPORTED_WITNESS` | nothing in the corpus supports a witness; an answer, not an error |
 
-`ComposeMain.campaignClaim` maps it: any BLOCKING claim gap → `INCONCLUSIVE_PARTIAL`; else a kind other
-than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else every valuation decided unsat → `UNSAT_CLOSED`; else
-`INCONCLUSIVE_PARTIAL`. The manifest's `solver` block carries `state` (sat/unsat/unknown),
+`ComposeMain.campaignClaim` maps it: the formula decides, SAT or UNSAT, and a blocking gap is a
+defect of the run or the engine that leaves no verdict: any BLOCKING claim gap → `RUN_DEFECT`; else a
+kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else every valuation decided unsat →
+`UNSAT_CLOSED`; else (a satisfiable valuation with no mechanism) `RUN_DEFECT`. EMIT publishes
+`SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when it did not agree), and an `UNSAT_CLOSED`
+beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
+with every defect in `defects[]` and what the decision rested on concretely in `concrete[]`. The manifest's `solver` block carries `state` (sat/unsat/unknown),
 `reachability`, `unsatClosureComplete`, `valuations` (status, assignment, moved, selected path and
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
 `findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved
@@ -1740,9 +1745,9 @@ with a `result.json` `CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmati
 `CONFIG_ONLY` when `configurationOnly` is true (COMPOSE's rule, read, never re-derived), a finding read
 after the others (`findings.py` ranks its mechanism after every other: a configuration-validation throw
 fires by design) --, `REFUTED` when
-`claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `NO_ROOT` when a
-BLOCKING `NO_ROOT_REACHES_ANCHOR` gap ended EXPLORE (§7.1; the gap's detail is the reason), else
-`NO_WITNESS` (`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row
+`claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `UNSAT` when it is
+`UNSAT_CLOSED` (a concrete anchor of `concrete[]` is the reason), else `RUN_DEFECT` (the first of
+`defects[]` is the reason). A case without one is `STOPPED` when its summary row
 exists (the stage and reason its logs state: the campaign's own failure, the case timeout, a
 failed trace aggregation, a stage's Java main, the engine's `die`, a full disk or quota),
 `PENDING` when never started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still

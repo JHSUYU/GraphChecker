@@ -524,12 +524,36 @@ if polarity.get("terms"):
             ""]
 
 if blocking:
-    out += ["## Blocking gaps", ""]
+    out += ["## Defects", "",
+            "Defects of the run or the engine, each a bug to fix: with one, an"
+            " UNSAT formula is no verdict (RUN_DEFECT).", ""]
     for row in blocking:
         out.append("* **%s** %s `%s` -- %s" % (row.get("stage", "?"),
                                                row.get("code", "?"),
                                                row.get("subject", ""),
                                                row.get("detail", "")))
+    out.append("")
+
+concrete = result.get("concrete") or []
+if concrete:
+    out += ["## Concrete", "",
+            "What the decision rested on concretely (result.json concrete[]):"
+            " information, never a gap.", ""]
+    for row in concrete:
+        if row.get("kind") == "ANCHOR":
+            out.append("* anchor `%s` decided on no symbol: %d of %d path(s)"
+                       " decided it, %d read(s) of %s demanded, %d off the"
+                       " cone" % (row.get("anchor", "?"),
+                                  row.get("decided", 0), row.get("paths", 0),
+                                  row.get("reads", 0),
+                                  ", ".join(row.get("locations") or [])
+                                  or "no location", row.get("offCone", 0)))
+        else:
+            out.append("* %s `%s` = `%s`%s" % (
+                row.get("kind", "?"), row.get("subject", ""),
+                row.get("value", ""),
+                (" (moves with %s)" % ", ".join(row["movesWith"]))
+                if row.get("movesWith") else ""))
     out.append("")
 
 if findings:

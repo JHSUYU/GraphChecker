@@ -138,7 +138,7 @@ public final class ClosurePlanner {
         /** Its predicate reads, in corpus order: the closure demands them. */
         public final List<ReadRow> reads;
         /** The reads it made before it decided off its path guards' cone:
-         *  not demanded, counted ({@code ExploreMain#noRoot} names them). */
+         *  not demanded, counted ({@code ExploreMain#concreteRow}). */
         public final int offCone;
 
         private Concrete(int paths, int decided, List<ReadRow> reads,

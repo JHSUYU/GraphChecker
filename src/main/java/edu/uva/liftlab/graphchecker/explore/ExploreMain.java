@@ -252,10 +252,6 @@ public final class ExploreMain {
                             : "the first admitted focused replay that runs "
                             + "it exposes it")));
         }
-        for (Map.Entry<OccurrenceAddress, ClosurePlanner.Concrete> anchor
-                : concrete.entrySet()) {
-            gaps.add(noRoot(anchor.getKey(), anchor.getValue(), fixpoint));
-        }
         RowCodec.writeAll(out.resolve("tasks.jsonl"), tasks,
                 ExploreCodec::writeTask);
         // An empty file IS the frontier closing.
@@ -265,7 +261,7 @@ public final class ExploreMain {
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,
-                witnesses, wave(iteration, corpus), branches);
+                witnesses, wave(iteration, corpus), branches, concrete);
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
@@ -273,49 +269,30 @@ public final class ExploreMain {
     }
 
     /**
-     * NO ROOT REACHES THE ANCHOR (R1-ROOTS D0): every admitted path decided
-     * it on no symbol, so its closure starts from what it read on its path
-     * guards' cone before it decided ({@link ClosurePlanner.Concrete}).
-     * DIAGNOSTIC while the exploration still has work; BLOCKING at the fixed
-     * point, where no flip of what wrote those reads moved the predicate
-     * onto a root and none will.  The detail says which of three ends it is:
-     * no admitted path decided a site on the way to the throw, the anchor
-     * read nothing on that cone before it decided, or the reads its closure
-     * demands.
+     * A CONCRETE ANCHOR (R1-ROOTS D0): every admitted path decided it on no
+     * symbol, so its decision is a constant of the formula (COMPOSE states
+     * its healthy arm as one) and its closure starts from what it read on its
+     * path guards' cone before it decided ({@link ClosurePlanner.Concrete}).
+     * Information, never a gap: what the decision rested on concretely --
+     * its paths, how many decided it on the way to the throw, the reads its
+     * closure demands and their locations, and how many earlier reads off
+     * the cone the root demand left out (root_demand.jsonl).
      */
-    private static GapRow noRoot(OccurrenceAddress anchor,
-                                 ClosurePlanner.Concrete concrete,
-                                 boolean fixpoint) {
+    private static JsonObject concreteRow(OccurrenceAddress anchor,
+                                          ClosurePlanner.Concrete concrete) {
         Set<String> locations = new TreeSet<String>();
         for (ReadRow read : concrete.reads) {
             locations.add(SmtLowering.locationKey(read.location()));
         }
-        List<String> named = new ArrayList<String>(locations);
-        String why = concrete.decided == 0
-                ? "none of its " + concrete.paths + " admitted paths decided "
-                        + "a site on its way to the throw"
-                : concrete.reads.isEmpty()
-                ? "it read no shared state its path guards depend on "
-                        + "before it decided"
-                : "its closure demands the " + concrete.reads.size()
-                        + " reads its path guards depend on it made before "
-                        + "it decided, of "
-                        + locations.size() + " locations ("
-                        + String.join(", ", named.subList(0,
-                                Math.min(4, named.size())))
-                        + (named.size() > 4 ? ", ..." : "") + ")";
-        // What the root demand left out is counted, never dropped silently.
-        if (concrete.decided > 0 && concrete.offCone > 0) {
-            why += ", and not the " + concrete.offCone + " earlier reads off"
-                    + " its path guards' cone (root_demand.jsonl)";
-        }
-        return GapRow.of(ExploreCodec.EXPLORATION,
-                GapKind.NO_ROOT_REACHES_ANCHOR, fixpoint ? GapClass.BLOCKING
-                        : GapClass.DIAGNOSTIC, anchor.render(),
-                why + "; every admitted path decided this anchor on no symbol "
-                        + "and none observed the fatal, "
-                        + (fixpoint ? "and the exploration ends here"
-                        : "and the exploration goes on"));
+        JsonObject row = new JsonObject();
+        row.addProperty("anchor", anchor.render());
+        row.addProperty("paths", concrete.paths);
+        row.addProperty("decided", concrete.decided);
+        row.addProperty("reads", concrete.reads.size());
+        row.add("locations", ExploreCodec.list(
+                new ArrayList<String>(locations)));
+        row.addProperty("offCone", concrete.offCone);
+        return row;
     }
 
     /**
@@ -549,7 +526,10 @@ public final class ExploreMain {
                                        SlotTable.Reconciliation skeleton,
                                        int exposed, int truncated,
                                        List<String> witnesses,
-                                       int wave, Branches branches) {
+                                       int wave, Branches branches,
+                                       Map<OccurrenceAddress,
+                                               ClosurePlanner.Concrete>
+                                               concrete) {
         JsonObject manifest = new JsonObject();
         JsonArray anchors = new JsonArray();
         // The same anchors as a target row spells its occurrence, so the
@@ -617,6 +597,13 @@ public final class ExploreMain {
             kinds.addProperty(entry.getKey(), entry.getValue());
         }
         manifest.add("gaps", kinds);
+        JsonArray concreteAnchors = new JsonArray();
+        for (Map.Entry<OccurrenceAddress, ClosurePlanner.Concrete> anchor
+                : concrete.entrySet()) {
+            concreteAnchors.add(concreteRow(anchor.getKey(),
+                    anchor.getValue()));
+        }
+        manifest.add("concreteAnchors", concreteAnchors);
         return manifest;
     }
 

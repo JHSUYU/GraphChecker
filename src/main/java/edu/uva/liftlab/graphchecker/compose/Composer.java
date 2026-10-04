@@ -1176,20 +1176,21 @@ public final class Composer {
         // (5) phi_p is the FATAL arm as published; never re-derive its
         //     polarity.  A concrete fatal condition is the constant of its
         //     arm (invariant 9): `true` rests the fatal on pi_p, the path
-        //     condition that reached the anchor; `false` is no path to the
-        //     fatal arm in any world of this one; none stated is no phi.
+        //     condition that reached the anchor; `false` is the constant
+        //     healthy decision, a disjunct no valuation of this formula
+        //     satisfies (what was concrete is EXPLORE's concreteAnchors);
+        //     none stated is no phi.
         String subject = "phi of " + anchor.render();
         String published = target.phiTerm().trim();
         int fatalArm = -1;
-        if (published.isEmpty() || "false".equals(published)) {
+        if (published.isEmpty()) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                    GapClass.DIAGNOSTIC, subject, published.isEmpty()
-                            ? "the target row states no phi (invariant 9), "
-                            + "so what the fatal rests on is stated by no "
-                            + "row"
-                            : "the anchor decided concretely on its healthy "
-                            + "arm, so no world of this path reaches the "
-                            + "fatal one"));
+                    GapClass.DIAGNOSTIC, subject, "the target row states "
+                            + "no phi (invariant 9), so what the fatal rests "
+                            + "on is stated by no row"));
+        } else if ("false".equals(published)) {
+            fatalArm = terms.size();
+            terms.add(published);
         } else {
             String phi = lowering.statedTerm(published, "phi:" + subject);
             if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
