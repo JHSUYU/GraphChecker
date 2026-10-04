@@ -3862,7 +3862,10 @@ public class ComposerTest {
      * what the anchor's read pairs with; the fatal is SAT under the plant
      * and UNSAT under the recording's arm, so the recording decides it: a
      * STATE_PAIRING_FLIPPED whose re-paired arm is the INITIAL.  The same
-     * session in a world that planted nothing names no mechanism.
+     * session in a world that planted nothing names no mechanism.  Where
+     * the turn also read a version no row wrote, its observed arm holds the
+     * reads to what the plant gave them: no recording's pairing either, so a
+     * witness resting on it is a STATE_PAIRING_FLIPPED too.
      */
     @Test
     public void aWorldPlantedPairingIsRePairedAsTheAnchorsReadsAre()
@@ -3882,19 +3885,24 @@ public class ComposerTest {
                 at("g#1", 0), 0);
         Endpoint asking = Endpoint.of(writer, "Volumes#excluded#5:READ",
                 at("r#1", 0), 0);
-        // planted?, the reconfiguration writes under construction?, the
-        // claim: a planted read is admitted by the anchor's test, so a
-        // write no read could have preceded leaves it the run's
+        Endpoint unrowed = Endpoint.of(turn, "Detector#bound#4:READ",
+                at("g#2", 0), 0);
+        // planted?, the reconfiguration writes under construction?, the turn
+        // also reads a version no row wrote?, the claim: a planted read is
+        // admitted by the anchor's test, so a write no read could have
+        // preceded leaves it the run's
         Object[][] table = {
-                {true, false, ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, false, ClaimKind.NO_SUPPORTED_WITNESS},
-                {true, true, ClaimKind.NO_SUPPORTED_WITNESS},
+                {true, false, false, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, false, false, ClaimKind.NO_SUPPORTED_WITNESS},
+                {true, true, false, ClaimKind.NO_SUPPORTED_WITNESS},
+                {true, false, true, ClaimKind.STATE_PAIRING_FLIPPED},
         };
         for (Object[] row : table) {
             boolean planted = (Boolean) row[0];
             boolean constructing = (Boolean) row[1];
+            boolean second = (Boolean) row[2];
             Path iteration = folder.newFolder("planted-" + planted + "-"
-                    + constructing).toPath();
+                    + constructing + "-" + second).toPath();
             for (boolean explored : new boolean[]{false, true}) {
                 String id = explored ? "s1" : "s0";
                 Session session = new Session(iteration, id, explored);
@@ -3930,8 +3938,17 @@ public class ComposerTest {
                 read.addProperty("readEventId", session.read(guard, bound,
                         seen, "INSTANCE_FIELD/1#48@v" + seen + "@" + id, "I",
                         explored ? "1" : "0"));
-                session.expression("EXPR.0000000000000010",
-                        binary(">", read, integer("I", 0L)));
+                JsonObject guarded = binary(">", read, integer("I", 0L));
+                if (second) {
+                    JsonObject other = read("INSTANCE_FIELD", 1L, 48L, 9L,
+                            "I");
+                    other.addProperty("readEventId", session.read(unrowed,
+                            bound, 9L, "INSTANCE_FIELD/1#48@v9@" + id, "I",
+                            "5"));
+                    guarded = binary("&&", guarded, binary(">", other,
+                            integer("I", 0L)));
+                }
+                session.expression("EXPR.0000000000000010", guarded);
                 session.decision(turn, "Detector#u63", explored,
                         "EXPR.0000000000000010");
                 long listed = 3L;
@@ -3964,9 +3981,9 @@ public class ComposerTest {
             ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                     solver());
             String detail = "planted " + planted + ", constructing "
-                    + constructing + ": " + decision.claim().gaps() + "\n"
-                    + composition.body();
-            assertEquals(detail, row[2], decision.claim().kind());
+                    + constructing + ", second " + second + ": "
+                    + decision.claim().gaps() + "\n" + composition.body();
+            assertEquals(detail, row[3], decision.claim().kind());
             if (!planted || constructing) continue;
             assertTrue(detail, decision.claim().polarityDecides());
             ClaimPolicy.Outcome witness = decision.outcomes().get(
@@ -3976,8 +3993,12 @@ public class ComposerTest {
                     .selector(), witness.selectedArms().keySet())) {
                 groups.add(composition.arm(arm).groupId());
             }
-            assertEquals(detail, Collections.singletonList("INITIAL|"
-                    + SmtLowering.locationKey(bound)), groups);
+            // The plant, or the observed arm that holds the reads to it.
+            assertEquals(detail, 1, groups.size());
+            assertTrue(detail, groups.get(0).equals("INITIAL|"
+                    + SmtLowering.locationKey(bound)) || second
+                    && groups.get(0).equals("observed:"
+                    + SmtLowering.locationKey(bound)));
             // The recording's pairing there is any arm but the plant: the
             // reconfiguration's arm, taken, re-pairs nothing.
             List<String> recording = new ArrayList<String>();

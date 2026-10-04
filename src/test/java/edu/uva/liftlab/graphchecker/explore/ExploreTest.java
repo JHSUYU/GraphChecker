@@ -3761,28 +3761,47 @@ public class ExploreTest {
      * wrote, no writer's choice is the run: the run's own choice holds each
      * read to the value it read, as COMPOSE's observed arm does, and is the
      * recorded pairing, never the two reads forced equal.  A model moving
-     * both to the other writer plants that pairing for each.
+     * both to the other writer plants that pairing for each; a writer whose
+     * store is of another sort than a read is no choice, the recorded one
+     * included once the run's choice is (its row's value holds that read),
+     * so the model takes the run and plants nothing.
      */
     @Test
     public void readsNoOneWriterExplainsKeepTheRunsOwnChoice()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        for (long again : new long[]{6L, 9L}) {
-            Path iteration = twoWriters("two-writes-" + again,
-                    "(and (= M_READ_KEY 2) (= M_READ_AGAIN 2))", null, "I",
-                    again);
-            Path out = tree.newFolder("two-writes-out-" + again).toPath();
+        // the lookup again's version, the second writer's type, the
+        // flipped term, the pairings the model plants
+        Object[][] table = {
+                {6L, "I", "(and (= M_READ_KEY 2) (= M_READ_AGAIN 2))", 2},
+                {9L, "I", "(and (= M_READ_KEY 2) (= M_READ_AGAIN 2))", 2},
+                {6L, "Z", "(and (= M_READ_AGAIN 2) (= M_READ_KEY 1))", 0},
+        };
+        for (Object[] row : table) {
+            String name = "two-writes-" + row[0] + row[1];
+            Path iteration = twoWriters(name, (String) row[2], null,
+                    (String) row[1], (Long) row[0]);
+            Path out = tree.newFolder(name + "-out").toPath();
             Path wave = out.resolve("obligations-0000");
             plan(iteration, TARGET_SELECTOR, null,
                     out.resolve("results.jsonl"), wave, 0);
             Worker worker = solve(iteration, wave,
                     named(obligations(wave), "Lookup#u8"), out, "w0");
-            assertEquals(again + ": " + detail(worker),
-                    Verdict.SAT_MODEL_READY, worker.verdict);
-            assertTrue(again + ": " + query(worker), query(worker).matches(
+            String detail = name + ": " + detail(worker) + "\n"
+                    + query(worker);
+            assertTrue(detail, query(worker).matches(
                     "(?s).*\\(=> wchoice_\\S+_run \\(= \\S+ 1\\)\\).*"));
-            assertTrue(again + ": " + detail(worker),
-                    detail(worker).contains("2 planted pairing(s)"));
+            if ((Integer) row[3] > 0) {
+                assertEquals(detail, Verdict.SAT_MODEL_READY,
+                        worker.verdict);
+                assertTrue(detail, detail(worker).contains(row[3]
+                        + " planted pairing(s)"));
+            } else {
+                assertTrue(detail, query(worker).matches(
+                        "(?s).*\\(not wchoice_\\S+\\).*"));
+                assertFalse(detail, detail(worker).contains(
+                        "planted pairing"));
+            }
         }
     }
 

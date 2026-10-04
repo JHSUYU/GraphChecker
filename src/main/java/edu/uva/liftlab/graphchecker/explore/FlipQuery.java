@@ -201,15 +201,21 @@ final class FlipQuery {
          *  ({@code Builder#choices}), or "" where no eligible writer wrote
          *  what they saw. */
         String recorded = "";
-        /** (reader occurrence, location), and the location. */
+        /** (reader occurrence, location), the reader and the location. */
         private final String key;
+        private final OccurrenceAddress reader;
         private final LocationId location;
         private final List<Choice> alternatives = new ArrayList<Choice>();
-        /** Each bound read's variable -> the value it read, as the query
-         *  spells it: its observed write's delivery, else its row's value;
-         *  "" where neither is stated. */
-        private final Map<String, String> own =
+        /** Each bound read's variable -> the read, and its observed write's
+         *  delivery as the query spells it (null: none, or none that
+         *  lowers): what the run's choice holds it to. */
+        private final Map<String, ReadRow> boundReads =
+                new LinkedHashMap<String, ReadRow>();
+        private final Map<String, String> observedDelivery =
                 new LinkedHashMap<String, String>();
+        /** The selectors a read of another version could not have seen
+         *  ({@link Arms#eligible}): no choice once the block saw two. */
+        private final Set<String> ineligible = new LinkedHashSet<String>();
         /** Where its exactly-one stands among the query's assertions:
          *  restated over the run's choice too when that is added. */
         private int exactlyOne;
@@ -220,8 +226,10 @@ final class FlipQuery {
          *  versions, or one no row wrote. */
         private boolean asHappened;
 
-        private WriterChoice(String key, LocationId location) {
+        private WriterChoice(String key, OccurrenceAddress reader,
+                             LocationId location) {
             this.key = key;
+            this.reader = reader;
             this.location = location;
         }
     }
@@ -1105,7 +1113,8 @@ final class FlipQuery {
                     + location;
             WriterChoice choices = choicesByReader.get(choiceKey);
             if (choices == null) {
-                choices = new WriterChoice(choiceKey, row.location());
+                choices = new WriterChoice(choiceKey,
+                        row.endpoint().occurrence(), row.location());
                 int ordinal = 0;
                 for (Arms.Arm alternative : eligible) {
                     String selector = names.name("choice|" + choiceKey + "|"
@@ -1135,13 +1144,26 @@ final class FlipQuery {
             // thread wrote between two of them: hdfs-adhoc-23's
             // layoutVersion), or a version no row wrote, are each held to
             // their own by the run's choice ({@link #choices}), as COMPOSE's
-            // observed arm holds them ({@code ComposedFamilies#stateFamilies}).
-            choices.asHappened |= !choices.reads.isEmpty()
+            // observed arm holds them ({@code ComposedFamilies#stateFamilies});
+            // and a writer a read of another version could not have seen is
+            // no choice (hdfs-adhoc-16: updatePipeline's earlier read bound
+            // to its own later write).
+            boolean another = !choices.reads.isEmpty()
                     && choices.reads.get(0).observedVersion()
-                    != row.observedVersion()
-                    || corpus.writeOf(row.sessionId(), location,
-                    row.observedVersion()) == null;
+                    != row.observedVersion();
+            choices.asHappened |= another || corpus.writeOf(row.sessionId(),
+                    location, row.observedVersion()) == null;
             choices.reads.add(row);
+            for (Choice choice : another ? choices.alternatives
+                    : Collections.<Choice>emptyList()) {
+                WriteRow write = choice.alternative.write();
+                if (write != null && !corpus.arms().eligible(choices.reader,
+                        row.sessionId(), location, corpus.writesOf(
+                                row.sessionId(), location),
+                        row.observedVersion(), write)) {
+                    choices.ineligible.add(choice.selector);
+                }
+            }
             String sort = sorts.get(variable);
             Arms.Arm seen = null;
             String own = null;
@@ -1171,17 +1193,14 @@ final class FlipQuery {
                                     + "it wrote, not why"));
                 }
             }
-            // The value it read: its observed write's (its own eligible
-            // arms hold that write when the block's first read saw another),
-            // else what its row states.
+            // Its observed write's delivery: among the choices, else (a read
+            // of another version) among its own eligible arms.
             for (Arms.Arm arm : seen == null ? eligible
                     : Collections.<Arms.Arm>emptyList()) {
                 if (observes(arm, row)) own = delivered(arm, sort);
             }
-            if (own == null || own.isEmpty()) {
-                own = SmtText.literal(row.concreteValue(), sort);
-            }
-            choices.own.put(variable, own);
+            choices.boundReads.put(variable, row);
+            choices.observedDelivery.put(variable, own);
             if (bindings.isEmpty()) {
                 stated(row, variable);
                 return;
@@ -1197,46 +1216,82 @@ final class FlipQuery {
 
         /**
          * Once every read is bound, each writer choice where no one writer's
-         * arm is the run ({@link WriterChoice#asHappened}) gets one more
-         * selector, the RUN'S CHOICE, holding each read to the value it
-         * read: the recorded pairing, which a model taking it plants nothing
-         * for, as COMPOSE's observed arm is the recorded pairing.  The writer
-         * choices stay beside it, each binding every read; its exactly-one is
-         * restated over all of them, and the observed writer's selector, no
-         * longer the recorded one, is no choice where it delivers a read a
-         * value of another sort.  A read stating no value of its own refuses
-         * the query by name.
+         * arm is the run ({@link WriterChoice#asHappened}) gets COMPOSE's
+         * rule ({@code ComposedFamilies#stateFamilies}): a writer a read of
+         * another version could not have seen is no choice; where a writer
+         * left is HB-concurrent with the reader, one more selector, the
+         * RUN'S CHOICE, holds each read to the value it read and is the
+         * recorded pairing (a model taking it plants nothing), beside the
+         * writer choices, its exactly-one restated over all of them, and the
+         * observed writer's selector, no longer the recorded one, is no
+         * choice where it delivers a read a value of another sort; where
+         * none is, there is no choice: each read is held to the value it
+         * read, as COMPOSE's reads keep their own joins where no family
+         * forms.  The value a read read is its observed write's delivery,
+         * else its row's value; a read stating neither refuses the query by
+         * name.
          */
         private void choices() {
+            List<String> runOnly = new ArrayList<String>();
             for (WriterChoice choice : choicesByReader.values()) {
                 if (!choice.asHappened) continue;
-                String run = names.name("choice|" + choice.key + "|run",
-                        "wchoice_" + choice.location.slot() + "_run");
-                declare(run, "Bool", "these reads take " + choice.location
-                        + " each from the write it observed");
-                for (Map.Entry<String, String> own : choice.own.entrySet()) {
-                    if (own.getValue().isEmpty()) {
+                List<String> own = new ArrayList<String>();
+                for (Map.Entry<String, ReadRow> read
+                        : choice.boundReads.entrySet()) {
+                    String value = choice.observedDelivery.get(read.getKey());
+                    if (value == null || value.isEmpty()) {
+                        value = SmtText.literal(read.getValue()
+                                .concreteValue(), sorts.get(read.getKey()));
+                    }
+                    if (value.isEmpty()) {
                         refusal = "UNSTATED_VALUE:" + choice.key;
-                        gaps.add(GapRow.of(choice.reads.get(0).sessionId(),
+                        gaps.add(GapRow.of(read.getValue().sessionId(),
                                 GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
                                 choice.key, "no one writer's arm is the run "
                                         + "of these reads, and "
-                                        + own.getKey() + " states no value "
+                                        + read.getKey() + " states no value "
                                         + "the run's choice could hold it "
                                         + "to"));
                         continue;
                     }
-                    assertions.add("(=> " + run + " (= " + own.getKey() + " "
-                            + own.getValue() + "))");
+                    own.add("(= " + read.getKey() + " " + value + ")");
                 }
-                if (choice.recordedDeliversNothing) {
-                    assertions.add("(not " + choice.recorded + ")");
+                boolean alternative = false;
+                for (Choice writer : choice.alternatives) {
+                    alternative |= !choice.ineligible.contains(writer.selector)
+                            && corpus.arms().concurrent(choice.reader,
+                            writer.alternative.producer(),
+                            choice.reads.get(0).sessionId());
+                }
+                if (!alternative) {
+                    for (String selector : choice.writes.keySet()) {
+                        own.add("(not " + selector + ")");
+                    }
+                    assertions.set(choice.exactlyOne, VmTermLowering.and(own));
+                    runOnly.add(choice.key);
+                    continue;
+                }
+                List<String> no = new ArrayList<String>(choice.ineligible);
+                String run = names.name("choice|" + choice.key + "|run",
+                        "wchoice_" + choice.location.slot() + "_run");
+                declare(run, "Bool", "these reads take " + choice.location
+                        + " each from the write it observed");
+                for (String held : own) {
+                    assertions.add("(=> " + run + " " + held + ")");
+                }
+                if (choice.recordedDeliversNothing
+                        && !no.contains(choice.recorded)) {
+                    no.add(choice.recorded);
+                }
+                for (String selector : no) {
+                    assertions.add("(not " + selector + ")");
                 }
                 choice.writes.put(run, null);
                 choice.recorded = run;
                 assertions.set(choice.exactlyOne, Arms.exactlyOne(
                         new ArrayList<String>(choice.writes.keySet())));
             }
+            for (String key : runOnly) choicesByReader.remove(key);
         }
 
         /**
