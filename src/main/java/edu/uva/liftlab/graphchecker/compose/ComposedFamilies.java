@@ -1027,7 +1027,7 @@ final class ComposedFamilies {
                     }
                 }
             }
-            composer.frameRefusals(session, reached.keySet(), local);
+            composer.frames(session, reached.keySet());
             // What the delivered values, the decisions a delivered referent
             // was built under, and the handoffs a nested family binds rest
             // on (Independence).
@@ -1133,7 +1133,7 @@ final class ComposedFamilies {
         }
         if (added.isEmpty()) return "";
         List<GapRow> refused = new ArrayList<GapRow>();
-        composer.frameRefusals(session, added.keySet(), refused);
+        composer.frames(session, added.keySet());
         Independence relevant = composer.independence(session,
                 Collections.singletonList(state.state.expressionRef()), bound,
                 added, composer.reachedConditions(session, added));

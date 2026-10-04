@@ -197,6 +197,8 @@ public final class ComposeMain {
                 complete ? "FINAL_READY" : "FINAL_REFUSED");
         row.add("finalStatusRefusals", refusals(decision.claim()));
         row.add("gaps", gaps(composition.gaps()));
+        // What the composed paths rest on concretely (Composer.Concrete).
+        row.add("concrete", GSON.toJsonTree(composition.concrete()));
         row.add("solver", solverRows(composition, decision, solver));
         return row;
     }

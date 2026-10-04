@@ -178,6 +178,8 @@ public final class Composer {
 
     /** What one composition is, before the solver is asked. */
     public static final class Composition {
+        /** What the composed paths rest on concretely ({@link Concrete}). */
+        private final List<Concrete> concrete;
         private final OccurrenceAddress anchor;
         private final String body;
         private final List<Disjunct> disjuncts;
@@ -260,6 +262,14 @@ public final class Composer {
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
+            Map<String, Concrete> concrete =
+                    new LinkedHashMap<String, Concrete>(composed.concrete);
+            for (SmtLowering.Pin pin : composed.lowering.pins().values()) {
+                concrete.put(pin.subject, new Concrete("PIN", pin.subject,
+                        pin.value, pin.movesWith));
+            }
+            this.concrete = Collections.unmodifiableList(
+                    new ArrayList<Concrete>(concrete.values()));
             this.ownArms = composed.composedFamilies.ownArms();
             this.recordedAtPlants =
                     composed.composedFamilies.recordedAtPlants();
@@ -459,6 +469,12 @@ public final class Composer {
 
         public List<Family> families() {
             return families;
+        }
+
+        /** What the composed paths rest on concretely: information, never
+         *  a gap (result.json {@code concrete[]}). */
+        public List<Concrete> concrete() {
+            return concrete;
         }
 
         public List<RootDomain> roots() {
@@ -772,6 +788,15 @@ public final class Composer {
     private final Set<String> replacing = new LinkedHashSet<String>();
     /** What refused the first path that reached the anchor, or "". */
     private String firstRefusal = "";
+    /** The path being composed: the arrivals it pins to the value its run
+     *  received ({@link #handoffRead}), and what it rests on concretely
+     *  ({@link Concrete}), kept once the path is a disjunct. */
+    private final List<String> pinnedArrivals = new ArrayList<String>();
+    private final Map<String, Concrete> pathConcrete =
+            new LinkedHashMap<String, Concrete>();
+    /** What the composed paths rest on concretely, by subject. */
+    private final Map<String, Concrete> concrete =
+            new LinkedHashMap<String, Concrete>();
     /** How the alternatives of one slot read in SMT. */
     private final ComposedFamilies composedFamilies;
 
@@ -1099,7 +1124,9 @@ public final class Composer {
         List<ReadRow> joined = new ArrayList<ReadRow>();
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
-        frameRefusals(session, reached.keySet(), refusals);
+        pinnedArrivals.clear();
+        pathConcrete.clear();
+        frames(session, reached.keySet());
 
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
@@ -1210,6 +1237,7 @@ public final class Composer {
         // (it would otherwise rest on a free constant).
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
+        terms.addAll(pinnedArrivals);
         terms.addAll(lowering.end());
 
         // (1b) Refuse the path only if its own terms name a declared root
@@ -1255,6 +1283,7 @@ public final class Composer {
         List<String> withoutFatalArm = new ArrayList<String>(terms);
         if (fatalArm >= 0) withoutFatalArm.remove(fatalArm);
         observedReads.put(path.pathId, observed);
+        concrete.putAll(pathConcrete);
         observedArrivals.put(path.pathId,
                 arrivals(corpus.attachesOn(session, anchor)));
         heldArrivals.put(path.pathId, arrivals(bound));
@@ -1522,7 +1551,10 @@ public final class Composer {
      * with its path delivered (hdfs-17967-pathC rb1: a flip answered the
      * DataNode's key id with 119532 while the moved serial had its producer
      * deliver 119533, and the answer, pinned as a literal, let the solver
-     * move the serial past it).  Otherwise refused by name.
+     * move the serial past it).  An arrival no producer this corpus attests
+     * delivered is pinned to the value its run received instead, which no
+     * moved root follows (a {@link Concrete} PIN): a witness over it is
+     * CONFIRM's to refute.  A row stating no value is refused by name.
      */
     private void handoffRead(String session, AttachRow attach,
                              Set<String> interactionIds,
@@ -1530,26 +1562,41 @@ public final class Composer {
                              List<AttachRow> bound) {
         if (!handoffs.add(attach.symbol())) return;
         Interaction interaction = attach.interaction();
-        if (interaction != null) {
-            interactionIds.add(interaction.id());
-        } else {
-            // No known source, so no family: named, and refused below.
+        if (interaction == null) {
+            // No known source, so no family: named, and pinned below.
             composedFamilies.unpaired(session, attach);
         }
         if (attestedArrival(attach)) {
+            // An attested arrival has a producer, so its interaction.
+            interactionIds.add(interaction.id());
             bound.add(attach);
             return;
         }
-        // Never pin the literal it took: the question is whether the
-        // producer could have delivered another value.  Refuse by name.
-        refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
-                GapClass.DIAGNOSTIC, attach.symbol(),
-                "no session of this corpus states the rows of the producer "
-                        + "occurrence this delivery came from, so what was "
-                        + "delivered is stated and why is not: this path "
-                        + "would have to pin the read to the literal it "
-                        + (attach.answered() ? "was answered with"
-                        : "received")));
+        // No producer this corpus attests (or none named): what it delivered
+        // is stated and why is not, so the arrival is a constant -- the value
+        // the run received (an answered one, the answer) -- whatever the
+        // producer might have delivered under a moved root; a witness over it
+        // is CONFIRM's to refute (hdfs-17967-pathC rb1).  A row stating no
+        // value refuses the path by name.
+        Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
+        String literal = smtLiteral(JsonFields.firstNonBlank(
+                attach.answeredValue(), attach.arrival()), sort);
+        if (literal.isEmpty()) {
+            refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
+                    GapClass.DIAGNOSTIC, attach.symbol(),
+                    "no session of this corpus states the rows of the "
+                            + "producer occurrence this delivery came from, "
+                            + "and its row states no value it "
+                            + (attach.answered() ? "was answered with"
+                            : "received")));
+            return;
+        }
+        lowering.declareStated(attach.symbol(), sort);
+        pinnedArrivals.add("(= " + attach.symbol() + " " + literal + ")");
+        pathConcrete.put(attach.symbol(), new Concrete("PIN",
+                attach.symbol(), literal, Collections.singletonList(
+                attach.producer() == null ? "no producer named"
+                        : "unattested producer " + attach.producer().id())));
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
@@ -1679,20 +1726,40 @@ public final class Composer {
 
     /**
      * A REFUSAL IS ITS FRAME'S: a value the run refused inside an occurrence
-     * ({@link Corpus#refusedIn}) refuses a path or an arm whose closure
-     * reaches that occurrence, and nothing else.  A refused attach used to
-     * be BLOCKING for the whole campaign, wherever it ran (hdfs-17899-bug1
-     * r1: 55 of them, all in NameNode registration handlers).
+     * ({@link Corpus#refusedIn}) is one it computed on as a constant, which
+     * its rows state concretely, so a path or an arm whose closure reaches
+     * that occurrence composes with those constants: what the decision
+     * rested on concretely ({@link Concrete}, kind FRAME), never a refusal.
      */
-    void frameRefusals(String session, Set<String> reached,
-                       List<GapRow> refusals) {
+    void frames(String session, Set<String> reached) {
         for (String occurrenceId : reached) {
             GapRow refused = corpus.refusedIn(session, occurrenceId);
             if (refused == null) continue;
-            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                    GapClass.DIAGNOSTIC, refused.subject(), "this closure "
-                            + "reaches an occurrence whose own run refused a "
-                            + "value it computes on: " + refused.detail()));
+            pathConcrete.put(refused.subject(), new Concrete("FRAME",
+                    refused.subject(), refused.detail(),
+                    Collections.<String>emptyList()));
+        }
+    }
+
+    /**
+     * One thing a composed path rests on concretely: an arrival or a read
+     * pinned to the value its row states though what it rests on can move
+     * (PIN, {@link SmtLowering#pins}), or an occurrence whose run computed
+     * on a value as a constant (FRAME).  Information beside the verdict
+     * (result.json {@code concrete[]}), never a gap.
+     */
+    public static final class Concrete {
+        public final String kind;
+        public final String subject;
+        public final String value;
+        public final List<String> movesWith;
+
+        Concrete(String kind, String subject, String value,
+                 List<String> movesWith) {
+            this.kind = kind;
+            this.subject = subject;
+            this.value = value;
+            this.movesWith = Collections.unmodifiableList(movesWith);
         }
     }
 
@@ -2309,8 +2376,9 @@ public final class Composer {
      * read's too, so the two cannot disagree): JOIN, the expression of the
      * write version it observed, if it lowers with no refusal; else its
      * MINT; else PIN; else REFUSE.  A join that refused gives way to the
-     * mint or the pin only where nothing it rests on can move.  No "latest
-     * write", no choice between writers.
+     * mint or the pin, which says what it cut where what it rests on can
+     * move ({@link SmtLowering#pins}).  No "latest write", no choice
+     * between writers.
      */
     void stateJoins(String session, Set<String> occurrences,
                     Independence relevant, SmtLowering.SessionJoin join,

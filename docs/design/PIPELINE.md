@@ -1016,9 +1016,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
 
 - P3 closure (`closure`): the occurrences the path's joins reach, each with the seq its prefix runs to,
   including earlier versions of every reached write's location; a refusal is its frame's
-  (`frameRefusals`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
-  attach, an attach that minted no `v_H`; `Corpus#refusedIn`) refuses the path, and an arm whose
-  closure reaches one is no option;
+  (`frames`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
+  attach, an attach that minted no `v_H`; `Corpus#refusedIn`) is a value its run computed on as a
+  constant, which its rows state, so the path or arm composes with those constants and names the
+  frame (`Composer.Concrete` FRAME, `concrete[]`);
 - constraint independence (`compose.Independence.of`), by what MOVES: a root of the session, what a
   family binds (an anchor handoff's symbol, a location a STATE family may re-pair), a read whose value
   (its observed write's, walked, and the construction guards of its referent) rests on one. A
@@ -1050,16 +1051,21 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   session neither minted nor read refuses the path only when the path's terms name it;
 - anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
-  an attach no session attests the producer of refuses the path (`UNATTESTED_ARM`);
+  an attach no session attests the producer of (or with no producer named) is held at the value
+  its run received -- an answered one at its answer -- a constant no moved root follows, named as a
+  `Composer.Concrete` PIN (a witness over it is CONFIRM's to refute); a row stating no value refuses
+  the path (`UNATTESTED_ARM`);
 - the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
   too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
   of that version (a placeholder), else PIN to the value the row states, else REFUSE
-  (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
+  (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin, and where what it rests on
   can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair) --
-  `SmtLowering#moves`, the one predicate every pin asks, a method return's and a container
-  answer's too, and EXPLORE's flip query alike, where a read of any location with write rows
-  moves (it takes one of its eligible writers, `SmtLowering#forSession`) -- and
-  dropped it raises nothing (no refusal, side condition or gap); what a read row's binding required
+  `SmtLowering#movers`, the one walk every pin asks, a method return's and a container answer's
+  too, and EXPLORE's flip query alike, where a read of any location with write rows moves (it takes
+  one of its eligible writers, `SmtLowering#forSession`) -- the pin cuts that dependence and says so
+  (`SmtLowering#pins`: subject, value and what it rests on, a `Composer.Concrete` PIN in
+  `concrete[]`); dropped, the join raises nothing (no refusal, side condition or gap); what a read
+  row's binding required
   (container membership and cell tags, recorded readings) is stated with its join, so only where
   the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
   object the VM named (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a

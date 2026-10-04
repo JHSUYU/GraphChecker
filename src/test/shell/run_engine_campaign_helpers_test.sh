@@ -491,13 +491,19 @@ $(jq -c '{claim, formulaClaim, accepted, defects, concrete, whyNotAccepted}' \
 grep -q 'no accepted verdict: claim=RUN_DEFECT (the formula UNSAT_CLOSED)' \
   "${emit_root}/emit.log" \
   || fail "EMIT did not name the defect run: $(<"${emit_root}/emit.log")"
-# The same formula with no defect is the verdict, concrete anchor and all.
+# The same formula with no defect is the verdict, concrete anchor and all,
+# and what COMPOSE pinned beside it (Composer.Concrete) travels too.
 emit_unsat_fixture
+jq '.concrete = [{kind: "PIN", subject: "vh", value: "20",
+      movesWith: ["unattested producer P"]}]' "${composition_manifest}" \
+  >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
 run_emit
 [[ "${emit_status}" -eq 0 ]] \
   || fail "a defect-free UNSAT was not accepted: $(<"${emit_root}/emit.log")"
 jq -e '.claim == "UNSAT_CLOSED" and .accepted == true and .defects == []
-  and (.concrete | length) == 1' "${campaign_final}/result.json" >/dev/null \
+  and [.concrete[].kind] == ["ANCHOR", "PIN"]' \
+  "${campaign_final}/result.json" >/dev/null \
   || fail "a defect-free UNSAT was not published as the verdict: \
 $(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"
 

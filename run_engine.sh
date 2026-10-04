@@ -5936,9 +5936,11 @@ campaign_emit() {
      # gaps, whichever stage raised them.
      defects: [$gaps.gaps[] | {stage, code, subject, detail}],
      # What the decision rested on concretely: each anchor every admitted
-     # path decided on no symbol (EXPLORE).
-     concrete: [($exploreDocuments[0].concreteAnchors // [])[]
-                | {kind: "ANCHOR"} + .],
+     # path decided on no symbol (EXPLORE), each value COMPOSE pinned to its
+     # row though what it rests on can move, each occurrence whose run
+     # computed on a value as a constant (Composer.Concrete).
+     concrete: ([($exploreDocuments[0].concreteAnchors // [])[]
+                 | {kind: "ANCHOR"} + .] + ($c.concrete // [])),
      # What each satisfying witness named, and whether the policy read it as a
      # finding or as freedom nobody accounted for. A reader asking "why is this
      # sat" gets the mechanism narrative here rather than having to rebuild it

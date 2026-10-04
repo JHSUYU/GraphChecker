@@ -297,15 +297,17 @@ field=<f> <subject>`.
   refusal, else to its version's mint, else to the value its row states, else it is refused
   `UNSTATED_VALUE` (`compose.SmtLowering.bind`, the one rule of a read row in
   `compose.Composer.stateJoins` and of a guarded read node). A join that refused yields to the mint
-  or the value only if nothing it rests on can move -- a root or clock cell, a handoff, a read a
-  STATE family may re-pair, through every read's own write; otherwise the read is refused. A flip
+  or the value; where what it rests on can move -- a root or clock cell, a handoff, a read a STATE
+  family may re-pair, through every read's own write -- the pin cuts it and says so
+  (`SmtLowering#pins`, `concrete[]`). A flip
   query offers eligible writers as choices first ([PIPELINE.md §7.5](PIPELINE.md)).
 - A method-return symbol (`M_<t>_return<n>`) is the call its node states (VM f14 member `call`:
   `holder`, `name`, `arguments`), as a `MethodExpression` node is the call it names (`_name`
   `"<holder> <method>"`, `_param_list`): `Integer.parseInt`/`Long.parseLong` (radix 10) of a String
   and `String.valueOf`/`Integer`/`Long.toString` of an integral are relations; any other callee's
-  return is pinned to the node's `concreteValue` by a named assertion, only if nothing its
-  arguments rest on can move. A method-return node stating no call is refused.
+  return is pinned to the node's `concreteValue` by a named assertion; where its arguments rest on
+  what can move, the pin cuts it and says so (`SmtLowering#pins`). A method-return node stating no
+  call is refused.
 - A decimal or boolean rendering is compared, parsed and split as the value it renders
   (WIRE-CODEC §6.2, `compose.StringIdentities`), read on the expression IR before any text and
   never through a read (its value is the write a family pairs it with): `String.valueOf` of a

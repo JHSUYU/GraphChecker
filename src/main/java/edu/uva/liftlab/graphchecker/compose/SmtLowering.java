@@ -882,6 +882,9 @@ public final class SmtLowering {
         /** method-return symbol -> the value its node states. */
         private final Map<String, String> pinnedReturns =
                 new LinkedHashMap<String, String>();
+        /** What was pinned to the value its row states though what it
+         *  rests on can move ({@link #pins}). */
+        private final Map<String, Pin> pins = new LinkedHashMap<String, Pin>();
         /** A named DIAGNOSTIC that refuses nothing -> why
          *  ({@link #diagnostics}). */
         private final Map<String, String> diagnostics =
@@ -911,6 +914,7 @@ public final class SmtLowering {
             cuts.addAll(other.cuts);
             sortConflicts.putAll(other.sortConflicts);
             pinnedReturns.putAll(other.pinnedReturns);
+            pins.putAll(other.pins);
             diagnostics.putAll(other.diagnostics);
         }
     }
@@ -1230,12 +1234,12 @@ public final class SmtLowering {
      * callee this lowering knows is its RELATION over the lowered arguments
      * ({@link #knownCall}), whatever they rest on.  Any other is PINNED to
      * the value the node states it returned, by an assertion named for an
-     * unsat core to show the reliance, and only where nothing its arguments
-     * rest on can move ({@link #moves}): a root moved through the call would
-     * stand as a constant.  A node stating no call (a VM before f14) is
-     * refused, since what its value was computed from is not known.  The
-     * pinned name is this session's, so two runs' results of one symbol are
-     * two values.
+     * unsat core to show the reliance; where its arguments rest on what can
+     * move ({@link #movers}), the pin cuts that dependence -- a root moved
+     * through the call stands as a constant -- and says so ({@link #pins}).
+     * A node stating no call (a VM before f14) is refused, since what its
+     * value was computed from is not known.  The pinned name is this
+     * session's, so two runs' results of one symbol are two values.
      */
     private Term methodReturn(JsonObject expression, String raw,
                               String javaType, Sort sort) {
@@ -1251,14 +1255,7 @@ public final class SmtLowering {
                 + optionalString(call, "name"), array(call, "arguments"),
                 "call:" + raw);
         if (related != null) return related;
-        if (moves(call)) {
-            return cut("MethodReturnOverMovingArgument:" + raw, "an "
-                    + "argument of the call that returned this value rests "
-                    + "on what a witness can move (a root, a clock, a "
-                    + "handoff or a read a family re-pairs), and the call is "
-                    + "no relation this lowering knows, so no pin may stand "
-                    + "for its result", sort, javaType);
-        }
+        Set<String> moving = movers(call, true);
         String returned = ReadRow.returned(expression);
         Term value = statedValue(returned, javaType);
         if (value == null) {
@@ -1280,6 +1277,7 @@ public final class SmtLowering {
             }
         }
         top().pinnedReturns.put(raw, returned);
+        pinnedOver("call:" + raw, returned, moving);
         return value.sort == Sort.STRING ? Term.nonNullString(name, "true")
                 : Term.of(name, value.sort, value.integralWidth);
     }
@@ -1493,13 +1491,15 @@ public final class SmtLowering {
      * REFUSE.  Never enumerate retained versions for the solver to pick
      * from.
      *
-     * <p>A join that refused gives way to the mint or the pin ONLY IF
-     * nothing it rests on can move ({@link #moves}): pinned, a value the
-     * refused write computed from a root, a clock or a handoff would stand
-     * as a constant while the witness moves them (C1 review H1: a pin of
-     * {@code parseInt(valueOf(R))} made a moved-root witness out of a path
-     * that used to be refused).  Otherwise the join is committed and the
-     * read refused.  Dropped, the join raised nothing.</p>
+     * <p>A join that refused gives way to the mint or the pin: what is
+     * symbolic stays symbolic, what the recording states concretely is a
+     * constant.  Where what the refused write rests on can move ({@link
+     * #movers}: a root, a clock, a handoff or a read a family re-pairs), the
+     * pin cuts that dependence -- the value stands as the run's while a
+     * witness moves them (C1 review H1: {@code parseInt(valueOf(R))}) --
+     * and says so ({@link #pins}: the subject, the value and what it rests
+     * on), so a witness over it is CONFIRM's to refute.  Dropped, the join
+     * raised nothing.</p>
      *
      * <p>{@code projected} is the node's own {@code observedVersion}
      * expression, the projection the read performed (e.g.
@@ -1510,6 +1510,7 @@ public final class SmtLowering {
     <T> T bind(String key, long version, long event, JsonElement projected,
                Binder<T> binder) {
         Attempt<Term> joined = null;
+        Set<String> cut = new LinkedHashSet<String>();
         if (!key.isEmpty() && version >= 0L) {
             JsonElement written = join.writeExpression(key, version);
             if (written != null && !written.isJsonNull()) {
@@ -1517,16 +1518,11 @@ public final class SmtLowering {
                         && !projected.isJsonNull() ? projected : written;
                 joined = attempting(() -> binder.join(value));
                 if (joined.lowered()) return binder.joined(commit(joined));
-                if (join.repaired(key, event) || moves(value)
-                        || moves(written)) {
-                    return binder.refused(commit(joined),
-                            "JoinOverMovingValue:" + key + "@" + version,
-                            "the write of this version did not lower, and "
-                                    + "what it rests on can move (a root, a "
-                                    + "clock, a handoff or a read a family "
-                                    + "re-pairs), so no mint or pin may "
-                                    + "stand for it");
+                if (join.repaired(key, event)) {
+                    cut.add("read " + key + "@" + version);
                 }
+                cut.addAll(movers(value, true));
+                cut.addAll(movers(written, true));
             }
             String minted = mintedReadSymbol(join, version);
             if (minted == null) {
@@ -1542,12 +1538,14 @@ public final class SmtLowering {
             }
             if (!minted.isEmpty()) {
                 if (joined != null) top().dropped.add(joined.value().text);
+                pinnedOver(key + "@" + version, minted, cut);
                 return binder.minted(minted);
             }
         }
         T pinned = binder.pinned();
         if (pinned != null) {
             if (joined != null) top().dropped.add(joined.value().text);
+            pinnedOver(key + "@" + version, statedReadValue(key, event), cut);
             return pinned;
         }
         return binder.refused(joined == null ? null : commit(joined),
@@ -1558,6 +1556,24 @@ public final class SmtLowering {
                         + "refusal is stated beside this)")
                         + ", and the recording states no value the read "
                         + "returned");
+    }
+
+    /** Records a pin that cuts a moving dependence ({@link #pins}). */
+    private void pinnedOver(String subject, String value, Set<String> cut) {
+        if (cut.isEmpty()) return;
+        top().pins.put(subject, new Pin(subject, value,
+                new ArrayList<String>(cut)));
+    }
+
+    /** What the read row of this event states it returned, or "". */
+    private String statedReadValue(String key, long event) {
+        for (ReadRow read : join.reads(key)) {
+            if (read.seq() == event) {
+                return read.concreteValue() == null ? ""
+                        : read.concreteValue();
+            }
+        }
+        return "";
     }
 
     /**
@@ -1597,7 +1613,17 @@ public final class SmtLowering {
      * again ({@link #still}).
      */
     private boolean moves(JsonElement expression) {
-        if (expression == null || expression.isJsonNull()) return false;
+        return !movers(expression, false).isEmpty();
+    }
+
+    /**
+     * What this expression rests on that can move ({@link #moves}): each
+     * moving symbol, re-paired read and moving mint, all of them, or (not
+     * {@code all}) the first found.
+     */
+    private Set<String> movers(JsonElement expression, boolean all) {
+        Set<String> found = new LinkedHashSet<String>();
+        if (expression == null || expression.isJsonNull()) return found;
         ExpressionTable expressions = openTable == null ? table : openTable;
         Set<JsonElement> walked = Collections.newSetFromMap(
                 new IdentityHashMap<JsonElement, Boolean>());
@@ -1622,24 +1648,32 @@ public final class SmtLowering {
             }
             JsonObject object = node.getAsJsonObject();
             String type = primitiveString(object, "_type");
+            String symbol = primitiveString(object, "_exp");
             if (VmExpressionIr.SYMBOL_TYPE.equals(type)
-                    && join.moves(primitiveString(object, "_exp"))) {
-                return true;
+                    && join.moves(symbol)) {
+                found.add(symbol);
+                if (!all) return found;
             }
             if (VmRows.GUARDED_READ_TYPE.equals(type)) {
                 String key = locationKey(JsonFields.object(object,
                         "location"));
                 long version = observedVersion(object);
-                if (join.repaired(key, VmRows.readEvent(object))) return true;
+                if (join.repaired(key, VmRows.readEvent(object))) {
+                    found.add("read " + key + "@" + version);
+                    if (!all) return found;
+                }
                 for (String minted : join.mintedReadSymbols(version)) {
-                    if (join.moves(minted)) return true;
+                    if (join.moves(minted)) {
+                        found.add(minted);
+                        if (!all) return found;
+                    }
                 }
                 pending.add(join.writeExpression(key, version));
             }
             pending.addAll(object.asMap().values());
         }
-        still.addAll(walked);
-        return false;
+        if (found.isEmpty()) still.addAll(walked);
+        return found;
     }
 
     /**
@@ -3230,6 +3264,30 @@ public final class SmtLowering {
      */
     public Map<String, String> pinnedReturns() {
         return Collections.unmodifiableMap(root.pinnedReturns);
+    }
+
+    /**
+     * Each value pinned to what its row states though what it rests on can
+     * move ({@link #bind}, {@link #methodReturn}): the formula holds it at
+     * the run's value, so a witness moving what it rests on is CONFIRM's to
+     * refute.  Information, never a gap.
+     */
+    public Map<String, Pin> pins() {
+        return Collections.unmodifiableMap(root.pins);
+    }
+
+    /** One pin over a moving dependence: what was pinned, to what, and
+     *  what it rests on that can move. */
+    public static final class Pin {
+        public final String subject;
+        public final String value;
+        public final List<String> movesWith;
+
+        Pin(String subject, String value, List<String> movesWith) {
+            this.subject = subject;
+            this.value = value;
+            this.movesWith = Collections.unmodifiableList(movesWith);
+        }
     }
 
     /**
