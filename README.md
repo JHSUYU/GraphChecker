@@ -108,7 +108,9 @@ The owner's rulings (binding; also in §1):
 
 | tree (worktree) | branch, head | of | what |
 | --- | --- | --- | --- |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study` | `gc/hdfs-study` | `~/hadoop` | EVERY HDFS case but 11741 (branch `system/hdfs`): `gc/hdfs-unified-dtx` + bug #15's workload + the study's 51 ad hoc check markers (`hdfs-adhoc-NN`) + the MiniJournalCluster hooks + HDFS-2 #09's workload (`TestCausynthReencryptNegativeSleep`); Maven repo `/bigtemp/vnr3ne/m2/hdfs-study` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-next` | `gc/hdfs-study-next` | `~/hadoop` | EVERY HDFS case but 11741 on `system/hdfs` from round HG2: `gc/hdfs-study` + node-startup brackets for automatic clusters (restarts by epoch), the startup window, weak adapter registries, the heartbeat tick on its NameNode, the IPC door naming its request's operation, HDFS-2 #09's workload removed; Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-next` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-verb` | `gc/hdfs-11741-verb` | `~/hadoop` | hdfs-11741 on `system/hdfs`: `gc/hdfs-11741` + the IPC door naming its request's operation; Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-verb` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study` | `gc/hdfs-study` | `~/hadoop` | round HG1's HDFS tree (branch `system/hdfs`): `gc/hdfs-unified-dtx` + bug #15's workload + the study's 51 ad hoc check markers (`hdfs-adhoc-NN`) + the MiniJournalCluster hooks + HDFS-2 #09's workload (`TestCausynthReencryptNegativeSleep`); Maven repo `/bigtemp/vnr3ne/m2/hdfs-study` |
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` | `gc/hdfs-unified-dtx` `51f1e058380` | `~/hadoop` | `gc/hdfs-unified` + the DataTransfer op's envelope: the base of `gc/hdfs-study`; main's eight named HDFS cases run it; Maven repo `/bigtemp/vnr3ne/wt/dtx/m2` |
 | `~/hadoop-hdfs-11741` | `gc/hdfs-11741` | `~/hadoop` | hdfs-11741 |
 | `~/hadoop-hdfs-unified` | `gc/hdfs-unified` `89f4c5348df` | `~/hadoop` | base of the dtx and bugs trees |

@@ -1,6 +1,6 @@
 # HDFS-17960: ordered snapshot deletion miscounts after a restart.
 # Declarations only.
-repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study
+repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study-next
 test_class=org.apache.hadoop.hdfs.server.namenode.snapshot.TestOrderedSnapshotDeletion
 test_method=testOrderedDeletionWithRestart
 target_occurrence="hdfs-17960/nn0#epoch1/region/REGION.5cf88831-22cf-3d39-88b2-258261af8fc8#1"
