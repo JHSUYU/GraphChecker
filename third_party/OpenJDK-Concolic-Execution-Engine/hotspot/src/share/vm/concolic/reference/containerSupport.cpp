@@ -1101,6 +1101,22 @@ bool ContainerSupport::guarded_mutation(const std::string &callee) {
   return SharedFieldVersions::guarded_store_admitted(NULL, "CALL " + callee);
 }
 
+bool ContainerSupport::admits(MethodSymbolizerHandle &handle,
+                              bool callback) {
+  const std::string &callee = handle.get_callee_name();
+  if (handle.general_check_param_symbolized() || guarded_mutation(callee)) {
+    return true;
+  }
+  Method *method = handle.get_callee_method();
+  if (method == NULL || method->is_static()
+      || !(callback || mutator(callee))) {
+    return false;
+  }
+  oop container = backing_container(handle.get_param<oop>(0));
+  return container != NULL
+      && SharedFieldVersions::is_tracked(state_location(container));
+}
+
 bool ContainerSupport::mutator(const std::string &callee) {
   static const char *const MUTATORS[] = {
       "put", "remove", "clear", "add", "offer", "set", "poll", "putAll",

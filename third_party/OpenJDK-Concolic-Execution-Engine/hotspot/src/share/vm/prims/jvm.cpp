@@ -501,6 +501,19 @@ JVM_ENTRY(jint, JVM_ObserveField(
 #endif
 JVM_END
 
+JVM_ENTRY(jint, JVM_ObserveContainer(
+    JNIEnv *env, jclass ignored, jobject value, jboolean mutation))
+  JVMWrapper("JVM_ObserveContainer");
+#ifdef ENABLE_CONCOLIC
+  if (value == NULL) return ExpressionBroker::HANDOFF_MISSING_METADATA;
+  HandleMark hm;
+  Handle container(THREAD, JNIHandles::resolve_non_null(value));
+  return ConcolicMngr::observeContainer(container, mutation == JNI_TRUE);
+#else
+  return 0;
+#endif
+JVM_END
+
 JVM_ENTRY(void, JVM_ArrayCopy(JNIEnv *env, jclass ignored, jobject src, jint src_pos,
                                jobject dst, jint dst_pos, jint length))
   JVMWrapper("JVM_ArrayCopy");

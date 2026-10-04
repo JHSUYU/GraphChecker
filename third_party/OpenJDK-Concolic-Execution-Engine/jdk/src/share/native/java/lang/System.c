@@ -58,6 +58,7 @@ static JNINativeMethod methods[] = {
     {"observeField",
         "(" OBJ "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
                                                         (void *)&JVM_ObserveField},
+    {"observeContainer",    "(" OBJ "Z)I",             (void *)&JVM_ObserveContainer},
     {"arraycopy",           "(" OBJ "I" OBJ "II)V",    (void *)&JVM_ArrayCopy},
     {"getPathCondition",     "()Ljava/lang/String;",    (void *)&JVM_GetPcStr},
     {"pauseConcolicPathCondition", "()V",

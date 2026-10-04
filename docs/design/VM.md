@@ -173,8 +173,15 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 Every other collection (`TreeMap`, `TreeSet`, `ConcurrentSkipList*`, `LinkedList`, `CopyOnWrite*`,
 `PriorityQueue`, blocking queues, `IdentityHashMap`, `WeakHashMap`, `EnumMap`) is interpreted as
 plain objects: its elements' fields propagate, but it has no container state and no version log.
-A modeled call with a callback on one of the four maps is admitted when an argument is symbolic or
-the map's state is tracked; otherwise it runs as bytecode. A visiting callback (`forEach`,
+A container model takes a call (`ContainerSupport::admits`, one predicate for the map, list and
+set models) when a symbolic value reaches it, when it is a guarded mutation (§5.3), when it is a
+mutation of a container whose state is tracked -- whatever object reaches the container: an
+iterator or a view the program built before the log began is no alias the model knows, and its
+`remove()` run as bytecode would leave the chain stale with no trace (the models' unaliased-cursor
+paths state it: a map's from the entry the iterator last returned, a list's from its last index) --
+and, for a call with a callback on one of the four maps, when the map's state is tracked; otherwise
+it runs as bytecode. A query through such an unaliased iterator or view stays bytecode: its
+positions began before the log did. A visiting callback (`forEach`,
 `replaceAll`, `removeIf`) is seeded with a READ of the state per element, so a decision on it is
 one path condition per element per call; past the snapshot bound (64,
 `-Dcausynth.concolic.initial.snapshot.max`) a call's visits are not seeded and it refuses its map
@@ -247,7 +254,7 @@ Container versions carry no word: a container mutation is a Java call no lock ca
 
 Tracking is by value; nothing is declared in advance. A log starts at the first symbolic store
 (field or array element), a mint, an attach, a symbolic container operation, an admitted guarded
-store (§5.3), or `observeField` (§5.4). A log a symbolic store starts has no INITIAL: the value
+store (§5.3), `observeField` or `observeContainer` (§5.4). A log a symbolic store starts has no INITIAL: the value
 that store wrote is the first thing it knows, and a store before it is no version
 (`SFV::begin_store_locked`). Once tracked, every store to it is versioned,
 concrete ones included, with the stored operand, not a heap re-read. A mint, an attach and an
@@ -307,6 +314,17 @@ the next read names a version. No referent is snapshotted there. It answers a st
 `0`, or `-1` (no context), `-2` (an argument missing), `-3` (no such field of that kind on the
 declaring class), `-12` (`float`/`double`). SYMBOL-SCOPE.md §5.2 says where it is woven. A read of
 a wrapper field is its value's sort (`J` for a `Long`) and its unboxing reads the read.
+
+`observeContainer(value, mutation)` (`ConcolicMngr::observeContainer`) starts the log of the state
+of the container `value` is or stands for (a view, an iterator, a `Collections` wrapper:
+`ContainerSupport::backing_container`) with an INITIAL stating what it holds, the one start a
+model's own first operation makes (`ContainerSupport::state_base_before_operation`: the snapshot of
+§6, its refusals -- `UNREADABLE_CONTAINER`, `TRUNCATED`, `RESIZING` -- stated on that INITIAL),
+unless a log stands. A container a final field holds is mutated in place and its contents may all
+be concrete, so nothing else would start it (SYMBOL-SCOPE §5.2). Without a region (no context, or
+an aborted one), a `mutation` marks a standing log incomplete instead (`UNHOOKED_CONTAINER_MUTATION`,
+`unnamedWriter`): that thread runs the mutation as bytecode no model sees. It answers `0`, `-1` (no
+region), `-2` (null) or `-12` (no container a model knows: an object, a `TreeMap`).
 
 ### 5.5 A container behind a reference
 
@@ -507,12 +525,12 @@ cross between nodes concretely, and the handle rides the message envelope (SYMBO
 
 ## 8. What the VM publishes
 
-`jdk/src/share/classes/java/lang/System.java` declares 34 concolic natives (registered in
+`jdk/src/share/classes/java/lang/System.java` declares 35 concolic natives (registered in
 `jdk/src/share/native/java/lang/System.c`, implemented in `VM/prims/jvm.cpp`).
-`runtime/ConcolicVmBroker` looks 25 of them up by reflection, so it loads on a stock JDK, and
+`runtime/ConcolicVmBroker` looks 26 of them up by reflection, so it loads on a stock JDK, and
 `#requireCurrentCapabilities` refuses a replay plan before its workload starts when any is missing:
 sessions, regions, context and event ids, `symbolize`/`symbolizeField`/`symbolizeExactField`,
-`observeField`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
+`observeField`, `observeContainer`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
 pause/resume, branch events and range, `endConcolic`, `exportExpression`/`attachExpression`,
 `getTrackedLocationVersions`, `installGuardedStoreSites`, `exportLeaf`/`mintLeaf` (§7; bound as
 `ConcolicVmBroker#exportLeaf`/`#mintLeaf` with a `SlotKind` whose ordinal is the VM's). `markConcolicBranch` and the pause
@@ -585,6 +603,8 @@ that does not hold.
 | decimal and boolean renderings (`toString`, `String.valueOf`, `append`) | modeled: one `toString` op |
 | radix, hexadecimal, char and floating renderings | detected (a named operation, not pinned) |
 | a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
+| a tracked container mutated through an iterator or view built before its log began | modeled (§4: `ContainerSupport::admits`) |
+| a tracked container mutated by a thread outside every region, at a mutation site the scope map names | detected (`UNHOOKED_CONTAINER_MUTATION`, §5.4) |
 | an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
 | map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6): a choice a guard, a callback's result and its side effects hooked; what a callback that did not run would have stored detected and named (an unknown cell, `CONTAINER_PINNED:`) |
 | a `java.util.stream` pipeline over a modeled container | modeled (§4): its result a guarded chain, its stages' callbacks seeded; what no relation states detected and pinned (a `PIN`, or the run's result named `STREAM_PINNED:`); an unmodeled operation named and hooked as bytecode |
@@ -616,7 +636,9 @@ that does not hold.
   never reads). A version's guard holds only the innermost region's decisions.
 - Re-pairable state is integral, wrapper and reference fields, modeled containers and
   Unsafe-written locations. A container read states no word, so it is never exact, and an unhooked
-  mutation of a container is not detected.
+  mutation of a container is detected only where a thread outside every region makes it at a
+  mutation site the scope map names (§5.4); elsewhere (a muted or paused body, an alias the scope
+  map does not name) it is not.
 - A container answer is typed by the object the run returned (`ContainerSupport::java_type`): a
   null answer is a reference, so a witness in which the same query answers a String or a box is
   outside its sort.
@@ -635,7 +657,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 68
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 69
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
