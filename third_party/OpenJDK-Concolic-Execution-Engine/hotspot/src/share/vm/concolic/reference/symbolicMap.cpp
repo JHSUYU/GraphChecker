@@ -395,18 +395,13 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
   oop container = ContainerSupport::backing_container(target);
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
-    // A symbolic value admits the model, and so does a mutation this thread
-    // is performing because of a symbolic decision (see
-    // ContainerSupport::guarded_mutation), and a call with a callback on a
-    // map whose state is tracked: its body runs muted and the callback with
+    // ContainerSupport::admits: a symbolic value, a guarded mutation, a
+    // mutation of a tracked map whatever object reaches it, and a call with a
+    // callback on a tracked map -- its body runs muted and the callback with
     // propagation, so what the callback computes is kept.  Anything else
     // runs as bytecode.
     const bool callback = takes_callback(callee_name) && container != NULL;
-    const bool recording = handle.general_check_param_symbolized()
-        || ContainerSupport::guarded_mutation(callee_name)
-        || (callback && SharedFieldVersions::is_tracked(
-                            ContainerSupport::state_location(container)));
-    if (!recording) return false;
+    if (!ContainerSupport::admits(handle, callback)) return false;
     if (container == NULL && map_level(callee_name)) {
       // A subclass of a modeled class, or an access-ordered LinkedHashMap,
       // is refused by name; anything else is no map this model knows, and
