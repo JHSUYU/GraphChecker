@@ -688,7 +688,10 @@ failure flows into what the walk demanded (`RootDemand.Faults`, `causynth/Latent
 
 Its distance is the site's plus one plus the calls it escapes. The doors this pass wove stay; the
 nearest calls are added until twelve stand (rows `fault_escape`, `fault_handler`, `door`, the
-others cut `WIDTH` or `DISTANCE`), and `io_doors.jsonl` holds them for every later pass. A call
+others cut `WIDTH` or `DISTANCE`), and `io_doors.jsonl` holds them for every later pass. A call in
+a constructor no region holds is cut `NO_REGION` (`StaticProgram#doorPlaceable`): no region roots
+at a constructor, so its marker would be read in no occurrence (a stream wrapper opening its file
+in its constructor, Hadoop's `AtomicFileOutputStream`). A call
 into the system outside the scope where such a fault could stand is an IO frontier row
 (`fault_frontier`): the twelve nearest join scope growth's demanded rows (§2.4). `run_engine.sh`
 `campaign_analyze_grown_scope` runs the static pass again while it chooses more doors, outside

@@ -32,10 +32,17 @@ final class LatentFaults implements RootDemand.Faults {
     private final Map<String, SiteControlDependence.MethodGuards> guards =
             new HashMap<>();
     private final Map<String, BriefUnitGraph> graphs = new HashMap<>();
+    private final Predicate<String> placeable;
 
-    /** @param systemClass whether a class is the system's own */
-    LatentFaults(Predicate<String> systemClass) {
+    /**
+     * @param systemClass whether a class is the system's own
+     * @param placeable   whether a door in a method reads its marker in a
+     *                    region ({@link StaticProgram#doorPlaceable})
+     */
+    LatentFaults(Predicate<String> systemClass,
+                 Predicate<String> placeable) {
         this.model = FaultPropagation.latent(systemClass);
+        this.placeable = placeable;
     }
 
     @Override
@@ -134,7 +141,7 @@ final class LatentFaults implements RootDemand.Faults {
             }
             if (raise.frontier != null) {
                 keep(found, new RootDemand.Candidate(siteOf(at, raise.unit),
-                        raise.frontier, at, 0, hops, reach, true));
+                        raise.frontier, at, 0, hops, reach, true, true));
             }
             for (FaultPropagation.Raise origin : raise.origins) {
                 work.add(new Object[]{at, origin, hops});
@@ -166,7 +173,8 @@ final class LatentFaults implements RootDemand.Faults {
                 CausynthStaticFacts.method(method));
         return new RootDemand.Candidate(siteOf(method, call),
                 call.getInvokeExpr().getMethodRef().getSignature(), method,
-                DoorWeave.ordinal(body, call), distance, reach, false);
+                DoorWeave.ordinal(body, call), distance, reach, false,
+                placeable.test(method));
     }
 
     private String siteOf(String method, Unit unit) {

@@ -77,7 +77,8 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * TRACK_IDENTITY, TRACK_CONTAINER or READ field), or goes to a handler that
  * decides a site the walk demanded -- a site on the target's path only when
  * the handler leads to it.  The {@value #WIDTH} nearest calls are chosen, the
- * doors already woven first ({@link DemandedDoors}); a call into the system
+ * doors already woven first ({@link DemandedDoors}), none where its marker
+ * would be read in no region ({@value #NO_REGION_CUT}); a call into the system
  * outside the scope where such a fault could stand is an IO frontier row,
  * the {@value #WIDTH} nearest grown first.  Any other IO boundary is cut
  * {@value #NO_DOOR_CUT}.</p>
@@ -106,6 +107,10 @@ final class RootDemand {
     /** An IO boundary no demanded door stands at: an observation, a
      *  stream not typed as a file's, a value its fault would not move. */
     static final String NO_DOOR_CUT = "NO_DOOR";
+    /** A call where a door would read its marker in no region: a
+     *  constructor no region holds ({@link SymbolicRegionPlanner} roots no
+     *  region at a constructor). */
+    static final String NO_REGION_CUT = "NO_REGION";
     /** How a door's outcome reaches the slice. */
     static final String VALUE = "VALUE";
     static final String ESCAPE = "ESCAPE";
@@ -144,9 +149,12 @@ final class RootDemand {
         final int distance;
         final String reach;
         final boolean frontier;
+        /** Whether a door there reads its marker in a region. */
+        final boolean placeable;
 
         Candidate(String siteId, String callee, String caller, int ordinal,
-                  int distance, String reach, boolean frontier) {
+                  int distance, String reach, boolean frontier,
+                  boolean placeable) {
             this.siteId = siteId;
             this.callee = callee;
             this.caller = caller;
@@ -154,11 +162,12 @@ final class RootDemand {
             this.distance = distance;
             this.reach = reach;
             this.frontier = frontier;
+            this.placeable = placeable;
         }
 
         Candidate at(int distance, String reach) {
             return new Candidate(siteId, callee, caller, ordinal, distance,
-                    reach, frontier);
+                    reach, frontier, placeable);
         }
 
         DemandedDoors.Site door() {
@@ -367,14 +376,15 @@ final class RootDemand {
                 }
                 boundary.chosen = frontier.containsKey(key);
             } else {
-                if (near && !chosen.contains(key) && chosen.size() < WIDTH) {
+                if (near && candidate.placeable && !chosen.contains(key)
+                        && chosen.size() < WIDTH) {
                     chosen.add(key);
                     doors.add(candidate.door());
                 }
                 boundary.chosen = chosen.contains(key);
             }
-            boundary.cut = boundary.chosen ? "" : near ? WIDTH_CUT
-                    : DISTANCE_CUT;
+            boundary.cut = boundary.chosen ? "" : !near ? DISTANCE_CUT
+                    : candidate.placeable ? WIDTH_CUT : NO_REGION_CUT;
         }
         return frontier;
     }

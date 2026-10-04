@@ -178,7 +178,8 @@ public final class CausynthPipeline {
         RootDemand demand = RootDemand.of(result.edges, result.regions,
                 clocks, recognized, targetPathSites(result.edges),
                 CausynthStaticFacts::trackedKind, systemClass,
-                new LatentFaults(systemClass), DemandedDoors.woven());
+                new LatentFaults(systemClass, result::doorPlaceable),
+                DemandedDoors.woven());
         ConfigRoots config = recognized.limitedTo(demand.configSources());
         Set<String> plantedConfigReads =
                 StaticSymbolicSourceDiscovery.discover(result, config);

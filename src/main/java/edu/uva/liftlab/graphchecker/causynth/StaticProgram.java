@@ -166,6 +166,14 @@ public final class StaticProgram {
     }
 
     /** The regions whose method set holds {@code method}. */
+    /** Whether a door woven into {@code method} reads its marker in a
+     *  region: a region holds it, or it can root one (no constructor:
+     *  {@link SymbolicRegionPlanner}'s explicit fault entry). */
+    boolean doorPlaceable(String method) {
+        return !regionsHolding(method).isEmpty()
+                || !CausynthStaticFacts.constructor(method);
+    }
+
     List<String> regionsHolding(String method) {
         if (method.isEmpty()) {
             return Collections.emptyList();
