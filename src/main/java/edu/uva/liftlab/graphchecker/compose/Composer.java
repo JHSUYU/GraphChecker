@@ -1180,16 +1180,29 @@ public final class Composer {
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
         lowering.path();
+        // Where the path decided: at the target row, or, where it never
+        // reached the anchor, at the guard it left the way to the throw at
+        // (a row that did not reach the anchor stands at no point of it).
+        DecisionRow way = target.reachedAnchor() ? null
+                : wayGuard(path.decisions);
+        boolean symbolicWay = way != null
+                && !corpus.termSymbols(session, way.term()).isEmpty();
+        long cutoff = target.reachedAnchor() ? target.seq()
+                : way == null ? Long.MAX_VALUE : way.seq();
+        // What the fatal arm is: phi; a symbolic way guard's other arm, the
+        // way to the throw; else (a concrete one) the constant false.
+        String fatalTerm = target.reachedAnchor() ? target.phiTerm()
+                : symbolicWay ? Arms.conjunct(way.term(), !way.outcome())
+                : "false";
         // (0a) THE CLOSURE (P3): the occurrences of this session the joins
         //      reach, and the seq each prefix runs to.  Row-level, before
         //      any lowering.
-        Map<String, Long> reached = closure(session, anchor, target.seq(),
-                null);
+        Map<String, Long> reached = closure(session, anchor, cutoff, null);
         // What a family may move is no constant anywhere in this path: not
         // a pin after a refused join, not a variable independence leaves
         // out.  ONE entry point: the anchor's reads and the world's planted
         // ones, less a location a reader mutated a container through.
-        Repairing repairing = repairing(session, reached, target.seq());
+        Repairing repairing = repairing(session, reached, cutoff);
         Set<String> pinned = repairing.pinned;
         Set<String> moved = repairing.keys;
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
@@ -1210,10 +1223,10 @@ public final class Composer {
 
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
-        List<DecisionRow> conditions = before(path.decisions, target.seq());
+        List<DecisionRow> conditions = before(path.decisions, cutoff);
         conditions.addAll(reachedConditions(session, reached));
         Independence relevant = independence(session,
-                Collections.singletonList(target.phiTerm()),
+                Collections.singletonList(fatalTerm),
                 familyBound(session, repairing.reads), reached,
                 conditions);
         //       What the fatal itself rests on ({@link #fatalRests}) and
@@ -1221,7 +1234,7 @@ public final class Composer {
         //       reaches holds the formula's alternatives, not the witness (a
         //       confirming run is held to these only).
         Set<String> restsOn = independence(session,
-                fatalRests(target, path.decisions),
+                fatalRests(fatalTerm, path.decisions, cutoff),
                 Collections.<String>emptySet(), reached, conditions)
                 .locations();
 
@@ -1268,7 +1281,7 @@ public final class Composer {
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
         //     decision shares the target's seq; including it would
         //     contradict phi on every healthy path.
-        terms.addAll(prefix(path.decisions, target.seq(), "decision ",
+        terms.addAll(prefix(path.decisions, cutoff, "decision ",
                 relevant, refusals));
 
         // (4b) P3: the prefix of every OTHER occurrence the joins reach,
@@ -1285,27 +1298,35 @@ public final class Composer {
         //     arm (invariant 9): `true` rests the fatal on pi_p, the path
         //     condition that reached the anchor; `false` is the constant
         //     healthy decision, a disjunct no valuation of this formula
-        //     satisfies (what was concrete is EXPLORE's concreteAnchors);
-        //     a path that left the way to the throw at a guard takes the
-        //     healthy arm there, the same constant, the guard named in
-        //     concrete[] (WAY); none stated is no phi.
+        //     satisfies (what was concrete is EXPLORE's concreteAnchors).
+        //     A path that left the way to the throw at a guard: at a
+        //     SYMBOLIC one, its fatal arm is that guard's other arm, the way
+        //     to the throw (a witness turns it, CONFIRM judges the rest);
+        //     at a concrete one, the constant false; the guard named in
+        //     concrete[] (WAY) with what its term rests on.  None stated is
+        //     no phi.
         String subject = "phi of " + anchor.render();
         String published = target.phiTerm().trim();
         int fatalArm = -1;
         if (!target.reachedAnchor()) {
-            fatalArm = terms.size();
-            terms.add("false");
-            DecisionRow way = wayGuard(path.decisions);
             pathConcrete.put("way:" + session, new Concrete("WAY",
                     way == null ? anchor.render() : way.siteId() + "#"
                             + way.ordinal(), way == null ? ""
-                    : Boolean.toString(way.outcome()),
-                    Collections.<String>emptyList()));
-            // An unreached target row stands at no point of the path (its
-            // seq states none): the path is its decisions up to the guard it
-            // left the way at (all of them where it left at none named).
+                    : way.outcome() + (way.term().isEmpty() ? ""
+                    : " " + way.term()), way == null
+                    ? Collections.<String>emptyList()
+                    : new ArrayList<String>(corpus.termSymbols(session,
+                    way.term()))));
+            String fatal = symbolicWay ? lowering.statedTerm(fatalTerm,
+                    "way:" + subject) : fatalTerm;
+            if (!fatal.isEmpty() && !unknown(fatal, refusals, subject)) {
+                fatalArm = terms.size();
+                terms.add(fatal);
+            }
+            // The decisions up to the guard (all of them where it left at
+            // none named); the guard itself is the fatal arm when symbolic.
             terms.addAll(healthyDecisions(session, ordinal, path.decisions,
-                    way == null ? Long.MAX_VALUE : way.seq(), relevant));
+                    symbolicWay ? cutoff - 1 : cutoff, relevant));
         } else if (published.isEmpty()) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, subject, "the target row states "
@@ -1407,13 +1428,13 @@ public final class Composer {
      * nothing, and that fatal rests on the path condition that reached the
      * anchor, the decisions before the target (CONTRACT-SPEC §2.2).
      */
-    private static List<String> fatalRests(TargetRow target,
-                                           List<DecisionRow> decisions) {
-        String phi = target.phiTerm().trim();
-        return !target.reachedAnchor() || "true".equals(phi)
-                || "false".equals(phi)
-                ? Arms.pathCondition(decisions, target.seq())
-                : Collections.singletonList(target.phiTerm());
+    private static List<String> fatalRests(String fatalTerm,
+                                           List<DecisionRow> decisions,
+                                           long cutoff) {
+        String phi = fatalTerm.trim();
+        return "true".equals(phi) || "false".equals(phi)
+                ? Arms.pathCondition(decisions, cutoff)
+                : Collections.singletonList(fatalTerm);
     }
 
     /**

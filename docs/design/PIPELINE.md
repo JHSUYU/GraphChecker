@@ -1008,9 +1008,11 @@ replace a slot (§7.1) give no arms.
 
 **Admission** (`admit`, `settled`): one path per session whose target row at the anchor reached it
 (beside one, a target row that did not reach it is a DIAGNOSTIC gap); where none reached it, one per
-session that ran the occurrence and left the way to the throw at a guard, its fatal arm the constant
-healthy decision (`false`, the guard named in `concrete[]` as WAY), so such a corpus closes UNSAT
-(hdfs-adhoc-07, 48); the seed always, a focused session only when all its own verdicts are
+session that ran the occurrence and left the way to the throw at a guard (`Composer#wayGuard`, the
+last decision at a target site's path site), its prefix the decisions before that guard: at a
+SYMBOLIC guard its fatal arm is the guard's other arm, the way to the throw (a witness turns it,
+CONFIRM judges the rest), at a concrete one the constant healthy decision (`false`), the guard named
+in `concrete[]` as WAY with what its term rests on (hdfs-adhoc-07, 48); the seed always, a focused session only when all its own verdicts are
 `ADMITTED`; an obligation its manifest names with no verdict is BLOCKING. No target row at all --
 the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING
 `ADMISSION_GAP` naming the first refusal.

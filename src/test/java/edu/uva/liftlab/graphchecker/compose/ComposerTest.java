@@ -1604,6 +1604,54 @@ public class ComposerTest {
                         + "decided__0__\\w+\\) decided__0__\\w+ "
                         + "decided__0__\\w+\\) false\\).*"));
 
+        // LEFT AT A SYMBOLIC GUARD.  The same path, left at a guard on the
+        // way to the throw whose term names the marker: its fatal arm is
+        // that guard's other arm, so the formula is satisfiable where the
+        // marker turns it -- a witness CONFIRM judges -- and the WAY entry
+        // names what the guard rests on; at a concrete guard, the constant.
+        for (boolean symbolic : new boolean[]{true, false}) {
+            Path way = folder.newFolder("way-" + symbolic).toPath();
+            Session at = new Session(way, "s0", false);
+            at.marker("false");
+            at.decision(ANCHOR, "way#u3", false, symbolic ? MARKER
+                    : "(< 3 2)");
+            at.target("", false, false);
+            at.write();
+            Path map = way.resolve(StaticScopeMap.FILE);
+            JsonObject site = new JsonObject();
+            site.addProperty("schemaVersion", 1);
+            site.addProperty("kind", StaticScopeMap.SITE_KIND);
+            site.addProperty("role", StaticScopeMap.TARGET_SITE);
+            site.addProperty("regionId", ANCHOR.regionId());
+            site.addProperty("siteId", "Throw#u30");
+            JsonArray guards = new JsonArray();
+            guards.add("way#u3");
+            site.add("guards", guards);
+            Files.write(map, Collections.singletonList(site.toString()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            Composer.Composition atWay = compose(way, ANCHOR, 4,
+                    StaticScopeMap.read(map));
+            ClaimPolicy.Decision decided = ClaimPolicy.decide(atWay,
+                    solver());
+            if (symbolic) {
+                assertEquals("the marker turns the guard: "
+                                + decided.claim().gaps(),
+                        ClaimKind.MARKER_FLIPPED, decided.claim().kind());
+            } else {
+                assertEquals("the constant: " + decided.claim().gaps(),
+                        "unsat", decided.formula().status());
+            }
+            List<String> ways = new ArrayList<String>();
+            for (Composer.Concrete row : atWay.concrete()) {
+                if ("WAY".equals(row.kind)) {
+                    ways.add(row.subject + " " + row.movesWith);
+                }
+            }
+            assertEquals(Collections.singletonList("way#u3#1 "
+                    + (symbolic ? Collections.singletonList(MARKER)
+                    : Collections.emptyList())), ways);
+        }
+
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its
         // path is not a disjunct -- and where the WAVE's aggregate copy
