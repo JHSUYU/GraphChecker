@@ -33,7 +33,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -57,8 +56,10 @@ public final class CausynthTraceRecorder {
     private static final AtomicBoolean INITIALIZED = new AtomicBoolean();
     private static final AtomicLong EVENT_COUNTER = new AtomicLong();
     /** Exact process-local object tokens; identity hash collisions are unsafe. */
-    private static final IdentityHashMap<Object, Integer> OBJECT_IDS =
-            new IdentityHashMap<>();
+    /** Each observed object's id, held weakly: a collected object is never
+     *  observed again, and its id is never reused. */
+    private static final WeakIdentityMap<Integer> OBJECT_IDS =
+            new WeakIdentityMap<>();
     private static int nextObjectId = 1;
     private static final ThreadLocal<Deque<ActiveCall>> ACTIVE_CALLS =
             ThreadLocal.withInitial(ArrayDeque::new);

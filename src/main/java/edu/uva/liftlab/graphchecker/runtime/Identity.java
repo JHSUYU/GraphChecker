@@ -9,9 +9,6 @@ import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
-import java.lang.ref.Reference;
-import java.lang.ref.ReferenceQueue;
-import java.lang.ref.WeakReference;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -20,7 +17,6 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -432,10 +428,11 @@ public final class Identity {
      * The frames filed at a start site, by the object that carries the work.
      * A start is an event of the STARTER; it is filed here and taken by the
      * work when it runs, since a thread inherits its creator's state at
-     * construction, before the start.
+     * construction, before the start.  By identity, because two equal tasks
+     * are two submissions; weakly, so an unrun submission is collected.
      */
-    private static final Map<Carrier, Start> STARTS =
-            new ConcurrentHashMap<Carrier, Start>();
+    private static final WeakIdentityMap<Start> STARTS =
+            new WeakIdentityMap<Start>();
 
     /**
      * One filed start: its frames and its starter.  A thread whose frames
@@ -537,35 +534,6 @@ public final class Identity {
         }
     }
 
-    private static final ReferenceQueue<Object> COLLECTED =
-            new ReferenceQueue<Object>();
-
-    /**
-     * One pending start's carrier: weak, so an unrun submission is
-     * collected; by identity, because two equal tasks are two submissions.
-     */
-    private static final class Carrier extends WeakReference<Object> {
-        private final int identity;
-
-        private Carrier(Object value, ReferenceQueue<Object> queue) {
-            super(value, queue);
-            this.identity = System.identityHashCode(value);
-        }
-
-        @Override
-        public int hashCode() {
-            return identity;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) return true;
-            if (!(other instanceof Carrier)) return false;
-            Object held = get();
-            return held != null && held == ((Carrier) other).get();
-        }
-    }
-
     /**
      * This thread's state, having claimed the start filed for the THREAD
      * once.
@@ -588,7 +556,7 @@ public final class Identity {
 
     private static void adopt(State state, Object carrier) {
         if (carrier == null || STARTS.isEmpty()) return;
-        Start start = STARTS.remove(new Carrier(carrier, null));
+        Start start = STARTS.remove(carrier);
         if (start == null) return;
         // The thread a start created claims it itself, standing on the
         // frames it inherited; a task is claimed on a pool's thread.
@@ -634,10 +602,9 @@ public final class Identity {
     public static void startWork(String startSiteId, Object carrier) {
         String site = JvmNames.stable(Text.safe(startSiteId));
         if (site.isEmpty() || carrier == null) return;
-        sweep();
         if (!Lineage.named()) {
             // Never in place of a named start of the same carrier.
-            STARTS.putIfAbsent(new Carrier(carrier, COLLECTED), Start.UNNAMED);
+            STARTS.putIfAbsent(carrier, Start.UNNAMED);
             return;
         }
         State state = state();
@@ -648,8 +615,7 @@ public final class Identity {
         // The start's scope travels with the work
         // (RuntimeTraceContext#claimCarried takes it back).
         RuntimeTraceContext.captureAsync(carrier);
-        STARTS.put(new Carrier(carrier, COLLECTED),
-                new Start(frames, Attribution.capture(),
+        STARTS.put(carrier, new Start(frames, Attribution.capture(),
                         RuntimeTraceContext.nodeHere() + "|"
                                 + contextHere().render() + "|"
                                 + ExecutionIndex.of(frames).render(),
@@ -785,14 +751,6 @@ public final class Identity {
         // A task claimed here takes the place of a finished unnamed one.
         state.endUnnamedWork();
         if (!STARTS.isEmpty()) adopt(state, carrier);
-    }
-
-    /** Drops the entries of carriers nothing runs any more. */
-    private static void sweep() {
-        for (Reference<?> dead = COLLECTED.poll(); dead != null;
-                dead = COLLECTED.poll()) {
-            STARTS.remove(dead);
-        }
     }
 
     /**

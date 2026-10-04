@@ -232,7 +232,11 @@ The system's test adapter registers nodes through `MessageDoors.registerNode` (a
 the objects the node runs its work through), `registerSource`, `registerSourceAlias` and
 `restartSource` (HDFS `CausynthCluster`, Solr `CausynthSolrCluster`, ZooKeeper `CausynthZkCluster`,
 in the trees). Work on no registered node is attributed to `workload/unregistered`
-(`RuntimeRegionPlanner.UNREGISTERED_SOURCE`).
+(`RuntimeRegionPlanner.UNREGISTERED_SOURCE`). The runtime's identity tables -- the registered
+sources and carried scopes (`RuntimeTraceContext`), the pending starts (`Identity`), the recorder's
+object ids -- hold their objects weakly (`runtime/WeakIdentityMap`): a node a test shut down is
+collected, and nothing collected is asked about again (hdfs ad-hoc `TestSnapshot` builds 36
+clusters one after another; held strongly, they filled the recording's heap).
 
 PLAN refuses what the address cannot tell apart: activations of one region sharing one address are
 `OCCURRENCE_ADDRESS_SHARED` (BLOCKING when the published closure retains that occurrence, else
