@@ -671,7 +671,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   exploration keeps its share in flight: those slots over the capped explorations running now
   (their entries in `$CAUSYNTH_HOST_LEDGER/explorations/`), at least one, read again at every start
   (`campaign_stream_has_slot`). Ten exploring cases keep 3 each; one left alone keeps all 30.
-  A sweep's head is admitted (`fanout.sh` `NEED_MB`) for the room it reserves on its host, what
+  A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host, what
   its planner or composer starts at (`tools/lib/heads.sh` `case_head_reserve_mb`, 8 GB), not
   its engine heap: a40's Solr heads asked for 16 GB and waited while one case's 27-32 replays
   filled the lifts.

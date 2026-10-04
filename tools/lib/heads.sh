@@ -23,7 +23,9 @@
 #       that heap (run_engine.sh campaign_head_need_mb: what its planner or
 #       composer starts at): every other step it runs is charged where it is
 #       placed, so this is what a sweep's head is admitted for (fanout.sh
-#       NEED_MB, tools/adhoc/sweep.sh).
+#       ADMIT_MB, tools/adhoc/sweep.sh) -- admitted, not charged for life:
+#       its campaign reserves the room itself (run_engine.sh
+#       campaign_head_reserve).
 #
 #   heads_choose <host>:<room_mb>...  <"<need_mb> <case-id>" lines
 #       prints "<case-id> <host>", one line per case, in launch order: the

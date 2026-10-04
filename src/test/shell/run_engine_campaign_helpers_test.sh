@@ -3930,6 +3930,19 @@ grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
   || fail "a returned job is still charged: \
 $(live_charges "${fanout_dir}/ledger")"
 
+# FANOUT-2: an ADMIT_MB job starts only where the ledger has its room and
+# holds no charge while it runs (a campaign head reserves its own room).
+admit_dir="${test_tmp}/fanout-admit"
+mkdir -p "${admit_dir}/logs"
+printf '%s\n' "ADMIT_MB=1 find ${admit_dir}/ledger -path '*/charges/*' -type f | wc -l >${admit_dir}/0.out" \
+  >"${admit_dir}/jobs"
+LIFTS=localhost CAUSYNTH_HOST_LEDGER="${admit_dir}/ledger" \
+  bash "${repo}/tools/adhoc/fanout.sh" "${admit_dir}/jobs" \
+  "${admit_dir}/logs" >"${admit_dir}/fanout.out" 2>&1 \
+  || fail "fanout failed an ADMIT_MB job: $(cat "${admit_dir}/fanout.out")"
+[[ "$(tr -d ' ' <"${admit_dir}/0.out")" == 0 ]] \
+  || fail "an ADMIT_MB job held a charge while it ran: $(cat "${admit_dir}/0.out")"
+
 # HEADS-1: a round's heads are chosen at launch from the hosts' room
 # (tools/rounds/launch-round.sh, tools/lib/heads.sh heads_choose): the
 # heaviest case first, each to the host with the most room among those that
@@ -4025,7 +4038,7 @@ sweep_run() {
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
 [[ "$(cat "${sweep_dir}/launched")" == "c-one 3 SEED" ]] \
-  && grep -q "^NEED_MB=1 PRUNE=0 .* CAUSYNTH_STREAM_MAX_IN_FLIGHT=3 .*\
+  && grep -q "^ADMIT_MB=1 PRUNE=0 .* CAUSYNTH_STREAM_MAX_IN_FLIGHT=3 .*\
  CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
   || fail "the sweep's case did not launch with its head's room and the \
 lifts' slots: $(cat "${sweep_dir}/launched" \

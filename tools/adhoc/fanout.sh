@@ -9,7 +9,13 @@
 # (run_engine.sh campaign_host_try_start, CAUSYNTH_HOST_LEDGER) has room for
 # its need, and it is charged there until it returns (a fanout ended before
 # leaves its charges to lapse with their lease), so no lift is ever run out
-# of memory by the jobs and the campaigns together.
+# of memory by the jobs and the campaigns together.  A line may instead
+# start with "ADMIT_MB=<n> ": the job starts only where the ledger has room
+# for n, and holds no charge once it is launched -- a campaign head, whose
+# run_engine.sh reserves its own room (campaign_head_reserve) and charges
+# each step where it places it; a lifelong charge as well counted the same
+# room twice and starved the head's own steps (round HG2: two 8 GB head
+# charges per lift left 5.7 GB for 6-11 GB seed replays).
 # A job on this machine runs here, with no ssh.
 #
 # Job n writes <log-dir>/<n>.log and, once it returned, <log-dir>/<n>.exit
@@ -37,7 +43,8 @@ reap() {
     if ! kill -0 "${pid}" 2>/dev/null; then
       wait "${pid}"; status=$?
       printf '%s\n' "${status}" >"${log_dir}/${pid_job[$pid]}.exit"
-      campaign_host_release "${pid_host[$pid]}" "${pid_charge[$pid]}"
+      [[ -z "${pid_charge[$pid]}" ]] \
+        || campaign_host_release "${pid_host[$pid]}" "${pid_charge[$pid]}"
       echo "${pid_job[$pid]} ${pid_host[$pid]} exit=${status} $(( $(date +%s) - started[$pid] ))s"
       running[${pid_host[$pid]}]=$(( running[${pid_host[$pid]}] - 1 ))
       unset "pid_host[$pid]" "pid_job[$pid]" "pid_charge[$pid]" "started[$pid]"
@@ -59,11 +66,18 @@ while (( next < ${#commands[@]} )) || (( ${#pid_host[@]} > 0 )); do
     while (( next < ${#commands[@]} && running[$host] < slots )); do
       command=${commands[$next]}
       need=${JOB_MEMORY_MB:-4000}
-      if [[ "${command}" =~ ^NEED_MB=([0-9]+)[[:space:]]+(.*)$ ]]; then
-        need=${BASH_REMATCH[1]}
-        command=${BASH_REMATCH[2]}
+      admit=0
+      if [[ "${command}" =~ ^(NEED|ADMIT)_MB=([0-9]+)[[:space:]]+(.*)$ ]]; then
+        [[ "${BASH_REMATCH[1]}" == NEED ]] || admit=1
+        need=${BASH_REMATCH[2]}
+        command=${BASH_REMATCH[3]}
       fi
       campaign_host_try_start "${host}" "${need}" || break
+      charge=${campaign_host_charge_id}
+      if (( admit )); then
+        campaign_host_release "${host}" "${charge}"
+        charge=""
+      fi
       if campaign_host_is_local "${host}"; then
         (cd "${checkout}" && exec bash -c "${command}") \
           > "${log_dir}/${next}.log" 2>&1 < /dev/null &
@@ -72,7 +86,7 @@ while (( next < ${#commands[@]} )) || (( ${#pid_host[@]} > 0 )); do
           > "${log_dir}/${next}.log" 2>&1 < /dev/null &
       fi
       pid_host[$!]=${host}; pid_job[$!]=${next}
-      pid_charge[$!]=${campaign_host_charge_id}; started[$!]=$(date +%s)
+      pid_charge[$!]=${charge}; started[$!]=$(date +%s)
       running[$host]=$(( running[$host] + 1 ))
       next=$(( next + 1 ))
       skip_returned
