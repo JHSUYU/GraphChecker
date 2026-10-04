@@ -12,12 +12,31 @@ package edu.uva.liftlab.graphchecker.runtime;
  * frame iterations ({@link Identity}), branch ordinals.  Counts before the
  * window are set-up history neither run controls.  A count files the index
  * it was taken in and is dropped when it counts in a later one.</p>
+ *
+ * <p>Where the workload opens it is its system's adapter's: once its cluster
+ * is up, or -- for a case that declares it ({@link #atStartup}), whose fatal
+ * value is set while the cluster starts -- before the cluster starts.</p>
  */
 final class RecordingWindow {
+    /**
+     * The JVM property a case's {@code recording_window} sets on every
+     * workload JVM of its run (experiments/lib/execute.sh).
+     */
+    static final String DECLARED = "causynth.recording.window";
     private static volatile int index;
     private static volatile boolean closed;
 
     private RecordingWindow() {
+    }
+
+    /**
+     * Whether the case declares its window open before its cluster starts
+     * ({@code recording_window=startup}): an opt-in for a bug whose fatal
+     * value is set during startup (HBase's master activation time), which a
+     * window opened once the cluster is up never records.
+     */
+    static boolean atStartup() {
+        return "startup".equals(System.getProperty(DECLARED));
     }
 
     /** Which window this JVM is in: 0 until the workload opens one. */

@@ -610,6 +610,46 @@ public final class MessageDoors {
         CausynthTraceRecorder.startRecording();
     }
 
+    /**
+     * Whether the case declares its window open before its cluster starts
+     * (case key {@code recording_window=startup}), where a system's cluster
+     * adapter then opens it; otherwise it opens once the cluster is up.
+     */
+    public static boolean startupWindow() {
+        return RecordingWindow.atStartup();
+    }
+
+    /**
+     * Opens the construction of one node, under the name the system's
+     * adapter registers it by once it is built ({@link #registerNode}, the
+     * same kind, role and id): what it starts or creates until {@link
+     * #endNodeStartup} belongs to that node, though the test's request
+     * stands where it runs (IDENTITY.md §5).  Attribution only: no event, no
+     * lineage hop, and the calling thread's own work keeps its node.  A
+     * system's cluster adapter brackets each node it constructs this way,
+     * and a registered node's start, a restart's included, by {@link
+     * #beginNodeStartup(Object)}.
+     *
+     * @return the token {@link #endNodeStartup} takes
+     */
+    public static long beginNodeStartup(String kind, String role,
+                                        String sourceId) {
+        return CausynthTraceRecorder.beginNodeStartup(kind, role, sourceId);
+    }
+
+    /**
+     * Opens one startup of a node already registered -- its threads' start
+     * -- or of none when it is not: what it starts belongs to the node.
+     */
+    public static long beginNodeStartup(Object node) {
+        return CausynthTraceRecorder.beginNodeStartup(node);
+    }
+
+    /** Ends the startup {@code token} opened. */
+    public static void endNodeStartup(long token) {
+        CausynthTraceRecorder.endNodeStartup(token);
+    }
+
     /** Closes it: the workload's test is over, its teardown unrecorded. */
     public static void stopRecording() {
         CausynthTraceRecorder.stopRecording();

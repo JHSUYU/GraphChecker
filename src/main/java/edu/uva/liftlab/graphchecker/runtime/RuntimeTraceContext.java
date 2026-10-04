@@ -208,12 +208,13 @@ final class RuntimeTraceContext {
         State state = CURRENT.get();
         View view = state.view();
         // Lineage and flow travel with the work, not the thread.  Only the
-        // starter's EXPLICIT node is carried: a weaker one made explicit here
-        // would outrank the work's own frames (Attribution, rule 3).
+        // starter's EXPLICIT node is carried, or the node a startup it stands
+        // in builds: a weaker one made explicit here would outrank the work's
+        // own frames (Attribution, rule 3).
         Lineage.Carried lineage = Lineage.capture();
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(
-                    explicitSource(), view.flow, lineage));
+                    carriedIn(state), view.flow, lineage));
         }
     }
 
@@ -287,11 +288,63 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The explicit scope this thread's CREATOR stood in when it constructed
-     * it, or null ({@link Attribution}, rule 3).
+     * The node work started or created here carries as its starter's
+     * ({@link Attribution}, rules 3 and 4): the node of the innermost node
+     * startup ({@link #beginNodeStartup}) or explicit scope, else null.
+     */
+    private static SourceRef carriedIn(State state) {
+        for (ScopeFrame scope : state.scopes) {
+            if (scope.startup != null) return scope.startup;
+            if (scope.opened != null) return scope.opened;
+        }
+        return null;
+    }
+
+    /** {@link #carriedIn} for the running thread. */
+    static SourceRef carriedNode() {
+        return carriedIn(CURRENT.get());
+    }
+
+    /**
+     * The node this thread's CREATOR carried when it constructed it, or null
+     * ({@link Attribution}, rule 3; {@link #carriedIn}).
      */
     static SourceRef inheritedSource() {
         return CURRENT.get().inheritedSource;
+    }
+
+    /**
+     * Opens one startup of {@code node} on this thread -- its construction,
+     * or its threads' start: attribution only (no lineage hop, no request
+     * flow, no event, and this thread's own work keeps its node), so what
+     * the startup starts, and every thread it creates, is the node's
+     * ({@link #carriedIn}).  A node's threads the test's thread starts under
+     * its request carried the test's client otherwise (rule 1 outranks a
+     * frame), and the threads its constructor creates inherited it (rule 3).
+     * The node is named from the start: named only once constructed and
+     * registered, what its threads did before raced its registration (HBA2:
+     * ZooKeeper callbacks a region server's construction set up were the
+     * unregistered workload's in the recording and the region server's in
+     * the replay, and the seed replay stalled on them).
+     *
+     * @param node the node, or null: then no startup opens
+     * @return the token that ends the startup, 0 when none opened
+     */
+    static long beginNodeStartup(SourceRef node) {
+        if (node == null) return 0L;
+        State state = CURRENT.get();
+        long token = nextId();
+        ScopeFrame scope = new ScopeFrame(token, state);
+        synchronized (LOCK) {
+            scope.startup = canonicalSourceLocked(node);
+        }
+        state.scopes.push(scope);
+        return token;
+    }
+
+    /** Ends the startup {@code token} opened. */
+    static void endNodeStartup(long token) {
+        if (token > 0L) restoreScope(token);
     }
 
     /** The first of these objects that is registered, by identity. */
@@ -475,6 +528,7 @@ final class RuntimeTraceContext {
         // daemon's next turn.
         State state = CURRENT.get();
         for (ScopeFrame open : state.scopes) {
+            if (open.startup != null) continue;
             if (!open.turn) return 0L;
         }
         SourceRef source = activationSource(null);
@@ -907,8 +961,8 @@ final class RuntimeTraceContext {
         State child = initialState();
         if (parent == null) return child;
         // Read off parent state: no thread-local during construction.
-        SourceRef creatorExplicit = explicitIn(parent);
-        child.inheritedSource = creatorExplicit != null ? creatorExplicit
+        SourceRef creator = carriedIn(parent);
+        child.inheritedSource = creator != null ? creator
                 : parent.inheritedSource;
         // Unresolved: resolving would touch the child's thread-locals.
         Frame frame = parent.frames.peek();
@@ -969,7 +1023,7 @@ final class RuntimeTraceContext {
         private Flow flow = Flow.NONE;
         private final Deque<Frame> frames = new ArrayDeque<>();
         private final Deque<ScopeFrame> scopes = new ArrayDeque<>();
-        /** The explicit node this thread's creator stood in, or null. */
+        /** The node this thread's creator carried, or null. */
         private SourceRef inheritedSource;
 
         private State(long laneId) {
@@ -1061,6 +1115,8 @@ final class RuntimeTraceContext {
         private long lineageToken;
         /** The node this scope names EXPLICITLY, or null ({@link Attribution}, rule 1). */
         private SourceRef opened;
+        /** The node of the startup this scope is, or null ({@link #beginNodeStartup}). */
+        private SourceRef startup;
         /** Whether this scope is a service-loop turn ({@link #beginWake}). */
         private boolean turn;
         /** The tick's site when its WAKE was written, else null. */

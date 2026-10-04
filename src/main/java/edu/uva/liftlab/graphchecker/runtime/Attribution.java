@@ -6,7 +6,7 @@ import java.util.List;
 
 /**
  * THE attribution rule: which node the running thread's work belongs to,
- * resolved lazily at the event that needs it, by three rules in order:
+ * resolved lazily at the event that needs it, by four rules in order:
  *
  * <ol>
  *   <li>the innermost EXPLICIT scope on this thread
@@ -14,12 +14,17 @@ import java.util.List;
  *       nothing it names outlives it;</li>
  *   <li>else the innermost frame whose RECEIVER is registered
  *       ({@link Identity#receivers}), whatever pool thread runs it;</li>
+ *   <li>else, on a thread that claimed no start, the node its creator
+ *       carried when it constructed it
+ *       ({@link RuntimeTraceContext#inheritedSource});</li>
  *   <li>else the node of whatever STARTED this work ({@link Reference}),
  *       resolved now, so a registration made after the start still
  *       counts.</li>
  * </ol>
  *
- * <p>All three failing answers {@code null} (LINEAGE_LOST), never a guess.</p>
+ * <p>What a node's startup starts or creates carries that node in rules 3
+ * and 4 ({@link RuntimeTraceContext#beginNodeStartup}).  All four failing
+ * answers {@code null} (LINEAGE_LOST), never a guess.</p>
  */
 final class Attribution {
     /** How far a chain of starters is followed before it is given up. */
@@ -76,7 +81,7 @@ final class Attribution {
 
     /** The reference a work started HERE carries. */
     static Reference capture() {
-        return new Reference(RuntimeTraceContext.explicitSource(),
+        return new Reference(RuntimeTraceContext.carriedNode(),
                 Identity.receivers(), Identity.starter());
     }
 

@@ -296,6 +296,35 @@ public final class CausynthMessagePropagation {
   }
 
   /**
+   * Whether the case declares its window open before its cluster starts
+   * ({@code recording_window=startup}): the cluster adapter then opens it
+   * there, else once the cluster is up.
+   */
+  public static boolean startupWindow() {
+    return MessageDoors.startupWindow();
+  }
+
+  /**
+   * Opens the construction of one node under the name it is then registered
+   * by: what the construction starts or creates belongs to that node, though
+   * the test's request stands where it runs (MessageDoors#beginNodeStartup).
+   */
+  public static long beginNodeStartup(String kind, String role,
+      String sourceId) {
+    return MessageDoors.beginNodeStartup(kind, role, sourceId);
+  }
+
+  /** Opens one startup of a registered node: a restart, or its start. */
+  public static long beginNodeStartup(Object node) {
+    return MessageDoors.beginNodeStartup(node);
+  }
+
+  /** Ends the startup {@code token} opened. */
+  public static void endNodeStartup(long token) {
+    MessageDoors.endNodeStartup(token);
+  }
+
+  /**
    * Whether this run is a concolic replay: a world the engine chose, where a
    * workload's check of the RECORDING's world (the key a node must still
    * retain, the gap that must still be open) is not the workload's to make.

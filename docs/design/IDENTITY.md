@@ -17,7 +17,7 @@ id = sha16(node/regionId/context/index-hash)
 ```
 
 - **node** (`contract/NodeId`): the logical component the work belongs to (§5) and its epoch; the
-  epoch advances only when the workload calls `restartSource`.
+  epoch advances only when the workload or its cluster adapter calls `restartSource` (a restart, §5).
 - **r**: a `REGION.<hash>` skeleton id (`causynth/SymbolicRegionPlanner`, a region rooted at an
   execution-context entry: `MAIN_ENTRY`, `THREAD_ENTRY`, `TASK_ENTRY`, `COMMUNICATION_ENTRY`,
   `STATE_WRITER_ENTRY`, `FAILURE_TARGET_ENTRY`, `EXPLICIT_FAULT_ENTRY` where neither an execution
@@ -146,7 +146,13 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
 - **Window rule** (`runtime/RecordingWindow`): the workload opens the window
   (`MessageDoors.startRecording`) and may close it (`stopRecording`); every count restarts at the
   window, and a frame entered before it stands at `k = 0` in any address. Neither the trace nor the
-  schedule states anything before the window opens.
+  schedule states anything before the window opens. The system's cluster adapter opens it once the
+  cluster is up, or, for a case that declares `recording_window=startup` (an opt-in, owner-approved
+  for bugs whose guard runs or whose fatal value is set while the cluster starts: a DataNode's
+  handshake, a NameNode's format), before the cluster starts (`MessageDoors.startupWindow`, the JVM
+  property `causynth.recording.window` every workload JVM of the run gets from
+  `experiments/lib/execute.sh`); its nodes are then constructed and started inside the window, under
+  the test's request (§5).
 - **Branch ordinals**: the 1-based count of decisions at one site in one occurrence, folded entries
   included (`#nextBranchOrdinal`), the key a flip is addressed by.
 
@@ -221,9 +227,9 @@ cross-run object identity.
 `runtime/Attribution#resolve`, four rules in order: the innermost explicit scope on the thread
 (a request, a registered inbound owner, a tick owner); else the innermost frame whose receiver is a
 registered object, the receiver of the thread's last work entry (`Identity#claimStart`) counting
-as its outermost; else, on a thread that claimed no start, the explicit scope its creator stood in
-when it constructed it (`RuntimeTraceContext#inheritedSource`); else the node of whatever started
-this work (followed through starters, at most 32 deep). All four failing is `null`, never a guess:
+as its outermost; else, on a thread that claimed no start, the node its creator carried when it
+constructed it (`RuntimeTraceContext#inheritedSource`: its explicit scope's, or a node startup's,
+below); else the node of whatever started this work (followed through starters, at most 32 deep). All four failing is `null`, never a guess:
 the activation is then attributed to `workload/unregistered`
 (`RuntimeTraceContext#activationSource`), so every activation has an address. An activation under
 a `Lost` context is a `LINEAGE_LOST` DIAGNOSTIC row (`runtime/RowRuntime#beginActivation`).
@@ -237,6 +243,25 @@ sources and carried scopes (`RuntimeTraceContext`), the pending starts (`Identit
 object ids -- hold their objects weakly (`runtime/WeakIdentityMap`): a node a test shut down is
 collected, and nothing collected is asked about again (hdfs ad-hoc `TestSnapshot` builds 36
 clusters one after another; held strongly, they filled the recording's heap).
+
+**Node startups.** A node constructed or restarted inside the window (a startup window, §3, or a
+cluster the test builds or restarts once its window is open) runs under the test's request: rule 1
+would name the test's client for every thread the test's thread starts for it, and rule 3 for every
+thread its constructor creates. A system's cluster adapter brackets each node's construction in
+`MessageDoors.beginNodeStartup(kind, role, sourceId)` / `endNodeStartup(token)`, under the name it
+registers the node by once built, and a registered node's start in `beginNodeStartup(node)`: a
+restart builds the node anew under its name at its next epoch (`restartSource` first; HDFS
+`CausynthCluster`: every NameNode, DataNode and JournalNode an automatic `MiniDFSCluster` or
+`MiniJournalCluster` builds or restarts). Attribution only -- no event, no lineage hop, no flow, and
+the thread running the startup keeps its own node, so what the test's thread itself runs inside a
+construction (a NameNode's format and fsimage load) stays the test's: work started or created inside
+carries the startup's node in place of its starter's explicit node (`RuntimeTraceContext#carriedIn`,
+read by `captureAsync`, `Attribution#capture` and a new thread's inherited state). The node is named
+from the startup's first moment: bound only once built and registered, what its constructor's
+threads did before raced the registration (HBase's HBA2: ZooKeeper callbacks a region server's
+construction set up were the unregistered workload's in the recording and the region server's in the
+replay, and its seed replay stalled; HDFS round HS1: a DataNode started inside the window ran its
+storage checks as the test's client).
 
 PLAN refuses what the address cannot tell apart: activations of one region sharing one address are
 `OCCURRENCE_ADDRESS_SHARED` (BLOCKING when the published closure retains that occurrence, else
