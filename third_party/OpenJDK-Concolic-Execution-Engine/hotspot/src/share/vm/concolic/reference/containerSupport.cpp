@@ -428,7 +428,7 @@ bool ContainerSupport::measures(Expression *length, Expression *state) {
   if (length == NULL || state == NULL) return false;
   ContainerExpression *size = length->as_container_expression();
   return size != NULL && size->get_operation() == "SIZE"
-      && size->get_receiver() == state;
+      && size->get_receiver() == ContainerExpression::size_source(state);
 }
 
 std::string ContainerSupport::measurement(Expression *length,
