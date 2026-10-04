@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -293,8 +294,12 @@ final class ActiveRegion {
     /**
      * The declared mint site one hook execution stands at, or null.  The
      * catalog lists SITES, not a budget: any read at a known site binds to
-     * its symbol.  An unnamed site is a plan/instrumentation disagreement
-     * and a gap.
+     * its symbol.  A configuration read at a site this occurrence's catalog
+     * lacks (its recording never read the key there; a flipped path reaches
+     * new reads) holds the world's value, which {@code RootMint#configuration}
+     * wrote before the mint, and mints nothing: named, and stated as a
+     * concrete reading by the caller.  A tree hook's plant is per site, so
+     * its unnamed site is a plan/instrumentation disagreement, BLOCKING.
      */
     synchronized RootMint.SourceSiteEntry observeConfiguredSourceEntry(
             String sourceId, String runtimeFieldSignature) {
@@ -311,8 +316,10 @@ final class ActiveRegion {
                 declaration.add(candidate);
             }
         }
-        if (declaration.isEmpty() && !ConcolicTaskPlan.configuration()
-                .declaresSource(safe(sourceId))) {
+        ConfiguredSourcePhaseContract.Occurrence planned =
+                declaration.isEmpty() ? ConcolicTaskPlan.configuration()
+                        .declaredPhase(safe(sourceId)) : null;
+        if (declaration.isEmpty() && planned == null) {
             // A tree hook every NameNode runs (a block key's serial, a
             // configuration a scaffold hooks) in a case whose plan declares
             // its source nowhere: no root of this case, so nothing to mint
@@ -330,6 +337,19 @@ final class ActiveRegion {
                     "the PUBLISH hook for " + safe(sourceId)
                             + " ran under no active call site, so the"
                             + " mint is at no declared phase");
+            return null;
+        }
+        if (declaration.isEmpty()
+                && planned.category() == RootCategory.CONFIG) {
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    mintAddress(), "the configuration read of "
+                            + safe(sourceId) + " at " + site + " is outside"
+                            + " this occurrence's frozen phase catalog (its"
+                            + " recording never read the key there): the"
+                            + " field holds the world's value, written at"
+                            + " every read, but no symbol is minted, so this"
+                            + " occurrence's decisions on it are concrete;"
+                            + " the read is stated as a concrete reading");
             return null;
         }
         if (declaration.isEmpty()) {
