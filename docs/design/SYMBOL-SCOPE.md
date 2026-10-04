@@ -494,7 +494,10 @@ reaches, to a fixed point:
   under another request or on another node -- is not the question's: no rule below plans it, so
   nothing only it would demand is planned either.
 - **The demand walk** (`DemandWalk`), backwards over the candidate graph, one demand per (occurrence,
-  cell), from the operands of the fatal guards the question's target occurrences decided. Inside
+  cell), from the operands of the fatal guards the question's target occurrences decided; a demand
+  is queued once and walked once, and a store site's writers and a decider's verdict are read once
+  (a cell N occurrences read and M store queued the writers' guards N×M times: hdfs ad-hoc
+  `TestFileTruncate`, 0.8 M duplicate demands of 2-4 KB each out of an 8 GB heap). Inside
   an occurrence it follows the edges of the methods its regions hold (its own and those folded into
   it) that ran in it (`observedMethods`): an edge of a method the occurrence never entered carried
   nothing there (ad-hoc `ReindexCollectionCmd-369`, Solr: along every method of their regions the

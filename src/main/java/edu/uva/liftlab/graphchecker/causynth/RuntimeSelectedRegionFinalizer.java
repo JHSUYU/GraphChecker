@@ -24,11 +24,13 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.booleanValue;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
@@ -841,14 +843,14 @@ public final class RuntimeSelectedRegionFinalizer {
                 recordedBeside(instances.keySet(), question));
         DemandWalk walk = new DemandWalk(program, demands, scopeMap,
                 cutPorts, otherTargets);
-        List<String> seeds = new ArrayList<>();
+        List<Demand> seeds = new ArrayList<>();
         for (String target : targets) {
             // Stated once here; the plan builder publishes TARGET_REACH for
             // exactly these and does not re-ask the static selection.
             instances.get(target).put(FAILURE_TARGET_OCCURRENCE, true);
             walk.admit(target, TARGET_DEMAND_DEPTH);
             for (String cell : demands.targetSeedCells(instances.get(target))) {
-                seeds.add(cellDemand(target, cell));
+                seeds.add(new Demand(target, cell));
             }
         }
         walk.walk(seeds);
@@ -991,7 +993,7 @@ public final class RuntimeSelectedRegionFinalizer {
         boolean progressed;
         do {
             progressed = false;
-            List<String> seeds = new ArrayList<>();
+            List<Demand> seeds = new ArrayList<>();
             for (Map.Entry<String, List<RootRead>> entry
                     : reading.entrySet()) {
                 String occurrence = entry.getKey();
@@ -1011,7 +1013,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     progressed = true;
                 }
                 for (String cell : through) {
-                    String demand = cellDemand(occurrence, cell);
+                    Demand demand = new Demand(occurrence, cell);
                     if (!walk.visited.contains(demand)) seeds.add(demand);
                 }
             }
@@ -1034,9 +1036,9 @@ public final class RuntimeSelectedRegionFinalizer {
                     }
                     if (through.isEmpty()) continue;
                     crossed.add(key);
-                    walk.crossMessage(occurrence, attach, seeds);
+                    walk.crossMessage(occurrence, attach, seeds::add);
                     for (String cell : through) {
-                        String demand = cellDemand(occurrence, cell);
+                        Demand demand = new Demand(occurrence, cell);
                         if (!walk.visited.contains(demand)) seeds.add(demand);
                     }
                 }
@@ -1155,7 +1157,14 @@ public final class RuntimeSelectedRegionFinalizer {
         private final Set<String> excluded;
         /** Hop count of each admission: the shortest chain that reached it. */
         private final Map<String, Integer> depths = new HashMap<>();
-        private final Set<String> visited = new HashSet<>();
+        /** Every demand ever queued: each is walked once, at its first
+         *  queueing (the queue holds no demand twice). */
+        private final Set<Demand> visited = new HashSet<>();
+        /** (writer, stored cell) pairs whose store guards were demanded. */
+        private final Set<Demand> writersCrossed = new HashSet<>();
+        /** Per store site: its storers and deciders, read once. */
+        private final Map<StaticScopeMap.Site, SiteWriters> siteWriters =
+                new IdentityHashMap<>();
         /** Node -> stored location -> the objects it was demanded on. */
         private final Map<String, Map<String, Demanded>> carriers =
                 new HashMap<>();
@@ -1306,60 +1315,70 @@ public final class RuntimeSelectedRegionFinalizer {
             return ends;
         }
 
-        private void walk(Collection<String> seeds) throws IOException {
+        /**
+         * Walks every demand queued from {@code seeds} on, each once, in the
+         * order it was first queued.  A demand is visited when queued, not
+         * when taken: a cell read by N occurrences and stored by M queued
+         * the M writers' guards N times over (hdfs-adhoc-42, round HS1:
+         * 0.8 M duplicate demands of 2-4 KB each over 124 K distinct ones,
+         * out of an 8 GB heap).
+         */
+        private void walk(Collection<Demand> seeds) throws IOException {
             Map<String, Map<String, Object>> instances = program.activations;
-            Deque<String> work = new ArrayDeque<>(seeds);
+            Deque<Demand> work = new ArrayDeque<>();
+            Consumer<Demand> queue = demand -> {
+                if (visited.add(demand)) work.add(demand);
+            };
+            seeds.forEach(queue);
             while (!work.isEmpty()) {
-                String demand = work.removeFirst();
-                if (!visited.add(demand)) continue;
-                int split = demand.indexOf('\n');
-                String occurrenceId = demand.substring(0, split);
-                String cell = demand.substring(split + 1);
+                Demand demand = work.removeFirst();
+                String occurrenceId = demand.occurrence;
+                String cell = demand.cell;
                 if (wireConsumers.contains(cell)) consumers.add(cell);
-                crossWire(occurrenceId, cell, work);
+                crossWire(occurrenceId, cell, queue);
                 List<StaticScopeMap.Site> writers = writeSites.get(cell);
                 if (writers == null || writers.isEmpty()) {
                     for (String from
                             : demands.incomingCells(occurrenceId, cell)) {
-                        work.add(cellDemand(occurrenceId, from));
+                        queue.accept(new Demand(occurrenceId, from));
                     }
                     continue;
                 }
                 String node = nodes.get(occurrenceId);
+                Map<String, Object> reader = instances.get(occurrenceId);
                 carriers.computeIfAbsent(node, ignored -> new HashMap<>())
                         .computeIfAbsent(cell, ignored -> new Demanded())
-                        .add(objectsOf(instances.get(occurrenceId), cell,
-                                true));
+                        .add(objectsOf(reader, cell, true));
                 for (StaticScopeMap.Site site : writers) {
-                    List<String> storers = demands.storers(site);
-                    Map<String, List<String>> deciders =
-                            demands.deciders(site);
-                    Set<String> candidates = new LinkedHashSet<>(storers);
-                    candidates.addAll(deciders.keySet());
-                    for (String writerOccurrence : candidates) {
-                        Map<String, Object> writer = instances.get(
-                                writerOccurrence);
+                    SiteWriters held = siteWriters.computeIfAbsent(site,
+                            SiteWriters::new);
+                    for (String writerOccurrence : held.candidates) {
                         if (writerOccurrence.equals(occurrenceId)
                                 || excluded.contains(writerOccurrence)
                                 || !node.equals(nodes.get(writerOccurrence))
-                                || holdsOthersOnly(writer, instances.get(
-                                        occurrenceId), cell, site)) {
+                                || holdsOthersOnly(instances.get(
+                                        writerOccurrence), reader, cell,
+                                        site)) {
                             continue;
                         }
-                        if (!storers.contains(writerOccurrence)
-                                && !movable(writerOccurrence,
-                                deciders.get(writerOccurrence))) {
+                        if (!held.storers.contains(writerOccurrence)
+                                && !held.movable(writerOccurrence)) {
                             fixedDeciders.add(writerOccurrence);
                             continue;
                         }
                         reach(writerOccurrence, depth(occurrenceId) + 1,
                                 SHARED_LOCATION_DEMAND_ADMISSION);
-                        // Whether it stores: its guards.  Not a read of the
-                        // cell: its other writers write what this read did
-                        // not read, or were reached from it already.
+                        // Whether it stores: its guards, demanded once per
+                        // writer and cell.  Not a read of the cell: its
+                        // other writers write what this read did not read,
+                        // or were reached from it already.
+                        if (!writersCrossed.add(new Demand(writerOccurrence,
+                                cell))) {
+                            continue;
+                        }
                         for (String guard : demands.guardCells(
                                 writerOccurrence, cell)) {
-                            work.add(cellDemand(writerOccurrence, guard));
+                            queue.accept(new Demand(writerOccurrence, guard));
                         }
                     }
                 }
@@ -1367,8 +1386,34 @@ public final class RuntimeSelectedRegionFinalizer {
                 // occurrence, but not the guard deciding whether the read
                 // runs.
                 for (String guard : demands.guardCells(occurrenceId, cell)) {
-                    work.add(cellDemand(occurrenceId, guard));
+                    queue.accept(new Demand(occurrenceId, guard));
                 }
+            }
+        }
+
+        /** One store site's writer candidates, read once off the index:
+         *  the occurrences that ran its storing method, then those that left
+         *  it at a guard ({@link RegionDemandIndex#deciders}), each
+         *  decider's {@link #movable} verdict asked once. */
+        private final class SiteWriters {
+            private final Set<String> storers;
+            private final Map<String, List<String>> deciders;
+            private final List<String> candidates;
+            private final Map<String, Boolean> movable = new HashMap<>();
+
+            private SiteWriters(StaticScopeMap.Site site) {
+                List<String> stored = demands.storers(site);
+                storers = new HashSet<>(stored);
+                deciders = demands.deciders(site);
+                Set<String> all = new LinkedHashSet<>(stored);
+                all.addAll(deciders.keySet());
+                candidates = new ArrayList<>(all);
+            }
+
+            private boolean movable(String decider) {
+                return movable.computeIfAbsent(decider, ignored ->
+                        DemandWalk.this.movable(decider,
+                                deciders.get(decider)));
             }
         }
 
@@ -1389,10 +1434,22 @@ public final class RuntimeSelectedRegionFinalizer {
                                                String cell,
                                                StaticScopeMap.Site site) {
             boolean mutation = !site.declaredCallee.isEmpty();
-            Set<Integer> wrote = objectsOf(writer, cell, mutation);
-            Set<Integer> read = objectsOf(reader, cell, mutation);
-            return !wrote.isEmpty() && !read.isEmpty()
-                    && Collections.disjoint(wrote, read);
+            Set<Integer> wroteOn = field(writer, FIELD_OWNERS, cell);
+            Set<Integer> readOn = field(reader, FIELD_OWNERS, cell);
+            Set<Integer> wroteHeld = mutation
+                    ? field(writer, FIELD_REFERENTS, cell)
+                    : Collections.<Integer>emptySet();
+            Set<Integer> readHeld = mutation
+                    ? field(reader, FIELD_REFERENTS, cell)
+                    : Collections.<Integer>emptySet();
+            // objectsOf's unions, compared without building them: asked
+            // once per reader and writer of every demanded store.
+            return (!wroteOn.isEmpty() || !wroteHeld.isEmpty())
+                    && (!readOn.isEmpty() || !readHeld.isEmpty())
+                    && Collections.disjoint(wroteOn, readOn)
+                    && Collections.disjoint(wroteOn, readHeld)
+                    && Collections.disjoint(wroteHeld, readOn)
+                    && Collections.disjoint(wroteHeld, readHeld);
         }
 
         /**
@@ -1405,7 +1462,7 @@ public final class RuntimeSelectedRegionFinalizer {
          * after the walk ({@link #stateUnpairedWires}).
          */
         private void crossWire(String occurrence, String cell,
-                               Deque<String> work) throws IOException {
+                               Consumer<Demand> work) throws IOException {
             Set<String> ports = new LinkedHashSet<>();
             for (String regionId : performedRegionIds(
                     program.activations.get(occurrence))) {
@@ -1450,7 +1507,7 @@ public final class RuntimeSelectedRegionFinalizer {
          * cells the export handed on; whether there was one.
          */
         private boolean crossMessage(String occurrence, Attach attach,
-                                     Collection<String> work)
+                                     Consumer<Demand> work)
                 throws IOException {
             boolean paired = false;
             for (String producer : exporters.getOrDefault(wireKey(
@@ -1465,7 +1522,7 @@ public final class RuntimeSelectedRegionFinalizer {
                         WIRE_PRODUCER_ADMISSION);
                 for (String handed : exportCells.getOrDefault(attach.port,
                         Collections.<String>emptySet())) {
-                    work.add(cellDemand(producer, handed));
+                    work.accept(new Demand(producer, handed));
                 }
             }
             return paired;
@@ -1573,9 +1630,32 @@ public final class RuntimeSelectedRegionFinalizer {
         return "";
     }
 
-    /** One demand: the cell, inside the occurrence that reads it. */
-    private static String cellDemand(String occurrenceId, String cell) {
-        return occurrenceId + "\n" + cell;
+    /** One demand: the cell, inside the occurrence that reads it.  Holds
+     *  the activation's own id and the graph's own cell, never a copy: a
+     *  walk holds one per (occurrence, cell) it demanded. */
+    private static final class Demand {
+        private final String occurrence;
+        private final String cell;
+        private final int hash;
+
+        private Demand(String occurrence, String cell) {
+            this.occurrence = occurrence;
+            this.cell = cell;
+            this.hash = 31 * occurrence.hashCode() + cell.hashCode();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (!(other instanceof Demand)) return false;
+            Demand that = (Demand) other;
+            return hash == that.hash && occurrence.equals(that.occurrence)
+                    && cell.equals(that.cell);
+        }
+
+        @Override
+        public int hashCode() {
+            return hash;
+        }
     }
 
     /**
