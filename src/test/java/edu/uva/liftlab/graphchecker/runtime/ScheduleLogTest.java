@@ -231,6 +231,49 @@ public class ScheduleLogTest {
                 scope + " k=0"), sends);
     }
 
+    /**
+     * Threads started through one utility -- each call of it a level of its
+     * own, so both starts are its 0th -- are told apart by the frames they
+     * were made under, which a started thread inherits as its starter's
+     * (IDENTITY §8): hdfs-adhoc-02's DataStreamer and LeaseRenewer, both
+     * {@code Daemon.start}ed after one RPC returned.
+     */
+    @Test
+    public void threadsStartedThroughOneUtilityStateWhereTheyWereMade()
+            throws Exception {
+        written.clear();
+        final String start = "<U: void start()>#u5";
+        List<String> makers = Arrays.asList("<A: void stream()>",
+                "<B: void renew()>");
+        for (String maker : makers) {
+            long made = Identity.enterFrame(maker, null);
+            Thread thread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                            "HADOOP_IPC#REQUEST");
+                }
+            });
+            Identity.exitFrame(made);
+            long utility = Identity.enterFrame("<U: void start()>", null);
+            Identity.startWork(start, thread);
+            Identity.exitFrame(utility);
+            thread.start();
+            thread.join();
+        }
+        String scope = ScheduleLog.contextOf(Identity.contextHere());
+        List<String> sends = new ArrayList<String>();
+        for (ScheduleEvent event : events()) {
+            if (event.kind() == ScheduleEvent.Kind.SEND) {
+                sends.add(event.context() + " k=" + event.k());
+            }
+        }
+        assertEquals(Arrays.asList(
+                scope + "|" + makers.get(0) + "@0>" + start + "@0 k=0",
+                scope + "|" + makers.get(1) + "@0>" + start + "@0 k=0"),
+                sends);
+    }
+
     /** And observe answers whether it wrote. */
     @Test
     public void nothingIsRecordedBeforeTheWindowOpens() {
@@ -635,25 +678,39 @@ public class ScheduleLogTest {
                 sites.containsAll(Arrays.asList(site, "tick.e")));
     }
 
+    /**
+     * A daemon's turn, and an interrupt another thread's call made, are in
+     * no later event's way: nobody waits for them, and each still takes its
+     * slot when it comes (an INTERRUPT inside the prefix included).
+     */
     @Test(timeout = 20000L)
-    public void nobodyWaitsForALateWakeAndItStillTakesItsSlot()
+    public void nobodyWaitsForALateWakeOrInterruptAndItStillTakesItsSlot()
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        ScheduleLog.enforceForTests(Arrays.asList(
-                event(ScheduleEvent.Kind.WAKE, "tick.d"),
-                event(ScheduleEvent.Kind.SEND, "x"),
-                event(ScheduleEvent.Kind.SEND, "y")));
-        long before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        assertTrue("x did not wait for the daemon's turn before it",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 5000L);
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.d");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
-        assertEquals(Arrays.asList("x", "tick.d", "y"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
-        assertFalse("every slot taken", ScheduleLog.enforcing());
+        Object[][] rows = {
+                {ScheduleEvent.Kind.WAKE, "tick.d"},
+                {ScheduleEvent.Kind.INTERRUPT, "<S: void run()>#u12"},
+        };
+        for (Object[] row : rows) {
+            ScheduleEvent.Kind kind = (ScheduleEvent.Kind) row[0];
+            String site = (String) row[1];
+            restart();
+            ScheduleLog.enforceForTests(Arrays.asList(
+                    event(kind, site),
+                    event(ScheduleEvent.Kind.SEND, "x"),
+                    event(ScheduleEvent.Kind.SEND, "y")));
+            long before = System.nanoTime();
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+            assertTrue(kind + ": x did not wait for the slot before it",
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                            < 5000L);
+            ScheduleLog.observe(kind, site);
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+            assertEquals(kind.name(), Arrays.asList("x", site, "y"), sites());
+            assertTrue(kind + ": " + ScheduleLog.progress(),
+                    ScheduleLog.progress().contains(" 0 given up"));
+            assertFalse(kind + ": every slot taken", ScheduleLog.enforcing());
+        }
     }
 
     /** A held wait, and a held poll, outlive the prefix's end. */
@@ -1936,8 +1993,9 @@ public class ScheduleLogTest {
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
         final String site = "<D: void run()>#u29";
-        ScheduleLog.enforceForTests(Collections.singletonList(
-                event(ScheduleEvent.Kind.INTERRUPT, site)));
+        ScheduleLog.enforceForTests(Arrays.asList(
+                event(ScheduleEvent.Kind.INTERRUPT, site),
+                event(ScheduleEvent.Kind.SEND, "x")));
         final boolean[] threw = new boolean[1];
         Thread daemon = new Thread(new Runnable() {
             @Override
@@ -1957,7 +2015,10 @@ public class ScheduleLogTest {
         daemon.join(5000L);
         assertTrue(threw[0]);
         assertEquals(ScheduleEvent.Kind.INTERRUPT, events().get(0).kind());
-        assertFalse("the INTERRUPT took its slot", ScheduleLog.enforcing());
+        assertTrue("x still holds the order", ScheduleLog.enforcing());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(": 2 taken"));
     }
 
     /** One event of this thread's context inside a recorded occurrence. */

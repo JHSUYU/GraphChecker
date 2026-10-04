@@ -209,6 +209,18 @@ public final class Identity {
             return true;
         }
 
+        /**
+         * The depth of this thread's own start frame, or -1 when it claimed
+         * none: every level below it is a frame of its starter's it stands
+         * on ({@link #copy}).
+         */
+        private int ownStart() {
+            for (Claim claim : starts) {
+                if (claim.own) return claim.depth;
+            }
+            return -1;
+        }
+
         /** The depth of the innermost claimed start frame, or -1. */
         private int innermostStart() {
             return starts.isEmpty() ? -1 : starts.peek().depth;
@@ -1048,14 +1060,27 @@ public final class Identity {
      * causal context.  Keyed by scope alone, a schedule
      * event's k would count across threads started under it, which an
      * event identity may never do ({@link ScheduleLog}).
+     *
+     * <p>A task claimed on a pool's thread stands on its starter's frames as
+     * levels of the claim; a started thread stands on the frames it
+     * inherited from its creator ({@link State#copy}) and adds its start
+     * frame alone, so those inherited frames are its starter's frames here.
+     * Without them two threads started through one utility (Hadoop's {@code
+     * Daemon.start}, each call a level of its own, so both starts are its
+     * 0th) after one RPC returned shared one context: hdfs-adhoc-02's
+     * LeaseRenewer took the DataStreamer's addBlock slot and every later
+     * send of either was the other's.</p>
      */
     public static String handoffs() {
         State state = state();
+        int own = state.ownStart();
         StringBuilder chain = new StringBuilder();
         for (int index = Math.max(0, state.scopeBase);
              index < state.depth(); index++) {
             Level level = state.levels.get(index + 1);
-            if (level.token != 0L || level.frame == null) continue;
+            if (level.frame == null || level.token != 0L && index >= own) {
+                continue;
+            }
             Frame frame = state.addressedFrame(index);
             if (chain.length() > 0) chain.append('>');
             chain.append(frame.callSite()).append('@')
