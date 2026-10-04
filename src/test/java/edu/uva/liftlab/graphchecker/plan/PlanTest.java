@@ -9,9 +9,13 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import org.junit.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -78,6 +82,44 @@ public class PlanTest {
                     seed);
             assertTrue(missing, absent.context().isLost());
             assertEquals(REGION, absent.regionId());
+        }
+    }
+
+    /**
+     * The declared occurrence is one the window holds back to its root: a
+     * target on a message sent before the window (round HG2's hdfs-adhoc-19,
+     * a block report answered inside the recording's window and before the
+     * replay's) is never the question, and none other is a named refusal.
+     */
+    @Test
+    public void aDeclarationResolvesAmongTargetsTheWindowHoldsToTheirRoot()
+            throws Exception {
+        String beforeWindow = anchored(DN0, 1).render();
+        String inWindow = anchored(DN1, 1).render();
+        Map<String, List<String>> shapes = new HashMap<String, List<String>>();
+        shapes.put(beforeWindow, Arrays.asList("HADOOP_IPC/r@nn0", "?"));
+        shapes.put(inWindow, Arrays.asList("HADOOP_IPC/r@nn1",
+                "Root:BP_SERVICE_ACTOR"));
+        Object[][] rows = {
+            {"first skips set-up history",
+                Arrays.asList(beforeWindow, inWindow), inWindow},
+            {"set-up history alone is refused, naming it",
+                Collections.singletonList(beforeWindow),
+                "DECLARED_TARGET_BEFORE_WINDOW"},
+        };
+        for (Object[] row : rows) {
+            @SuppressWarnings("unchecked")
+            List<String> observed = (List<String>) row[1];
+            String outcome;
+            try {
+                outcome = RuntimeWorkflowDiscovery.declaredOccurrence(
+                        observed, RuntimeWorkflowDiscovery.FIRST, shapes::get);
+            } catch (IOException refused) {
+                assertTrue((String) row[0],
+                        refused.getMessage().contains(beforeWindow));
+                outcome = refused.getMessage().split(":")[0];
+            }
+            assertEquals((String) row[0], row[2], outcome);
         }
     }
 

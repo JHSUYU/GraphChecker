@@ -821,12 +821,18 @@ public final class RuntimeSelectedRegionFinalizer {
         // occurrences of its region, node and context shape are the walk's
         // origins.  Another target occurrence -- the same throw reached
         // under another request -- is not the question's: no rule plans it,
-        // so nothing only it would demand is planned either.
+        // so nothing only it would demand is planned either.  The declared
+        // occurrence is one the window holds back to its root; any other
+        // target stays a walk origin when its shape is the question's (an
+        // unknown hop is no known difference).
+        Map<CausalContext, List<String>> shapes = new HashMap<>();
         String declared = RuntimeWorkflowDiscovery.declaredOccurrence(
                 new ArrayList<>(targets), declaredOccurrence.isEmpty()
-                        ? RuntimeWorkflowDiscovery.FIRST : declaredOccurrence);
+                        ? RuntimeWorkflowDiscovery.FIRST : declaredOccurrence,
+                target -> shapes.computeIfAbsent(
+                        OccurrenceAddress.parse(target).context(),
+                        messages::shape));
         OccurrenceAddress question = OccurrenceAddress.parse(declared);
-        Map<CausalContext, List<String>> shapes = new HashMap<>();
         Set<String> otherTargets = new LinkedHashSet<>();
         for (String target : targets) {
             if (!ContextShape.sameQuestion(OccurrenceAddress.parse(target),

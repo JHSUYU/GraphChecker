@@ -120,10 +120,11 @@ public final class ContextShape {
      * region, on the same node, under a chain of anchors whose shape is the
      * declared one's hop for hop ({@code ranShape}, {@code declaredShape},
      * both off their own run's senders) and known up to the root it began
-     * at.  Stricter than {@link #sameQuestion}, which keeps an occurrence in
-     * the question unless a hop is known to differ: here the run's
-     * occurrence takes the declared address, which only a chain known end to
-     * end may do; an unnamed sender or a {@code Lost} context names none.
+     * at ({@link #rootedInWindow}).  Stricter than {@link #sameQuestion},
+     * which keeps an occurrence in the question unless a hop is known to
+     * differ: here the run's occurrence takes the declared address, which
+     * only a chain known end to end may do; an unnamed sender or a {@code
+     * Lost} context names none.
      */
     public static boolean answers(OccurrenceAddress ran,
                                   OccurrenceAddress declared,
@@ -131,9 +132,25 @@ public final class ContextShape {
                                   List<String> declaredShape) {
         return ran.regionId().equals(declared.regionId())
                 && ran.node().equals(declared.node())
-                && !ranShape.isEmpty()
-                && ranShape.get(ranShape.size() - 1).startsWith(ROOT_HOP)
+                && rootedInWindow(ranShape)
                 && ranShape.equals(declaredShape);
+    }
+
+    /**
+     * Whether a shape's chain is known end to end, back to the root it began
+     * at: every message on it was sent inside the window by a sender the
+     * order names, so a replay held to the window's order holds the whole
+     * chain.  A message sent before the window ends a chain with {@link
+     * #UNKNOWN_HOP}, as does any sender nothing names, and a {@code Lost}
+     * context (a turn begun before the window) has no root.  What was sent
+     * before the window ran inside or before it as each run's timing fell
+     * (round HG2's hdfs-adhoc-19: the DataNode's first block report, sent
+     * before the window, answered inside it in the recording and before it
+     * in the replay).
+     */
+    public static boolean rootedInWindow(List<String> shape) {
+        return !shape.isEmpty()
+                && shape.get(shape.size() - 1).startsWith(ROOT_HOP);
     }
 
     /**
