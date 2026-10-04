@@ -189,7 +189,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         RowRuntime.configure(sessionFile());
         RecordingWindow.open();
         long invocation = CausynthTraceRecorder.beginCall(0L, SOURCE_METHOD,
-                UNIT, SOURCE_METHOD, new Object());
+                UNIT, SOURCE_METHOD, new Object(), true);
         try {
             OccurrenceAddress source = address();
             ActiveRegion configured = region(sourceTask(), source);

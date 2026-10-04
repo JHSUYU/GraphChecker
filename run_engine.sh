@@ -212,6 +212,13 @@ workflow_config_keys=(
   # fails the campaign at REPLAY naming it.  The seed replays the 09-29
   # sweeps finished took up to 38x their recording, one of 78 took 63x.
   "seed_replay_time_factor CAUSYNTH_SEED_REPLAY_TIME_FACTOR krp 40"
+  # The most trace the recording may write, in MB: past it the workload is
+  # ended and SEED fails RECORDING_BOUND, by name (campaign_watch_workload).
+  # The aggregation holds every row it reads in memory, a little more than
+  # their bytes: hdfs-adhoc-49 (TestSnapshot, 36 clusters) writes 8.5 GB
+  # of the rows it reads, which no 8 GB aggregation held; the HDFS
+  # regression cases write 1-19 MB, the largest ad-hoc checks ~1 GB.
+  "recording_max_trace_mb CAUSYNTH_RECORDING_MAX_TRACE_MB krp 4096"
   # How many root valuations the composer enumerates around the recorded one.
   # The composer runs z3 per valuation while it composes, so this bounds the
   # solving a campaign does, not a separate stage's budget.
@@ -650,7 +657,7 @@ validate_config() {
   # does not start.
   local key
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
-      schedule_max_jobs region_path_max_waves \
+      recording_max_trace_mb schedule_max_jobs region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound \
       obligation_memory_mb reproduce_runs \
       reproduce_time_factor campaign_budget_s campaign_reserve_s; do
@@ -952,9 +959,11 @@ do_compose() {
     "${selection[@]}"
 }
 
-# run_configured_workload <trace-dir> [seconds] [plant] [charged_mb]: the
+# run_configured_workload <trace-dir> [seconds] [plant] [charged_mb]
+# [max_trace_mb]: the
 # workload in the recording weave (analysis_classes_dir, as SEED's static
-# pass wove it), its trace into <trace-dir>, under a wall-clock bound of
+# pass wove it), its trace into <trace-dir> and no more than <max_trace_mb>
+# of it (the recording's, campaign_watch_workload), under a wall-clock bound of
 # <seconds> when one is given (run_under_wall_clock_bound), with a native
 # reproduction's plant (runtime.RecordingPlant) when one is named, and held
 # to what its host was charged for it when it was (campaign_watch_workload).
@@ -968,6 +977,7 @@ run_configured_workload() {
     "CAUSYNTH_TRACE_OUTPUT_DIR=${trace_dir}"
     "CAUSYNTH_PLANT=${3:-}"
     "CAUSYNTH_CHARGED_MB=${4:-}"
+    "CAUSYNTH_RECORDING_MAX_TRACE_MB=${5:-0}"
   )
   [[ -z "${2:-}" ]] || bound=(run_under_wall_clock_bound "$2")
   (cd "${workload_work_dir}" && "${bound[@]+"${bound[@]}"}" \
@@ -991,8 +1001,12 @@ do_workload() {
   # it measures (workload_rss_mb, 0.4-0.8 GB over round e1), so there is no
   # need yet to charge it with or to place it by (campaign_head_charged).
   local status=0 started=${SECONDS}
-  run_configured_workload "${trace_dir}" || status=$?
+  run_configured_workload "${trace_dir}" "" "" "" "${recording_max_trace_mb}" \
+    || status=$?
   campaign_recorded_workload_s=$(( SECONDS - started ))
+  [[ ! -s "${trace_dir}/${campaign_recording_bound_marker}" ]] \
+    || campaign_fail SEED RECORDING_BOUND "${trace_dir}" \
+      "$(cat "${trace_dir}/${campaign_recording_bound_marker}")"
   (( status == 0 )) || campaign_fail SEED WORKLOAD "${trace_dir}" \
     "the recorded workload exited ${status}: the test failed, or its run" \
     "never opened a recording window (its output is above)"
@@ -3629,6 +3643,10 @@ campaign_process_rss_mb() {
 
 # How often a workload JVM's resident memory is read.
 campaign_watch_interval_s=2
+# The file a recording's watcher leaves in its trace directory when the trace
+# passed recording_max_trace_mb and it ended the workload, saying so: the
+# reason SEED fails by (do_workload).
+campaign_recording_bound_marker=RECORDING_BOUND
 
 # campaign_watch_workload <pid> <charged_mb> [trace_dir]: one workload JVM
 # watched until it ends (experiments/lib/execute.sh).  Its peak resident
@@ -3647,12 +3665,25 @@ campaign_watch_interval_s=2
 # and one refused 6 MB on a host with 16 GB free, all of it promised to
 # starts and heads (accept-x1-17960's).
 # What it was granted is held by the watcher (campaign_host_hold) and
-# released when it ends.
+# released when it ends.  A recording given <max_trace_mb> whose trace
+# passes it is ended there, RECORDING_BOUND, said in
+# <trace_dir>/${campaign_recording_bound_marker}: never a trace cut short
+# and aggregated as if whole.
 campaign_watch_workload() {
-  local pid=$1 charged=$2 trace=${3:-} peak=0 held=$2 mb id
-  local status=0 refused=""
+  local pid=$1 charged=$2 trace=${3:-} max_mb=${4:-0} peak=0 held=$2 mb id
+  local status=0 refused="" written=0 bounded=""
   local -a grants=()
+  [[ -z "${trace}" ]] || rm -f -- "${trace}/${campaign_recording_bound_marker}"
   while kill -0 "${pid}" 2>/dev/null; do
+    if (( max_mb > 0 )); then
+      written=$(stat -c %s "${trace}/runtime_trace.jsonl" 2>/dev/null) \
+        || written=0
+      if (( written > max_mb * 1048576 )); then
+        bounded=$(( written / 1048576 ))
+        kill -KILL "${pid}" 2>/dev/null || true
+        break
+      fi
+    fi
     mb=$(campaign_process_rss_mb "${pid}") || mb=""
     if (( ${mb:-0} > peak )); then
       peak=${mb}
@@ -3676,6 +3707,13 @@ campaign_watch_workload() {
   for id in "${grants[@]}"; do
     campaign_host_release localhost "${id}"
   done
+  if [[ -n "${bounded}" ]]; then
+    echo "RECORDING_BOUND: the recording's trace passed \
+recording_max_trace_mb (${max_mb} MB) at ${bounded} MB, more rows than SEED's \
+aggregation holds; the workload was ended" \
+      >"${trace}/${campaign_recording_bound_marker}"
+    echo "causynth: $(cat "${trace}/${campaign_recording_bound_marker}")" >&2
+  fi
   (( charged > 0 )) || return 0
   [[ -z "${refused}" ]] || echo "causynth: the workload JVM's resident \
 memory reached ${peak} MB, over the ${held} MB its host holds for it, and \

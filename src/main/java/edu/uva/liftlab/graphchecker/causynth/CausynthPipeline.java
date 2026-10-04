@@ -382,13 +382,18 @@ public final class CausynthPipeline {
     }
 
     /** Second pass: rich evidence for only runtime-selected region methods. */
-    private void instrumentRuntimeState(StaticProgram result) {
+    private void instrumentRuntimeState(StaticProgram result)
+            throws IOException {
         HookCatalog refs = HookCatalog.trace();
         SootMethodRef recordFieldRef = refs.ref(Hook.RECORD_FIELD);
         // Same skeleton file as the concolic pass (IDENTITY §10).
         Map<String, String> regionRoots =
                 RegionSkeletonInstrumentationSelection
                         .regionRootsFromEnvironment();
+        // Only the rows the aggregation reads are written (PIPELINE §2).
+        TracedRows traced = TracedRows.of(
+                RegionSkeletonInstrumentationSelection
+                        .skeletonsFromEnvironment());
         Set<String> rewritten = instrumentMethods(result.traceMethods,
                 "REGION_STATE method is outside production application "
                         + "scope: ",
@@ -396,7 +401,7 @@ public final class CausynthPipeline {
                     instrumentRichMethod(body, method, units, entry,
                             lowerBound, receiver, refs,
                             regionRoots.getOrDefault(method.getSignature(),
-                                    ""));
+                                    ""), traced);
                     instrumentFieldTrace(body, method, recordFieldRef,
                             units, lowerBound);
                 });
@@ -3041,7 +3046,7 @@ public final class CausynthPipeline {
     private void instrumentRichMethod(
             Body body, SootMethod method, List<Unit> originalUnits,
             Unit insertionPoint, Unit lowerBound, Value receiver,
-            HookCatalog refs, String openedRegionId) {
+            HookCatalog refs, String openedRegionId, TracedRows traced) {
         Local callId = newTraceLocal(body, LongType.v(), "$causynthCallId");
         List<Unit> entryUnits = new ArrayList<>();
         entryUnits.add(Jimple.v().newAssignStmt(callId, LongConstant.v(0L)));
@@ -3051,12 +3056,15 @@ public final class CausynthPipeline {
         for (int index = 0; index < method.getParameterCount(); index++) {
             Value parameter = parameterLocal(body, index);
             if (parameter == null) continue;
-            Value objectValue = objectArg(body, parameter, entryUnits);
-            Value primitiveValue = primitiveValueString(body, parameter, entryUnits);
+            boolean read = traced.methodArgument(method.getSignature(), index);
             emit(entryUnits, refs.ref(Hook.RECORD_METHOD_ARGUMENT), callId,
                     IntConstant.v(index),
                     StringConstant.v(method.getParameterType(index).toString()),
-                    objectValue, primitiveValue);
+                    read ? objectArg(body, parameter, entryUnits)
+                            : NullConstant.v(),
+                    read ? primitiveValueString(body, parameter, entryUnits)
+                            : StringConstant.v(""),
+                    IntConstant.v(read ? 1 : 0));
         }
         insertBeforeOrAppendNoRedirect(body, insertionPoint, entryUnits);
 
@@ -3071,7 +3079,7 @@ public final class CausynthPipeline {
             if (stmt.containsInvokeExpr()
                     && !isRecorderInvoke(stmt.getInvokeExpr())) {
                 instrumentCallSite(body, method, stmt, unitIndex, callId,
-                        refs);
+                        refs, traced);
             }
             if (stmt instanceof IfStmt) {
                 instrumentBranch(body, method, (IfStmt) stmt, unitIndex,
@@ -3085,44 +3093,58 @@ public final class CausynthPipeline {
                 insertMethodExit(body, stmt, stmt instanceof ReturnStmt
                                 ? ((ReturnStmt) stmt).getOp()
                                 : NullConstant.v(),
-                        refs.ref(Hook.EXIT_ACTIVE_METHOD));
+                        refs.ref(Hook.EXIT_ACTIVE_METHOD),
+                        traced.methodExit(method.getSignature()));
             }
         }
         addThrowHandler(body, insertionPoint, refs, Hook.THROW_ACTIVE_METHOD,
                 "$causynthThrown");
     }
 
+    /**
+     * One call site's hooks.  Every hook is called, so every row keeps its
+     * number; a row the aggregation does not read ({@link TracedRows}) is
+     * not written, and its values are not even taken.
+     */
     private void instrumentCallSite(Body body, SootMethod method, Stmt stmt,
                                     int unitIndex, Local ownerCallId,
-                                    HookCatalog refs) {
+                                    HookCatalog refs, TracedRows traced) {
         InvokeExpr invoke = stmt.getInvokeExpr();
+        String siteId = SiteId.render(method.getSignature(), unitIndex);
+        String callee = invoke.getMethodRef().getSignature();
+        boolean read = traced.callSite(siteId, callee);
         List<Unit> before = new ArrayList<>();
         Value receiverBase = runtimeCallSiteReceiver(invoke);
-        Value receiver = receiverBase == null
+        Value receiver = receiverBase == null || !read
                 ? NullConstant.v() : objectArg(body, receiverBase, before);
         Local invocationId = newTraceLocal(body, LongType.v(), "$causynthInvocation");
         emit(before, invocationId, refs.ref(Hook.BEGIN_CALL), ownerCallId,
                 StringConstant.v(method.getSignature()),
-                IntConstant.v(unitIndex),
-                StringConstant.v(invoke.getMethodRef().getSignature()),
-                receiver);
+                IntConstant.v(unitIndex), StringConstant.v(callee), receiver,
+                IntConstant.v(read ? 1 : 0));
         for (int index = 0; index < invoke.getArgCount(); index++) {
             Value argument = invoke.getArg(index);
-            Value objectValue = objectArg(body, argument, before);
-            Value primitiveValue = primitiveValueString(body, argument, before);
+            boolean argumentRead = traced.callArgument(siteId, callee, index);
             Type declaredType = index < invoke.getMethodRef().parameterTypes().size()
                     ? invoke.getMethodRef().parameterType(index) : argument.getType();
             emit(before, refs.ref(Hook.RECORD_CALL_ARGUMENT), invocationId,
                     IntConstant.v(index),
-                    StringConstant.v(declaredType.toString()), objectValue,
-                    primitiveValue);
+                    StringConstant.v(declaredType.toString()),
+                    argumentRead ? objectArg(body, argument, before)
+                            : NullConstant.v(),
+                    argumentRead ? primitiveValueString(body, argument, before)
+                            : StringConstant.v(""),
+                    IntConstant.v(argumentRead ? 1 : 0));
         }
         insertBeforeSequence(body, stmt, before);
 
         Value returnValue = runtimeCallSiteReturnValue(stmt, invoke);
         List<Unit> after = new ArrayList<>();
-        Value returnObject = objectArg(body, returnValue, after);
-        Value primitiveReturn = primitiveValueString(body, returnValue, after);
+        Value returnObject = read ? objectArg(body, returnValue, after)
+                : NullConstant.v();
+        Value primitiveReturn = read
+                ? primitiveValueString(body, returnValue, after)
+                : StringConstant.v("");
         emit(after, refs.ref(Hook.END_CALL), invocationId, returnObject,
                 primitiveReturn);
         insertAfterSequence(body, stmt, after);
@@ -3190,11 +3212,15 @@ public final class CausynthPipeline {
     }
 
     private void insertMethodExit(Body body, Stmt returnUnit, Value returnValue,
-                                  SootMethodRef exitRef) {
+                                  SootMethodRef exitRef, boolean read) {
         List<Unit> units = new ArrayList<>();
-        Value objectValue = objectArg(body, returnValue, units);
-        Value primitiveValue = primitiveValueString(body, returnValue, units);
-        emit(units, exitRef, objectValue, primitiveValue);
+        Value objectValue = read ? objectArg(body, returnValue, units)
+                : NullConstant.v();
+        Value primitiveValue = read
+                ? primitiveValueString(body, returnValue, units)
+                : StringConstant.v("");
+        emit(units, exitRef, objectValue, primitiveValue,
+                IntConstant.v(read ? 1 : 0));
         insertBeforeSequence(body, returnUnit, units);
     }
 
@@ -3658,12 +3684,15 @@ public final class CausynthPipeline {
                     .shared(recorder)
                     .add(Hook.RECORD_METHOD_ARGUMENT, recorder,
                             "recordMethodArgument", VoidType.v(), LongType.v(),
-                            IntType.v(), string, object, string)
+                            IntType.v(), string, object, string,
+                            BooleanType.v())
                     .add(Hook.BEGIN_CALL, recorder, "beginCall", LongType.v(),
-                            LongType.v(), string, IntType.v(), string, object)
+                            LongType.v(), string, IntType.v(), string, object,
+                            BooleanType.v())
                     .add(Hook.RECORD_CALL_ARGUMENT, recorder,
                             "recordCallArgument", VoidType.v(), LongType.v(),
-                            IntType.v(), string, object, string)
+                            IntType.v(), string, object, string,
+                            BooleanType.v())
                     .add(Hook.END_CALL, recorder, "endCall", VoidType.v(),
                             LongType.v(), object, string)
                     .add(Hook.RECORD_BRANCH, recorder, "recordBranch",
@@ -3674,7 +3703,7 @@ public final class CausynthPipeline {
                             string, IntType.v(), string, IntType.v(), string,
                             string)
                     .add(Hook.EXIT_ACTIVE_METHOD, recorder, "exitActiveMethod",
-                            VoidType.v(), object, string)
+                            VoidType.v(), object, string, BooleanType.v())
                     .add(Hook.THROW_ACTIVE_METHOD, recorder,
                             "throwActiveMethod", VoidType.v(),
                             RefType.v("java.lang.Throwable"))

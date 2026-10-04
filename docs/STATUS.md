@@ -320,13 +320,13 @@ Scale and robustness:
     engine's identity tables weak (`runtime/WeakIdentityMap`), the adapter's maps alone keep the dead
     clusters (old INodeMap/BlocksMap sets 1.5 GB, 20 740 netty threads) and the 4 GB recording
     collects from ~9 min on; with them weak too (a measurement patch, not in a tree) it ends in 602 s.
-44. The recording writes every call, argument, return, branch and field access of every candidate
-    method; no aggregation rule reads about 70 % of the bytes (call rows outside declared,
-    field-accessing, hook and port sites; arguments and exits outside ports; a branch or field
-    access repeated in its frame). Applied to recorded traces, that filter leaves hdfs-adhoc-42's and
-    the ten HDFS regression cases' plans as they were, object names and the unread branch
-    `occurrences` lists aside. hdfs-adhoc-49 writes 32 GB in 10 min, 8.5 GB filtered, which the
-    aggregation still cannot hold at 8 GB (5.8 M frames, 19 M object observations for the naming).
+44. A recording past `recording_max_trace_mb` (4096) ends SEED, `RECORDING_BOUND`: its rows would
+    not fit the aggregation, which holds every row it reads (and 19 M object observations for the
+    naming of hdfs-adhoc-49's 8.5 GB of read rows: out of 8 GB). The recording writes only those
+    rows (`causynth/TracedRows`, a frame's repeated decisions capped at two): 21-38 % of the bytes
+    on the ten HDFS regression recordings, the same plans, object names aside. hdfs-adhoc-49/50/51
+    (`TestSnapshot#testSnapshot`, 36 clusters, ~8.5 GB of read rows) stay past the bound;
+    `TestNestedSnapshots#testNestedSnapshots` (one cluster) evaluates the same three guards.
 13. VM: every expression is kept until the session closes, under one global mutex.
 32. COMPOSE lowers and states a message family once per path that binds it
     (`gc/compose/ComposedFamilies#messageFamily`): hdfs-11741 r3's 47 paths carry 7 MB of family
