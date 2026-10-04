@@ -726,7 +726,8 @@ replay reads with its guarded-store table) through the read path an expression's
 so a read both state is one row. Before it a read whose value reached no expression -- a reference
 compared with a constant (hdfs-adhoc-45's `state == State.IN_SEGMENT` in `FSEditLog.isSegmentOpen`),
 a value handed to a call the VM does not model -- was no row, and neither the closure nor a STATE
-family saw it. A read log the VM cut at its 1024-read bound is an `UNSTATED_VALUE` DIAGNOSTIC.
+family saw it. A read log the VM cut at its 1024-read bound is an `UNSTATED_VALUE` DIAGNOSTIC, and so
+is a logged read of a version the location's log does not list: it would pair with nothing.
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).

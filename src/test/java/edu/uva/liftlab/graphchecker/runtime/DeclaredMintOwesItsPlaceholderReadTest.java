@@ -435,7 +435,10 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
             read.addProperty("readEventId", (Long) each[0]);
             read.addProperty("regionEnterEventId", 900L);
             read.add("site", site);
-            read.addProperty("observedVersion", 456L);
+            JsonObject chosen = new JsonObject();
+            chosen.addProperty("fieldVersionId", 456L);
+            chosen.addProperty("versionKind", "WRITE");
+            read.add("observedVersion", chosen);
             read.addProperty("observedExact", true);
             read.addProperty("writerSetComplete", true);
             read.addProperty("_java_type", "L");

@@ -244,10 +244,21 @@ final class RowPublication {
                             version.getAsJsonObject().get("expression"));
                 }
             }
-            long version = optionalLongInteger(read,
-                    VmRows.OBSERVED_VERSION, -1L);
-            JsonObject observed = new JsonObject();
-            observed.addProperty("fieldVersionId", version);
+            // The version as its read-from node states it, with that
+            // version's value: a read of a version the log does not list
+            // (dropped at its bound) would pair with nothing, so it is
+            // named, never published.
+            long version = VmRows.recordedVersion(read);
+            if (!values.containsKey(version)) {
+                RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        locationKey, "the read at event " + optionalLongInteger(
+                                read, "readEventId", -1L) + " states version "
+                                + version + ", which this location's log does"
+                                + " not list, so it is no row");
+                continue;
+            }
+            JsonObject observed = object(read, VmRows.OBSERVED_VERSION)
+                    .deepCopy();
             JsonElement value = values.get(version);
             if (value != null) observed.add("expression", value);
             JsonObject node = read.deepCopy();

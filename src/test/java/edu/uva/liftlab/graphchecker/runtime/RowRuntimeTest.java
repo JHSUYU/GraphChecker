@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
@@ -1146,6 +1147,10 @@ public class RowRuntimeTest {
         assertEquals(41L, read.get("regionEnterEventId").getAsLong());
         assertEquals("()I", read.getAsJsonObject("site")
                 .get("methodDescriptor").getAsString());
+        // And what its plan chose, in its read-from node's shape.
+        assertEquals(50L, VmRows.recordedVersion(read));
+        assertEquals("RMW", read.getAsJsonObject("observedVersion")
+                .get("versionKind").getAsString());
         // The expressions the refs name are in the session's own table.
         assertTrue(Files.exists(dir.expressions()));
         assertTrue(RowCodec.readExpressions(dir.expressions())
@@ -1294,13 +1299,20 @@ public class RowRuntimeTest {
         read.addProperty("regionEnterEventId", 41L);
         read.addProperty("readerContextId", 7L);
         read.add("site", site);
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", 50L);
+        observed.addProperty("versionKind", "RMW");
+        read.add("observedVersion", observed);
+        read.addProperty("observedExact", true);
+        read.addProperty("writerSetComplete", true);
+        read.addProperty("_java_type", "I");
         JsonArray versions = new JsonArray();
         versions.add(version);
         JsonArray reads = new JsonArray();
         reads.add(read);
         JsonObject envelope = new JsonObject();
         envelope.addProperty("kind", "SHARED_FIELD_VERSIONS");
-        envelope.addProperty("schemaVersion", 1);
+        envelope.addProperty("schemaVersion", 2);
         envelope.add("versions", versions);
         envelope.add("reads", reads);
         envelope.addProperty("readLogTruncated", false);

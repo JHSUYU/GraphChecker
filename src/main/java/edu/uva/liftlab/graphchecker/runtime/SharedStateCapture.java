@@ -777,7 +777,7 @@ final class SharedStateCapture {
                 || optionalString(read, "taskId").isEmpty()) {
             return "read " + readEvent + " names no reader case";
         }
-        if (optionalLongInteger(read, VmRows.OBSERVED_VERSION, 0L) <= 0L
+        if (VmRows.recordedVersion(read) <= 0L
                 || !booleanMember(read, VmRows.OBSERVED_EXACT)
                 || !booleanMember(read, VmRows.WRITER_SET_COMPLETE)) {
             return "read " + readEvent + " states no version it observed";
