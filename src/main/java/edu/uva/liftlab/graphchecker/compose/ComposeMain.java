@@ -117,34 +117,19 @@ public final class ComposeMain {
     }
 
     /**
-     * The composed query at valuation 0 (the run as it happened); other
-     * valuations differ only in their {@code valuation__*} assertions.  A
-     * BLOCKED or pathless composition asserts false with the blocker named,
-     * since an empty query would read "sat" by hand.
+     * THE COMPOSED FORMULA: the disjunction of the admitted paths, the fatal
+     * arm asserted, every root free over its domain -- the formula whose z3
+     * answer is the verdict ({@code ClaimPolicy#closed}), so a standalone
+     * z3 re-solves it to the same answer.  A witness's valuation is the
+     * claim's ({@code claim.json}), never part of the file.  A BLOCKED or
+     * pathless composition asserts false with the blocker named, since an
+     * empty query would read "sat" by hand.
      */
     static ArtifactIO.Body candidate(Composer.Composition composition,
                                      ClaimPolicy.Decision decision) {
         String blocker = blocker(composition, decision);
         return output -> {
             output.write(composition.body());
-            if (!composition.valuations().isEmpty()) {
-                output.write("; valuation 0: the run as it happened\n");
-                for (String assertion
-                        : composition.valuations().get(0).assertions()) {
-                    output.write(assertion);
-                    output.write('\n');
-                }
-            }
-            if (!decision.outcomes().isEmpty()
-                    && !decision.outcomes().get(0).pinned().isEmpty()) {
-                output.write("; held at the recording: the clocks the "
-                        + "witness does not need, and each path's own "
-                        + "pairing where the recording decides the arm\n");
-                for (String pin : decision.outcomes().get(0).pinned()) {
-                    output.write(pin);
-                    output.write('\n');
-                }
-            }
             if (!blocker.isEmpty()) {
                 output.write("(assert false) ; fail closed: " + blocker
                         + "\n");
@@ -206,12 +191,16 @@ public final class ComposeMain {
     private static JsonObject solverRows(Composer.Composition composition,
                                          ClaimPolicy.Decision decision,
                                          Z3 solver) {
-        // Every valuation asked and decided; none sat is then a refutation.
-        boolean decided = !decision.outcomes().isEmpty();
-        boolean anySat = false;
+        // The formula's own answer where it was asked, else the witness's
+        // valuations: a sat one is the formula sat.
+        Z3.Answer formula = decision.formula();
+        boolean anySat = formula != null && formula.sat();
+        boolean decided = formula != null && formula.decided();
         for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
-            if (!outcome.answer().decided()) decided = false;
-            if (outcome.answer().sat()) anySat = true;
+            if (outcome.answer().sat()) {
+                anySat = true;
+                decided = true;
+            }
         }
         JsonObject row = new JsonObject();
         row.addProperty("state",
@@ -254,13 +243,19 @@ public final class ComposeMain {
                     + (claim.polarityDecides()
                     ? ", and the recorded valuation refutes the recording"
                     : "");
-        } else {
-            // Every valuation is decided (an undecided one is a blocker)
-            // and none is sat (a sat one is a claim, FORMULA_SAT at least).
+        } else if (decision.formula() != null
+                && decision.formula().unsat()) {
             kind = "UNSAT_CLOSED";
-            reason = "every enumerated valuation is decided and unsat: the"
-                    + " declared roots do not reach the fatal arm on the"
-                    + " paths this corpus admits";
+            reason = "the composed formula, every root free over its domain,"
+                    + " is unsat: no world of the paths this corpus admits"
+                    + " reaches the fatal arm";
+        } else {
+            // No claim and no unsat: never a refutation.
+            kind = "RUN_DEFECT";
+            reason = "the composed formula is not unsat ("
+                    + (decision.formula() == null ? "never asked"
+                    : decision.formula().status()) + ") and no witness is"
+                    + " named";
         }
         JsonObject row = new JsonObject();
         row.addProperty("claim", kind);

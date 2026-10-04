@@ -1428,7 +1428,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    per ask or per arithmetic engine, `Composition#query`/`#pathQuery`, `Z3#ask`) for the path
    selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
    clock cells and the codec holes the arms bind (`Composition#holeSymbols`); a selected state arm
-   keeps the states whose selector the model set. An undecided valuation is BLOCKING.
+   keeps the states whose selector the model set. An undecided valuation is named DIAGNOSTIC: it
+   names no witness, and the verdict is the formula's own answer (4).
    Every such ask (and each re-ask below) is `compose.Disjunction#ask`: the disjunction whole, its
    verdict within 60 s (`WHOLE_BUDGET_MS`; its model and core runs keep the full budget), until a
    whole ask of the composition runs past that budget; from then on, every ask is path by path, the
@@ -1495,12 +1496,16 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      `NO_SUPPORTED_WITNESS`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
      every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any;
-   - else, where a valuation is still a witness, `FORMULA_SAT` at the first one a replay can plant
-     (`ClaimPolicy#formulaSat`): composer imprecision until CONFIRM says otherwise, planted and judged
-     like any claim, a refutation excluded before the claim is decided again; a formula satisfiable
-     only by moving a configuration whose plant leaves reads at the recording's value is BLOCKING
-     `UNPRODUCIBLE_ANSWER`, a defect of the plant;
-   - else `NO_SUPPORTED_WITNESS`.
+   - else THE FORMULA DECIDES (`ClaimPolicy#closed`): the composed formula is asked whole, every
+     root free over its domain -- the very text exported as `final/candidate.smt2` -- and its answer
+     is the verdict; the enumeration of single and pair moves above only picks a witness's
+     valuation. Unsat: `NO_SUPPORTED_WITNESS` (UNSAT_CLOSED). Undecided within the budget: BLOCKING
+     (a defect, never a refutation). Sat: `FORMULA_SAT` at the first enumerated witness a replay can
+     plant, else at the formula's own model (`Composition#modelValuation`: each declared root at the
+     model's value), composer imprecision until CONFIRM says otherwise, planted and judged like any
+     claim, a refutation excluded before the claim is decided again; a sat model selecting no path,
+     or one only a configuration whose plant leaves reads at the recording's value satisfies
+     (`UNPRODUCIBLE_ANSWER`), is BLOCKING.
 5. `mechanism`, narrowest first: pinning the path's observed reads makes it unsat →
    `STATE_PAIRING_FLIPPED`; its observed anchor arrivals → `MESSAGE_PAIRING_FLIPPED`; a moved root →
    `MARKER_FLIPPED` (any declared root kind); `clockDriven` → `CLOCK_SKEW`; the seed's path at ordinal 0
@@ -1523,17 +1528,18 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 | `MESSAGE_PAIRING_FLIPPED` | the roots stay; the anchor's attaches must receive another delivery than the run's |
 | `RECORDED_FAILURE_EXPLAINED` | the seed itself observed the fatal and every moved valuation is refuted |
 | `FORMULA_SAT` | a valuation satisfies the formula and none of the above names why: the formula's own claim, which CONFIRM plants (its arms and valuation) and judges |
-| `NO_SUPPORTED_WITNESS` | every valuation is unsat; an answer, not an error |
+| `NO_SUPPORTED_WITNESS` | the composed formula, every root free, is unsat; an answer, not an error |
 
 `ComposeMain.campaignClaim` maps it: the formula decides, SAT or UNSAT, and a blocking gap is a
 defect of the run or the engine that leaves no verdict: any BLOCKING claim gap → `RUN_DEFECT`; else a
-kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else `UNSAT_CLOSED` (every valuation is
-decided, an undecided one being BLOCKING, and none sat, a sat one being a claim). EMIT publishes
+kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else, the formula's own answer unsat →
+`UNSAT_CLOSED`; else `RUN_DEFECT` (no claim and no unsat is never a refutation). EMIT publishes
 `SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when it did not agree), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
 with every defect in `defects[]`, what the decision rested on concretely in `concrete[]`, and the
-formula it decided on in `formula` (`final/candidate.smt2`'s path and sha256: the composed paths,
-which a standalone z3 re-solves to the same verdict, UNSAT included). The manifest's `solver` block carries `state` (sat/unsat/unknown),
+formula it decided on in `formula` (`final/candidate.smt2`'s path and sha256: the disjunction of the
+admitted paths, the fatal arm asserted, every root free over its domain and no valuation pinned,
+which a standalone z3 re-solves to the same verdict, SAT or UNSAT). The manifest's `solver` block carries `state` (sat/unsat/unknown),
 `reachability`, `unsatClosureComplete`, `valuations` (status, assignment, moved, selected path and
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
 `findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved

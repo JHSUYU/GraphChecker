@@ -131,14 +131,20 @@ public final class ClaimPolicy {
         }
     }
 
-    /** The claim, and every answer it was read off. */
+    /** The claim, every answer it was read off, and the formula's own. */
     public static final class Decision {
         private final Claim claim;
         private final List<Outcome> outcomes;
+        private final Z3.Answer formula;
 
         Decision(Claim claim, List<Outcome> outcomes) {
+            this(claim, outcomes, null);
+        }
+
+        Decision(Claim claim, List<Outcome> outcomes, Z3.Answer formula) {
             this.claim = claim;
             this.outcomes = Collections.unmodifiableList(outcomes);
+            this.formula = formula;
         }
 
         public Claim claim() {
@@ -147,6 +153,15 @@ public final class ClaimPolicy {
 
         public List<Outcome> outcomes() {
             return outcomes;
+        }
+
+        /**
+         * z3's answer for the composed formula itself, every root free over
+         * its domain (the exported candidate.smt2), or null where a named
+         * claim's witness decided without it ({@link #closed}).
+         */
+        public Z3.Answer formula() {
+            return formula;
         }
     }
 
@@ -158,7 +173,7 @@ public final class ClaimPolicy {
                                   Z3 solver) {
         Decision decision;
         try (Disjunction asks = new Disjunction(composition, solver)) {
-            decision = formulaSat(composition, read(composition, asks));
+            decision = closed(composition, asks, read(composition, asks));
         }
         // After every ask: a solver error means some query was never read,
         // so the claim over it is refused by name.
@@ -177,50 +192,112 @@ public final class ClaimPolicy {
         return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS,
                 decision.claim().valuationOrdinal(),
                 Collections.<String, String>emptyMap(), false, gaps),
-                decision.outcomes());
+                decision.outcomes(), decision.formula());
     }
 
     /**
-     * A satisfiable formula the policy named no mechanism for is the
-     * formula's own claim: FORMULA_SAT at its first satisfying valuation a
-     * replay can plant, which CONFIRM plants and judges like any other
-     * (over-approximate, confirm strictly), never a gap that leaves no
-     * verdict.  A formula satisfiable only by moving a configuration whose
-     * plant leaves reads of its key at the recording's value ({@link
-     * #unplanted}) is a world no replay can plant: a defect of the plant
-     * (UNPRODUCIBLE_ANSWER, BLOCKING) until those reads are planted too.
+     * THE FORMULA DECIDES (owner 2026-10-04: "拼出.smt。结果肯定不是sat就是
+     * Unsat"): a named claim stands on its witness; otherwise the composed
+     * formula is asked whole, every root free over its domain -- the text
+     * COMPOSE exports as candidate.smt2 -- and its answer is the verdict.
+     * Unsat closes the claim negative, whatever the enumeration of single
+     * and pair moves reached (it only picks a witness's valuation);
+     * undecided within the budget is a defect (BLOCKING), never a
+     * refutation.  Sat is FORMULA_SAT: at the first enumerated witness a
+     * replay can plant, else at the formula's own model ({@link
+     * Composer.Composition#modelValuation}), which CONFIRM plants and judges
+     * like any other (over-approximate, confirm strictly).  A sat model that
+     * selects no disjunct is a defect, and so is a formula satisfiable only
+     * by moving a configuration whose plant leaves reads of its key at the
+     * recording's value ({@link #unplanted}): a world no replay can plant
+     * (UNPRODUCIBLE_ANSWER) until those reads are planted too.
      */
-    private static Decision formulaSat(Composer.Composition composition,
-                                       Decision decided) {
+    private static Decision closed(Composer.Composition composition,
+                                   Disjunction asks, Decision decided) {
         Claim claim = decided.claim();
-        if (claim.kind() != ClaimKind.NO_SUPPORTED_WITNESS) return decided;
-        Set<String> unplantable = new LinkedHashSet<String>();
-        for (Outcome outcome : decided.outcomes()) {
-            if (!outcome.witness()) continue;
-            Set<String> partial = composition.unplanted(
-                    outcome.valuation().moved().keySet()).keySet();
-            if (!partial.isEmpty()) {
-                unplantable.addAll(partial);
-                continue;
-            }
-            return new Decision(Claim.of(ClaimKind.FORMULA_SAT,
-                    outcome.valuation().ordinal(),
-                    movedRoots(composition, outcome),
-                    claim.polarityDecides(), claim.gaps()),
-                    decided.outcomes());
+        if (claim.kind() != ClaimKind.NO_SUPPORTED_WITNESS
+                || composition.disjuncts().isEmpty()) {
+            return decided;
         }
-        if (unplantable.isEmpty()) return decided;
         List<GapRow> gaps = new ArrayList<GapRow>(claim.gaps());
-        gaps.add(GapRow.of(Composer.COMPOSITION, GapKind.UNPRODUCIBLE_ANSWER,
-                GapClass.BLOCKING, composition.anchor().render(),
-                "the formula is satisfiable only by moving configuration "
-                        + unplantable + " whose plant leaves reads of its "
-                        + "key at the recording's value, a world no replay "
-                        + "can plant: a defect until those reads are "
-                        + "planted"));
-        return new Decision(Claim.of(claim.kind(), claim.valuationOrdinal(),
-                claim.movedRoots(), claim.polarityDecides(), gaps),
-                decided.outcomes());
+        List<Outcome> outcomes = new ArrayList<Outcome>(decided.outcomes());
+        Outcome free = outcome(composition, asks,
+                composition.free(outcomes.size()),
+                Collections.<String>emptyList(), false);
+        Z3.Answer formula = free.answer();
+        if (formula.unsat()) {
+            return new Decision(claim, outcomes, formula);
+        }
+        if (!formula.decided()) {
+            String reason = formula.reason();
+            gaps.add(GapRow.of(Composer.COMPOSITION,
+                    GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
+                    "formula:" + formula.status(), "z3 did not decide the "
+                            + "composed formula, every root free over its "
+                            + "domain, within its budget, so neither a "
+                            + "witness nor a refutation is closed over it: "
+                            + (reason.isEmpty() ? "it stated no reason"
+                            : reason)));
+            return new Decision(claimWith(claim, gaps), outcomes, formula);
+        }
+        Set<String> unplantable = new LinkedHashSet<String>();
+        Outcome witness = null;
+        for (Outcome outcome : outcomes) {
+            if (!outcome.witness()) continue;
+            if (plantable(composition, outcome, unplantable)) {
+                witness = outcome;
+                break;
+            }
+        }
+        if (witness == null && free.witness()) {
+            Outcome modelled = new Outcome(composition.modelValuation(
+                    outcomes.size(), formula.values()),
+                    Collections.<String>emptyList(), formula,
+                    free.selected(), free.selectedArms());
+            if (plantable(composition, modelled, unplantable)) {
+                outcomes.add(modelled);
+                witness = modelled;
+            }
+        }
+        if (witness == null) {
+            gaps.add(unplantable.isEmpty()
+                    ? GapRow.of(Composer.COMPOSITION,
+                    GapKind.ADMISSION_GAP, GapClass.BLOCKING,
+                    composition.anchor().render(), "the composed formula is "
+                            + "satisfiable and its model selects no path, "
+                            + "so no witness is named and no refutation "
+                            + "closed")
+                    : GapRow.of(Composer.COMPOSITION,
+                    GapKind.UNPRODUCIBLE_ANSWER, GapClass.BLOCKING,
+                    composition.anchor().render(), "the formula is "
+                            + "satisfiable only by moving configuration "
+                            + unplantable + " whose plant leaves reads of "
+                            + "its key at the recording's value, a world no "
+                            + "replay can plant: a defect until those reads "
+                            + "are planted"));
+            return new Decision(claimWith(claim, gaps), outcomes, formula);
+        }
+        return new Decision(Claim.of(ClaimKind.FORMULA_SAT,
+                witness.valuation().ordinal(),
+                movedRoots(composition, witness), claim.polarityDecides(),
+                gaps), outcomes, formula);
+    }
+
+    /** Whether a replay can plant this witness's valuation; a root it
+     *  cannot is added to {@code unplantable}. */
+    private static boolean plantable(Composer.Composition composition,
+                                     Outcome outcome,
+                                     Set<String> unplantable) {
+        Set<String> partial = composition.unplanted(
+                outcome.valuation().moved().keySet()).keySet();
+        unplantable.addAll(partial);
+        return partial.isEmpty();
+    }
+
+    /** The same claim with these gaps. */
+    private static Claim claimWith(Claim claim, List<GapRow> gaps) {
+        return Claim.of(claim.kind(), claim.valuationOrdinal(),
+                claim.movedRoots(), claim.polarityDecides(), gaps);
     }
 
     private static Decision read(Composer.Composition composition,
@@ -243,13 +320,13 @@ public final class ClaimPolicy {
                         valuation.ordinal() == 0)));
         Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
 
-        // An undecided valuation is named and blocks: neither a witness nor
-        // a refutation is closed over it.
+        // An undecided valuation is named: no witness there.  The verdict
+        // is the formula's own answer ({@link #closed}).
         for (Outcome outcome : outcomes) {
             if (outcome.answer().decided()) continue;
             String reason = outcome.answer().reason();
             gaps.add(GapRow.of(Composer.COMPOSITION,
-                    GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
+                    GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     "valuation " + outcome.valuation().ordinal() + ":"
                             + outcome.answer().status(),
                     "z3 did not decide this valuation"
@@ -624,7 +701,7 @@ public final class ClaimPolicy {
      * A mechanism the formula shows but the recording does not decide, raised
      * as FORMULA_SAT_AT_RECORDED_VALUATION, not published: the run reached
      * the fatal arm at the recorded valuation too, or its refutation names no
-     * valuation pin.  An UNDECIDED recorded valuation is BLOCKING already
+     * valuation pin.  An UNDECIDED recorded valuation is named already
      * ({@link #read}) and is no such statement (hdfs-11741 L1: valuation 0
      * "unknown" was published as satisfiable).
      */
@@ -839,6 +916,7 @@ public final class ClaimPolicy {
         for (String held : composition.heldSymbols()) {
             asked.add(SmtNames.legalSymbols(held));
         }
+        asked.addAll(composition.rootSymbols());
         List<String> assertions =
                 new ArrayList<String>(valuation.assertions());
         assertions.addAll(pinned);

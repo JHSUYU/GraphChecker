@@ -180,6 +180,9 @@ public final class Composer {
     public static final class Composition {
         /** What the composed paths rest on concretely ({@link Concrete}). */
         private final List<Concrete> concrete;
+        /** The declared roots a valuation assigns, and their recordings. */
+        private final Map<String, RootMintRow> declaredRoots;
+        private final Map<String, String> recordedValues;
         private final OccurrenceAddress anchor;
         private final String body;
         private final List<Disjunct> disjuncts;
@@ -264,6 +267,16 @@ public final class Composer {
             this.armChoices = composed.composedFamilies.armChoices();
             this.concrete = Collections.unmodifiableList(
                     new ArrayList<Concrete>(composed.concrete.values()));
+            this.declaredRoots = Collections.unmodifiableMap(
+                    new LinkedHashMap<String, RootMintRow>(
+                            composed.declaredRoots));
+            Map<String, String> recordedValues =
+                    new LinkedHashMap<String, String>();
+            for (String rootId : declaredRoots.keySet()) {
+                recordedValues.put(rootId,
+                        composed.roots.get(rootId).recordedValue());
+            }
+            this.recordedValues = Collections.unmodifiableMap(recordedValues);
             this.ownArms = composed.composedFamilies.ownArms();
             this.recordedAtPlants =
                     composed.composedFamilies.recordedAtPlants();
@@ -515,6 +528,68 @@ public final class Composer {
             return clockCells;
         }
 
+        /** The symbol of every declared root a valuation assigns, as a
+         *  query spells it: what a model of the formula is read back for. */
+        public List<String> rootSymbols() {
+            List<String> symbols = new ArrayList<String>();
+            for (RootMintRow row : declaredRoots.values()) {
+                symbols.add(SmtNames.legalSymbols(row.symbol()));
+            }
+            return symbols;
+        }
+
+        /**
+         * THE FORMULA ITSELF: no root held, each free over its domain, as
+         * the body states it -- the question whose answer is the verdict
+         * ({@code ClaimPolicy#closed}), asked under this valuation of no
+         * pin, numbered {@code ordinal}.
+         */
+        public Valuation free(int ordinal) {
+            return new Valuation(ordinal, recordedValues,
+                    Collections.<String, String>emptyMap(),
+                    Collections.<String>emptyList());
+        }
+
+        /**
+         * The valuation a model of the formula assigns (symbol -> value,
+         * {@link #rootSymbols}), numbered {@code ordinal}: each declared
+         * root at the model's value, moved where that is not its
+         * recording's, pinned there as an enumerated valuation is.
+         */
+        public Valuation modelValuation(int ordinal,
+                                        Map<String, String> model) {
+            Map<String, String> assignment =
+                    new LinkedHashMap<String, String>();
+            Map<String, String> moved = new LinkedHashMap<String, String>();
+            List<String> assertions = new ArrayList<String>();
+            for (Map.Entry<String, RootMintRow> root
+                    : declaredRoots.entrySet()) {
+                String recorded = recordedValues.get(root.getKey());
+                String value = modelValue(model.get(
+                        SmtNames.legalSymbols(root.getValue().symbol())));
+                if (value.isEmpty()) value = recorded;
+                assignment.put(root.getKey(), value);
+                if (!value.equals(recorded)) moved.put(root.getKey(), value);
+                String literal = smtLiteral(value, sortOf(root.getValue()));
+                if (literal.isEmpty()) continue;
+                assertions.add("(assert (! (= " + root.getValue().symbol()
+                        + " " + literal + ") :named valuation__"
+                        + smtName(root.getValue().symbol()) + "))");
+            }
+            return new Valuation(ordinal, assignment, moved, assertions);
+        }
+
+        /** A model's value as a recording spells it: {@code (- 5)} is -5;
+         *  "" for none. */
+        private static String modelValue(String model) {
+            if (model == null) return "";
+            String text = model.trim();
+            if (text.startsWith("(-") && text.endsWith(")")) {
+                return "-" + text.substring(2, text.length() - 1).trim();
+            }
+            return text;
+        }
+
         /** Clock cell -> its instant on the recording's timeline: the
          *  seed's reading, or where a session that read it places it
          *  ({@code Composer#clocks}). */
@@ -751,6 +826,10 @@ public final class Composer {
     private final Map<String, Family> families =
             new LinkedHashMap<String, Family>();
     /** Root id -> the domain the case and the recording give it. */
+    /** The declared roots the enumeration moves (rootId -> its row), set
+     *  by {@link #valuations}: what a model of the formula assigns. */
+    private final Map<String, RootMintRow> declaredRoots =
+            new LinkedHashMap<String, RootMintRow>();
     private final Map<String, RootDomain> roots =
             new LinkedHashMap<String, RootDomain>();
     /** The one family-arm rule, shared with the flip solver. */
@@ -3087,6 +3166,7 @@ public final class Composer {
                 continue;
             }
             declared.add(entry.getKey());
+            declaredRoots.put(entry.getKey(), row);
             alternatives.put(entry.getKey(), values);
         }
         List<Valuation> valuations = new ArrayList<Valuation>();

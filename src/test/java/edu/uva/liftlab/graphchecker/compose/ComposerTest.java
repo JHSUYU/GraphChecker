@@ -2029,6 +2029,58 @@ public class ComposerTest {
     // 8. A mechanism the recording does not decide is not a finding.
     // ------------------------------------------------------------------
 
+    /**
+     * THE FORMULA DECIDES.  Three markers must all flip to reach the fatal
+     * arm: no single or pair move does, and the formula itself, every root
+     * free, is satisfiable -- so the claim is FORMULA_SAT at the formula's
+     * own model (all three moved), never a refutation over the moves the
+     * enumeration tried; the exported file is that formula with no
+     * valuation pinned, and the same corpus with a fourth, unflippable
+     * conjunct is unsat, closed by the formula's own answer.
+     */
+    @Test
+    public void theComposedFormulaDecidesNotTheEnumeration()
+            throws Exception {
+        for (boolean reachable : new boolean[]{true, false}) {
+            Path iteration = folder.newFolder("formula-" + reachable)
+                    .toPath();
+            Session session = new Session(iteration, "s0", false);
+            for (String marker : new String[]{"M_ONE", "M_TWO", "M_THREE"}) {
+                session.root(PRODUCER, "ROOT." + marker, marker,
+                        RootKind.MARKER, "false");
+            }
+            session.target(reachable ? "(and M_ONE M_TWO M_THREE)"
+                    : "(and M_ONE M_TWO M_THREE (not M_ONE))", false, true);
+            session.write();
+            Composer.Composition composition = compose(iteration, 8);
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+                if (outcome.valuation().moved().size() < 3) {
+                    assertTrue(reachable + ": no single or pair move "
+                            + outcome, outcome.answer().unsat());
+                }
+            }
+            String candidate = text(ComposeMain.candidate(composition,
+                    decision));
+            assertFalse("the file pins no valuation: " + candidate,
+                    candidate.contains(":named valuation__"));
+            assertEquals(reachable ? "sat" : "unsat",
+                    solver().ask(candidate.replace("(check-sat)\n", ""),
+                            Collections.<String>emptyList(), false)
+                            .status());
+            assertEquals(reachable ? "sat" : "unsat",
+                    decision.formula().status());
+            assertEquals(reachable ? ClaimKind.FORMULA_SAT
+                    : ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
+            if (reachable) {
+                assertEquals("all three moved", 3,
+                        decision.claim().movedRoots().size());
+            }
+            assertFalse(decision.claim().blocked());
+        }
+    }
+
     @Test
     public void aWitnessWithoutPolarityIsNotAFinding() throws Exception {
         Path iteration = folder.newFolder("polarity").toPath();
