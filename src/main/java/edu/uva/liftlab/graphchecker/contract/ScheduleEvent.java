@@ -17,6 +17,14 @@ public final class ScheduleEvent extends Value {
      */
     public static final String WITNESS = "WITNESS";
 
+    /**
+     * The mark stating which invocation of a parameterized workload test the
+     * run is ({@code RowCodec#writeScheduleInvocation}): a replay held to a
+     * run that ran another is refused ({@code runtime.ScheduleLog
+     * #invocation}).
+     */
+    public static final String INVOCATION = "INVOCATION";
+
     /** What kind of handoff the event is. */
     public enum Kind {
         /** A work start: {@code Thread.start}, a submission, a queue put. */

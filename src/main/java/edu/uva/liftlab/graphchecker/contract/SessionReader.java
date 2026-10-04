@@ -216,6 +216,23 @@ public final class SessionReader {
         return marks;
     }
 
+    /**
+     * The invocation of a parameterized test a schedule file states it ran
+     * ({@link ScheduleEvent#INVOCATION}), its row whole; null when it states
+     * none.
+     */
+    public static JsonObject readScheduleInvocation(Path file)
+            throws IOException {
+        JsonObject[] stated = new JsonObject[1];
+        schedulePrefix(file, row -> {
+            if (stated[0] == null && row.has("mark") && ScheduleEvent
+                    .INVOCATION.equals(row.get("mark").getAsString())) {
+                stated[0] = row;
+            }
+        });
+        return stated[0];
+    }
+
     /** Each row of a schedule file, up to the first one that will not read. */
     private static void schedulePrefix(Path file, Consumer<JsonObject> each)
             throws IOException {

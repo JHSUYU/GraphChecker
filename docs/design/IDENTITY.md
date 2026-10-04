@@ -498,7 +498,9 @@ made before this rule states shorter contexts for such threads, so it cannot hol
 after it (every campaign records and replays with one frozen jar). `k` counts events per (kind, context, site). A
 `Lost` context, and a context anchored by an unawaited receipt, make no event. `mark` rows state
 where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS, at}` states the run
-was cut at its witness.
+was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameterized workload test
+the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
+order, so a replay held to a run of another invocation is refused by name (`ScheduleLog#invocation`).
 
 `runtime/ScheduleLog` records in both passes into `schedule.jsonl`. In a replay it also holds the
 order:

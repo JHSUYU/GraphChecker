@@ -23,7 +23,9 @@ import java.util.Map;
  * waits for the events it followed ({@code runtime.ScheduleLog}) -- on a slower
  * replay's wall clock every daemon would be due at once. No cut found: whole
  * schedule. A source run cut at its witness hands its mark on with the rest
- * ({@code ScheduleEvent#WITNESS}): its order ends there.
+ * ({@code ScheduleEvent#WITNESS}): its order ends there; so does a run of one
+ * invocation of a parameterized test its invocation's ({@code
+ * ScheduleEvent#INVOCATION}).
  */
 final class SchedulePrefix {
     /** The file the replay reads, beside its focus row. */
@@ -115,6 +117,11 @@ final class SchedulePrefix {
             rest.add(RowCodec.writeScheduleMark(ScheduleEvent.WITNESS,
                     witness));
         }
+        // Which invocation of a parameterized test the run was, for the
+        // replay to check it runs the same one.
+        JsonObject invocation =
+                SessionReader.readScheduleInvocation(session.schedule());
+        if (invocation != null) rest.add(invocation);
         RowCodec.writeJsonl(out.resolve(FILE), rows);
         RowCodec.writeJsonl(out.resolve(REST_FILE), rest);
         return new Cut(sessionId, cut, events.size(), found,

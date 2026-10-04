@@ -4,6 +4,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -11,6 +13,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.stream.Stream;
 
+import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import org.junit.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInfo;
@@ -83,6 +86,48 @@ public class JUnitInvocationTest {
             assertEquals(row[1] + " ran nothing", Collections.emptyList(),
                     LOG);
         }
+    }
+
+    /** A replay held to a run of another invocation is refused by name; one
+     *  of the same invocation runs. */
+    @Test
+    public void aReplayRunsTheInvocationItsRunRan() throws Exception {
+        Path order = Files.createTempFile("schedule_prefix", ".jsonl");
+        String before = System.getProperty(ScheduleLog.PREFIX_PROPERTY);
+        try {
+            System.setProperty(ScheduleLog.PREFIX_PROPERTY, order.toString());
+            RowCodec.writeJsonl(order, Collections.singletonList(
+                    RowCodec.writeScheduleInvocation("resolver[1](null)")));
+            LOG.clear();
+            run(Methods.class, "resolver[1]");
+            assertEquals(Arrays.asList("beforeEach", "resolver:null"), LOG);
+            LOG.clear();
+            try {
+                run(Methods.class, "resolver[2]");
+                fail("another invocation than its run's must be refused");
+            } catch (IllegalStateException refused) {
+                assertTrue(refused.getMessage(), refused.getMessage().contains(
+                        "runs invocation resolver[2](trusted)"));
+            }
+            assertEquals(Collections.emptyList(), LOG);
+        } finally {
+            if (before == null) {
+                System.clearProperty(ScheduleLog.PREFIX_PROPERTY);
+            } else {
+                System.setProperty(ScheduleLog.PREFIX_PROPERTY, before);
+            }
+            Files.delete(order);
+            ScheduleLog.resetForTests();
+        }
+    }
+
+    /** An argument without a toString of its own renders by its class, not
+     *  by an identity hash no other run shares. */
+    @Test
+    public void argumentsRenderAlikeInEveryRun() {
+        assertEquals("null, 2, [1, 2], " + Methods.class.getName(),
+                JUnitInvocation.rendered(new Object[] {null, 2,
+                        new int[] {1, 2}, new Methods()}));
     }
 
     private static void run(Class<?> workload, String name) throws Exception {

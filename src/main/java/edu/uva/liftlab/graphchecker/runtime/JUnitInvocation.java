@@ -17,6 +17,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.BaseStream;
 
+import edu.uva.liftlab.graphchecker.contract.JvmNames;
+
 /**
  * The one invocation of a workload test a case names: {@code m} for a plain
  * test method, {@code m[k]} for the k-th invocation of a Jupiter {@code
@@ -30,7 +32,10 @@ import java.util.stream.BaseStream;
  *
  * <p>The arguments are resolved before anything of the test runs, so before
  * the window and alike in both passes, provided a factory states its
- * arguments in one order.  A source that throws, yields no invocation or has
+ * arguments in one order; the run states which invocation it resolved, its
+ * arguments rendered alike in both passes ({@link #stated}), and a replay of
+ * a run that resolved another is refused by name ({@code
+ * ScheduleLog#invocation}).  A source that throws, yields no invocation or has
  * no k-th one is refused by name: a session would otherwise be published for
  * a workload that never ran.  The sources resolved are {@code @MethodSource}
  * (a static factory, by name or {@code Class#name}, the test method's own
@@ -68,6 +73,9 @@ final class JUnitInvocation {
     private Object[] ofMethod;
     /** JUnit's display name of the innermost invocation, or null. */
     private String display;
+    /** The invocation as the run states it: the method, then per level its
+     *  pick and its arguments ({@link #rendered}). */
+    private final StringBuilder stated = new StringBuilder();
     /** A class invocation's {@code @Parameter} fields; none else. */
     private List<Field> fields = new ArrayList<>();
     /** The constructor a class invocation's arguments go to, else null. */
@@ -113,6 +121,12 @@ final class JUnitInvocation {
         return display;
     }
 
+    /** The resolved invocation as the run states it, e.g. {@code
+     *  testSimpleEditLog[1](false)}; null for a plain test. */
+    String stated() {
+        return plain() ? null : method + stated;
+    }
+
     /**
      * Resolves the named invocation of {@code testMethod} of {@code
      * testClass}: what each parameterized level passes this run, checked
@@ -138,6 +152,8 @@ final class JUnitInvocation {
             ofClass = pick(sets(sourced(testClass), testClass, null, null,
                     where), picks.get(next), where);
             display = display(picks.get(next++), ofClass);
+            stated.append("[").append(picks.get(next - 1)).append("](")
+                    .append(rendered(ofClass)).append(")");
             fields = parameterFields(testClass);
             if (fields.isEmpty()) {
                 constructor = theConstructor(testClass);
@@ -154,6 +170,8 @@ final class JUnitInvocation {
                     testClass, testMethod, types.length == 0 ? null
                             : types[0], test), picks.get(next), test);
             display = display(picks.get(next), ofMethod);
+            stated.append("[").append(picks.get(next)).append("](")
+                    .append(rendered(ofMethod)).append(")");
         }
         fits(testMethod, methodArguments(), true);
     }
@@ -300,15 +318,45 @@ final class JUnitInvocation {
         return sets.get(k - 1);
     }
 
+    /** JUnit's display name of invocation {@code k}: {@code [k] } and its
+     *  arguments ({@link #rendered}). */
     private static String display(int k, Object[] arguments) {
-        StringBuilder shown = new StringBuilder("[").append(k).append("] ");
-        for (int i = 0; i < arguments.length; i++) {
-            if (i > 0) shown.append(", ");
-            shown.append(arguments[i] instanceof Object[]
-                    ? Arrays.deepToString((Object[]) arguments[i])
-                    : String.valueOf(arguments[i]));
+        return "[" + k + "] " + rendered(arguments);
+    }
+
+    /**
+     * Arguments as both passes render them alike: a value by its own {@code
+     * toString}, an array element by element, and a value whose class has no
+     * {@code toString} of its own by its run-stable class name (an identity
+     * hash would differ in every run).
+     */
+    static String rendered(Object value) {
+        if (value == null) return "null";
+        if (value instanceof Object[]) {
+            StringBuilder shown = new StringBuilder();
+            for (Object each : (Object[]) value) {
+                if (shown.length() > 0) shown.append(", ");
+                shown.append(each != null && each.getClass().isArray()
+                        ? "[" + rendered(each) + "]" : rendered(each));
+            }
+            return shown.toString();
         }
-        return shown.toString();
+        if (value.getClass().isArray()) {
+            Object[] boxed = new Object[Array.getLength(value)];
+            for (int i = 0; i < boxed.length; i++) {
+                boxed[i] = Array.get(value, i);
+            }
+            return rendered(boxed);
+        }
+        try {
+            if (value.getClass().getMethod("toString").getDeclaringClass()
+                    != Object.class) {
+                return String.valueOf(value);
+            }
+        } catch (NoSuchMethodException unreachable) {
+            // Every class has a public toString.
+        }
+        return JvmNames.stable(value.getClass().getName());
     }
 
     /** The argument sets of every source in {@code marks}, in order. */

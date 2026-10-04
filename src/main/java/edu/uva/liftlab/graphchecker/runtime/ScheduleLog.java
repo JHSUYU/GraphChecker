@@ -24,6 +24,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -579,6 +580,44 @@ public final class ScheduleLog {
         synchronized (LOCK) {
             if (!MARKED.add(id)) return;
             writeLocked(RowCodec.writeScheduleMark(id, seq));
+        }
+    }
+
+    /**
+     * States which invocation of a parameterized workload test this run is
+     * ({@link ScheduleEvent#INVOCATION}), before its window: a schedule
+     * holds the order of one invocation, and a replay of another would take
+     * its slots for what they are not.  A replay held to a run that states
+     * another is refused by name: the test's argument factory listed its
+     * arguments in another order in the two runs.
+     */
+    static void invocation(String stated) {
+        // A recording is handed no order: nothing to compare.
+        for (Path file : Arrays.asList(prefixFile(), suffixFile())) {
+            JsonObject held = held(file);
+            String ran = held == null || !held.has("of") ? null
+                    : held.get("of").getAsString();
+            if (ran != null && !ran.equals(stated)) {
+                throw new IllegalStateException("this replay runs invocation "
+                        + stated + " of the workload's parameterized test,"
+                        + " the run it follows (" + file + ") ran " + ran
+                        + ": its argument source listed its arguments in"
+                        + " another order");
+            }
+        }
+        synchronized (LOCK) {
+            writeLocked(RowCodec.writeScheduleInvocation(stated));
+        }
+    }
+
+    /** The invocation an order file states, or null. */
+    private static JsonObject held(Path file) {
+        if (file == null || !file.toFile().isFile()) return null;
+        try {
+            return SessionReader.readScheduleInvocation(file);
+        } catch (IOException unreadable) {
+            // Its schedule names an unreadable order once it loads it.
+            return null;
         }
     }
 

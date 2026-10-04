@@ -110,6 +110,7 @@ final class JUnitLifecycle {
         }
         // Before anything of the test runs, so before its window.
         named.resolve(testClass, testMethod);
+        if (!named.plain()) ScheduleLog.invocation(named.stated());
         running = named;
         Throwable failure = null;
         // A static field's extension is the class's; an instance field's,
