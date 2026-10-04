@@ -48,7 +48,7 @@ public final class RegionUnattributedWriterSmoke {
 
         String versions = System.getSharedFieldVersions(block,
                 Block.class.getName(), "generationStamp", "J");
-        require(count(versions, "\"versionKind\":\"WRITE\"") == 2, versions);
+        require(count(versions, "\"versionKind\":\"WRITE\",") == 2, versions);
         Sink read = new Sink();
         read.value = block.generationStamp;
         read.slot = slots[2];

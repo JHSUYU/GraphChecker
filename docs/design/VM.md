@@ -285,11 +285,12 @@ newest; never for a container read), `writerSetComplete` (the location's writer 
 and, when true, `unnamedWriter` (a writer the log never named reached the location: every
 incompleteness reason but `VERSION_BOUND`); a read that returned its version's word shares that
 version's constant, or for a reference its identity node. The location's read log keeps the same
-answer per read (`ReadRecord`: `readEventId`, the reader, its `site`, `observedVersion` -- the
-chosen version's id --, `observedExact`, `writerSetComplete`, `unnamedWriter` when true, and
-`_java_type`, the loaded word's letter, absent for a container's state), so a read whose value
-reaches no published expression (a reference compared with a constant) is still a read of its
-version (SYMBOL-SCOPE §5.2).
+answer per read (`ReadRecord`: `readEventId`, the reader, its `site`, `observedVersion` --
+`{fieldVersionId, versionKind}`, the read-from node's shape without its expression --,
+`observedExact`, `writerSetComplete`, `unnamedWriter` when true, and `_java_type`, the loaded word's
+letter, absent for a container's state), so a read whose value reaches no published expression (a
+reference compared with a constant) is still a read of its version (SYMBOL-SCOPE §5.2). The log is a
+ring of 1024 reads: past it the newest replaces the oldest in place (`readLogTruncated`).
 
 ### 5.3 Guarded concrete stores
 
@@ -663,7 +664,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 69
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 70
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor

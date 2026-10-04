@@ -67,12 +67,12 @@ public final class RegionTrackedRaceSmoke {
         System.endConcolic();
         require(!field.contains("UNOBSERVED")
                         && field.contains("\"writerSetComplete\":true")
-                        && count(field, "\"fieldVersionId\"") == WRITES + 1,
+                        && count(field, "\"writerContextId\"") == WRITES + 1,
                 "a racing reader named a write that did not happen: "
                         + field);
         require(atomic.get() == WRITES + INCREMENTS
                         && !counter.contains("UNOBSERVED")
-                        && count(counter, "\"versionKind\":\"RMW\"") > 0,
+                        && count(counter, "\"versionKind\":\"RMW\",") > 0,
                 "a racing increment named a write that did not happen: "
                         + counter);
         System.out.println("RegionTrackedRaceSmoke OK");

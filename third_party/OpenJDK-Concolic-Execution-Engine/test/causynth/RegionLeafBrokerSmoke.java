@@ -232,8 +232,8 @@ public final class RegionLeafBrokerSmoke {
         require(count(logBefore, "\"readEventId\"")
                         == count(logAfter, "\"readEventId\""),
                 "a peek recorded a read: " + logBefore + "\n" + logAfter);
-        require(count(logBefore, "\"fieldVersionId\"")
-                        == count(logAfter, "\"fieldVersionId\""),
+        require(count(logBefore, "\"writerContextId\"")
+                        == count(logAfter, "\"writerContextId\""),
                 "a peek published a version: " + logAfter);
         require(peeks.length == 9, "peek rows");
         require(System.finishConcolicRegion().contains("\"complete\":true"),

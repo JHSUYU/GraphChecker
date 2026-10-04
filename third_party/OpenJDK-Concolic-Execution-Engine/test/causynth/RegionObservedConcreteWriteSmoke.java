@@ -44,7 +44,7 @@ public final class RegionObservedConcreteWriteSmoke {
         require(evidence.contains("\"selected\":true"), evidence);
         require(evidence.contains("\"versionKind\":\"INITIAL\""), evidence);
         require(evidence.contains("\"versionKind\":\"WRITE\""), evidence);
-        require(count(evidence, "\"versionKind\":\"INITIAL\"") == 1,
+        require(count(evidence, "\"versionKind\":\"INITIAL\",") == 1,
                 evidence);
         require(count(evidence, "\"readerContextId\"") == 1, evidence);
 

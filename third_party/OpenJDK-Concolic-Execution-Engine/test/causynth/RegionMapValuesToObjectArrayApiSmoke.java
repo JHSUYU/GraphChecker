@@ -39,8 +39,8 @@ public final class RegionMapValuesToObjectArrayApiSmoke {
         require(versions.contains("\"selected\":true"), versions);
         require(versions.contains("\"locationKind\":\"MAP_STATE\""),
                 versions);
-        require(count(versions, "\"fieldVersionId\"") == 3, versions);
-        require(count(versions, "\"versionKind\":\"STATE_PUT\"") == 2,
+        require(count(versions, "\"writerContextId\"") == 3, versions);
+        require(count(versions, "\"versionKind\":\"STATE_PUT\",") == 2,
                 versions);
         require(count(versions, "\"readEventId\"") == 1, versions);
         require(count(versions, "\"readerContextId\"") == 1, versions);
