@@ -621,10 +621,17 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   upstream hole's symbol, is a nested slot.
 - READ: the eligible writers (`Arms.stateArms`, the location's INITIAL among them, the writer at
   version 0) become one Bool selector each (`wchoice_*`, exactly one), one choice per (reader
-  occurrence, location) binding every read of it -- reads of it that saw two writes have no choice
-  that is the run's pairing and refuse the flip by name (`UNSTATED_VALUE:READS_SAW_TWO_WRITES`, as
-  COMPOSE's family does); a writer whose write lowers to another sort than the read delivers
-  nothing it could be and is no choice (`ARM_SORT_MISMATCH`, the recorded one excepted); no writer:
+  occurrence, location) binding every read of it, so a writer's choice is the run only where every
+  read saw that writer's one write; where the reads saw several writes, or a version no row wrote,
+  one more selector, the run's own (`wchoice_*_run`, `FlipQuery#choices`), holds each read to the
+  value it read (its observed write's delivery, else its row's `concreteValue`; neither refuses
+  `UNSTATED_VALUE`) and is the recorded pairing, as COMPOSE's observed arm is (§8): a model taking it
+  plants nothing, `heldToRecording` asserts it, and the writer choices stay beside it, less those a
+  read of another version could not have seen (`Arms#eligible`); by COMPOSE's gate, only where a
+  writer left is HB-concurrent with the reader, else the block is no choice and each read is held
+  to the value it read; a writer
+  whose write lowers to another sort than the read delivers nothing it could be and is no choice
+  (`ARM_SORT_MISMATCH`, the recorded one excepted); no writer:
   pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A scalar read of a field or array cell
   of the flipped occurrence (not a container's state or a query of one) with more than one
   eligible writer is its own symbol, as COMPOSE keeps the anchor's
@@ -1134,21 +1141,26 @@ location, and only attested ones the read could have run right after, `Arms#elig
 location's INITIAL, the writer at version 0, where the read observed it or the same rule admits it
 (its arm binds the reads to what the location held and rests on nothing a run
 decided, `ComposedFamilies#initialBody`), plus an `observed_arm__` holding each read to its
-own join or pin when a version one of the reads observed has no writing row; exactly one per
-location that has two arms or more, one of them an HB-concurrent writer's, else the reads keep their
-own joins: arms that are each some read's own pairing (the writer one read saw, the pins of another
-whose version no row wrote) re-pair nothing. The read rule's "a location a STATE family may
+own join or pin wherever the run is no one writer's arm -- the reads saw several writes (a nested
+region of the reader's own thread wrote between two of its reads: hdfs-adhoc-23's
+`StorageInfo.layoutVersion`), or a version one of them observed has no writing row; the writer
+arms stay beside it, each binding every read, and where the reads saw several versions only a
+write each of them could have seen (`Arms#eligible` for every version; hdfs-adhoc-16: the first
+read's own later write is none); exactly one per location that has two arms or more, one of them
+an HB-concurrent writer's, else the reads keep their own joins, which are the run. The read
+rule's "a location a STATE family may
 re-pair" (`Composer#repairing`) is the same alternative: a read of it could have seen a writer
 occurrence besides the one it did (`Corpus#eligibleWrites`; a version no row wrote has none of its
 own). A hot field the reader's own occurrence alone writes, whose earliest versions the VM's
 64-version bound dropped, is none (hdfs-17960 e1c: the checkpoint saver's configuration parse,
 whose `Hashtable` entries' hashes, a `String.hashCode` no lowering models, are pinned). The arm the
 run took (the observed arm, else the one writer every read observed) is part of the path's recorded
-pairing -- at a location the world planted, the recording's pairing, any arm but the plant
-(`(not <plant>)`), so a witness that needs the plant names it as the arm it re-paired
-(`repairedArms`) and the recording decides it (STATE_PAIRING_FLIPPED); a location where no arm is
-that pairing (the reads saw two writes, or the write they saw has no arm) is a BLOCKING
-`UNSTATED_VALUE`: the run as it happened is no world of the formula.
+pairing -- at a location the world planted, the recording's pairing, any arm but the plant and the
+observed arm, which holds the reads to what the plant gave them (`(not (or <plant> <observed>))`),
+so a witness that needs either names it as the arm it re-paired (`repairedArms`) and the recording
+decides it (STATE_PAIRING_FLIPPED); a location where no arm is that pairing (the one write the
+reads saw has no arm) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the
+formula.
 
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
