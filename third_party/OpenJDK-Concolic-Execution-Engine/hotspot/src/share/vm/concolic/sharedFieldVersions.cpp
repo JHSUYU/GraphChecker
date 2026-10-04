@@ -484,6 +484,11 @@ bool SharedFieldVersions::plan_read_locked(const Location &location,
   ReadRecord record;
   record.read_event_id = plan->read_event_id;
   record.reader = plan->reader;
+  record.observed_version_id = version.version_id;
+  record.observed_exact = plan->observed_exact;
+  record.writer_set_complete = plan->writer_set_complete;
+  record.unnamed_writer = plan->unnamed_writer;
+  record.java_type = loaded.stated() ? type2char(loaded.type) : 0;
   slot->reads.push_back(record);
   if (slot->reads.size() > MAX_READS_PER_LOCATION) {
     slot->reads.erase(slot->reads.begin());
@@ -1108,8 +1113,9 @@ bool SharedFieldVersions::write_versions_envelope(
   const size_t bound = envelope_bytes(buffer, expression_artifact)
       + (budget_bytes == 0 ? MAX_VERSION_ENVELOPE_BYTES : budget_bytes);
   writer.StartObject();
+  // 2: each read of the read log states the version its plan chose.
   writer.Key("schemaVersion");
-  writer.Int(1);
+  writer.Int(2);
   writer.Key("kind");
   writer.String("SHARED_FIELD_VERSIONS");
   writer.Key("sessionId");
@@ -1245,6 +1251,21 @@ bool SharedFieldVersions::write_versions_envelope(
     writer.Key("regionEnterEventId");
     writer.Int64(read.reader.region_enter_event_id);
     write_site(writer, read.reader.site);
+    // What the plan chose, under the read-from node's names.
+    writer.Key("observedVersion");
+    writer.Int64(read.observed_version_id);
+    writer.Key("observedExact");
+    writer.Bool(read.observed_exact);
+    writer.Key("writerSetComplete");
+    writer.Bool(read.writer_set_complete);
+    if (read.unnamed_writer) {
+      writer.Key("unnamedWriter");
+      writer.Bool(true);
+    }
+    if (read.java_type != 0) {
+      writer.Key("_java_type");
+      writer.String(&read.java_type, 1);
+    }
     writer.EndObject();
   }
   writer.EndArray();

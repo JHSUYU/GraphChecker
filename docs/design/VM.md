@@ -277,7 +277,12 @@ the lock; either way the location is marked incomplete (`UNOBSERVED_WRITE`). Eve
 newest; never for a container read), `writerSetComplete` (the location's writer set as of the read)
 and, when true, `unnamedWriter` (a writer the log never named reached the location: every
 incompleteness reason but `VERSION_BOUND`); a read that returned its version's word shares that
-version's constant, or for a reference its identity node.
+version's constant, or for a reference its identity node. The location's read log keeps the same
+answer per read (`ReadRecord`: `readEventId`, the reader, its `site`, `observedVersion` -- the
+chosen version's id --, `observedExact`, `writerSetComplete`, `unnamedWriter` when true, and
+`_java_type`, the loaded word's letter, absent for a container's state), so a read whose value
+reaches no published expression (a reference compared with a constant) is still a read of its
+version (SYMBOL-SCOPE §5.2).
 
 ### 5.3 Guarded concrete stores
 
@@ -541,7 +546,8 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   its id, never scanned; a row whose ids do not read so is parsed whole; a table that does not close
   the envelope, a row holding more than one row, or a count the rows do not meet is refused. The
   store is locked only while a node expands. Each envelope is bounded by its own bytes
-  (32 MB, `serializationTruncated` when cut), never by the page's. An envelope states `writerSetComplete` and,
+  (32 MB, `serializationTruncated` when cut), never by the page's. An envelope (`schemaVersion` 2:
+  its read log states each read's version, §5.2) states `writerSetComplete` and,
   when false, `incompleteReasons` and `unnamedWriter`; an INITIAL's `initialSnapshot.stated` is
   true only for a stated count.
 - A read node states `observedExact`, `writerSetComplete`, `unnamedWriter` (only when true) and
