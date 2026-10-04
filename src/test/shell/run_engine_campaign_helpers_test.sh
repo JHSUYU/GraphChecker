@@ -3947,8 +3947,10 @@ EOF
 )
 
 # SWEEP-1: sweep.sh launches every case with its head's room as its need
-# and the lifts' obligation slots for its obligation_memory_mb as its cap;
-# a case whose configuration states no obligation_memory_mb launches no case.
+# and the lifts' obligation slots for its obligation_memory_mb as its cap,
+# and a measurement sweep's stop stage on the job's command line (ssh carries
+# no environment); a case whose configuration states no
+# obligation_memory_mb launches no case.
 sweep_dir="${test_tmp}/sweep"
 mkdir -p "${sweep_dir}/snap/experiments/x/c" "${sweep_dir}/snap/experiments/lib" \
   "${sweep_dir}/snap/tools/rounds" "${sweep_dir}/out" \
@@ -3957,21 +3959,22 @@ mkdir -p "${sweep_dir}/snap/experiments/x/c" "${sweep_dir}/snap/experiments/lib"
 printf '%s\n' '[[ "$3" == config ]] || exit 2' \
   'printf "obligation_memory_mb=6000\nengine_memory_mb=1\n"' \
   >"${sweep_dir}/snap/experiments/lib/run.sh"
-printf 'echo "$2 ${CAUSYNTH_STREAM_MAX_IN_FLIGHT}" >%s/launched\n' \
+printf 'echo "$2 ${CAUSYNTH_STREAM_MAX_IN_FLIGHT} ${CAUSYNTH_CAMPAIGN_STOP_AFTER-}" >%s/launched\n' \
   "${sweep_dir}" >"${sweep_dir}/snap/tools/rounds/launch-run.sh"
 echo 31583 >"${sweep_dir}/ledger/$(hostname -s)/total"
 echo 48 >"${sweep_dir}/ledger/$(hostname -s)/cores"
 echo c-one >"${sweep_dir}/cases"
 sweep_run() {
   LIFTS=localhost GC_OUT="${sweep_dir}/out" VM_IMAGE=vm \
+    CAUSYNTH_CAMPAIGN_STOP_AFTER=SEED \
     CAUSYNTH_HOST_LEDGER="${sweep_dir}/ledger" CAUSYNTH_HOST_MAX_USED_PCT=70 \
     bash "${repo}/tools/adhoc/sweep.sh" "${sweep_dir}/snap" "$1" \
     "${sweep_dir}/cases" >"${sweep_dir}/$1.out" 2>&1
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
-[[ "$(cat "${sweep_dir}/launched")" == "c-one 3" ]] \
-  && grep -q '^NEED_MB=1 .* CAUSYNTH_STREAM_MAX_IN_FLIGHT=3 ' \
-    "${sweep_dir}/out/sweep-s1-jobs.txt" \
+[[ "$(cat "${sweep_dir}/launched")" == "c-one 3 SEED" ]] \
+  && grep -q "^NEED_MB=1 .* CAUSYNTH_STREAM_MAX_IN_FLIGHT=3 .*\
+ CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
   || fail "the sweep's case did not launch with its head's room and the \
 lifts' slots: $(cat "${sweep_dir}/launched" \
     "${sweep_dir}/out/sweep-s1-jobs.txt")"

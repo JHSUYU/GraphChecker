@@ -41,6 +41,12 @@ vm=CAUSYNTH_CUSTOM_JDK_HOME=${VM_IMAGE:?sweep.sh: name the concolic VM image as 
 mkdir -p "${out}"
 
 mapfile -t cases < <(grep -v '^\s*\(#\|$\)' "${cases_file}")
+# A measurement sweep (CAUSYNTH_CAMPAIGN_STOP_AFTER=SEED or IMPORT) reaches a
+# head on another host only on its job's command line: ssh carries no
+# environment (launch-round.sh does the same).
+stop_after=
+[[ -z "${CAUSYNTH_CAMPAIGN_STOP_AFTER+x}" ]] \
+  || stop_after=" CAUSYNTH_CAMPAIGN_STOP_AFTER='${CAUSYNTH_CAMPAIGN_STOP_AFTER}'"
 jobs="${out}/sweep-${round}-jobs.txt"
 : > "${jobs}"
 : > "${out}/sweep-${round}-cases.tsv"
@@ -55,6 +61,6 @@ configuration could not be read): no case is launched" >&2
   # shellcheck disable=SC2086 # the lifts are words
   slots=$(campaign_pool_slots "${obligation_mb}" ${LIFTS})
   printf '%s\t%s\n' "${n}" "${cases[$n]}" >> "${out}/sweep-${round}-cases.tsv"
-  printf '%s\n' "NEED_MB=$(case_head_reserve_mb "${config}") PRUNE=1 CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_STREAM_MAX_IN_FLIGHT=${slots} CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' GC_OUT=${out} CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} ${vm} bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
+  printf '%s\n' "NEED_MB=$(case_head_reserve_mb "${config}") PRUNE=1 CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_STREAM_MAX_IN_FLIGHT=${slots} CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' GC_OUT=${out} CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} ${vm}${stop_after} bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
 done
 exec bash "${here}/fanout.sh" "${jobs}" "${out}/sweep-${round}-logs" "${heads}"
