@@ -311,6 +311,19 @@ final class ActiveRegion {
                 declaration.add(candidate);
             }
         }
+        if (declaration.isEmpty() && !ConcolicTaskPlan.configuration()
+                .declaresSource(safe(sourceId))) {
+            // A tree hook every NameNode runs (a block key's serial, a
+            // configuration a scaffold hooks) in a case whose plan declares
+            // its source nowhere: no root of this case, so nothing to mint
+            // and nothing a verdict waits for -- named, not blocking.
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    mintAddress(), "the hook for " + safe(sourceId)
+                            + " ran, but no task of this case's plan"
+                            + " declares a phase of that source: it is no"
+                            + " root of this case, and nothing is minted");
+            return null;
+        }
         if (context == null) {
             refuseMint(GapKind.DECLARATION_MISSING,
                     declaration.isEmpty() ? null : declaration.get(0),

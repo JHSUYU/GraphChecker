@@ -466,7 +466,11 @@ owns it until its tree drops the hook.
 declaration per source to every region that can run it (one hook site per source per region, else
 refused). Its value is planted at a focused occurrence only, and its domain is the
 `root-domains.jsonl` row for `sourceId` (absolute or `+k`/`-k` from the recording); without a row it
-is pinned.
+is pinned. A hook that runs in a case whose plan declares a phase of its source in no task (a
+block key's serial in every NameNode of an unrelated check) mints nothing and is named by a
+DIAGNOSTIC `DECLARATION_MISSING` row: its source is no root of that case
+(`runtime/ActiveRegion#observeConfiguredSourceEntry`, `ConcolicTaskPlan#declaresSource`); a hook
+whose source the plan declares, run at a site it does not declare, still refuses BLOCKING.
 
 Either way `runtime/RootMint#configuredSource` mints one symbol per source on the owner's
 primitive instance field, keeps a propagated expression instead when the field already carries one

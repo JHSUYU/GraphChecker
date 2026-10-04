@@ -80,6 +80,21 @@ final class ConcolicTaskPlan {
             new HashMap<String, String>();
     boolean unansweredAddressesPublished;
 
+    /**
+     * Whether some task of this plan declares a phase of the configured
+     * source: a tree hook of a source no task declares is no root of this
+     * case ({@link ActiveRegion#observeConfiguredSourceEntry}).
+     */
+    boolean declaresSource(String sourceId) {
+        for (RuntimeTask task : tasks) {
+            for (ConfiguredSourcePhaseContract.Occurrence phase
+                    : task.configuredSourcePhases) {
+                if (phase.sourceId().equals(sourceId)) return true;
+            }
+        }
+        return false;
+    }
+
     ConcolicTaskPlan(Path resultFile, List<RuntimeTask> tasks) {
         this.resultFile = resultFile;
         this.tasks = Collections.unmodifiableList(tasks);
