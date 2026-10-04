@@ -40,6 +40,8 @@ public class RootDemandTest {
     private static final String RUN = "<t.T: void run()>";
     private static final String HANDLE = "<t.T: void handle(int)>";
     private static final Jimple J = Jimple.v();
+    /** A door's chain: chosen at RUN's store, standing in RUN. */
+    private static final List<String> VIA = Collections.singletonList(RUN);
 
     @After
     public void resetSoot() {
@@ -116,9 +118,9 @@ public class RootDemandTest {
      * outcome reaches what the walk demanded -- a failing result into the
      * path (VALUE), a latent fault skipping a demanded store (ESCAPE) --
      * the doors this pass wove first, the {@value RootDemand#WIDTH}
-     * nearest in all, none in a constructor no region holds; a call into
-     * the system where one could stand is an IO frontier row of scope
-     * growth.
+     * nearest in all, none whose demanded site no region holds (its marker
+     * is read where that site runs); a call into the system where one
+     * could stand is an IO frontier row of scope growth.
      */
     @Test
     public void aFileFaultIsADoorOnlyWhereItsOutcomeReachesTheSlice() {
@@ -138,23 +140,24 @@ public class RootDemandTest {
                         3, null));
         Faults faults = new Faults();
         faults.latent.add(new RootDemand.Candidate(RUN + "#u1", open, RUN,
-                0, 2, RootDemand.ESCAPE, false, true));
+                0, 2, RootDemand.ESCAPE, false, VIA, true));
         faults.latent.add(new RootDemand.Candidate(RUN + "#u2",
                 "<t.Other: void save()>", RUN, 0, 3, RootDemand.HANDLER,
-                true, true));
-        faults.latent.add(new RootDemand.Candidate("<t.T: void <init>()>#u4",
-                open, "<t.T: void <init>()>", 0, 2, RootDemand.ESCAPE,
-                false, false));
+                true, VIA, true));
+        faults.latent.add(new RootDemand.Candidate("<t.T: void close()>#u4",
+                open, "<t.T: void close()>", 0, 2, RootDemand.ESCAPE,
+                false, Arrays.asList("<t.T: void unheld()>",
+                        "<t.T: void close()>"), false));
         faults.latent.add(new RootDemand.Candidate(RUN + "#u30", open, RUN,
-                99, 17, RootDemand.ESCAPE, false, true));
+                99, 17, RootDemand.ESCAPE, false, VIA, true));
         for (int site = 0; site < 11; site++) {
             faults.latent.add(new RootDemand.Candidate(RUN + "#u" + (10
                     + site), open, RUN, site + 1, 5, RootDemand.HANDLER,
-                    false, true));
+                    false, VIA, true));
         }
         DemandedDoors.Site woven = new DemandedDoors.Site(HANDLE,
                 "<java.io.FileOutputStream: void write(byte[])>", 0, 4,
-                RootDemand.ESCAPE);
+                RootDemand.ESCAPE, Collections.singletonList(HANDLE));
         RootDemand demand = RootDemand.of(edges, Collections.singletonList(
                 region()), Collections.<String, Clock>emptyMap(),
                 ConfigRoots.of(edges, new LinkedHashMap<>()),
@@ -236,7 +239,8 @@ public class RootDemandTest {
         public RootDemand.Candidate valued(String siteId, String callee) {
             return callee.startsWith("<java.io.File: ")
                     ? new RootDemand.Candidate(siteId, callee, CHECK, 0, 0,
-                    RootDemand.VALUE, false, true) : null;
+                    RootDemand.VALUE, false, Collections.singletonList(
+                    CHECK), true) : null;
         }
 
         @Override

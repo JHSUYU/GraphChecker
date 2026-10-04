@@ -166,8 +166,9 @@ public final class CausynthPipeline {
                 new SeedBackwardStaticAnalyzer(target).analyze();
         long seedAnalysisMillis = elapsedMillis(seedAnalysisStart);
         long skeletonPlanningStart = System.nanoTime();
+        List<DemandedDoors.Site> woven = DemandedDoors.woven();
         SymbolicRegionPlanner.planSelectedSkeleton(result,
-                result.traceMethods);
+                result.traceMethods, woven);
         // SYMBOL-SCOPE §2.3: over the door-woven bodies, before any hook is
         // woven, so site and guard ids are the unit indices a replay decides
         // at.
@@ -178,8 +179,9 @@ public final class CausynthPipeline {
         RootDemand demand = RootDemand.of(result.edges, result.regions,
                 clocks, recognized, targetPathSites(result.edges),
                 CausynthStaticFacts::trackedKind, systemClass,
-                new LatentFaults(systemClass, result::doorPlaceable),
-                DemandedDoors.woven());
+                new LatentFaults(systemClass,
+                        method -> !result.regionsHolding(method).isEmpty()),
+                woven);
         ConfigRoots config = recognized.limitedTo(demand.configSources());
         Set<String> plantedConfigReads =
                 StaticSymbolicSourceDiscovery.discover(result, config);

@@ -347,6 +347,17 @@ public final class LibraryCatalog {
         return hooks;
     }
 
+    /** Whether a marker name is a demanded door's ({@code
+     *  FAULT:<TRANSPORT>:..} of a transport whose doors are demanded). */
+    public static boolean demandedMarker(String name) {
+        String[] parts = name == null ? new String[0] : name.split(":", -1);
+        if (parts.length < 2 || !"FAULT".equals(parts[0])) return false;
+        for (Door door : doors()) {
+            if (door.demanded && door.transport.equals(parts[1])) return true;
+        }
+        return false;
+    }
+
     /** The demanded door at calls of {@code callee}, or null. */
     public static Door demandedDoor(String callee) {
         for (Door door : doors()) {

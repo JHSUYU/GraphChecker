@@ -184,8 +184,10 @@ public class FaultPropagationTest {
         java.nio.file.Path doors = java.nio.file.Files.createTempFile(
                 "io_doors", ".jsonl");
         DemandedDoors.write(doors, Arrays.asList(
-                new DemandedDoors.Site(method, open, 0, 2, "ESCAPE"),
-                new DemandedDoors.Site(method, rename, 0, 2, "ESCAPE")));
+                new DemandedDoors.Site(method, open, 0, 2, "ESCAPE",
+                        Collections.singletonList(method)),
+                new DemandedDoors.Site(method, rename, 0, 2, "ESCAPE",
+                        Collections.singletonList(method))));
         System.setProperty(DemandedDoors.PROPERTY, doors.toString());
         String refused = "";
         try {

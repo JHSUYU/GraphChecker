@@ -32,17 +32,16 @@ final class LatentFaults implements RootDemand.Faults {
     private final Map<String, SiteControlDependence.MethodGuards> guards =
             new HashMap<>();
     private final Map<String, BriefUnitGraph> graphs = new HashMap<>();
-    private final Predicate<String> placeable;
+    private final Predicate<String> held;
 
     /**
      * @param systemClass whether a class is the system's own
-     * @param placeable   whether a door in a method reads its marker in a
-     *                    region ({@link StaticProgram#doorPlaceable})
+     * @param held        whether a region holds a method: a door's marker
+     *                    is read in the regions holding its demanded site
      */
-    LatentFaults(Predicate<String> systemClass,
-                 Predicate<String> placeable) {
+    LatentFaults(Predicate<String> systemClass, Predicate<String> held) {
         this.model = FaultPropagation.latent(systemClass);
-        this.placeable = placeable;
+        this.held = held;
     }
 
     @Override
@@ -56,7 +55,8 @@ final class LatentFaults implements RootDemand.Faults {
                 || !((Stmt) unit).containsInvokeExpr()) {
             return null;
         }
-        return candidate(method, (Stmt) unit, 0, RootDemand.VALUE);
+        return candidate(Collections.singletonList(method), (Stmt) unit, 0,
+                RootDemand.VALUE);
     }
 
     @Override
@@ -121,7 +121,8 @@ final class LatentFaults implements RootDemand.Faults {
     /**
      * From a raise of {@code method} down to where its fault comes from:
      * the call where a door could stand, the call into the system outside
-     * the scope, and through each callee it escapes, one edge further each.
+     * the scope, and through each callee it escapes, one edge further each,
+     * the chain of methods walked kept as the door's {@code via}.
      */
     private void descend(String method, FaultPropagation.Raise start,
                          int distance, String reach,
@@ -129,28 +130,34 @@ final class LatentFaults implements RootDemand.Faults {
         Deque<Object[]> work = new ArrayDeque<>();
         Set<FaultPropagation.Raise> seen =
                 Collections.newSetFromMap(new IdentityHashMap<>());
-        work.add(new Object[]{method, start, distance});
+        work.add(new Object[]{Collections.singletonList(method), start,
+                distance});
         while (!work.isEmpty()) {
             Object[] next = work.removeFirst();
-            String at = (String) next[0];
+            @SuppressWarnings("unchecked")
+            List<String> via = (List<String>) next[0];
+            String at = via.get(via.size() - 1);
             FaultPropagation.Raise raise = (FaultPropagation.Raise) next[1];
             int hops = (Integer) next[2];
             if (hops > RootDemand.DISTANCE || !seen.add(raise)) continue;
             if (raise.latent != null) {
-                keep(found, candidate(at, raise.latent, hops, reach));
+                keep(found, candidate(via, raise.latent, hops, reach));
             }
             if (raise.frontier != null) {
                 keep(found, new RootDemand.Candidate(siteOf(at, raise.unit),
-                        raise.frontier, at, 0, hops, reach, true, true));
+                        raise.frontier, at, 0, hops, reach, true, via,
+                        true));
             }
             for (FaultPropagation.Raise origin : raise.origins) {
-                work.add(new Object[]{at, origin, hops});
+                work.add(new Object[]{via, origin, hops});
             }
             for (String cell : raise.callees) {
                 String callee = cell.substring(0,
                         cell.length() - FaultPropagation.THROWS.length());
+                List<String> deeper = new ArrayList<>(via);
+                deeper.add(callee);
                 for (FaultPropagation.Raise inner : model.escapes(callee)) {
-                    work.add(new Object[]{callee, inner, hops + 1});
+                    work.add(new Object[]{deeper, inner, hops + 1});
                 }
             }
         }
@@ -167,14 +174,17 @@ final class LatentFaults implements RootDemand.Faults {
         }
     }
 
-    private RootDemand.Candidate candidate(String method, Stmt call,
+    /** A door at {@code call} in the last method of {@code via}, read
+     *  where the first runs. */
+    private RootDemand.Candidate candidate(List<String> via, Stmt call,
                                            int distance, String reach) {
+        String method = via.get(via.size() - 1);
         Body body = CausynthStaticFacts.activeBody(
                 CausynthStaticFacts.method(method));
         return new RootDemand.Candidate(siteOf(method, call),
                 call.getInvokeExpr().getMethodRef().getSignature(), method,
-                DoorWeave.ordinal(body, call), distance, reach, false,
-                placeable.test(method));
+                DoorWeave.ordinal(body, call), distance, reach, false, via,
+                held.test(via.get(0)));
     }
 
     private String siteOf(String method, Unit unit) {

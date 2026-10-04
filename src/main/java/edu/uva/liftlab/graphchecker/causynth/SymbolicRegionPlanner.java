@@ -32,8 +32,14 @@ final class SymbolicRegionPlanner {
     private SymbolicRegionPlanner() {
     }
 
+    /**
+     * @param doors the demanded doors the pass wove ({@link DemandedDoors}):
+     *              each roots nothing; the methods of its chain join the
+     *              regions holding the chain's first method
+     */
     static void planSelectedSkeleton(
-            StaticProgram program, Collection<String> selectedMethods) {
+            StaticProgram program, Collection<String> selectedMethods,
+            List<DemandedDoors.Site> doors) {
         Anchors anchors = new Anchors(program, selectedMethods);
         program.regions.clear();
         anchors.root(program, anchors.authorities.keySet(),
@@ -43,8 +49,32 @@ final class SymbolicRegionPlanner {
                 method -> !program.regionsHolding(method).isEmpty());
         anchors.root(program, anchors.state, method -> STATE_WRITER_ENTRY,
                 method -> false);
+        fold(program, doors);
         declareCommunicationPorts(program);
         declareRetainedLoops(program);
+    }
+
+    /**
+     * A demanded door's marker is read in the occurrence that runs the
+     * demanded site it was chosen for (SYMBOL-SCOPE §4.6): the methods of
+     * its chain, from the site's method down to the door's caller, join
+     * every region holding the site's method.  No root is added, so no
+     * address moves (a utility method rooted as a fault entry opened
+     * occurrences wherever it ran, and the test thread's DataNode starts
+     * lost their hop: hdfs-adhoc-26, DECLARED_TARGET_BEFORE_WINDOW).
+     */
+    private static void fold(StaticProgram program,
+                             List<DemandedDoors.Site> doors) {
+        for (DemandedDoors.Site door : doors) {
+            for (Map<String, Object> region : program.regions) {
+                @SuppressWarnings("unchecked")
+                List<String> methods = (List<String>) region.get("methods");
+                if (!methods.contains(door.via.get(0))) continue;
+                Set<String> held = new java.util.TreeSet<>(methods);
+                held.addAll(door.via);
+                region.put("methods", new ArrayList<>(held));
+            }
+        }
     }
 
     /** The slice's call graph and the anchor kinds a skeleton is kept for. */
@@ -105,10 +135,13 @@ final class SymbolicRegionPlanner {
             if (!target.isEmpty()) {
                 authorities.putIfAbsent(target, FAILURE_TARGET_ENTRY);
             }
+            // A demanded door's marker roots nothing (fold).
             for (Map<String, Object> edge : program.edges) {
                 String method = text(edge.get("method"));
                 if (selected.contains(method) && Boolean.TRUE.equals(
-                        edge.get("explicitSymbolicFault"))) {
+                        edge.get("explicitSymbolicFault"))
+                        && !LibraryCatalog.demandedMarker(
+                        text(edge.get("symbolicName")))) {
                     faults.add(method);
                     authorities.putIfAbsent(method, EXPLICIT_FAULT_ENTRY);
                 }

@@ -77,8 +77,9 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * TRACK_IDENTITY, TRACK_CONTAINER or READ field), or goes to a handler that
  * decides a site the walk demanded -- a site on the target's path only when
  * the handler leads to it.  The {@value #WIDTH} nearest calls are chosen, the
- * doors already woven first ({@link DemandedDoors}), none where its marker
- * would be read in no region ({@value #NO_REGION_CUT}); a call into the system
+ * doors already woven first ({@link DemandedDoors}), none whose demanded site
+ * no region holds ({@value #NO_REGION_CUT}: a demanded door roots no region,
+ * its marker is read where the site runs); a call into the system
  * outside the scope where such a fault could stand is an IO frontier row,
  * the {@value #WIDTH} nearest grown first.  Any other IO boundary is cut
  * {@value #NO_DOOR_CUT}.</p>
@@ -107,9 +108,8 @@ final class RootDemand {
     /** An IO boundary no demanded door stands at: an observation, a
      *  stream not typed as a file's, a value its fault would not move. */
     static final String NO_DOOR_CUT = "NO_DOOR";
-    /** A call where a door would read its marker in no region: a
-     *  constructor no region holds ({@link SymbolicRegionPlanner} roots no
-     *  region at a constructor). */
+    /** A call whose demanded site no region holds: its marker would be
+     *  read in no occurrence (a demanded door roots none). */
     static final String NO_REGION_CUT = "NO_REGION";
     /** How a door's outcome reaches the slice. */
     static final String VALUE = "VALUE";
@@ -149,12 +149,15 @@ final class RootDemand {
         final int distance;
         final String reach;
         final boolean frontier;
-        /** Whether a door there reads its marker in a region. */
+        /** The methods from the demanded site's down to the caller. */
+        final List<String> via;
+        /** Whether a region holds the demanded site's method, where the
+         *  door's marker is read. */
         final boolean placeable;
 
         Candidate(String siteId, String callee, String caller, int ordinal,
                   int distance, String reach, boolean frontier,
-                  boolean placeable) {
+                  List<String> via, boolean placeable) {
             this.siteId = siteId;
             this.callee = callee;
             this.caller = caller;
@@ -162,17 +165,18 @@ final class RootDemand {
             this.distance = distance;
             this.reach = reach;
             this.frontier = frontier;
+            this.via = via;
             this.placeable = placeable;
         }
 
         Candidate at(int distance, String reach) {
             return new Candidate(siteId, callee, caller, ordinal, distance,
-                    reach, frontier, placeable);
+                    reach, frontier, via, placeable);
         }
 
         DemandedDoors.Site door() {
             return new DemandedDoors.Site(caller, callee, ordinal, distance,
-                    reach);
+                    reach, via);
         }
     }
 

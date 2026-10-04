@@ -36,14 +36,19 @@ final class DemandedDoors {
         final int distance;
         /** How its outcome reaches the slice: VALUE, ESCAPE, HANDLER. */
         final String reach;
+        /** The methods from the demanded site's down to the caller: the
+         *  regions holding the first hold them all
+         *  ({@code SymbolicRegionPlanner#fold}). */
+        final List<String> via;
 
         Site(String caller, String callee, int ordinal, int distance,
-             String reach) {
+             String reach, List<String> via) {
             this.caller = caller;
             this.callee = callee;
             this.ordinal = ordinal;
             this.distance = distance;
             this.reach = reach;
+            this.via = Collections.unmodifiableList(new ArrayList<>(via));
         }
 
         /** The call's identity: caller, callee and ordinal. */
@@ -60,6 +65,9 @@ final class DemandedDoors {
             row.addProperty("ordinal", ordinal);
             row.addProperty("distance", distance);
             row.addProperty("reach", reach);
+            com.google.gson.JsonArray chain = new com.google.gson.JsonArray();
+            for (String method : via) chain.add(method);
+            row.add("via", chain);
             return row;
         }
     }
@@ -86,9 +94,16 @@ final class DemandedDoors {
                     throw new IllegalStateException("DEMANDED_DOOR_ROW: "
                             + file + ": " + row);
                 }
+                List<String> via = new ArrayList<>();
+                for (com.google.gson.JsonElement method
+                        : row.getAsJsonArray("via")) {
+                    via.add(method.getAsString());
+                }
+                if (via.isEmpty()) throw new IllegalStateException("no via");
                 sites.add(new Site(text(row, "caller"), text(row, "callee"),
                         row.get("ordinal").getAsInt(),
-                        row.get("distance").getAsInt(), text(row, "reach")));
+                        row.get("distance").getAsInt(), text(row, "reach"),
+                        via));
             }
         } catch (IOException | RuntimeException unreadable) {
             throw new IllegalStateException("DEMANDED_DOOR_ROW: " + file

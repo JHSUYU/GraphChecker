@@ -334,7 +334,8 @@ A failing result's checked throw -- the first test of the result the call falls 
 each throw its failing arm reaches that its other arm does not (`if (!f.renameTo(g)) throw new
 IOException(..)`) -- is a raise of the door's marker (`causynth/FaultPropagation`), so the fault
 flows on as a thrown door kind does. A site the file names that no catalog row or no analysed call
-answers, or a call that already holds a door, is refused (`DEMANDED_DOOR_UNAVAILABLE`).
+answers, or a call that already holds a door, is refused (`DEMANDED_DOOR_UNAVAILABLE`). A demanded
+door's marker roots no region (§4.6).
 
 A door keeps the pairing its call made: a request door lies after the tree's outbound message hook
 (or before anything is sent: the SASL magic number), a response door after its inbound hook, a
@@ -688,10 +689,15 @@ failure flows into what the walk demanded (`RootDemand.Faults`, `causynth/Latent
 
 Its distance is the site's plus one plus the calls it escapes. The doors this pass wove stay; the
 nearest calls are added until twelve stand (rows `fault_escape`, `fault_handler`, `door`, the
-others cut `WIDTH` or `DISTANCE`), and `io_doors.jsonl` holds them for every later pass. A call in
-a constructor no region holds is cut `NO_REGION` (`StaticProgram#doorPlaceable`): no region roots
-at a constructor, so its marker would be read in no occurrence (a stream wrapper opening its file
-in its constructor, Hadoop's `AtomicFileOutputStream`). A call
+others cut `WIDTH` or `DISTANCE`), and `io_doors.jsonl` holds them for every later pass, each with
+its `via`: the methods the descent walked, from the demanded site's method down to the door's
+caller. A demanded door roots no region, unlike a catalog door at calls: its marker is read in the
+occurrence that runs the demanded site, the chain's methods joining every region that holds the
+site's method (`causynth/SymbolicRegionPlanner#fold`; no root is added, so no address moves). Rooted
+as fault entries, utility callers (`StorageInfo#readPropertiesFile`, `FileUtil#listFiles`) opened
+occurrences wherever they ran, and the test thread's DataNode starts lost their hop
+(hdfs-adhoc-26, `DECLARED_TARGET_BEFORE_WINDOW`). A call whose demanded site no region holds is cut
+`NO_REGION`. A call
 into the system outside the scope where such a fault could stand is an IO frontier row
 (`fault_frontier`): the twelve nearest join scope growth's demanded rows (§2.4). `run_engine.sh`
 `campaign_analyze_grown_scope` runs the static pass again while it chooses more doors, outside
