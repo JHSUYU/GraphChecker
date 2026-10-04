@@ -123,6 +123,7 @@ public final class ScopeGrowth {
             if (!line.contains("\t" + DOOR + "\t")) taken++;
         }
         int added = 0;
+        int byIo = 0;
         Set<String> noFileOperation = new TreeSet<>();
         for (JsonObject row : rows) {
             String kind = row.get("kind").getAsString();
@@ -145,10 +146,12 @@ public final class ScopeGrowth {
                         + signature + "\t" + row.get("distance").getAsInt());
                 present.add(name);
                 added++;
+                if (io) byIo++;
             }
         }
         System.out.println(added + " added " + added + " class(es), "
-                + (taken + added) + " of " + budget + " grown"
+                + (taken + added) + " of " + budget + " grown, " + byIo
+                + " by IO rows"
                 + (noFileOperation.isEmpty() ? "" : "; IO rows skipped, no "
                 + "file operation of their own: " + noFileOperation));
     }
