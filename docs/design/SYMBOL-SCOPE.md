@@ -590,8 +590,17 @@ depths that fit whole (PIPELINE.md §3).
 
 ### 4.5 Randomness is not a root
 
-The weave replaces `new Random()`, `Math.random()`, `Collections.shuffle(List)` and
-`UUID.randomUUID()` in both passes with `runtime/Randoms`, so a replay draws what the recording drew.
+The weave replaces `new Random()`, `Math.random()`, `Collections.shuffle(List)`,
+`UUID.randomUUID()` and `ThreadLocalRandom.current()` in both passes with `runtime/Randoms`, so a
+replay draws what the recording drew. `ThreadLocalRandom.current()` becomes `Randoms#current`, a
+`Random` seeded by the same key, and each draw on what it returned becomes that `Random`'s (a bounded
+draw only `ThreadLocalRandom` declares, `nextInt(int,int)`, `nextLong(long[,long])`,
+`nextDouble(double[,double])`, a `Randoms` stand-in of that name), only where every use of the value
+is such a draw or stands where a `Random` may (a return, an assignment, an argument); any other use
+leaves the site as written (`CausynthPipeline#seedThreadLocalRandom`). HDFS's block placement picks
+a pipeline's DataNodes through NetworkTopology's `ThreadLocalRandom`: hdfs-adhoc-42's replay wrote to
+dn0 first where its recording wrote to dn2 first, and every DataXceiver turn after took another
+node's slot.
 A draw is keyed (`Randoms#key`) by its endpoint where it runs in an occurrence with a context (a Root
 or an Anchor) inside the window: the same function of the same inputs in both passes. Anywhere else
 -- before the window, or in a Lost context, whose address siblings share (unnamed work, a turn begun

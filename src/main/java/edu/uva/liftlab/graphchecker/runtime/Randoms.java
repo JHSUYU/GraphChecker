@@ -13,8 +13,9 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 /**
  * THE unseeded randomness of the application scope, seeded by where it is
  * drawn.  The weave replaces {@code new Random()}, {@code Math.random()},
- * {@code Collections.shuffle(List)} and {@code UUID.randomUUID()} with these
- * in BOTH passes, so a replay draws what the recording drew: a Solr client
+ * {@code Collections.shuffle(List)}, {@code UUID.randomUUID()} and {@code
+ * ThreadLocalRandom.current()} with these in BOTH passes, so a replay draws
+ * what the recording drew: a Solr client
  * shuffles the live nodes it sends an admin request to, and a replay that
  * sent it to another node than the recording did held no order past it.
  *
@@ -79,6 +80,43 @@ public final class Randoms {
     /** Test seam: a fresh run's counts. */
     static void resetForTests() {
         COUNTS.clear();
+    }
+
+    /**
+     * {@code ThreadLocalRandom.current()}: a Random seeded by where it is
+     * drawn, one per call, whose draws the weave makes its own (a bounded
+     * draw only ThreadLocalRandom declares through the stand-ins below).
+     */
+    public static Random current(String site) {
+        return new Random(seed(key(site)));
+    }
+
+    /** {@code ThreadLocalRandom#nextInt(int, int)} on {@code random}: the
+     *  bounded draws below are Random's own bounded streams, one long. */
+    public static int nextInt(Random random, int origin, int bound) {
+        return random.ints(1L, origin, bound).iterator().nextInt();
+    }
+
+    /** {@code ThreadLocalRandom#nextLong(long)} on {@code random}. */
+    public static long nextLong(Random random, long bound) {
+        return nextLong(random, 0L, bound);
+    }
+
+    /** {@code ThreadLocalRandom#nextLong(long, long)} on {@code random}. */
+    public static long nextLong(Random random, long origin, long bound) {
+        return random.longs(1L, origin, bound).iterator().nextLong();
+    }
+
+    /** {@code ThreadLocalRandom#nextDouble(double)} on {@code random}. */
+    public static double nextDouble(Random random, double bound) {
+        return nextDouble(random, 0.0, bound);
+    }
+
+    /** {@code ThreadLocalRandom#nextDouble(double, double)} on {@code
+     *  random}. */
+    public static double nextDouble(Random random, double origin,
+                                    double bound) {
+        return random.doubles(1L, origin, bound).iterator().nextDouble();
     }
 
     /** {@code new Random()}'s seed. */

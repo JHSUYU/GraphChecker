@@ -21,7 +21,9 @@ import java.util.stream.Stream;
 
 /**
  * The lineage scope: every application class that hands work to another thread,
- * runs it, or waits/signals. A lineage hole puts everything after it under
+ * runs it, waits/signals, or makes an unseeded draw ({@link #DRAWS}: the weave
+ * seeds it, so a replay draws what its recording drew wherever the class sits).
+ * A lineage hole puts everything after it under
  * {@code Lost:UNKNOWN}, so the weave's work-start, claim and timed-wait hooks
  * cover this scope ({@code CausynthPipeline.instrumentApplicationScope}).
  * Bytecode only, no hierarchy: wide {@link WorkStartSites} predicates; classes
@@ -78,8 +80,8 @@ public final class LineageScan {
             }
         }
         System.out.println("lineage scope: " + kept + " of " + scanned
-                + " class(es) start, hand off, run, wait, signal or hold a "
-                + "declared codec method outside the analysis scope");
+                + " class(es) start, hand off, run, wait, signal, draw or hold"
+                + " a declared codec method outside the analysis scope");
     }
 
     /**
@@ -118,6 +120,20 @@ public final class LineageScan {
         return files;
     }
 
+    /**
+     * The unseeded draws the weave seeds ({@code
+     * CausynthPipeline#replaceRandom}): HDFS's NetworkTopology, which places
+     * a pipeline's DataNodes by ThreadLocalRandom, neither hands off work nor
+     * is analysed, so its draws went unseeded (STATUS open defect 40).
+     */
+    private static final Set<String> DRAWS = new LinkedHashSet<>(
+            java.util.Arrays.asList("java/util/Random.<init>()V",
+                    "java/lang/Math.random()D",
+                    "java/util/Collections.shuffle(Ljava/util/List;)V",
+                    "java/util/UUID.randomUUID()Ljava/util/UUID;",
+                    "java/util/concurrent/ThreadLocalRandom.current()"
+                            + "Ljava/util/concurrent/ThreadLocalRandom;"));
+
     static boolean handsOffWork(Path file) throws IOException {
         try (InputStream in = Files.newInputStream(file)) {
             return handsOffWork(new ClassReader(in));
@@ -150,7 +166,9 @@ public final class LineageScan {
                         if (WorkStartSites.mayHandOffWork(owner, callee,
                                 Type.getArgumentTypes(calleeDescriptor)
                                         .length)
-                                || WorkStartSites.mayWait(callee)) {
+                                || WorkStartSites.mayWait(callee)
+                                || DRAWS.contains(owner + "." + callee
+                                        + calleeDescriptor)) {
                             found[0] = true;
                         }
                     }

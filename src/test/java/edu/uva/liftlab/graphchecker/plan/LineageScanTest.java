@@ -13,7 +13,8 @@ import java.util.concurrent.LinkedBlockingDeque;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/** The lineage scope keeps every class that starts, hands off or runs work. */
+/** The lineage scope keeps every class that starts, hands off or runs work,
+ *  waits, or draws unseeded. */
 public class LineageScanTest {
 
     /** The DataNode actor's shape: a command put at the head of a deque. */
@@ -64,6 +65,14 @@ public class LineageScanTest {
         }
     }
 
+    /** NetworkTopology's shape: a pick by ThreadLocalRandom. */
+    static final class Drawer {
+        int pick(int of) {
+            return java.util.concurrent.ThreadLocalRandom.current()
+                    .nextInt(of);
+        }
+    }
+
     @Test
     public void everyHandoffAndWaitIsKeptAndAListWriteIsNot()
             throws IOException {
@@ -73,6 +82,7 @@ public class LineageScanTest {
         assertTrue(kept(Submitter.class));
         assertTrue(kept(Work.class));
         assertTrue(kept(Waiter.class));
+        assertTrue(kept(Drawer.class));
         assertFalse(kept(ListWriter.class));
     }
 

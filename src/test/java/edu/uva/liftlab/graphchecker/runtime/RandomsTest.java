@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -134,5 +136,39 @@ public class RandomsTest {
                     .nextInt(4));
         }
         assertNotEquals(1, picked.size());
+    }
+
+    /**
+     * {@code ThreadLocalRandom.current()}'s stand-in draws, in a fresh run,
+     * what the first drew; its bounded draws keep ThreadLocalRandom's
+     * contract: in [origin, bound), and a bad bound refused.
+     */
+    @Test
+    public void aThreadLocalDrawRepeatsInEveryPassWithinItsBounds() {
+        List<Long> passes = new java.util.ArrayList<>();
+        for (int pass = 0; pass < 2; pass++) {
+            freshRun();
+            Random drawn = Randoms.current(SITE);
+            passes.add(Randoms.nextLong(drawn, 1L << 40));
+        }
+        assertEquals(passes.get(0), passes.get(1));
+        Random drawn = Randoms.current(SITE);
+        for (int i = 0; i < 100; i++) {
+            int one = Randoms.nextInt(drawn, -3, 4);
+            long other = Randoms.nextLong(drawn, Long.MIN_VALUE, -5L);
+            double third = Randoms.nextDouble(drawn, 0.5);
+            assertTrue(one >= -3 && one < 4 && other < -5L && third >= 0.0
+                    && third < 0.5);
+        }
+        Runnable[] refused = {() -> Randoms.nextInt(drawn, 4, 4),
+                () -> Randoms.nextLong(drawn, 0L),
+                () -> Randoms.nextDouble(drawn, 1.0, -1.0)};
+        for (Runnable bad : refused) {
+            try {
+                bad.run();
+                fail("a bad bound is refused");
+            } catch (IllegalArgumentException expected) {
+            }
+        }
     }
 }
