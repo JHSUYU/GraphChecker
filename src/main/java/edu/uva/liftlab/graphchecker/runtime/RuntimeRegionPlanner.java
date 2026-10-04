@@ -26,7 +26,11 @@ import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -1874,11 +1878,9 @@ public final class RuntimeRegionPlanner {
         final List<Map<String, Object>> runtimeInstances = new ArrayList<>();
         int staticRegionCount;
 
-        String runtimePlanJsonl() {
-            List<JsonObject> plans = new ArrayList<>();
-            for (Map<String, Object> plan : regionPlans) {
-                plans.add(toJsonTreeFast(plan).getAsJsonObject());
-            }
+        /** The runtime region plan, streamed row by row ({@link
+         *  RuntimePlanArtifact#write}). */
+        void writeRuntimePlan(Path file) throws IOException {
             List<JsonObject> regions = new ArrayList<>();
             for (Map<String, Object> region : regionCatalog) {
                 regions.add(toJsonTreeFast(region).getAsJsonObject());
@@ -1887,7 +1889,14 @@ public final class RuntimeRegionPlanner {
             for (Map<String, Object> gap : planGaps) {
                 gaps.add(toJsonTreeFast(gap).getAsJsonObject());
             }
-            return RuntimePlanArtifact.encode(plans, regions, gaps);
+            Files.createDirectories(file.toAbsolutePath().getParent());
+            try (Writer output = Files.newBufferedWriter(file,
+                    StandardCharsets.UTF_8)) {
+                RuntimePlanArtifact.write(output, regions, gaps,
+                        () -> regionPlans.stream().map(plan ->
+                                toJsonTreeFast(plan).getAsJsonObject())
+                                .iterator());
+            }
         }
 
     }

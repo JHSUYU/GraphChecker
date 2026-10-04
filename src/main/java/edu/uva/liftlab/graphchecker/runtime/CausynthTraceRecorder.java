@@ -2158,12 +2158,11 @@ public final class CausynthTraceRecorder {
             List<Map<String, Object>> regions, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds,
             Collection<Map<String, Object>> planGaps) throws IOException {
-        writeFile(new File(directory, "concolic_region_plan.jsonl"),
-                RuntimeRegionPlanner.plan(regions,
-                        "runtime region closure",
-                        runtimeSeeds, trace.methods, trace.execution,
-                        trace.fields, trace.protocol,
-                        planGaps).runtimePlanJsonl());
+        RuntimeRegionPlanner.plan(regions, "runtime region closure",
+                runtimeSeeds, trace.methods, trace.execution, trace.fields,
+                trace.protocol, planGaps).writeRuntimePlan(
+                        new File(directory, "concolic_region_plan.jsonl")
+                                .toPath());
     }
 
     /** The epoch's scope map, refused when it states no site at all. */
