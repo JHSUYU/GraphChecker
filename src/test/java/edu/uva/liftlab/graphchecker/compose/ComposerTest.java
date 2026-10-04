@@ -3998,11 +3998,12 @@ public class ComposerTest {
      * The recorded arm is the pairing the run took, or there is none and the
      * claim is blocked by name.  (a) The observed writer wrote again after
      * the read: its arm is the write read, not the later one.  (b) Two reads
-     * of one location saw two writes, and one arm binds both.  (c) The one
-     * writer read has no arm: its block, stretched to its write of another
-     * location, rests on a decision nothing states.  (p) A second read saw a
-     * version no row wrote: the pins' arm, holding each read to its own
-     * join or pin, is the run, whichever read came first.
+     * of one location saw two writes, which no writer arm is (each binds
+     * both reads), and (p) a second read saw a version no row wrote: the
+     * pins' arm, holding each read to its own join or pin, is the run,
+     * whichever read came first.  (c) The one writer read has no arm: its
+     * block, stretched to its write of another location, rests on a
+     * decision nothing states.
      */
     @Test
     public void theRecordedArmIsTheWriteReadOrABlockingGap()
@@ -4078,11 +4079,12 @@ public class ComposerTest {
                     solver());
             assertEquals(shape + ": both runs are paths", 2,
                     composition.disjuncts().size());
-            boolean stated = "a".equals(shape) || "p".equals(shape);
+            boolean stated = !"c".equals(shape);
             assertEquals(shape + ": a recorded pairing iff one arm is it",
                     stated, !composition.recordedPairings().isEmpty());
-            assertEquals(shape + ": the pins' arm iff a read saw no write",
-                    "p".equals(shape),
+            assertEquals(shape + ": the pins' arm iff no writer's arm is "
+                            + "the run", "b".equals(shape)
+                            || "p".equals(shape),
                     composition.body().contains("observed_arm__"));
             boolean named = false;
             for (GapRow gap : decision.claim().gaps()) {

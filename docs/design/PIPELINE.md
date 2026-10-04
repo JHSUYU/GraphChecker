@@ -1133,7 +1133,10 @@ location, and only attested ones the read could have run right after, `Arms#elig
 location's INITIAL, the writer at version 0, where the read observed it or the same rule admits it
 (its arm binds the reads to what the location held and rests on nothing a run
 decided, `ComposedFamilies#initialBody`), plus an `observed_arm__` holding each read to its
-own join or pin when a version one of the reads observed has no writing row; exactly one per
+own join or pin wherever the run is no one writer's arm -- the reads saw several writes (a nested
+region of the reader's own thread wrote between two of its reads: hdfs-adhoc-23's
+`StorageInfo.layoutVersion`), or a version one of them observed has no writing row; the writer
+arms stay beside it, each binding every read; exactly one per
 location that has two arms or more, one of them an HB-concurrent writer's, else the reads keep their
 own joins: arms that are each some read's own pairing (the writer one read saw, the pins of another
 whose version no row wrote) re-pair nothing. The read rule's "a location a STATE family may
@@ -1146,8 +1149,9 @@ run took (the observed arm, else the one writer every read observed) is part of 
 pairing -- at a location the world planted, the recording's pairing, any arm but the plant
 (`(not <plant>)`), so a witness that needs the plant names it as the arm it re-paired
 (`repairedArms`) and the recording decides it (STATE_PAIRING_FLIPPED); a location where no arm is
-that pairing (the reads saw two writes, or the write they saw has no arm) is a BLOCKING
-`UNSTATED_VALUE`: the run as it happened is no world of the formula.
+that pairing (the one write the reads saw has no arm, or a read has no join or pin, so no observed
+arm holds them all) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the
+formula.
 
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated

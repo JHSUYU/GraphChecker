@@ -1343,16 +1343,19 @@ final class ComposedFamilies {
      * then exactly-one PER LOCATION over its writers (none for a single
      * writer).  Choosing a writer for one location and not another would
      * be half a block moved.  {@code recorded} receives each family's arm
-     * the run took -- the observed writer's selector, or the pins' when no
-     * region wrote a version read: the pairing a witness re-pairs if it
-     * needs another.  At a location the session's world {@code planted} a
+     * the run took -- the one writer every read observed, or, where the run
+     * is no one writer's arm (the reads saw several writes, or a version no
+     * row wrote), the OBSERVED ARM holding each read to its own join or pin:
+     * the pairing a witness re-pairs if it needs another.  The writer arms
+     * stay beside it, each binding every read.  At a location the session's
+     * world {@code planted} a
      * pairing on (location -> planted writer, {@code Composer#repairing}) the
      * recording's pairing is any arm but the plant: a witness resting on it
      * names the plant as the arm it re-paired.  A read's value is no such statement, since a joined
      * value moves with the valuation while its pairing stays.  Where no arm
-     * is that pairing (the reads saw two writes, or the one they saw has no
-     * arm) the run as it happened is no world of the formula, and a BLOCKING
-     * gap says so: STATE_PAIRING_FLIPPED and the recording's own verdict pin
+     * is that pairing (the one write they saw has no arm, or a read has no
+     * join or pin) the run as it happened is no world of the formula, and a
+     * BLOCKING gap says so: STATE_PAIRING_FLIPPED and the recording's own verdict pin
      * that pairing, and every other kind is named only once the pairing flip
      * is ruled out ({@link ClaimPolicy}).  A writer arm's delivery rests on
      * the messages it was handed as a message arm's does
@@ -1379,13 +1382,14 @@ final class ComposedFamilies {
                 new LinkedHashMap<String, List<String>>();
         Map<String, List<Out>> outsOfWriter =
                 new LinkedHashMap<String, List<Out>>();
-        // A location one of whose observed versions no row wrote: its reads'
-        // joins and pins, the arm that is the run's own interleaving.
+        // A location whose run is no one writer's arm: its reads' joins and
+        // pins, the arm that is the run's own interleaving.
         Map<String, List<String>> observedPins =
                 new LinkedHashMap<String, List<String>>();
-        // Otherwise the writes its reads observed: version -> writer.
-        Map<String, Map<Long, String>> observedWrites =
-                new LinkedHashMap<String, Map<Long, String>>();
+        // Otherwise the one writer every read of it observed.
+        Map<String, String> runWriters = new LinkedHashMap<String, String>();
+        // Or why neither states the run: a read with no join or pin.
+        Map<String, String> unpinned = new LinkedHashMap<String, String>();
         for (Map.Entry<String, List<ReadRow>> entry
                 : byLocation.entrySet()) {
             List<ReadRow> reads = entry.getValue();
@@ -1431,30 +1435,42 @@ final class ComposedFamilies {
                 found.add(arm);
             }
             fileRefusals();
-            // What EVERY read of it observed, not the first's.  A version
-            // whose writer ran outside every region is stated by no arm: the
-            // pins are, as one more arm holding each read to its own join or
-            // pin, the run as it happened.
+            // What EVERY read of it observed, not the first's.  The run is
+            // one writer's arm only where every read saw that writer's one
+            // write: a writer arm binds every read to one write.  Reads that
+            // saw several writes (a nested region of the reader's own thread
+            // wrote between two of its reads: hdfs-adhoc-23's layoutVersion),
+            // or a version whose writer ran outside every region, which no
+            // arm states, are no writer's arm: the pins are, as one more arm
+            // holding each read to its own join or pin, the run as it
+            // happened.
             boolean outside = false;
-            Map<Long, String> observed = new LinkedHashMap<Long, String>();
+            Set<Long> versions = new LinkedHashSet<Long>();
+            String seen = null;
             for (ReadRow read : reads) {
+                versions.add(read.observedVersion());
                 WriteRow write = corpus.writeOf(session, entry.getKey(),
                         read.observedVersion());
                 if (write == null) {
                     outside = true;
                 } else {
-                    observed.put(write.version(), writer(write));
+                    seen = writer(write);
                 }
             }
+            boolean asHappened = outside || versions.size() > 1;
             List<String> observedPin = new ArrayList<String>();
-            if (outside) {
-                for (String symbol : symbols) {
-                    String pin = pins.get(symbol);
-                    if (pin != null && !observedPin.contains(pin)) {
-                        observedPin.add(pin);
-                    }
+            String unpinnedRead = null;
+            for (String symbol : asHappened ? symbols
+                    : Collections.<String>emptyList()) {
+                String pin = pins.get(symbol);
+                if (pin == null) {
+                    unpinnedRead = symbol;
+                } else if (!observedPin.contains(pin)) {
+                    observedPin.add(pin);
                 }
             }
+            // Never an arm holding only some reads: the others would be free.
+            if (unpinnedRead != null) observedPin.clear();
             // One arm is the run's own interleaving: the join says it.  An
             // alternative is an HB-concurrent writer: arms that are each the
             // run's own pairing of some read (the writer one read saw, the
@@ -1469,10 +1485,14 @@ final class ComposedFamilies {
                     || found.size() + (observedPin.isEmpty() ? 0 : 1) < 2) {
                 continue;
             }
-            if (observedPin.isEmpty()) {
-                observedWrites.put(entry.getKey(), observed);
-            } else {
+            if (!asHappened) {
+                runWriters.put(entry.getKey(), seen);
+            } else if (unpinnedRead == null) {
                 observedPins.put(entry.getKey(), observedPin);
+            } else {
+                unpinned.put(entry.getKey(), "versions " + versions
+                        + " and read " + unpinnedRead + " has no join or "
+                        + "pin");
             }
             List<String> writers = new ArrayList<String>();
             for (Arms.Arm arm : found) {
@@ -1554,13 +1574,11 @@ final class ComposedFamilies {
             if (selectors.size() + (observedPin == null ? 0 : 1) < 2) {
                 continue;
             }
-            // The arm the run took: the pins', else the one write every read
-            // of it observed.
-            Map<Long, String> observed =
-                    observedWrites.get(location.getKey());
-            String taken = observed != null && observed.size() == 1
-                    ? selectorOf.get(observed.values().iterator().next())
-                    : null;
+            // The arm the run took: the pins', else the one writer every
+            // read of it observed.
+            String runWriter = runWriters.get(location.getKey());
+            String taken = runWriter == null ? null
+                    : selectorOf.get(runWriter);
             if (observedPin != null) {
                 String name = "observed_arm__" + ordinal + "__"
                         + ArtifactIO.digest(location.getKey() + "|"
@@ -1586,11 +1604,10 @@ final class ComposedFamilies {
                 chosen.add(read.symbol());
             }
             if (taken == null) {
-                String saw = observed.size() == 1
-                        ? "one write, by " + observed.values().iterator()
-                        .next() + ", that no arm here states"
-                        : "versions " + observed.keySet() + " while one arm "
-                        + "binds every read";
+                String saw = runWriter != null
+                        ? "one write, by " + runWriter + ", that no arm "
+                        + "here states"
+                        : unpinned.get(location.getKey());
                 gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                         GapClass.BLOCKING, location.getKey(), "path "
                                 + path.pathId + " observed " + saw + ": no "
