@@ -189,7 +189,8 @@ public final class CausynthPipeline {
                 demand.marks(),
                 method -> !CausynthStaticFacts.applicationMethod(method),
                 CausynthStaticFacts::trackedKind,
-                CausynthStaticFacts::staticField);
+                CausynthStaticFacts::staticField,
+                CausynthStaticFacts::constructionOnly);
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
                         StaticScopeMap.siteIds(scopeSites)));

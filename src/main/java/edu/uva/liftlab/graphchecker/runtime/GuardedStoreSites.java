@@ -99,9 +99,12 @@ final class GuardedStoreSites {
         Map<String, Map<String, Set<String>>> guardsBySite =
                 new LinkedHashMap<String, Map<String, Set<String>>>();
         for (JsonObject row : rows) {
+            // A field only its construction stores has nothing to re-pair:
+            // a concrete store into it starts no log (SYMBOL-SCOPE §5.1).
             if (!StaticScopeMap.SITE_KIND.equals(member(row, "kind"))
                     || !StaticScopeMap.WRITE_SITE.equals(
-                            member(row, "role"))) {
+                            member(row, "role"))
+                    || StaticScopeMap.constructionOnly(row)) {
                 continue;
             }
             List<String> guards = guards(row);

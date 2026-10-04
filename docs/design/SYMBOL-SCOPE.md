@@ -243,7 +243,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `demandDistance` (the root demand's distance to this read, §4.6) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field), `demandDistance` (§4.6) |
-| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field) |
+| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field), `constructionOnly` (a store into the field itself that only its class's construction stores, §5.1) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
 **Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
@@ -659,10 +659,11 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
   - `REFERENCE`: a field a store re-points holding any other object, an array included, except a
     `String` or a float wrapper: a reader queries or projects the referent the field held when it
     read (SOLR-18406's `knownCommits`, a map each commit replaces, and `latestCommit`). A static
-    one too (`static: true`: its location is its class's). A final field is none, nor a private
-    one only its own class's constructors store (`#storedOnlyAtConstruction`: Lucene's
-    `IndexFileDeleter.refCounts`, a lambda's captured value): its only writer is its
-    constructor, so there is nothing to re-pair;
+    one too (`static: true`: its location is its class's). A field only its class's construction
+    stores is none (`#constructionOnly`: final, or private and stored only by its own class's
+    constructors, `#storedOnlyAtConstruction`: Lucene's `IndexFileDeleter.refCounts`, a lambda's
+    captured value): its only writer is its constructor, so there is nothing to re-pair. The same
+    rule marks a store into such a field `constructionOnly` (§5.3);
 - decides a branch: the read's value reaches a branch operand within eight flows
   (`StaticScopeMap#decidingCells`, `DECIDING_FLOWS`), never through a field and never across a
   `wire_handoff` edge, or the root demand chose it, a `TRACK`, `TRACK_IDENTITY` or
@@ -712,7 +713,11 @@ An occurrence of a region that reads a tracked cell records its branches from re
 (`methodKey`, the store as the VM names it -- `CALL <name>` from `declaredCallee`, else `FIELD
 a/b/C.f` from `cell` -- then its guard site ids, tab-separated), from the map named by
 `CAUSYNTH_STATIC_SCOPE_MAP`; a missing or refused table fails the session by name
-(`GUARDED_STORE_SITES_*`). The VM uses it to version a concrete store at a listed site made after
+(`GUARDED_STORE_SITES_*`). A `constructionOnly` store is none (§5.1): a concrete store there starts
+no log, so the field names no owner its readers project through; a symbolic store into it is still
+logged by value (VM.md §5.1). hdfs-adhoc-03's `FSOutputSummer.sum` (a final `DataChecksum`, its
+constructor's store guarded by `newStreamForCreate`) had made every read of it a guarded reference
+read and every chunk's CRC ~10k symbolic nodes. The VM uses it to version a concrete store at a listed site made after
 one of that site's guards decided symbolically (VM.md §5.3). A `publishedFrom` write site's guards
 join its store's line: SOLR-18406's `updateKnownCommitPoints` lists the `isDeleted()` branch its
 `map.put` runs under (`CALL put`).

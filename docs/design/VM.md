@@ -282,7 +282,8 @@ version's constant, or for a reference its identity node.
 ### 5.3 Guarded concrete stores
 
 The session's guarded-store table (`installGuardedStoreSites`, from `runtime/GuardedStoreSites`)
-lists the scope map's control-dependent store sites, one line each: the method, the store (`FIELD
+lists the scope map's control-dependent store sites but stores into a field only its class's
+construction stores (SYMBOL-SCOPE §5.1, `constructionOnly`), one line each: the method, the store (`FIELD
 a/b/C.f`, or `CALL <name>` for a container mutation), and the site's guard branch sites. A concrete
 store at a listed site, after one of that site's guards decided symbolically on this path, starts the
 location's log: a container mutation (`put`, `remove`, `clear`, `add`, `offer`, `set`;

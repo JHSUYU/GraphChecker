@@ -240,6 +240,10 @@ public final class StaticScopeMap {
         /** READ_SITE, WRITE_SITE: whether its field is static, whose location
          *  is its class's (an atomic's value never is). */
         public final boolean staticField;
+        /** WRITE_SITE: a store into the field itself (no mutator call) that
+         *  only its class's construction stores (SYMBOL-SCOPE §5.1): no
+         *  guarded store (§5.3, {@code runtime.GuardedStoreSites}). */
+        public final boolean constructionOnly;
         /**
          * WRITE_SITE: the local whose container this mutation builds before
          * a later store publishes it into {@link #carrier} (solr-18406's
@@ -265,7 +269,8 @@ public final class StaticScopeMap {
                     declaredCallee, local, declared, guards, guardOutcomes,
                     Collections.<String, Guard>emptyMap(),
                     Collections.<Guard>emptyList(),
-                    Collections.<String>emptyList(), "", false, "", -1);
+                    Collections.<String>emptyList(), "", false, false, "",
+                    -1);
         }
 
         Site(String role, String regionId, String siteId, String vmSite,
@@ -274,7 +279,8 @@ public final class StaticScopeMap {
              List<String> guards, List<Boolean> guardOutcomes,
              Map<String, Guard> guardDeciders, List<Guard> chain,
              List<String> callers, String trackedKind, boolean staticField,
-             String publishedFrom, int demandDistance) {
+             boolean constructionOnly, String publishedFrom,
+             int demandDistance) {
             this.declared = declared;
             this.role = role;
             this.regionId = regionId;
@@ -297,6 +303,7 @@ public final class StaticScopeMap {
                     new ArrayList<String>(callers));
             this.trackedKind = trackedKind == null ? "" : trackedKind;
             this.staticField = staticField;
+            this.constructionOnly = constructionOnly;
             this.publishedFrom = publishedFrom == null ? "" : publishedFrom;
             this.demandDistance = demandDistance;
         }
@@ -345,7 +352,7 @@ public final class StaticScopeMap {
             return new Site(role, held, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, stated, sites, outcomes,
                     deciders, chained, calling, trackedKind, staticField,
-                    publishedFrom, demandDistance);
+                    constructionOnly, publishedFrom, demandDistance);
         }
 
         /**
@@ -525,6 +532,8 @@ public final class StaticScopeMap {
      * @param unwoven      whether a method runs outside the woven program
      * @param trackedKind  how the replay versions a field (SYMBOL-SCOPE F2)
      * @param staticField  whether a field is static
+     * @param constructionOnly whether only its class's construction stores
+     *                     a field (SYMBOL-SCOPE §5.1)
      */
     public static List<Site> sites(
             List<Map<String, Object>> edges,
@@ -532,7 +541,8 @@ public final class StaticScopeMap {
             ConfigCalls configCalls, Demand demand,
             Predicate<String> unwoven,
             Function<String, SharedFieldFlow.TrackedKind> trackedKind,
-            Predicate<String> staticField) {
+            Predicate<String> staticField,
+            Predicate<String> constructionOnly) {
         Set<String> deciding = decidingCells(edges);
         // Once per field: a kind can read the field's class's bodies.
         Map<String, SharedFieldFlow.TrackedKind> kinds =
@@ -580,7 +590,8 @@ public final class StaticScopeMap {
                             accessor ? text(edge.get("invoke")) : "", "",
                             null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS,
                             NO_CHAIN, NO_CALLERS, tracked.name(),
-                            staticField.test(field), "", distance(mark)));
+                            staticField.test(field), false, "",
+                            distance(mark)));
                 }
                 continue;
             }
@@ -592,6 +603,7 @@ public final class StaticScopeMap {
                     leaf.isEmpty() ? field : leaf, field, "", invoke, "",
                     null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS, NO_CHAIN,
                     NO_CALLERS, "", leaf.isEmpty() && staticField.test(field),
+                    invoke.isEmpty() && constructionOnly.test(field),
                     text(edge.get("publishedFrom")), -1));
         }
         markReads(found, unwoven, demand);
@@ -827,6 +839,9 @@ public final class StaticScopeMap {
         if (site.staticField) {
             row.addProperty("static", true);
         }
+        if (site.constructionOnly) {
+            row.addProperty("constructionOnly", true);
+        }
         if (!site.publishedFrom.isEmpty()) {
             row.addProperty("publishedFrom", site.publishedFrom);
         }
@@ -1014,7 +1029,7 @@ public final class StaticScopeMap {
                             dependencyCell, implementation, javaType,
                             inputKind, clock, config), NO_GUARDS,
                     NO_OUTCOMES, NO_DECIDERS, NO_CHAIN, NO_CALLERS, "", false,
-                    "", distance(demand.at(siteId, cell))));
+                    false, "", distance(demand.at(siteId, cell))));
         }
     }
 
@@ -1215,10 +1230,18 @@ public final class StaticScopeMap {
                     deciders(row), chain(row), strings(row, "callers"),
                     optionalString(row, "trackedKind"),
                     row.has("static") && row.get("static").getAsBoolean(),
+                    constructionOnly(row),
                     optionalString(row, "publishedFrom"),
                     (int) optionalLongInteger(row, "demandDistance", -1L)));
         }
         return new StaticScopeMap(sites, readRegions(file), concreteReads);
+    }
+
+    /** A row's {@code constructionOnly}. */
+    public static boolean constructionOnly(JsonObject row) {
+        JsonElement stated = row.get("constructionOnly");
+        return stated != null && stated.isJsonPrimitive()
+                && stated.getAsBoolean();
     }
 
     /** A row's {@code chain}. */

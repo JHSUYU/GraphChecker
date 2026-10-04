@@ -367,7 +367,8 @@ public class RegionFoldPlanTest {
                 Collections.singletonList(thrown),
                 Collections.singletonList(region),
                 Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, (demandSite, demandCell) -> null, method -> false,
-                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false),
+                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false,
+                cell -> false),
                 site -> Collections.singletonList(new StaticScopeMap.Guard(
                         GUARD_SITE, Boolean.TRUE)))) {
             text.append(row).append('\n');

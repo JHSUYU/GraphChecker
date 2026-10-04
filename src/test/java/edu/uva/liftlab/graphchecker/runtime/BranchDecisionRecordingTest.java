@@ -86,13 +86,16 @@ public class BranchDecisionRecordingTest {
                     publishes(decision[1]));
             releaseRegions();
         }
+        JsonObject construction = writeSite("a.B#<init>()V", "", DECLARED);
+        construction.addProperty("constructionOnly", true);
         GuardedStoreSites table = GuardedStoreSites.of(Arrays.asList(
                 writeSite("a.B#run(I)V", "", DECLARED, COMMAS),
                 writeSite("a.B#run(I)V", "<java.util.Map: java.lang.Object"
                         + " put(java.lang.Object,java.lang.Object)>",
-                        DECLARED)));
+                        DECLARED), construction));
         assertEquals("the store's method is internal, its store named as the"
-                + " VM names it, each guard a field",
+                + " VM names it, each guard a field; a store into a field"
+                + " only its construction stores is no guarded store",
                 "a/B#run(I)V\tFIELD a/B.f\t" + DECLARED + "\t" + COMMAS
                         + "\na/B#run(I)V\tCALL put\t" + DECLARED + "\n",
                 table.text());
