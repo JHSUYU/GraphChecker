@@ -249,10 +249,29 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * Counts one real enclosing method entry and freezes which loop task
-     * owns all body iterations executed by that invocation.
+     * What one enclosing method entry of a loop root addressed: the loop
+     * tasks whose bodies it runs, and the declared one among them when it
+     * answers that by its question's rule ({@link #answeredHere}), whose
+     * answer its caller makes at this entry, where the occurrence opened.
      */
-    synchronized Set<String> addressLoopRootInvocation(
+    static final class LoopRootAdmission {
+        final Set<String> admitted;
+        final RuntimeTask answered;
+
+        private LoopRootAdmission(Set<String> admitted, RuntimeTask answered) {
+            this.admitted = Collections.unmodifiableSet(admitted);
+            this.answered = answered;
+        }
+    }
+
+    /**
+     * Counts one real enclosing method entry and freezes which loop task
+     * owns all body iterations executed by that invocation: the task whose
+     * address it ran at, else the declared one when it answers that by its
+     * question's rule, as {@link #select} does at a root entry (a loop
+     * body is no root entry, so this is where its occurrence opens).
+     */
+    synchronized LoopRootAdmission addressLoopRootInvocation(
             String loopRootHookGroup, String rootMethod,
             Object receiver, Object[] rootArguments,
             long enclosingInvocationEvent) {
@@ -264,9 +283,11 @@ final class ConcolicTaskPlan {
         // Outside the recording window nothing has an ordinal, so nothing is
         // a candidate.
         if (!RecordingWindow.opened()) {
-            return admitted;
+            return new LoopRootAdmission(admitted, null);
         }
         ObservedAddresses observedAddresses = new ObservedAddresses();
+        RuntimeTask answering = null;
+        RefusedCandidate answered = null;
         for (RuntimeTask task : tasks) {
             // Another region's enclosing root: silent, or every enclosing
             // invocation would file a refusal against every task.
@@ -284,6 +305,11 @@ final class ConcolicTaskPlan {
                     task.enclosingRootArgumentSelector, receiver,
                     rootArguments, activationSource, observedAddresses);
             if (refused != null) {
+                if (answering == null && task.answers(refused.observed)) {
+                    answering = task;
+                    answered = refused;
+                    continue;
+                }
                 task.noteUnaddressedCandidate(refused);
                 continue;
             }
@@ -301,7 +327,26 @@ final class ConcolicTaskPlan {
             }
             admitted.add(task.taskId);
         }
-        return admitted;
+        if (answering == null) return new LoopRootAdmission(admitted, null);
+        if (!admitted.isEmpty() || !answeredHere(answering, answered,
+                answering.rootHookGroup, activationSource)) {
+            if (!admitted.isEmpty()) {
+                answering.noteUnaddressedCandidate(answered);
+            }
+            return new LoopRootAdmission(admitted, null);
+        }
+        if (!answering.claimsEnclosingInvocation(enclosingInvocationEvent)) {
+            answering.noteUnaddressedCandidate(RefusedCandidate.stated(
+                    "a second enclosing invocation of this region: "
+                            + "occurrence " + answering.occurrenceId
+                            + " already runs the bodies of entry event "
+                            + answering.enclosingInvocationEvent()
+                            + ", so this entry is another activation",
+                    activationSource));
+            return new LoopRootAdmission(admitted, null);
+        }
+        admitted.add(answering.taskId);
+        return new LoopRootAdmission(admitted, answering);
     }
 
     /**
@@ -353,28 +398,44 @@ final class ConcolicTaskPlan {
             return task;
         }
         if (answering < 0) return null;
-        // A context a task plans an occurrence in is that task's, live,
-        // done or not, its every invocation included; an address the
-        // recording opened is that occurrence; and an entry that opened no
-        // occurrence of its own (a fold, unnamed work) has none to give the
-        // declared address.
         RuntimeTask declared = tasks.get(answering);
+        if (!answeredHere(declared, answered, rootHookGroupKey,
+                activationSource)) {
+            return null;
+        }
+        candidateLive[answering] = true;
+        answeredByQuestion[answering] = true;
+        return declared;
+    }
+
+    /**
+     * THE question rule's last three tests (IDENTITY §9), at a root entry
+     * and at a loop root's enclosing entry alike, for an activation the
+     * declared task's question answers ({@link RuntimeTask#answers}): a
+     * context a task plans an occurrence in is that task's, live, done or
+     * not, its every invocation included; an address the recording opened
+     * is that occurrence; and an entry that opened no occurrence of its own
+     * (a fold, unnamed work) has none to give the declared address.  A
+     * refusal is noted on the declared task.
+     */
+    private boolean answeredHere(RuntimeTask declared,
+                                 RefusedCandidate answered,
+                                 String rootHookGroupKey,
+                                 SourceRef activationSource) {
         if (declared.recorded(answered.observed)) {
             declared.noteUnaddressedCandidate(RefusedCandidate.onAddress(
                     "the recording opened this address itself, so the "
                             + "activation is that occurrence and answers no "
                             + "question", answered.observed,
                     activationSource));
-            return null;
+            return false;
         }
         if (occupies(rootHookGroupKey, answered.observed)
                 || Identity.openedNone()) {
             declared.noteUnaddressedCandidate(answered);
-            return null;
+            return false;
         }
-        candidateLive[answering] = true;
-        answeredByQuestion[answering] = true;
-        return declared;
+        return true;
     }
 
     /**

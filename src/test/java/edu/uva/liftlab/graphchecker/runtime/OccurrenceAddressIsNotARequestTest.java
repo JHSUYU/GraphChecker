@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Set;
 
+import static java.util.Collections.singleton;
 import static java.util.Collections.singletonList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -220,7 +221,7 @@ public class OccurrenceAddressIsNotARequestTest {
         try {
             Set<String> admitted = plan.addressLoopRootInvocation(
                     deferred.rootMethod, deferred.rootMethod, null,
-                    new Object[0], 11L);
+                    new Object[0], 11L).admitted;
 
             assertTrue("an activation of another node is no occurrence of "
                             + "this one: " + admitted, admitted.isEmpty());
@@ -316,6 +317,66 @@ public class OccurrenceAddressIsNotARequestTest {
             RuntimeTraceContext.endRequest(request);
             ScheduleLog.resetForTests();
         }
+    }
+
+    /**
+     * A declared loop body is answered by its question where its occurrence
+     * opens, at its loop root's enclosing entry (no root entry admits a
+     * body): the entry binds it, its bodies run under it, and the entry's
+     * occurrence takes the declared address once.  A second enclosing entry
+     * is another activation (hdfs-adhoc-29: block recovery under another
+     * heartbeat's response than the recorded one).
+     */
+    @Test
+    public void theDeclaredLoopOccurrenceIsAnsweredAtItsEnclosingEntry() {
+        RecordingWindow.open();
+        Object node = new Object();
+        RuntimeTraceContext.registerSource(node,
+                new SourceRef("NAMENODE", "nn", NAMENODE, 0L));
+        long request = RuntimeTraceContext.beginRequest(node, "heartbeat");
+        try {
+            JsonObject row = row(PLAN_ROW);
+            String regionId = row.get("regionId").getAsString();
+            OccurrenceAddress ran = heartbeatAddress(regionId, 1);
+            OccurrenceAddress declared = heartbeatAddress(regionId, 2);
+            row.addProperty("occurrenceId", declared.render());
+            row.add("questionShape", json("{'s':['Root:CLIENT/heartbeat']}")
+                    .getAsJsonArray("s"));
+            ConcolicTaskPlan.RuntimeTask asked = new ConcolicTaskPlan
+                    .RuntimeTask(ExecutionTask.decode(row));
+            ConcolicTaskPlan plan = plan(asked);
+            Identity.occurrence(NAMENODE + "#epoch0", regionId, true);
+
+            ConcolicTaskPlan.LoopRootAdmission first =
+                    plan.addressLoopRootInvocation(asked.loopRootHookGroup,
+                            asked.rootMethod, node, new Object[0], 21L);
+            assertEquals(asked, first.answered);
+            assertEquals(singleton(asked.taskId), first.admitted);
+            assertEquals(21L, asked.enclosingInvocationEvent());
+            assertEquals(ran, Identity.answer(declared));
+            assertEquals(declared,
+                    Identity.currentOccurrence(NAMENODE + "#epoch0"));
+
+            ConcolicTaskPlan.LoopRootAdmission second =
+                    plan.addressLoopRootInvocation(asked.loopRootHookGroup,
+                            asked.rootMethod, node, new Object[0], 22L);
+            assertNull(second.answered);
+            assertTrue(second.admitted.isEmpty());
+            assertTrue(asked.unansweredAddress(), asked.unansweredAddress()
+                    .contains("a second enclosing invocation"));
+        } finally {
+            RuntimeTraceContext.endRequest(request);
+            ScheduleLog.resetForTests();
+        }
+    }
+
+    /** The occurrence of {@code regionId} on the NameNode under the k-th
+     *  heartbeat request. */
+    private static OccurrenceAddress heartbeatAddress(String regionId,
+                                                      int k) {
+        return OccurrenceAddress.of(NodeId.parse(NAMENODE + "#epoch0"),
+                regionId, CausalContext.of(Role.of("CLIENT"), "heartbeat", k),
+                ExecutionIndex.empty());
     }
 
     /** The occurrence of the snapshot region under the k-th check. */

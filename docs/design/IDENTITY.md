@@ -608,7 +608,13 @@ opened its own occurrence, answers it when its own context, shaped over this run
 reaches a root (`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then
 takes the declared address (`Identity#answer`): its rows, endpoints, decision ordinals, schedule
 mark and close state it, so every later stage reads the declared address as before, and a
-DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). Which
+DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). A
+declared loop body is asked where its occurrence opens, at its loop root's enclosing entry
+(`ConcolicTaskPlan#addressLoopRootInvocation`, the same four tests, `#answeredHere`), since no root
+entry admits a body: the entry binds the declared task (`RuntimeTask#claimsEnclosingInvocation`), its
+bodies run under it, and the entry's occurrence takes the declared address there, once
+(`LoopAccounting#enterLoopRoot`; hdfs-adhoc-29: a block recovery's worker under the response of
+another DataNode heartbeat than the recorded one). Which
 turn of a daemon carries another node's asynchronous work is that node's timing, which no schedule
 holds: in round `a40h` a NameNode command (block recovery queued by the lease monitor, replication
 after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
@@ -647,8 +653,8 @@ randomness is seeded by endpoint where the occurrence has a context, else by sit
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
-- Only the declared occurrence is answered by its question (§9), and only at a root entry, not a
-  loop body. Every other task still needs its whole address, so the chain a replay took to the
+- Only the declared occurrence is answered by its question (§9). Every other task still needs its
+  whole address, so the chain a replay took to the
   declared occurrence instead of the recorded one has no planned rows, and that session sends no
   message under the declared anchor: EXPLORE finds no door of it there
   (`explore/ClosurePlanner#controlProducer`).
