@@ -288,7 +288,11 @@ Correctness:
     replicas and places pipelines by `NetworkTopology#getRandom`. Both classes are now woven (the
     lineage scan keeps every class that draws) and `ThreadLocalRandom.current()` is seeded by where
     it is drawn (SYMBOL-SCOPE §4.5), but a draw outside an occurrence with a context is keyed by its
-    count, which threads sharing its key take in arrival order. Sweep `b20h` (before the seeding):
+    count, which threads sharing its key take in arrival order. Seeded, a replay draws what its
+    recording drew and still picks other DataNodes: a draw picks by position in the topology's leaf
+    list, whose order is the DataNodes' registration order, before the window (round SS1,
+    hdfs-adhoc-44: block 1 dn0,dn1,dn2 recorded, dn2,dn0,dn1 replayed; block 2 dn2,dn1,dn0 and
+    dn1,dn0,dn2 -- one relabelling, the same picks; likewise 01, 42, 43). Sweep `b20h` (before the seeding):
     BlockSender-509 read the block from dn0 where the recording read dn1, DataNode-3611 ran the
     transfer on dn1/dn4 for dn3, so the declared occurrence ran on another node; an earlier trial of
     the same seeding left 2 of 4 hand seeds of BlockSender-509 reading the other DataNode.
