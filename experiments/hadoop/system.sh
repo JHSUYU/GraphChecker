@@ -4,8 +4,13 @@
 #
 # A Hadoop case.sh may also set
 #   hadoop_javac        the javac the Hadoop build uses (default: the filter)
+#   cluster_automatic   true for a cluster test of the tree as it is written:
+#                       every MiniDFSCluster it builds is made reproducible,
+#                       registered whole and opens the window by itself
+#                       (CausynthCluster#AUTOMATIC)
 
 hadoop_javac=
+cluster_automatic=
 # THE block-key family's shared scope: the SASL data-transfer handshake and
 # the block-token key managers every case of the family turns on, and the IPC
 # client whose propagation calls the causal context travels on.  A case adds
@@ -71,4 +76,6 @@ system_build() {
 # test.build.data.
 system_jvm_properties() {
   jvm_properties=("-Dtest.build.data=$2")
+  [[ "${cluster_automatic}" != true ]] \
+    || jvm_properties+=("-Dcausynth.cluster.automatic=true")
 }
