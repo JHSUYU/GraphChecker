@@ -268,10 +268,57 @@ public class ScheduleLogTest {
                 sends.add(event.context() + " k=" + event.k());
             }
         }
-        assertEquals(Arrays.asList(
-                scope + "|" + makers.get(0) + "@0>" + start + "@0 k=0",
-                scope + "|" + makers.get(1) + "@0>" + start + "@0 k=0"),
+        assertEquals("by the sites they were made at, never how often their"
+                + " creator came there", Arrays.asList(
+                scope + "|" + makers.get(0) + ">" + start + "@0 k=0",
+                scope + "|" + makers.get(1) + ">" + start + "@0 k=0"),
                 sends);
+    }
+
+    /**
+     * A start made while a request is in hand -- the thread's last outbound
+     * named its verb and no receipt came since -- hands that request off:
+     * its site, and the start frame its work claims, name the verb, so its
+     * k counts per verb (IDENTITY §3).  A receipt ends the request in hand.
+     * A DataNode turn's heartbeat hand-off to the IPC sender no longer takes
+     * its block report's START and CLAIM (hdfs-adhoc-15).
+     */
+    @Test
+    public void aStartWithARequestInHandIsThatRequestsHandOff()
+            throws Exception {
+        written.clear();
+        String offer = "<C$Connection: void sendRpcRequest(C$Call)>#u48";
+        String[] verbs = {"P.sendHeartbeat", "P.blockReceivedAndDeleted"};
+        List<String> claimed = new ArrayList<String>();
+        for (String verb : verbs) {
+            CausynthTraceRecorder.outboundExchange("HADOOP_IPC", "c-" + verb,
+                    "0", "REQUEST", null, null, verb);
+            final Object item = new Object();
+            Identity.startWork(offer, item);
+            Thread sender = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    Identity.claimItem(item);
+                }
+            });
+            sender.start();
+            sender.join();
+        }
+        CausynthTraceRecorder.inboundExchange("", "HADOOP_IPC", "c-r", "0",
+                "RESPONSE", null);
+        Identity.startWork(offer, new Object());
+        List<String> starts = new ArrayList<String>();
+        for (ScheduleEvent event : events()) {
+            if (event.kind() == ScheduleEvent.Kind.START) {
+                starts.add(event.site() + " k=" + event.k());
+            } else if (event.kind() == ScheduleEvent.Kind.CLAIM) {
+                claimed.add(event.site());
+            }
+        }
+        assertEquals(Arrays.asList(offer + ":" + verbs[0] + " k=0",
+                offer + ":" + verbs[1] + " k=0", offer + " k=0"), starts);
+        assertEquals(Arrays.asList(offer + ":" + verbs[0],
+                offer + ":" + verbs[1]), claimed);
     }
 
     /** And observe answers whether it wrote. */

@@ -243,6 +243,9 @@ public final class MessageDoors {
                                   String transport, String correlationId,
                                   String attemptId, String half,
                                   Object localOwner, boolean keepSymbolic) {
+        // Every receipt ends the request this thread had in hand, whether or
+        // not it carries a context (Identity#requestInHand).
+        Identity.requestInHand("");
         Inbound before = CURRENT.get();
         CodecMessages.Message kept = keepSymbolic && before != null
                 ? before.codecMessage : null;
