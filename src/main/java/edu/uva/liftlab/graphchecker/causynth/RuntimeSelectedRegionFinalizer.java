@@ -185,7 +185,7 @@ public final class RuntimeSelectedRegionFinalizer {
             List<StaticProgram.RegionRow> selectedSkeletons,
             String skeletonSource, Collection<String> observedMethods,
             Collection<Map<String, Object>> runtimeInstances,
-            Collection<Map<String, Object>> runtimeObservations,
+            Collection<Map<String, Object>> branchObservations,
             StaticScopeMap scopeMap, String declaredOccurrence,
             Collection<ScheduleEvent> recordedSchedule)
             throws IOException {
@@ -200,7 +200,7 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         List<Map<String, Object>> branchOrder = orderedBranchObservations(
-                runtimeObservations);
+                branchObservations);
         // Addresses several activations share; classed after the closure
         // (see #stateSharedAddressClasses).
         List<Map<String, Object>> sharedAddresses = new ArrayList<>();

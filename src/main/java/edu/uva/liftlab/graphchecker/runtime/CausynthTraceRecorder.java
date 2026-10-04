@@ -1462,7 +1462,7 @@ public final class CausynthTraceRecorder {
                         graph, skeletons,
                         String.valueOf(selectedSkeletons),
                         observedMethods, activationGraph.runtimeInstances,
-                        runtimeObservations(trace.execution, trace.methods),
+                        branchObservations(trace.execution, trace.methods),
                         scopeMap, declaredOccurrence, trace.schedule);
         // Plan gaps = this pass's plus those the recording stated.
         List<Map<String, Object>> planGaps = new ArrayList<>(closure.gaps);
@@ -1471,8 +1471,10 @@ public final class CausynthTraceRecorder {
                 activationGraph.runtimeInstances, planGaps);
     }
 
-    /** Compact branch and primitive call-return rows used by the finalizer. */
-    private static List<Map<String, Object>> runtimeObservations(
+    /** The recorded decisions as the finalizer reads them (its branch
+     *  order: {@code RuntimeSelectedRegionFinalizer#orderedBranchObservations}),
+     *  one compact row per BRANCH event. */
+    private static List<Map<String, Object>> branchObservations(
             Collection<RuntimeRegionPlanner.RuntimeEvent> events,
             Collection<RuntimeRegionPlanner.MethodEvent> methods) {
         List<Map<String, Object>> result = new ArrayList<>();
@@ -1485,12 +1487,8 @@ public final class CausynthTraceRecorder {
             }
         }
         for (RuntimeRegionPlanner.RuntimeEvent event : events) {
-            boolean branch = "BRANCH".equals(event.kind)
-                    && event.outcome != null;
-            boolean callReturn = "CALL_SITE_RETURN".equals(event.kind)
-                    && !event.primitiveValue.isEmpty();
-            if ((!branch && !callReturn) || event.callId <= 0L
-                    || event.siteId.isEmpty()) {
+            if (!"BRANCH".equals(event.kind) || event.outcome == null
+                    || event.callId <= 0L || event.siteId.isEmpty()) {
                 continue;
             }
             Map<String, Object> row = new LinkedHashMap<>();
@@ -1499,12 +1497,7 @@ public final class CausynthTraceRecorder {
             row.put("method", event.method);
             row.put("callId", event.callId);
             row.put("siteId", event.siteId);
-            if (branch) {
-                row.put("outcome", event.outcome);
-            } else {
-                row.put("declaredCallee", event.declaredCallee);
-                row.put("primitiveValue", event.primitiveValue);
-            }
+            row.put("outcome", event.outcome);
             RuntimeRegionPlanner.MethodEvent context =
                     contextByCall.get(event.callId);
             if (context != null && !context.sourceKey.isEmpty()) {
@@ -1512,13 +1505,13 @@ public final class CausynthTraceRecorder {
                 row.put("requestKey", context.requestKey);
                 row.put("requestApi", context.requestApi);
             }
-            if (branch && event.successorIndex != null) {
+            if (event.successorIndex != null) {
                 row.put("successorIndex", event.successorIndex);
             }
-            if (branch && !event.branchKind.isEmpty()) {
+            if (!event.branchKind.isEmpty()) {
                 row.put("branchKind", event.branchKind);
             }
-            if (branch && !event.switchCaseKeys.isEmpty()) {
+            if (!event.switchCaseKeys.isEmpty()) {
                 row.put("switchCaseKeys", event.switchCaseKeys);
             }
             result.add(row);
