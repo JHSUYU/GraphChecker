@@ -1180,7 +1180,8 @@ public final class SmtLowering {
         // An object the VM named, asked as a reference, is its identity
         // whatever its class ({@link #whole}).
         Sort sort = expected == Sort.REF
-                && VmRows.referencedObjectRid(raw) > 0L
+                && (VmRows.referencedObjectRid(raw) > 0L
+                || VmRows.placedObject(raw))
                 ? Sort.REF : leafSort(javaType, expected);
         if (sort == null) sort = Sort.REF;
         Declared held = declarations.get(raw);
@@ -1968,8 +1969,7 @@ public final class SmtLowering {
         }
         Sort sort = VmTermLowering.sortOfContainer(cell.sort);
         Map<String, Term> answers = new LinkedHashMap<String, Term>();
-        answers.put(symbolTerm(own, Sort.REF).text,
-                Term.vm(cell.text, sort, cell.integralWidth));
+        answers.put(symbolTerm(own, Sort.REF).text, lowered(cell));
         long run = VmRows.referencedObjectRid(primitiveString(own, "_exp"));
         String slot = Long.toString(optionalLongInteger(access,
                 "fieldOffset", -1L));
@@ -1983,8 +1983,7 @@ public final class SmtLowering {
                         .text, field);
             }
         }
-        return new ContainerSmtCodec.Term(perCandidate(asked.text, answers),
-                cell.sort, cell.integralWidth);
+        return perCandidateTerm(asked.text, answers, cell);
     }
 
     /** The member a node names the reference it was reached through by. */
@@ -2041,6 +2040,52 @@ public final class SmtLowering {
         }
         sideCondition(VmTermLowering.or(defined));
         return value;
+    }
+
+    /**
+     * {@link #perCandidate} as a codec term of {@code run}'s sort; a String
+     * answer is null where its case's is, by the same test of the owner,
+     * and of unknown nullness where any case states none.
+     */
+    private ContainerSmtCodec.Term perCandidateTerm(
+            String owner, Map<String, Term> answers,
+            ContainerSmtCodec.Term run) {
+        String value = perCandidate(owner, answers);
+        if (run.sort != ContainerSmtCodec.Sort.STRING) {
+            return new ContainerSmtCodec.Term(value, run.sort,
+                    run.integralWidth);
+        }
+        List<Map.Entry<String, Term>> cases =
+                new ArrayList<Map.Entry<String, Term>>(answers.entrySet());
+        String nullness = "";
+        boolean nonNull = true;
+        for (int index = cases.size() - 1; index >= 0; index--) {
+            Term answer = cases.get(index).getValue();
+            if (answer.stringNullness.isEmpty()) {
+                return ContainerSmtCodec.Term.string(value, "");
+            }
+            nonNull &= "false".equals(answer.stringNullness);
+            nullness = nullness.isEmpty() ? answer.stringNullness
+                    : "(ite (= " + owner + " " + cases.get(index).getKey()
+                    + ") " + answer.stringNullness + " " + nullness + ")";
+        }
+        return ContainerSmtCodec.Term.string(value,
+                nonNull ? "false" : nullness);
+    }
+
+    /**
+     * A lowered value as the codec takes it, with its Java width (shift and
+     * bitwise operators are typed: ISHR is not LSHR) and a String's
+     * nullness as its lowering stated it: a recorded String is not null,
+     * and a value the lowering knows is not left unknown at the codec.
+     */
+    private static ContainerSmtCodec.Term codecTerm(Term value) {
+        return value.sort == Sort.STRING
+                ? ContainerSmtCodec.Term.string(value.text,
+                value.stringNullness)
+                : new ContainerSmtCodec.Term(value.text,
+                VmTermLowering.containerSortOf(value.sort),
+                value.integralWidth);
     }
 
     /**
@@ -2260,8 +2305,7 @@ public final class SmtLowering {
             return own;
         }
         askedThrough(read);
-        Term run = Term.vm(own.text, VmTermLowering.sortOfContainer(
-                own.sort), own.integralWidth);
+        Term run = lowered(own);
         long rid = VmRows.referencedObjectRid(primitiveString(self, "_exp"));
         Map<Long, Candidate> objects = candidates(key, null);
         Map<String, Term> answers = new LinkedHashMap<String, Term>();
@@ -2278,8 +2322,7 @@ public final class SmtLowering {
                         answer);
             }
         }
-        return new ContainerSmtCodec.Term(perCandidate(asked.text, answers),
-                own.sort, own.integralWidth);
+        return perCandidateTerm(asked.text, answers, own);
     }
 
     /**
@@ -2719,19 +2762,18 @@ public final class SmtLowering {
                 Term value = dispatch(expression,
                         VmTermLowering.sortOfContainer(expected),
                         origin + ":container-operand");
-                // Keep the Java width: shift and bitwise operators are typed
-                // (ISHR is not LSHR) and are ambiguous without it.
-                return new ContainerSmtCodec.Term(value.text,
-                        VmTermLowering.containerSortOf(value.sort),
-                        value.integralWidth);
+                return codecTerm(value);
             }
 
             @Override
             public ContainerSmtCodec.Term box(JsonElement expression) {
-                Term value = dispatch(expression, null,
-                        origin + ":container-value");
                 String javaType =
                         VmTermLowering.expressionJavaType(expression);
+                // A cell holds what Java stores in it: an object, a
+                // container included, is its reference.
+                Term value = dispatch(expression, JavaSmtSorts.sortOfJava(
+                        javaType).containerState() ? Sort.REF : null,
+                        origin + ":container-value");
                 String boxed = boxed(value, javaType);
                 if (boxed.isEmpty()) {
                     // Name both the declared type and the lowered shape.

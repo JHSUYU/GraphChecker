@@ -3143,6 +3143,59 @@ public class ComposerTest {
     }
 
     /**
+     * What the lowering states of a value it hands the container codec stays
+     * stated: a String keeps its nullness (hdfs-adhoc-19: the blockPoolId a
+     * FinalizeCommand taken from the command list holds, recorded as a
+     * String, reached String.equals as of unknown nullness and was
+     * refused), and an object a cell stores, a list included, is its
+     * reference (hdfs-adhoc-33: bpStorageDirMap.put(bpid, dirs) with a list
+     * the VM placed unnamed was cut, CannotBox, and so was every read of
+     * that version).
+     */
+    @Test
+    public void aValueKeepsWhatItsLoweringStatesAcrossTheCodec() {
+        JsonObject commands = relation("INDEXED", "READ", "L",
+                relation("INDEXED", "SNAPSHOT_BASE", "java/util/ArrayList",
+                        null), integer("I", 0L));
+        JsonObject blockPool = fieldRead(
+                "org/apache/hadoop/hdfs/server/protocol/FinalizeCommand", 32L,
+                commands, vmLeaf("ConStringSymbolExp", "Y_L'String'_BP-1",
+                        "java/lang/String"));
+        Object[][] rows = {
+            {"a recorded String a field read hands String.equals",
+                    vmString("equals", symbol("s", "Ljava/lang/String;"),
+                            blockPool)},
+            {"a list the VM placed unnamed, stored in a map",
+                    stored(symbol("P_L'java/util/ArrayList'_",
+                            "java/util/ArrayList"))},
+            {"a list the VM named, stored in a map",
+                    stored(symbol("M_L'java/util/ArrayList'_7",
+                            "java/util/ArrayList"))},
+        };
+        for (Object[] row : rows) {
+            Map<String, VmTermLowering.Sort> declared =
+                    new LinkedHashMap<String, VmTermLowering.Sort>();
+            declared.put("s", VmTermLowering.Sort.STRING);
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+            lowering.dispatch((JsonObject) row[1], VmTermLowering.Sort.BOOL,
+                    "test");
+            List<String> refused = lowering.openRefusals();
+            lowering.end();
+            assertTrue(row[0] + ": " + refused, refused.isEmpty());
+        }
+    }
+
+    /** Whether key 5 of a map that stores {@code value} there is null. */
+    private static JsonObject stored(JsonObject value) {
+        JsonObject put = relation("ASSOCIATIVE", "PUT", "java/util/Map",
+                relation("ASSOCIATIVE", "SNAPSHOT_BASE", "java/util/HashMap",
+                        null), integer("I", 5L), value);
+        return binary("==", relation("ASSOCIATIVE", "READ",
+                "java/util/ArrayList", put, integer("I", 5L)), vmNull());
+    }
+
+    /**
      * A reference compared with an object the VM named is an identity
      * test whichever side the object is on.
      */
