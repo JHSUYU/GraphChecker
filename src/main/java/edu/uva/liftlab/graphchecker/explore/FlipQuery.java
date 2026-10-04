@@ -210,8 +210,12 @@ final class FlipQuery {
          *  "" where neither is stated. */
         private final Map<String, String> own =
                 new LinkedHashMap<String, String>();
-        /** The selectors delivering some read a value of another sort. */
-        private final Set<String> nothing = new LinkedHashSet<String>();
+        /** Where its exactly-one stands among the query's assertions:
+         *  restated over the run's choice too when that is added. */
+        private int exactlyOne;
+        /** Whether the observed writer's selector delivers some read a
+         *  value of another sort: no choice once the run's replaces it. */
+        private boolean recordedDeliversNothing;
         /** Whether no one writer's arm is the run: the reads saw several
          *  versions, or one no row wrote. */
         private boolean asHappened;
@@ -1121,6 +1125,9 @@ final class FlipQuery {
                     }
                 }
                 choicesByReader.put(choiceKey, choices);
+                choices.exactlyOne = assertions.size();
+                assertions.add(Arms.exactlyOne(new ArrayList<String>(
+                        choices.writes.keySet())));
             }
             // One writer choice binds every read of the block, so it is the
             // run only where every read saw that writer's one write.  Reads
@@ -1146,7 +1153,11 @@ final class FlipQuery {
                     own = value;
                 }
                 if (value == null) {
-                    choices.nothing.add(choice.selector);
+                    if (choice.selector.equals(choices.recorded)) {
+                        choices.recordedDeliversNothing = true;
+                    } else {
+                        assertions.add("(not " + choice.selector + ")");
+                    }
                     continue;
                 }
                 if (value.isEmpty()) continue;
@@ -1185,53 +1196,46 @@ final class FlipQuery {
         }
 
         /**
-         * Each writer choice, once every read it binds is bound: exactly one
-         * of its selectors, never one delivering a read a value of another
-         * sort (the recorded one excepted), and where no one writer's arm is
-         * the run ({@link WriterChoice#asHappened}) one more, the RUN'S
-         * CHOICE, holding each read to the value it read: the recorded
-         * pairing, which a model taking it plants nothing for, as COMPOSE's
-         * observed arm is the recorded pairing.  The writer choices stay
-         * beside it, each binding every read.  A read stating no value of
-         * its own refuses the query by name.
+         * Once every read is bound, each writer choice where no one writer's
+         * arm is the run ({@link WriterChoice#asHappened}) gets one more
+         * selector, the RUN'S CHOICE, holding each read to the value it
+         * read: the recorded pairing, which a model taking it plants nothing
+         * for, as COMPOSE's observed arm is the recorded pairing.  The writer
+         * choices stay beside it, each binding every read; its exactly-one is
+         * restated over all of them, and the observed writer's selector, no
+         * longer the recorded one, is no choice where it delivers a read a
+         * value of another sort.  A read stating no value of its own refuses
+         * the query by name.
          */
         private void choices() {
             for (WriterChoice choice : choicesByReader.values()) {
-                List<String> selectors =
-                        new ArrayList<String>(choice.writes.keySet());
-                if (choice.asHappened) {
-                    String run = names.name("choice|" + choice.key + "|run",
-                            "wchoice_" + choice.location.slot() + "_run");
-                    declare(run, "Bool", "these reads take "
-                            + choice.location + " each from the write it "
-                            + "observed");
-                    for (Map.Entry<String, String> own
-                            : choice.own.entrySet()) {
-                        if (own.getValue().isEmpty()) {
-                            refusal = "UNSTATED_VALUE:" + choice.key;
-                            gaps.add(GapRow.of(choice.reads.get(0)
-                                            .sessionId(),
-                                    GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
-                                    choice.key, "no one writer's arm is the "
-                                            + "run of these reads, and "
-                                            + own.getKey() + " states no "
-                                            + "value the run's choice could "
-                                            + "hold it to"));
-                            continue;
-                        }
-                        assertions.add("(=> " + run + " (= " + own.getKey()
-                                + " " + own.getValue() + "))");
+                if (!choice.asHappened) continue;
+                String run = names.name("choice|" + choice.key + "|run",
+                        "wchoice_" + choice.location.slot() + "_run");
+                declare(run, "Bool", "these reads take " + choice.location
+                        + " each from the write it observed");
+                for (Map.Entry<String, String> own : choice.own.entrySet()) {
+                    if (own.getValue().isEmpty()) {
+                        refusal = "UNSTATED_VALUE:" + choice.key;
+                        gaps.add(GapRow.of(choice.reads.get(0).sessionId(),
+                                GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+                                choice.key, "no one writer's arm is the run "
+                                        + "of these reads, and "
+                                        + own.getKey() + " states no value "
+                                        + "the run's choice could hold it "
+                                        + "to"));
+                        continue;
                     }
-                    choice.writes.put(run, null);
-                    choice.recorded = run;
-                    selectors.add(run);
+                    assertions.add("(=> " + run + " (= " + own.getKey() + " "
+                            + own.getValue() + "))");
                 }
-                for (String selector : choice.nothing) {
-                    if (!selector.equals(choice.recorded)) {
-                        assertions.add("(not " + selector + ")");
-                    }
+                if (choice.recordedDeliversNothing) {
+                    assertions.add("(not " + choice.recorded + ")");
                 }
-                assertions.add(Arms.exactlyOne(selectors));
+                choice.writes.put(run, null);
+                choice.recorded = run;
+                assertions.set(choice.exactlyOne, Arms.exactlyOne(
+                        new ArrayList<String>(choice.writes.keySet())));
             }
         }
 
