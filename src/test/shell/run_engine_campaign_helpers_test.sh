@@ -1377,14 +1377,16 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
 
 # REPLAY-NEED: the seed replay (and CONFIRM's) is charged the recording's
 # measured peak times campaign_replay_memory_factor (7) when that is above
-# one obligation's replay, else that (campaign_replay_need_mb), never more
-# than half a host's ceiling (cap: CAUSYNTH_HOST_MAX_USED_PCT of this host's
-# MemTotal, halved), and its replay JVM is handed that charge
-# (CAUSYNTH_CHARGED_MB, which execute.sh sizes and holds the JVM by).  Per
-# row: obligation_memory_mb, the recording's peak (- none), the need.
+# one obligation's replay, else that (campaign_replay_need_mb); it is charged
+# that need, never more than half a host's ceiling (cap:
+# CAUSYNTH_HOST_MAX_USED_PCT of this host's MemTotal, halved;
+# campaign_replay_charge_mb), its replay JVM is held to that charge
+# (CAUSYNTH_CHARGED_MB) and sized by the whole need (CAUSYNTH_HEAP_BASIS_MB,
+# campaign_replay_heap_basis_mb).  Per row: obligation_memory_mb, the
+# recording's peak (- none), the charge, the need.
 need_cap=$(( $(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo) \
   * campaign_host_max_used_pct / 200 ))
-while read -r need_obligation need_rss need_expected; do
+while read -r need_obligation need_rss need_expected need_whole; do
   [[ "${need_rss}" != - ]] || need_rss=""
   [[ "${need_expected}" != cap ]] || need_expected=${need_cap}
   need_said=$(
@@ -1394,17 +1396,19 @@ while read -r need_obligation need_rss need_expected; do
     campaign_recorded_workload_s=10
     campaign_task_ids() { echo TASK.SEED; }
     campaign_head_charged() { printf 'charged=%s ' "$1"; shift; "$@"; }
-    campaign_replay() { printf 'jvm=%s' "$7"; }
+    campaign_replay() {
+      printf 'jvm=%s heap=%s' "$7" "${campaign_replay_heap_basis_mb}"; }
     campaign_session_replay "${bound_dir}/seed-iteration"
   )
-  [[ "${need_said}" == "charged=${need_expected} jvm=${need_expected}" ]] \
+  [[ "${need_said}" == "charged=${need_expected} jvm=${need_expected} heap=${need_whole}" ]] \
     || fail "a seed replay with ${need_obligation} MB per obligation and a \
-'${need_rss}' MB recording is ${need_said}, not ${need_expected} MB"
+'${need_rss}' MB recording is ${need_said}, not ${need_expected} MB sized by \
+${need_whole} MB"
 done <<'EOF'
-2500 300 2500
-2500 442 3094
-2500 - 2500
-2500 99999 cap
+2500 300 2500 2500
+2500 442 3094 3094
+2500 - 2500 2500
+2500 99999 cap 699993
 EOF
 need_dir="${bound_dir}/need"
 mkdir -p "${need_dir}"

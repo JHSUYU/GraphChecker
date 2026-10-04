@@ -2362,6 +2362,7 @@ campaign_replay() {
   run_capturing_status \
     campaign_run_adapter "replay(${role})" "${concolic_replay_command}" \
     "CAUSYNTH_CHARGED_MB=${charged}" \
+    "CAUSYNTH_HEAP_BASIS_MB=${campaign_replay_heap_basis_mb:-${charged}}" \
     "CAUSYNTH_CONCOLIC_ROLE=${role}" \
     "CAUSYNTH_CONCOLIC_TASK_PLAN=${plan}" \
     "CAUSYNTH_CONCOLIC_TASK_ID=${ids}" \
@@ -2478,15 +2479,16 @@ campaign_target_reached() {
 # observed cases, so a replay past it is a campaign failure at REPLAY, named,
 # not a recorded verdict.
 campaign_session_replay() {
-  local iteration_dir=$1 bound need
+  local iteration_dir=$1 bound need charge
   bound=$(( seed_replay_time_factor * campaign_recorded_workload_s ))
   (( bound >= replay_timeout_s )) || bound=${replay_timeout_s}
   need=$(campaign_replay_need_mb)
-  campaign_head_charged "${need}" campaign_seed_replay "${iteration_dir}" \
-    "${causynth_static_scope_map}" "${need}" "${bound}" \
+  charge=$(campaign_replay_charge_mb "${need}")
+  campaign_head_charged "${charge}" campaign_seed_replay "${iteration_dir}" \
+    "${causynth_static_scope_map}" "${charge}" "${bound}" \
     "seed_replay_time_factor=${seed_replay_time_factor} x the recording's \
 ${campaign_recorded_workload_s}s workload and at least \
-replay_timeout_s=${replay_timeout_s}"
+replay_timeout_s=${replay_timeout_s}" "${need}"
 }
 
 # The memory, in MB, the seed and the CONFIRM replay are charged: the
@@ -2497,18 +2499,27 @@ replay_timeout_s=${replay_timeout_s}"
 # peaked at 0.65 to 6.94 times it (hdfs-17960 4.89, solr-18413 3.65,
 # solr-18406 6.94; the block-key cases under 1.2).  One that outgrows its
 # charge still grows it while its host has real room
-# (campaign_watch_workload).  So the charge is never more than half a host's
-# ceiling: a charge only an idle host can hold waits for one forever on a
-# shared cluster (round HG1: four HDFS seed replays charged 20.6 GB, seven
-# times a 2.9 GB recording, waited 75 minutes for a host under 22 GB).
+# (campaign_watch_workload).  The need sizes the replay JVM's heap
+# (CAUSYNTH_HEAP_BASIS_MB, execute.sh); the charge it STARTS with
+# (campaign_replay_charge_mb) is never more than half a host's ceiling: a
+# charge only an idle host can hold waits for one forever on a shared cluster
+# (round HG1: four HDFS seed replays charged 20.6 GB, seven times a 2.9 GB
+# recording, waited 75 minutes for a host under 22 GB), and what the replay
+# grows past it the ledger grants while its host has real room.
 campaign_replay_memory_factor=7
 campaign_replay_need_mb() {
   local rss=${campaign_recorded_workload_rss_mb} need=${obligation_memory_mb}
-  local cap
   if [[ "${rss}" =~ ^[0-9]+$ ]] \
       && (( rss * campaign_replay_memory_factor > need )); then
     need=$(( rss * campaign_replay_memory_factor ))
   fi
+  printf '%s\n' "${need}"
+}
+
+# campaign_replay_charge_mb <need>: what a seed or CONFIRM replay of that
+# need is charged at its start: the need, at most half a host's ceiling.
+campaign_replay_charge_mb() {
+  local need=$1 cap
   cap=$(( $(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo) \
     * campaign_host_max_used_pct / 200 ))
   (( need <= cap || cap < obligation_memory_mb )) || need=${cap}
@@ -2516,13 +2527,13 @@ campaign_replay_need_mb() {
 }
 
 # campaign_seed_replay <iteration_dir> <scope_map> <charged_mb> <bound_s>
-# <rule>: the seed replay itself, on whichever host its charge placed it
+# <rule> <need_mb>: the seed replay itself, on whichever host its charge placed it
 # (run_engine.sh --run-placed).  What it reads of its head is in its
 # arguments -- its scope map, and the bound <rule> states -- or in the run's
 # configuration.
 campaign_seed_replay() {
   local iteration_dir=$1 causynth_static_scope_map=$2 charged=$3 bound=$4
-  local rule=$5
+  local rule=$5 need=${6:-$3}
   local seed="${iteration_dir}/seed-result"
   local plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   # CAUSYNTH_CONCOLIC_RESULTS names this replay, it is not a file:
@@ -2546,6 +2557,7 @@ campaign_seed_replay() {
   campaign_schedule_prefix="${recorded_schedule}" \
     campaign_adapter_timeout_s="${bound}" \
     campaign_adapter_timeout_rule="${bound}s, ${rule}" \
+    campaign_replay_heap_basis_mb="${need}" \
     campaign_replay worker "${plan}" "${ids}" \
     "${iteration_dir}/instrumented-classes" "${results}" "${seed}/focused" \
     "${charged}"
@@ -3073,7 +3085,7 @@ host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
 # solver and read unchanged by a re-run.
 campaign_obligation_replay() {
   local obligation_id=$1 classes=$2 worker=$3 sessions=$4 seed_plan=$5
-  local charged=$6
+  local charged=$6 need=${7:-$6}
   # Charged as a whole by whoever starts it: the pool, GROW, or CONFIRM.
   local campaign_head_charging=0
   local plan="${worker}/execution_task_plan.jsonl"
@@ -3096,6 +3108,7 @@ campaign_obligation_replay() {
   campaign_sessions_dir="${sessions}" \
     campaign_adapter_timeout_s="${replay_timeout_s}" \
     campaign_adapter_timeout_rule="replay_timeout_s=${replay_timeout_s}" \
+    campaign_replay_heap_basis_mb="${need}" \
     campaign_replay worker "${plan}" "${replay_tasks}" "${classes}" \
       "${results}" "${worker}" "${charged}" tolerated
   # ONE WRITER.  The replay's process group is gone
@@ -5308,7 +5321,7 @@ ${campaign_witness_attempt}"
 # leaves the model unconfirmed and open: a later attempt may claim it again.
 campaign_confirm_claim() {
   local iteration_dir=$1 claims=$2 dir=$3
-  local worker sessions status=0 reason need
+  local worker sessions status=0 reason need charge
   [[ ! -e "${dir}" ]] \
     || die "the confirmation directory already exists: ${dir}"
   worker="${dir}/worker"
@@ -5343,10 +5356,12 @@ campaign_confirm_claim() {
     # confirmation as "no verdict", which is one more way of not agreeing
     # with the model.
     need=$(campaign_replay_need_mb)
-    ( campaign_head_charged "${need}" \
+    charge=$(campaign_replay_charge_mb "${need}")
+    ( campaign_head_charged "${charge}" \
         campaign_obligation_replay CONFIRM \
         "${iteration_dir}/instrumented-classes" "${worker}" "${sessions}" \
-        "${iteration_dir}/seed-replay/execution_task_plan.jsonl" "${need}" ) \
+        "${iteration_dir}/seed-replay/execution_task_plan.jsonl" "${charge}" \
+        "${need}" ) \
       >>"${dir}/confirm.log" 2>&1 || status=$?
     if [[ "${status}" -ne 0 ]]; then
       campaign_confirm_verdict false "the confirmation replay published no \

@@ -92,7 +92,11 @@ extra=()
 # replays of SplitShardTest and ReindexCollectionTest ran out of a 2 GB heap
 # at a 2500 MB charge, round a40s).
 charged_mb=${CAUSYNTH_CHARGED_MB:-0}
-heap_mb=$(( charged_mb / 2 ))
+# A seed or CONFIRM replay starts with a charge capped at half a host's
+# ceiling (run_engine.sh campaign_replay_charge_mb); its heap is half its
+# whole need (CAUSYNTH_HEAP_BASIS_MB), so the cap places it and the ledger
+# grants its growth, but the heap never stops it first.
+heap_mb=$(( ${CAUSYNTH_HEAP_BASIS_MB:-${charged_mb}} / 2 ))
 (( heap_mb >= 4096 )) || heap_mb=4096
 
 # noInflation: a reflective call is served by a generated accessor from its

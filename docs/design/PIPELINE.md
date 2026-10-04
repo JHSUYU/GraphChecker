@@ -837,8 +837,9 @@ told apart from a crash) -- the seed
 and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged
 seven times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its
 native recording, up to 6.94 times in round x1) when above `obligation_memory_mb`, else that,
-never more than half a host's ceiling (a charge only an idle host can hold waited 75 minutes in
-round HG1; past its charge the replay grows while its host has room) (`campaign_replay_need_mb`), and REPRODUCE's native runs (§10b). A running JVM that outgrows its
+charged at most half a host's ceiling at its start (a charge only an idle host can hold waited 75
+minutes in round HG1; past its charge the replay grows while its host has room) and its heap sized
+by the whole need (`CAUSYNTH_HEAP_BASIS_MB`) (`campaign_replay_need_mb`, `campaign_replay_charge_mb`), and REPRODUCE's native runs (§10b). A running JVM that outgrows its
 charge is ended only when the host's real use would pass the ceiling with it
 (`campaign_host_try_grow`). They read and write only the run's
 shared directories -- the case's scope copy among them (§1) -- so each runs alike on any host. What
