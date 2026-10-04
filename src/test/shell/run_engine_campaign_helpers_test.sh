@@ -1375,12 +1375,16 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
 
 # REPLAY-NEED: the seed replay (and CONFIRM's) is charged the recording's
 # measured peak times campaign_replay_memory_factor (7) when that is above
-# one obligation's replay, else that (campaign_replay_need_mb), and its
-# replay JVM is handed that charge
+# one obligation's replay, else that (campaign_replay_need_mb), never more
+# than half a host's ceiling (cap: CAUSYNTH_HOST_MAX_USED_PCT of this host's
+# MemTotal, halved), and its replay JVM is handed that charge
 # (CAUSYNTH_CHARGED_MB, which execute.sh sizes and holds the JVM by).  Per
 # row: obligation_memory_mb, the recording's peak (- none), the need.
+need_cap=$(( $(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo) \
+  * campaign_host_max_used_pct / 200 ))
 while read -r need_obligation need_rss need_expected; do
   [[ "${need_rss}" != - ]] || need_rss=""
+  [[ "${need_expected}" != cap ]] || need_expected=${need_cap}
   need_said=$(
     obligation_memory_mb=${need_obligation}
     campaign_recorded_workload_rss_mb=${need_rss}
@@ -1398,6 +1402,7 @@ done <<'EOF'
 2500 300 2500
 2500 442 3094
 2500 - 2500
+2500 99999 cap
 EOF
 need_dir="${bound_dir}/need"
 mkdir -p "${need_dir}"
@@ -3238,14 +3243,14 @@ grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
   || fail "the stage did not say why it ran nothing"
 # The rule, both conditions holding.  The replay is charged as the seed's:
 # the recording's measured peak times the replay factor, above one
-# obligation's replay here.
-confirm_recorded_rss=3000
+# obligation's replay and under half a host's ceiling here.
+confirm_recorded_rss=1000
 run_confirm SAT_CANDIDATE
 confirm_says true "the claim's anchor observed the fatal" \
   "a clean replay was not confirmed"
-[[ "$(cat "${confirm_root}/replay-ran")" == 21000 ]] \
+[[ "$(cat "${confirm_root}/replay-ran")" == 7000 ]] \
   || fail "the CONFIRM replay was charged $(cat "${confirm_root}/replay-ran") \
-MB, not seven times the recording's 3000 MB peak"
+MB, not seven times the recording's 1000 MB peak"
 confirm_recorded_rss=""
 [[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == CONFIRM-1 ]] \
   || fail "the confirmation does not name the session that answered"

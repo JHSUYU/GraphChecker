@@ -2483,16 +2483,22 @@ replay_timeout_s=${replay_timeout_s}"
 # peaked at 0.65 to 6.94 times it (hdfs-17960 4.89, solr-18413 3.65,
 # solr-18406 6.94; the block-key cases under 1.2).  One that outgrows its
 # charge still grows it while its host has real room
-# (campaign_watch_workload).
+# (campaign_watch_workload).  So the charge is never more than half a host's
+# ceiling: a charge only an idle host can hold waits for one forever on a
+# shared cluster (round HG1: four HDFS seed replays charged 20.6 GB, seven
+# times a 2.9 GB recording, waited 75 minutes for a host under 22 GB).
 campaign_replay_memory_factor=7
 campaign_replay_need_mb() {
-  local rss=${campaign_recorded_workload_rss_mb}
+  local rss=${campaign_recorded_workload_rss_mb} need=${obligation_memory_mb}
+  local cap
   if [[ "${rss}" =~ ^[0-9]+$ ]] \
-      && (( rss * campaign_replay_memory_factor > obligation_memory_mb )); then
-    printf '%s\n' "$(( rss * campaign_replay_memory_factor ))"
-  else
-    printf '%s\n' "${obligation_memory_mb}"
+      && (( rss * campaign_replay_memory_factor > need )); then
+    need=$(( rss * campaign_replay_memory_factor ))
   fi
+  cap=$(( $(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo) \
+    * campaign_host_max_used_pct / 200 ))
+  (( need <= cap || cap < obligation_memory_mb )) || need=${cap}
+  printf '%s\n' "${need}"
 }
 
 # campaign_seed_replay <iteration_dir> <scope_map> <charged_mb> <bound_s>

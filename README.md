@@ -858,7 +858,7 @@ a re-run, which is its replay (`obligation_memory_mb`), a host's solver of the e
 start's need; PIPELINE §7.5), a campaign head's engine JVM (its main's measured need, else
 `engine_memory_mb`, and once more at `engine_memory_mb` if it runs out; PIPELINE §7.7), its seed and
 CONFIRM replays (seven times the recording's measured peak when above `obligation_memory_mb`, else
-that), REPRODUCE's runs (the recording's peak), an offline gate's JVM (its heap) and a `fanout.sh`
+that, never more than half a host's ceiling), REPRODUCE's runs (the recording's peak), an offline gate's JVM (its heap) and a `fanout.sh`
 job (its `NEED_MB`). A start goes only when both the host's live charges and its real use
 (`MemTotal` less `MemAvailable`), each with the start and a head's held room, stay within
 `CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
