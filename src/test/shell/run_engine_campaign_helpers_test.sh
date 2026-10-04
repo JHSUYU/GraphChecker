@@ -501,8 +501,10 @@ mv "${composition_manifest}.tmp" "${composition_manifest}"
 run_emit
 [[ "${emit_status}" -eq 0 ]] \
   || fail "a defect-free UNSAT was not accepted: $(<"${emit_root}/emit.log")"
-jq -e '.claim == "UNSAT_CLOSED" and .accepted == true and .defects == []
-  and [.concrete[].kind] == ["ANCHOR", "PIN"]' \
+jq -e --arg formula "${campaign_final}/candidate.smt2" \
+  '.claim == "UNSAT_CLOSED" and .accepted == true and .defects == []
+  and [.concrete[].kind] == ["ANCHOR", "PIN"]
+  and .formula.path == $formula and (.formula.sha256 | length) == 64' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "a defect-free UNSAT was not published as the verdict: \
 $(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"

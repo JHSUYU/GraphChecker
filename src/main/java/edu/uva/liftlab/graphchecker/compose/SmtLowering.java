@@ -884,7 +884,7 @@ public final class SmtLowering {
                 new LinkedHashMap<String, String>();
         /** What was pinned to the value its row states though what it
          *  rests on can move ({@link #pins}). */
-        private final Map<String, Pin> pins = new LinkedHashMap<String, Pin>();
+        private final List<Pin> pins = new ArrayList<Pin>();
         /** A named DIAGNOSTIC that refuses nothing -> why
          *  ({@link #diagnostics}). */
         private final Map<String, String> diagnostics =
@@ -914,7 +914,7 @@ public final class SmtLowering {
             cuts.addAll(other.cuts);
             sortConflicts.putAll(other.sortConflicts);
             pinnedReturns.putAll(other.pinnedReturns);
-            pins.putAll(other.pins);
+            pins.addAll(other.pins);
             diagnostics.putAll(other.diagnostics);
         }
     }
@@ -1561,8 +1561,7 @@ public final class SmtLowering {
     /** Records a pin that cuts a moving dependence ({@link #pins}). */
     private void pinnedOver(String subject, String value, Set<String> cut) {
         if (cut.isEmpty()) return;
-        top().pins.put(subject, new Pin(subject, value,
-                new ArrayList<String>(cut)));
+        top().pins.add(new Pin(subject, value, new ArrayList<String>(cut)));
     }
 
     /** What the read row of this event states it returned, or "". */
@@ -3268,12 +3267,13 @@ public final class SmtLowering {
 
     /**
      * Each value pinned to what its row states though what it rests on can
-     * move ({@link #bind}, {@link #methodReturn}): the formula holds it at
-     * the run's value, so a witness moving what it rests on is CONFIRM's to
-     * refute.  Information, never a gap.
+     * move ({@link #bind}, {@link #methodReturn}), in the order pinned: the
+     * formula holds it at the run's value, so a witness moving what it rests
+     * on is CONFIRM's to refute.  Information, never a gap; a composer keeps
+     * those its admitted paths made ({@code Composer#concrete}).
      */
-    public Map<String, Pin> pins() {
-        return Collections.unmodifiableMap(root.pins);
+    public List<Pin> pins() {
+        return Collections.unmodifiableList(root.pins);
     }
 
     /** One pin over a moving dependence: what was pinned, to what, and

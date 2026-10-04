@@ -262,14 +262,8 @@ public final class Composer {
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
-            Map<String, Concrete> concrete =
-                    new LinkedHashMap<String, Concrete>(composed.concrete);
-            for (SmtLowering.Pin pin : composed.lowering.pins().values()) {
-                concrete.put(pin.subject, new Concrete("PIN", pin.subject,
-                        pin.value, pin.movesWith));
-            }
             this.concrete = Collections.unmodifiableList(
-                    new ArrayList<Concrete>(concrete.values()));
+                    new ArrayList<Concrete>(composed.concrete.values()));
             this.ownArms = composed.composedFamilies.ownArms();
             this.recordedAtPlants =
                     composed.composedFamilies.recordedAtPlants();
@@ -1135,6 +1129,7 @@ public final class Composer {
         Map<String, String> joins = new LinkedHashMap<String, String>();
         pinnedArrivals.clear();
         pathConcrete.clear();
+        int pinsBefore = lowering.pins().size();
         frames(session, reached.keySet());
 
         // (0a') What phi rests on (constraint independence): conditions and
@@ -1310,6 +1305,11 @@ public final class Composer {
         lowering.assertNamed(fatal,
                 "(=> " + selector + " " + conjunction + ")");
         observedReads.put(path.pathId, observed);
+        for (SmtLowering.Pin pin : lowering.pins().subList(pinsBefore,
+                lowering.pins().size())) {
+            pathConcrete.put(pin.subject, new Concrete("PIN", pin.subject,
+                    pin.value, pin.movesWith));
+        }
         concrete.putAll(pathConcrete);
         observedArrivals.put(path.pathId,
                 arrivals(corpus.attachesOn(session, anchor)));

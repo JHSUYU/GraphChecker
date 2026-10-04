@@ -1527,7 +1527,9 @@ kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else `UNSAT_CLOSED` 
 decided, an undecided one being BLOCKING, and none sat, a sat one being a claim). EMIT publishes
 `SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when it did not agree), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
-with every defect in `defects[]` and what the decision rested on concretely in `concrete[]`. The manifest's `solver` block carries `state` (sat/unsat/unknown),
+with every defect in `defects[]`, what the decision rested on concretely in `concrete[]`, and the
+formula it decided on in `formula` (`final/candidate.smt2`'s path and sha256: the composed paths,
+which a standalone z3 re-solves to the same verdict, UNSAT included). The manifest's `solver` block carries `state` (sat/unsat/unknown),
 `reachability`, `unsatClosureComplete`, `valuations` (status, assignment, moved, selected path and
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
 `findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved

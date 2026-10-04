@@ -5839,9 +5839,13 @@ campaign_emit() {
   for round in "${iteration_dir}"/obligations-*/explore_manifest.json; do
     [[ -s "${round}" ]] && explored=${round}
   done
+  # The formula the claim is about, SAT or UNSAT: the file z3 re-solves.
+  require_nonempty "composed formula" "${campaign_final}/candidate.smt2"
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --argjson confirmation "${confirmation}" \
+    --arg formula "${campaign_final}/candidate.smt2" \
+    --arg formulaSha "$(campaign_digest "${campaign_final}/candidate.smt2")" \
     --slurpfile refutedClaims "${refuted}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile exploreDocuments "${explored}" \
@@ -5873,8 +5877,10 @@ campaign_emit() {
        then "the formula decided " + $decided.claim + ", and the run named "
             + ($gapCount | tostring) + " defect(s) that leave no verdict"
        else $decided.claimReason end),
-     # What the composition itself decided, whatever the run made of it.
+     # What the composition itself decided, whatever the run made of it,
+     # and the formula it decided it on (z3 reproduces the verdict on it).
      formulaClaim: $decided.claim,
+     formula: {path: $formula, sha256: $formulaSha},
      blockers: $decided.blockers,
      # ClaimPolicy counts its own blockers; re-counting the array here let
      # the published count drift from the policy that decided the claim.
