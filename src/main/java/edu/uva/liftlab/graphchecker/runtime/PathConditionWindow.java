@@ -38,17 +38,26 @@ final class PathConditionWindow {
         this.size = size;
     }
 
-    /** One {@code CONCOLIC_PATH_CONDITION_RANGE} envelope, or null. */
+    /**
+     * One {@code CONCOLIC_PATH_CONDITION_RANGE} envelope, or null.  Read as
+     * its conditions beside its table ({@link
+     * VmExpressionTable.Store#importRecords}): the table repeats the whole
+     * closure of the window's conditions, and a node an earlier window or
+     * page expanded is not read again, so a branch costs what is new to it
+     * (A2's SB19 seed replay: every branch of CreateCollectionCmd's
+     * replica-position loop re-imported its closure whole).
+     */
     static PathConditionWindow window(String envelope, int expectedStart,
                                         VmExpressionTable.Store store) {
         if (envelope == null) return null;
         try {
-            JsonObject decoded = store.importEnvelope(envelope);
+            JsonArray conditions = new JsonArray();
+            JsonObject decoded = store.importRecords(envelope, "conditions",
+                    stated -> true, conditions::add);
             int start = optionalInteger(decoded, "startIndex", -1);
             int end = optionalInteger(decoded, "endIndex", -1);
             int watermark = optionalInteger(decoded,
                     "pathConditionWatermark", -1);
-            JsonArray conditions = array(decoded, "conditions");
             int declaredCount = optionalInteger(decoded, "conditionCount", -1);
             if (start != expectedStart || end < start
                     || watermark < 0

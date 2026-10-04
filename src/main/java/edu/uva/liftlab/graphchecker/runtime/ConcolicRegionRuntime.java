@@ -16,7 +16,7 @@ import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.BranchObservation.BranchDecision;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBoundCut;
-import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
+import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedStateReadOut;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import java.io.IOException;
 import java.io.StringReader;
@@ -45,7 +45,7 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.endLi
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.submitCompletedResultPublication;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.captureRecordedSharedStateRaw;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.captureRecordedSharedState;
 
 /**
  * Runtime bridge injected at symbolic-region roots for the second (concolic)
@@ -1496,7 +1496,7 @@ public final class ConcolicRegionRuntime {
         ConcolicVmBroker api = engine();
         boolean engineFinished = false;
         boolean pathConditionPaused = false;
-        RawSharedStateReadOut rawSharedState = null;
+        SharedStateReadOut sharedState = null;
         boolean publishRows = false;
         try {
             api.pausePathCondition();
@@ -1504,8 +1504,7 @@ public final class ConcolicRegionRuntime {
             if (!active.abandoned) {
                 publishRows = true;
                 try {
-                    rawSharedState = captureRecordedSharedStateRaw(active,
-                            api);
+                    sharedState = captureRecordedSharedState(active, api);
                 } catch (Throwable throwable) {
                     // An unread write log leaves its locations unjoinable.
                     RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -1569,7 +1568,7 @@ public final class ConcolicRegionRuntime {
             }
             return false;
         }
-        return submitCompletedResultPublication(active, rawSharedState);
+        return submitCompletedResultPublication(active, sharedState);
     }
 
 

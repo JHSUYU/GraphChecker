@@ -23,6 +23,7 @@ import java.util.Set;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -303,6 +304,28 @@ public class ContractTest {
         store.importRecords(page.toString(), "records", stated -> false,
                 record -> read.add(record.getAsJsonObject()));
         assertTrue("an unadmitted page hands on no record", read.isEmpty());
+        // A node the store expanded is not read again: its expansion
+        // answers, whatever the envelope repeats of it.
+        store.importRecords(vmPage(new JsonObject[] {second},
+                vmDefinition(1, symbol("M_I_other"))).toString(), "records",
+                stated -> true, record -> read.add(record.getAsJsonObject()));
+        assertSame(earlier, read.get(0).getAsJsonObject("value"));
+        // A record is consumed outside the store's lock: another thread
+        // imports meanwhile.
+        final JsonObject[] meanwhile = new JsonObject[1];
+        store.importRecords(page.toString(), "records", stated -> true,
+                record -> {
+                    Thread other = new Thread(() -> meanwhile[0] =
+                            store.importEnvelope(vmEnvelope(vmReference(3),
+                                    vmDefinition(3, symbol("M_I_next")))));
+                    other.start();
+                    try {
+                        other.join(10_000L);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+        assertNotNull("a page's consumer holds no lock", meanwhile[0]);
         JsonObject dangling = new JsonObject();
         dangling.add("value", vmReference(9));
         try {

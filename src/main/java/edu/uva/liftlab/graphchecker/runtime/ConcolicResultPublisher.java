@@ -5,7 +5,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
-import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
+import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedStateReadOut;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
@@ -209,7 +209,8 @@ final class ConcolicResultPublisher {
      * What moves while a run settles: publications finished, loop bodies
      * the live activations charged, the CPU the publication thread spent,
      * the JVM's time in garbage collection (a collection stops that thread
-     * too), and how many activations are live and publications running.
+     * too), how many activations are live and publications running, and
+     * the read-out text still to decode.
      * Called under {@link #PUBLICATION_LOCK}.
      */
     private static long[] progressLocked() {
@@ -226,7 +227,8 @@ final class ConcolicResultPublisher {
             collecting += Math.max(0L, collector.getCollectionTime());
         }
         return new long[] {publicationsFinished, loops, cpu, collecting,
-                liveSelectedRegions, resultPublicationsInFlight};
+                liveSelectedRegions, resultPublicationsInFlight,
+                undecodedChars};
     }
 
     /** Guarded by {@link #PUBLICATION_LOCK}: the publication running, its
@@ -238,6 +240,9 @@ final class ConcolicResultPublisher {
             new LinkedHashSet<ActiveRegion>();
     private static long publicationsFinished;
     private static boolean gaveUp;
+    /** Read-out text handed to the publication thread and not yet decoded,
+     *  in chars ({@link #decodeBeforePublication}). */
+    private static long undecodedChars;
 
     /** Why a focused replay ends before its workload does. */
     private enum Conclusion {
@@ -451,9 +456,79 @@ final class ConcolicResultPublisher {
     private static boolean runTotalsStarted;
     private static boolean runTotalsPublished;
 
+    /**
+     * Decodes one read-out page of {@code chars} on the publication thread
+     * ahead of every publication queued after it, in order (one thread, one
+     * queue): an activation's pages are decoded there as they are read,
+     * before its publication ({@code SharedStateCapture
+     * #captureRecordedSharedState}).  The page is handed on once the pages
+     * before it, not yet decoded, leave room for it under
+     * {@link #UNDECODED_BOUND_CHARS} (or none is left); until then the
+     * reading thread waits, bounded by progress as the settle is
+     * ({@link Grace}), so a stuck publication delays it, never holds it.
+     *
+     * @return false when the executor refused the work
+     */
+    static boolean decodeBeforePublication(long chars, Runnable decode) {
+        boolean interrupted = false;
+        synchronized (PUBLICATION_LOCK) {
+            Grace grace = new Grace(TERMINAL_GRACE_MILLIS * 1_000_000L,
+                    System.nanoTime(), progressLocked());
+            while (undecodedChars > 0L
+                    && undecodedChars + chars > UNDECODED_BOUND_CHARS
+                    && !gaveUp) {
+                long remaining = grace.remaining(System.nanoTime(),
+                        progressLocked());
+                if (remaining <= 0L) break;
+                try {
+                    PUBLICATION_LOCK.wait(remaining / 1_000_000L,
+                            (int) (remaining % 1_000_000L));
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+            undecodedChars += chars;
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+        try {
+            RESULT_PUBLICATION_EXECUTOR.execute(() -> {
+                synchronized (PUBLICATION_LOCK) {
+                    publishingThread = Thread.currentThread();
+                }
+                try {
+                    decode.run();
+                } finally {
+                    decoded(chars);
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException rejected) {
+            decoded(chars);
+            return false;
+        }
+    }
+
+    private static void decoded(long chars) {
+        synchronized (PUBLICATION_LOCK) {
+            undecodedChars -= chars;
+            PUBLICATION_LOCK.notifyAll();
+        }
+    }
+
+    /**
+     * The most read-out text the publication thread may hold undecoded:
+     * four pages ({@code SharedStateCapture#READ_OUT_PAGE_BYTES}), 128 MB
+     * of chars.  Unbounded, an owner that reads faster than one thread
+     * decodes queues without end: SB12's obligation 0a1a085e98d056aa,
+     * once a branch window no longer waits on the decoding (the store's
+     * lock, {@code VmExpressionTable.Store}), held 109 pages, 3.5 GB, and
+     * filled its 4 GB heap.
+     */
+    private static final long UNDECODED_BOUND_CHARS = 64L << 20;
+
     static boolean submitCompletedResultPublication(
             final ActiveRegion active,
-            final RawSharedStateReadOut rawSharedState) {
+            final SharedStateReadOut sharedState) {
         // Reserve loop evidence BEFORE reopening admission, so a later turn
         // cannot claim the same anchor.  Fail-closed: a failure terminates
         // the task, never rolls back a reservation another turn relies on.
@@ -468,7 +543,7 @@ final class ConcolicResultPublisher {
             RESULT_PUBLICATION_EXECUTOR.execute(new Runnable() {
                 @Override
                 public void run() {
-                    publishCompletedResult(active, rawSharedState, ordinal);
+                    publishCompletedResult(active, sharedState, ordinal);
                 }
             });
             return true;
@@ -485,7 +560,7 @@ final class ConcolicResultPublisher {
     }
 
     private static void publishCompletedResult(
-            ActiveRegion active, RawSharedStateReadOut rawSharedState,
+            ActiveRegion active, SharedStateReadOut sharedState,
             long ordinal) {
         try {
             Conclusion late;
@@ -504,7 +579,7 @@ final class ConcolicResultPublisher {
                         + ", and the replay ended there");
                 return;
             }
-            assembleRecordedSharedState(active, rawSharedState);
+            assembleRecordedSharedState(active, sharedState);
             // Here, where the write log is assembled: once, on one thread.
             RowPublication.publish(active);
             if (resultAnswersSelectedGoal(active)) {
