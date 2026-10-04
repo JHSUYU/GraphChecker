@@ -30,7 +30,9 @@ case "${1:?usage: case.sh slowdisk-zero|reencrypt-negative-sleep}" in
   reencrypt-negative-sleep)
     test_class=org.apache.hadoop.hdfs.server.namenode.TestCausynthReencryptNegativeSleep
     test_method=testReencryptAgainAfterThrottledReencryption
-    target_occurrence=first
+    # The second START: the one the first re-encryption's dead handler
+    # would refuse (round HS1's recording: the first START is #1).
+    target_occurrence="reencrypt/nn0#epoch0/region/REGION.8d993f8d-eed1-3457-a797-d073191c4fc5#2"
     scope=(
       hdfs:org/apache/hadoop/hdfs/server/namenode/ReencryptionHandler
       hdfs:org/apache/hadoop/hdfs/server/namenode/FSTreeTraverser
