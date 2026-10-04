@@ -1179,7 +1179,7 @@ campaign_require_claim() {
     and (($r.campaignClaim.findingKind // "")
       | IN("MARKER_FLIPPED", "CLOCK_SKEW", "MESSAGE_PAIRING_FLIPPED",
            "STATE_PAIRING_FLIPPED", "RECORDED_FAILURE_EXPLAINED",
-           "NO_SUPPORTED_WITNESS"))
+           "FORMULA_SAT", "NO_SUPPORTED_WITNESS"))
     and ($r.campaignClaim.polarityDecides | type) == "boolean"' \
     "${path}" >/dev/null \
     || campaign_fail EMIT ClaimPolicy "${path}" \

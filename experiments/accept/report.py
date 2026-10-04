@@ -250,10 +250,11 @@ findings = result.get("witnessFindings") or []
 # The claim layer is the whole gate: the conditions below, all read off
 # result.json (and the cone gate's cone.json), none of them re-derived here.
 #
-# The five mechanisms a composition may conclude.  NO_SUPPORTED_WITNESS is the
-# sixth ClaimKind and is deliberately not among them: it is the honest answer
-# that nothing in the corpus supports a witness, and a case that reaches it
-# has not passed.
+# The five mechanisms a composition may conclude.  FORMULA_SAT (a satisfiable
+# formula no mechanism names, which CONFIRM judges) and NO_SUPPORTED_WITNESS
+# (the honest answer that nothing in the corpus supports a witness) are the
+# other ClaimKinds and deliberately not among them: a named case that reaches
+# one has not passed.
 ACCEPTED_FINDINGS = {"MARKER_FLIPPED", "CLOCK_SKEW",
                      "MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED",
                      "RECORDED_FAILURE_EXPLAINED"}

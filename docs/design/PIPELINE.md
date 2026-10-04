@@ -1466,7 +1466,7 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    (`REFINE_BUDGET_MS`); past them the witness is published as far as it got, its untried cells named
    DIAGNOSTIC `SOLVER_TIMEOUT`. Every open path is asked in its own run before any is asked free
    (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
-   when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
+   when the recording does not decide, is named DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
 4. The claim, first match. A witness moving configuration only (`Composition#configurationOnly`:
    every moved root `CONFIG`) ranks after every other, so the first rule takes the others, then the
@@ -1475,10 +1475,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    `CONFIG_KEY` row, SYMBOL-SCOPE §4.3) is not claimed: no cluster holds that world, so no replay can
    confirm it as one; `UNPRODUCIBLE_ANSWER` DIAGNOSTIC names the root and the reads, once.
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
-     whose moved roots are in no unattested arm (else BLOCKING `UNATTESTED_ARM`): its `mechanism`;
+     whose moved roots are in no unattested arm (else DIAGNOSTIC `UNATTESTED_ARM`): its `mechanism`;
      without `recordingDecides` it also needs `polarityDecides`, checked before the witness is
      refined (`leastClocks`, margins, `mechanism`: rounds of path asks for a witness it would refuse)
-     (else BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
+     (else DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
      by a core naming no valuation pin; an undecided ordinal 0 is BLOCKING already and raises no
      second gap);
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
@@ -1488,6 +1488,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      `NO_SUPPORTED_WITNESS`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
      every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any;
+   - else, where a valuation is still a witness, `FORMULA_SAT` at the first one a replay can plant
+     (`ClaimPolicy#formulaSat`): composer imprecision until CONFIRM says otherwise, planted and judged
+     like any claim, a refutation excluded before the claim is decided again; a formula satisfiable
+     only by moving a configuration whose plant leaves reads at the recording's value is BLOCKING
+     `UNPRODUCIBLE_ANSWER`, a defect of the plant;
    - else `NO_SUPPORTED_WITNESS`.
 5. `mechanism`, narrowest first: pinning the path's observed reads makes it unsat →
    `STATE_PAIRING_FLIPPED`; its observed anchor arrivals → `MESSAGE_PAIRING_FLIPPED`; a moved root →
@@ -1510,12 +1515,13 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 | `STATE_PAIRING_FLIPPED` | the roots stay; the path's anchor reads must take another writer than the run's |
 | `MESSAGE_PAIRING_FLIPPED` | the roots stay; the anchor's attaches must receive another delivery than the run's |
 | `RECORDED_FAILURE_EXPLAINED` | the seed itself observed the fatal and every moved valuation is refuted |
-| `NO_SUPPORTED_WITNESS` | nothing in the corpus supports a witness; an answer, not an error |
+| `FORMULA_SAT` | a valuation satisfies the formula and none of the above names why: the formula's own claim, which CONFIRM plants (its arms and valuation) and judges |
+| `NO_SUPPORTED_WITNESS` | every valuation is unsat; an answer, not an error |
 
 `ComposeMain.campaignClaim` maps it: the formula decides, SAT or UNSAT, and a blocking gap is a
 defect of the run or the engine that leaves no verdict: any BLOCKING claim gap → `RUN_DEFECT`; else a
-kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else every valuation decided unsat →
-`UNSAT_CLOSED`; else (a satisfiable valuation with no mechanism) `RUN_DEFECT`. EMIT publishes
+kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else `UNSAT_CLOSED` (every valuation is
+decided, an undecided one being BLOCKING, and none sat, a sat one being a claim). EMIT publishes
 `SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when it did not agree), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
 with every defect in `defects[]` and what the decision rested on concretely in `concrete[]`. The manifest's `solver` block carries `state` (sat/unsat/unknown),

@@ -223,7 +223,7 @@ public final class ComposeMain {
         // One question per valuation, so the valuation IS the model.
         row.add("valuations", valuations(composition, decision));
         row.add("campaignClaim",
-                campaignClaim(composition, decision, decided, anySat));
+                campaignClaim(composition, decision));
         return row;
     }
 
@@ -234,8 +234,7 @@ public final class ComposeMain {
      * (RUN_DEFECT), named until it is fixed, never a verdict of its own.
      */
     private static JsonObject campaignClaim(
-            Composer.Composition composition, ClaimPolicy.Decision decision,
-            boolean decided, boolean anySat) {
+            Composer.Composition composition, ClaimPolicy.Decision decision) {
         Claim claim = decision.claim();
         JsonArray refusals = refusals(claim);
         int blockers = refusals.size();
@@ -255,25 +254,13 @@ public final class ComposeMain {
                     + (claim.polarityDecides()
                     ? ", and the recorded valuation refutes the recording"
                     : "");
-        } else if (decided && !anySat) {
+        } else {
+            // Every valuation is decided (an undecided one is a blocker)
+            // and none is sat (a sat one is a claim, FORMULA_SAT at least).
             kind = "UNSAT_CLOSED";
             reason = "every enumerated valuation is decided and unsat: the"
                     + " declared roots do not reach the fatal arm on the"
                     + " paths this corpus admits";
-        } else {
-            kind = "RUN_DEFECT";
-            reason = decision.outcomes().isEmpty()
-                    ? "no path of this corpus reached the declared"
-                    + " occurrence"
-                    : !decided
-                    ? "the solver left a valuation undecided, so neither a"
-                    + " witness nor a refutation is closed"
-                    // Sat, and no mechanism: e.g. only a delivery of another
-                    // session reaches the fatal arm (adhoc token-nokey).
-                    : "a valuation reaches the fatal arm, and no moved root,"
-                    + " clock or pairing the recording decides is what"
-                    + " makes it, so there is no mechanism to name and no"
-                    + " witness";
         }
         JsonObject row = new JsonObject();
         row.addProperty("claim", kind);

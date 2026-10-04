@@ -1005,8 +1005,9 @@ public class ComposerTest {
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver());
         assertEquals("sat", decision.outcomes().get(1).answer().status());
-        assertEquals("the move is satisfiable and is refused anyway",
-                ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
+        assertEquals("the move is satisfiable and names no mechanism: the "
+                        + "formula's claim alone, CONFIRM's to judge",
+                ClaimKind.FORMULA_SAT, decision.claim().kind());
         assertTrue("and the refusal is named",
                 named(decision.claim().gaps(), GapKind.UNATTESTED_ARM));
     }
@@ -1818,20 +1819,22 @@ public class ComposerTest {
      * NO CLUSTER COULD HOLD IS NO CLAIM.  {what reaches the fatal arm, the
      * configuration's reads its plant leaves (the scope map's CONFIG_KEY
      * row), the claim's kind, its moves, whether it states configuration
-     * only, whether a gap names the partial world}: the fault and the
-     * configuration each alone, the configuration declared first; the
-     * configuration alone, whole; the same, a read of its key left.
+     * only, whether a gap names the partial world, whether that is a
+     * defect}: the fault and the configuration each alone, the
+     * configuration declared first; the configuration alone, whole; the
+     * same, a read of its key left -- satisfiable only in a world no replay
+     * can plant, a defect (RUN_DEFECT) until that read is planted.
      */
     @Test
     public void aConfigurationWitnessRanksLastAndAPartialOneIsNoClaim()
             throws Exception {
         Object[][] rows = {
             {"(or (not " + MARKER + ") (not " + CONFIG + "))", "",
-                ClaimKind.MARKER_FLIPPED, MARKER_ROOT, false, false},
+                ClaimKind.MARKER_FLIPPED, MARKER_ROOT, false, false, false},
             {"(not " + CONFIG + ")", "", ClaimKind.MARKER_FLIPPED,
-                CONFIG_ROOT, true, false},
+                CONFIG_ROOT, true, false, false},
             {"(not " + CONFIG + ")", "<t.A: void a()>#u3",
-                ClaimKind.NO_SUPPORTED_WITNESS, "", false, true}};
+                ClaimKind.NO_SUPPORTED_WITNESS, "", false, true, true}};
         int variant = 0;
         for (Object[] row : rows) {
             Path iteration = folder.newFolder("config-rank-" + variant++)
@@ -1861,11 +1864,12 @@ public class ComposerTest {
                         && CONFIG_ROOT.equals(gap.subject());
             }
             assertEquals((String) row[0] + " " + row[1],
-                    row[2] + " " + row[3] + " " + row[4] + " " + row[5],
+                    row[2] + " " + row[3] + " " + row[4] + " " + row[5]
+                            + " " + row[6],
                     decision.claim().kind() + " " + moved + " "
                             + composition.configurationOnly(
                             decision.claim().movedRoots().keySet())
-                            + " " + named);
+                            + " " + named + " " + decision.claim().blocked());
         }
     }
 
@@ -2000,11 +2004,13 @@ public class ComposerTest {
                 solver());
         assertEquals("sat", decision.outcomes().get(0).answer().status());
         assertEquals("sat", decision.outcomes().get(1).answer().status());
-        assertEquals("the flip is satisfiable and explains nothing",
-                ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
+        assertEquals("the flip is satisfiable and explains nothing: the "
+                        + "formula's claim alone, CONFIRM's to judge",
+                ClaimKind.FORMULA_SAT, decision.claim().kind());
         assertTrue("and the alarm says why",
                 named(decision.claim().gaps(),
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
+        assertFalse("which withholds no verdict", decision.claim().blocked());
 
         // R2: A CLOCK IS PART OF THE WITNESS.  phi holds only where the
         // clock sits past an instant this run did not read, and pinning the
@@ -3904,11 +3910,12 @@ public class ComposerTest {
         // planted?, the reconfiguration writes under construction?, the turn
         // also reads a version no row wrote?, the claim: a planted read is
         // admitted by the anchor's test, so a write no read could have
-        // preceded leaves it the run's
+        // preceded leaves it the run's; where no pairing is the mechanism,
+        // the satisfiable formula is its own claim (FORMULA_SAT)
         Object[][] table = {
                 {true, false, false, ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, false, false, ClaimKind.NO_SUPPORTED_WITNESS},
-                {true, true, false, ClaimKind.NO_SUPPORTED_WITNESS},
+                {false, false, false, ClaimKind.FORMULA_SAT},
+                {true, true, false, ClaimKind.FORMULA_SAT},
                 {true, false, true, ClaimKind.STATE_PAIRING_FLIPPED},
         };
         for (Object[] row : table) {

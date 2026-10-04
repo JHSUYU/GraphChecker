@@ -507,6 +507,20 @@ jq -e '.claim == "UNSAT_CLOSED" and .accepted == true and .defects == []
   || fail "a defect-free UNSAT was not published as the verdict: \
 $(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"
 
+# A satisfiable formula no mechanism names (FORMULA_SAT) is a claim like any
+# other: published as CONFIRM left it.
+emit_fixture
+jq '.solver.campaignClaim.findingKind = "FORMULA_SAT"' "${composition_manifest}" \
+  >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a confirmed FORMULA_SAT was not published: $(<"${emit_root}/emit.log")"
+jq -e '.claim == "SAT_CANDIDATE" and .findingKind == "FORMULA_SAT"
+  and .accepted == true' "${campaign_final}/result.json" >/dev/null \
+  || fail "a confirmed FORMULA_SAT is not the verdict: \
+$(jq -c '{claim, findingKind, accepted}' "${campaign_final}/result.json")"
+
 # DECISIVE-2: triage reads the verdict: UNSAT (the concrete anchor as its
 # reason), RUN_DEFECT (the first defect), CONFIRMED, REFUTED; no NO_ROOT or
 # NO_WITNESS class is left.
