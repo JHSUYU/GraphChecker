@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.Rule;
 import org.junit.Test;
@@ -232,10 +233,18 @@ public class RegionFoldPlanTest {
     private RuntimeSelectedRegionFinalizer.Result closure(
             RuntimeRegionPlanner.Result activations, boolean threw)
             throws IOException {
+        return closure(activations, threw, false);
+    }
+
+    /** The same, the guard reaching a second declared throw on its other
+     *  arm or not. */
+    private RuntimeSelectedRegionFinalizer.Result closure(
+            RuntimeRegionPlanner.Result activations, boolean threw,
+            boolean ambiguous) throws IOException {
         return RuntimeSelectedRegionFinalizer.finalizeRegions(cutGraph(),
                 cutSkeletons(), "test", Arrays.asList(HANDLER, LEAF),
                 activations.runtimeInstances, cutObservations(threw),
-                cutScopeMap(), RuntimeWorkflowDiscovery.FIRST,
+                cutScopeMap(ambiguous), RuntimeWorkflowDiscovery.FIRST,
                 Collections.<ScheduleEvent>emptyList());
     }
 
@@ -243,6 +252,9 @@ public class RegionFoldPlanTest {
      * A DECLARED OCCURRENCE THE RECORDING THREW AT ASKS NOTHING: the run as
      * recorded is the failure, and a claim moving no root is never a
      * finding (owner 2026-10-04), so PLAN names the declaration, BLOCKING.
+     * A guard reaching a declared throw on both arms states no fatal arm to
+     * judge the recording by: PLAN names that declaration too, never a
+     * stack trace.
      */
     @Test
     public void aRecordingThatThrewThereIsADeclarationDefect()
@@ -250,14 +262,22 @@ public class RegionFoldPlanTest {
         RuntimeRegionPlanner.Result activations = activations(cutEvents(
                 RuntimeRegionPlanner.UNREGISTERED_SOURCE, true,
                 RuntimeRegionPlanner.UNREGISTERED_SOURCE, DN1));
-        for (boolean threw : new boolean[]{false, true}) {
-            List<Map<String, Object>> gaps = closure(activations, threw).gaps;
-            boolean named = false;
+        // {threw, ambiguous, the BLOCKING kind PLAN names or ""}
+        Object[][] table = {
+                {false, false, ""},
+                {true, false, "TARGET_FATAL_IN_RECORDING"},
+                {false, true, "AMBIGUOUS_FATAL_ARM"},
+                {true, true, "AMBIGUOUS_FATAL_ARM"}};
+        for (Object[] row : table) {
+            List<Map<String, Object>> gaps = closure(activations,
+                    (Boolean) row[0], (Boolean) row[1]).gaps;
+            String named = "";
             for (Map<String, Object> gap : gaps) {
-                named |= "TARGET_FATAL_IN_RECORDING".equals(gap.get("kind"))
-                        && "BLOCKING".equals(gap.get("cls"));
+                if ("BLOCKING".equals(gap.get("cls"))) {
+                    named = String.valueOf(gap.get("kind"));
+                }
             }
-            assertEquals(threw + ": " + gaps, threw, named);
+            assertEquals(Arrays.toString(row) + ": " + gaps, row[2], named);
         }
     }
 
@@ -385,22 +405,32 @@ public class RegionFoldPlanTest {
     /** The published scope map: the throw below {@link #GUARD_SITE}, which
      *  decides it. */
     private StaticScopeMap cutScopeMap() throws IOException {
-        Map<String, Object> thrown = new LinkedHashMap<>();
-        thrown.put("kind", "exception_throw");
-        thrown.put("method", LEAF);
-        thrown.put("unitIndex", 7);
+        return cutScopeMap(false);
+    }
+
+    /** The fixture's map; {@code ambiguous}: a second declared throw (unit
+     *  9) on the guard's other arm. */
+    private StaticScopeMap cutScopeMap(boolean ambiguous) throws IOException {
+        List<Map<String, Object>> throwsDeclared = new ArrayList<>();
+        for (int unit : ambiguous ? new int[]{7, 9} : new int[]{7}) {
+            Map<String, Object> thrown = new LinkedHashMap<>();
+            thrown.put("kind", "exception_throw");
+            thrown.put("method", LEAF);
+            thrown.put("unitIndex", unit);
+            throwsDeclared.add(thrown);
+        }
         Map<String, Object> region = new LinkedHashMap<>();
         region.put("regionId", LEAF_REGION);
         region.put("methods", Collections.singletonList(LEAF));
         StringBuilder text = new StringBuilder();
         for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(
-                Collections.singletonList(thrown),
+                throwsDeclared,
                 Collections.singletonList(region),
                 Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, (demandSite, demandCell) -> null, method -> false,
                 cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false,
                 cell -> false),
                 site -> Collections.singletonList(new StaticScopeMap.Guard(
-                        GUARD_SITE, Boolean.TRUE)))) {
+                        GUARD_SITE, SiteId.unitIndexOf(site) != 9)))) {
             text.append(row).append('\n');
         }
         Path file = folder.newFolder().toPath().resolve(StaticScopeMap.FILE);

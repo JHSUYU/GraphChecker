@@ -1482,7 +1482,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    occurrence leaves no claim (BLOCKING `SEED_OBSERVED_FATAL`): the run as recorded is no
    counterfactual (owner 2026-10-04: a claim moving no root is never a finding); beside PLAN's
    `TARGET_FATAL_IN_RECORDING` (the recording took the fatal arm there, `RuntimeSelectedRegionFinalizer`)
-   it is a declaration defect, else the replay diverged. A witness moving configuration only (`Composition#configurationOnly`:
+   it is a declaration defect, else the replay diverged. A guard of the declared target that
+   reaches it on both arms states no fatal arm to judge the recording by: PLAN names it BLOCKING
+   `AMBIGUOUS_FATAL_ARM` (`StaticScopeMap.AmbiguousFatalArm`, caught by the finalizer), a
+   RUN_DEFECT at EMIT, never a stack trace. A witness moving configuration only (`Composition#configurationOnly`:
    every moved root `CONFIG`) ranks after every other, so the first rule takes the others, then the
    second, and only then the first rule takes a configuration-only one. A witness moving a
    configuration whose plant leaves reads of its key at the recording's value (the scope map's

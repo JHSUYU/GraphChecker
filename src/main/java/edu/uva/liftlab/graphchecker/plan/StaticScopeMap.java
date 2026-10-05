@@ -1611,20 +1611,31 @@ public final class StaticScopeMap {
 
     /** The arm of one branch site that reaches the declared target, from the
      *  TARGET_SITE guards ({@code causynth.SiteControlDependence}). {@code
-     *  null}: no arm stated, which the caller refuses (never a default). */
+     *  null}: no arm stated, which the caller refuses (never a default).
+     *
+     *  @throws AmbiguousFatalArm where the guard reaches a declared target on
+     *          both arms: no one arm is the fatal one */
     public Boolean fatalArm(String guardSiteId) {
         Boolean found = null;
         for (Site target : targetSites()) {
             Boolean arm = target.outcomeOf(guardSiteId);
             if (arm == null) continue;
             if (found != null && !found.equals(arm)) {
-                throw new IllegalArgumentException(
-                        "AMBIGUOUS_FATAL_ARM: " + guardSiteId + " reaches "
-                                + "the declared target on both arms");
+                throw new AmbiguousFatalArm(guardSiteId);
             }
             found = arm;
         }
         return found;
+    }
+
+    /** A guard that reaches a declared target on both arms ({@link
+     *  #fatalArm}): a refusal a caller names, never a crash. */
+    public static final class AmbiguousFatalArm
+            extends IllegalArgumentException {
+        public AmbiguousFatalArm(String guardSiteId) {
+            super("AMBIGUOUS_FATAL_ARM: " + guardSiteId + " reaches the "
+                    + "declared target on both arms");
+        }
     }
 
     /** A site's method as the VM spells it, {@code
