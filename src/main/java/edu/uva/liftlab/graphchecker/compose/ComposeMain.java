@@ -71,16 +71,27 @@ public final class ComposeMain {
         long started = System.nanoTime();
         // Root domains are read once, here, and handed to the composer only.
         Corpus corpus = Corpus.read(arguments.iteration, null);
+        System.err.println("compose: read " + corpus.sessions().size()
+                + " session(s) in " + seconds(System.nanoTime() - started)
+                + " s");
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         Composer.Composition composition = Composer.compose(corpus, anchor,
                 RootDomain.declared(arguments.rootDomains),
                 arguments.maxValuations,
                 StaticScopeMap.read(arguments.scopeMap));
         long lowered = System.nanoTime();
+        System.err.println("compose: " + composition.disjuncts().size()
+                + " path(s) composed, a " + composition.body().length()
+                / (1024 * 1024) + " MB body and " + composition.valuations()
+                .size() + " valuation(s), in " + seconds(lowered - started)
+                + " s; deciding");
         Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
         long decided = System.nanoTime();
+        System.err.println("compose: decided " + decision.claim().kind()
+                + " with " + solver.runs() + " z3 run(s) in "
+                + seconds(decided - lowered) + " s");
 
         ArtifactIO.atomicReplace(arguments.output,
                 candidate(composition, decision));

@@ -33,7 +33,7 @@ exploration reached FIXED_POINT and z3 re-solves the exported `candidate.smt2` t
 | check | site (our tree) | guard | workload | window | state (2026-10-05) |
 | --- | --- | --- | --- | --- | --- |
 | hdfs-adhoc-01 | C/DFSInputStream.java:517 | the NN returns no located block for an offset (`newBlocks==null \|\| count==0`) | TestPread#testPreadDFS | up | open: time-model class (clock/draw) |
-| hdfs-adhoc-07 | H/qjournal/server/Journal.java:926 | acceptRecovery would discard a committed txn | TestQuorumJournalManager#testRecoverAfterIncompleteRecovery | up | open: reaches its fixed point with measured charges (HR1) but COMPOSE over 556 sessions did not finish (COMPOSE cost, TODO); self-contradictions fixed (wire-half) |
+| hdfs-adhoc-07 | H/qjournal/server/Journal.java:926 | acceptRecovery would discard a committed txn | TestQuorumJournalManager#testRecoverAfterIncompleteRecovery | up | open: reaches its fixed point with measured charges (HR1); COMPOSE over its 556 sessions, which did not finish there, takes 2-3 min offline (the self-check fixed); self-contradictions fixed (wire-half); rerun alone (TODO) |
 | hdfs-adhoc-08 | H/qjournal/server/Journal.java:487 | `reqInfo.epoch < lastPromisedEpoch` | TestQuorumJournalManager#testSingleWriter | up | open: budget-cut in HG5A (EXPLORATION_CUT); rerun alone on the cluster |
 | hdfs-adhoc-09 | H/qjournal/server/Journal.java:504 | `reqInfo.committedTxId >= committedTxnId` | TestQuorumJournalManager#testSingleWriter | up | open: budget-cut in HG5A; rerun alone |
 | hdfs-adhoc-10 | H/qjournal/server/Journal.java:518 | `reqInfo.epoch != lastWriterEpoch` | TestQuorumJournalManager#testSingleWriter | up | SAT confirmed (HG7): QJM designed tolerance, no new bug |

@@ -1022,9 +1022,11 @@ cancelled or reaped, by id):
 - **CAMPAIGN_BUDGET_REACHED.** Between two steps, the campaign's budget (`campaign_budget_s` from
   the campaign's start; `accept.sh` passes what is left of the case's `CASE_TIMEOUT_SECONDS`) has
   less left than the stages after the exploration are owed (`campaign_claim_room`): its reserve,
-  `campaign_reserve`, COMPOSE and EMIT each as long as the longest COMPOSE the campaign measured,
-  CONFIRM and REPRODUCE each as long as the longest CONFIRM (its stage metrics and its witness
-  attempts; the seed's REPLAY standing for a CONFIRM not yet run), never less than
+  `campaign_reserve`, COMPOSE and EMIT each as long as the longest COMPOSE the campaign measured
+  (its stage metrics and its witness attempts; the last planner round, which reads the same corpus,
+  standing for a COMPOSE not yet run: its `in_flight.jsonl`, copied as the planner starts, to its
+  `explore_manifest.json`, `campaign_last_round_millis`), CONFIRM and REPRODUCE each as long as the
+  longest CONFIRM (the seed's REPLAY standing for a CONFIRM not yet run), never less than
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped), and the stop is a DIAGNOSTIC row stating what it left owed.
@@ -1496,6 +1498,23 @@ selected arm states `texts`, consumer endpoint id -> the model's value of each l
 arrives (an integral's decimal, a boolean's `true`/`false`, a String's characters; none for a char
 or a floating value), for every such leaf whose value rests on no clock through the valuation's
 selected arms (`ComposedFamilies#texts`; a replay reads its clocks afresh).
+
+**Cost.** COMPOSE reads the whole corpus -- every session (`SessionReader#readAll`) and every
+obligation worker's answer with, once it published a session, its focus row (`ObligationDir#workersIn`),
+8 directories at a time (`contract.ParallelReads`: on NFS a read is its latency) -- composes each
+admitted path and decides (§9). Where each top-level command of the body ends, the path selector
+guarding it and whether it asserts a refuted claim (its name closes it, so only its last 64
+characters are read) are found once, as the composition is built (`Composition#commandEnds`,
+`#commandGuards`, `#commandRefuted`); every path's question, the self-check's without its fatal arm
+included (`#pathQuery`, `#withoutFatalArm`), is written from the one body by them, never by
+searching it again: a search per command and path to the end of the body kept hdfs-adhoc-07's
+self-check (HR1: 556 sessions, 248 paths, a 26 MB body) past the 5400 s case limit; offline it now
+takes 2-3 minutes: the corpus read 73-130 s (NFS), composing 27-45 s, deciding 13 s over 744 z3 runs
+(`/bigtemp/vnr3ne/ab/hdfs-refactor-compose/c07`).
+ComposeMain says how far it is on stderr (`final/compose.log`, a witness attempt's `compose.log`):
+the corpus read, every 25 paths, the composition (paths, body size, valuations), each z3 run (its
+command, its answer and its wall, the wait for room included) and the decision. Before a COMPOSE is
+measured, the campaign's reserve stands the last planner round for it (§7.9).
 
 ## 9. SOLVE and DECIDE: `compose.ClaimPolicy.decide`
 

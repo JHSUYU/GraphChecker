@@ -480,17 +480,36 @@ public final class Z3 {
      * one's answer.  Both share the budget, enforced here; z3's own
      * ({@link #hardTimeout}) only outlives a driver that hangs.  A run
      * starts once its host has room ({@link #enter}); an interrupted one
-     * answers as a timeout, its z3s killed.
+     * answers as a timeout, its z3s killed.  Each run says what it answered
+     * and how long it took, waiting for room included, on stderr: a quiet
+     * log is then one run's own wall, bounded by its budget.
      */
     private String run(String prefix, ArtifactIO.Body query, String suffix,
                        long budgetMillis) {
-        runs.incrementAndGet();
-        if (!enter()) return TIMEOUT;
-        try {
-            return raced(prefix, query, suffix, budgetMillis);
-        } finally {
-            leave();
+        int run = runs.incrementAndGet();
+        long started = System.nanoTime();
+        String answer = TIMEOUT;
+        if (enter()) {
+            try {
+                answer = raced(prefix, query, suffix, budgetMillis);
+            } finally {
+                leave();
+            }
         }
+        String said = firstLine(answer);
+        System.err.println("z3 run " + run + " (" + command(suffix) + "): "
+                + (said.length() > 40 ? said.substring(0, 40) + "..." : said)
+                + " in " + TimeUnit.NANOSECONDS.toMillis(System.nanoTime()
+                - started) / 1000.0 + " s");
+        return answer;
+    }
+
+    /** The command a run's suffix asks: its last line's name. */
+    private static String command(String suffix) {
+        String[] lines = suffix.trim().split("\n");
+        String last = lines[lines.length - 1].replace("(", "").trim();
+        int end = last.indexOf(' ');
+        return (end < 0 ? last : last.substring(0, end)).replace(")", "");
     }
 
     /** {@link #run} once it has room: both engines, raced. */

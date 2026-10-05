@@ -395,12 +395,11 @@ public final class Corpus implements Arms.Rows {
      *  ({@code ConcolicRegionRuntime#applyFocusedRootAssignment}). */
     private void indexWorlds(Path iteration) throws IOException {
         for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
-            for (JsonObject row : RowCodec.readJsonl(worker.focusedTask())) {
+            for (JsonObject row : worker.focus()) {
                 worlds.put(worker.sessionId(),
                         ExploreCodec.readWorld(row));
             }
-            for (ObligationResult result : RowCodec.readAll(worker.result(),
-                    RowCodec::readObligationResult)) {
+            for (ObligationResult result : worker.results()) {
                 waveVerdicts.put(result.obligationId(), result);
             }
         }
