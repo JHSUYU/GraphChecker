@@ -84,7 +84,7 @@ rerun (27 28 29 30 31 39 40 48 49 52), 8 open with a cause and a fix landed or a
 | hdfs-17960 | ordered=false lets a duplicate delete record decrement numSnapshots | CONFIG | PASS (HG5A, HCL1, PS3) |
 | hdfs-17967-pathA/B/C | three DN relay paths abandon on ERROR_UNKNOWN_KEY | IPC door fault | PASS (HG5A; pathA WHF1) |
 | hdfs-bugs-slowdisk-zero | bug_study HDFS #15: max slow disks 0 leaves a stale exclusion list | STATE re-pairing | PASS (HG5A) |
-| hdfs-11741 | a stale block key after expiry (its own tree gc/hdfs-11741-verb) | CLOCK_SKEW | open: the witness is confirmed CLOCK_SKEW with the allKeys chain complete (PS3), but the key id's binding across the wire is unstable (FREE / bound / HELD across runs: COMPOSE refuses the SASL sender arms beside ~100 map-view ordering gaps) |
+| hdfs-11741 | a stale block key after expiry (its own tree gc/hdfs-11741-r4) | CLOCK_SKEW | open: the witness is confirmed CLOCK_SKEW with the allKeys chain complete (PS3), but the key id's binding across the wire is unstable (FREE / bound / HELD across runs: COMPOSE refuses the SASL sender arms beside ~100 map-view ordering gaps) |
 
 ## Solr, HBase, ZooKeeper: the study checks (their turn comes after HDFS)
 
