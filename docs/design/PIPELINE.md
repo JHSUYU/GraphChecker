@@ -1865,8 +1865,9 @@ charged the recording's peak resident memory (`execute.sh` states it as `workloa
 trace directory, and holds each run to it as to any charge) wherever there is room until it
 returns, naming the host it ran on (`<run>/host.txt`), and bounded by `reproduce_time_factor` (3)
 times the recording's own workload, at least `reproduce_min_s` (300: a short recording says
-little of how long ten runs at once on one busy host take -- hdfs-17960's 8 s recording gave 24 s,
-and all ten runs of round NP1 were cut before their window opened; `campaign_reproduce_bound`). A
+little of how long ten runs at once on a busy cluster take -- hdfs-17960's 8 s recording gave 24 s,
+and all ten runs of round NP1 were cut before their window opened; hdfs-17897's 9 s recording, ten
+runs of 119-187 s in NP7, each at the anchor; `campaign_reproduce_bound`). A
 run (`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant` (`execute.sh`,
 `CAUSYNTH_PLANT`); inside the window:
 - `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value when an enclosing region
