@@ -8,7 +8,7 @@ Order:
 
 The owner: "hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统". Each system is finished when every one of its
 checks has an exported `.smt` that is right (SAT confirmed, or UNSAT at the fixed point) and every known bug of it
-passes. The final acceptance runs each case alone on the whole cluster. Branch, tree and path details are in
+passes (owner 2026-10-05: no exclusive runs required; keep all ten lifts full; the goal is a right `.smt` per check). Branch, tree and path details are in
 [STATE.md](STATE.md); every check with its live state in [../checks/README.md](../checks/README.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
@@ -104,8 +104,8 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
 1. After 1-4 land: a full round of the 46 on the merged body (`tools/adhoc/sweep.sh`, 2 heads/host, `PRUNE=0`, the
    next name `HG8`); watch with `round-watch.sh`, `round-slow.sh <round> HG7` (or HG5A), stop cases at 80+ seed
    give-ups only if the time model has not landed; verify each finished case with `round-verify.sh`.
-2. Cases the sweep's time limit cut: rerun alone on the whole cluster (a large closure must converge).
-3. Run each of the 46 alone on the whole cluster.
+2. Cases the sweep's time limit cut: rerun with a longer budget (a large closure must converge).
+3. The final verdict of each of the 46 on the final body (concurrently, through the ledger).
 4. Check every `.smt` by hand: causal chain, symbols, propagation, against the HDFS code; write the chain of each SAT
    and a one-line reading of each UNSAT into STATUS.
 5. Merge `system/hdfs` into `main`; push only when the owner asks.

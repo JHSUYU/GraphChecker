@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
-# round-watch.sh <round>: one line per finished case (its claim and verdict) and per seed replay past 30/80 stalls.
+# round-watch.sh <round> [<baseline round>]: one line per finished case (its claim and verdict), per seed replay past
+# 30/80 stalls, and, given a baseline round, per seed replay past twice the baseline's stalls of the same case (at
+# least 20): a replay that departs from its recording more than it used to is a regression to read at once.
 out=${GC_OUT:-/bigtemp/vnr3ne/gc-out/hdfs-study}
-round=$1
+round=$1 base=${2:-}
+declare -A basestalls
+if [[ -n $base && -f $out/sweep-$base-cases.tsv ]]; then
+  while IFS=$'\t' read -r n c; do
+    f=$out/accept-$base-$n/out/$c/schedule/iteration-0000/seed-result/focused/replay.log
+    [[ -f $f ]] && basestalls[$c]=$(grep -c 'did not happen' "$f")
+  done < "$out/sweep-$base-cases.tsv"
+fi
 shopt -s nullglob
 declare -A seen
 state=$out/.watch-$round
@@ -16,6 +25,11 @@ while true; do
         : > "$state/stall.$k"; echo "STALLS>=${t} ${c} seed replay stalls=${n}"
       fi
     done
+    b=${basestalls[$c]:-}
+    k=$(echo "$c.regress" | tr '/' '_')
+    if [[ -n $b ]] && (( ${n:-0} >= 20 && ${n:-0} > 2 * b )) && [[ ! -e "$state/stall.$k" ]]; then
+      : > "$state/stall.$k"; echo "STALLS-REGRESSION ${c} seed replay stalls=${n}, ${b} in ${base}"
+    fi
   done
   for s in "${out}"/accept-"${round}"-*/summary.tsv; do
     d=$(dirname "$s"); k=$(basename "$d")
