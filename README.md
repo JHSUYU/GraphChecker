@@ -21,8 +21,8 @@ defaulted.
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
-[AGENTS.md](docs/handover/AGENTS.md) and [OPERATIONS.md](docs/handover/OPERATIONS.md) as its own
-long-term memory.
+[AGENTS.md](docs/handover/AGENTS.md), [OPERATIONS.md](docs/handover/OPERATIONS.md) and
+[PARALLEL.md](docs/handover/PARALLEL.md) as its own long-term memory.
 
 | # | document | what it holds |
 | --- | --- | --- |
@@ -31,10 +31,11 @@ long-term memory.
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 4 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
 | 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps. |
-| 6 | [docs/checks/README.md](docs/checks/README.md) | Every ad hoc coordination check of the four systems (HDFS, Solr, HBase, ZooKeeper) and every bug check: site, guard, workload and live state; the per-system point tables and the owner's selection. |
-| 7 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
-| 8 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
-| 9 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds). |
+| 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps all ten lifts full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster. |
+| 7 | [docs/checks/README.md](docs/checks/README.md) | Every ad hoc coordination check of the four systems (HDFS, Solr, HBase, ZooKeeper) and every bug check: site, guard, workload and live state; the per-system point tables and the owner's selection. |
+| 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
+| 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
+| 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds). |
 
 The sections below are the user-level reference: the pipeline, running one case, running the bug
 checks, outputs, and the repository map.
@@ -228,7 +229,8 @@ tools/adhoc/                      sweep.sh (a list of cases over the lifts), fan
                                   findings.py
 tools/regress/                    offline-ab.sh: the offline merge gate
 tools/analysis/                   timeline.py (where a campaign's wall time went), rootcov.py (roots
-                                  and symbolic predicates per campaign)
+                                  and symbolic predicates per campaign), smt-legend.py (a formula's
+                                  symbols named in the system's code, for checking a chain by hand)
 docs/STATUS.md                    done / partial / not done, per requirement; open defects
 docs/design/                      the design (index and design at a glance: docs/design/README.md; speed and the
                                   cluster: PERFORMANCE.md)

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # round-verify.sh <round> [case...]: per finished case, how EXPLORE ended, the claim, z3 on the exported candidate.smt2,
-# the blocking gaps and whether a SAT moved roots. No case: every finished case of the round.
+# the blocking gaps, whether a SAT moved roots, and the formula's leaf symbols (roots, reads, handoffs: every declared
+# constant but the formula's own selectors and named identities); an UNSAT over none (NO-SYMBOL) decided nothing that
+# moves, a scope hole to read before it counts. No case: every finished case of the round.
 out=${GC_OUT:-/bigtemp/vnr3ne/gc-out/hdfs-study}; round=$1; shift
 want=" $* "
 while IFS=$'\t' read -r n c; do
@@ -33,6 +35,13 @@ try:
     c=json.load(open(os.path.join(f,'claim.json')))
     mr=find(c,'movedRoots') or []; pd=find(c,'polarityDecides')
     if mr or pd is not None: out.append(f'moved={len(mr)} polarityDecides={pd}')
+except Exception: pass
+try:
+    import re
+    names=re.findall(r'\(declare-const (\|[^|]*\||\S+)', open(os.path.join(f,'candidate.smt2')).read())
+    own=re.compile(r'^\|?(path_selector|writer_arm|message_arm|state_arm|observed_arm|decided|wchoice|identity__|nullRef)')
+    leaves=sum(1 for n in names if not own.match(n))
+    out.append(f'leaves={leaves}' + (' NO-SYMBOL' if leaves == 0 else ''))
 except Exception: pass
 try:
     cf=json.load(open(os.path.join(f,'confirm.json'))); out.append('confirmed' if cf.get('confirmed') else ('refutes' if cf.get('refutes') else 'confirm?'))

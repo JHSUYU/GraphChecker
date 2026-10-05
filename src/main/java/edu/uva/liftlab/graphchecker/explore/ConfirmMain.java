@@ -905,9 +905,7 @@ public final class ConfirmMain {
             throws IOException {
         for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
             if (!sessionId.equals(worker.sessionId())) continue;
-            List<JsonObject> rows = RowCodec.readJsonl(
-                    worker.dir().resolve(ObligationDir.FOCUSED_TASK));
-            if (!rows.isEmpty()) return rows.get(0);
+            if (!worker.focus().isEmpty()) return worker.focus().get(0);
         }
         return new JsonObject();
     }

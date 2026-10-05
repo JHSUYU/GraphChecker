@@ -35,11 +35,16 @@ everything lives, how to build, test, run and read a campaign, and the traps the
 ```
 
 Round tools (in the repo, `tools/rounds/`; `GC_OUT` names the output root): `round-status.sh <round>` (every started
-case: age, stage, seed give-ups, or its verdict), `round-watch.sh <round>` (one line per finished case and per seed
-replay past 30/80 give-ups), `round-slow.sh <round> <baseline>` (a running case past 2x/4x its baseline time),
+case: age, stage, seed give-ups, or its verdict), `round-watch.sh <round> [<baseline>]` (one line per finished case, per seed
+replay past 30/80 give-ups, and STALLS-REGRESSION when a seed replay passes twice the baseline round's give-ups of the
+same case), `round-slow.sh <round> <baseline>` (a running case past 2x/4x its baseline time),
 `round-verify.sh <round> [case...]` (how EXPLORE ended, z3 on the exported formula, BLOCKING gaps, moved roots,
-CONFIRM), `obl-times.py <case>/schedule` (EXPLORE: run time vs queue wait per verdict, concurrency, refusal
-reasons). How to debug a slow case: [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §4.
+CONFIRM, and the formula's leaf symbols: NO-SYMBOL marks an UNSAT over nothing that moves, a scope hole to read before
+it counts), `obl-times.py <case>/schedule` (EXPLORE: run time vs queue wait per verdict, concurrency, refusal
+reasons). How to debug a slow case: [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §4. Reading a `.smt` by hand:
+`tools/analysis/smt-legend.py <out/case> --repo <tree>` names every leaf symbol of `final/candidate.smt2` (each root's
+door or configuration and where it was minted, each read's node, region, method and field, each handoff's port and
+producer), the starting point of every causal-chain check.
 
 ## 3. Build, test, commit
 
