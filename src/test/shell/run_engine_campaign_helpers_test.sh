@@ -125,6 +125,7 @@ emit_fixture() {
   # CONFIRM's answer for that SAT claim: the one replay agreed.  EMIT
   # requires it for every SAT_CANDIDATE and copies it into the result.
   jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: true,
+    refutes: false,
     reason: "every edge the model chose was taken, and the anchor observed the fatal",
     sessionId: "CONFIRM-1"}' >"${campaign_final}/confirm.json"
   # One replay session, per kind, as the runtime publishes it.  IMPORT
@@ -524,11 +525,13 @@ jq -e '.claim == "SAT_CANDIDATE" and .findingKind == "FORMULA_SAT"
 $(jq -c '{claim, findingKind, accepted}' "${campaign_final}/result.json")"
 
 # DECISIVE-2: triage reads the verdict: UNSAT (the concrete anchor as its
-# reason), RUN_DEFECT (the first defect), CONFIRMED, REFUTED; no NO_ROOT or
-# NO_WITNESS class is left.
+# reason), RUN_DEFECT (the first defect), CONFIRMED, REFUTED only where the
+# confirmation refutes -- one that published no verdict is a RUN_DEFECT,
+# also in a result an older EMIT downgraded; no NO_ROOT or NO_WITNESS class
+# is left.
 triage_out="${test_tmp}/triage"
 mkdir -p "${triage_out}"
-printf '1\tcase-unsat\n2\tcase-defect\n3\tcase-sat\n4\tcase-refuted\n' \
+printf '1\tcase-unsat\n2\tcase-defect\n3\tcase-sat\n4\tcase-refuted\n5\tcase-noverdict\n' \
   >"${triage_out}/sweep-T1-cases.tsv"
 triage_case() {
   local dir="${triage_out}/accept-T1-$1/out/$2/schedule/final"
@@ -544,13 +547,17 @@ triage_case 2 case-defect '{"claim": "RUN_DEFECT", "defects": [{"code":
 triage_case 3 case-sat '{"claim": "SAT_CANDIDATE",
   "confirmation": {"confirmed": true}, "findingKind": "MARKER_FLIPPED"}'
 triage_case 4 case-refuted '{"claim": "SAT_UNCONFIRMED",
-  "confirmation": {"confirmed": false, "reason": "WIRE e1"}}'
+  "confirmation": {"confirmed": false, "refutes": true, "reason": "WIRE e1"}}'
+triage_case 5 case-noverdict '{"claim": "SAT_UNCONFIRMED",
+  "confirmation": {"confirmed": false, "refutes": false,
+    "reason": "the confirmation replay published no verdict"}}'
 triage_rows=$(python3 "${repo}/tools/adhoc/triage.py" T1 "${triage_out}" \
   2>/dev/null | tr -d '\r' | awk -F'\t' 'NR > 1 {print $2 "=" $3 "|" $NF}')
 [[ "${triage_rows}" == "case-unsat=UNSAT|the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
 case-defect=RUN_DEFECT|ADMISSION_GAP no session reached the declared occurrence
 case-sat=CONFIRMED|
-case-refuted=REFUTED|WIRE e1" ]] \
+case-refuted=REFUTED|WIRE e1
+case-noverdict=RUN_DEFECT|CONFIRM_NO_VERDICT the confirmation replay published no verdict" ]] \
   || fail "triage did not class the verdicts: ${triage_rows}"
 
 # DECISIVE-3: report.py names a defect run's claim and its defects, and the
@@ -3515,7 +3522,7 @@ campaign_witness_attempt="${confirm_root}/witness-attempt"
 mkdir -p "${campaign_witness_attempt}"
 cp -- "${campaign_final}/claim.json" "${campaign_witness_attempt}/claim.json"
 jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: true,
-  reason: "at the witness", sessionId: "W-1"}' \
+  refutes: false, reason: "at the witness", sessionId: "W-1"}' \
   >"${campaign_witness_attempt}/confirm.json"
 rm -f -- "${confirm_root}/replay-ran"
 run_confirm SAT_CANDIDATE
@@ -3599,6 +3606,7 @@ unset -f budget_validate
 # the campaign exits 2 as for any claim that is not an accepted candidate.
 emit_fixture
 jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: false,
+  refutes: true,
   reason: "the run took an edge the model did not choose: WIRE e1",
   sessionId: "CONFIRM-2"}' >"${campaign_final}/confirm.json"
 run_emit
@@ -3617,6 +3625,28 @@ $(jq -c '{claim, accepted, confirmation, whyNotAccepted}' \
     "${campaign_final}/result.json")"
 grep -q 'no accepted candidate: claim=SAT_UNCONFIRMED' "${emit_root}/emit.log" \
   || fail "EMIT did not name the unconfirmed claim: $(<"${emit_root}/emit.log")"
+# A confirmation that published no verdict (a replay that timed out) is a
+# defect of the run, never a refutation: RUN_DEFECT, exit 3, the
+# confirmation's reason a CONFIRM defect.
+emit_fixture
+jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: false,
+  refutes: false, sessionId: "",
+  reason: "the confirmation replay published no verdict (exit 124)"}' \
+  >"${campaign_final}/confirm.json"
+run_emit
+[[ "${emit_status}" -eq 3 ]] \
+  || fail "a confirmation with no verdict exited ${emit_status}, not 3: \
+$(<"${emit_root}/emit.log")"
+jq -e '.claim == "RUN_DEFECT" and .formulaClaim == "SAT_CANDIDATE"
+  and .accepted == false and (.claimReason | contains("exit 124"))
+  and (.whyNotAccepted | startswith("RUN_DEFECT: CONFIRM published no verdict"))
+  and ([.defects[] | select(.stage == "CONFIRM"
+        and .code == "CONFIRM_NO_VERDICT")] | length) == 1
+  and .refutedClaims == []' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "a confirmation with no verdict was not a run defect: \
+$(jq -c '{claim, formulaClaim, claimReason, defects}' \
+    "${campaign_final}/result.json")"
 # A SAT claim with no confirmation at all is a malformed run, not a pass.
 emit_fixture
 rm -f -- "${campaign_final}/confirm.json"

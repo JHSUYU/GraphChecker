@@ -219,8 +219,9 @@ gaps = len(blocking) if gaps_doc else result.get("gapCount", "?")
 withheld = result.get("accepted") is not True
 # CONFIRM (PIPELINE §10): SAT says the model satisfies the formula, the
 # confirmation replay says whether the program agrees.  EMIT copies
-# confirm.json into result.json and downgrades an unconfirmed claim to
-# SAT_UNCONFIRMED; a result with no confirmation at all is not confirmed.
+# confirm.json into result.json: a refuted claim is SAT_UNCONFIRMED, one
+# whose confirmation published no verdict RUN_DEFECT; a result with no
+# confirmation at all is not confirmed.
 confirmation = result.get("confirmation") or {}
 confirmed = confirmation.get("confirmed") is True
 # WHICH mechanism the composition concluded, and the condition it rests on.

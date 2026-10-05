@@ -5813,9 +5813,10 @@ campaign_emit() {
   campaign_require_claim "${composition_manifest}"
   # CONFIRM's answer (PIPELINE §10).  A SAT claim is a claim about the model;
   # whether the program agreed is final/confirm.json, required for every
-  # SAT_CANDIDATE, and an unconfirmed one is published as SAT_UNCONFIRMED
-  # with the first mismatch named.  Any other claim was never confirmed
-  # and carries null.
+  # SAT_CANDIDATE: one the program refuted is published as SAT_UNCONFIRMED
+  # with the first mismatch named, one whose confirmation published no
+  # verdict as RUN_DEFECT.  Any other claim was never confirmed and carries
+  # null.
   local confirmation=null
   if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       == SAT_CANDIDATE ]]; then
@@ -5823,10 +5824,11 @@ campaign_emit() {
     campaign_require_json "confirmation" "${campaign_final}/confirm.json" \
       || campaign_fail EMIT CONFIRM "${campaign_final}/confirm.json" \
         "the confirmation is malformed"
-    jq -e '(.confirmed | type) == "boolean" and (.reason | type) == "string"' \
+    jq -e '(.confirmed | type) == "boolean" and (.refutes | type) == "boolean"
+        and (.reason | type) == "string"' \
       "${campaign_final}/confirm.json" >/dev/null \
       || campaign_fail EMIT CONFIRM "${campaign_final}/confirm.json" \
-        "the confirmation states no boolean confirmed and string reason"
+        "the confirmation states no boolean confirmed and refutes and string reason"
     confirmation=$(cat "${campaign_final}/confirm.json")
   fi
   # Every claim CONFIRM refuted on the way, in order: the filtered false
@@ -5859,10 +5861,15 @@ campaign_emit() {
     ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
     # The formula decides, SAT or UNSAT.  A SAT claim is what CONFIRM made
-    # of it; an UNSAT closes only where no stage named a defect, else the
-    # run left no verdict (RUN_DEFECT), the defects named in defects[].
+    # of it: confirmed, refuted (SAT_UNCONFIRMED), or no verdict -- a replay
+    # that timed out or published none, a decision that failed -- which is
+    # a defect of the run (RUN_DEFECT), never a refutation.  An UNSAT closes
+    # only where no stage named a defect.  Every defect is in defects[].
+    ($confirmation != null and $confirmation.confirmed != true
+     and $confirmation.refutes != true) as $noVerdict |
     (if $decided.claim == "SAT_CANDIDATE"
      then (if $confirmation.confirmed == true then "SAT_CANDIDATE"
+           elif $noVerdict then "RUN_DEFECT"
            else "SAT_UNCONFIRMED" end)
      elif $gapCount > 0 then "RUN_DEFECT"
      else $decided.claim end) as $claim |
@@ -5872,6 +5879,9 @@ campaign_emit() {
      claim: $claim,
      claimReason: (if $claim == "SAT_UNCONFIRMED"
        then "the confirmation replay did not agree with the model: "
+            + $confirmation.reason
+       elif $noVerdict
+       then "the confirmation of the formula'"'"'s witness published no verdict: "
             + $confirmation.reason
        elif $claim == "RUN_DEFECT" and $decided.claim != "RUN_DEFECT"
        then "the formula decided " + $decided.claim + ", and the run named "
@@ -5887,6 +5897,8 @@ campaign_emit() {
      blockerCount: $decided.blockerCount,
      whyNotAccepted: (if $claim == "SAT_UNCONFIRMED"
        then "SAT_UNCONFIRMED: " + $confirmation.reason
+       elif $noVerdict
+       then "RUN_DEFECT: CONFIRM published no verdict: " + $confirmation.reason
        elif $claim == "RUN_DEFECT" and $decided.claim != "RUN_DEFECT"
        then "RUN_DEFECT: the run named " + ($gapCount | tostring)
             + " defect(s): " + ([$gaps.gaps[] | .code] | unique | join(", "))
@@ -5939,12 +5951,17 @@ campaign_emit() {
                 and $gapCount == 0),
      blockingGapCodes: ($gaps.byCode // {}),
      # The defects of the run or the engine, each a bug to fix: the BLOCKING
-     # gaps, whichever stage raised them.
-     defects: [$gaps.gaps[] | {stage, code, subject, detail}],
+     # gaps, whichever stage raised them, and a confirmation that published
+     # no verdict.
+     defects: ([$gaps.gaps[] | {stage, code, subject, detail}]
+       + (if $noVerdict
+          then [{stage: "CONFIRM", code: "CONFIRM_NO_VERDICT",
+                 subject: ($confirmation.sessionId // ""),
+                 detail: $confirmation.reason}]
+          else [] end)),
      # What the decision rested on concretely: each anchor every admitted
-     # path decided on no symbol (EXPLORE), each value COMPOSE pinned to its
-     # row though what it rests on can move, each occurrence whose run
-     # computed on a value as a constant (Composer.Concrete).
+     # path decided on no symbol (EXPLORE), and each value COMPOSE stated
+     # as a constant or left free, with what it rests on (Composer.Concrete).
      concrete: ([($exploreDocuments[0].concreteAnchors // [])[]
                  | {kind: "ANCHOR"} + .] + ($c.concrete // [])),
      # What each satisfying witness named, and whether the policy read it as a
@@ -6067,10 +6084,10 @@ campaign_exit_verdict() {
       != RUN_DEFECT ]] || {
     jq -r '"[campaign] no accepted verdict: claim=\(.claim) (the formula "
       + .formulaClaim + "), and the run named "
-      + (.gapCount | tostring) + " defect(s); "
+      + (.defects | length | tostring) + " defect(s); "
       + (.telemetryCount | tostring) + " diagnostic row(s) withhold nothing"' \
       "${campaign_final}/result.json" >&2
-    echo "  named defects: ${campaign_final}/gaps.json" >&2
+    echo "  named defects: ${campaign_final}/result.json defects[]" >&2
     exit 3
   }
 }

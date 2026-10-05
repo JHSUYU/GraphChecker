@@ -1536,7 +1536,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 defect of the run or the engine that leaves no verdict: any BLOCKING claim gap → `RUN_DEFECT`; else a
 kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else, the formula's own answer unsat →
 `UNSAT_CLOSED`; else `RUN_DEFECT` (no claim and no unsat is never a refutation). EMIT publishes
-`SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when it did not agree), and an `UNSAT_CLOSED`
+`SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when the confirmation refutes it, `RUN_DEFECT`
+when it published no verdict: a `CONFIRM_NO_VERDICT` defect), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
 with every defect in `defects[]`, what the decision rested on concretely in `concrete[]`, and the
 formula it decided on in `formula` (`final/candidate.smt2`'s path and sha256: the disjunction of the
@@ -1651,7 +1652,8 @@ sessionId}`, the same shape for a refusal, `realized.json` and the decision. `re
 model is refuted: the replay ran it and disagreed (a `CONFIRM_MISMATCH`, no fatal at the anchor),
 or ConfirmMain refused it by name (`CONFIRM refused:`, no run can realize it). A replay that was
 not ADMITTED, published no readable session or no verdict, or a decision that failed, refutes
-nothing: the claim is unconfirmed and its model stays open.
+nothing: the claim is unconfirmed and its model stays open; if it is the claim EMIT publishes, the
+run has no verdict (`RUN_DEFECT`, never `SAT_UNCONFIRMED`).
 
 **A refuted claim is followed by the next.** A refuted claim (`campaign_refute`) is one row of
 `<iteration>/refuted_claims.jsonl`: its `model` (`campaign_claim_model`, off `claim.json`: the
@@ -1722,8 +1724,9 @@ refutes it. Then the campaign exits by its verdict (`campaign_exit_verdict`).
    `timed-out-sessions/` or `refused-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
    `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `byStage`, `byCode`.
-3. `final/result.json`: `claim` = the campaign claim, downgraded to `SAT_UNCONFIRMED` when a
-   `SAT_CANDIDATE`'s confirmation is not `confirmed` (the confirmation is copied in);
+3. `final/result.json`: `claim` = the campaign claim; a `SAT_CANDIDATE` whose confirmation is not
+   `confirmed` is `SAT_UNCONFIRMED` when the confirmation `refutes` it, else `RUN_DEFECT` with a
+   `CONFIRM_NO_VERDICT` row in `defects[]` (the confirmation is copied in);
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `findingKind`,
    `polarityDecides`, `valuationOrdinal`, `movedRoots`, `movedRootCategories` (each moved root's
    category, `contract.RootCategory`), `configurationOnly`, `blockers`, `reachability`, `finalStatus`, `gapCount`,
@@ -1774,7 +1777,8 @@ with a `result.json` `CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmati
 `CONFIG_ONLY` when `configurationOnly` is true (COMPOSE's rule, read, never re-derived), a finding read
 after the others (`findings.py` ranks its mechanism after every other: a configuration-validation throw
 fires by design) --, `REFUTED` when
-`claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), `UNSAT` when it is
+`claim` is `SAT_UNCONFIRMED` and the confirmation `refutes` the model (the confirmation's reason is
+the row's reason; one that published no verdict is a `RUN_DEFECT`), `UNSAT` when it is
 `UNSAT_CLOSED` (a concrete anchor of `concrete[]` is the reason), else `RUN_DEFECT` (the first of
 `defects[]` is the reason). A case without one is `STOPPED` when its summary row
 exists (the stage and reason its logs state: the campaign's own failure, the case timeout, a

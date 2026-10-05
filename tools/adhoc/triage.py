@@ -12,13 +12,15 @@ Classes:
                 (result.json configurationOnly, COMPOSE's rule): a finding,
                 read after the others -- a configuration-validation throw
                 fires by design
-  REFUTED       the campaign published SAT_UNCONFIRMED: a false positive the
-                engine filtered, the confirmation's reason as the reason
+  REFUTED       the campaign published SAT_UNCONFIRMED, its confirmation
+                refutes the model: a false positive the engine filtered,
+                the confirmation's reason as the reason
   UNSAT         the formula is unsatisfiable (UNSAT_CLOSED): no world of the
                 corpus reaches the fatal; where the anchor was decided on no
                 symbol (result.json concrete[]), that is the reason
   RUN_DEFECT    the run or the engine named a defect that leaves no verdict
-                (result.json defects[]): the first defect as the reason, a
+                (result.json defects[], a confirmation that published no
+                verdict among them): the first defect as the reason, a
                 bug to fix
   STOPPED       the campaign failed at a stage: the stage and its reason
   DEAD          started, no verdict, and no process on any lift names its
@@ -107,7 +109,8 @@ def classify(row, result_path, lines, root, text):
             row["class"] = ("CONFIG_ONLY"
                             if result.get("configurationOnly") is True
                             else "CONFIRMED")
-        elif claim == "SAT_UNCONFIRMED":
+        elif (claim == "SAT_UNCONFIRMED"
+              and confirmation.get("refutes") is True):
             row["class"] = "REFUTED"
             row["reason"] = confirmation.get("reason", "")[:200]
         elif claim == "UNSAT_CLOSED":
@@ -121,8 +124,14 @@ def classify(row, result_path, lines, root, text):
                                     anchors[0].get("paths", 0),
                                     anchors[0].get("reads", 0)))
         else:
+            # A confirmation that published no verdict refuted nothing: a
+            # defect of the run (EMIT names it CONFIRM_NO_VERDICT; an older
+            # EMIT published it SAT_UNCONFIRMED with refutes false).
             row["class"] = "RUN_DEFECT"
             defects = result.get("defects") or []
+            if not defects and claim == "SAT_UNCONFIRMED":
+                defects = [{"code": "CONFIRM_NO_VERDICT",
+                            "detail": confirmation.get("reason", "")}]
             if defects:
                 row["reason"] = re.sub(r"\S*/region/\S*", "<occ>",
                                        defects[0].get("code", "") + " "
