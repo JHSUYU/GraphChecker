@@ -4,16 +4,18 @@ GraphChecker is an academic research tool in software engineering. It studies ho
 distributed Java systems (HDFS, Solr, HBase, ZooKeeper) fail under fault, clock and ordering counterfactuals.
 
 It starts from one recorded run of a system's own cluster test that does **not** fail, plus one
-declared failure site (a `throw`, named by its class and source line). It then asks whether a
-small change could have made that run fail at that site, and it answers with a witness. The
-changes it considers are a transport fault, a skewed clock, a flipped configuration value, or a
-different pairing of a message or of shared state.
+declared failure site (a `throw`, named by its class and source line). From that run it explores
+systematically: it flips the symbolic branches on the failure's slice and the roots that decide
+them (transport faults at the woven doors, local IO faults on the traced flow, clocks,
+configuration values, the pairing of a message or of a shared-state read with its writer), replays
+each flipped world on a concolic OpenJDK 8 (Zero) that keeps a symbolic expression under every
+value, and grows the closure (the woven regions and the rows they state) from what each replay
+newly reaches, round after round. Every admitted replay is fused into one free-root formula,
+`candidate.smt2`, and z3 on that file decides: SAT or UNSAT.
 
-A witness is a quantifier-free SMT formula (`candidate.smt2`), a claim naming what moved
-(`claim.json`), and one replay confirming that the program agrees (`confirm.json`). Replays run
-on a concolic OpenJDK 8 (Zero) that keeps a symbolic expression under every value. The formula
-is composed from many focused replays, and the solver picks the nearest world. What the rows do
-not state is named, never silently defaulted.
+A SAT comes with a claim naming the roots that moved (`claim.json`) and one replay confirming that
+the program agrees (`confirm.json`). What the rows do not state is named, never silently
+defaulted.
 
 ## Taking over: read these, in order
 
