@@ -1708,6 +1708,7 @@ public final class CausynthPipeline {
                     else last = stmt;
                     replaceRandom(body, stmt, site);
                     replaceClock(stmt);
+                    replaceListing(stmt);
                     if (claims && last instanceof AssignStmt
                             && ((AssignStmt) last).getLeftOp()
                                     instanceof Local
@@ -1894,6 +1895,39 @@ public final class CausynthPipeline {
                         Clock.MONOTONIC.equals(callee.getName()) ? "nanos"
                                 : "millis",
                         Collections.<Type>emptyList(), LongType.v(), true)));
+    }
+
+    /** The runtime's stand-ins for directory listings, sorted by name. */
+    private static final String LISTINGS_CLASS =
+            "edu.uva.liftlab.graphchecker.runtime.Listings";
+
+    /**
+     * A directory listing on java.io.File ({@link WorkStartSites#LISTINGS})
+     * becomes the {@code runtime.Listings} stand-in of its name, the file
+     * its first argument, in both passes: the listing comes back sorted by
+     * name, so a recording and its replays walk a directory in one order
+     * whatever host and file system each runs on (SYMBOL-SCOPE §4.5).
+     */
+    private static void replaceListing(Stmt stmt) {
+        InvokeExpr invoke = stmt.getInvokeExpr();
+        if (!(invoke instanceof VirtualInvokeExpr)) return;
+        SootMethodRef callee = invoke.getMethodRef();
+        if (!WorkStartSites.lists(callee.declaringClass().getName()
+                        .replace('.', '/'), callee.getName(),
+                soot.AbstractJasminClass.jasminDescriptorOf(callee))) {
+            return;
+        }
+        List<Type> parameters = new ArrayList<>();
+        parameters.add(RefType.v("java.io.File"));
+        parameters.addAll(callee.getParameterTypes());
+        List<Value> arguments = new ArrayList<>();
+        arguments.add(((VirtualInvokeExpr) invoke).getBase());
+        arguments.addAll(invoke.getArgs());
+        stmt.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
+                Scene.v().makeMethodRef(phantomClass(LISTINGS_CLASS),
+                        callee.getName(), parameters, callee.getReturnType(),
+                        true),
+                arguments));
     }
 
     /** {@code Randoms#at(site)} in a fresh local, before {@code stmt}. */

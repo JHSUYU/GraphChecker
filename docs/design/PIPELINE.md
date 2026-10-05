@@ -1056,8 +1056,9 @@ cancelled or reaped, by id):
   `campaign_reserve`, COMPOSE and EMIT each as long as the longest COMPOSE the campaign measured
   (its stage metrics and its witness attempts; the last planner round, which reads the same corpus,
   standing for a COMPOSE not yet run: its `in_flight.jsonl`, copied as the planner starts, to its
-  `explore_manifest.json`, `campaign_last_round_millis`), CONFIRM and REPRODUCE each as long as the
-  longest CONFIRM (the seed's REPLAY standing for a CONFIRM not yet run), never less than
+  `explore_manifest.json`, `campaign_last_round_millis`), CONFIRM as long as the longest CONFIRM
+  (the seed's REPLAY standing for a CONFIRM not yet run), REPRODUCE its own bound
+  (`reproduce_time_factor` times the recorded workload; its native runs go out at once), never less than
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped), and the stop is a DIAGNOSTIC row stating what it left owed.
