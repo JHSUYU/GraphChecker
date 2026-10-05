@@ -115,9 +115,16 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  * </ul>
  *
  * <p>The path and arms come from the claim's valuation ({@code selectedPathId},
- * {@code selectedSessionId}, {@code selectedArms}); nothing is re-solved. An
- * unrunnable confirmation is refused by name (exit 1), which the driver reads
- * as "unconfirmed, because ...".</p>
+ * {@code selectedSessionId}, {@code selectedArms}); nothing is re-solved.  The
+ * selected path's closure runs to where it decided, the manifest's {@code
+ * cutoff}: its target row, or -- a witness whose path left the way to the
+ * throw at a symbolic guard, which never reached the anchor -- that guard;
+ * such a witness is planted and judged as any other, by the fatal at the
+ * declared occurrence.  An unrunnable confirmation is refused by name (exit
+ * 1): a defect of the rows (RUN_DEFECT), never a refutation, since no replay
+ * ran the model -- except a claim that is the run as recorded, which no
+ * replay could make a counterfactual, refuted by name ({@link
+ * Refused#refutes}).</p>
  *
  * <p>The decision ({@code --sessions}): confirmed iff the replay was ADMITTED,
  * its session published a readable gaps file with no {@code
@@ -161,9 +168,13 @@ public final class ConfirmMain {
                     ? writePlant(iteration, claim, scopeMap, plant)
                     : write(iteration, claim, manifest, out);
         } catch (Refused refused) {
-            System.err.println("CONFIRM refused: " + refused.getMessage());
+            // The driver reads which: "refutes" excludes the model, "refused"
+            // is a defect of the run (run_engine.sh campaign_confirm_claim).
+            System.err.println("CONFIRM " + (refused.refutes ? "refutes"
+                    : "refused") + ": " + refused.getMessage());
             JsonObject row = new JsonObject();
             row.addProperty("kind", "CONFIRM_REFUSED");
+            row.addProperty("refutes", refused.refutes);
             row.addProperty("reason", refused.getMessage());
             System.out.println(ExploreMain.pretty(row));
             System.exit(1);
@@ -172,10 +183,30 @@ public final class ConfirmMain {
         System.out.println(ExploreMain.pretty(summary));
     }
 
-    /** A confirmation nothing can run, named. */
+    /**
+     * A confirmation nothing can run, named.  A DEFECT of the rows or the
+     * claim -- a selector, a cutoff, a schedule, a pairing, a moved root
+     * they do not state -- refutes nothing: no replay ran the model, so the
+     * claim is RUN_DEFECT.  Only a claim that is the run as recorded is
+     * refuted without a replay ({@link #refutes}): no run of it is a
+     * counterfactual, so the campaign excludes it and decides again.
+     */
     static final class Refused extends RuntimeException {
+        /** Whether the claim itself is refuted, not the run defective. */
+        final boolean refutes;
+
         Refused(String reason) {
+            this(reason, false);
+        }
+
+        private Refused(String reason, boolean refutes) {
             super(reason);
+            this.refutes = refutes;
+        }
+
+        /** The claim is no counterfactual: excluded, never a defect. */
+        static Refused noCounterfactual(String reason) {
+            return new Refused(reason, true);
         }
     }
 
@@ -205,17 +236,20 @@ public final class ConfirmMain {
         String ordinalOfPath = "";
         Set<String> restsOn = new LinkedHashSet<String>();
         boolean stated = false;
+        long cutoff = -1L;
         for (JsonElement element : array(manifest, "paths")) {
             JsonObject path = element.getAsJsonObject();
             if (pathId.equals(optionalString(path, "pathId"))) {
                 ordinalOfPath = ordinalOf(optionalString(path, "selector"));
                 stated = path.has("restsOn");
                 restsOn.addAll(strings(path, "restsOn"));
+                cutoff = path.has("cutoff") ? path.get("cutoff").getAsLong()
+                        : -1L;
             }
         }
-        if (ordinalOfPath.isEmpty() || !stated) {
-            throw new Refused("the manifest states no selector or no "
-                    + "restsOn for the selected path " + pathId);
+        if (ordinalOfPath.isEmpty() || !stated || cutoff < 0L) {
+            throw new Refused("the manifest states no selector, no restsOn "
+                    + "or no cutoff for the selected path " + pathId);
         }
         List<JsonObject> arms = new ArrayList<JsonObject>();
         for (JsonElement element : array(valuation, "selectedArms")) {
@@ -226,10 +260,13 @@ public final class ConfirmMain {
             }
         }
         SessionReader session = SessionReader.read(iteration, sessionId);
+        // The row COMPOSE composed the path from: one that reached the
+        // anchor, or one whose path left the way at a guard (no row of it
+        // stands at the anchor; its cutoff is that guard).
         TargetRow target = null;
         for (TargetRow row : session.targets()) {
             if (row.occurrence().id().equals(anchor.id())
-                    && row.reachedAnchor()) {
+                    && (target == null || row.reachedAnchor())) {
                 target = row;
             }
         }
@@ -237,8 +274,9 @@ public final class ConfirmMain {
             throw new Refused("the selected session " + sessionId
                     + " states no target row at the anchor " + anchor.id());
         }
-        // The writes the model chose for the anchor's join closure.
-        StateClosure closure = new StateClosure(session, anchor, target.seq());
+        // The writes the model chose for the anchor's join closure, up to
+        // where the path decided.
+        StateClosure closure = new StateClosure(session, anchor, cutoff);
         Map<String, WriteRow> chosen = closure.chosen(arms);
         // A choice at a location the fatal does not rest on is the solver's
         // free pick among the formula's alternatives, not the witness.
@@ -259,10 +297,10 @@ public final class ConfirmMain {
         if (sessionId.equals(seedSessionId)
                 && object(decided, "movedRoots").size() == 0
                 && ownDeliveries(sessionId, arms) && sawChosen) {
-            throw new Refused("the claim moves nothing: its witness is the "
-                    + "run as recorded -- the seed's own path, every root "
-                    + "and clock as recorded, every arm its own delivery -- "
-                    + "so no run of it is a counterfactual");
+            throw Refused.noCounterfactual("the claim moves nothing: its "
+                    + "witness is the run as recorded -- the seed's own "
+                    + "path, every root and clock as recorded, every arm its "
+                    + "own delivery -- so no run of it is a counterfactual");
         }
         String realized = realizedBy(moved, world, sessionId, arms, session,
                 target, sawChosen);
@@ -329,7 +367,7 @@ public final class ConfirmMain {
         JsonObject anchorRow = new JsonObject();
         anchorRow.addProperty("kind", "ANCHOR");
         anchorRow.addProperty("occurrence", anchor.id());
-        anchorRow.addProperty("seq", target.seq());
+        anchorRow.addProperty("seq", cutoff);
         edges.add(anchorRow);
         RowCodec.writeJsonl(out.resolve(Confirmation.FILE), edges);
 

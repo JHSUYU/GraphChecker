@@ -139,11 +139,14 @@ public final class Composer {
         private final boolean fatalObserved;
         private final Set<String> interactionIds;
         private final Set<String> restsOn;
+        /** Where the path decided: its target row's seq, or the way guard's
+         *  ({@link PathEntry}). */
+        private final long cutoff;
 
         private Disjunct(Corpus.RecordedPath path, String selector,
                          String fatal, String withoutFatalArm,
                          boolean fatalObserved, Set<String> interactionIds,
-                         Set<String> restsOn) {
+                         Set<String> restsOn, long cutoff) {
             this.path = path;
             this.selector = selector;
             this.fatal = fatal;
@@ -151,6 +154,7 @@ public final class Composer {
             this.fatalObserved = fatalObserved;
             this.interactionIds = Collections.unmodifiableSet(interactionIds);
             this.restsOn = Collections.unmodifiableSet(restsOn);
+            this.cutoff = cutoff;
         }
 
         public Corpus.RecordedPath path() {
@@ -173,6 +177,11 @@ public final class Composer {
         /** The tracked locations its fatal predicate rests on. */
         public Set<String> restsOn() {
             return restsOn;
+        }
+
+        /** Where the path decided ({@link PathEntry}). */
+        public long cutoff() {
+            return cutoff;
         }
     }
 
@@ -989,7 +998,7 @@ public final class Composer {
                 disjuncts.add(disjunct);
                 entries.add(PathEntry.of(path.pathId, path.sessionId,
                         disjunct.selector(), disjunct.fatalObserved(),
-                        disjunct.restsOn()));
+                        disjunct.restsOn(), disjunct.cutoff()));
                 ordinal++;
             }
         }
@@ -1419,7 +1428,7 @@ public final class Composer {
         heldArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, fatal, "(=> " + selector + " "
                 + VmTermLowering.and(withoutFatalArm) + ")",
-                target.observedFatal(), interactionIds, restsOn);
+                target.observedFatal(), interactionIds, restsOn, cutoff);
     }
 
     /**
