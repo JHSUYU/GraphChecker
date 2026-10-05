@@ -417,8 +417,18 @@ asked of their expressions' shared nodes, never of their lowered text (`Corpus#t
 a container read's state rows by the v_C rule, a read no write answers as its mint; each expression
 walked once per session): the anchor's `phiTerm` (a concrete fatal condition's constant names nothing), its own decisions at its flip sites (a factor
 member deciding the same site decides it on its own objects), and the values it contributed (the
-exports a demanded attach paired with, the write a demanded read could observe), closed over the
-reads those name and the writes they could observe. The occurrence and its state-connected factor are
+exports a demanded attach paired with, the write a demanded read could observe), and WHAT COMPOSE
+KEEPS of each (`compose.RestsOn`, the one notion of what a delivery rests on, COMPOSE's path and arm
+closures included): for each admitted path at the anchor, and for each session the occurrence
+contributed in up to its last contribution's seq, the decisions and reads of every occurrence the
+row joins from its prefix reach (§8 P3) that rest on what moves (`Independence`: a root, a clock, a
+value the session received), the anchor's own prefix decisions among them -- so a handoff a kept
+decision of a reached occurrence names is demanded of the group member that received it, and its
+producer planned (hdfs-11741: the balancer's KeyManager, reached by the SASL producer's closure,
+decides on the expiry dates of nn0's `updateBlockKeys@1` response, whose handler no session ran
+until it was demanded so); closed over the reads those name and the writes they could observe. Each
+(session, occurrence, cutoff, terms) is asked once per walk. The occurrence and its state-connected
+factor are
 one symbolic unit: every member's attaches and reads are asked whether a demanded value rests on them,
 and a member joins the closure only through them, as a writer or a producer below, never for touching
 what the occurrence touches (two readers of one location pass each other nothing).
