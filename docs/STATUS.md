@@ -323,6 +323,12 @@ Correctness:
     trees by a per-collection refresh lock (`gc/solr-unified-storing` `04f8489`, `gc/solr-bugs`
     `9d572a4`); a recording silent for 600 s is ended by name (`RECORDING_STALLED`, branch
     `solr-bug-reindex`).
+50. A queue item `gc/runtime/MessageDoors#consumed` installs (the Solr Overseer's state-update
+    queue) states no message: the consumer thread's `MessageDoors#current` stays what it served
+    before, so an attach of a concrete element the item carried has no message to pair by
+    correlation (IDENTITY §4) and stays unpaired, named; a stale `current` could even name another
+    message. Fix: `consumed` states the item as the message it installs (one line, after the
+    MessageDoors-touching branches merge).
 
 Scale and robustness:
 

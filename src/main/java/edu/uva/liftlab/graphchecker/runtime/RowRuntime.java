@@ -277,14 +277,13 @@ public final class RowRuntime {
 
     /** One export, and the producer endpoint a delivery can be paired to. */
     public static Endpoint exported(OccurrenceAddress producer, long seq,
-                                    String portId, long handle,
-                                    String correlationId, int attempt,
+                                    String portId, long handle, int attempt,
                                     JsonObject expression, String javaType,
                                     String recordedValue) {
         if (producer == null) return null;
         Endpoint endpoint = endpoint(producer, portId, attempt);
         String ref = expressionRef(expression);
-        Interactions.exported(portId, handle, correlationId, endpoint);
+        Interactions.exported(handle, endpoint);
         SessionPublisher session = publisher;
         if (session != null) {
             String type = statedJavaType("export", endpoint.id(), javaType,
@@ -306,7 +305,12 @@ public final class RowRuntime {
     }
 
 
-    /** One v_H minted at an endpoint already allocated. */
+    /**
+     * One v_H minted at an endpoint already allocated, paired with the
+     * export of the message this thread received ({@link
+     * MessageDoors#current}): by the element's handle, else by that
+     * message and the port when the message carried an element for it.
+     */
     public static Endpoint attachedAt(Endpoint endpoint, long seq,
                                       String portId, long handle,
                                       String correlationId, String symbol,
@@ -314,8 +318,10 @@ public final class RowRuntime {
                                       boolean answered,
                                       String answeredValue) {
         if (endpoint == null) return null;
+        MessageDoors.Inbound received = MessageDoors.current();
         Interactions.Pairing pairing = Interactions.pairing(portId, handle,
-                correlationId);
+                received == null ? "" : received.correlationId,
+                received == null ? "" : received.half);
         Endpoint producer = pairing.producer();
         if (producer != null && handle > 0L
                 && !"HANDLE".equals(pairing.key())) {
@@ -343,7 +349,12 @@ public final class RowRuntime {
             if (producer == null) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
                         GapClass.DIAGNOSTIC, endpoint.id(),
-                        "the delivery at " + Text.safe(portId)
+                        handle == SymbolicMessageEnvelope.ABSENT
+                                ? "the message carried no element for "
+                                + Text.safe(portId) + ": its sender forwarded"
+                                + " the value without exporting it, so the"
+                                + " delivery pairs with no export"
+                                : "the delivery at " + Text.safe(portId)
                                 + " was paired with no export of this run"));
             }
         }

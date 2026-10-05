@@ -239,9 +239,18 @@ producer. Two messages carrying one producer endpoint are named as a `LINEAGE_LO
 
 **Pairing** (`runtime/Interactions`, in-JVM, each store bounded to 8192 entries by eviction):
 `sent` files a message's producer by (transport, correlation, half) and by endpoint id; a receiver's
-anchor is looked up there. `exported` files a staged value's producer by VM handle and by
-(correlation, port); `pairing` answers an attach by `HANDLE`, else `CORRELATION_PORT`, else
-unpaired. The `WIRE_FLOW` header does not carry the producer endpoint; a codec hole's envelope does,
+anchor is looked up there. `exported` files an exported value's producer by VM handle; `carried`
+files the producer of each value staged on a message by that message (correlation, half) and the
+port, at the message's own outbound door (`SymbolicMessageEnvelope#carriedBy`, called by
+`CausynthTraceRecorder#outboundExchange` just before the door drains the envelope), never where the
+value was exported: a server's export while it serves a request belongs to its response half
+(hdfs-adhoc-07 HG5A: a JournalNode's own export, filed under the request it served, answered that
+request's attaches; 855 self-pairings, 57 of 68 paths self-contradictory). `pairing` answers an
+attach by `HANDLE`, else -- when the message it received (`MessageDoors#current`) carried an element
+for the port -- `CORRELATION_PORT` (that message's correlation and half, and the port), else
+unpaired: an element the message did not carry (`SymbolicMessageEnvelope#take` `ABSENT`: a value its
+sender forwarded without exporting it) pairs with nothing and is named `LINEAGE_LOST`. A queue item
+`MessageDoors#consumed` installs states no message, so its concrete elements stay unpaired. The `WIRE_FLOW` header does not carry the producer endpoint; a codec hole's envelope does,
 and its attach is paired by `ENVELOPE` (§7.5).
 
 **Interactions** (`contract/Interaction`): (kind, producer endpoint, consumer endpoint), `id =

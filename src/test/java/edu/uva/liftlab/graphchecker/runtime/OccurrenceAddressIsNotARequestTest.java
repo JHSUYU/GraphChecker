@@ -146,7 +146,7 @@ public class OccurrenceAddressIsNotARequestTest {
 
         // An envelope changes nothing either way: it decides which v_H the
         // attach mints, never which activation this is.
-        assertTrue(SymbolicMessageEnvelope.stage(PORT, 41L));
+        assertTrue(SymbolicMessageEnvelope.stage(PORT, 41L, null));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
 
