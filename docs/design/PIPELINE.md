@@ -1145,11 +1145,13 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   say (`derivedRoots`, `Corpus#derived`) -- has no reading of its own, and none pins anything; a
   session whose manifest predates readings (schema 1) is named, DIAGNOSTIC; a declared root this
   session neither minted nor read refuses the path only when the path's terms name it;
-- anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
+- anchor handoffs, by the one arrival rule (`Composer#arrival`, a path's and an arm's alike):
+  bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
   an attach no session attests the producer of (or with no producer named) has a producer no row
-  states: HELD at the value its row states it received, conjoined with the path and named
-  (`Composer.Concrete` HELD, "producer unstated"); one whose producer is attested and no export of
+  states: HELD at the value its row states it received, conjoined with the path (inside an arm: with
+  the arm's body) and named (`Composer.Concrete` HELD, "producer unstated", its `arm` the arm whose
+  body holds it, none on the path's own); one whose producer is attested and no export of
   it lowers, or whose row states a value the lowering places nowhere, is FREE, named: nothing pins
   it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it
@@ -1204,10 +1206,15 @@ exactly one, each arm guarded by its replay's value of every root it holds under
 those its expression names, every varied root, every root its replay read and minted none -- the
 valuation its path would carry, never a clock nor a derived root; a guard symbol no row has
 declared yet is declared at its root's sort) and closed like a path in its own session (producer prefix before the delivery, its
-P3 closure, nested families to depth 16). The nested families bind every handoff the arm's conjunction
-names, its delivery's and those its closure's conditions and joins read
-(`ComposedFamilies#handedOn`); one its session minted no attach for, or one paired with no producer,
-refuses the arm, so no arm lowers a handoff as a free constant. A path closes each message once (one family,
+P3 closure, nested families to depth 16). Every handoff the arm's conjunction names, its delivery's
+and those its closure's conditions and joins read (`ComposedFamilies#handedOn`), goes by the path's
+own arrival rule in the arm's session (`Composer#reachedHandoffs`): an attested arrival is a nested
+family; one no producer this corpus attests is HELD at the value its row received, conjoined inside
+the arm and named in `concrete[]` with the arm; one whose attested producer's exports do not lower is
+FREE, named; only one its session minted no attach for refuses the arm. So an arm is never refused
+for a handoff its closure merely reads (hdfs-11741 PS1-PS3: the SASL sender's arms read, through the
+balancer's key-updater tick, the expiry dates of a refresh whose NameNode handler no session
+instrumented; refused, they took the key id's binding with them). A path closes each message once (one family,
 one name), under what rests on it: the path's own messages under the path selector; a message a
 delivery was itself handed under every arm (message or writer) whose conjunction names its
 handoffs, asserted once the path's arms are all known as `(=> <path> (=> (or <those arms>) F))`
@@ -1219,7 +1226,9 @@ arm selectors are the chain its path took. A level's messages are closed before 
 closes its own; an arm resting on a message the path closed already is one more thing resting on
 it. A copy per arm instead is a family per arm per level: hdfs-11741 i1's body ran an 8 GB heap
 out. A refused arm, or one whose body equals an earlier arm's (it rests on the same messages),
-takes back what it stated (`ComposedFamilies#rollback`). A message no session can send drops the path.
+takes back what it stated (`ComposedFamilies#rollback`), its `concrete[]` rows included
+(`SmtLowering#unboundRollback`): a row is the arm's only while the arm is in the formula, one per
+value and arm. A message no session can send drops the path.
 Each leaf an arm binds (a declared port's delivery) is noted with the occurrence it was delivered
 into and whether its value rests on
 a clock (`ComposedFamilies.BoundLeaf`: a CLOCK root the delivered value reaches, or a nested
