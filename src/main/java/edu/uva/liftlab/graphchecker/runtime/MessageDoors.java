@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 
@@ -152,19 +153,33 @@ public final class MessageDoors {
     }
 
     /**
-     * A request starts on this thread, at its client's invoke point, before
-     * the client's call: it first ends the exchange the thread served, as a
-     * node startup and a daemon's turn do ({@link #beginTick}) -- the
-     * request is the thread's own work, not the last response's (round
-     * SL1-3, hdfs-adhoc-52: every request the test made stood on the
-     * previous response's anchor, chaining each NameNode context onto every
-     * earlier exchange) -- and is in hand, named by {@code verb}, attempt
-     * {@code attempt} of it (a retry of one call), its call's frame counted
-     * per verb ({@code Identity#requestStarting}).
+     * A request of {@code transport} starts on this thread, at its client's
+     * invoke point, before the client's call.  A RESPONSE the thread
+     * received is over: the request is the thread's own work, not that
+     * response's (round SL1-3, hdfs-adhoc-52: every request the test made
+     * stood on the previous response's anchor, chaining each NameNode
+     * context onto every earlier exchange), as a node startup or a daemon's
+     * turn ends what it served ({@link #beginTick}).  A REQUEST the thread
+     * serves stands: a handler's nested call is its call's.  The request is
+     * in hand, named by {@code verb}, attempt {@code attempt} of it (a retry
+     * of one call), in a level of its own counted per verb ({@code
+     * Identity#requestStarting}).
+     *
+     * @return what {@link #requestEnded} takes, in a finally
      */
-    public static void requestStarting(String verb, int attempt) {
-        endInbound();
-        Identity.requestStarting(verb, attempt);
+    public static long requestStarting(String transport, String verb,
+                                       int attempt) {
+        Inbound served = CURRENT.get();
+        if (served != null && RESPONSE.equals(served.half)) endInbound();
+        return Identity.requestStarting(Endpoint.messageSite(
+                Text.safe(transport), REQUEST, Text.safe(verb)), verb,
+                attempt);
+    }
+
+    /** The request {@link #requestStarting} began is over, answered or
+     *  failed ({@code Identity#requestEnded}). */
+    public static void requestEnded(long request) {
+        Identity.requestEnded(request);
     }
 
     /**

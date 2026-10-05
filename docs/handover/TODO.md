@@ -114,6 +114,9 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
   RuntimeTraceContext directly), CausynthTraceRecorder's ~1,100 lines of offline aggregation into its own class,
   CausynthPipeline's weaves apart from analysis orchestration, DependencyRole (a digest change).
 - The VM's dead natives and `exportLeaf`/`mintLeaf` with the next VM build (STATE §3).
+- Loop-bound rows keyed structurally, not by Jimple unit ordinals (`loopSiteId` `...>#u53`): one statement added to a
+  method (r5 deleted `Client#sendRpcRequest`'s hand `endInbound()`) shifts every later `#uN` and refuses the case's
+  `loop-bounds.jsonl` (BOUNDED_LOOP_BODY_BOUND_SITE_UNDECLARED) until its rows are renumbered by hand.
 - Merged branches and their worktrees, stale snapshots (STATE §2-§3), `/bigtemp/vnr3ne/readout-stream/` (4.2 GB) once
   its numbers are in STATUS, finished agents' `gc-out` dirs, `/bigtemp/vnr3ne/gc-out/diag-11741` after 11741 passes.
 
@@ -122,6 +125,8 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
 **1. Bring the body.** Merge `main` (with the HDFS body) into `system/solr`. The WIRE-CODEC runtime is gone from the
 body; check that no Solr tree hook calls a removed door (`MessageDoors` payload/bytes overloads; the 3-arg
 `stored`/`fetched` stay). Close the `MessageDoors.consumed` gap (a consumed Overseer item states its message key).
+The Solr trees' `CausynthHttp` ends the served exchange by hand before each send: replace it by the request start at
+the client's invoke point (`MessageDoors#requestStarting`/`#requestEnded`, IDENTITY §3), ending a received response only.
 Rebase `solr-bug-reindex` onto it and fix its solr-18413 regression first:
 - The seed replay stalls 103,812 times. A store-write slot is held while the Overseer's
   `waitForCoreAdminAsyncCallToComplete` poll outruns its recorded WAKE count. Read the jstacks in

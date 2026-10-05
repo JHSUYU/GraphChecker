@@ -115,11 +115,6 @@ public final class Identity {
          * own: a child thread starts with none.
          */
         private String requestVerb = "";
-        /**
-         * The attempt of the request starting on this thread, until the
-         * first frame it enters for it ({@link #requestFrame}), else -1.
-         */
-        private int requestAttempt = -1;
 
         private State() {
             levels.add(new Level(null, 0L, null));
@@ -373,23 +368,23 @@ public final class Identity {
         }
 
         /**
-         * THE request's frame (IDENTITY §3): the first frame this thread
-         * enters once a request starts ({@link Identity#requestStarting}) is
-         * that request's call, named by its verb and counted per verb, as a
-         * start made with a request in hand is ({@link Identity#startWork}):
-         * a request of another verb -- a heartbeat a replay inserted, a
-         * call a fault added -- renames no later one (hdfs-adhoc-52 SL1-3:
-         * the test's every {@code Client.call@k} counted all its RPCs).  A
-         * retry is its original's k, at a site naming its attempt.
+         * THE request's level (IDENTITY §3): the k-th request at its message
+         * site (which names its verb) in the enclosing level under the root
+         * hop that owns the count ({@link #nextSiteEvent}), as a start made
+         * with a request in hand is counted per verb: a request of another
+         * verb -- a heartbeat a replay inserted, a call a fault added --
+         * renames no later one (hdfs-adhoc-52 SL1-3: the test's every
+         * {@code Client.call@k} counted all its RPCs).  A retry (attempt
+         * {@code a}) is its original's k at {@code <site>#retry<a>}; one
+         * whose original this level did not count (a retry on another
+         * thread) is counted at that site, never a silent 0.
          */
-        private Frame requestFrame(String site) {
-            String named = site + ":" + requestVerb;
-            int attempt = requestAttempt;
-            requestAttempt = -1;
-            if (attempt == 0) return Frame.of(named, nextSiteEvent(named));
-            Integer made = top().events(countingRoot()).get(named);
-            return Frame.of(named + "#retry" + attempt,
-                    made == null ? 0 : made - 1);
+        private Frame requestFrame(String site, int attempt) {
+            if (attempt <= 0) return Frame.of(site, nextSiteEvent(site));
+            String retry = site + "#retry" + attempt;
+            Integer made = top().events(countingRoot()).get(site);
+            return made == null ? Frame.of(retry, nextSiteEvent(retry))
+                    : Frame.of(retry, made - 1);
         }
 
         /**
@@ -761,24 +756,37 @@ public final class Identity {
      */
     static void requestInHand(String verb) {
         // Not state(): a door is no identity event, and claims no start.
-        State state = CURRENT.get();
-        state.requestVerb = Endpoint.verb(verb);
-        state.requestAttempt = -1;
+        CURRENT.get().requestVerb = Endpoint.verb(verb);
     }
 
     /**
      * A request of {@code verb} starts on this thread, attempt {@code
      * attempt} of it ({@code MessageDoors#requestStarting}): it is in hand
-     * from here ({@link #requestInHand}), and the first frame the thread
-     * enters is its call ({@link State#requestFrame}).  A request naming no
-     * verb is only in hand.
+     * from here ({@link #requestInHand}) and opens a level of its own at
+     * {@code site}, its message site ({@link State#requestFrame}), whatever
+     * of the client the case's scope frames.  A request naming no verb is
+     * only in hand.
+     *
+     * @return the token {@link #requestEnded} closes its level by, or 0
      */
-    static void requestStarting(String verb, int attempt) {
+    static long requestStarting(String site, String verb, int attempt) {
         requestInHand(verb);
-        State state = CURRENT.get();
-        if (!state.requestVerb.isEmpty()) {
-            state.requestAttempt = Math.max(0, attempt);
-        }
+        if (CURRENT.get().requestVerb.isEmpty()) return 0L;
+        State state = state();
+        return enter(state, state.requestFrame(JvmNames.stable(site),
+                attempt), null);
+    }
+
+    /**
+     * The request {@link #requestStarting} opened is over, answered or
+     * failed: its level closes and it is in hand no more, so a call that
+     * failed before its send (a connection refused) names no later start
+     * (the hdfs-17899-bug2 class, {@link #doorFaulted}).
+     */
+    static void requestEnded(long token) {
+        if (token <= 0L) return;
+        exitFrame(token);
+        requestInHand("");
     }
 
     /**
@@ -937,16 +945,20 @@ public final class Identity {
      * context is the application methods it is inside (IDENTITY §3).
      * The iteration is the k-th entry of this site in the enclosing level
      * ({@link State#nextSiteEvent}); callers outside the weave count in the
-     * thread base level.  The first frame a starting request enters is its
-     * call, counted per verb ({@link State#requestFrame}).</p>
+     * thread base level.</p>
      *
      * @return the token that closes exactly the level this opened
      */
     public static long enterFrame(String callSiteId, Object receiver) {
         State state = state();
         String site = JvmNames.stable(Text.safe(callSiteId));
-        Frame frame = state.requestAttempt >= 0 ? state.requestFrame(site)
-                : Frame.of(site, state.nextSiteEvent(site));
+        return enter(state, Frame.of(site, state.nextSiteEvent(site)),
+                receiver);
+    }
+
+    /** Opens one level at {@code frame}, journalled and, under CONFIRM's
+     *  order gate, entered. */
+    private static long enter(State state, Frame frame, Object receiver) {
         long token = TOKENS.getAndIncrement();
         state.levels.add(new Level(frame, token, receiver));
         state.journal();

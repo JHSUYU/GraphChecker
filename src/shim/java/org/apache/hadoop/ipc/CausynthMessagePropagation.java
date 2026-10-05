@@ -88,9 +88,16 @@ public final class CausynthMessagePropagation {
    * invoke point before the client's call ({@link
    * MessageDoors#requestStarting}): named by the operation it asks for
    * ({@link #verb}), {@code attempt} the retry count its call carries.
+   *
+   * @return what {@link #requestEnded} takes, in the invoke's finally
    */
-  public static void requestStarting(Object request, int attempt) {
-    MessageDoors.requestStarting(verb(request), attempt);
+  public static long requestStarting(Object request, int attempt) {
+    return MessageDoors.requestStarting(IPC, verb(request), attempt);
+  }
+
+  /** The request {@link #requestStarting} began is over. */
+  public static void requestEnded(long request) {
+    MessageDoors.requestEnded(request);
   }
 
   /**
