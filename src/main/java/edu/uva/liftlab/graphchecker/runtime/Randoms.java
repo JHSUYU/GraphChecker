@@ -8,42 +8,36 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-
 /**
  * THE randomness of the application scope, keyed by where it is drawn.
  * The weave makes every draw on a Random receiver (Random, ThreadLocalRandom,
- * SecureRandom) a draw on {@link #at}, a Random handed to a library method
- * {@link #at} at that call, and {@code Math.random()}, {@code
+ * SecureRandom) a draw on {@link #at}, whatever seed the Random was built
+ * with, a Random handed to a JDK method {@link #at} at that call, and {@code Math.random()}, {@code
  * Collections.shuffle(List)} and {@code UUID.randomUUID()} these stand-ins,
  * in BOTH passes, so a replay draws what the recording drew, never a
  * stream's next value whatever was drawn from it before: a Solr client
  * shuffles the live nodes it sends an admin request to, and a replay that
  * sent it to another node than the recording did held no order past it.
  *
- * <p>Inside the window a draw in an occurrence with a context (a Root or an
- * Anchor) is seeded by its endpoint: the occurrence, its site and its count
- * there -- the same function of the same inputs in both passes.  A Lost
- * context names no work of its own: siblings share its address (unnamed
- * work, a turn begun before the window), so a draw there is seeded as one
- * before the window, where no occurrence stands: by the thread's node, the
- * starts it was handed on through ({@link Identity#handoffs}, as a schedule
- * event's context is), its site, and its count under that key in this
- * window.  hdfs-adhoc-01 (round HS1): a cluster started inside the window
- * while no hop stood drew one UUID for every DataNode, and their
- * registrations refused each other for the rest of the run.  A key one
- * thread alone draws under counts in that thread's program order, the same
- * in both passes (a cluster whose nodes are named from their construction,
- * the adapters' node startups, keys each DataNode's draws by its node);
- * threads that share one (unnamed work of one node, started under no hop:
- * HS1's DataNodes, all {@code workload/unregistered} on a tree without node
- * startups) take its counts in the run's arrival order, so two runs may hand
- * them each other's values: distinct is what is guaranteed there, not
- * equal.</p>
+ * <p>A draw is keyed by what no weave moves: inside the window, its schedule
+ * context ({@link ScheduleLog#contextOf}: node, causal context and the
+ * starts it was handed on through), its site, and its count under that key;
+ * before the window, where no context is ordered, its node and handoffs in
+ * place of the context.  Never an occurrence or an endpoint: a GROW weaves
+ * new regions, whose occurrences and endpoints are new ids (IDENTITY §9),
+ * so a draw keyed by its endpoint drew another value in every replay after
+ * the GROW, and a block placement another pipeline (hdfs-adhoc-01/42).  The
+ * counts restart at each window.  A key one thread alone draws under counts
+ * in that thread's program order, the same in both passes; threads that
+ * share one (unnamed work of one node, started under no hop: round HS1's
+ * DataNodes, which drew one UUID before draws were counted and refused each
+ * other's registrations) take its counts in the run's arrival order,
+ * so two runs may hand them each other's values: distinct is what is
+ * guaranteed there, not equal.</p>
  */
 public final class Randoms {
-    /** Per window, node, handoffs and site, the draws seeded by their count
-     *  so far. */
+    /** Per window, context (or node and handoffs) and site, the draws
+     *  keyed by their count so far. */
     private static final Map<String, AtomicLong> COUNTS =
             new ConcurrentHashMap<String, AtomicLong>();
 
@@ -52,17 +46,10 @@ public final class Randoms {
 
     /** What the draw at {@code site} here is keyed by (class comment). */
     static String key(String site) {
-        if (RecordingWindow.opened()) {
-            OccurrenceAddress occurrence = Identity.currentOccurrence(
-                    RuntimeTraceContext.nodeHere());
-            if (occurrence != null && !occurrence.lineageLost()) {
-                return Identity.endpointAt(occurrence, "random#" + site, 0)
-                        .id();
-            }
-        }
-        String counted = RecordingWindow.index() + "#"
-                + RuntimeTraceContext.nodeHere() + "|" + Identity.handoffs()
-                + "#" + site;
+        String scope = RecordingWindow.opened()
+                ? ScheduleLog.contextOf(Identity.contextHere())
+                : RuntimeTraceContext.nodeHere() + "|" + Identity.handoffs();
+        String counted = RecordingWindow.index() + "#" + scope + "#" + site;
         return counted + "#" + COUNTS.computeIfAbsent(counted,
                 ignored -> new AtomicLong()).getAndIncrement();
     }

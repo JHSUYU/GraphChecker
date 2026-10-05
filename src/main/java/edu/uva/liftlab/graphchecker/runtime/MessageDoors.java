@@ -640,11 +640,12 @@ public final class MessageDoors {
     }
 
     /**
-     * {@code who} is about to take startup {@code step}, a step before the
-     * window that builds state a replay reads: a replay holds it until those
-     * its recording saw complete the step first have completed it ({@link
-     * StartupOrder}).  {@code who} names the taker the same in both passes
-     * (a DataNode's UUID, which its seeded draw makes).
+     * {@code who} is about to take startup {@code step}, a step that builds
+     * state a replay reads and that no slot of the schedule orders, before
+     * the window or inside it: a replay holds it until those its recording
+     * saw complete the step first have completed it ({@link StartupOrder}).
+     * {@code who} names the taker the same in both passes (a DataNode's
+     * UUID, which its keyed draw makes).
      *
      * @return what {@link #startupDone} takes
      */

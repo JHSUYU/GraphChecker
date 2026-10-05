@@ -669,19 +669,23 @@ pipeline's DataNodes from NetworkTopology's `ThreadLocalRandom` and DFSNetworkTo
 `Random`, which every IPC handler shares: draw k depended on every draw before it (hdfs-adhoc-01,
 round SS5), and a replay that wrote another pipeline than its recording put every DataXceiver turn
 after it on another node's slot. A `SecureRandom`'s draws (block-key nonces) are keyed too.
-A draw is keyed (`Randoms#key`) by its endpoint where it runs in an occurrence with a context (a Root
-or an Anchor) inside the window: the same function of the same inputs in both passes. Anywhere else
--- before the window, or in a Lost context, whose address siblings share (unnamed work, a turn begun
-before the window) -- it is keyed by the thread's node, the starts it was handed on through
-(`Identity#handoffs`, as a schedule event's context is), its site, and its count under that key, the
-counts restarting at each window: hdfs-adhoc-01 (round HS1) started a cluster inside the window while
-no hop stood, its DataNodes all drew one endpoint's UUID, and their registrations refused each other
-for the rest of the run. A key one thread alone draws under counts in that thread's program order,
-the same in both passes: a cluster whose nodes are named from their construction (the adapters'
-node startups, IDENTITY §5) keys each DataNode's draws by its node. Threads that share a key
-(unnamed work of one node started under no hop: HS1's DataNodes, all `workload/unregistered` on a
-tree without node startups) take its counts in the run's arrival order, so two runs may hand them
-each other's values: distinct is what is guaranteed there, not equal. A key's bits are
+A draw is keyed (`Randoms#key`) by what no weave moves: inside the window, by its schedule context
+(`ScheduleLog#contextOf`: the thread's node, its causal context and the starts it was handed on
+through, `Identity#handoffs`), its site, and its count under that key; before the window, where no
+context is ordered, by the thread's node and handoffs, its site and its count. The counts restart at
+each window. Never by an occurrence or an endpoint: a GROW weaves new regions, whose occurrences and
+endpoints take new ids (IDENTITY §9), so a draw keyed by its endpoint drew another value in every
+replay after the GROW, and a block placement another pipeline (the hdfs-adhoc-01/42 failure again).
+hdfs-adhoc-01 (round HS1) started a cluster inside the window while no hop stood, its DataNodes all
+drew one UUID, and their registrations refused each other for the rest of the run: the count keeps
+their draws apart. A key one thread alone draws under counts in that thread's program order, the same
+in both passes: a cluster whose nodes are named from their construction (the adapters' node
+startups, IDENTITY §5) keys each DataNode's draws by its node. Threads that share a key (unnamed work
+of one node started under no hop: HS1's DataNodes, all `workload/unregistered` on a tree without
+node startups) take its counts in the run's arrival order, so two runs may hand them each other's
+values: distinct is what is guaranteed there, not equal. A deliberate seed is keyed by site too: a
+draw on `new Random(seed)`, or on HDFS's `NetworkTopology.setRandomSeed` Random, draws from
+`Randoms#at(site)`, not from that seed's stream. A key's bits are
 mixed into the seed (`Randoms#seed`): neighbouring counts of one site would otherwise start
 generators nearly alike (alike UUID prefixes, one pick of four for every count).
 

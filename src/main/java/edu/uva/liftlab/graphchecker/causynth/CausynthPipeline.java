@@ -1812,11 +1812,12 @@ public final class CausynthPipeline {
      * before it (IDENTITY §10, SYMBOL-SCOPE §4.5).  A draw on any Random
      * receiver ({@link WorkStartSites#RANDOM_RECEIVERS}: Random,
      * ThreadLocalRandom, SecureRandom) draws from {@code Randoms#at(site)}
-     * instead of the receiver's stream -- HDFS's DFSNetworkTopology picks
-     * pipelines from one static Random every handler shares, so draw k
-     * depended on every draw before it (hdfs-adhoc-01); a bounded draw only
-     * ThreadLocalRandom declares becomes the {@code Randoms} helper of its
-     * name.  A Random handed to a method outside the weave ({@code
+     * instead of the receiver's stream, whatever seed it was built with --
+     * HDFS's DFSNetworkTopology picks pipelines from one static Random every
+     * handler shares, so draw k depended on every draw before it
+     * (hdfs-adhoc-01); a bounded draw only ThreadLocalRandom declares
+     * becomes the {@code Randoms} helper of its name.  A Random handed to a
+     * JDK method ({@link WorkStartSites#handsRandomOut}: {@code
      * Collections.shuffle(list, random)}) is {@code Randoms#at(site)} at that
      * call.  A static draw ({@link WorkStartSites#STATIC_DRAWS}) becomes the
      * {@code Randoms} stand-in of its name, the site its last argument.
@@ -1867,7 +1868,10 @@ public final class CausynthPipeline {
                     arguments));
             return;
         }
-        if (callee.declaringClass().isApplicationClass()) return;
+        if (!WorkStartSites.handsRandomOut(owner.replace('.', '/'),
+                soot.AbstractJasminClass.jasminDescriptorOf(callee))) {
+            return;
+        }
         for (int index = 0; index < invoke.getArgCount(); index++) {
             Type parameter = callee.getParameterType(index);
             if (parameter instanceof RefType && RANDOM.equals(

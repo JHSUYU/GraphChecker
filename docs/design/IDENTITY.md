@@ -585,19 +585,18 @@ where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS,
 was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameterized workload test
 the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
 order, so a replay held to a run of another invocation is refused by name (`ScheduleLog#invocation`).
-`{mark: STARTUP, step, who, pre}` states one taker completing a startup step an adapter names
-(`MessageDoors#startupStep(step, who)`/`#startupDone`): a step taken before the window that builds
-state a replay reads, which no slot holds; `who` names the taker the same in both passes, `pre` that
-the run's window had not opened yet. Marks are written in completion order and handed on with every
-order (`SchedulePrefix#write`). A replay holds the taker of a `pre` pass at the step until every pass
-marked before its own (a taker's n-th pass is its n-th mark) completed it, whatever its own window's
-state -- two passes' windows may open at different points of the start-up (hdfs-adhoc-43, round SS5:
-two DataNodes added in the other order, no hold) -- at most one schedule timeout, then gives the
-missing ones up by name (`runtime/StartupOrder`, a `SCHEDULE_DIVERGED` DIAGNOSTIC `startup#<step>`;
-an interrupt ends the hold by that name too). Inside its own window a held thread is away from the
-frontier (`ScheduleLog#elsewhere`), so no hold is hidden from the watchdog. A pass the recording took
-inside its window is the schedule's to order; one a replay takes before its own window opens is named
-(`startup-unheld#<step>`).
+`{mark: STARTUP, step, who}` states one taker completing a startup step an adapter names
+(`MessageDoors#startupStep(step, who)`/`#startupDone`): a step that builds state a replay reads and
+that no slot orders, before the window or inside it (the NameNode's IPC handler takes no slot between
+its `RECV` and the write lock its step runs under); `who` names the taker the same in both passes.
+Marks are written in completion order and handed on with every order (`SchedulePrefix#write`). A
+replay holds every taker at the step until every pass marked before its own (a taker's n-th pass is
+its n-th mark) completed it, whatever either run's window -- two passes' windows may open at
+different points of the start-up (hdfs-adhoc-43, round SS5: two DataNodes added in the other order,
+no hold) -- at most one schedule timeout, then gives the missing ones up by name
+(`runtime/StartupOrder`, a `SCHEDULE_DIVERGED` DIAGNOSTIC `startup#<step>`; an interrupt ends the
+hold by that name too). Inside its own window a held thread is away from the frontier
+(`ScheduleLog#elsewhere`), so a hold defers no give-up.
 HDFS's step is the NameNode adding a DataNode (`FSNamesystem#registerDatanode`, around its write
 lock), named by the DataNode's UUID, which its seeded draw makes equal in both passes: the topology
 orders DataNodes as they are added, and block placement picks pipelines by position there
@@ -771,8 +770,9 @@ an event (`startWork`, `claimStart`, `endClaim`, `claimItem`, `enterMethodFrame`
 in both hook catalogs (`CausynthPipeline.HookCatalog#shared`); every site string is stabilized once
 by `contract/JvmNames#stable` (reflection accessors and lambda proxies lose their JVM-minted
 counters; a desugared lambda class is named by content in every weave, `LambdaClassNames`);
-randomness is seeded by endpoint where the occurrence has a context, else by node, handoffs, site
-and count, equal in both passes where one thread alone draws under that key (SYMBOL-SCOPE.md §4.5).
+randomness is keyed by the schedule context (before the window by node and handoffs), site and
+count, never by an occurrence a GROW may rename, equal in both passes where one thread alone draws
+under that key (SYMBOL-SCOPE.md §4.5).
 
 ## 11. Current limits
 
