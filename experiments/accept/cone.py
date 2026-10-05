@@ -21,8 +21,12 @@ Two facts are published for report.py, which gates on both:
                 the path the claim selected.  A mechanism whose root the fatal
                 does not depend on is a mechanism the formula cannot carry.
   unbound    -- boundary variables some fatal condition names that no family
-                binds.  A free v_H is a value the engine invented, not one a
-                producer made.
+                binds and that COMPOSE did not state FREE.  A free v_H no
+                family binds and COMPOSE did not name is a value the engine
+                invented, not one a producer made.  One COMPOSE named FREE
+                (result.json concrete[], an arrival whose producer this
+                corpus does not attest) is the over-approximation the owner's
+                design states and CONFIRM judges strictly, not an invention.
 
 A root is named by its rootId in result.json and by its symbol in the
 formula; the session rows (roots.jsonl) state both.  Writes <work>/cone.json.
@@ -155,12 +159,16 @@ def main():
         elif name.startswith('message_family'):
             families.setdefault(selector, []).append(formula.names(body[2]))
 
+    # An arrival COMPOSE named FREE is accounted for, whether read off the
+    # published result or the composition manifest the offline gate stops at.
+    free = {c['subject'] for src in (result, manifest)
+            for c in src.get('concrete') or [] if c.get('kind') == 'FREE'}
     for selector, own in sorted(fatal.items()):
         bound = set()
         for family in families.get(selector, []):
             bound |= family
-        out['unbound'] += sorted(c for c in own
-                                 if is_boundary(c) and c not in bound)
+        out['unbound'] += sorted(c for c in own if is_boundary(c)
+                                 and c not in bound and c not in free)
 
     ordinal = result.get('valuationOrdinal')
     chosen = next((v for v in result.get('valuations') or []

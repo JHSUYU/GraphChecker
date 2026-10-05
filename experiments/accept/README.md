@@ -68,7 +68,10 @@ when all of these hold:
 * `cone.py`: every moved root is in the causal cone of the selected path (the
   constants its `path_fatal__` assertion names, closed over the message
   families under the same path selector), and no wire boundary variable in a
-  path's fatal condition is unnamed by that path's message families.
+  path's fatal condition is unaccounted for -- neither bound by that path's
+  message families nor stated FREE by COMPOSE (`concrete[]`: an arrival whose
+  producer this corpus does not attest, the over-approximation CONFIRM
+  judges strictly).
 
 A case the table does not name cannot pass. The z3 probe is reported, never
 gated on: it asks the published formula, unpinned, about the accepted
