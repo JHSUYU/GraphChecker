@@ -92,11 +92,6 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
   or 45. Never 42, 44, 46, 47. Update `checks.tsv`, `selection.txt` (branch `study`) and `docs/checks/` with the reason.
 
 ### 6. Speed (PERFORMANCE.md §5)
-- SEED: implement the approved indexed class provider on `hdfs-seed-speed` (one listing per classpath dir per JVM,
-  first match in Soot's order, the same FoundFile; delete the per-dir lookup) and drop `project_classpath` from the
-  static pass's own `-cp`; gate `offline-ab AB_STAGES=SEED.static` over ~12 HDFS cases (byte identity + pass walls)
-  and one case alone with an strace count. Also drop the study-next class dirs from r3's classpath
-  (`experiments/hadoop/classpath.py` reads a stale surefire report).
 - The ledger's remaining ~1.6x over real use is step charges at their start heap (kept: a refused growth would end a
   planner).
 
