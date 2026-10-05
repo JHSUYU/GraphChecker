@@ -18,7 +18,7 @@ on the cluster is faster):
 | INSTRUMENT | weaving (Soot) and the JVM verifier | 1-2 min | same NFS lookups |
 | REPLAY (seed) | one concolic replay of the workload on the Zero VM, held to the recorded schedule | 2-8 min; every schedule give-up costs the 15 s watchdog | replays that depart from the recording's order (the start-up/clock family: 30-170 give-ups); the budget's reserve then owes twice the seed replay's time (§3) |
 | EXPLORE | planner rounds (one JVM each), obligation SOLVEs (z3 on a host's warm solver), obligation REPLAYs (~1-4 min each), GROW re-runs | 5-60 min | queue waits on an over-charged ledger (§3); closures of many equivalent occurrences; re-asked arms |
-| COMPOSE | one formula over every admitted session, z3 per valuation | seconds to minutes | grows with the corpus: hdfs-adhoc-07's 556 sessions did not finish in 17 min (open, TODO) |
+| COMPOSE | the corpus read, one formula over every admitted session, z3 per valuation | seconds to minutes (hdfs-adhoc-07's 556 sessions: 2-3 min offline, most of it the read) | the self-check searched the 26 MB body per command and path: 07 did not finish in 17 min (HR1) |
 | CONFIRM, EMIT, REPRODUCE | one replay of the witness world; artifacts; N native runs | 1-10 min | a remote CONFIRM's path bug lost results (fixed 71df98a00); EMIT up to 233 s on a large corpus |
 
 Measured per campaign in `out/<case>/schedule/stage_metrics.tsv`; `tools/analysis/timeline.py <case dir>` splits it by
@@ -77,7 +77,7 @@ running out of memory, and a single case alone takes the whole cluster.
 | 17 and 24 "UNSAT" with 151 / 3 obligations owed (HG5A) | the budget's reserve owes twice the longest COMPOSE + max(CONFIRM, seed REPLAY); a 22-min seed replay reserved 44 min and left EXPLORE none | EXPLORATION_CUT: such an end leaves no UNSAT; the real fix is the seed replay's speed |
 | 16: PLAN_CLOSURE_CUT, 1542 occurrences over `schedule_max_jobs` | 1520 polling turns of `MarkedDeleteBlockScrubber` each planned as a task once control flow counted | E1: equivalent deciders planned once per class (1406 turns -> 55 classes) |
 | 07: rounds proposing 180, 136, 587 obligations | the same (task, site, flip) arm re-asked under ~7.8 dependence digests on average; 47 of 189 re-asked arms changed verdict, so most is real work | open: dependence-key granularity (TODO); give the case the cluster |
-| 07: COMPOSE silent for 17+ min over 556 sessions (HR1) | `Composition#withoutFatalArm` looked for a refuted claim in each command with an `indexOf` reading to the end of the 26 MB body: commands x body size for every path of the self-check; the reserve guesses 600 s when no witness attempt measured COMPOSE | fixed on branch `hdfs-compose-cost` (flag per command from its last 64 chars, worker dirs read 8 at a time, progress lines): 116 s offline; NOT yet gated or merged (TODO). Reserve proposal: twice the last planner round's wall time until COMPOSE is measured |
+| 07: COMPOSE silent for 17+ min over 556 sessions (HR1), past the case limit | `Composition#withoutFatalArm` looked for a refuted claim in each command with an `indexOf` reading to the end of the 26 MB body: commands x body size for every path of the self-check; and the reserve, before any COMPOSE was measured, owed it no more than the `campaign_reserve_s` floor (600 s) | each command's refuted-claim flag found once, from its last 64 characters; obligation workers' rows read 8 at a time; progress lines in `compose.log` (one per 25 paths, one per z3 run): 116-191 s offline (the corpus read 73-130 s from NFS), outputs byte-identical. Before a COMPOSE is measured, the reserve owes COMPOSE and EMIT the last planner round's wall each (07: 241 s; `campaign_last_round_millis`), never less than the floor |
 | 07: `slots.jsonl` 1 GB (314,758 slots), rewritten by EXPLORE every round and most of COMPOSE's remaining read | the slot table grows with every session's pairings | open (TODO) |
 | a replay's answer row corrupted when written from another host (MCH1) | rewriting a file in place over NFS: a client's cached copy wrote past a truncate | answers are written as a new inode and renamed |
 | a branch window re-imported its whole closure per node (SB19 seed window 787 s) | O(n^2) re-import | stream the import, skip expanded nodes (183 s) |
@@ -113,9 +113,9 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
 
 1. SEED: the indexed class provider (design approved; branch `hdfs-seed-speed`, nothing coded) and dropping
    `project_classpath` from the static pass's own `-cp`.
-2. COMPOSE on a large corpus (07: 556 sessions): the quadratic self-check is fixed on `hdfs-compose-cost` (gate, then
-   merge); a reserve for a COMPOSE never measured (twice the last planner round); the 1 GB `slots.jsonl` rewritten
-   every round.
+2. COMPOSE on a large corpus (07: 556 sessions, 2-3 min offline): the corpus read is most of it; the 1 GB
+   `slots.jsonl` (07: 314,758 slots) is rewritten by EXPLORE every round and is most of COMPOSE's remaining read;
+   `Corpus#index` re-reads each session's schedule on one thread.
 3. The seed replay's give-ups: the time model (the start-up/clock family) -- also the biggest correctness item.
 4. EXPLORE: dependence-key granularity (re-asked arms, 07's snowball), measured before any change.
 5. Step charges at the start heap (~1.6x real); a per-step measured charge needs a planner that survives a refused
