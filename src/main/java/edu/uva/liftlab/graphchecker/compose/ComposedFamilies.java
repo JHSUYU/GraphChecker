@@ -413,19 +413,24 @@ final class ComposedFamilies {
         path = null;
     }
 
-    /** The path is refused: nothing its families stated stays. */
+    /** The path is refused: nothing its families stated stays (the values
+     *  they left unbound are no path's: Composer reads a path's only once
+     *  it is a disjunct). */
     void discard() {
-        rollback(new int[2]);
+        rollback(new int[]{0, 0, lowering.unboundMark()});
         path = null;
     }
 
     /** How far the path being composed has stated, for {@link #rollback}. */
     private int[] mark() {
-        return new int[]{pathAssertions.size(), pathUndo.size()};
+        return new int[]{pathAssertions.size(), pathUndo.size(),
+                lowering.unboundMark()};
     }
 
-    /** Takes back what the path stated since {@code mark}. */
+    /** Takes back what the path stated since {@code mark}, the values its
+     *  arms left unbound included. */
     private void rollback(int[] mark) {
+        lowering.unboundRollback(mark[2]);
         List<String> assertions =
                 pathAssertions.subList(mark[0], pathAssertions.size());
         lowering.retract(assertions);
@@ -894,8 +899,11 @@ final class ComposedFamilies {
      * (ii) P's closure at that cutoff plus the versions the delivered
      * expressions read ({@link #expressionWrites}); (iii) the prefixes and
      * the joins this arm's text reaches, by the path's own routines; (iv)
-     * P's own attaches as nested families.  Without (i)-(iii) an arm says
-     * WHAT was delivered, not why.
+     * the handoffs it names, by the path's own arrival rule ({@link
+     * #handedOn}): its attested arrivals as nested families, any other FREE
+     * or HELD inside the arm, each such row naming this arm ({@link
+     * SmtLowering#arm}).  Without (i)-(iii) an arm says WHAT was delivered,
+     * not why.
      *
      * @param selector this arm's selector, which (iv)'s families rest on
      * @param leaves receives the wire leaves the outs bind, by consumer
@@ -912,6 +920,7 @@ final class ComposedFamilies {
         List<GapRow> local = new ArrayList<GapRow>();
         SmtLowering.SessionJoin rows = corpus.join(session);
         lowering.begin(session, rows, corpus.expressions(session));
+        lowering.arm(selector);
         List<String> conjuncts = new ArrayList<String>();
         boolean stated = true;
         // The bindings: what this run delivered at each out.

@@ -437,6 +437,8 @@ public final class SmtLowering {
     /** What the conjunction now open raised: its frame of {@link #raising}. */
     private Raised open;
     private String scope = "";
+    /** The arm whose body is open ({@link #arm}), "" for a path's. */
+    private String arm = "";
     /** Session -> clock symbol -> its base there ({@link #clockBases}). */
     private Map<String, Map<String, Long>> clockBases =
             Collections.emptyMap();
@@ -948,7 +950,7 @@ public final class SmtLowering {
         // mid-path; overwriting the path's frame would leave the rest of the
         // path with no join, no table and no refusal sink.
         frames.push(new Frame(open, scope, join, openTable, memo, still,
-                statedBases));
+                statedBases, arm));
         this.open = new Raised();
         raising.add(open);
         this.scope = sessionId;
@@ -985,6 +987,7 @@ public final class SmtLowering {
         memo = previous.memo;
         still = previous.still;
         statedBases = previous.statedBases;
+        arm = previous.arm;
         top().gaps(closed);
         return new ArrayList<String>(closed.conditions);
     }
@@ -998,11 +1001,12 @@ public final class SmtLowering {
         private final Map<MemoKey, Attempt<?>> memo;
         private final Set<JsonElement> still;
         private final Map<JsonElement, Boolean> statedBases;
+        private final String arm;
 
         private Frame(Raised open, String scope, SessionJoin join,
                       ExpressionTable table, Map<MemoKey, Attempt<?>> memo,
                       Set<JsonElement> still,
-                      Map<JsonElement, Boolean> statedBases) {
+                      Map<JsonElement, Boolean> statedBases, String arm) {
             this.open = open;
             this.scope = scope;
             this.join = join;
@@ -1010,6 +1014,7 @@ public final class SmtLowering {
             this.memo = memo;
             this.still = still;
             this.statedBases = statedBases;
+            this.arm = arm;
         }
     }
 
@@ -1196,6 +1201,28 @@ public final class SmtLowering {
                 + "a state asked by identity whose write rests on it: it was "
                 + "read before that write, which therefore answers nothing "
                 + "here");
+    }
+
+    /**
+     * The conjunction now open is the body of {@code selector}'s arm, and
+     * so is every one nested in it until it ends: each value it leaves
+     * unbound names that arm ({@link Unbound#arm}).
+     */
+    public void arm(String selector) {
+        arm = selector;
+    }
+
+    /** How many values the innermost frame left unbound so far, for
+     *  {@link #unboundRollback}. */
+    public int unboundMark() {
+        return top().unbound.size();
+    }
+
+    /** Takes back the values left unbound since {@code mark}: an arm
+     *  refused, or a copy of one taken already, states none. */
+    public void unboundRollback(int mark) {
+        List<Unbound> held = top().unbound;
+        held.subList(Math.min(mark, held.size()), held.size()).clear();
     }
 
     /** What the conjunction now open refused, each cause once. */
@@ -1755,7 +1782,7 @@ public final class SmtLowering {
      *  #unbound}). */
     private void freed(String subject, String why, Set<String> movesWith) {
         top().unbound.add(new Unbound(Unbound.FREE, subject, "", why,
-                new ArrayList<String>(movesWith)));
+                new ArrayList<String>(movesWith), arm));
     }
 
     /**
@@ -3500,14 +3527,17 @@ public final class SmtLowering {
         public final String reason;
         /** What a FREE value rests on that can move. */
         public final List<String> movesWith;
+        /** The arm whose body left it unbound, "" for a path's own. */
+        public final String arm;
 
         Unbound(String kind, String subject, String value, String reason,
-                List<String> movesWith) {
+                List<String> movesWith, String arm) {
             this.kind = kind;
             this.subject = subject;
             this.value = value;
             this.reason = reason;
             this.movesWith = Collections.unmodifiableList(movesWith);
+            this.arm = arm;
         }
     }
 
@@ -3526,7 +3556,7 @@ public final class SmtLowering {
     public void held(String subject, String value, String why) {
         top().unbound.add(new Unbound(Unbound.HELD, subject, value,
                 Unbound.PRODUCER_UNSTATED + ": " + why,
-                Collections.<String>emptyList()));
+                Collections.<String>emptyList(), arm));
     }
 
     /**

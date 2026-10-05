@@ -532,22 +532,27 @@ if blocking:
     out.append("")
 
 concrete = result.get("concrete") or []
-# The witness path's rows come first and are never cut (a reader checking
-# the witness's chain needs every value it rests on); then the rows that
-# name no path (EXPLORE's concrete anchors); the rest are cut at
-# CONCRETE_SHOWN, their count stated (hdfs-17899-bug2: a held arrival on every
-# one of its paths).
+# The witness's rows come first and are never cut (a reader checking the
+# witness's chain needs every value it rests on): its path's own and those of
+# the arms it chose (a row inside an arm names it, "arm"); then the rows that
+# name no path (EXPLORE's concrete anchors); the other paths' own rows are cut
+# at CONCRETE_SHOWN, their count stated (hdfs-17899-bug2: a held arrival on
+# every one of its paths).  A row in an arm no witness chose is counted only
+# (hdfs-11741 PS1: 12 HELD rows of arms the witness did not take).
 CONCRETE_SHOWN = 20
 WORDS = {"FREE": "free (over-approximated)",
          "HELD": "held at its recorded value"}
-witness_path = next((row.get("selectedPathId") or ""
-                     for row in result.get("valuations") or []
-                     if row.get("ordinal") == valuation_ordinal), "")
+witness = next((row for row in result.get("valuations") or []
+                if row.get("ordinal") == valuation_ordinal), {})
+witness_path = witness.get("selectedPathId") or ""
+chosen = {arm.get("selector") for arm in witness.get("selectedArms") or []}
 on_witness = [r for r in concrete
-              if witness_path and r.get("pathId") == witness_path]
+              if witness_path and r.get("pathId") == witness_path
+              and (not r.get("arm") or r.get("arm") in chosen)]
 pathless = [r for r in concrete if not r.get("pathId")]
 others = [r for r in concrete if r.get("pathId")
-          and r.get("pathId") != witness_path]
+          and r.get("pathId") != witness_path and not r.get("arm")]
+unchosen = len(concrete) - len(on_witness) - len(pathless) - len(others)
 if concrete:
     out += ["## Concrete", "",
             "What the decision rested on (result.json concrete[], %d row(s)):"
@@ -567,17 +572,21 @@ if concrete:
                                   ", ".join(row.get("locations") or [])
                                   or "no location", row.get("offCone", 0)))
         else:
-            out.append("* %s `%s`%s%s%s%s" % (
+            out.append("* %s `%s`%s%s%s%s%s" % (
                 WORDS.get(row.get("kind"), row.get("kind", "?")),
                 row.get("subject", ""),
                 " = `%s`" % row["value"] if row.get("value") else "",
                 (" (moves with %s)" % ", ".join(row["movesWith"]))
                 if row.get("movesWith") else "",
                 " -- %s" % row["reason"] if row.get("reason") else "",
+                " [arm %s]" % row["arm"] if row.get("arm") else "",
                 "" if row.get("pathId") in ("", None, witness_path)
                 else " [path %s]" % row["pathId"]))
     if len(others) > CONCRETE_SHOWN:
         out.append("* ... and %d more" % (len(others) - CONCRETE_SHOWN))
+    if unchosen:
+        out.append("* %d row(s) inside arms no witness chose, not shown"
+                   % unchosen)
     out.append("")
 
 rests = result.get("restsOnRefutations") or []

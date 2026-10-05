@@ -1144,8 +1144,9 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
   an attach no session attests the producer of (or with no producer named) has a producer no row
-  states: HELD at the value its row states it received, conjoined with the path and named
-  (`Composer.Concrete` HELD, "producer unstated"); one whose producer is attested and no export of
+  states: HELD at the value its row states it received, conjoined with the path (inside an arm: with
+  the arm's body) and named (`Composer.Concrete` HELD, "producer unstated", its `arm` the arm whose
+  body holds it, `""` on the path's own); one whose producer is attested and no export of
   it lowers, or whose row states a value the lowering places nowhere, is FREE, named: nothing pins
   it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it
@@ -1220,7 +1221,9 @@ arm selectors are the chain its path took. A level's messages are closed before 
 closes its own; an arm resting on a message the path closed already is one more thing resting on
 it. A copy per arm instead is a family per arm per level: hdfs-11741 i1's body ran an 8 GB heap
 out. A refused arm, or one whose body equals an earlier arm's (it rests on the same messages),
-takes back what it stated (`ComposedFamilies#rollback`). A message no session can send drops the path.
+takes back what it stated (`ComposedFamilies#rollback`), its `concrete[]` rows included
+(`SmtLowering#unboundRollback`): a row is the arm's only while the arm is in the formula, one per
+value and arm. A message no session can send drops the path.
 Each leaf an arm binds (a declared port's delivery) is noted with the occurrence it was delivered
 into and whether its value rests on
 a clock (`ComposedFamilies.BoundLeaf`: a CLOCK root the delivered value reaches, or a nested

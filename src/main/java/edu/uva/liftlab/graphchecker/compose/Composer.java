@@ -1512,9 +1512,10 @@ public final class Composer {
         observedReads.put(path.pathId, observed);
         for (SmtLowering.Unbound value : lowering.unbound().subList(
                 unboundBefore, lowering.unbound().size())) {
-            pathConcrete.putIfAbsent(value.subject, new Concrete(value.kind,
-                    value.subject, value.value, value.reason,
-                    value.movesWith));
+            // One row per value and arm: an arm's own run holds its value.
+            pathConcrete.putIfAbsent(value.subject + "|" + value.arm,
+                    new Concrete(value.kind, value.subject, value.value,
+                            value.reason, value.movesWith).in(value.arm));
         }
         for (Map.Entry<String, Concrete> row : pathConcrete.entrySet()) {
             concrete.put(path.pathId + "|" + row.getKey(),
@@ -1807,7 +1808,7 @@ public final class Composer {
                               List<String> holds, List<AttachRow> bound) {
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
             if (handoffs.add(attach.symbol())) {
-                arrival(session, attach, holds, bound, "");
+                arrival(session, attach, holds, bound);
             }
         }
     }
@@ -1833,7 +1834,7 @@ public final class Composer {
             AttachRow attach = corpus.attach(session, name);
             if (attach != null) {
                 handoffs.add(name);
-                arrival(session, attach, holds, bound, arm);
+                arrival(session, attach, holds, bound);
             } else if (corpus.handoffSymbol(name) && handoffs.add(name)) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                         GapClass.DIAGNOSTIC, name, (arm.isEmpty()
@@ -1866,14 +1867,11 @@ public final class Composer {
      * never a refused conjunction (hdfs-11741 PS1-PS3: the SASL sender's
      * arms were refused for the expiry dates its closure read from a
      * refresh whose NameNode handler no session instrumented, and the key
-     * id they would have bound was left HELD).
-     *
-     * @param arm the arm selector whose conjunction names it, "" for the
-     *            path's own
+     * id they would have bound was left HELD).  Inside an arm's body its
+     * row names that arm ({@link SmtLowering#arm}).
      */
     private void arrival(String session, AttachRow attach,
-                         List<String> holds, List<AttachRow> bound,
-                         String arm) {
+                         List<String> holds, List<AttachRow> bound) {
         if (attach.interaction() == null) {
             // No known source, so no family: named, and held below.
             composedFamilies.unpaired(session, attach);
@@ -1885,13 +1883,12 @@ public final class Composer {
             bound.add(attach);
             return;
         }
-        String in = arm.isEmpty() ? "" : " (in arm " + arm + ")";
         Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
         if (!attested.isEmpty()) {
             lowering.declareStated(attach.symbol(), sort);
             lowering.freedArrival(attach.symbol(), "attested producer "
                     + attach.producer().id() + ", whose "
-                    + attested.size() + " export(s) did not lower" + in);
+                    + attested.size() + " export(s) did not lower");
             return;
         }
         String received = JsonFields.firstNonBlank(attach.answeredValue(),
@@ -1901,15 +1898,15 @@ public final class Composer {
             lowering.declareStated(attach.symbol(), sort);
             lowering.freedArrival(attach.symbol(), "no producer is attested "
                     + "and its row states the value \"" + received
-                    + "\", which this lowering places nowhere" + in);
+                    + "\", which this lowering places nowhere");
             return;
         }
         lowering.declareStated(attach.symbol(), value.sort);
         holds.add("(= " + attach.symbol() + " " + value.text + ")");
-        lowering.held(attach.symbol(), received, (attach.producer() == null
+        lowering.held(attach.symbol(), received, attach.producer() == null
                 ? "the attach names no producer"
                 : "no export row of this corpus attests its producer "
-                + attach.producer().id()) + in);
+                + attach.producer().id());
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
@@ -2086,27 +2083,37 @@ public final class Composer {
         public final List<String> movesWith;
         /** The path it was composed on ({@link #on}). */
         public final String pathId;
+        /** The arm whose body it is in, "" for the path's own ({@link
+         *  SmtLowering.Unbound#arm}). */
+        public final String arm;
 
         Concrete(String kind, String subject, String value, String reason,
                  List<String> movesWith) {
-            this(kind, subject, value, reason, movesWith, "");
+            this(kind, subject, value, reason, movesWith, "", "");
         }
 
         private Concrete(String kind, String subject, String value,
                          String reason, List<String> movesWith,
-                         String pathId) {
+                         String pathId, String arm) {
             this.kind = kind;
             this.subject = subject;
             this.value = value;
             this.reason = reason;
             this.movesWith = Collections.unmodifiableList(movesWith);
             this.pathId = pathId;
+            this.arm = arm;
         }
 
         /** The same row, on this path. */
         Concrete on(String path) {
             return new Concrete(kind, subject, value, reason, movesWith,
-                    path);
+                    path, arm);
+        }
+
+        /** The same row, in this arm's body. */
+        Concrete in(String selector) {
+            return new Concrete(kind, subject, value, reason, movesWith,
+                    pathId, selector);
         }
     }
 

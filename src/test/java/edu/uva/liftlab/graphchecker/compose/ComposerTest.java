@@ -1033,9 +1033,9 @@ public class ComposerTest {
         // A STATE arm, which is where this rule still bites: the OBSERVED
         // writer is stated whatever it is (it is what the run did), so an
         // unattested one reaches the formula and carries the marker.  On a
-        // WIRE read the rule is now stronger and earlier -- a read no
-        // attested arm delivers is refused by name and its path never
-        // enters the disjunction at all (Composer.handoffRead) -- so the
+        // WIRE read the rule is stronger and earlier -- a read no attested
+        // arm delivers is held at the value it received (Composer#arrival),
+        // so nothing inside its producer reaches the formula -- and the
         // witness this test is about cannot be built there.
         for (String[] each : new String[][]{{"s0", "false", "false"},
                 {"s1", "true", "true"}}) {
@@ -1138,14 +1138,26 @@ public class ComposerTest {
                 held.disjuncts().size());
         assertEquals("on the anchor's family alone", 1,
                 held.families().size());
-        assertTrue("the handed value is held inside the arm",
-                held.body().contains("(= vh_up false)"));
+        String hold = "(= vh_up false)";
+        String inArm = "";
+        for (String line : held.body().split("\n")) {
+            assertFalse("the hold is no part of the path's own fatal",
+                    line.contains(":named path_fatal__")
+                            && line.contains(hold));
+            int arm = line.indexOf("(=> message_arm__");
+            if (line.contains(":named message_family__") && arm >= 0
+                    && line.indexOf(hold, arm) > arm) {
+                inArm = line.substring(arm + 4, line.indexOf(' ', arm + 4));
+            }
+        }
+        assertTrue("the handed value is held inside the arm's case: "
+                + held.body(), inArm.startsWith("message_arm__"));
         boolean named = false;
         for (Composer.Concrete row : held.concrete()) {
             named |= "HELD".equals(row.kind) && "vh_up".equals(row.subject)
-                    && row.reason.contains("(in arm message_arm__");
+                    && inArm.equals(row.arm);
         }
-        assertTrue("and named HELD with its arm: " + held.concrete(),
+        assertTrue("and named HELD with that arm: " + held.concrete(),
                 named);
 
         // ONE RUN BEHIND EVERY OUT OF ONE OCCURRENCE (PIPELINE §8).  The
