@@ -1739,7 +1739,11 @@ cell of the query runs on from the cell before it (`Composer#clockStep`, the spe
 witness's run-on pins too); an instant alone excluded one point, and the next model sat a tick
 beside it --, a
 DIAGNOSTIC `CLAIM_REFUTED` gap names it, and a model whose path or arm the query no longer composes
-is not stated. During EXPLORE a refuted witness attempt lets the exploration go on (§7.9); after
+is not stated. A refutation excludes a region, so an UNSAT may rest on one: whenever a refutation is
+asserted, the free-formula ask and the self-check ask for the unsat core, and an `UNSAT_CLOSED`
+whose core names a `refuted_claim__k` publishes each as `restsOnRefutations` (its path, moved
+roots and reason; `Composition#restsOn`, `ComposeMain#campaignClaim`, EMIT, `report.py`, `triage.py`).
+During EXPLORE a refuted witness attempt lets the exploration go on (§7.9); after
 it, the final stages go on to the next claim (`campaign_next_claim`): while the claim is a refuted
 `SAT_CANDIDATE` whose model is refuted once (recorded, and not one the composition was told was
 refuted already), the campaign's budget has room for its reserve (`campaign_claim_room`) and

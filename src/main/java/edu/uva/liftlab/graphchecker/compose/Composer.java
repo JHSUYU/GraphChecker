@@ -214,6 +214,8 @@ public final class Composer {
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
+        /** refuted_claim__k -> the refuted model it excludes. */
+        private final Map<String, Refutations.Refuted> refutations;
         private final Map<String, List<String>> ownArms;
         private final Map<String, List<String>> recordedAtPlants;
         private final String seedSessionId;
@@ -274,6 +276,9 @@ public final class Composer {
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
+            this.refutations = Collections.unmodifiableMap(
+                    new LinkedHashMap<String, Refutations.Refuted>(
+                            composed.refutationNames));
             this.concrete = Collections.unmodifiableList(
                     new ArrayList<Concrete>(composed.concrete.values()));
             this.declaredRoots = Collections.unmodifiableMap(
@@ -728,6 +733,39 @@ public final class Composer {
             return seedSessionId;
         }
 
+        /** Whether this formula asserts a refuted claim ({@link
+         *  Composer#refutations}): an UNSAT may then rest on one, which
+         *  only an unsat core shows. */
+        public boolean assertsRefutations() {
+            return !refutations.isEmpty();
+        }
+
+        /**
+         * The refutations an unsat core names (its {@code refuted_claim__k}
+         * labels), each as the model it excludes: what an UNSAT rests on
+         * beside the corpus ({@code restsOnRefutations}).
+         */
+        public List<JsonObject> restsOn(List<String> core) {
+            List<JsonObject> rows = new ArrayList<JsonObject>();
+            if (core == null) return rows;
+            for (String label : new LinkedHashSet<String>(core)) {
+                Refutations.Refuted model = refutations.get(label);
+                if (model == null) continue;
+                JsonObject row = new JsonObject();
+                row.addProperty("name", label);
+                row.addProperty("pathId", model.pathId);
+                JsonObject moved = new JsonObject();
+                for (Map.Entry<String, String> each
+                        : model.moved.entrySet()) {
+                    moved.addProperty(each.getKey(), each.getValue());
+                }
+                row.add("moved", moved);
+                row.addProperty("reason", model.reason);
+                rows.add(row);
+            }
+            return rows;
+        }
+
         /**
          * Every family ARM selector, so a claim can say which delivery of a
          * slot the witness model used.
@@ -870,6 +908,10 @@ public final class Composer {
     private final Set<String> replacing = new LinkedHashSet<String>();
     /** What refused the first path that reached the anchor, or "". */
     private String firstRefusal = "";
+    /** Each refuted claim this formula excludes, by its assertion's name
+     *  ({@link #refutations}). */
+    private final Map<String, Refutations.Refuted> refutationNames =
+            new LinkedHashMap<String, Refutations.Refuted>();
     /** What the path being composed rests on concretely or leaves free
      *  ({@link Concrete}), kept once the path is a disjunct. */
     private final Map<String, Concrete> pathConcrete =
@@ -3229,8 +3271,10 @@ public final class Composer {
                 conjuncts.add(clockStep(cell, clockReadings, clockBefore,
                         Long.signum(skew - previous)));
             }
-            lowering.assertNamed("refuted_claim__" + ordinal++,
+            String name = "refuted_claim__" + ordinal++;
+            lowering.assertNamed(name,
                     "(not " + VmTermLowering.and(conjuncts) + ")");
+            refutationNames.put(name, model);
             gap(GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC, model.pathId,
                     "CONFIRM refuted the model on this path with arms "
                             + model.arms + " at " + model.assignment

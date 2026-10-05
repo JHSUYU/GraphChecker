@@ -17,7 +17,9 @@ Classes:
                 the confirmation's reason as the reason
   UNSAT         the formula is unsatisfiable (UNSAT_CLOSED): no world of the
                 corpus reaches the fatal; where the anchor was decided on no
-                symbol (result.json concrete[]), that is the reason
+                symbol (result.json concrete[]), that is the reason, and
+                where the unsat core names refuted claims the formula
+                excludes (result.json restsOnRefutations), how many
   RUN_DEFECT    the run or the engine named a defect that leaves no verdict
                 (result.json defects[], a confirmation that published no
                 verdict among them): the first defect as the reason, a
@@ -123,6 +125,11 @@ def classify(row, result_path, lines, root, text):
                                  % (anchors[0].get("decided", 0),
                                     anchors[0].get("paths", 0),
                                     anchors[0].get("reads", 0)))
+            rests = result.get("restsOnRefutations") or []
+            if rests:
+                row["reason"] = ("rests on %d refuted claim(s) %s; %s" % (
+                    len(rests), ",".join(r.get("pathId", "") for r in rests),
+                    row["reason"])).rstrip("; ")
         else:
             # A confirmation that published no verdict refuted nothing: a
             # defect of the run (EMIT names it CONFIRM_NO_VERDICT; an older

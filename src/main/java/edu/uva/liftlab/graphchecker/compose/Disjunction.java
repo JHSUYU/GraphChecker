@@ -110,13 +110,17 @@ final class Disjunction implements AutoCloseable {
     /**
      * Every path alone with no assertion, within
      * {@link #SELF_CHECK_BUDGET_MS}: an unsat one contradicts itself, and is
-     * remembered as refuted under every set of assertions.  The answers, in
-     * the disjuncts' order.
+     * remembered as refuted under every set of assertions.  Where the
+     * formula asserts a refuted claim, its core is asked for: a path the
+     * refutation alone makes unsat says so in it, and every answer reusing
+     * this one ({@link #refutation}) carries it.  The answers, in the
+     * disjuncts' order.
      */
     List<Z3.Answer> selfCheck() {
         List<String> none = Collections.emptyList();
         List<Z3.Answer> answers = alone(
-                selector -> composition.pathQuery(selector, none));
+                selector -> composition.pathQuery(selector, none),
+                composition.assertsRefutations());
         for (int at = 0; at < answers.size(); at++) {
             if (answers.get(at).unsat()) {
                 remember(composition.disjuncts().get(at).selector(),
@@ -133,19 +137,20 @@ final class Disjunction implements AutoCloseable {
      * is a contradiction the composition built.  In the disjuncts' order.
      */
     List<Z3.Answer> withoutFatalArms() {
-        return alone(composition::withoutFatalArm);
+        return alone(composition::withoutFatalArm, false);
     }
 
     /** One question per path, asked {@link #PATH_ASKS} at a time with no
-     *  assertion and no core, read back in the disjuncts' order. */
+     *  assertion, a core where {@code wantCore}, read back in the
+     *  disjuncts' order. */
     private List<Z3.Answer> alone(
-            Function<String, ArtifactIO.Body> question) {
+            Function<String, ArtifactIO.Body> question, boolean wantCore) {
         List<String> none = Collections.emptyList();
         List<Future<Z3.Answer>> pending = new ArrayList<Future<Z3.Answer>>();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             String selector = disjunct.selector();
             pending.add(pool.submit(() -> solver.ask(question.apply(selector),
-                    none, false, SELF_CHECK_BUDGET_MS)));
+                    none, wantCore, SELF_CHECK_BUDGET_MS)));
         }
         List<Z3.Answer> answers = new ArrayList<Z3.Answer>();
         for (Future<Z3.Answer> each : pending) answers.add(get(each));

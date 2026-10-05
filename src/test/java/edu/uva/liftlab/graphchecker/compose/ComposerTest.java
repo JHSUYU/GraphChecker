@@ -851,6 +851,14 @@ public class ComposerTest {
         assertEquals("every later instant is the jump CONFIRM refuted",
                 "unsat", again.formula().status());
         assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, again.claim().kind());
+        // That UNSAT rests on the refutation: the formula's core names it
+        // (asked for whenever a refutation is asserted), restsOnRefutations.
+        List<JsonObject> rests = next.restsOn(again.formula().core());
+        assertEquals(again.formula().core().toString(), 1, rests.size());
+        assertEquals("refuted_claim__0", rests.get(0).get("name")
+                .getAsString());
+        assertEquals(claimed.selected().path().pathId, rests.get(0)
+                .get("pathId").getAsString());
     }
 
     // ------------------------------------------------------------------

@@ -6173,6 +6173,10 @@ campaign_emit() {
      # session answered and why, not only that the claim was downgraded.
      confirmation: $confirmation,
      refutedClaims: $refutedClaims,
+     # The refuted claims an UNSAT rests on: the refuted_claim__ labels its
+     # unsat core names (ComposeMain#campaignClaim), each the model it
+     # excludes -- a region the verdict rests on beside the corpus.
+     restsOnRefutations: ($decided.restsOnRefutations // []),
      # WHICH mechanism the formula supports, beside WHETHER the run is
      # accepted.  Two questions, and a reader of result.json alone could
      # answer only the second: the ClaimKind, the valuation that carried it

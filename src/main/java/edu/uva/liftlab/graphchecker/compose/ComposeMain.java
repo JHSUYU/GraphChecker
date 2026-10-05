@@ -229,6 +229,7 @@ public final class ComposeMain {
         int blockers = refusals.size();
         String kind;
         String reason;
+        JsonArray restsOnRefutations = new JsonArray();
         if (blockers > 0) {
             kind = "RUN_DEFECT";
             reason = "the composition named " + blockers
@@ -258,6 +259,18 @@ public final class ComposeMain {
                     + " corpus reaches the fatal arm, given the marker"
                     + " valuations each path ran and the values concrete[]"
                     + " holds";
+            // A refuted claim the formula excludes is a region the UNSAT
+            // rests on beside the corpus, named where its core names it.
+            JsonArray rests = new JsonArray();
+            for (JsonObject refuted : composition.restsOn(
+                    decision.formula().core())) {
+                rests.add(refuted);
+            }
+            restsOnRefutations = rests;
+            if (rests.size() > 0) {
+                reason += ", and on " + rests.size() + " refuted claim(s)"
+                        + " it excludes (restsOnRefutations)";
+            }
         } else {
             // No claim and no unsat: never a refutation.
             kind = "RUN_DEFECT";
@@ -269,6 +282,7 @@ public final class ComposeMain {
         JsonObject row = new JsonObject();
         row.addProperty("claim", kind);
         row.addProperty("claimReason", reason);
+        row.add("restsOnRefutations", restsOnRefutations);
         row.addProperty("findingKind", claim.kind().name());
         row.addProperty("valuationOrdinal", claim.valuationOrdinal());
         row.addProperty("polarityDecides", claim.polarityDecides());

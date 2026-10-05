@@ -493,11 +493,15 @@ grep -q 'no accepted verdict: claim=RUN_DEFECT (the formula UNSAT_CLOSED)' \
   "${emit_root}/emit.log" \
   || fail "EMIT did not name the defect run: $(<"${emit_root}/emit.log")"
 # The same formula with no defect is the verdict, concrete anchor and all,
-# and what COMPOSE pinned beside it (Composer.Concrete) travels too.
+# and what COMPOSE held beside it (Composer.Concrete) travels too, with the
+# refuted claims its unsat core names (restsOnRefutations).
 emit_unsat_fixture
-jq '.concrete = [{kind: "FREE", subject: "vh", value: "",
-      movesWith: ["unattested producer P"]}]' "${composition_manifest}" \
-  >"${composition_manifest}.tmp"
+jq '.concrete = [{kind: "HELD", subject: "vh", value: "7",
+      reason: "producer unstated: the attach names no producer",
+      movesWith: [], pathId: "P1"}]
+  | .solver.campaignClaim.restsOnRefutations = [{name: "refuted_claim__0",
+      pathId: "P1", moved: {"ROOT.M": "true"}, reason: "WIRE e1"}]' \
+  "${composition_manifest}" >"${composition_manifest}.tmp"
 mv "${composition_manifest}.tmp" "${composition_manifest}"
 run_emit
 [[ "${emit_status}" -eq 0 ]] \
@@ -505,7 +509,9 @@ run_emit
 jq -e --arg formula "$(realpath --relative-to="${causynth_output_dir}" \
     "${campaign_final}/candidate.smt2")" \
   '.claim == "UNSAT_CLOSED" and .accepted == true and .defects == []
-  and [.concrete[].kind] == ["ANCHOR", "FREE"]
+  and [.concrete[].kind] == ["ANCHOR", "HELD"]
+  and .concrete[1].pathId == "P1"
+  and [.restsOnRefutations[].name] == ["refuted_claim__0"]
   and .formula.path == $formula and ($formula | startswith("/") | not)
   and (.formula.sha256 | length) == 64' \
   "${campaign_final}/result.json" >/dev/null \
@@ -543,7 +549,8 @@ triage_case() {
   printf '%s\n' "$3" >"${dir}/result.json"
 }
 triage_case 1 case-unsat '{"claim": "UNSAT_CLOSED", "concrete": [{"kind":
-  "ANCHOR", "decided": 1, "paths": 1, "reads": 2}]}'
+  "ANCHOR", "decided": 1, "paths": 1, "reads": 2}],
+  "restsOnRefutations": [{"name": "refuted_claim__0", "pathId": "P1"}]}'
 triage_case 2 case-defect '{"claim": "RUN_DEFECT", "defects": [{"code":
   "ADMISSION_GAP", "detail": "no session reached the declared occurrence"}]}'
 triage_case 3 case-sat '{"claim": "SAT_CANDIDATE",
@@ -555,7 +562,7 @@ triage_case 5 case-noverdict '{"claim": "SAT_UNCONFIRMED",
     "reason": "the confirmation replay published no verdict"}}'
 triage_rows=$(python3 "${repo}/tools/adhoc/triage.py" T1 "${triage_out}" \
   2>/dev/null | tr -d '\r' | awk -F'\t' 'NR > 1 {print $2 "=" $3 "|" $NF}')
-[[ "${triage_rows}" == "case-unsat=UNSAT|the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
+[[ "${triage_rows}" == "case-unsat=UNSAT|rests on 1 refuted claim(s) P1; the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
 case-defect=RUN_DEFECT|ADMISSION_GAP no session reached the declared occurrence
 case-sat=CONFIRMED|
 case-refuted=REFUTED|WIRE e1
@@ -588,6 +595,26 @@ grep -q '^## Defects' "${report_work}/report.md" \
     "${report_work}/report.md" \
   || fail "report.md did not name the defects and the concrete anchor: \
 $(<"${report_work}/report.md")"
+# The witness path's rows come first and are never cut; a FREE row is free
+# (over-approximated), a HELD one held at its recorded value; the other
+# paths' rows are cut at 20, their count stated.
+jq -n '{claim: "SAT_CANDIDATE", valuationOrdinal: 1,
+  valuations: [{ordinal: 1, selectedPathId: "P.w"}],
+  concrete: ([range(25) | {kind: "HELD", subject: "r\(.)", value: "0",
+      reason: "producer unstated: x", movesWith: [], pathId: "P.o"}]
+    + [{kind: "FREE", subject: "w", value: "", reason: "moves",
+      movesWith: ["ROOT.M"], pathId: "P.w"}])}' \
+  >"${report_case}/schedule/final/result.json"
+python3 "${repo}/experiments/accept/report.py" case-x "${report_case}" \
+  "${report_work}" >/dev/null
+awk '/^## Concrete/ {on = 1; next} on && /^\* / {print; exit}' \
+    "${report_work}/report.md" \
+  | grep -q '^\* free (over-approximated) `w` (moves with ROOT.M)' \
+  && grep -q '^\* held at its recorded value `r0` = `0`' \
+    "${report_work}/report.md" \
+  && grep -q '^\* \.\.\. and 5 more' "${report_work}/report.md" \
+  || fail "report.md did not put the witness path's rows first, or cut \
+the others: $(<"${report_work}/report.md")"
 
 # The claim has one home. A solved manifest without the policy's decision is
 # a manifest EMIT may not publish a result from.
